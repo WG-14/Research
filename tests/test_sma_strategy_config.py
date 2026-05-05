@@ -223,7 +223,7 @@ def test_approved_profile_selector_is_marked_full_contract_not_legacy(
 
     assert config.candidate_regime_policy is not None
     assert config.candidate_regime_policy["legacy_candidate_profile_path_used"] is False
-    assert config.candidate_regime_policy["legacy_profile_contract_scope"] == "full_approved_profile"
+    assert config.candidate_regime_policy.get("legacy_profile_contract_scope") is None
     assert config.candidate_regime_policy["approved_profile_contract_scope"] == "full_approved_profile"
     assert config.candidate_regime_policy["approved_profile_verification_ok"] is True
     assert config.candidate_regime_policy["approved_profile_loaded"] is True

@@ -129,7 +129,6 @@ def _candidate_regime_policy_from_configured_profile(
             policy = {
                 **policy,
                 "legacy_candidate_profile_path_used": False,
-                "legacy_profile_contract_scope": "full_approved_profile",
                 "approved_profile_contract_scope": "full_approved_profile",
             }
         else:

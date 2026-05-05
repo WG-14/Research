@@ -22,6 +22,7 @@ from bithumb_bot.approved_profile import (
     validate_approved_profile,
 )
 from bithumb_bot.profile_cli import cmd_profile_diff, cmd_profile_generate, cmd_profile_promote, cmd_profile_verify
+from bithumb_bot.paths import PathConfig, PathManager
 from bithumb_bot.research.promotion_gate import build_candidate_profile
 from bithumb_bot.storage_io import write_json_atomic
 
@@ -471,17 +472,19 @@ def test_profile_promote_fails_when_parent_source_promotion_drifts(
     profile_path = _write_profile_with_source(tmp_path)
     promotion = _promotion(repository_version="other-version")
     write_json_atomic(tmp_path / "promotion.json", promotion)
+    out_path = tmp_path / "live_dry_run.json"
 
     assert cmd_profile_promote(
         profile_path=str(profile_path),
         mode="live_dry_run",
-        out_path=str(tmp_path / "live_dry_run.json"),
+        out_path=str(out_path),
         paper_validation_evidence=str(_write_evidence(tmp_path, "paper_validation.json")),
         live_readiness_evidence=None,
     ) == 1
     payload = json.loads(capsys.readouterr().out)
 
     assert payload["error"] == "source_promotion_content_hash_mismatch"
+    assert not out_path.exists()
 
 
 def test_profile_promote_fails_when_parent_paper_validation_evidence_drifts(
@@ -500,17 +503,54 @@ def test_profile_promote_fails_when_parent_paper_validation_evidence_drifts(
     live_dry_run_path = tmp_path / "live_dry_run.json"
     write_json_atomic(live_dry_run_path, live_dry_run)
     paper_evidence.write_text('{"ok":false}\n', encoding="utf-8")
+    out_path = tmp_path / "small_live.json"
 
     assert cmd_profile_promote(
         profile_path=str(live_dry_run_path),
         mode="small_live",
-        out_path=str(tmp_path / "small_live.json"),
+        out_path=str(out_path),
         paper_validation_evidence=None,
         live_readiness_evidence=str(_write_evidence(tmp_path, "live_ready.json")),
     ) == 1
     payload = json.loads(capsys.readouterr().out)
 
     assert payload["error"] == "paper_validation_evidence_content_hash_mismatch"
+    assert not out_path.exists()
+
+
+def test_profile_promote_fails_when_any_attached_parent_evidence_drifts(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    promotion_path = tmp_path / "promotion.json"
+    write_json_atomic(promotion_path, _promotion())
+    paper = _profile(str(promotion_path))
+    live_dry_run = promote_profile_mode(
+        parent_profile=paper,
+        target_mode="live_dry_run",
+        paper_validation_evidence=str(_write_evidence(tmp_path, "paper_validation.json")),
+    )
+    attached_live_ready = _write_evidence(tmp_path, "attached_live_ready.json")
+    live_dry_run["live_readiness_evidence_path"] = str(attached_live_ready.resolve())
+    live_dry_run["live_readiness_evidence_content_hash"] = compute_file_content_hash(attached_live_ready)
+    live_dry_run.pop("profile_content_hash")
+    live_dry_run["profile_content_hash"] = compute_approved_profile_hash(live_dry_run)
+    live_dry_run_path = tmp_path / "live_dry_run.json"
+    write_json_atomic(live_dry_run_path, validate_approved_profile(live_dry_run))
+    attached_live_ready.write_text('{"ok":false}\n', encoding="utf-8")
+    out_path = tmp_path / "small_live.json"
+
+    assert cmd_profile_promote(
+        profile_path=str(live_dry_run_path),
+        mode="small_live",
+        out_path=str(out_path),
+        paper_validation_evidence=None,
+        live_readiness_evidence=str(_write_evidence(tmp_path, "new_live_ready.json")),
+    ) == 1
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["error"] == "live_readiness_evidence_content_hash_mismatch"
+    assert not out_path.exists()
 
 
 def test_regime_policy_helper_verify_source_fails_on_source_drift(tmp_path: Path) -> None:
@@ -652,6 +692,63 @@ def test_profile_generation_rejects_repo_local_source_promotion_path() -> None:
             interval="1m",
             generated_at="2026-05-04T00:00:00+00:00",
         )
+
+
+def test_profile_generation_rejects_missing_source_promotion_path(tmp_path: Path) -> None:
+    with pytest.raises(ApprovedProfileError, match="source_promotion_artifact_path_not_found"):
+        build_approved_profile(
+            promotion=_promotion(),
+            mode="paper",
+            source_promotion_path=str(tmp_path / "missing_promotion.json"),
+            market="KRW-BTC",
+            interval="1m",
+            generated_at="2026-05-04T00:00:00+00:00",
+        )
+
+
+def test_profile_generation_accepts_external_absolute_source_promotion_path(tmp_path: Path) -> None:
+    promotion_path = tmp_path / "promotion.json"
+    write_json_atomic(promotion_path, _promotion())
+
+    profile = build_approved_profile(
+        promotion=_promotion(),
+        mode="paper",
+        source_promotion_path=str(promotion_path),
+        market="KRW-BTC",
+        interval="1m",
+        generated_at="2026-05-04T00:00:00+00:00",
+    )
+
+    assert profile["source_promotion_artifact_path"] == str(promotion_path.resolve())
+
+
+def test_profile_generation_accepts_managed_data_reports_source_promotion_path(tmp_path: Path) -> None:
+    manager = PathManager(
+        project_root=Path.cwd(),
+        config=PathConfig(
+            mode="paper",
+            env_root=tmp_path / "env_root",
+            run_root=tmp_path / "run_root",
+            data_root=tmp_path / "data_root",
+            log_root=tmp_path / "log_root",
+            backup_root=tmp_path / "backup_root",
+        ),
+    )
+    promotion_path = manager.data_dir() / "reports" / "profiles" / "promotion.json"
+    promotion_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(promotion_path, _promotion())
+
+    profile = build_approved_profile(
+        promotion=_promotion(),
+        mode="paper",
+        source_promotion_path=str(promotion_path),
+        market="KRW-BTC",
+        interval="1m",
+        generated_at="2026-05-04T00:00:00+00:00",
+        manager=manager,
+    )
+
+    assert profile["source_promotion_artifact_path"] == str(promotion_path.resolve())
 
 
 def test_live_runtime_arming_ambiguity_returns_reason_code(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
