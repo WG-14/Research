@@ -30,7 +30,7 @@ class ValidatedCandidate:
 
 
 def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
-    return {
+    profile = {
         "strategy_name": candidate.get("strategy_name"),
         "candidate_id": candidate.get("parameter_candidate_id"),
         "parameter_values": candidate.get("parameter_values"),
@@ -43,6 +43,13 @@ def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
         "allowed_live_regimes": candidate.get("allowed_live_regimes"),
         "blocked_live_regimes": candidate.get("blocked_live_regimes"),
     }
+    if candidate.get("execution_model") is not None:
+        profile["execution_model"] = candidate.get("execution_model")
+    if candidate.get("execution_calibration_required") is not None:
+        profile["execution_calibration_required"] = candidate.get("execution_calibration_required")
+    if candidate.get("execution_calibration_gate") is not None:
+        profile["execution_calibration_gate"] = candidate.get("execution_calibration_gate")
+    return profile
 
 
 def evaluate_candidate_for_promotion(candidate: dict[str, Any]) -> tuple[bool, list[str]]:
@@ -59,6 +66,7 @@ def evaluate_candidate_for_promotion(candidate: dict[str, Any]) -> tuple[bool, l
         reasons.append("validation_trade_count_missing")
     if candidate.get("walk_forward_required") and candidate.get("walk_forward_gate_result") != "PASS":
         reasons.append("walk_forward_gate_not_passed")
+    _extend_execution_calibration_reasons(candidate, reasons)
     profile_hash = candidate.get("candidate_profile_hash")
     if not profile_hash:
         reasons.append("candidate_profile_hash_missing")
@@ -88,7 +96,29 @@ def validate_backtest_candidate_for_promotion(candidate: dict[str, Any] | None) 
         reasons.extend(["backtest_candidate_profile_hash_mismatch", "candidate_profile_hash_mismatch"])
     if not _candidate_has_regime_policy(candidate):
         reasons.extend(["backtest_regime_policy_missing", "regime_policy_missing"])
+    _extend_execution_calibration_reasons(candidate, reasons, prefix="backtest_")
     return not reasons, reasons
+
+
+def _extend_execution_calibration_reasons(
+    candidate: dict[str, Any],
+    reasons: list[str],
+    *,
+    prefix: str = "",
+) -> None:
+    gate = candidate.get("execution_calibration_gate")
+    if candidate.get("execution_calibration_required"):
+        if not isinstance(gate, dict):
+            reasons.extend([f"{prefix}execution_calibration_missing", "execution_calibration_missing"])
+            return
+        if gate.get("status") != "PASS":
+            gate_reasons = [str(item) for item in gate.get("reasons") or ["execution_calibration_failed"]]
+            reasons.extend([f"{prefix}{reason}" for reason in gate_reasons])
+            reasons.extend(gate_reasons)
+    elif isinstance(gate, dict) and gate.get("status") == "FAIL":
+        gate_reasons = [str(item) for item in gate.get("reasons") or ["execution_calibration_failed"]]
+        reasons.extend([f"{prefix}{reason}" for reason in gate_reasons])
+        reasons.extend(gate_reasons)
 
 
 def _candidate_has_regime_policy(candidate: dict[str, Any]) -> bool:
@@ -237,6 +267,9 @@ def validate_walk_forward_candidate_for_promotion(
         "parameter_candidate_id",
         "parameter_values",
         "cost_model",
+        "execution_model",
+        "execution_calibration_required",
+        "execution_calibration_gate",
         "manifest_hash",
     ):
         if candidate.get(key) != backtest_candidate.get(key):

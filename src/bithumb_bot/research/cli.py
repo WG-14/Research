@@ -6,35 +6,40 @@ from pathlib import Path
 from bithumb_bot.config import PATH_MANAGER, settings
 
 from .experiment_manifest import ManifestValidationError, load_manifest
+from .execution_calibration import ExecutionCalibrationError, load_calibration_artifact
 from .promotion_gate import PromotionGateError, promote_candidate
 from .run_summary import ResearchRunSummary, build_research_run_summary
 from .validation_protocol import ResearchValidationError, run_research_backtest, run_research_walk_forward
 
 
-def cmd_research_backtest(*, manifest_path: str) -> int:
+def cmd_research_backtest(*, manifest_path: str, execution_calibration_path: str | None = None) -> int:
     try:
         manifest = load_manifest(manifest_path)
+        calibration = load_calibration_artifact(execution_calibration_path) if execution_calibration_path else None
         report = run_research_backtest(
             manifest=manifest,
             db_path=settings.DB_PATH,
             manager=PATH_MANAGER,
+            execution_calibration=calibration,
         )
-    except (ManifestValidationError, ResearchValidationError, OSError, ValueError) as exc:
+    except (ManifestValidationError, ExecutionCalibrationError, ResearchValidationError, OSError, ValueError) as exc:
         print(f"[RESEARCH-BACKTEST] error={exc}")
         return 1
     _print_report_summary("RESEARCH-BACKTEST", report)
     return 0
 
 
-def cmd_research_walk_forward(*, manifest_path: str) -> int:
+def cmd_research_walk_forward(*, manifest_path: str, execution_calibration_path: str | None = None) -> int:
     try:
         manifest = load_manifest(manifest_path)
+        calibration = load_calibration_artifact(execution_calibration_path) if execution_calibration_path else None
         report = run_research_walk_forward(
             manifest=manifest,
             db_path=settings.DB_PATH,
             manager=PATH_MANAGER,
+            execution_calibration=calibration,
         )
-    except (ManifestValidationError, ResearchValidationError, OSError, ValueError) as exc:
+    except (ManifestValidationError, ExecutionCalibrationError, ResearchValidationError, OSError, ValueError) as exc:
         print(f"[RESEARCH-WALK-FORWARD] error={exc}")
         return 1
     _print_report_summary("RESEARCH-WALK-FORWARD", report)

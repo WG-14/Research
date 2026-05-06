@@ -249,7 +249,10 @@ def load_manifest_max_slippage_bps(path: str | Path | None) -> float | None:
     if path is None:
         return None
     manifest = load_manifest(path)
-    return max(float(value) for value in manifest.cost_model.slippage_bps)
+    return max(
+        float(scenario.slippage_bps) + float(scenario.market_order_extra_cost_bps)
+        for scenario in manifest.execution_model.scenarios
+    )
 
 
 def _decode_submit_evidence(raw: object) -> dict[str, Any]:

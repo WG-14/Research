@@ -10,7 +10,9 @@ from bithumb_bot.paths import PathManager
 from bithumb_bot.market_regime import MARKET_REGIME_VERSION, evaluate_regime_acceptance_gate
 
 from .dataset_snapshot import DatasetSnapshot, combined_dataset_fingerprint, load_dataset_range, load_dataset_split
-from .experiment_manifest import DateRange, ExperimentManifest
+from .execution_calibration import compare_calibration_to_scenario
+from .execution_model import FixedBpsExecutionModel, StressExecutionModel, model_params_hash
+from .experiment_manifest import DateRange, ExecutionScenario, ExperimentManifest
 from .hashing import sha256_prefixed
 from .parameter_space import candidate_id, iter_parameter_candidates
 from .promotion_gate import build_candidate_profile
@@ -28,6 +30,7 @@ def run_research_backtest(
     db_path: str | Path,
     manager: PathManager,
     generated_at: str | None = None,
+    execution_calibration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     snapshots = {
         "train": load_dataset_split(db_path=db_path, manifest=manifest, split_name="train"),
@@ -41,7 +44,12 @@ def run_research_backtest(
         )
     _require_enough_candles(snapshots.values())
 
-    candidates = _evaluate_candidates(manifest=manifest, snapshots=snapshots, include_walk_forward=False)
+    candidates = _evaluate_candidates(
+        manifest=manifest,
+        snapshots=snapshots,
+        include_walk_forward=False,
+        execution_calibration=execution_calibration,
+    )
     report = _report_payload(
         manifest=manifest,
         snapshots=tuple(snapshots.values()),
@@ -66,6 +74,7 @@ def run_research_walk_forward(
     db_path: str | Path,
     manager: PathManager,
     generated_at: str | None = None,
+    execution_calibration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if manifest.walk_forward is None:
         raise ResearchValidationError("walk_forward_missing")
@@ -76,7 +85,12 @@ def run_research_walk_forward(
         )
     snapshots = _load_walk_forward_snapshots(db_path=db_path, manifest=manifest, windows=windows)
     _require_enough_candles(snapshots.values())
-    candidates = _evaluate_candidates(manifest=manifest, snapshots=snapshots, include_walk_forward=True)
+    candidates = _evaluate_candidates(
+        manifest=manifest,
+        snapshots=snapshots,
+        include_walk_forward=True,
+        execution_calibration=execution_calibration,
+    )
     report = _report_payload(
         manifest=manifest,
         snapshots=tuple(snapshots.values()),
@@ -100,6 +114,7 @@ def _evaluate_candidates(
     manifest: ExperimentManifest,
     snapshots: dict[str, DatasetSnapshot],
     include_walk_forward: bool,
+    execution_calibration: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     raw_candidates = iter_parameter_candidates(manifest.parameter_space)
     rows: list[dict[str, Any]] = []
@@ -107,30 +122,39 @@ def _evaluate_candidates(
     dataset_hash = combined_dataset_fingerprint(tuple(snapshots.values()))
     runner = resolve_research_strategy(manifest.strategy_name)
 
-    for slippage_bps in manifest.cost_model.slippage_bps:
+    for scenario in manifest.execution_model.scenarios:
+        execution_model = _execution_model_from_scenario(scenario)
+        calibration_gate = compare_calibration_to_scenario(
+            calibration=execution_calibration,
+            assumed_slippage_bps=scenario.slippage_bps + scenario.market_order_extra_cost_bps,
+            assumed_latency_ms=scenario.latency_ms,
+        )
         base_results: list[dict[str, Any]] = []
         for index, params in enumerate(raw_candidates):
             train = runner(
                 dataset=snapshots["train"],
                 parameter_values=params,
-                fee_rate=manifest.cost_model.fee_rate,
-                slippage_bps=float(slippage_bps),
+                fee_rate=scenario.fee_rate,
+                slippage_bps=float(scenario.slippage_bps),
                 parameter_stability_score=None,
+                execution_model=execution_model,
             )
             validation = runner(
                 dataset=snapshots["validation"],
                 parameter_values=params,
-                fee_rate=manifest.cost_model.fee_rate,
-                slippage_bps=float(slippage_bps),
+                fee_rate=scenario.fee_rate,
+                slippage_bps=float(scenario.slippage_bps),
                 parameter_stability_score=None,
+                execution_model=_execution_model_from_scenario(scenario),
             )
             final_holdout = (
                 runner(
                     dataset=snapshots["final_holdout"],
                     parameter_values=params,
-                    fee_rate=manifest.cost_model.fee_rate,
-                    slippage_bps=float(slippage_bps),
+                    fee_rate=scenario.fee_rate,
+                    slippage_bps=float(scenario.slippage_bps),
                     parameter_stability_score=None,
+                    execution_model=_execution_model_from_scenario(scenario),
                 )
                 if "final_holdout" in snapshots
                 else None
@@ -140,8 +164,8 @@ def _evaluate_candidates(
                     manifest=manifest,
                     snapshots=snapshots,
                     parameter_values=params,
-                    fee_rate=manifest.cost_model.fee_rate,
-                    slippage_bps=float(slippage_bps),
+                    fee_rate=scenario.fee_rate,
+                    scenario=scenario,
                     parameter_stability_score=None,
                 )
                 if include_walk_forward
@@ -201,11 +225,13 @@ def _evaluate_candidates(
                 stability_score=stability_score,
                 include_walk_forward=include_walk_forward,
                 regime_gate_result=regime_gate.as_dict(),
+                execution_calibration_gate=calibration_gate,
             )
             cost_model = {
-                "fee_rate": manifest.cost_model.fee_rate,
-                "slippage_bps": float(slippage_bps),
+                "fee_rate": scenario.fee_rate,
+                "slippage_bps": float(scenario.slippage_bps),
             }
+            execution_model_payload = _scenario_payload(scenario)
             candidate_payload = {
                 "experiment_id": manifest.experiment_id,
                 "manifest_hash": manifest_hash,
@@ -215,6 +241,9 @@ def _evaluate_candidates(
                 "parameter_candidate_id": base["candidate_id"],
                 "parameter_values": params,
                 "cost_model": cost_model,
+                "execution_model": execution_model_payload,
+                "execution_calibration_required": manifest.execution_model.calibration_required,
+                "execution_calibration_gate": calibration_gate,
                 "train_metrics": train_metrics,
                 "validation_metrics": validation_metrics,
                 "final_holdout_metrics": final_holdout_metrics,
@@ -253,6 +282,7 @@ def _gate_result(
     stability_score: float | None,
     include_walk_forward: bool,
     regime_gate_result: dict[str, Any] | None = None,
+    execution_calibration_gate: dict[str, Any] | None = None,
 ) -> tuple[str, list[str]]:
     gate = manifest.acceptance_gate
     reasons: list[str] = []
@@ -279,6 +309,17 @@ def _gate_result(
             reasons.append("regime_gate_missing")
         elif regime_gate_result.get("result") != "PASS":
             reasons.extend(str(reason) for reason in regime_gate_result.get("reasons") or ["regime_gate_failed"])
+    if manifest.execution_model.calibration_required:
+        if not isinstance(execution_calibration_gate, dict):
+            reasons.append("execution_calibration_missing")
+        elif execution_calibration_gate.get("status") != "PASS":
+            reasons.extend(str(reason) for reason in execution_calibration_gate.get("reasons") or ["execution_calibration_failed"])
+    elif (
+        manifest.execution_model.calibration_strictness == "fail"
+        and isinstance(execution_calibration_gate, dict)
+        and execution_calibration_gate.get("status") == "FAIL"
+    ):
+        reasons.extend(str(reason) for reason in execution_calibration_gate.get("reasons") or ["execution_calibration_failed"])
     return ("PASS" if not reasons else "FAIL", reasons)
 
 
@@ -359,7 +400,8 @@ def _walk_forward_metrics(
     snapshots: dict[str, DatasetSnapshot],
     parameter_values: dict[str, Any],
     fee_rate: float,
-    slippage_bps: float,
+    scenario: ExecutionScenario | None = None,
+    slippage_bps: float | None = None,
     parameter_stability_score: float | None,
 ) -> dict[str, Any]:
     config = manifest.walk_forward
@@ -373,6 +415,12 @@ def _walk_forward_metrics(
             "windows": [],
         }
     runner = resolve_research_strategy(manifest.strategy_name)
+    active_scenario = scenario or ExecutionScenario(
+        type="fixed_bps",
+        fee_rate=float(fee_rate),
+        slippage_bps=float(slippage_bps or 0.0),
+        source="legacy_test_call",
+    )
     windows: list[dict[str, Any]] = []
     for window_id in sorted({key.rsplit("_", 1)[0] for key in snapshots if key.startswith("window_")}):
         train_snapshot = snapshots[f"{window_id}_train"]
@@ -380,16 +428,18 @@ def _walk_forward_metrics(
         train = runner(
             train_snapshot,
             parameter_values,
-            fee_rate,
-            slippage_bps,
+            active_scenario.fee_rate,
+            active_scenario.slippage_bps,
             parameter_stability_score,
+            _execution_model_from_scenario(active_scenario),
         )
         test = runner(
             test_snapshot,
             parameter_values,
-            fee_rate,
-            slippage_bps,
+            active_scenario.fee_rate,
+            active_scenario.slippage_bps,
             parameter_stability_score,
+            _execution_model_from_scenario(active_scenario),
         )
         test_metrics = test.metrics.as_dict()
         pass_reasons: list[str] = []
@@ -484,6 +534,9 @@ def _report_payload(
         "strategy_name": manifest.strategy_name,
         "regime_classifier_version": MARKET_REGIME_VERSION,
         "regime_acceptance_gate": manifest.acceptance_gate.regime_acceptance_gate.as_dict(),
+        "execution_model": manifest.execution_model.as_dict(),
+        "execution_model_source": manifest.execution_model.source,
+        "execution_calibration_required": manifest.execution_model.calibration_required,
         "market_regime_bucket_performance": (
             best.get("market_regime_bucket_performance") if best else None
         ),
@@ -502,6 +555,28 @@ def _report_payload(
         "repository_version": _repository_version(),
         "generated_at": generated_at or datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _execution_model_from_scenario(scenario: ExecutionScenario):
+    if scenario.type == "fixed_bps":
+        return FixedBpsExecutionModel(fee_rate=scenario.fee_rate, slippage_bps=scenario.slippage_bps)
+    if scenario.type == "stress":
+        return StressExecutionModel(
+            fee_rate=scenario.fee_rate,
+            slippage_bps=scenario.slippage_bps,
+            latency_ms=scenario.latency_ms,
+            partial_fill_rate=scenario.partial_fill_rate,
+            order_failure_rate=scenario.order_failure_rate,
+            market_order_extra_cost_bps=scenario.market_order_extra_cost_bps,
+            seed=scenario.seed,
+        )
+    raise ResearchValidationError(f"unsupported execution model scenario: {scenario.type}")
+
+
+def _scenario_payload(scenario: ExecutionScenario) -> dict[str, Any]:
+    payload = scenario.as_dict()
+    payload["model_params_hash"] = model_params_hash(_execution_model_from_scenario(scenario).params_payload())
+    return payload
 
 
 def _candidate_rank_key(candidate: dict[str, Any]) -> tuple[int, float, float]:

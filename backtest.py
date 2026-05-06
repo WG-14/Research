@@ -14,6 +14,11 @@ if str(SRC_DIR) not in sys.path:
 
 from bithumb_bot.paths import PathManager
 
+SMOKE_BACKTEST_WARNING = (
+    "This is a smoke backtest only. It must not be used as evidence for strategy promotion, "
+    "approved profiles, live readiness, or capital allocation."
+)
+
 load_dotenv(Path(__file__).with_name(".env"))
 
 path_manager = PathManager.from_env(PROJECT_ROOT)
@@ -191,6 +196,7 @@ def main():
     ap.add_argument("--show-trades", type=int, default=10)
     args = ap.parse_args()
 
+    print(f"[SMOKE-BACKTEST WARNING] {SMOKE_BACKTEST_WARNING}", file=sys.stderr)
     r = backtest(args.short, args.long, args.entry)
 
     print(f"[BACKTEST] PAIR={PAIR} INTERVAL={INTERVAL} entry={args.entry} short={args.short} long={args.long}")

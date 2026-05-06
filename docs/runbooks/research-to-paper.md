@@ -24,11 +24,18 @@ sed -n '1,220p' examples/research/sma_filter_manifest.example.json
 ```
 
 Review the hypothesis, dataset split dates, `snapshot_id`, parameter grid, cost model, acceptance gate, and `walk_forward` window configuration. Do not tune runtime env values until a backtest looks good.
+If the manifest uses `execution_model`, review every scenario and whether execution calibration is required. Root/simple smoke backtests are not research evidence and must not be used as evidence for strategy promotion, approved profiles, live readiness, or capital allocation.
 
 3. Run the deterministic research backtest.
 
 ```bash
 uv run bithumb-bot research-backtest --manifest examples/research/sma_filter_manifest.example.json
+```
+
+When execution-quality calibration evidence exists and the manifest requires or should compare it, pass it explicitly:
+
+```bash
+uv run bithumb-bot research-backtest --manifest examples/research/sma_filter_manifest.example.json --execution-calibration "$DATA_ROOT/paper/reports/execution_quality/<calibration>.json"
 ```
 
 Review the printed `manifest_hash`, `dataset_content_hash`, `content_hash`, report path, derived path, candidate count, `gate_result`, `candidate_gate_counts`, `top_fail_reasons`, `promotion_allowed`, `nearest_failed_candidate_id`, and `next_action`.
@@ -67,7 +74,7 @@ uv run bithumb-bot research-promote-candidate --experiment-id sma_filter_v1_2026
 ```
 
 Promotion requires backtest/OOS evidence. If walk-forward is required, promotion also requires walk-forward evidence for the same experiment, strategy, parameters, cost model, and manifest.
-Promotion refuses candidates with missing validation evidence, failed backtest gates, missing or failed walk-forward evidence, mismatched walk-forward candidates, or tampered candidate profile hashes.
+Promotion refuses candidates with missing validation evidence, failed backtest gates, missing or failed walk-forward evidence, mismatched walk-forward candidates, missing or breached required execution-calibration evidence, or tampered candidate profile hashes.
 Both evidence sources are hash-verified and bound into the promotion artifact.
 
 8. Review the promotion artifact.

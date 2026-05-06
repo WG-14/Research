@@ -7,6 +7,8 @@ from pathlib import Path
 from bithumb_bot.paths import PathManager
 from bithumb_bot.research.backtest_engine import run_sma_backtest
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
+from bithumb_bot.research.execution_calibration import build_calibration_artifact
+from bithumb_bot.research.execution_model import FixedBpsExecutionModel, StressExecutionModel
 from bithumb_bot.research.experiment_manifest import parse_manifest
 from bithumb_bot.research.validation_protocol import run_research_backtest
 
@@ -148,3 +150,140 @@ def test_sma_backtest_attaches_entry_and_exit_regime_snapshots() -> None:
     assert isinstance(closed[0]["exit_regime_snapshot"], dict)
     assert result.regime_performance
     assert result.regime_coverage
+
+
+def test_fixed_bps_execution_model_preserves_legacy_backtest_metrics() -> None:
+    manifest = parse_manifest(_manifest())
+    snapshot = DatasetSnapshot(
+        snapshot_id="unit",
+        source="sqlite_candles",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="validation",
+        date_range=manifest.dataset.split.validation,
+        candles=tuple(
+            Candle(
+                ts=1_700_000_000_000 + index * 60_000,
+                open=float(close),
+                high=float(close) * 1.01,
+                low=float(close) * 0.99,
+                close=float(close),
+                volume=1.0,
+            )
+            for index, close in enumerate([100, 99, 98, 99, 101, 103, 102, 100, 98, 97, 99, 102])
+        ),
+    )
+
+    legacy = run_sma_backtest(
+        dataset=snapshot,
+        parameter_values={"SMA_SHORT": 2, "SMA_LONG": 4},
+        fee_rate=0.001,
+        slippage_bps=5.0,
+    )
+    modeled = run_sma_backtest(
+        dataset=snapshot,
+        parameter_values={"SMA_SHORT": 2, "SMA_LONG": 4},
+        fee_rate=0.001,
+        slippage_bps=5.0,
+        execution_model=FixedBpsExecutionModel(fee_rate=0.001, slippage_bps=5.0),
+    )
+
+    assert modeled.metrics.as_dict() == legacy.metrics.as_dict()
+    assert modeled.trades[0]["execution"]["model_name"] == "fixed_bps"
+    assert modeled.trades[0]["execution"]["model_params_hash"].startswith("sha256:")
+
+
+def test_seeded_stress_execution_model_is_deterministic_and_auditable() -> None:
+    manifest = parse_manifest(_manifest())
+    snapshot = DatasetSnapshot(
+        snapshot_id="unit",
+        source="sqlite_candles",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="validation",
+        date_range=manifest.dataset.split.validation,
+        candles=tuple(
+            Candle(
+                ts=1_700_000_000_000 + index * 60_000,
+                open=float(close),
+                high=float(close) * 1.01,
+                low=float(close) * 0.99,
+                close=float(close),
+                volume=1.0,
+            )
+            for index, close in enumerate([100, 99, 98, 99, 101, 103, 102, 100, 98, 97, 99, 102])
+        ),
+    )
+    def _run():
+        return run_sma_backtest(
+            dataset=snapshot,
+            parameter_values={"SMA_SHORT": 2, "SMA_LONG": 4},
+            fee_rate=0.001,
+            slippage_bps=20.0,
+            execution_model=StressExecutionModel(
+            fee_rate=0.001,
+            slippage_bps=20.0,
+            latency_ms=500,
+            partial_fill_rate=1.0,
+            order_failure_rate=0.0,
+            market_order_extra_cost_bps=5.0,
+            seed=42,
+            ),
+        )
+
+    first = _run()
+    second = _run()
+
+    assert first.trades == second.trades
+    execution = first.trades[0]["execution"]
+    assert execution["fill_status"] == "partial"
+    assert execution["latency_ms"] == 500
+    assert execution["slippage_bps"] == 25.0
+    assert execution["fee"] >= 0.0
+    assert execution["filled_qty"] > 0.0
+    assert execution["remaining_qty"] > 0.0
+
+
+def test_research_backtest_fails_candidate_when_calibration_breaches_assumptions(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["execution_model"] = {
+        "type": "stress",
+        "fee_rate": [0.0],
+        "slippage_bps": [5],
+        "latency_ms": [100],
+        "calibration_required": True,
+    }
+    manifest = parse_manifest(payload)
+    calibration = build_calibration_artifact(
+        summary={
+            "sample_count": 50,
+            "median_slippage_vs_signal_bps": 8.0,
+            "p90_slippage_vs_signal_bps": 12.0,
+            "p95_slippage_vs_signal_bps": 20.0,
+            "p95_submit_to_fill_ms": 200,
+            "partial_fill_rate": 0.0,
+            "unfilled_rate": 0.0,
+            "model_breach_rate": 0.0,
+            "quality_gate_status": "PASS",
+        },
+        market="KRW-BTC",
+        interval="1m",
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    report = run_research_backtest(
+        manifest=manifest,
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+        execution_calibration=calibration,
+    )
+
+    assert report["gate_result"] == "FAIL"
+    assert "execution_calibration_p90_slippage_exceeds_assumption" in report["candidates"][0]["gate_fail_reasons"]

@@ -95,6 +95,7 @@ from .execution_quality import (
     refresh_execution_quality_records,
     summarize_execution_quality,
 )
+from .research.execution_calibration import build_calibration_artifact, write_calibration_artifact
 from .position_authority_repair import (
     apply_position_authority_rebuild,
     build_position_authority_rebuild_preview,
@@ -2486,6 +2487,7 @@ def cmd_execution_quality_report(
     compare_manifest: str | None,
     output_format: str,
     group_by: str | None,
+    write_calibration: bool = False,
 ) -> None:
     try:
         since_ts_ms = _parse_since_ts_ms(since)
@@ -2534,6 +2536,15 @@ def cmd_execution_quality_report(
     )
     summary["quality_gate_enabled"] = bool(settings.LIVE_EXECUTION_QUALITY_GATE_ENABLED)
     summary["quality_gate_mode"] = str(settings.LIVE_EXECUTION_QUALITY_GATE_MODE)
+    if write_calibration:
+        calibration = build_calibration_artifact(
+            summary=summary,
+            market=market or settings.PAIR,
+            interval=settings.INTERVAL,
+        )
+        calibration_path = write_calibration_artifact(manager=PATH_MANAGER, artifact=calibration)
+        summary["execution_calibration_artifact_path"] = str(calibration_path)
+        summary["execution_calibration_artifact_hash"] = calibration["content_hash"]
 
     if str(group_by or "").strip() == "order_type":
         grouped: dict[str, dict[str, object]] = {}
@@ -7006,6 +7017,7 @@ def main(argv: list[str] | None = None) -> int:
     execution_quality.add_argument("--mode")
     execution_quality.add_argument("--by", choices=("order_type",))
     execution_quality.add_argument("--compare-manifest")
+    execution_quality.add_argument("--write-calibration", action="store_true")
     execution_quality.add_argument("--format", choices=("text", "json"), default="text")
 
     risk_report = sub.add_parser(
@@ -7141,6 +7153,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     research_backtest.add_argument("--manifest", required=True)
+    research_backtest.add_argument("--execution-calibration")
 
     research_walk_forward = sub.add_parser(
         "research-walk-forward",
@@ -7148,6 +7161,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Run research walk-forward validation without live broker or order lifecycle coupling.",
     )
     research_walk_forward.add_argument("--manifest", required=True)
+    research_walk_forward.add_argument("--execution-calibration")
 
     research_promote = sub.add_parser(
         "research-promote-candidate",
@@ -7335,6 +7349,7 @@ def main(argv: list[str] | None = None) -> int:
             compare_manifest=args.compare_manifest,
             output_format=str(args.format),
             group_by=args.by,
+            write_calibration=bool(args.write_calibration),
         )
     elif args.cmd == "risk-report":
         cmd_risk_report(limit=max(1, int(args.limit)), as_json=bool(args.json))
@@ -7479,9 +7494,15 @@ def main(argv: list[str] | None = None) -> int:
             as_json=bool(args.json),
         )
     elif args.cmd == "research-backtest":
-        return cmd_research_backtest(manifest_path=str(args.manifest))
+        return cmd_research_backtest(
+            manifest_path=str(args.manifest),
+            execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None,
+        )
     elif args.cmd == "research-walk-forward":
-        return cmd_research_walk_forward(manifest_path=str(args.manifest))
+        return cmd_research_walk_forward(
+            manifest_path=str(args.manifest),
+            execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None,
+        )
     elif args.cmd == "research-promote-candidate":
         return cmd_research_promote_candidate(
             experiment_id=str(args.experiment_id),

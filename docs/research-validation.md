@@ -2,6 +2,8 @@
 
 This repository separates research-stage candidate variables from runtime env values.
 Research manifests define hypotheses, data splits, parameter spaces, cost models, and acceptance gates.
+
+Root `backtest.py` and any simple close-price SMA script are smoke backtests only. This is a smoke backtest only. It must not be used as evidence for strategy promotion, approved profiles, live readiness, or capital allocation. Official evidence comes from the `research-backtest` and `research-walk-forward` CLI paths, their managed artifacts, and explicit promotion/profile gates.
 Runtime env/profile values should be treated as verified outputs of that process, not mutable knobs to tune until a backtest looks good.
 
 ## Lifecycle
@@ -46,7 +48,8 @@ Required sections:
 - `experiment_id`, `hypothesis`, `strategy_name`, `market`, `interval`
 - `dataset.source=sqlite_candles`, `dataset.snapshot_id`, `train`, `validation`, optional `final_holdout`
 - `parameter_space`
-- `cost_model.fee_rate`, `cost_model.slippage_bps`
+- `cost_model.fee_rate`, `cost_model.slippage_bps` for legacy fixed-bps manifests
+- `execution_model` for normalized fixed-bps or stress execution scenarios. Stress scenarios may configure slippage bps, latency, partial-fill rate, order-failure rate, market-order extra cost, scenario policy, seed, and calibration requirements. Unsupported execution-model fields fail manifest parsing rather than being ignored.
 - `acceptance_gate`
 
 Optional section:
@@ -73,6 +76,7 @@ DATA_ROOT/<mode>/reports/research/<experiment_id>/...
 ```
 
 Reports include manifest hash, dataset fingerprint, candidate profile hash, content hash, repository version, metrics, gate results, and artifact paths.
+Reports also record execution-model source, scenario details, model parameter hash, dataset split hashes, walk-forward/regime status, execution-calibration requirement, execution-calibration artifact hash when supplied, warnings, fail reasons, and promotion eligibility. Candle datasets do not contain orderbook depth or intra-candle path data; trade metadata records that limitation instead of fabricating quotes or depth.
 `generated_at` is included for operator context but excluded from the deterministic `content_hash`.
 
 The research CLI prints an operator-facing run summary derived from the report payload without mutating the persisted artifact. The summary includes candidate gate counts, top candidate fail reasons, walk-forward window counts, top window fail reasons, promotion eligibility, nearest failed candidate diagnostics, and a conservative next action.
@@ -107,6 +111,8 @@ The promotion artifact binds the evidence sources by recording `validation_evide
 If walk-forward is not required, the promotion artifact explicitly records `walk_forward_required=false` and null walk-forward evidence hash/source fields.
 
 Promotion writes an operator-reviewable artifact only after these checks pass. It does not edit `.env`, `BITHUMB_ENV_FILE_LIVE`, `BITHUMB_ENV_FILE_PAPER`, or live secrets.
+
+When a manifest requires execution calibration, promotion fails closed unless the backtest candidate carries passing execution-calibration evidence. A malformed, missing, insufficient, or breached calibration artifact is a rejection condition. Calibration artifacts are generated from `execution-quality-report --write-calibration` under `DATA_ROOT/<mode>/reports/execution_quality/` and can be supplied to research commands with `--execution-calibration <path>`.
 
 The operator next step is review. Promotion evidence does not imply live readiness and does not edit env files or secrets.
 

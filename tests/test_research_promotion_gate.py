@@ -264,3 +264,26 @@ def test_promotion_refuses_old_candidate_without_regime_policy(tmp_path, monkeyp
 
     with pytest.raises(PromotionGateError, match="regime_policy_missing"):
         promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_promotion_refuses_execution_calibration_breach(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate(
+        execution_model={
+            "type": "stress",
+            "fee_rate": 0.0,
+            "slippage_bps": 5.0,
+            "latency_ms": 100,
+            "model_params_hash": "sha256:model",
+        },
+        execution_calibration_required=True,
+        execution_calibration_gate={
+            "status": "FAIL",
+            "reasons": ["execution_calibration_p95_slippage_exceeds_assumption"],
+            "artifact_hash": "sha256:calibration",
+        },
+    )
+    _write_report(manager, candidate)
+
+    with pytest.raises(PromotionGateError, match="execution_calibration_p95_slippage_exceeds_assumption"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)

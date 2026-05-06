@@ -107,6 +107,8 @@ uv run bithumb-bot fee-pending-accounting-repair --client-order-id <id> --fill-i
 uv run bithumb-bot run --short 7 --long 30
 ```
 
+Root `backtest.py` is a smoke backtest only. It must not be used as evidence for strategy promotion, approved profiles, live readiness, or capital allocation. The official validation path is `uv run bithumb-bot research-backtest --manifest ...`, followed by walk-forward validation, promotion artifact review, approved-profile generation or transition, and separate paper/live-readiness checks.
+
 Use `config-dump --masked` for operator config inspection. Direct Python imports of
 `bithumb_bot.config.settings` do not run the CLI bootstrap path and are not the
 supported way to validate `BITHUMB_ENV_FILE`-loaded runtime configuration.

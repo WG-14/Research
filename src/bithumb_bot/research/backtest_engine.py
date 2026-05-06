@@ -13,6 +13,7 @@ from bithumb_bot.market_regime import (
 from bithumb_bot.market_regime.thresholds import MarketRegimeThresholds
 
 from .dataset_snapshot import DatasetSnapshot
+from .execution_model import ExecutionModel, ExecutionRequest, FixedBpsExecutionModel
 from .metrics import ResearchMetrics
 
 
@@ -37,6 +38,7 @@ def run_sma_backtest(
     fee_rate: float,
     slippage_bps: float,
     parameter_stability_score: float | None = None,
+    execution_model: ExecutionModel | None = None,
 ) -> BacktestRun:
     short_n = int(parameter_values.get("SMA_SHORT", parameter_values.get("short_n", 0)))
     long_n = int(parameter_values.get("SMA_LONG", parameter_values.get("long_n", 0)))
@@ -81,7 +83,7 @@ def run_sma_backtest(
     trades: list[dict[str, object]] = []
     closed_pnls: list[float] = []
     prev_above: bool | None = None
-    slip = float(slippage_bps) / 10_000.0
+    model = execution_model or FixedBpsExecutionModel(fee_rate=fee_rate, slippage_bps=slippage_bps)
 
     for index in range(long_n, len(candles)):
         candle = candles[index]
@@ -112,30 +114,41 @@ def run_sma_backtest(
 
         if action == "BUY":
             spend = cash * BUY_FRACTION
-            exec_price = candle.close * (1.0 + slip)
-            fee = spend * fee_rate
-            received_qty = (spend - fee) / exec_price if exec_price > 0.0 else 0.0
+            fill = model.simulate(
+                ExecutionRequest(
+                    signal_ts=candle.ts,
+                    decision_ts=candle.ts,
+                    side="BUY",
+                    reference_price=candle.close,
+                    requested_notional=spend,
+                    fee_rate=fee_rate,
+                )
+            )
+            if fill.fill_status == "failed" or fill.avg_fill_price is None or fill.filled_qty <= 0.0:
+                trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
+                prev_above = above
+                continue
+            exec_price = float(fill.avg_fill_price)
+            fee = fill.fee
+            received_qty = fill.filled_qty
+            actual_spend = (exec_price * received_qty) + fee
             reference_cost = candle.close * received_qty
             slipped_cost = exec_price * received_qty
             buy_slippage = max(0.0, slipped_cost - reference_cost)
             slippage_total += buy_slippage
-            cash -= spend
+            cash -= actual_spend
             qty += received_qty
-            entry_cost_basis = spend
+            entry_cost_basis = actual_spend
             entry_regime_snapshot = dict(regime_snapshot)
             entry_fee = fee
             entry_slippage = buy_slippage
             fee_total += fee
             trades.append(
-                _trade(
-                    candle.ts,
-                    "BUY",
-                    exec_price,
-                    received_qty,
-                    fee,
-                    cash,
-                    qty,
-                    None,
+                _trade_from_fill(
+                    fill,
+                    cash=cash,
+                    asset_qty=qty,
+                    pnl=None,
                     entry_regime_snapshot=entry_regime_snapshot,
                     exit_regime_snapshot=None,
                     net_pnl=None,
@@ -144,32 +157,44 @@ def run_sma_backtest(
                 )
             )
         elif action == "SELL":
-            exec_price = candle.close * (1.0 - slip)
-            sell_qty = qty
+            fill = model.simulate(
+                ExecutionRequest(
+                    signal_ts=candle.ts,
+                    decision_ts=candle.ts,
+                    side="SELL",
+                    reference_price=candle.close,
+                    requested_qty=qty,
+                    fee_rate=fee_rate,
+                )
+            )
+            if fill.fill_status == "failed" or fill.avg_fill_price is None or fill.filled_qty <= 0.0:
+                trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
+                prev_above = above
+                continue
+            exec_price = float(fill.avg_fill_price)
+            sell_qty = fill.filled_qty
             gross = sell_qty * exec_price
-            fee = gross * fee_rate
+            fee = fill.fee
             reference_proceeds = candle.close * sell_qty
             sell_slippage = max(0.0, reference_proceeds - gross)
             slippage_total += sell_slippage
             net_proceeds = gross - fee
-            pnl = net_proceeds - entry_cost_basis
+            filled_fraction = sell_qty / qty if qty > 0.0 else 0.0
+            pnl = net_proceeds - (entry_cost_basis * filled_fraction)
             cash += net_proceeds
-            qty = 0.0
-            entry_cost_basis = 0.0
+            qty = max(0.0, qty - sell_qty)
+            entry_cost_basis = entry_cost_basis * (1.0 - filled_fraction) if qty > 0.0 else 0.0
             fee_total += fee
-            closed_pnls.append(pnl)
+            if fill.fill_status == "filled":
+                closed_pnls.append(pnl)
             trade_fee_total = entry_fee + fee
             trade_slippage_total = entry_slippage + sell_slippage
             trades.append(
-                _trade(
-                    candle.ts,
-                    "SELL",
-                    exec_price,
-                    sell_qty,
-                    fee,
-                    cash,
-                    qty,
-                    pnl,
+                _trade_from_fill(
+                    fill,
+                    cash=cash,
+                    asset_qty=qty,
+                    pnl=pnl,
                     entry_regime_snapshot=entry_regime_snapshot,
                     exit_regime_snapshot=dict(regime_snapshot),
                     net_pnl=pnl,
@@ -177,9 +202,10 @@ def run_sma_backtest(
                     slippage_total=trade_slippage_total,
                 )
             )
-            entry_regime_snapshot = None
-            entry_fee = 0.0
-            entry_slippage = 0.0
+            if qty <= 0.0:
+                entry_regime_snapshot = None
+                entry_fee = 0.0
+                entry_slippage = 0.0
 
         equity = cash + qty * candle.close
         peak = max(peak, equity)
@@ -253,6 +279,37 @@ def _trade(
         "entry_regime_snapshot": entry_regime_snapshot,
         "exit_regime_snapshot": exit_regime_snapshot,
     }
+
+
+def _trade_from_fill(
+    fill: Any,
+    *,
+    cash: float,
+    asset_qty: float,
+    pnl: float | None,
+    entry_regime_snapshot: dict[str, object] | None = None,
+    exit_regime_snapshot: dict[str, object] | None = None,
+    net_pnl: float | None = None,
+    fee_total: float | None = None,
+    slippage_total: float | None = None,
+) -> dict[str, object]:
+    trade = _trade(
+        fill.signal_ts,
+        fill.side,
+        float(fill.avg_fill_price) if fill.avg_fill_price is not None else float(fill.reference_price),
+        float(fill.filled_qty),
+        float(fill.fee),
+        cash,
+        asset_qty,
+        pnl,
+        entry_regime_snapshot=entry_regime_snapshot,
+        exit_regime_snapshot=exit_regime_snapshot,
+        net_pnl=net_pnl,
+        fee_total=fee_total,
+        slippage_total=slippage_total,
+    )
+    trade["execution"] = fill.as_dict()
+    return trade
 
 
 def _empty_metrics(parameter_stability_score: float | None) -> ResearchMetrics:

@@ -41,6 +41,32 @@ def test_manifest_parses_required_contract() -> None:
     assert manifest.experiment_id == "sma_filter_v1_2026_05"
     assert manifest.hypothesis
     assert manifest.manifest_hash().startswith("sha256:")
+    assert manifest.execution_model.source == "legacy_cost_model"
+    assert manifest.execution_model.scenarios[0].type == "fixed_bps"
+    assert manifest.execution_model.scenarios[0].slippage_bps == 0.0
+
+
+def test_manifest_parses_execution_model_scenarios() -> None:
+    payload = _manifest()
+    payload["execution_model"] = {
+        "type": "stress",
+        "fee_rate": [0.001],
+        "slippage_bps": [5, 10],
+        "latency_ms": [0, 500],
+        "partial_fill_rate": [0.0, 0.1],
+        "order_failure_rate": [0.0],
+        "market_order_extra_cost_bps": [0, 5],
+        "scenario_policy": "must_pass_base_and_survive_stress",
+        "seed": 42,
+        "calibration_required": True,
+    }
+
+    manifest = parse_manifest(payload)
+
+    assert manifest.execution_model.source == "execution_model"
+    assert manifest.execution_model.calibration_required is True
+    assert len(manifest.execution_model.scenarios) == 16
+    assert {scenario.type for scenario in manifest.execution_model.scenarios} == {"stress"}
 
 
 def test_manifest_parses_valid_walk_forward_config() -> None:

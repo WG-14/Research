@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import itertools
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,6 +74,52 @@ class CostModel:
 
 
 @dataclass(frozen=True)
+class ExecutionScenario:
+    type: str
+    fee_rate: float
+    slippage_bps: float
+    latency_ms: int = 0
+    partial_fill_rate: float = 0.0
+    order_failure_rate: float = 0.0
+    market_order_extra_cost_bps: float = 0.0
+    seed: int | None = None
+    source: str = "execution_model"
+    scenario_policy: str = "single_scenario"
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "type": self.type,
+            "fee_rate": self.fee_rate,
+            "slippage_bps": self.slippage_bps,
+            "latency_ms": self.latency_ms,
+            "partial_fill_rate": self.partial_fill_rate,
+            "order_failure_rate": self.order_failure_rate,
+            "market_order_extra_cost_bps": self.market_order_extra_cost_bps,
+            "seed": self.seed,
+            "source": self.source,
+            "scenario_policy": self.scenario_policy,
+        }
+
+
+@dataclass(frozen=True)
+class ExecutionModelConfig:
+    scenarios: tuple[ExecutionScenario, ...]
+    source: str
+    scenario_policy: str
+    calibration_required: bool = False
+    calibration_strictness: str = "fail"
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "source": self.source,
+            "scenario_policy": self.scenario_policy,
+            "calibration_required": self.calibration_required,
+            "calibration_strictness": self.calibration_strictness,
+            "scenarios": [scenario.as_dict() for scenario in self.scenarios],
+        }
+
+
+@dataclass(frozen=True)
 class AcceptanceGate:
     min_trade_count: int
     max_mdd_pct: float
@@ -120,6 +167,7 @@ class ExperimentManifest:
     dataset: DatasetSpec
     parameter_space: dict[str, tuple[object, ...]]
     cost_model: CostModel
+    execution_model: ExecutionModelConfig
     acceptance_gate: AcceptanceGate
     walk_forward: WalkForwardConfig | None
     raw: dict[str, Any]
@@ -134,6 +182,7 @@ class ExperimentManifest:
             "dataset": self.dataset.as_dict(),
             "parameter_space": {key: list(value) for key, value in sorted(self.parameter_space.items())},
             "cost_model": self.cost_model.as_dict(),
+            "execution_model": self.execution_model.as_dict(),
             "acceptance_gate": self.acceptance_gate.as_dict(),
             "walk_forward": self.walk_forward.as_dict() if self.walk_forward is not None else None,
         }
@@ -161,7 +210,10 @@ def parse_manifest(payload: dict[str, Any]) -> ExperimentManifest:
     dataset_payload = _required_dict(payload, "dataset")
     dataset = _parse_dataset(dataset_payload)
     parameter_space = _parse_parameter_space(payload.get("parameter_space"))
-    cost_model = _parse_cost_model(_required_dict(payload, "cost_model"))
+    if payload.get("cost_model") is None and payload.get("execution_model") is None:
+        raise ManifestValidationError("manifest requires cost_model or execution_model")
+    cost_model = _parse_cost_model(payload.get("cost_model"))
+    execution_model = _parse_execution_model(payload.get("execution_model"), cost_model)
     acceptance_gate = _parse_acceptance_gate(_required_dict(payload, "acceptance_gate"))
     walk_forward = _parse_walk_forward(payload.get("walk_forward"))
     if acceptance_gate.walk_forward_required and walk_forward is None:
@@ -178,6 +230,7 @@ def parse_manifest(payload: dict[str, Any]) -> ExperimentManifest:
         dataset=dataset,
         parameter_space=parameter_space,
         cost_model=cost_model,
+        execution_model=execution_model,
         acceptance_gate=acceptance_gate,
         walk_forward=walk_forward,
         raw=dict(payload),
@@ -241,7 +294,11 @@ def _parse_parameter_space(value: Any) -> dict[str, tuple[object, ...]]:
     return out
 
 
-def _parse_cost_model(payload: dict[str, Any]) -> CostModel:
+def _parse_cost_model(payload: Any) -> CostModel:
+    if payload is None:
+        return CostModel(fee_rate=0.0, slippage_bps=(0.0,))
+    if not isinstance(payload, dict):
+        raise ManifestValidationError("manifest field 'cost_model' must be an object")
     fee_rate = _finite_non_negative_float(payload.get("fee_rate"), "cost_model.fee_rate")
     slippage = payload.get("slippage_bps")
     if not isinstance(slippage, list) or not slippage:
@@ -250,6 +307,105 @@ def _parse_cost_model(payload: dict[str, Any]) -> CostModel:
         fee_rate=fee_rate,
         slippage_bps=tuple(_finite_non_negative_float(value, "cost_model.slippage_bps") for value in slippage),
     )
+
+
+def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelConfig:
+    if value is None:
+        scenarios = tuple(
+            ExecutionScenario(
+                type="fixed_bps",
+                fee_rate=cost_model.fee_rate,
+                slippage_bps=float(slippage),
+                source="legacy_cost_model",
+                scenario_policy="legacy_cost_model_single_pass",
+            )
+            for slippage in cost_model.slippage_bps
+        )
+        return ExecutionModelConfig(
+            scenarios=scenarios,
+            source="legacy_cost_model",
+            scenario_policy="legacy_cost_model_single_pass",
+        )
+    if not isinstance(value, dict):
+        raise ManifestValidationError("execution_model must be an object")
+    allowed_fields = {
+        "type",
+        "fee_rate",
+        "slippage_bps",
+        "latency_ms",
+        "partial_fill_rate",
+        "order_failure_rate",
+        "market_order_extra_cost_bps",
+        "scenario_policy",
+        "seed",
+        "calibration_required",
+        "calibration_strictness",
+    }
+    unknown = sorted(set(value) - allowed_fields)
+    if unknown:
+        raise ManifestValidationError(f"execution_model unsupported fields: {','.join(unknown)}")
+    model_type = _required_str(value, "type")
+    if model_type not in {"fixed_bps", "stress"}:
+        raise ManifestValidationError("execution_model.type must be fixed_bps or stress")
+    scenario_policy = str(value.get("scenario_policy") or "must_pass_base_and_survive_stress").strip()
+    strictness = str(value.get("calibration_strictness") or "fail").strip().lower()
+    if strictness not in {"fail", "warn"}:
+        raise ManifestValidationError("execution_model.calibration_strictness must be fail or warn")
+    fees = _number_array(value, "fee_rate", default=(cost_model.fee_rate,))
+    slippages = _number_array(value, "slippage_bps", default=cost_model.slippage_bps)
+    latencies = _int_array(value, "latency_ms", default=(0,))
+    partial_rates = _number_array(value, "partial_fill_rate", default=(0.0,))
+    failure_rates = _number_array(value, "order_failure_rate", default=(0.0,))
+    market_extra = _number_array(value, "market_order_extra_cost_bps", default=(0.0,))
+    seed = value.get("seed")
+    parsed_seed = None if seed is None else int(seed)
+    scenarios = []
+    for fee, slippage, latency, partial, failure, extra in itertools.product(
+        fees, slippages, latencies, partial_rates, failure_rates, market_extra
+    ):
+        scenarios.append(
+            ExecutionScenario(
+                type=model_type,
+                fee_rate=float(fee),
+                slippage_bps=float(slippage),
+                latency_ms=int(latency),
+                partial_fill_rate=float(partial),
+                order_failure_rate=float(failure),
+                market_order_extra_cost_bps=float(extra),
+                seed=parsed_seed,
+                source="execution_model",
+                scenario_policy=scenario_policy,
+            )
+        )
+    if not scenarios:
+        raise ManifestValidationError("execution_model produced no scenarios")
+    return ExecutionModelConfig(
+        scenarios=tuple(scenarios),
+        source="execution_model",
+        scenario_policy=scenario_policy,
+        calibration_required=bool(value.get("calibration_required", False)),
+        calibration_strictness=strictness,
+    )
+
+
+def _number_array(payload: dict[str, Any], key: str, *, default: tuple[float, ...]) -> tuple[float, ...]:
+    if key not in payload:
+        return tuple(float(item) for item in default)
+    value = payload.get(key)
+    raw_values = value if isinstance(value, list) else [value]
+    if not raw_values:
+        raise ManifestValidationError(f"execution_model.{key} must not be empty")
+    return tuple(_finite_non_negative_float(item, f"execution_model.{key}") for item in raw_values)
+
+
+def _int_array(payload: dict[str, Any], key: str, *, default: tuple[int, ...]) -> tuple[int, ...]:
+    if key not in payload:
+        return tuple(int(item) for item in default)
+    value = payload.get(key)
+    raw_values = value if isinstance(value, list) else [value]
+    if not raw_values:
+        raise ManifestValidationError(f"execution_model.{key} must not be empty")
+    return tuple(_positive_or_zero_int(item, f"execution_model.{key}") for item in raw_values)
 
 
 def _parse_acceptance_gate(payload: dict[str, Any]) -> AcceptanceGate:
@@ -384,4 +540,14 @@ def _positive_int(value: Any, field: str) -> int:
         raise ManifestValidationError(f"{field} must be an integer") from exc
     if parsed <= 0:
         raise ManifestValidationError(f"{field} must be > 0")
+    return parsed
+
+
+def _positive_or_zero_int(value: Any, field: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ManifestValidationError(f"{field} must be an integer") from exc
+    if parsed < 0:
+        raise ManifestValidationError(f"{field} must be >= 0")
     return parsed

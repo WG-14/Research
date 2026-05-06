@@ -4,10 +4,11 @@ from typing import Any, Callable
 
 from .backtest_engine import BacktestRun, run_sma_backtest
 from .dataset_snapshot import DatasetSnapshot
+from .execution_model import ExecutionModel
 
 
 ResearchStrategyRunner = Callable[
-    [DatasetSnapshot, dict[str, Any], float, float, float | None],
+    [DatasetSnapshot, dict[str, Any], float, float, float | None, ExecutionModel | None],
     BacktestRun,
 ]
 
@@ -28,6 +29,7 @@ def _run_sma_with_filter(
     fee_rate: float,
     slippage_bps: float,
     parameter_stability_score: float | None = None,
+    execution_model: ExecutionModel | None = None,
 ) -> BacktestRun:
     _require_parameter(parameter_values, "SMA_SHORT")
     _require_parameter(parameter_values, "SMA_LONG")
@@ -37,6 +39,7 @@ def _run_sma_with_filter(
         fee_rate=fee_rate,
         slippage_bps=slippage_bps,
         parameter_stability_score=parameter_stability_score,
+        execution_model=execution_model,
     )
 
 
