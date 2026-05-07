@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from bithumb_bot.paths import PathManager
+from bithumb_bot import app as app_module
 from bithumb_bot.research import cli as research_cli
 from bithumb_bot.research.hashing import content_hash_payload, sha256_prefixed
 from bithumb_bot.research.lineage import build_research_lineage, reproduce_promotion
@@ -96,23 +98,8 @@ def _candidate(**overrides):
     return payload
 
 
-def _write_report(manager: PathManager, candidate: dict[str, object]) -> None:
-    path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
-    payload = {
-        "experiment_id": "promo_exp",
-        "manifest_hash": "sha256:manifest",
-        "dataset_snapshot_id": "snap",
-        "dataset_content_hash": "sha256:dataset",
-        "repository_version": "test",
-        "candidates": [candidate],
-    }
-    payload["content_hash"] = sha256_prefixed(content_hash_payload(payload))
-    write_json_atomic(path, payload)
-
-
-def _write_report_with_lineage(manager: PathManager, candidate: dict[str, object]) -> None:
-    path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
-    lineage = build_research_lineage(
+def _lineage() -> dict[str, object]:
+    return build_research_lineage(
         experiment_id="promo_exp",
         experiment_family_id="family_001",
         hypothesis_id="hypothesis_001",
@@ -131,6 +118,29 @@ def _write_report_with_lineage(manager: PathManager, candidate: dict[str, object
         dataset_reuse_policy="visible_reuse_not_hard_blocked",
         created_at="2026-05-04T00:00:00+00:00",
     )
+
+
+def _write_report(manager: PathManager, candidate: dict[str, object]) -> None:
+    _write_report_with_lineage(manager, candidate)
+
+
+def _write_report_without_lineage(manager: PathManager, candidate: dict[str, object]) -> None:
+    path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    payload = {
+        "experiment_id": "promo_exp",
+        "manifest_hash": "sha256:manifest",
+        "dataset_snapshot_id": "snap",
+        "dataset_content_hash": "sha256:dataset",
+        "repository_version": "test",
+        "candidates": [candidate],
+    }
+    payload["content_hash"] = sha256_prefixed(content_hash_payload(payload))
+    write_json_atomic(path, payload)
+
+
+def _write_report_with_lineage(manager: PathManager, candidate: dict[str, object]) -> None:
+    path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    lineage = _lineage()
     payload = {
         "experiment_id": "promo_exp",
         "manifest_hash": "sha256:manifest",
@@ -356,10 +366,55 @@ def test_lineage_backed_promotion_records_reproducibility_fields(tmp_path, monke
     assert summary["candidate_profile_hash"] == result.artifact["candidate_profile_hash"]
 
 
-def test_reproduce_fails_closed_when_lineage_missing(tmp_path, monkeypatch) -> None:
+def test_promotion_refuses_missing_lineage_by_default(tmp_path, monkeypatch) -> None:
     manager = _manager(tmp_path, monkeypatch)
-    _write_report(manager, _candidate())
-    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    _write_report_without_lineage(manager, _candidate())
+
+    with pytest.raises(PromotionGateError, match="promotion refused: lineage_missing"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_promotion_refuses_invalid_lineage_hash(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate()
+    _write_report_with_lineage(manager, candidate)
+    report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["lineage"]["lineage_hash"] = "sha256:tampered"
+    payload.pop("content_hash", None)
+    payload["content_hash"] = sha256_prefixed(content_hash_payload(payload))
+    write_json_atomic(report_path, payload)
+
+    with pytest.raises(PromotionGateError, match="promotion refused: lineage_hash_mismatch"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_promotion_allows_missing_lineage_only_with_explicit_compatibility(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    _write_report_without_lineage(manager, _candidate())
+
+    result = promote_candidate(
+        experiment_id="promo_exp",
+        candidate_id="candidate_001",
+        manager=manager,
+        allow_legacy_lineage=True,
+    )
+
+    assert result.artifact["lineage_required"] is False
+    assert result.artifact["legacy_compatibility_used"] is True
+    assert result.artifact["lineage_hash"] is None
+    assert "legacy_lineage_compatibility_used" in result.artifact["promotion_warnings"]
+
+
+def test_reproduce_fails_closed_when_lineage_missing_in_legacy_artifact(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    _write_report_without_lineage(manager, _candidate())
+    result = promote_candidate(
+        experiment_id="promo_exp",
+        candidate_id="candidate_001",
+        manager=manager,
+        allow_legacy_lineage=True,
+    )
 
     summary = reproduce_promotion(result.artifact_path).summary
 
@@ -382,6 +437,61 @@ def test_reproduce_reports_backtest_hash_mismatch(tmp_path, monkeypatch) -> None
     assert summary["ok"] is False
     assert summary["reason"] == "backtest_report_hash_mismatch"
     assert summary["mismatches"][0]["field"] == "backtest_report_hash"
+
+
+def test_reproduce_recomputes_backtest_hash_when_body_tampered_but_embedded_hash_unchanged(
+    tmp_path, monkeypatch
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate(walk_forward_required=False)
+    _write_report_with_lineage(manager, candidate)
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["dataset_content_hash"] = "sha256:tampered_dataset"
+    write_json_atomic(report_path, payload)
+
+    summary = reproduce_promotion(result.artifact_path).summary
+
+    assert summary["ok"] is False
+    assert summary["reason"] == "backtest_report_hash_mismatch"
+    assert summary["mismatches"][0]["expected"] == result.artifact["backtest_report_hash"]
+    assert summary["mismatches"][0]["actual"] != payload["content_hash"]
+
+
+def test_reproduce_fails_when_backtest_embedded_content_hash_tampered_only(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate(walk_forward_required=False)
+    _write_report_with_lineage(manager, candidate)
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["content_hash"] = "sha256:tampered_embedded_hash"
+    write_json_atomic(report_path, payload)
+
+    summary = reproduce_promotion(result.artifact_path).summary
+
+    assert summary["ok"] is False
+    assert summary["reason"] == "backtest_report_embedded_content_hash_mismatch"
+
+
+def test_reproduce_recomputes_walk_forward_hash_when_body_tampered_but_embedded_hash_unchanged(
+    tmp_path, monkeypatch
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate(walk_forward_required=True)
+    _write_report_with_lineage(manager, candidate)
+    _write_walk_forward_report(manager, _walk_forward_candidate(candidate))
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "walk_forward_report.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["manifest_hash"] = "sha256:tampered_manifest"
+    write_json_atomic(report_path, payload)
+
+    summary = reproduce_promotion(result.artifact_path).summary
+
+    assert summary["ok"] is False
+    assert summary["reason"] == "walk_forward_report_hash_mismatch"
 
 
 def test_reproduce_reports_lineage_hash_mismatch(tmp_path, monkeypatch) -> None:
@@ -620,6 +730,62 @@ def test_promotion_cli_refuses_required_calibration_failure_without_success_bloc
     assert "  gate_result=PASS" not in output
     assert "  artifact_path=" not in output
     assert "  has_execution_calibration_warning=" not in output
+
+
+def test_promotion_cli_refuses_missing_lineage_without_flag(tmp_path, monkeypatch, capsys) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
+    _write_report_without_lineage(manager, _candidate())
+
+    status = research_cli.cmd_research_promote_candidate(
+        experiment_id="promo_exp",
+        candidate_id="candidate_001",
+    )
+
+    output = capsys.readouterr().out
+    assert status == 1
+    assert "promotion refused: lineage_missing" in output
+
+
+def test_promotion_cli_allows_legacy_lineage_with_explicit_flag(tmp_path, monkeypatch, capsys) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
+    _write_report_without_lineage(manager, _candidate())
+
+    status = research_cli.cmd_research_promote_candidate(
+        experiment_id="promo_exp",
+        candidate_id="candidate_001",
+        allow_legacy_lineage=True,
+    )
+
+    output = capsys.readouterr().out
+    assert status == 0
+    assert "legacy_lineage_compatibility_used" in output
+    assert "  legacy_compatibility_used=1" in output
+
+
+def test_promotion_cli_argument_wires_allow_legacy_lineage(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_promote(**kwargs) -> int:
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(app_module, "cmd_research_promote_candidate", fake_promote)
+
+    status = app_module.main(
+        [
+            "research-promote-candidate",
+            "--experiment-id",
+            "promo_exp",
+            "--candidate-id",
+            "candidate_001",
+            "--allow-legacy-lineage",
+        ]
+    )
+
+    assert status == 0
+    assert captured["allow_legacy_lineage"] is True
 
 
 def test_candidate_profile_hash_changes_when_calibration_warning_evidence_changes() -> None:

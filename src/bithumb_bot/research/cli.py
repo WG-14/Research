@@ -63,12 +63,18 @@ def cmd_research_reproduce(*, promotion_path: str) -> int:
     return 0 if result.ok else 1
 
 
-def cmd_research_promote_candidate(*, experiment_id: str, candidate_id: str) -> int:
+def cmd_research_promote_candidate(
+    *,
+    experiment_id: str,
+    candidate_id: str,
+    allow_legacy_lineage: bool = False,
+) -> int:
     try:
         result = promote_candidate(
             experiment_id=experiment_id,
             candidate_id=candidate_id,
             manager=PATH_MANAGER,
+            allow_legacy_lineage=allow_legacy_lineage,
         )
     except PromotionGateError as exc:
         print(f"[RESEARCH-PROMOTE-CANDIDATE] error={exc}")
@@ -91,6 +97,7 @@ def cmd_research_promote_candidate(*, experiment_id: str, candidate_id: str) -> 
         "  promotion_warnings="
         f"{_format_items(tuple(str(item) for item in result.artifact.get('promotion_warnings') or []))}"
     )
+    print(f"  legacy_compatibility_used={1 if result.artifact.get('legacy_compatibility_used') else 0}")
     print(f"  operator_next_step={result.artifact['operator_next_step']}")
     return 0
 

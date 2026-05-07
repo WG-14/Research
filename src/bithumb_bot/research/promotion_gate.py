@@ -207,6 +207,7 @@ def promote_candidate(
     candidate_id: str,
     manager: PathManager,
     generated_at: str | None = None,
+    allow_legacy_lineage: bool = False,
 ) -> PromotionResult:
     research_report_dir = manager.data_dir() / "reports" / "research" / experiment_id
     candidate_report_path = research_report_dir / "backtest_report.json"
@@ -241,6 +242,8 @@ def promote_candidate(
             validate_lineage_artifact(base_lineage)
         except LineageValidationError as exc:
             raise PromotionGateError(f"promotion refused: {exc}") from exc
+    elif not allow_legacy_lineage:
+        raise PromotionGateError("promotion refused: lineage_missing")
 
     candidate = backtest.candidate
     profile = backtest.profile
@@ -251,6 +254,8 @@ def promote_candidate(
         set(str(item) for item in candidate.get("promotion_warnings") or [])
         | set(calibration_warning_reasons)
     )
+    if base_lineage is None:
+        promotion_warnings = sorted(set(promotion_warnings) | {"legacy_lineage_compatibility_used"})
     artifact = {
         "promotion_schema_version": 1,
         "strategy_name": candidate["strategy_name"],

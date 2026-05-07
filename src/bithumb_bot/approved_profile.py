@@ -1176,6 +1176,10 @@ def _validate_decision_equivalence_evidence(
     ).strip()
     if actual_profile_hash != expected_profile_hash:
         raise ApprovedProfileError(f"{label}_decision_equivalence_profile_hash_mismatch")
+    if str(report.get("market") or "").strip() != str(parent_profile.get("market") or "").strip():
+        raise ApprovedProfileError(f"{label}_decision_equivalence_market_mismatch")
+    if str(report.get("interval") or "").strip() != str(parent_profile.get("interval") or "").strip():
+        raise ApprovedProfileError(f"{label}_decision_equivalence_interval_mismatch")
     dataset_hash = str(parent_profile.get("dataset_content_hash") or "").strip()
     actual_dataset_hash = str(
         report.get("dataset_content_hash")
@@ -1185,9 +1189,17 @@ def _validate_decision_equivalence_evidence(
     ).strip()
     if dataset_hash and actual_dataset_hash and actual_dataset_hash != dataset_hash:
         raise ApprovedProfileError(f"{label}_decision_equivalence_dataset_hash_mismatch")
+    evidence_db_fingerprint = str(payload.get("db_data_fingerprint") or "").strip()
+    report_data_fingerprint = str(report.get("db_data_fingerprint") or "").strip()
+    if evidence_db_fingerprint and report_data_fingerprint and evidence_db_fingerprint != report_data_fingerprint:
+        raise ApprovedProfileError(f"{label}_decision_equivalence_data_fingerprint_mismatch")
     mismatch_count = int(report.get("mismatch_count") or report.get("mismatched_decision_count") or 0)
     if mismatch_count > 0:
         raise ApprovedProfileError(f"{label}_decision_equivalence_mismatch_count_nonzero")
+    if report.get("missing_research_decisions"):
+        raise ApprovedProfileError(f"{label}_decision_equivalence_missing_research_decisions")
+    if report.get("missing_runtime_decisions"):
+        raise ApprovedProfileError(f"{label}_decision_equivalence_missing_runtime_decisions")
     if bool(report.get("blocked_decision_equivalence")):
         raise ApprovedProfileError(f"{label}_decision_equivalence_blocked")
     if report.get("ok") is not True:

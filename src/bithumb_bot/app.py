@@ -7172,6 +7172,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     research_promote.add_argument("--experiment-id", required=True)
     research_promote.add_argument("--candidate-id", required=True)
+    research_promote.add_argument(
+        "--allow-legacy-lineage",
+        action="store_true",
+        help="explicitly allow promotion of reviewed historical reports that lack lineage",
+    )
 
     research_reproduce = sub.add_parser(
         "research-reproduce",
@@ -7527,6 +7532,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_research_promote_candidate(
             experiment_id=str(args.experiment_id),
             candidate_id=str(args.candidate_id),
+            allow_legacy_lineage=bool(args.allow_legacy_lineage),
         )
     elif args.cmd == "research-reproduce":
         return cmd_research_reproduce(promotion_path=str(args.promotion))

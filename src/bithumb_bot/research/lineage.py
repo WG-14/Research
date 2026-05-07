@@ -301,10 +301,20 @@ def _verify_artifact_hash(
     except ValueError as exc:
         summary["mismatches"].append({"field": stem, "reason": str(exc), "path": str(path)})
         return
-    actual = str(payload.get("content_hash") or "")
+    actual = sha256_prefixed(content_hash_payload({k: v for k, v in payload.items() if k != "content_hash"}))
+    embedded = str(payload.get("content_hash") or "").strip()
     if actual != expected:
         reason = f"{stem}_hash_mismatch"
         summary["mismatches"].append(_mismatch(f"{stem}_hash", expected, actual, reason))
+    elif embedded != actual:
+        summary["mismatches"].append(
+            _mismatch(
+                f"{stem}_embedded_content_hash",
+                actual,
+                embedded or None,
+                f"{stem}_embedded_content_hash_mismatch",
+            )
+        )
 
 
 def _compare(summary: dict[str, Any], field: str, expected: object, actual: object, reason: str) -> None:

@@ -1,332 +1,288 @@
 You are Codex working directly in the `WG-14/bithumb-bot` repository.
 
-Task: turn the repository into a more reproducible, evidence-driven automated trading experiment system. Do not treat this as a narrow feature patch. The core concern is that the repo already has strong approval/profile/promotion verification, and it also appears to have a research validation pipeline, but the end-to-end lineage from research evidence → promotion → approved profile → paper/runtime evidence may not yet be fully closed, reproducible, observable, and fail-closed.
+Task: apply a follow-up hardening patch. The previous patch moved the repo in the right direction, but the current `main` branch still has reproducibility and fail-closed gaps. Do not treat this as a cosmetic cleanup. The goal is to make the repo closer to a lineage-backed, reproducible, fail-closed automated trading experiment system.
 
-Use the attached analysis as the starting context and preserve its priorities. Do not dilute it into generic “add logging/tests” advice. The prior diagnosis states that the issue is probably not “there is no validation generator,” but rather that the validation generator, promotion gate, approved profile, and runtime observability may not yet form one immutable, reproducible experiment lifecycle. 
+Preserve the priorities below. Do not weaken them into generic testing or logging work.
+
+Core problem:
+The repo now appears to have stronger typed evidence validation, decision-equivalence diagnostics, lineage artifacts, and `research-reproduce`, but three critical gaps may remain:
+
+1. `research-reproduce` may trust an artifact’s embedded `content_hash` instead of recomputing the artifact’s canonical hash from its body.
+2. promotion may silently fall back to legacy/no-lineage mode when a research report lacks lineage.
+3. decision-equivalence may still be treated as a diagnostic/reporting tool instead of mandatory profile transition evidence.
+
+Treat these as hypotheses. Verify each from code before changing anything. If a hypothesis is already false, document why and only adjust tests/docs if needed.
 
 Work in this order.
 
-1. Inspect the repo before changing anything
+1. Inspect current code and tests
 
-Verify, from code and tests, the actual current state of:
-
-* `src/bithumb_bot/approved_profile.py`
-* `src/bithumb_bot/research/promotion_gate.py`
-* `src/bithumb_bot/research/experiment_manifest.py`
-* `src/bithumb_bot/research/validation_protocol.py`
-* any CLI wiring for:
-
-  * `research-backtest`
-  * `research-walk-forward`
-  * `research-promote-candidate`
-  * profile generation / verification / promotion
-  * decision equivalence, if present
-* docs such as:
-
-  * `docs/research-validation.md`
-  * `docs/runbooks/research-to-paper.md`
-* tests covering:
-
-  * promotion artifact verification
-  * approved profile hash/source/evidence verification
-  * walk-forward verification
-  * profile transition evidence
-  * runtime contract/profile startup checks
-
-Do not assume the diagnosis is fully correct. Treat the following as hypotheses and either confirm, weaken, or reject them with code evidence.
-
-Hypothesis A:
-The problem is not absence of a validation generator, but insufficient authority of the validation generator relative to profile/promotion verification. There may be no single experiment lineage ledger that proves the operator went through:
-`research-backtest → research-walk-forward → research-promote-candidate → profile-generate → profile-verify → paper validation evidence → profile-promote`.
-
-Hypothesis B:
-There may be a semantic gap between research simulation decisions and runtime/paper decisions. Research may be pure replay/simulation, while live/paper execution may use a different strategy path, broker/order lifecycle, recovery behavior, or lot-native SELL authority. If so, decision equivalence should become a mandatory promotion/transition evidence gate, not merely documentation or optional tooling.
-
-Hypothesis C:
-The acceptance gate may have a solid scientific skeleton, but may not sufficiently defend against experiment-family-level overfitting, repeated final-holdout reuse, multiple-testing, or researcher degrees of freedom.
-
-Hypothesis D:
-Artifact hashes may be strong against tampering, but may not be sufficient to prove reproducibility. A JSON hash proves “this artifact did not change,” not necessarily “this artifact can be regenerated from the same code, dataset, manifest, command args, and calibration inputs.”
-
-2. Prefer design changes over local patches
-
-If the hypotheses are supported, implement structural changes that prevent the whole problem class.
-
-Priority 1: add an experiment lineage layer
-
-Add a module such as:
+Check these files first:
 
 * `src/bithumb_bot/research/lineage.py`
+* `src/bithumb_bot/research/promotion_gate.py`
+* `src/bithumb_bot/research/cli.py`
+* `src/bithumb_bot/approved_profile.py`
+* `src/bithumb_bot/evidence_chain.py`
+* `src/bithumb_bot/decision_equivalence.py`
+* `src/bithumb_bot/profile_cli.py`
+* `src/bithumb_bot/app.py`
+* existing tests related to:
 
-It should define a canonical, deterministic lineage artifact schema and hash logic for experiment lifecycle evidence.
+  * research lineage
+  * `research-reproduce`
+  * promotion gate
+  * approved profile verification
+  * profile transition evidence
+  * decision equivalence
+  * CLI argument wiring
 
-The lineage artifact should capture, when available:
+Do not assume pytest passing means the system is closed. Look for cases where tests only verify happy paths or only compare recorded hash fields without recomputing canonical content.
 
-* `lineage_schema_version`
-* `experiment_id`
-* `experiment_family_id`
-* `hypothesis_id`
-* `hypothesis_status`
-* `pre_registered_at`
-* `manifest_path`
-* `manifest_hash`
-* `manifest_canonical_hash`
-* `dataset_snapshot_id`
-* `dataset_content_hash`
-* `dataset_split_hash`
-* database/data source fingerprint, without leaking secrets
-* `repository_version`
-* command/provenance fields:
+2. Hypothesis A: `research-reproduce` trusts report `content_hash`
 
-  * CLI command name
-  * normalized command args
-  * command args hash
-  * environment/config fingerprint, excluding secrets
-* cost/execution model hash
-* execution calibration artifact hash, if applicable
-* backtest report path/hash
-* walk-forward report path/hash
-* candidate id
-* candidate profile hash
-* promotion artifact path/hash
-* approved profile path/hash
-* paper validation evidence path/hash
-* live readiness evidence path/hash
-* decision equivalence report path/hash
-* `search_budget`
-* `parameter_grid_size`
-* `attempt_index`
-* `failed_candidate_count`
-* `holdout_reuse_count`
-* `dataset_reuse_policy`
-* created timestamp
+Verify whether `reproduce_promotion()` or its helper, likely `_verify_artifact_hash()`, opens backtest/walk-forward reports and does something equivalent to:
 
-The lineage hash must be computed from canonical content with volatile fields excluded where appropriate. Follow the repo’s existing content hash style and deterministic JSON conventions.
+```python
+actual = str(payload.get("content_hash") or "")
+```
 
-Priority 2: integrate lineage into promotion and approved profile flow
+If yes, fix it.
 
-Do not merely create `lineage.py` as unused code.
+Required design:
+`research-reproduce` must not trust the artifact’s embedded `content_hash` for backtest/walk-forward reports. It must recompute the report’s canonical content hash from the loaded artifact body, excluding the `content_hash` field, using the repo’s deterministic hash conventions.
 
-Wire lineage into the places that generate or validate research/promotion/profile artifacts.
+Preferred implementation:
 
-Promotion artifacts should include or reference enough lineage to verify:
+```python
+actual = sha256_prefixed(
+    content_hash_payload({k: v for k, v in payload.items() if k != "content_hash"})
+)
+```
 
-* source backtest report hash
-* source walk-forward report hash, if walk-forward is required
-* manifest hash / canonical hash
-* dataset snapshot id and dataset content hash
-* command args hash
-* repository version
-* candidate profile hash
-* cost/execution model hash
-* execution calibration hash, if required
-* experiment family / hypothesis metadata, if available
+If the repo has a report-writer-specific official hash helper, use that instead. Do not create a conflicting hash convention.
 
-Approved profile generation/verification should fail closed when required lineage is missing or inconsistent, unless the current mode explicitly supports a backward-compatible legacy path. If a compatibility path is necessary, make it explicit, observable, and documented with a clear deprecation boundary.
+Required failure behavior:
 
-Priority 3: add `research-reproduce`
+* If the report body is changed but the old `content_hash` field remains, `research-reproduce` must fail.
+* Backtest report tamper should report `backtest_report_hash_mismatch`.
+* Walk-forward report tamper should report `walk_forward_report_hash_mismatch`.
+* The structured output should include the expected and actual hashes in `mismatches`.
 
-Add CLI support for a reproducibility check, for example:
+Required tests:
+
+* valid promotion + valid lineage + valid report artifacts → `research-reproduce` returns `ok=true`
+* backtest report body tampered, old `content_hash` left unchanged → `ok=false`, reason `backtest_report_hash_mismatch`
+* walk-forward report body tampered, old `content_hash` left unchanged → `ok=false`, reason `walk_forward_report_hash_mismatch`
+* embedded report `content_hash` tampered while body unchanged → fail clearly
+* missing report file still produces the existing missing-artifact reason
+
+3. Hypothesis B: promotion silently allows no-lineage reports
+
+Verify whether `promote_candidate()` does this:
+
+* read `report.get("lineage")`
+* if lineage exists, validate it
+* if lineage is missing, create promotion artifact with:
+
+  * `lineage_required=false`
+  * `legacy_compatibility_used=true`
+  * no hard failure
+
+If yes, fix it.
+
+Required design:
+New promotion must be lineage-backed by default. Legacy/no-lineage promotion is allowed only with explicit operator intent.
+
+Implement:
+
+```python
+promote_candidate(
+    *,
+    experiment_id: str,
+    candidate_id: str,
+    manager: PathManager,
+    generated_at: str | None = None,
+    allow_legacy_lineage: bool = False,
+) -> PromotionResult:
+```
+
+Default behavior:
+
+* If `backtest_report.json` has no valid `lineage`, promotion must fail with:
+
+  * `promotion refused: lineage_missing`
+
+Explicit compatibility behavior:
+
+* If `allow_legacy_lineage=True`, no-lineage promotion may proceed.
+* The artifact must include:
+
+  * `legacy_compatibility_used=true`
+  * `lineage_required=false`
+  * `lineage_hash=None`
+  * a clear warning such as `legacy_lineage_compatibility_used`
+* CLI output must print that warning.
+* Audit/verification output must continue to expose `legacy_compatibility_used`.
+
+CLI wiring:
+Add an explicit CLI flag:
 
 ```bash
-uv run bithumb-bot research-reproduce \
-  --promotion "$DATA_ROOT/paper/reports/research/<experiment>/promotion_<candidate>.json"
+uv run bithumb-bot research-promote-candidate \
+  --experiment-id <id> \
+  --candidate-id <id> \
+  --allow-legacy-lineage
 ```
 
-The command should load the promotion artifact, follow its lineage, and verify that the required artifacts are reproducible or at least fully re-verifiable from the recorded inputs.
+Do not make this the default. Do not silently enable it based on environment variables.
 
-Preferred behavior:
+Required tests:
 
-* Load promotion artifact.
-* Verify promotion content hash.
-* Verify candidate profile hash.
-* Verify manifest hash / canonical hash.
-* Verify dataset snapshot id and dataset content hash.
-* Verify backtest report hash.
-* Verify walk-forward report hash when required.
-* Verify execution calibration hash when required.
-* Verify command args hash / repository version where supported.
-* Rebuild or re-check candidate profile from recorded source evidence.
-* Emit deterministic JSON summary with:
+* report with valid lineage → promotion passes
+* report without lineage → promotion fails by default with `lineage_missing`
+* report without lineage + explicit `allow_legacy_lineage=True` → promotion passes and artifact has `legacy_compatibility_used=true`
+* CLI passes the flag through correctly
+* CLI without the flag fails on no-lineage report
+* invalid lineage hash still fails closed
 
-  * `ok`
-  * `reason`
-  * `promotion_path`
-  * `promotion_content_hash`
-  * `lineage_hash`
-  * `manifest_hash`
-  * `dataset_content_hash`
-  * `backtest_report_hash`
-  * `walk_forward_report_hash`
-  * `candidate_profile_hash`
-  * `mismatches`
-  * `missing_artifacts`
-  * `legacy_compatibility_used`
+4. Hypothesis C: decision-equivalence is not mandatory transition evidence
 
-Failure reasons should be specific, such as:
+Verify whether paper validation evidence and/or live readiness evidence can pass without decision-equivalence. Inspect:
 
-* `promotion_path_missing`
-* `promotion_hash_mismatch`
-* `lineage_missing`
-* `lineage_hash_mismatch`
-* `manifest_missing`
-* `manifest_hash_mismatch`
-* `dataset_missing`
-* `dataset_content_hash_mismatch`
-* `backtest_report_missing`
-* `backtest_report_hash_mismatch`
-* `walk_forward_required_but_missing`
-* `walk_forward_hash_mismatch`
-* `candidate_hash_mismatch`
-* `code_version_mismatch`
-* `command_args_hash_mismatch`
-* `calibration_hash_mismatch`
+* `approved_profile.verify_profile_evidence_artifacts`
+* any `_validate_decision_equivalence_evidence` helper
+* `evidence_chain.validate_profile_transition_evidence`
+* profile promotion CLI paths
+* tests for missing or failed decision-equivalence reports
 
-Priority 4: make decision equivalence a mandatory transition evidence where appropriate
+If decision-equivalence is already mandatory and well-tested, document the evidence and only add missing edge tests. If it is not mandatory, fix it.
 
-Inspect whether decision equivalence already exists.
+Required design:
+Decision-equivalence must be mandatory for profile transition evidence where the system is trying to prove research/paper/runtime continuity.
 
-If it exists, integrate it into profile transition evidence so that paper validation or live-dry-run promotion requires a decision-equivalence artifact.
+At minimum:
 
-If it does not exist, implement the minimal structural contract needed to make it enforceable without overbuilding.
+* `paper_validation_evidence` must include:
 
-The evidence should include fields like:
+  * `decision_equivalence_report_path`
+  * `decision_equivalence_content_hash`
+* `live_readiness_evidence` must either also require the same fields, or the code must define an explicit policy explaining why only paper validation requires it. Prefer requiring it for both unless existing design clearly says otherwise.
 
-* `decision_equivalence_report_path`
-* `decision_equivalence_content_hash`
-* `matched_decision_count`
-* `mismatch_count`
-* `mismatch_reasons`
-* `blocked_decision_equivalence`
-* `approved_profile_hash`
-* `dataset_snapshot_id`
+Decision-equivalence validation must fail closed when:
+
+* path missing
+* hash missing
+* report file missing
+* report hash mismatch
+* report `ok` is false
+* `mismatched_decision_count > 0`
+* `missing_research_decisions` is non-empty
+* `missing_runtime_decisions` is non-empty
+* profile hash mismatch
+* market mismatch
+* interval mismatch
+* data/db fingerprint mismatch, if both evidence and report provide comparable fingerprints
+
+Hash rule:
+Do not trust the report’s embedded `content_hash`. Recompute it from canonical report body excluding `content_hash`, using the repo’s deterministic hash convention.
+
+Required tests:
+
+* paper validation evidence missing decision-equivalence fields → fail
+* live readiness evidence missing decision-equivalence fields → fail, unless explicitly documented otherwise
+* decision-equivalence report path missing → fail
+* decision-equivalence hash mismatch → fail
+* decision-equivalence `ok=false` → fail
+* `mismatched_decision_count > 0` → fail
+* non-empty `missing_research_decisions` → fail
+* non-empty `missing_runtime_decisions` → fail
+* profile hash mismatch → fail
+* market mismatch → fail
+* interval mismatch → fail
+* valid decision-equivalence report → profile transition evidence passes
+
+5. Observability and recovery
+
+Add or preserve structured failure output. Operators must be able to recover without guessing.
+
+For `research-reproduce`, ensure JSON output includes:
+
+* `ok`
+* `reason`
+* `promotion_path`
+* `promotion_content_hash`
+* `lineage_hash`
+* `manifest_hash`
 * `dataset_content_hash`
-* `fee_model_hash`
-* `slippage_model_hash`
+* `backtest_report_hash`
+* `walk_forward_report_hash`
+* `candidate_profile_hash`
+* `mismatches`
+* `missing_artifacts`
+* `legacy_compatibility_used`
 
-Profile transition should fail closed when:
-
-* decision equivalence evidence is required but missing
-* report hash mismatches
-* approved profile hash mismatches
-* dataset hash mismatches
-* `mismatch_count > 0`, unless an explicit documented tolerance exists
-* `blocked_decision_equivalence` is true
-
-Priority 5: add overfitting/experiment-family observability
-
-Do not try to solve statistical overfitting perfectly in one patch. Instead, make it visible and enforce basic guardrails.
-
-Add or propagate fields such as:
-
-* `experiment_family_id`
-* `hypothesis_id`
-* `pre_registered_gate`
-* `search_budget`
-* `parameter_space_hash`
-* `parameter_grid_size`
-* `attempt_index`
-* `failed_candidate_count`
-* `holdout_reuse_count`
-* `dataset_reuse_policy`
-
-At minimum, these should be present in lineage and visible in promotion/profile audit output. If the repo already has equivalent fields, use the existing names and avoid duplicate concepts.
-
-3. Tests are required
-
-Add focused tests. Prefer small deterministic tests over large integration fixtures.
-
-Required negative tests:
-
-* promotion/profile verification fails when lineage is missing but required
-* lineage hash mismatch fails closed
-* backtest report hash mismatch fails closed
-* walk-forward required but missing fails closed
-* walk-forward report hash mismatch fails closed
-* manifest hash mismatch fails closed
-* dataset content hash mismatch fails closed
-* candidate profile hash mismatch still fails closed
-* command args hash mismatch is reported clearly
-* decision equivalence missing fails when required
-* decision equivalence hash mismatch fails
-* decision equivalence with nonzero mismatch count fails
-* stale or reused final holdout is visible through lineage fields, even if not hard-blocked yet
-* legacy compatibility path, if retained, is explicit and audited
-
-Required positive tests:
-
-* valid lineage + promotion + approved profile verifies successfully
-* `research-reproduce` returns `ok=true` for a deterministic fixture
-* paper/live transition evidence with valid decision equivalence passes
-* audit fields include lineage and reproducibility identifiers
-
-Also update any existing tests that construct promotion/profile artifacts by hand so they include the new required fields, or consciously route them through a named legacy compatibility helper.
-
-4. Observability and recovery
-
-Add audit fields or structured output so operators can see:
+For profile/evidence verification, ensure audit fields include:
 
 * approved profile hash
-* promotion hash
+* source promotion hash
 * lineage hash
-* manifest hash
-* dataset content hash
-* backtest report hash
-* walk-forward report hash
-* decision equivalence hash
-* whether legacy compatibility was used
+* decision-equivalence path
+* decision-equivalence hash
 * exact block reason
-* mismatch list
-* missing artifact list
+* mismatch list where available
+* whether legacy compatibility was used
 
-Avoid vague failure messages. A failed startup/profile verification should tell the operator what artifact is missing or mismatched and which hash/path was expected.
+Failure reasons should be precise. Avoid vague messages like `invalid_evidence` when the real reason is `decision_equivalence_hash_mismatch`.
 
-Do not log secrets, API keys, raw private env values, or account-sensitive data. Use safe fingerprints.
+Do not log secrets, API keys, raw private environment variables, account balances beyond existing safe diagnostics, or exchange credentials. Use safe fingerprints only.
 
-5. Documentation
+6. Documentation
 
-Update docs/runbooks so the intended lifecycle is explicit:
+Update docs/runbooks if behavior changes.
 
-```text
-hypothesis / manifest
-→ dataset snapshot
-→ research-backtest
-→ research-walk-forward
-→ research-promote-candidate
-→ research-reproduce
-→ approved profile generation
-→ profile verification
-→ decision equivalence / paper validation evidence
-→ live-dry-run readiness
-→ small-live promotion
+Required documentation updates:
+
+* `research-promote-candidate` now requires lineage by default.
+* `--allow-legacy-lineage` is an explicit compatibility escape hatch, not the normal path.
+* `research-reproduce` recomputes artifact hashes and does not trust embedded `content_hash`.
+* decision-equivalence is mandatory transition evidence for paper/live readiness, or explicitly document the narrower policy if you choose one.
+* Explain operator recovery:
+
+  * regenerate research report if report hash mismatch
+  * rerun walk-forward if walk-forward artifact missing/mismatched
+  * rerun decision-equivalence if profile/market/interval/data fingerprint mismatch
+  * avoid promoting legacy lineage except for explicitly reviewed historical artifacts
+
+7. Scope control
+
+Do not rewrite the trading strategy.
+
+Do not add a large statistical research framework.
+
+Do not fabricate orderbook/depth/intra-candle data.
+
+Do not weaken existing approved profile, promotion, evidence, path, runtime, or hash verification.
+
+Do not make new fail-closed paths fail-open for convenience.
+
+Do not silently accept legacy/no-lineage artifacts.
+
+8. Run tests
+
+Run targeted tests first, then full pytest.
+
+At minimum run:
+
+```bash
+pytest tests -q
 ```
 
-Clearly distinguish:
+If the repo has narrower test files for lineage, promotion, approved profile, and evidence chain, run those explicitly too.
 
-* smoke backtests
-* official research evidence
-* promotion evidence
-* approved profile evidence
-* decision equivalence evidence
-* runtime observability
+9. Final report format
 
-Make clear that hashes defend against artifact drift, while `research-reproduce` and lineage defend against non-reproducible experiment selection.
-
-6. Scope control
-
-Do not rewrite the trading strategy itself unless necessary for decision-equivalence contract tests.
-
-Do not add a full statistical research platform.
-
-Do not weaken existing hash, evidence, path, or profile verification.
-
-Do not make fail-closed behavior fail-open for convenience.
-
-Do not fabricate orderbook/depth/intra-candle evidence that the current dataset does not contain. If the dataset is candle-only, preserve that limitation honestly in artifacts and docs.
-
-7. Final report format
-
-When finished, report in this exact structure:
+When finished, report exactly in this structure:
 
 ```text
 Summary
@@ -342,15 +298,11 @@ Hypotheses evaluated
 - Hypothesis C: confirmed / partially confirmed / rejected.
   Evidence:
   Changes:
-- Hypothesis D: confirmed / partially confirmed / rejected.
-  Evidence:
-  Changes:
 
 Design changes
-- New modules:
 - Modified modules:
-- New/changed CLI commands:
-- New artifact fields:
+- New/changed CLI flags:
+- New/changed artifact validation rules:
 - Backward compatibility behavior:
 
 Tests
@@ -358,21 +310,21 @@ Tests
 - Updated tests:
 - Negative cases:
 - Positive cases:
-- Command run:
+- Commands run:
 - Result:
 
 Observability / recovery
-- New audit fields:
 - New failure reasons:
+- New audit fields or structured output:
 - Operator recovery path:
 
 Docs
 - Files updated:
-- Lifecycle clarified:
+- Behavior clarified:
 
 Known limitations / follow-up
 - Anything intentionally not solved in this patch.
 ```
 
-Keep the implementation pragmatic, but preserve the central priority: this repo should evolve from “a bot with approved strategy profile verification” into “a reproducible automated trading experiment system where only scientifically selected, lineage-backed, decision-equivalent strategies can move toward operation.”
+The central priority is not “make tests pass.” The central priority is to close the remaining gap between a good validation feature and a reproducible automated trading experiment system: promotion must be lineage-backed by default, reproduction must recompute artifact truth instead of trusting recorded hash fields, and profile transition evidence must prove decision equivalence before strategies move closer to operation.
 

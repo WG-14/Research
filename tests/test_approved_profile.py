@@ -1048,6 +1048,48 @@ def test_profile_promote_fails_when_decision_equivalence_missing(tmp_path: Path)
         )
 
 
+def test_profile_promote_fails_when_live_readiness_decision_equivalence_missing(tmp_path: Path) -> None:
+    promotion_path = tmp_path / "promotion.json"
+    write_json_atomic(promotion_path, _promotion())
+    paper = _profile(str(promotion_path))
+    live_dry_run = promote_profile_mode(
+        parent_profile=paper,
+        target_mode="live_dry_run",
+        paper_validation_evidence=str(_write_evidence(tmp_path, "paper_validation.json", profile=paper)),
+    )
+    payload = _evidence_payload(live_dry_run, evidence_type="live_readiness")
+    payload["evidence_path"] = str((tmp_path / "live_missing_decision_equivalence.json").resolve())
+    payload["content_hash"] = compute_evidence_content_hash(payload)
+    evidence_path = tmp_path / "live_missing_decision_equivalence.json"
+    evidence_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ApprovedProfileError, match="live_readiness_evidence_decision_equivalence_missing"):
+        promote_profile_mode(
+            parent_profile=live_dry_run,
+            target_mode="small_live",
+            live_readiness_evidence=str(evidence_path),
+        )
+
+
+def test_profile_promote_fails_when_decision_equivalence_report_path_missing(tmp_path: Path) -> None:
+    profile_path = _write_profile_with_source(tmp_path)
+    profile = load_approved_profile(profile_path)
+    payload = _evidence_payload(profile)
+    payload["evidence_path"] = str((tmp_path / "decision_report_path_missing.json").resolve())
+    payload["decision_equivalence_report_path"] = str((tmp_path / "missing_report.json").resolve())
+    payload["decision_equivalence_content_hash"] = "sha256:missing"
+    payload["content_hash"] = compute_evidence_content_hash(payload)
+    evidence_path = tmp_path / "decision_report_path_missing.json"
+    evidence_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ApprovedProfileError, match="paper_validation_evidence_decision_equivalence_path_not_found"):
+        promote_profile_mode(
+            parent_profile=profile,
+            target_mode="live_dry_run",
+            paper_validation_evidence=str(evidence_path),
+        )
+
+
 def test_profile_promote_fails_when_decision_equivalence_hash_mismatches(tmp_path: Path) -> None:
     profile_path = _write_profile_with_source(tmp_path)
     profile = load_approved_profile(profile_path)
@@ -1086,6 +1128,57 @@ def test_profile_promote_fails_when_decision_equivalence_mismatch_count_nonzero(
     evidence_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
 
     with pytest.raises(ApprovedProfileError, match="paper_validation_evidence_decision_equivalence_mismatch_count_nonzero"):
+        promote_profile_mode(
+            parent_profile=profile,
+            target_mode="live_dry_run",
+            paper_validation_evidence=str(evidence_path),
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutations", "reason"),
+    [
+        ({"ok": False}, "paper_validation_evidence_decision_equivalence_not_ok"),
+        (
+            {"missing_research_decisions": ["2026-05-03T00:00:00+00:00|KRW-BTC|1m"]},
+            "paper_validation_evidence_decision_equivalence_missing_research_decisions",
+        ),
+        (
+            {"missing_runtime_decisions": ["2026-05-03T00:00:00+00:00|KRW-BTC|1m"]},
+            "paper_validation_evidence_decision_equivalence_missing_runtime_decisions",
+        ),
+        (
+            {"profile_content_hash": "sha256:other", "approved_profile_hash": "sha256:other"},
+            "paper_validation_evidence_decision_equivalence_profile_hash_mismatch",
+        ),
+        ({"market": "KRW-ETH"}, "paper_validation_evidence_decision_equivalence_market_mismatch"),
+        ({"interval": "5m"}, "paper_validation_evidence_decision_equivalence_interval_mismatch"),
+        (
+            {"db_data_fingerprint": "sha256:other_db"},
+            "paper_validation_evidence_decision_equivalence_data_fingerprint_mismatch",
+        ),
+    ],
+)
+def test_profile_promote_fails_when_decision_equivalence_semantics_invalid(
+    tmp_path: Path,
+    mutations: dict[str, object],
+    reason: str,
+) -> None:
+    profile_path = _write_profile_with_source(tmp_path)
+    profile = load_approved_profile(profile_path)
+    payload = _evidence_payload(profile)
+    payload["evidence_path"] = str((tmp_path / "decision_semantics_invalid.json").resolve())
+    report_path = _attach_decision_equivalence_report(tmp_path, payload, profile)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report.update(mutations)
+    report["content_hash"] = compute_decision_equivalence_hash(report)
+    report_path.write_text(json.dumps(report, sort_keys=True) + "\n", encoding="utf-8")
+    payload["decision_equivalence_content_hash"] = report["content_hash"]
+    payload["content_hash"] = compute_evidence_content_hash(payload)
+    evidence_path = tmp_path / "decision_semantics_invalid.json"
+    evidence_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ApprovedProfileError, match=reason):
         promote_profile_mode(
             parent_profile=profile,
             target_mode="live_dry_run",

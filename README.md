@@ -96,6 +96,7 @@ uv run bithumb-bot strategy-report
 uv run bithumb-bot research-backtest --manifest examples/research/sma_filter_manifest.example.json
 uv run bithumb-bot research-walk-forward --manifest examples/research/sma_filter_manifest.example.json
 uv run bithumb-bot research-promote-candidate --experiment-id <id> --candidate-id <id>
+uv run bithumb-bot research-promote-candidate --experiment-id <id> --candidate-id <id> --allow-legacy-lineage
 uv run bithumb-bot research-reproduce --promotion <promotion.json>
 uv run bithumb-bot profile-generate --promotion <promotion.json> --mode paper --out <profile.json>
 uv run bithumb-bot profile-diff --profile <profile.json> --target-env <env-file> --json
@@ -108,7 +109,7 @@ uv run bithumb-bot fee-pending-accounting-repair --client-order-id <id> --fill-i
 uv run bithumb-bot run --short 7 --long 30
 ```
 
-Root `backtest.py` is a smoke backtest only. It must not be used as evidence for strategy promotion, approved profiles, live readiness, or capital allocation. The official validation path is `uv run bithumb-bot research-backtest --manifest ...`, followed by walk-forward validation, promotion artifact review, `research-reproduce`, approved-profile generation or transition, decision-equivalence evidence, and separate paper/live-readiness checks.
+Root `backtest.py` is a smoke backtest only. It must not be used as evidence for strategy promotion, approved profiles, live readiness, or capital allocation. The official validation path is `uv run bithumb-bot research-backtest --manifest ...`, followed by walk-forward validation, lineage-backed promotion artifact review, `research-reproduce`, approved-profile generation or transition, mandatory decision-equivalence evidence, and separate paper/live-readiness checks. `--allow-legacy-lineage` is only an explicit compatibility escape hatch for reviewed historical artifacts, not the normal promotion path.
 
 Use `config-dump --masked` for operator config inspection. Direct Python imports of
 `bithumb_bot.config.settings` do not run the CLI bootstrap path and are not the
