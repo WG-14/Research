@@ -10,6 +10,7 @@ from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
 from bithumb_bot.research.execution_calibration import build_calibration_artifact
 from bithumb_bot.research.execution_model import FixedBpsExecutionModel, StressExecutionModel
 from bithumb_bot.research.experiment_manifest import parse_manifest
+from bithumb_bot.research.parameter_space import candidate_id
 from bithumb_bot.research.validation_protocol import run_research_backtest
 
 
@@ -287,3 +288,111 @@ def test_research_backtest_fails_candidate_when_calibration_breaches_assumptions
 
     assert report["gate_result"] == "FAIL"
     assert "execution_calibration_p90_slippage_exceeds_assumption" in report["candidates"][0]["gate_fail_reasons"]
+
+
+def test_stress_report_is_candidate_order_independent(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["parameter_space"] = {
+        "SMA_SHORT": [2, 3],
+        "SMA_LONG": [4],
+        "SMA_FILTER_GAP_MIN_RATIO": [0.0],
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": [0.0],
+    }
+    payload["execution_model"] = {
+        "type": "stress",
+        "fee_rate": [0.0],
+        "slippage_bps": [5, 10],
+        "partial_fill_rate": [0.5],
+        "order_failure_rate": [0.1],
+        "scenario_policy": "must_pass_base_and_survive_stress",
+        "seed": 42,
+    }
+    reordered = dict(payload)
+    reordered["parameter_space"] = {
+        "SMA_SHORT": [3, 2],
+        "SMA_LONG": [4],
+        "SMA_FILTER_GAP_MIN_RATIO": [0.0],
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": [0.0],
+    }
+    target_params = {
+        "SMA_SHORT": 2,
+        "SMA_LONG": 4,
+        "SMA_FILTER_GAP_MIN_RATIO": 0.0,
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": 0.0,
+    }
+    target_id = candidate_id(target_params, 0)
+
+    first = run_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+    second = run_research_backtest(
+        manifest=parse_manifest(reordered),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    first_candidate = {item["parameter_candidate_id"]: item for item in first["candidates"]}[target_id]
+    second_candidate = {item["parameter_candidate_id"]: item for item in second["candidates"]}[target_id]
+    for first_scenario, second_scenario in zip(
+        first_candidate["scenario_results"],
+        second_candidate["scenario_results"],
+        strict=True,
+    ):
+        assert first_scenario["scenario_id"] == second_scenario["scenario_id"]
+        assert first_scenario["validation_metrics"] == second_scenario["validation_metrics"]
+        assert first_scenario["validation_execution_metadata"] == second_scenario["validation_execution_metadata"]
+    execution = first_candidate["scenario_results"][0]["validation_execution_metadata"][0]
+    assert execution["base_seed"] == 42
+    assert execution["derived_seed_hash"].startswith("sha256:")
+    assert execution["seed_derivation_inputs"]["parameter_candidate_id"] == target_id
+
+
+def test_different_stress_seed_changes_auditable_seed_hash(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["execution_model"] = {
+        "type": "stress",
+        "fee_rate": [0.0],
+        "slippage_bps": [5, 10],
+        "partial_fill_rate": [0.5],
+        "order_failure_rate": [0.1],
+        "scenario_policy": "must_pass_base_and_survive_stress",
+        "seed": 42,
+    }
+    changed_seed = dict(payload)
+    changed_seed["execution_model"] = dict(payload["execution_model"])
+    changed_seed["execution_model"]["seed"] = 43
+
+    first = run_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+    second = run_research_backtest(
+        manifest=parse_manifest(changed_seed),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    first_execution = first["candidates"][0]["scenario_results"][0]["validation_execution_metadata"][0]
+    second_execution = second["candidates"][0]["scenario_results"][0]["validation_execution_metadata"][0]
+    assert first_execution["base_seed"] == 42
+    assert second_execution["base_seed"] == 43
+    assert first_execution["derived_seed_hash"] != second_execution["derived_seed_hash"]

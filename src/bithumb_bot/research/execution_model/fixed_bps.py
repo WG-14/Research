@@ -63,4 +63,7 @@ class FixedBpsExecutionModel:
             best_ask=request.best_ask,
             spread_bps=request.spread_bps,
             intra_candle_policy=request.intra_candle_policy,
+            base_seed=None,
+            derived_seed_hash=None,
+            seed_derivation_inputs=None,
         )

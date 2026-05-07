@@ -42,11 +42,24 @@ def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
         "regime_classifier_version": candidate.get("regime_classifier_version"),
         "allowed_live_regimes": candidate.get("allowed_live_regimes"),
         "blocked_live_regimes": candidate.get("blocked_live_regimes"),
+        "acceptance_gate_result": candidate.get("acceptance_gate_result"),
+        "scenario_policy": candidate.get("scenario_policy"),
+        "scenario_results": candidate.get("scenario_results"),
+        "scenario_pass_count": candidate.get("scenario_pass_count"),
+        "scenario_fail_count": candidate.get("scenario_fail_count"),
+        "required_scenario_count": candidate.get("required_scenario_count"),
+        "final_holdout_present": candidate.get("final_holdout_present"),
+        "final_holdout_required_for_promotion": candidate.get("final_holdout_required_for_promotion"),
+        "final_holdout_metrics": candidate.get("final_holdout_metrics"),
+        "validation_metrics": candidate.get("validation_metrics"),
+        "walk_forward_metrics": candidate.get("walk_forward_metrics"),
     }
     if candidate.get("execution_model") is not None:
         profile["execution_model"] = candidate.get("execution_model")
     if candidate.get("execution_calibration_required") is not None:
         profile["execution_calibration_required"] = candidate.get("execution_calibration_required")
+    if candidate.get("execution_calibration_strictness") is not None:
+        profile["execution_calibration_strictness"] = candidate.get("execution_calibration_strictness")
     if candidate.get("execution_calibration_gate") is not None:
         profile["execution_calibration_gate"] = candidate.get("execution_calibration_gate")
     return profile
@@ -66,6 +79,8 @@ def evaluate_candidate_for_promotion(candidate: dict[str, Any]) -> tuple[bool, l
         reasons.append("validation_trade_count_missing")
     if candidate.get("walk_forward_required") and candidate.get("walk_forward_gate_result") != "PASS":
         reasons.append("walk_forward_gate_not_passed")
+    _extend_final_holdout_reasons(candidate, reasons)
+    _extend_scenario_policy_reasons(candidate, reasons)
     _extend_execution_calibration_reasons(candidate, reasons)
     profile_hash = candidate.get("candidate_profile_hash")
     if not profile_hash:
@@ -96,6 +111,8 @@ def validate_backtest_candidate_for_promotion(candidate: dict[str, Any] | None) 
         reasons.extend(["backtest_candidate_profile_hash_mismatch", "candidate_profile_hash_mismatch"])
     if not _candidate_has_regime_policy(candidate):
         reasons.extend(["backtest_regime_policy_missing", "regime_policy_missing"])
+    _extend_final_holdout_reasons(candidate, reasons, prefix="backtest_")
+    _extend_scenario_policy_reasons(candidate, reasons, prefix="backtest_")
     _extend_execution_calibration_reasons(candidate, reasons, prefix="backtest_")
     return not reasons, reasons
 
@@ -115,10 +132,50 @@ def _extend_execution_calibration_reasons(
             gate_reasons = [str(item) for item in gate.get("reasons") or ["execution_calibration_failed"]]
             reasons.extend([f"{prefix}{reason}" for reason in gate_reasons])
             reasons.extend(gate_reasons)
-    elif isinstance(gate, dict) and gate.get("status") == "FAIL":
+    elif (
+        candidate.get("execution_calibration_strictness") != "warn"
+        and isinstance(gate, dict)
+        and gate.get("status") == "FAIL"
+    ):
         gate_reasons = [str(item) for item in gate.get("reasons") or ["execution_calibration_failed"]]
         reasons.extend([f"{prefix}{reason}" for reason in gate_reasons])
         reasons.extend(gate_reasons)
+
+
+def _extend_final_holdout_reasons(
+    candidate: dict[str, Any],
+    reasons: list[str],
+    *,
+    prefix: str = "",
+) -> None:
+    if candidate.get("final_holdout_required_for_promotion") is False:
+        return
+    metrics = candidate.get("final_holdout_metrics")
+    if candidate.get("final_holdout_present") is not True or not isinstance(metrics, dict):
+        reasons.extend([f"{prefix}final_holdout_evidence_missing", "final_holdout_evidence_missing"])
+    elif metrics.get("trade_count") is None:
+        reasons.extend([f"{prefix}final_holdout_evidence_missing", "final_holdout_evidence_missing"])
+
+
+def _extend_scenario_policy_reasons(
+    candidate: dict[str, Any],
+    reasons: list[str],
+    *,
+    prefix: str = "",
+) -> None:
+    scenario_results = candidate.get("scenario_results")
+    if not isinstance(scenario_results, list) or not scenario_results:
+        reasons.extend([f"{prefix}scenario_result_missing", "scenario_result_missing"])
+        return
+    if candidate.get("acceptance_gate_result") != "PASS":
+        for reason in candidate.get("gate_fail_reasons") or ["scenario_policy_required_scenario_failed"]:
+            reason_text = str(reason)
+            if reason_text.startswith("scenario_policy_") or reason_text == "scenario_result_missing":
+                reasons.extend([f"{prefix}{reason_text}", reason_text])
+    for result in scenario_results:
+        if result.get("scenario_acceptance_gate_result") != "PASS":
+            reason_text = f"scenario_policy_required_scenario_failed:{result.get('scenario_id')}"
+            reasons.extend([f"{prefix}{reason_text}", reason_text])
 
 
 def _candidate_has_regime_policy(candidate: dict[str, Any]) -> bool:
@@ -201,6 +258,13 @@ def promote_candidate(
         "walk_forward_evidence_source": "walk_forward_report.json" if walk_forward_required else None,
         "walk_forward_candidate_profile_hash": walk_forward.profile_hash if walk_forward else None,
         "walk_forward_candidate_profile_verified": bool(walk_forward),
+        "final_holdout_required_for_promotion": candidate.get("final_holdout_required_for_promotion") is not False,
+        "final_holdout_present": candidate.get("final_holdout_present") is True,
+        "final_holdout_metrics": candidate.get("final_holdout_metrics"),
+        "scenario_policy": candidate.get("scenario_policy"),
+        "scenario_pass_count": candidate.get("scenario_pass_count"),
+        "scenario_fail_count": candidate.get("scenario_fail_count"),
+        "required_scenario_count": candidate.get("required_scenario_count"),
         "regime_classifier_version": candidate["regime_classifier_version"],
         "allowed_regimes": list(candidate["allowed_live_regimes"]),
         "blocked_regimes": list(candidate["blocked_live_regimes"]),
@@ -276,6 +340,12 @@ def validate_walk_forward_candidate_for_promotion(
             raise PromotionGateError("promotion refused: walk_forward_candidate_mismatch")
     if candidate.get("walk_forward_gate_result") != "PASS":
         raise PromotionGateError("promotion refused: walk_forward_gate_not_passed")
+    _extend_final_holdout_reasons(candidate, reasons := [], prefix="walk_forward_")
+    if reasons:
+        raise PromotionGateError(f"promotion refused: {','.join(reasons)}")
+    _extend_scenario_policy_reasons(candidate, reasons := [], prefix="walk_forward_")
+    if reasons:
+        raise PromotionGateError(f"promotion refused: {','.join(reasons)}")
     walk_forward_metrics = candidate.get("walk_forward_metrics")
     if not isinstance(walk_forward_metrics, dict):
         raise PromotionGateError("promotion refused: walk_forward_metrics_missing")

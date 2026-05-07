@@ -23,8 +23,8 @@ Confirm the active `DB_PATH` is a repository-external runtime path and contains 
 sed -n '1,220p' examples/research/sma_filter_manifest.example.json
 ```
 
-Review the hypothesis, dataset split dates, `snapshot_id`, parameter grid, cost model, acceptance gate, and `walk_forward` window configuration. Do not tune runtime env values until a backtest looks good.
-If the manifest uses `execution_model`, review every scenario and whether execution calibration is required. Root/simple smoke backtests are not research evidence and must not be used as evidence for strategy promotion, approved profiles, live readiness, or capital allocation.
+Review the hypothesis, dataset split dates, `snapshot_id`, parameter grid, cost model, acceptance gate, final-holdout policy, and `walk_forward` window configuration. Do not tune runtime env values until a backtest looks good.
+If the manifest uses `execution_model`, review every scenario, `scenario_policy`, stress seed, and whether execution calibration is required. `must_pass_base_and_survive_stress` is same-candidate evidence: a base pass for one parameter candidate and a stress pass for another candidate do not combine. Root/simple smoke backtests are not research evidence and must not be used as evidence for strategy promotion, approved profiles, live readiness, or capital allocation.
 
 3. Run the deterministic research backtest.
 
@@ -45,10 +45,11 @@ If `promotion_allowed=0`, do not run `research-promote-candidate`. `nearest_fail
 
 ```bash
 jq '.manifest_hash, .dataset_content_hash, .content_hash, .best_candidate_id' "$DATA_ROOT/paper/reports/research/sma_filter_v1_2026_05/backtest_report.json"
-jq '.candidates[] | {candidate_id: .parameter_candidate_id, profile_hash: .candidate_profile_hash, gate: .acceptance_gate_result, reasons: .gate_fail_reasons, stability: .parameter_stability}' "$DATA_ROOT/paper/reports/research/sma_filter_v1_2026_05/backtest_report.json"
+jq '.candidates[] | {candidate_id: .parameter_candidate_id, profile_hash: .candidate_profile_hash, gate: .acceptance_gate_result, reasons: .gate_fail_reasons, scenario_policy: .scenario_policy, pass: .scenario_pass_count, fail: .scenario_fail_count, required: .required_scenario_count, final_holdout_present: .final_holdout_present, stability: .parameter_stability}' "$DATA_ROOT/paper/reports/research/sma_filter_v1_2026_05/backtest_report.json"
+jq '.candidates[] | {candidate_id: .parameter_candidate_id, scenarios: [.scenario_results[] | {id: .scenario_id, role: .scenario_role, gate: .scenario_acceptance_gate_result, reasons: .scenario_fail_reasons, calibration: .execution_calibration_gate.status}]}' "$DATA_ROOT/paper/reports/research/sma_filter_v1_2026_05/backtest_report.json"
 ```
 
-Confirm the report path is under `DATA_ROOT/<mode>/reports/research/...`, not the repository.
+Confirm the report path is under `DATA_ROOT/<mode>/reports/research/...`, not the repository. For stress scenarios, inspect `base_seed`, `derived_seed_hash`, and `seed_derivation_inputs` in scenario execution metadata; they must be tied to candidate id, scenario id, split name, and seed, not to candidate enumeration order.
 
 5. Run rolling walk-forward validation.
 
@@ -73,17 +74,19 @@ Review every window date range, test return, fail reason, `window_count`, `pass_
 uv run bithumb-bot research-promote-candidate --experiment-id sma_filter_v1_2026_05 --candidate-id <candidate_id>
 ```
 
-Promotion requires backtest/OOS evidence. If walk-forward is required, promotion also requires walk-forward evidence for the same experiment, strategy, parameters, cost model, and manifest.
-Promotion refuses candidates with missing validation evidence, failed backtest gates, missing or failed walk-forward evidence, mismatched walk-forward candidates, missing or breached required execution-calibration evidence, or tampered candidate profile hashes.
+Promotion requires backtest/OOS evidence, same-candidate scenario-policy evidence, and final-holdout evidence by default. If walk-forward is required, promotion also requires walk-forward evidence for the same experiment, strategy, parameters, cost model, execution model, calibration gate, and manifest.
+Promotion refuses candidates with missing validation evidence, failed scenario policy, missing final holdout, failed backtest gates, missing or failed walk-forward evidence, mismatched walk-forward candidates, missing/hashless/mismatched/breached required execution-calibration evidence, or tampered candidate profile hashes.
 Both evidence sources are hash-verified and bound into the promotion artifact.
 
 8. Review the promotion artifact.
 
 ```bash
-jq '{profile: .strategy_profile_id, hash: .verified_candidate_profile_hash, gate: .gate_result, backtest_hash: .backtest_candidate_profile_hash, backtest_verified: .backtest_candidate_profile_verified, wf_required: .walk_forward_required, wf_hash: .walk_forward_candidate_profile_hash, wf_verified: .walk_forward_candidate_profile_verified, next: .operator_next_step}' "$DATA_ROOT/paper/reports/research/sma_filter_v1_2026_05/promotion_<candidate_id>.json"
+jq '{profile: .strategy_profile_id, hash: .verified_candidate_profile_hash, gate: .gate_result, scenario_policy: .scenario_policy, scenario_pass_count: .scenario_pass_count, scenario_fail_count: .scenario_fail_count, final_holdout_present: .final_holdout_present, backtest_hash: .backtest_candidate_profile_hash, backtest_verified: .backtest_candidate_profile_verified, wf_required: .walk_forward_required, wf_hash: .walk_forward_candidate_profile_hash, wf_verified: .walk_forward_candidate_profile_verified, next: .operator_next_step}' "$DATA_ROOT/paper/reports/research/sma_filter_v1_2026_05/promotion_<candidate_id>.json"
 ```
 
-Verify the profile hash, candidate parameter values, dataset fingerprint, manifest hash, content hash, backtest evidence source, and walk-forward evidence source when required. Promotion does not edit `.env`, `BITHUMB_ENV_FILE_PAPER`, `BITHUMB_ENV_FILE_LIVE`, or secrets.
+Verify the profile hash, candidate parameter values, scenario policy counts, final-holdout presence, dataset fingerprint, manifest hash, content hash, backtest evidence source, calibration hash/market/interval when required, and walk-forward evidence source when required. Promotion does not edit `.env`, `BITHUMB_ENV_FILE_PAPER`, `BITHUMB_ENV_FILE_LIVE`, or secrets.
+
+A clean `uv run pytest -q` pass is not approval to allocate capital. It only validates code behavior. Promotion readiness still requires complete fail-closed research evidence, operator review, approved-profile verification, paper validation, and live readiness checks.
 
 9. Generate and verify the approved paper profile.
 

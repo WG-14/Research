@@ -69,3 +69,44 @@ def test_calibration_comparison_fails_when_observed_costs_exceed_assumptions() -
 
     assert result["status"] == "FAIL"
     assert "execution_calibration_p90_slippage_exceeds_assumption" in result["reasons"]
+
+
+def test_calibration_comparison_fails_on_market_and_interval_mismatch() -> None:
+    artifact = build_calibration_artifact(
+        summary={"sample_count": 40, "quality_gate_status": "PASS"},
+        market="KRW-ETH",
+        interval="5m",
+    )
+
+    result = compare_calibration_to_scenario(
+        calibration=artifact,
+        assumed_slippage_bps=10.0,
+        assumed_latency_ms=3000,
+        expected_market="KRW-BTC",
+        expected_interval="1m",
+    )
+
+    assert result["status"] == "FAIL"
+    assert "execution_calibration_market_mismatch" in result["reasons"]
+    assert "execution_calibration_interval_mismatch" in result["reasons"]
+
+
+def test_required_calibration_without_content_hash_fails_closed() -> None:
+    artifact = build_calibration_artifact(
+        summary={"sample_count": 40, "quality_gate_status": "PASS"},
+        market="KRW-BTC",
+        interval="1m",
+    )
+    artifact.pop("content_hash")
+
+    result = compare_calibration_to_scenario(
+        calibration=artifact,
+        assumed_slippage_bps=10.0,
+        assumed_latency_ms=3000,
+        expected_market="KRW-BTC",
+        expected_interval="1m",
+        require_content_hash=True,
+    )
+
+    assert result["status"] == "FAIL"
+    assert "execution_calibration_content_hash_missing" in result["reasons"]

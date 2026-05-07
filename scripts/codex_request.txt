@@ -1,333 +1,403 @@
 You are Codex working directly inside the `WG-14/bithumb-bot` repository.
 
-Your task is not to add a small feature patch to `backtest.py`. Treat the current weakness of `backtest.py` as a symptom of a larger structural problem: the repository has pieces of a research-validation pipeline, execution-quality observation, promotion artifacts, and operational safety controls, but these pieces may not yet form one closed, reproducible, fail-closed automatic-trading experiment system.
+Your task is to review and patch the repository after the previous research-validation/execution-model changes. Do not treat the earlier pytest pass as proof that the system is safe. The current concern is that the new features may exist, but the actual policy guarantees may not be enforced.
 
-Use the following diagnosis as the starting point, but do not assume it is fully correct. Verify it against the repository before changing code.
+The core problem to solve is:
 
-Source context: the prior repository diagnosis concluded that root `backtest.py` is a legacy close-price SMA smoke backtest, while `src/bithumb_bot/research/*`, execution-quality reporting, and promotion/profile machinery already point toward a stronger validation system, but are not fully integrated into a closed loop. 
+> The repository now appears to have a pluggable execution model, stress scenarios, execution calibration artifacts, and promotion-gate checks, but it may still allow false-positive research candidates because scenario policy aggregation, deterministic stress reproducibility, calibration binding, and final-holdout promotion evidence are not fully fail-closed.
+
+Use the diagnosis below as a starting point, but verify each point directly in the repository before patching.
+
+Source context: prior review of `WG-14/bithumb-bot` found that the patch direction is good, but additional work is needed around scenario aggregation, stochastic stress determinism, calibration market/interval/hash binding, and final-holdout promotion requirements. 
 
 ## Mission
 
-Evolve the repository toward a robust, reproducible, observable, and operationally safe automated-trading experiment system.
+Make the research-validation and promotion pipeline enforce the intended safety policy, not merely record related fields.
 
-Prioritize design changes that prevent an entire class of false-positive backtest and promotion errors over isolated feature additions.
+Prioritize design-level correctness over small local fixes.
 
-Do not optimize for “make backtest.py more complex.” Optimize for:
+The system must not promote a strategy candidate merely because one scenario passed. A candidate should only be eligible when the same parameter candidate survives the required scenario policy, calibration evidence is compatible and hash-bound when required, and promotion evidence is complete.
 
-1. clear separation between smoke-test backtests and official research validation;
-2. pluggable, testable execution models;
-3. explicit cost, latency, partial-fill, order-failure, and stress scenarios;
-4. closed-loop integration between observed execution quality and future research cost assumptions;
-5. fail-closed promotion/live-readiness gates;
-6. reproducible artifacts with hashes, manifests, and machine-checkable evidence.
+## Scope boundaries
 
-## Non-negotiable scope boundaries
+Do not rewrite the entire research pipeline.
 
-Do not implement a real exchange-orderbook simulator unless the repository already contains enough orderbook data infrastructure to support it safely.
+Do not introduce live trading behavior changes unless required to preserve fail-closed safety.
 
-Do not introduce live-trading behavior changes unless explicitly needed to preserve fail-closed safety.
+Do not relax any existing approval, arming, run-lock, live/dry-run, ledger, reconciliation, or startup safety gates.
 
-Do not relax any existing safety gate, approval requirement, arming requirement, run-lock behavior, ledger invariant, or dry-run/live separation.
+Do not fake orderbook, bid/ask, depth, or fill data that the repository does not actually have.
 
-Do not make root `backtest.py` appear more authoritative. If anything, reduce its authority.
+Do not make stochastic stress results depend on parameter enumeration order.
 
-Do not treat high return, low max drawdown, or good in-sample results as sufficient for promotion.
+Do not claim correctness based only on pytest passing. Add tests that prove the actual policy behavior.
 
 ## Hypotheses to verify or falsify
 
-Before coding, inspect the repository and write down whether each hypothesis is confirmed, partially confirmed, or rejected.
+Before coding, inspect the repository and classify each hypothesis as confirmed, partially confirmed, or rejected.
 
-### Hypothesis 1
+### Hypothesis 1: `scenario_policy` exists but is not actually enforced at the candidate level
 
-The root `backtest.py` is a legacy close-price smoke backtest, not an edge-validation engine.
+Expected current risk:
 
-Verification steps:
+* `execution_model.scenario_policy` can contain values such as `must_pass_base_and_survive_stress`.
+* `validation_protocol.py` may evaluate each execution scenario independently and append one candidate row per scenario.
+* `_report_payload` may choose the first `acceptance_gate_result == PASS` row as best candidate.
+* This may allow a parameter candidate to pass under one scenario while failing under another required scenario.
 
-* Inspect root `backtest.py`.
-* Confirm whether it reads only `ts` and `close` from SQLite candles.
-* Confirm whether it assumes full fills at candle close.
-* Confirm whether it models only fees and ignores bid/ask spread, slippage distribution, latency, partial fills, order failures, market-order cost, and intra-candle uncertainty.
-* Confirm whether docs or CLI surfaces could cause users to mistake it for an official validation path.
-
-### Hypothesis 2
-
-The research pipeline is more advanced than root `backtest.py`, but still relies heavily on static cost assumptions such as fixed slippage bps.
-
-Verification steps:
-
-* Inspect `src/bithumb_bot/research/backtest_engine.py` and related research modules.
-* Identify current support for train/validation/final holdout, parameter sweep, walk-forward, regime decomposition, acceptance gates, and parameter stability.
-* Identify whether execution realism is limited to fixed fee/slippage calculations.
-* Identify whether trade-level output includes enough execution-assumption metadata to audit simulated fills.
-
-### Hypothesis 3
-
-The dataset layer is candle/OHLCV centered, so it supports statistical signal validation better than executable-edge validation.
-
-Verification steps:
-
-* Inspect dataset snapshot/loading code.
-* Determine whether snapshots include only candles or also orderbook snapshots, trades, historical fills, spreads, or quote data.
-* Determine whether dataset fingerprints include the data necessary to reproduce execution-cost assumptions.
-* Determine whether intra-candle path uncertainty is handled, ignored, or impossible with current data.
-
-### Hypothesis 4
-
-Execution-quality observation exists, but may not yet automatically recalibrate research cost models or block promotion/live readiness when real execution quality is worse than backtest assumptions.
-
-Verification steps:
-
-* Inspect execution-quality modules and reports.
-* Identify fields such as slippage, spread, latency, fill ratio, partial fill, unfilled orders, and model breach.
-* Inspect whether execution-quality reports produce cost-model calibration artifacts.
-* Inspect whether research backtests can consume those calibration artifacts.
-* Inspect whether promotion/profile/live-readiness gates fail closed when observed p90/p95 execution costs exceed research assumptions.
-
-## Required design changes
-
-Implement the highest-value subset that can be completed cleanly in this repository without overreaching. Prefer a coherent minimal architecture over many shallow options.
-
-### 1. Demote root `backtest.py` to explicit smoke-test status
-
-Make it impossible to confuse root `backtest.py` with the official research-validation path.
-
-Acceptable implementations include one or more of:
-
-* move it to `scripts/legacy_sma_smoke_backtest.py` or `scripts/smoke_backtest.py`;
-* leave a thin compatibility wrapper at root that prints a strong warning;
-* update README/docs/runbooks to state that root/simple backtests are not valid evidence for promotion, approval, or live readiness;
-* add tests that assert the official validation path is the research CLI, not root `backtest.py`;
-* ensure this script cannot produce candidate, promotion, or approved-profile artifacts.
-
-The warning should be unambiguous:
-
-> This is a smoke backtest only. It must not be used as evidence for strategy promotion, approved profiles, live readiness, or capital allocation.
-
-### 2. Introduce a pluggable execution-model interface for research backtests
-
-Refactor research backtesting so fill simulation is not hard-coded inside the strategy/backtest loop.
-
-Create a small, testable execution-model abstraction, for example:
+Concrete failure mode to test:
 
 ```text
-src/bithumb_bot/research/execution_model/
-  __init__.py
-  base.py
-  fixed_bps.py
-  stress.py
+candidate_A + base scenario = PASS
+candidate_A + stress scenario = FAIL
+candidate_B + stress scenario = PASS
 ```
 
-At minimum, support:
+The final result must not treat `candidate_A` as promotion-eligible, and must not let a stress-only or base-only pass satisfy `must_pass_base_and_survive_stress`.
 
-* a fixed bps model equivalent to current behavior, for backwards compatibility;
-* a stress model that can apply configurable slippage bps, latency assumptions, partial-fill rate, order-failure rate, and optional market-order extra cost;
-* deterministic behavior when a seed is supplied.
+### Hypothesis 2: stochastic `StressExecutionModel` may be candidate-order dependent
 
-Each simulated trade should record enough metadata to audit the execution assumption:
+Expected current risk:
 
-```text
-signal_ts
-decision_ts
-submit_ts_assumption
-side
-order_type
-reference_price
-requested_qty
-filled_qty
-remaining_qty
-avg_fill_price
-fee
-slippage_bps
-latency_ms
-fill_status
-model_name
-model_version
-model_params_hash
-```
+* `StressExecutionModel` owns mutable `random.Random(seed)` state.
+* If the same model instance is reused across candidates or splits, earlier candidates consume RNG events and change later candidates’ fills.
+* Candidate results can depend on parameter-space enumeration order rather than candidate identity, scenario, split, and seed.
 
-Include optional fields if the repository has data for them:
+Concrete failure mode to test:
 
-```text
-best_bid
-best_ask
-spread_bps
-orderbook_depth_ref
-intra_candle_policy
-```
+* Run the same manifest twice with the same seed.
+* Reorder candidate enumeration or parameter-space ordering.
+* The same `parameter_candidate_id` should produce the same stress execution metadata.
+* If results differ only because another candidate was evaluated earlier, the implementation is unsafe.
 
-Do not fake unavailable orderbook data. If bid/ask/depth data is unavailable, record `null`/omitted fields and make the limitation explicit in reports.
+### Hypothesis 3: execution calibration may not be bound to the manifest’s market and interval
 
-### 3. Extend research manifests with execution scenarios
+Expected current risk:
 
-Add or support manifest configuration that separates old static cost fields from richer execution-model scenarios.
+* Calibration artifacts include `market` and `interval`.
+* `compare_calibration_to_scenario` may only compare p90/p95 slippage, latency, and model breach.
+* A calibration artifact from a different market or interval could be accidentally accepted.
 
-Example target shape:
+Concrete failure mode to test:
 
-```json
-{
-  "execution_model": {
-    "type": "stress",
-    "fee_rate": [0.0025],
-    "slippage_bps": [5, 10, 20, 40],
-    "latency_ms": [0, 500, 1500, 3000],
-    "partial_fill_rate": [0.0, 0.03, 0.10],
-    "order_failure_rate": [0.0, 0.01],
-    "market_order_extra_cost_bps": [0, 5, 15],
-    "scenario_policy": "must_pass_base_and_survive_stress",
-    "seed": 42
-  }
-}
-```
+* Research manifest uses `KRW-BTC` / `1m`.
+* Calibration artifact says `KRW-ETH` / `5m`.
+* The gate must fail closed with explicit mismatch reasons.
 
-Backward compatibility requirement:
+### Hypothesis 4: calibration content hash may be optional even when calibration is required
 
-* existing manifests using `cost_model.fee_rate` and `cost_model.slippage_bps` must still work;
-* when legacy cost fields are used, normalize them internally into an execution-model scenario;
-* emitted artifacts should clearly state whether the run used legacy cost fields or the new execution-model config.
+Expected current risk:
 
-### 4. Add execution-cost calibration artifacts from observed execution quality
+* `validate_calibration_artifact` may verify `content_hash` if present but allow missing hash.
+* For `calibration_required=true` or promotion evidence, hashless calibration should not be acceptable.
 
-If execution-quality reports already compute p50/p90/p95 slippage, latency, partial-fill, unfilled, and model-breach metrics, add a calibration artifact such as:
+Concrete failure mode to test:
 
-```text
-DATA_ROOT/<mode>/reports/execution_quality/cost_model_calibration_<date>.json
-```
+* Provide otherwise valid calibration artifact without `content_hash`.
+* When calibration is required, the candidate must fail with `execution_calibration_content_hash_missing`.
 
-Suggested contents:
+### Hypothesis 5: final holdout may not be required for promotion
 
-```json
-{
-  "market": "KRW-BTC",
-  "interval": "1m",
-  "sample_count": 214,
-  "p50_slippage_bps": 4.1,
-  "p90_slippage_bps": 18.7,
-  "p95_slippage_bps": 31.2,
-  "p95_full_fill_latency_ms": 2400,
-  "partial_fill_rate": 0.04,
-  "unfilled_rate": 0.01,
-  "model_breach_rate": 0.08,
-  "recommended_research_cost_model": {
-    "slippage_bps": [10, 20, 35],
-    "latency_ms": [500, 1500, 3000],
-    "partial_fill_rate": [0.0, 0.05],
-    "order_failure_rate": [0.0, 0.01]
-  }
-}
-```
+Expected current risk:
 
-If the repository lacks enough real execution data to generate this artifact, implement the schema and fail-safe behavior, then document exactly what data is missing.
+* `dataset.final_holdout` may be optional in manifests.
+* Promotion may validate backtest and walk-forward evidence but not require final-holdout evidence.
+* For a promotion artifact that can lead toward paper/live profile consideration, missing final holdout should be explicit and fail-closed unless the repository already has a more precise equivalent policy.
 
-### 5. Connect calibration artifacts to research backtests and promotion gates
+Concrete failure mode to test:
 
-Research backtests should optionally consume a cost-model calibration artifact.
+* Candidate passes validation and walk-forward, but manifest/report lacks final-holdout evidence.
+* Promotion must be refused or must require an explicit manifest policy that forbids live/promotion use without final holdout.
+
+## Required patch priorities
+
+### P0: Enforce scenario policy at the aggregated candidate level
+
+Refactor research result construction so scenario results are grouped by stable parameter candidate identity.
 
 Required behavior:
 
-* If a calibration artifact is supplied, compare observed p90/p95 execution costs against the manifest’s assumed cost model.
-* If observed costs are materially worse than assumptions, either fail the run or emit a machine-readable warning depending on the configured strictness.
-* Promotion or approved-profile creation must fail closed when required evidence is missing or when observed execution quality breaches the assumed research cost model.
-* If promotion logic already checks manifest hashes, candidate hashes, walk-forward evidence, or cost hashes, extend those checks rather than replacing them.
+* A parameter candidate should have one top-level candidate record.
+* That record should contain `scenario_results[]`.
+* Each scenario result should include:
 
-Suggested fail-closed conditions:
+  * scenario identity;
+  * execution model payload;
+  * model params hash;
+  * train metrics;
+  * validation metrics;
+  * final holdout metrics if present;
+  * walk-forward metrics if applicable;
+  * regime gate result;
+  * execution calibration gate;
+  * scenario acceptance result;
+  * scenario fail reasons.
+* The top-level candidate should compute final `acceptance_gate_result` from `execution_model.scenario_policy`.
+
+For `scenario_policy == "must_pass_base_and_survive_stress"`:
+
+* The same parameter candidate must pass all required scenarios.
+* If any scenario fails, top-level candidate must fail.
+* Top-level `gate_fail_reasons` must include scenario-level failures in a machine-readable form.
+* The selected `best_candidate_id` must be an aggregated candidate id, not a scenario row id.
+* Promotion must verify the aggregated candidate evidence, not only one scenario result.
+
+If the repository supports other scenario policies, preserve them. If not, implement only:
 
 ```text
-walk_forward_required=true but no walk-forward report exists
-final_holdout is missing for a promotion candidate
-parameter stability is below threshold
-regime-specific performance violates acceptance gates
-execution-quality p90/p95 slippage exceeds research assumptions
-model_breach_rate exceeds configured threshold
-paper/live-dry-run observation sample count is below threshold
-manifest/candidate/cost-model hash mismatch
+legacy_cost_model_single_pass
+single_scenario
+must_pass_base_and_survive_stress
 ```
 
-Only implement conditions that can be supported by existing repository data and tests. For unsupported conditions, add explicit TODO documentation and schema fields so the future path is clear.
+Fail clearly on unsupported scenario policies.
 
-### 6. Add robustness checks where feasible
+Suggested fail reasons:
 
-Add or improve tests and metrics for:
+```text
+scenario_policy_unsupported
+scenario_policy_required_scenario_failed
+scenario_policy_no_passing_base_scenario
+scenario_policy_no_passing_stress_scenario
+scenario_result_missing
+```
 
-* parameter sweep result persistence;
-* out-of-sample validation;
-* rolling walk-forward validation;
-* regime-level performance decomposition;
-* cost sensitivity;
-* deterministic stress execution with seed;
-* trade-level execution metadata;
-* rejection of promotion when evidence is missing;
-* rejection of promotion when cost assumptions are breached;
-* backwards compatibility for old manifests.
+### P0: Make stochastic stress execution deterministic and candidate-order independent
 
-If bootstrap or Monte Carlo is not currently present, add a small deterministic robustness module only if it fits cleanly. Otherwise, document it as a missing validation layer and add a testable interface or placeholder schema, not a misleading half-implementation.
+Patch `StressExecutionModel` or the validation runner so stochastic behavior is reproducible by candidate/split/scenario identity.
 
-## Testing requirements
+Acceptable designs:
 
-Run the repository’s existing test suite.
+1. Create a fresh execution model instance for every candidate/split/scenario evaluation and derive the seed from:
 
-Add targeted tests for every behavior you change.
+   * manifest hash;
+   * scenario params hash;
+   * parameter candidate id;
+   * split name;
+   * base seed.
 
-At minimum, add tests covering:
+2. Or make `StressExecutionModel.simulate()` derive randomness from immutable per-request material, including:
 
-1. root/simple smoke backtest warning or relocation;
-2. fixed-bps execution model preserves old research-backtest behavior within tolerance;
-3. stress execution model records fill status, slippage, latency, fee, filled quantity, and model hash;
-4. seeded stress execution is deterministic;
-5. legacy `cost_model` manifests normalize into execution-model scenarios;
-6. calibration artifact schema is generated or validated;
-7. research backtest detects when calibration p90/p95 costs exceed assumed costs;
-8. promotion/profile gate fails closed when required execution-cost evidence is missing or breached;
-9. docs mention that smoke backtests cannot justify promotion or live readiness.
+   * model seed;
+   * scenario hash;
+   * candidate id;
+   * split name;
+   * trade index or signal timestamp;
+   * side.
 
-Use fixtures with tiny synthetic datasets. Do not require real exchange access or live credentials.
+Do not rely on shared mutable RNG state across candidates.
+
+Required behavior:
+
+* Same manifest + same seed + same candidate + same split must produce identical trade-level execution metadata.
+* Reordering parameter candidates must not alter a candidate’s stress fills.
+* Different seeds may produce different stress outcomes, but the seed and model params hash must make the result auditable.
+
+Add observability fields if needed:
+
+```text
+stress_seed_material
+stress_seed_hash
+scenario_id
+split_name
+```
+
+### P1: Bind execution calibration artifacts to manifest market, interval, and content hash
+
+Patch calibration comparison and validation.
+
+Required behavior:
+
+* `compare_calibration_to_scenario` should accept expected market and interval, or equivalent manifest context.
+* If calibration market differs from manifest market, fail with:
+
+```text
+execution_calibration_market_mismatch
+```
+
+* If calibration interval differs from manifest interval, fail with:
+
+```text
+execution_calibration_interval_mismatch
+```
+
+* If `calibration_required=true`, missing `content_hash` must fail with:
+
+```text
+execution_calibration_content_hash_missing
+```
+
+* If `content_hash` is present but invalid, preserve the existing mismatch failure behavior.
+* If calibration is optional and strictness is `warn`, missing hash may be warning-only, but the report must make this explicit.
+* Promotion must not accept required calibration evidence without a valid content hash.
+
+### P1: Require final-holdout evidence for promotion
+
+Patch promotion gating so final holdout evidence is not silently optional for promotion.
+
+Acceptable designs:
+
+1. Add `final_holdout_required_for_promotion: bool = true` to `AcceptanceGate`, defaulting to true for new manifests.
+2. Or enforce final holdout unconditionally in `promote_candidate`.
+3. Or implement a clearly named manifest policy, but do not default to unsafe promotion.
+
+Required behavior:
+
+* Candidate payload must include whether final holdout was present.
+* Promotion must fail when required final-holdout evidence is missing.
+* Fail reason should be explicit:
+
+```text
+final_holdout_evidence_missing
+```
+
+* If final holdout exists, promotion should verify its metrics are present and profile hash covers the evidence or its relevant hash.
+
+## Tests to add or update
+
+Use small synthetic fixtures. Do not require real exchange access, live credentials, or network access.
+
+Add tests proving the following:
+
+### Scenario policy tests
+
+1. Base scenario PASS + stress scenario FAIL results in top-level candidate FAIL.
+2. Base scenario FAIL + stress scenario PASS results in top-level candidate FAIL.
+3. Base scenario PASS + stress scenario PASS results in top-level candidate PASS.
+4. `best_candidate_id` is selected only from aggregated candidates that satisfy the scenario policy.
+5. Promotion refuses a candidate with failed required scenario evidence.
+
+### Stress determinism tests
+
+1. Same manifest and same seed produce identical candidate metrics and trade-level execution metadata across repeated runs.
+2. Reordered parameter candidates do not change the same candidate’s stress result.
+3. Different seeds can produce different stress outcomes, and the seed/model hash are visible in the report.
+
+### Calibration binding tests
+
+1. Calibration market mismatch fails the research gate.
+2. Calibration interval mismatch fails the research gate.
+3. Required calibration without `content_hash` fails.
+4. Optional calibration with strictness `warn` records warning/fail-reason semantics exactly as designed.
+5. Promotion refuses candidates whose required calibration gate failed.
+
+### Final holdout tests
+
+1. Promotion refuses a candidate when final-holdout evidence is required but missing.
+2. Promotion allows final-holdout-present candidates only when all other gates pass.
+3. Candidate profile hash changes if final-holdout-relevant promotion evidence changes.
+
+### Regression tests
+
+1. Legacy `cost_model` manifests still normalize into fixed-bps execution scenarios.
+2. Single-scenario legacy reports still work where promotion evidence is complete.
+3. Root `backtest.py` remains a smoke backtest and cannot generate promotion artifacts.
 
 ## Observability requirements
 
-Artifacts and reports should make limitations visible, not hidden.
+Reports must make scenario aggregation and fail reasons easy to audit.
 
-Each research result should clearly show:
+Each top-level candidate should include:
 
-* dataset snapshot hash;
-* manifest hash;
-* strategy parameters;
-* execution model name/version/hash;
-* cost scenario;
-* train/validation/final-holdout split;
-* walk-forward status;
-* regime breakdown status;
-* execution-calibration artifact hash if used;
-* warnings and fail reasons;
-* whether the result is eligible or ineligible for promotion.
+```text
+parameter_candidate_id
+parameter_values
+acceptance_gate_result
+gate_fail_reasons
+scenario_policy
+scenario_results
+scenario_pass_count
+scenario_fail_count
+required_scenario_count
+execution_model_source
+execution_calibration_required
+final_holdout_present
+candidate_profile_hash
+```
 
-Each simulated trade should be auditable enough to explain why its fill price and cost were assigned.
+Each scenario result should include:
+
+```text
+scenario_id
+scenario_index
+scenario_type
+execution_model
+execution_model_hash
+cost_model
+execution_calibration_gate
+train_metrics
+validation_metrics
+final_holdout_metrics
+walk_forward_metrics
+regime_gate_result
+scenario_acceptance_gate_result
+scenario_fail_reasons
+```
+
+If stochastic stress is used, include enough metadata to reproduce the randomness source without exposing unnecessary internals:
+
+```text
+base_seed
+derived_seed_hash
+seed_derivation_inputs
+```
+
+If a report fails because evidence is missing, the report should still explain what was missing rather than silently omitting the field.
 
 ## Recovery and safety requirements
 
-All new behavior must be fail-closed.
+All new policy behavior must be fail-closed.
 
-If a calibration artifact is malformed, missing, stale, or incompatible, promotion must not silently proceed.
+If scenario policy is unsupported, fail the research run or mark all affected candidates as ineligible. Do not silently fall back to single-scenario behavior.
 
-If a manifest uses unsupported execution-model fields, fail with a clear error.
+If calibration is malformed, mismatched, missing, stale, hashless when required, or insufficient, promotion must not proceed.
 
-If execution-quality data is insufficient, emit an explicit “insufficient evidence” result rather than assuming costs are acceptable.
+If final holdout is required and absent, promotion must not proceed.
 
-Do not delete existing research artifacts during normal runs.
+Do not delete existing artifacts during normal runs.
 
-Do not overwrite reports unless the existing repository convention already supports safe overwrites. Prefer timestamped or hash-addressed outputs.
+Do not overwrite existing reports unless the repository already has safe atomic write conventions. Prefer existing report-writer behavior.
+
+Keep backward compatibility for old manifests where possible, but not at the cost of unsafe promotion.
 
 ## Documentation requirements
 
 Update repository docs/runbooks to explain:
 
-* the difference between smoke backtests and official research validation;
-* the official command path for research backtests;
-* how execution models are configured;
-* how execution-quality calibration is generated and consumed;
-* what evidence is required before promotion;
-* why promotion is not authorization for live trading;
-* how fail-closed behavior protects against false-positive backtests.
+* scenario policy semantics;
+* why `must_pass_base_and_survive_stress` is evaluated at the same parameter-candidate level;
+* how stress randomness is made deterministic and candidate-order independent;
+* how calibration artifacts are bound to market, interval, and content hash;
+* when calibration is required versus warning-only;
+* why final-holdout evidence is required for promotion;
+* why a pytest pass is not equivalent to promotion readiness;
+* that smoke backtests remain invalid as evidence for promotion, approved profiles, live readiness, or capital allocation.
 
-Keep the tone operational and specific to this repository.
+Keep documentation specific to `WG-14/bithumb-bot`. Do not write generic trading-system advice.
+
+## Suggested implementation order
+
+1. Inspect current files:
+
+   * `src/bithumb_bot/research/validation_protocol.py`
+   * `src/bithumb_bot/research/experiment_manifest.py`
+   * `src/bithumb_bot/research/execution_model/stress.py`
+   * `src/bithumb_bot/research/execution_calibration.py`
+   * `src/bithumb_bot/research/promotion_gate.py`
+   * relevant tests and docs
+
+2. Add failing tests for:
+
+   * scenario-policy aggregation;
+   * stress candidate-order determinism;
+   * calibration market/interval/hash mismatch;
+   * final-holdout promotion refusal.
+
+3. Patch implementation.
+
+4. Add or update docs.
+
+5. Run full test suite.
 
 ## Final report format
 
@@ -339,18 +409,31 @@ When finished, produce a concise engineering report with these exact sections:
 # Hypotheses Checked
 For each hypothesis:
 - Status: confirmed / partially confirmed / rejected
-- Evidence from files changed or inspected
+- Evidence from files inspected or changed
 - What would falsify this conclusion later
 
 # Design Changes Implemented
 - Files changed
-- New interfaces or schemas
+- New interfaces, fields, schemas, or report structures
 - Backward compatibility behavior
 
-# Safety / Fail-Closed Behavior
-- New rejection conditions
-- Missing-evidence behavior
-- Recovery behavior
+# Scenario Policy Enforcement
+- How candidates are aggregated
+- How required scenarios are evaluated
+- New fail reasons
+
+# Stress Determinism
+- Seed derivation strategy
+- Proof that candidate order does not affect results
+
+# Calibration Binding
+- Market/interval/hash checks
+- Required vs optional behavior
+- Promotion behavior
+
+# Final Holdout Promotion Evidence
+- New requirement
+- Fail-closed behavior
 
 # Tests Added or Updated
 - Test file names
@@ -362,12 +445,12 @@ For each hypothesis:
 
 # Remaining Gaps
 - Unsupported due to missing data
-- Future work needed for orderbook/depth realism, Monte Carlo/bootstrap, or live calibration
+- Future work needed for orderbook/depth realism, bootstrap/Monte Carlo, or live calibration
 
 # Risks
 - Any behavior that may affect existing workflows
-- Any migration concerns
+- Migration concerns for old manifests or reports
 ```
 
-Do not claim success unless tests actually pass.
+Do not claim success unless the tests actually pass.
 

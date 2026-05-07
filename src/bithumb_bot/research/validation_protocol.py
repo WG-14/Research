@@ -117,27 +117,40 @@ def _evaluate_candidates(
     execution_calibration: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     raw_candidates = iter_parameter_candidates(manifest.parameter_space)
-    rows: list[dict[str, Any]] = []
+    aggregates: dict[str, dict[str, Any]] = {}
     manifest_hash = manifest.manifest_hash()
     dataset_hash = combined_dataset_fingerprint(tuple(snapshots.values()))
     runner = resolve_research_strategy(manifest.strategy_name)
 
-    for scenario in manifest.execution_model.scenarios:
-        execution_model = _execution_model_from_scenario(scenario)
+    for scenario_index, scenario in enumerate(manifest.execution_model.scenarios):
+        scenario_id = _scenario_id(scenario, scenario_index)
         calibration_gate = compare_calibration_to_scenario(
             calibration=execution_calibration,
             assumed_slippage_bps=scenario.slippage_bps + scenario.market_order_extra_cost_bps,
             assumed_latency_ms=scenario.latency_ms,
+            expected_market=manifest.market,
+            expected_interval=manifest.interval,
+            require_content_hash=manifest.execution_model.calibration_required,
         )
         base_results: list[dict[str, Any]] = []
         for index, params in enumerate(raw_candidates):
+            param_candidate_id = candidate_id(params, index)
             train = runner(
                 dataset=snapshots["train"],
                 parameter_values=params,
                 fee_rate=scenario.fee_rate,
                 slippage_bps=float(scenario.slippage_bps),
                 parameter_stability_score=None,
-                execution_model=execution_model,
+                execution_model=_execution_model_from_scenario(
+                    scenario,
+                    seed_context=_seed_context(
+                        manifest_hash=manifest_hash,
+                        scenario=scenario,
+                        scenario_id=scenario_id,
+                        parameter_candidate_id=param_candidate_id,
+                        split_name="train",
+                    ),
+                ),
             )
             validation = runner(
                 dataset=snapshots["validation"],
@@ -145,7 +158,16 @@ def _evaluate_candidates(
                 fee_rate=scenario.fee_rate,
                 slippage_bps=float(scenario.slippage_bps),
                 parameter_stability_score=None,
-                execution_model=_execution_model_from_scenario(scenario),
+                execution_model=_execution_model_from_scenario(
+                    scenario,
+                    seed_context=_seed_context(
+                        manifest_hash=manifest_hash,
+                        scenario=scenario,
+                        scenario_id=scenario_id,
+                        parameter_candidate_id=param_candidate_id,
+                        split_name="validation",
+                    ),
+                ),
             )
             final_holdout = (
                 runner(
@@ -154,7 +176,16 @@ def _evaluate_candidates(
                     fee_rate=scenario.fee_rate,
                     slippage_bps=float(scenario.slippage_bps),
                     parameter_stability_score=None,
-                    execution_model=_execution_model_from_scenario(scenario),
+                    execution_model=_execution_model_from_scenario(
+                        scenario,
+                        seed_context=_seed_context(
+                            manifest_hash=manifest_hash,
+                            scenario=scenario,
+                            scenario_id=scenario_id,
+                            parameter_candidate_id=param_candidate_id,
+                            split_name="final_holdout",
+                        ),
+                    ),
                 )
                 if "final_holdout" in snapshots
                 else None
@@ -166,6 +197,7 @@ def _evaluate_candidates(
                     parameter_values=params,
                     fee_rate=scenario.fee_rate,
                     scenario=scenario,
+                    parameter_candidate_id=param_candidate_id,
                     parameter_stability_score=None,
                 )
                 if include_walk_forward
@@ -174,11 +206,14 @@ def _evaluate_candidates(
             base_results.append(
                 {
                     "index": index,
-                    "candidate_id": candidate_id(params, index),
+                    "candidate_id": param_candidate_id,
                     "parameter_values": params,
                     "train_metrics": train.metrics.as_dict(),
                     "validation_metrics": validation.metrics.as_dict(),
                     "final_holdout_metrics": final_holdout.metrics.as_dict() if final_holdout else None,
+                    "train_execution_metadata": _execution_metadata(train.trades),
+                    "validation_execution_metadata": _execution_metadata(validation.trades),
+                    "final_holdout_execution_metadata": _execution_metadata(final_holdout.trades) if final_holdout else None,
                     "train_regime_performance": [row.as_dict() for row in train.regime_performance],
                     "train_regime_coverage": [row.as_dict() for row in train.regime_coverage],
                     "validation_regime_performance": [row.as_dict() for row in validation.regime_performance],
@@ -232,45 +267,161 @@ def _evaluate_candidates(
                 "slippage_bps": float(scenario.slippage_bps),
             }
             execution_model_payload = _scenario_payload(scenario)
-            candidate_payload = {
-                "experiment_id": manifest.experiment_id,
-                "manifest_hash": manifest_hash,
-                "dataset_snapshot_id": manifest.dataset.snapshot_id,
-                "dataset_content_hash": dataset_hash,
-                "strategy_name": manifest.strategy_name,
-                "parameter_candidate_id": base["candidate_id"],
-                "parameter_values": params,
-                "cost_model": cost_model,
+            scenario_result = {
+                "scenario_id": scenario_id,
+                "scenario_index": scenario_index,
+                "scenario_type": scenario.type,
+                "scenario_role": _scenario_role(scenario, scenario_index),
                 "execution_model": execution_model_payload,
-                "execution_calibration_required": manifest.execution_model.calibration_required,
+                "execution_model_hash": execution_model_payload["model_params_hash"],
+                "model_params_hash": execution_model_payload["model_params_hash"],
+                "cost_model": cost_model,
                 "execution_calibration_gate": calibration_gate,
                 "train_metrics": train_metrics,
                 "validation_metrics": validation_metrics,
                 "final_holdout_metrics": final_holdout_metrics,
                 "walk_forward_metrics": walk_forward,
-                "regime_classifier_version": MARKET_REGIME_VERSION,
+                "regime_gate_result": regime_gate.as_dict(),
                 "market_regime_bucket_performance": base["validation_regime_performance"],
                 "market_regime_coverage": base["validation_regime_coverage"],
                 "train_market_regime_bucket_performance": base["train_regime_performance"],
                 "train_market_regime_coverage": base["train_regime_coverage"],
                 "final_holdout_market_regime_bucket_performance": base["final_holdout_regime_performance"],
                 "final_holdout_market_regime_coverage": base["final_holdout_regime_coverage"],
-                "regime_gate_result": regime_gate.as_dict(),
                 "allowed_live_regimes": list(regime_gate.allowed_live_regimes),
                 "blocked_live_regimes": list(regime_gate.blocked_live_regimes),
                 "regime_evidence": regime_gate.evidence,
-                "walk_forward_required": manifest.acceptance_gate.walk_forward_required,
-                "walk_forward_gate_result": "PASS" if walk_forward and walk_forward["return_consistency_pass"] else None,
                 "parameter_stability": stability_payload,
-                "acceptance_gate_result": gate_result,
-                "gate_fail_reasons": fail_reasons,
-                "warnings": list(base.get("warnings") or ()),
-                "repository_version": _repository_version(),
+                "walk_forward_gate_result": "PASS" if walk_forward and walk_forward["return_consistency_pass"] else None,
+                "scenario_acceptance_gate_result": gate_result,
+                "scenario_fail_reasons": fail_reasons,
+                "train_execution_metadata": base.get("train_execution_metadata") or [],
+                "validation_execution_metadata": base.get("validation_execution_metadata") or [],
+                "final_holdout_execution_metadata": base.get("final_holdout_execution_metadata"),
             }
-            profile_hash = sha256_prefixed(build_candidate_profile(candidate_payload))
-            candidate_payload["candidate_profile_hash"] = profile_hash
-            rows.append(candidate_payload)
+            candidate_payload = aggregates.setdefault(
+                base["candidate_id"],
+                {
+                    "experiment_id": manifest.experiment_id,
+                    "manifest_hash": manifest_hash,
+                    "dataset_snapshot_id": manifest.dataset.snapshot_id,
+                    "dataset_content_hash": dataset_hash,
+                    "strategy_name": manifest.strategy_name,
+                    "parameter_candidate_id": base["candidate_id"],
+                    "parameter_values": params,
+                    "scenario_policy": manifest.execution_model.scenario_policy,
+                    "scenario_results": [],
+                    "execution_model_source": manifest.execution_model.source,
+                    "execution_calibration_required": manifest.execution_model.calibration_required,
+                    "execution_calibration_strictness": manifest.execution_model.calibration_strictness,
+                    "final_holdout_required_for_promotion": manifest.acceptance_gate.final_holdout_required_for_promotion,
+                    "final_holdout_present": "final_holdout" in snapshots,
+                    "walk_forward_required": manifest.acceptance_gate.walk_forward_required,
+                    "regime_classifier_version": MARKET_REGIME_VERSION,
+                    "warnings": [],
+                    "repository_version": _repository_version(),
+                },
+            )
+            candidate_payload["scenario_results"].append(scenario_result)
+            candidate_payload["warnings"] = sorted(
+                set(candidate_payload.get("warnings") or ()) | set(base.get("warnings") or ())
+            )
+            if candidate_payload.get("_primary_scenario_result") is None:
+                candidate_payload["_primary_scenario_result"] = scenario_result
+
+    rows: list[dict[str, Any]] = []
+    for candidate_payload in aggregates.values():
+        _apply_scenario_policy(manifest=manifest, candidate=candidate_payload)
+        primary = candidate_payload.pop("_primary_scenario_result", None) or (
+            candidate_payload["scenario_results"][0] if candidate_payload.get("scenario_results") else {}
+        )
+        candidate_payload.update(
+            {
+                "cost_model": primary.get("cost_model"),
+                "execution_model": primary.get("execution_model"),
+                "execution_calibration_gate": _combined_calibration_gate(candidate_payload.get("scenario_results") or []),
+                "train_metrics": primary.get("train_metrics"),
+                "validation_metrics": primary.get("validation_metrics"),
+                "final_holdout_metrics": primary.get("final_holdout_metrics"),
+                "walk_forward_metrics": primary.get("walk_forward_metrics"),
+                "market_regime_bucket_performance": primary.get("market_regime_bucket_performance"),
+                "market_regime_coverage": primary.get("market_regime_coverage"),
+                "train_market_regime_bucket_performance": primary.get("train_market_regime_bucket_performance"),
+                "train_market_regime_coverage": primary.get("train_market_regime_coverage"),
+                "final_holdout_market_regime_bucket_performance": primary.get("final_holdout_market_regime_bucket_performance"),
+                "final_holdout_market_regime_coverage": primary.get("final_holdout_market_regime_coverage"),
+                "regime_gate_result": primary.get("regime_gate_result"),
+                "allowed_live_regimes": list(primary.get("allowed_live_regimes") or []),
+                "blocked_live_regimes": list(primary.get("blocked_live_regimes") or []),
+                "regime_evidence": dict(primary.get("regime_evidence") or {}),
+                "walk_forward_gate_result": primary.get("walk_forward_gate_result"),
+                "parameter_stability": primary.get("parameter_stability"),
+            }
+        )
+        candidate_payload["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate_payload))
+        rows.append(candidate_payload)
     return sorted(rows, key=_candidate_rank_key)
+
+
+def _apply_scenario_policy(*, manifest: ExperimentManifest, candidate: dict[str, Any]) -> None:
+    policy = manifest.execution_model.scenario_policy
+    scenario_results = list(candidate.get("scenario_results") or [])
+    pass_results = [item for item in scenario_results if item.get("scenario_acceptance_gate_result") == "PASS"]
+    fail_results = [item for item in scenario_results if item.get("scenario_acceptance_gate_result") != "PASS"]
+    candidate["scenario_pass_count"] = len(pass_results)
+    candidate["scenario_fail_count"] = len(fail_results)
+    candidate["required_scenario_count"] = len(scenario_results)
+    reasons: list[str] = []
+    primary = pass_results[0] if pass_results else (scenario_results[0] if scenario_results else None)
+    candidate["required_scenario_ids"] = [str(item.get("scenario_id")) for item in scenario_results]
+
+    if not scenario_results:
+        reasons.append("scenario_result_missing")
+    elif policy == "legacy_cost_model_single_pass":
+        if not pass_results:
+            reasons.append("scenario_policy_no_passing_base_scenario")
+    elif policy == "single_scenario":
+        if len(scenario_results) != 1:
+            reasons.append("scenario_policy_unsupported")
+        elif not pass_results:
+            reasons.append("scenario_policy_required_scenario_failed")
+    elif policy == "must_pass_base_and_survive_stress":
+        base_results = [item for item in scenario_results if item.get("scenario_role") == "base"]
+        stress_results = [item for item in scenario_results if item.get("scenario_role") == "stress"]
+        if not any(item.get("scenario_acceptance_gate_result") == "PASS" for item in base_results):
+            reasons.append("scenario_policy_no_passing_base_scenario")
+        if not any(item.get("scenario_acceptance_gate_result") == "PASS" for item in stress_results):
+            reasons.append("scenario_policy_no_passing_stress_scenario")
+        for item in fail_results:
+            for reason in item.get("scenario_fail_reasons") or []:
+                reasons.append(str(reason))
+            reasons.append(
+                "scenario_policy_required_scenario_failed:"
+                f"{item.get('scenario_id')}:{','.join(str(reason) for reason in item.get('scenario_fail_reasons') or [])}"
+            )
+        primary = base_results[0] if base_results else primary
+    else:
+        reasons.append("scenario_policy_unsupported")
+
+    candidate["_primary_scenario_result"] = primary
+    candidate["acceptance_gate_result"] = "PASS" if not reasons else "FAIL"
+    candidate["gate_fail_reasons"] = reasons
+
+
+def _combined_calibration_gate(scenario_results: list[dict[str, Any]]) -> dict[str, Any]:
+    gates = [item.get("execution_calibration_gate") for item in scenario_results if isinstance(item.get("execution_calibration_gate"), dict)]
+    reasons = sorted({str(reason) for gate in gates for reason in gate.get("reasons") or []})
+    statuses = {str(gate.get("status")) for gate in gates}
+    status = "PASS"
+    if "FAIL" in statuses:
+        status = "FAIL"
+    elif "MISSING" in statuses:
+        status = "MISSING"
+    return {
+        "status": status,
+        "reasons": reasons,
+        "scenario_gates": gates,
+    }
 
 
 def _gate_result(
@@ -402,7 +553,8 @@ def _walk_forward_metrics(
     fee_rate: float,
     scenario: ExecutionScenario | None = None,
     slippage_bps: float | None = None,
-    parameter_stability_score: float | None,
+    parameter_candidate_id: str | None = None,
+    parameter_stability_score: float | None = None,
 ) -> dict[str, Any]:
     config = manifest.walk_forward
     if config is None:
@@ -431,7 +583,16 @@ def _walk_forward_metrics(
             active_scenario.fee_rate,
             active_scenario.slippage_bps,
             parameter_stability_score,
-            _execution_model_from_scenario(active_scenario),
+            _execution_model_from_scenario(
+                active_scenario,
+                seed_context=_seed_context(
+                    manifest_hash=manifest.manifest_hash(),
+                    scenario=active_scenario,
+                    scenario_id=_scenario_id(active_scenario, 0),
+                    parameter_candidate_id=parameter_candidate_id or "unknown_candidate",
+                    split_name=f"{window_id}_train",
+                ),
+            ),
         )
         test = runner(
             test_snapshot,
@@ -439,7 +600,16 @@ def _walk_forward_metrics(
             active_scenario.fee_rate,
             active_scenario.slippage_bps,
             parameter_stability_score,
-            _execution_model_from_scenario(active_scenario),
+            _execution_model_from_scenario(
+                active_scenario,
+                seed_context=_seed_context(
+                    manifest_hash=manifest.manifest_hash(),
+                    scenario=active_scenario,
+                    scenario_id=_scenario_id(active_scenario, 0),
+                    parameter_candidate_id=parameter_candidate_id or "unknown_candidate",
+                    split_name=f"{window_id}_test",
+                ),
+            ),
         )
         test_metrics = test.metrics.as_dict()
         pass_reasons: list[str] = []
@@ -557,7 +727,7 @@ def _report_payload(
     }
 
 
-def _execution_model_from_scenario(scenario: ExecutionScenario):
+def _execution_model_from_scenario(scenario: ExecutionScenario, *, seed_context: dict[str, Any] | None = None):
     if scenario.type == "fixed_bps":
         return FixedBpsExecutionModel(fee_rate=scenario.fee_rate, slippage_bps=scenario.slippage_bps)
     if scenario.type == "stress":
@@ -569,6 +739,7 @@ def _execution_model_from_scenario(scenario: ExecutionScenario):
             order_failure_rate=scenario.order_failure_rate,
             market_order_extra_cost_bps=scenario.market_order_extra_cost_bps,
             seed=scenario.seed,
+            seed_derivation_inputs=seed_context,
         )
     raise ResearchValidationError(f"unsupported execution model scenario: {scenario.type}")
 
@@ -577,6 +748,47 @@ def _scenario_payload(scenario: ExecutionScenario) -> dict[str, Any]:
     payload = scenario.as_dict()
     payload["model_params_hash"] = model_params_hash(_execution_model_from_scenario(scenario).params_payload())
     return payload
+
+
+def _scenario_id(scenario: ExecutionScenario, scenario_index: int) -> str:
+    digest = model_params_hash(_execution_model_from_scenario(scenario).params_payload()).split(":", 1)[-1][:8]
+    return f"scenario_{scenario_index + 1:03d}_{scenario.type}_{digest}"
+
+
+def _scenario_role(scenario: ExecutionScenario, scenario_index: int) -> str:
+    if scenario_index == 0:
+        return "base"
+    return "stress"
+
+
+def _seed_context(
+    *,
+    manifest_hash: str,
+    scenario: ExecutionScenario,
+    scenario_id: str,
+    parameter_candidate_id: str,
+    split_name: str,
+) -> dict[str, Any]:
+    scenario_hash = model_params_hash(_execution_model_from_scenario(scenario).params_payload())
+    material = {
+        "manifest_hash": manifest_hash,
+        "scenario_id": scenario_id,
+        "scenario_hash": scenario_hash,
+        "parameter_candidate_id": parameter_candidate_id,
+        "split_name": split_name,
+        "base_seed": scenario.seed,
+    }
+    material["stress_seed_material"] = dict(material)
+    material["stress_seed_hash"] = sha256_prefixed(material)
+    return material
+
+
+def _execution_metadata(trades: Any) -> list[dict[str, Any]]:
+    metadata: list[dict[str, Any]] = []
+    for trade in trades:
+        if isinstance(trade, dict) and isinstance(trade.get("execution"), dict):
+            metadata.append(dict(trade["execution"]))
+    return metadata
 
 
 def _candidate_rank_key(candidate: dict[str, Any]) -> tuple[int, float, float]:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass
 from typing import Any
+
+from bithumb_bot.research.hashing import sha256_hex, sha256_prefixed
 
 from .base import ExecutionFill, ExecutionRequest, model_params_hash
 
@@ -17,12 +18,10 @@ class StressExecutionModel:
     market_order_extra_cost_bps: float = 0.0
     seed: int | None = None
     partial_fill_fraction: float = 0.5
+    seed_derivation_inputs: dict[str, Any] | None = None
 
     name: str = "stress"
     version: str = "research_stress_v1"
-
-    def __post_init__(self) -> None:
-        self._rng = random.Random(self.seed)
 
     def params_payload(self) -> dict[str, Any]:
         return {
@@ -36,6 +35,7 @@ class StressExecutionModel:
             "market_order_extra_cost_bps": float(self.market_order_extra_cost_bps),
             "seed": self.seed,
             "partial_fill_fraction": float(self.partial_fill_fraction),
+            "seed_derivation_inputs": self.seed_derivation_inputs,
         }
 
     def simulate(self, request: ExecutionRequest) -> ExecutionFill:
@@ -57,12 +57,27 @@ class StressExecutionModel:
             avg_fill_price = request.reference_price * (1.0 - slip)
             requested_qty = float(request.requested_qty or 0.0)
 
+        seed_inputs = {
+            "base_seed": self.seed,
+            "model_params_hash": model_params_hash(self.params_payload()),
+            "request": {
+                "signal_ts": int(request.signal_ts),
+                "decision_ts": int(request.decision_ts),
+                "side": side,
+                "order_type": request.order_type,
+                "reference_price": float(request.reference_price),
+            },
+            **(self.seed_derivation_inputs or {}),
+        }
+        derived_seed_hash = sha256_prefixed(seed_inputs)
+        rng = _DeterministicUnitRng(derived_seed_hash)
+
         fill_status = "filled"
         fill_ratio = 1.0
-        if self._rng.random() < float(self.order_failure_rate):
+        if rng.unit_float("order_failure") < float(self.order_failure_rate):
             fill_status = "failed"
             fill_ratio = 0.0
-        elif self._rng.random() < float(self.partial_fill_rate):
+        elif rng.unit_float("partial_fill") < float(self.partial_fill_rate):
             fill_status = "partial"
             fill_ratio = min(max(float(self.partial_fill_fraction), 0.0), 1.0)
 
@@ -93,4 +108,16 @@ class StressExecutionModel:
             best_ask=request.best_ask,
             spread_bps=request.spread_bps,
             intra_candle_policy=request.intra_candle_policy,
+            base_seed=self.seed,
+            derived_seed_hash=derived_seed_hash,
+            seed_derivation_inputs=seed_inputs,
         )
+
+
+class _DeterministicUnitRng:
+    def __init__(self, seed_hash: str) -> None:
+        self._seed_hash = seed_hash
+
+    def unit_float(self, stream: str) -> float:
+        digest = sha256_hex({"seed_hash": self._seed_hash, "stream": stream})
+        return int(digest[:16], 16) / float(16**16)

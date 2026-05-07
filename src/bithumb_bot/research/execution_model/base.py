@@ -46,6 +46,9 @@ class ExecutionFill:
     spread_bps: float | None = None
     orderbook_depth_ref: str | None = None
     intra_candle_policy: str = "close_price_only_no_intracandle_path"
+    base_seed: int | None = None
+    derived_seed_hash: str | None = None
+    seed_derivation_inputs: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -71,6 +74,9 @@ class ExecutionFill:
             "spread_bps": self.spread_bps,
             "orderbook_depth_ref": self.orderbook_depth_ref,
             "intra_candle_policy": self.intra_candle_policy,
+            "base_seed": self.base_seed,
+            "derived_seed_hash": self.derived_seed_hash,
+            "seed_derivation_inputs": self.seed_derivation_inputs,
         }
 
 

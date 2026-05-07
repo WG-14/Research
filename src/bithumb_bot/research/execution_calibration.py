@@ -72,7 +72,7 @@ def load_calibration_artifact(path: str | Path) -> dict[str, Any]:
     return validate_calibration_artifact(payload)
 
 
-def validate_calibration_artifact(payload: object) -> dict[str, Any]:
+def validate_calibration_artifact(payload: object, *, require_content_hash: bool = False) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ExecutionCalibrationError("execution_calibration_payload_not_object")
     if payload.get("artifact_type") != "execution_cost_calibration":
@@ -81,6 +81,8 @@ def validate_calibration_artifact(payload: object) -> dict[str, Any]:
         if payload.get(key) is None:
             raise ExecutionCalibrationError(f"execution_calibration_{key}_missing")
     expected = payload.get("content_hash")
+    if require_content_hash and not (isinstance(expected, str) and expected.startswith("sha256:")):
+        raise ExecutionCalibrationError("execution_calibration_content_hash_missing")
     if isinstance(expected, str) and expected.startswith("sha256:"):
         actual = sha256_prefixed({key: value for key, value in payload.items() if key != "content_hash"})
         if actual != expected:
@@ -93,12 +95,25 @@ def compare_calibration_to_scenario(
     calibration: dict[str, Any] | None,
     assumed_slippage_bps: float,
     assumed_latency_ms: int,
+    expected_market: str | None = None,
+    expected_interval: str | None = None,
+    require_content_hash: bool = False,
     max_model_breach_rate: float = 0.10,
 ) -> dict[str, Any]:
     if calibration is None:
         return {"status": "MISSING", "reasons": ["execution_calibration_missing"]}
-    artifact = validate_calibration_artifact(calibration)
+    try:
+        artifact = validate_calibration_artifact(
+            calibration,
+            require_content_hash=require_content_hash,
+        )
+    except ExecutionCalibrationError as exc:
+        return {"status": "FAIL", "reasons": [str(exc)]}
     reasons: list[str] = []
+    if expected_market is not None and str(artifact.get("market")) != str(expected_market):
+        reasons.append("execution_calibration_market_mismatch")
+    if expected_interval is not None and str(artifact.get("interval")) != str(expected_interval):
+        reasons.append("execution_calibration_interval_mismatch")
     if bool(artifact.get("insufficient_evidence")) or int(artifact.get("sample_count") or 0) <= 0:
         reasons.append("execution_calibration_insufficient_evidence")
     p90 = _float_or_none(artifact.get("p90_slippage_bps"))
@@ -117,6 +132,11 @@ def compare_calibration_to_scenario(
         "status": "PASS" if not reasons else "FAIL",
         "reasons": reasons,
         "artifact_hash": artifact.get("content_hash"),
+        "content_hash_present": isinstance(artifact.get("content_hash"), str),
+        "market": artifact.get("market"),
+        "interval": artifact.get("interval"),
+        "expected_market": expected_market,
+        "expected_interval": expected_interval,
         "sample_count": artifact.get("sample_count"),
         "observed_p90_slippage_bps": p90,
         "observed_p95_slippage_bps": p95,

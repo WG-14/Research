@@ -17,4 +17,4 @@ def iter_parameter_candidates(parameter_space: dict[str, tuple[object, ...]]) ->
 
 def candidate_id(parameter_values: dict[str, Any], index: int) -> str:
     digest = sha256_hex(parameter_values)[:8]
-    return f"candidate_{index + 1:03d}_{digest}"
+    return f"candidate_{digest}"

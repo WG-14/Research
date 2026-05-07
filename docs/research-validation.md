@@ -76,7 +76,7 @@ DATA_ROOT/<mode>/reports/research/<experiment_id>/...
 ```
 
 Reports include manifest hash, dataset fingerprint, candidate profile hash, content hash, repository version, metrics, gate results, and artifact paths.
-Reports also record execution-model source, scenario details, model parameter hash, dataset split hashes, walk-forward/regime status, execution-calibration requirement, execution-calibration artifact hash when supplied, warnings, fail reasons, and promotion eligibility. Candle datasets do not contain orderbook depth or intra-candle path data; trade metadata records that limitation instead of fabricating quotes or depth.
+Reports aggregate by stable `parameter_candidate_id`; they do not treat each execution scenario as a separate promotion candidate. Each top-level candidate contains `scenario_policy`, pass/fail counts, required scenario count, `final_holdout_present`, and `scenario_results[]`. Each scenario result records scenario identity, role, execution model payload/hash, cost model, train/validation/final-holdout/walk-forward metrics when present, regime gate result, execution-calibration gate, scenario acceptance result, fail reasons, and execution metadata. Candle datasets do not contain orderbook depth or intra-candle path data; trade metadata records that limitation instead of fabricating quotes or depth.
 `generated_at` is included for operator context but excluded from the deterministic `content_hash`.
 
 The research CLI prints an operator-facing run summary derived from the report payload without mutating the persisted artifact. The summary includes candidate gate counts, top candidate fail reasons, walk-forward window counts, top window fail reasons, promotion eligibility, nearest failed candidate diagnostics, and a conservative next action.
@@ -84,6 +84,30 @@ The research CLI prints an operator-facing run summary derived from the report p
 
 Candidate artifacts include parameter stability diagnostics. The stability score is based on one-grid-step neighboring candidates whose validation metrics remain gate-compatible. Isolated spikes do not satisfy `parameter_stability_required=true` merely because the grid has enough candidates.
 Promotion artifacts also carry `live_regime_policy`; old or malformed artifacts without valid regime policy are rejected for promotion and fail closed for live/replay BUY entries when used through `STRATEGY_CANDIDATE_PROFILE_PATH`.
+
+## Scenario Policy
+
+Supported scenario policies are `legacy_cost_model_single_pass`, `single_scenario`, and `must_pass_base_and_survive_stress`.
+
+`legacy_cost_model_single_pass` preserves old fixed-bps cost-model behavior: a parameter candidate can pass if one legacy fixed-bps scenario passes. This is retained for compatibility only.
+
+`single_scenario` requires exactly one scenario result and that result must pass.
+
+`must_pass_base_and_survive_stress` is evaluated at the same parameter-candidate level. The base scenario and every required stress scenario must be present for that same `parameter_candidate_id`; a base-only pass or stress-only pass is not promotion evidence. Required scenario failures produce fail reasons such as `scenario_policy_no_passing_base_scenario`, `scenario_policy_no_passing_stress_scenario`, `scenario_policy_required_scenario_failed:<scenario_id>:<reason>`, `scenario_result_missing`, or `scenario_policy_unsupported`.
+
+Unsupported scenario policies fail closed. `best_candidate_id` is selected only from top-level aggregated candidates whose policy result is `PASS`.
+
+## Stress Determinism
+
+Stress execution does not share mutable RNG state across candidates. Each stochastic fill derives deterministic randomness from the scenario hash, base seed, stable parameter candidate id, split name, scenario id, signal timestamp, side, order type, and reference price. Reports include `base_seed`, `derived_seed_hash`, and `seed_derivation_inputs` in execution metadata so an operator can audit the randomness source without depending on candidate enumeration order.
+
+Parameter-space list ordering is not semantic evidence. The manifest hash normalizes parameter-space values for hashing, and parameter candidate ids are hash-based from parameter values rather than enumeration index.
+
+## Calibration Binding
+
+Execution calibration artifacts are bound to the manifest market and interval. A mismatch fails the research gate with `execution_calibration_market_mismatch` or `execution_calibration_interval_mismatch`.
+
+When `execution_model.calibration_required=true`, the calibration artifact must carry a valid `content_hash`. Missing hashes fail with `execution_calibration_content_hash_missing`; hash mismatches still fail with `execution_calibration_content_hash_mismatch`. If calibration is optional and strictness is `warn`, missing or failing calibration remains explicit in the report but does not by itself promote a candidate.
 
 Walk-forward reports include rolling train/test windows, per-window metrics, pass/fail reasons, and aggregate evidence:
 
@@ -112,9 +136,13 @@ If walk-forward is not required, the promotion artifact explicitly records `walk
 
 Promotion writes an operator-reviewable artifact only after these checks pass. It does not edit `.env`, `BITHUMB_ENV_FILE_LIVE`, `BITHUMB_ENV_FILE_PAPER`, or live secrets.
 
-When a manifest requires execution calibration, promotion fails closed unless the backtest candidate carries passing execution-calibration evidence. A malformed, missing, insufficient, or breached calibration artifact is a rejection condition. Calibration artifacts are generated from `execution-quality-report --write-calibration` under `DATA_ROOT/<mode>/reports/execution_quality/` and can be supplied to research commands with `--execution-calibration <path>`.
+When a manifest requires execution calibration, promotion fails closed unless the backtest candidate carries passing execution-calibration evidence bound to the same market, interval, and calibration content hash. A malformed, missing, hashless, mismatched, insufficient, or breached calibration artifact is a rejection condition. Calibration artifacts are generated from `execution-quality-report --write-calibration` under `DATA_ROOT/<mode>/reports/execution_quality/` and can be supplied to research commands with `--execution-calibration <path>`.
+
+Final-holdout evidence is required for promotion by default through `acceptance_gate.final_holdout_required_for_promotion=true`. Promotion refuses missing final-holdout evidence with `final_holdout_evidence_missing`. Final-holdout metrics are included in the candidate profile hash so changing final-holdout promotion evidence changes the hash.
 
 The operator next step is review. Promotion evidence does not imply live readiness and does not edit env files or secrets.
+
+A clean pytest pass is not promotion readiness. Tests show code contracts are currently satisfied; promotion readiness additionally requires complete scenario-policy evidence, compatible calibration evidence when required, final-holdout evidence, walk-forward evidence when required, operator review, approved-profile generation, and separate paper/live readiness gates.
 
 ## Approved Profiles
 

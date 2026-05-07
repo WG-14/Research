@@ -127,6 +127,7 @@ class AcceptanceGate:
     oos_return_must_be_positive: bool
     parameter_stability_required: bool
     walk_forward_required: bool = False
+    final_holdout_required_for_promotion: bool = True
     regime_acceptance_gate: RegimeAcceptanceGate = field(default_factory=RegimeAcceptanceGate)
 
     def as_dict(self) -> dict[str, object]:
@@ -137,6 +138,7 @@ class AcceptanceGate:
             "oos_return_must_be_positive": self.oos_return_must_be_positive,
             "parameter_stability_required": self.parameter_stability_required,
             "walk_forward_required": self.walk_forward_required,
+            "final_holdout_required_for_promotion": self.final_holdout_required_for_promotion,
             "regime_acceptance_gate": self.regime_acceptance_gate.as_dict(),
         }
 
@@ -180,7 +182,7 @@ class ExperimentManifest:
             "market": self.market,
             "interval": self.interval,
             "dataset": self.dataset.as_dict(),
-            "parameter_space": {key: list(value) for key, value in sorted(self.parameter_space.items())},
+            "parameter_space": {key: sorted(list(value), key=repr) for key, value in sorted(self.parameter_space.items())},
             "cost_model": self.cost_model.as_dict(),
             "execution_model": self.execution_model.as_dict(),
             "acceptance_gate": self.acceptance_gate.as_dict(),
@@ -423,6 +425,7 @@ def _parse_acceptance_gate(payload: dict[str, Any]) -> AcceptanceGate:
         oos_return_must_be_positive=bool(payload.get("oos_return_must_be_positive", True)),
         parameter_stability_required=bool(payload.get("parameter_stability_required", False)),
         walk_forward_required=bool(payload.get("walk_forward_required", False)),
+        final_holdout_required_for_promotion=bool(payload.get("final_holdout_required_for_promotion", True)),
         regime_acceptance_gate=_parse_regime_acceptance_gate(payload.get("regime_acceptance_gate")),
     )
 

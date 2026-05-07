@@ -122,7 +122,22 @@ def test_walk_forward_required_refuses_missing_evidence(tmp_path, monkeypatch) -
         "parameter_values": {"SMA_SHORT": 2, "SMA_LONG": 4},
         "cost_model": {"fee_rate": 0.0, "slippage_bps": 0.0},
         "validation_metrics": {"return_pct": 2.0, "trade_count": 2, "max_drawdown_pct": 1.0, "profit_factor": 2.0},
+        "final_holdout_metrics": {"return_pct": 2.0, "trade_count": 2, "max_drawdown_pct": 1.0, "profit_factor": 2.0},
+        "final_holdout_present": True,
+        "final_holdout_required_for_promotion": True,
         "acceptance_gate_result": "PASS",
+        "scenario_policy": "single_scenario",
+        "scenario_pass_count": 1,
+        "scenario_fail_count": 0,
+        "required_scenario_count": 1,
+        "scenario_results": [
+            {
+                "scenario_id": "scenario_001_fixed_bps_unit",
+                "scenario_role": "base",
+                "scenario_acceptance_gate_result": "PASS",
+                "scenario_fail_reasons": [],
+            }
+        ],
         "regime_classifier_version": "market_regime_v2",
         "allowed_live_regimes": ["uptrend_normal_vol_volume_increasing"],
         "blocked_live_regimes": ["sideways_low_vol_volume_decreasing"],

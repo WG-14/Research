@@ -33,7 +33,44 @@ def _candidate(**overrides):
             "profit_factor": 2.0,
             "return_pct": 1.0,
         },
+        "final_holdout_metrics": {
+            "trade_count": 4,
+            "max_drawdown_pct": 1.0,
+            "profit_factor": 2.0,
+            "return_pct": 1.0,
+        },
+        "final_holdout_present": True,
+        "final_holdout_required_for_promotion": True,
         "acceptance_gate_result": "PASS",
+        "scenario_policy": "single_scenario",
+        "scenario_pass_count": 1,
+        "scenario_fail_count": 0,
+        "required_scenario_count": 1,
+        "scenario_results": [
+            {
+                "scenario_id": "scenario_001_fixed_bps_unit",
+                "scenario_index": 0,
+                "scenario_type": "fixed_bps",
+                "scenario_role": "base",
+                "scenario_acceptance_gate_result": "PASS",
+                "scenario_fail_reasons": [],
+                "execution_model_hash": "sha256:model",
+                "execution_model": {"type": "fixed_bps", "model_params_hash": "sha256:model"},
+                "cost_model": {"fee_rate": 0.0, "slippage_bps": 0.0},
+                "validation_metrics": {
+                    "trade_count": 4,
+                    "max_drawdown_pct": 1.0,
+                    "profit_factor": 2.0,
+                    "return_pct": 1.0,
+                },
+                "final_holdout_metrics": {
+                    "trade_count": 4,
+                    "max_drawdown_pct": 1.0,
+                    "profit_factor": 2.0,
+                    "return_pct": 1.0,
+                },
+            }
+        ],
         "regime_classifier_version": "market_regime_v2",
         "allowed_live_regimes": ["uptrend_normal_vol_volume_increasing"],
         "blocked_live_regimes": ["sideways_low_vol_volume_decreasing"],
@@ -287,3 +324,68 @@ def test_promotion_refuses_execution_calibration_breach(tmp_path, monkeypatch) -
 
     with pytest.raises(PromotionGateError, match="execution_calibration_p95_slippage_exceeds_assumption"):
         promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_promotion_allows_optional_warn_calibration_breach(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate(
+        execution_calibration_required=False,
+        execution_calibration_strictness="warn",
+        execution_calibration_gate={
+            "status": "FAIL",
+            "reasons": ["execution_calibration_content_hash_missing"],
+            "artifact_hash": None,
+        },
+    )
+    _write_report(manager, candidate)
+
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+    assert result.artifact["gate_result"] == "PASS"
+
+
+def test_promotion_refuses_missing_final_holdout_evidence(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate(final_holdout_present=False, final_holdout_metrics=None)
+    _write_report(manager, candidate)
+
+    with pytest.raises(PromotionGateError, match="final_holdout_evidence_missing"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_promotion_refuses_failed_required_scenario_evidence(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    scenario_results = [
+        {
+            "scenario_id": "scenario_001_fixed_bps_base",
+            "scenario_role": "base",
+            "scenario_acceptance_gate_result": "PASS",
+            "scenario_fail_reasons": [],
+        },
+        {
+            "scenario_id": "scenario_002_fixed_bps_stress",
+            "scenario_role": "stress",
+            "scenario_acceptance_gate_result": "FAIL",
+            "scenario_fail_reasons": ["profit_factor_failed"],
+        },
+    ]
+    candidate = _candidate(
+        acceptance_gate_result="FAIL",
+        gate_fail_reasons=["scenario_policy_required_scenario_failed:scenario_002_fixed_bps_stress:profit_factor_failed"],
+        scenario_policy="must_pass_base_and_survive_stress",
+        scenario_pass_count=1,
+        scenario_fail_count=1,
+        required_scenario_count=2,
+        scenario_results=scenario_results,
+    )
+    _write_report(manager, candidate)
+
+    with pytest.raises(PromotionGateError, match="scenario_policy_required_scenario_failed"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_candidate_profile_hash_changes_when_final_holdout_evidence_changes() -> None:
+    first = _candidate(final_holdout_metrics={"trade_count": 4, "return_pct": 1.0})
+    second = _candidate(final_holdout_metrics={"trade_count": 4, "return_pct": 2.0})
+
+    assert first["candidate_profile_hash"] != second["candidate_profile_hash"]
