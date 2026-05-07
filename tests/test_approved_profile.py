@@ -214,6 +214,7 @@ def _write_evidence(
         else:
             payload = _evidence_payload(profile, evidence_type=evidence_type)
             payload["evidence_path"] = str(path.resolve())
+            _attach_decision_equivalence_report(tmp_path, payload, profile)
             payload["content_hash"] = compute_evidence_content_hash(payload)
             content = json.dumps(payload, sort_keys=True) + "\n"
     path.write_text(content, encoding="utf-8")
@@ -223,9 +224,58 @@ def _write_evidence(
 def _write_evidence_payload(tmp_path: Path, name: str, payload: dict[str, object]) -> Path:
     path = tmp_path / name
     payload["evidence_path"] = str(path.resolve())
+    profile_hash = str(payload.get("approved_profile_content_hash") or "sha256:profile")
+    profile_stub = {
+        "profile_content_hash": profile_hash,
+        "dataset_content_hash": payload.get("decision_equivalence_dataset_content_hash")
+        or "sha256:dataset",
+    }
+    _attach_decision_equivalence_report(tmp_path, payload, profile_stub)
     payload["content_hash"] = compute_evidence_content_hash(payload)
     path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def _attach_decision_equivalence_report(
+    tmp_path: Path,
+    payload: dict[str, object],
+    profile: dict[str, object],
+) -> Path:
+    if payload.get("decision_equivalence_report_path") and payload.get("decision_equivalence_content_hash"):
+        return Path(str(payload["decision_equivalence_report_path"]))
+    report_path = tmp_path / f"decision_equivalence_{len(list(tmp_path.glob('decision_equivalence_*.json')))}.json"
+    report = {
+        "schema_version": 1,
+        "ok": True,
+        "reason_codes": [],
+        "profile_content_hash": profile["profile_content_hash"],
+        "approved_profile_hash": profile["profile_content_hash"],
+        "market": payload.get("market"),
+        "interval": payload.get("interval"),
+        "data_fingerprint": profile.get("dataset_content_hash"),
+        "dataset_content_hash": profile.get("dataset_content_hash"),
+        "research_decision_count": 20,
+        "runtime_decision_count": 20,
+        "matched_decision_count": 20,
+        "mismatched_decision_count": 0,
+        "mismatch_count": 0,
+        "mismatch_reasons": [],
+        "blocked_decision_equivalence": False,
+        "missing_research_decisions": [],
+        "missing_runtime_decisions": [],
+        "mismatches": [],
+        "recommended_next_action": "none",
+        "generated_at": "2026-05-03T00:00:00+00:00",
+    }
+    report["content_hash"] = compute_decision_equivalence_hash(report)
+    report_path.write_text(json.dumps(report, sort_keys=True) + "\n", encoding="utf-8")
+    payload["decision_equivalence_report_path"] = str(report_path.resolve())
+    payload["decision_equivalence_content_hash"] = report["content_hash"]
+    payload["decision_equivalence_approved_profile_hash"] = profile["profile_content_hash"]
+    payload["decision_equivalence_dataset_content_hash"] = profile.get("dataset_content_hash")
+    payload["matched_decision_count"] = report["matched_decision_count"]
+    payload["mismatch_count"] = 0
+    return report_path
 
 
 def test_profile_generation_rejects_tampered_candidate_profile_hash(tmp_path: Path) -> None:
@@ -245,6 +295,23 @@ def test_profile_generation_rejects_tampered_candidate_profile_hash(tmp_path: Pa
 
     assert rc == 1
     assert not out.exists()
+
+
+def test_profile_generation_fails_closed_when_required_lineage_missing(tmp_path: Path) -> None:
+    promotion = _promotion(lineage_required=True, lineage_hash="sha256:missing")
+    promotion.pop("content_hash", None)
+    promotion["content_hash"] = sha256_prefixed(content_hash_payload(promotion))
+    path = tmp_path / "promotion.json"
+    write_json_atomic(path, promotion)
+
+    with pytest.raises(ApprovedProfileError, match="lineage_missing"):
+        build_approved_profile(
+            promotion=promotion,
+            mode="paper",
+            source_promotion_path=str(path),
+            market="KRW-BTC",
+            interval="1m",
+        )
 
 
 def test_profile_generate_refuses_live_modes_without_explicit_transition(tmp_path: Path) -> None:
@@ -964,6 +1031,68 @@ def test_profile_promote_fails_when_paper_evidence_missing(tmp_path: Path) -> No
     ) == 1
 
 
+def test_profile_promote_fails_when_decision_equivalence_missing(tmp_path: Path) -> None:
+    profile_path = _write_profile_with_source(tmp_path)
+    profile = load_approved_profile(profile_path)
+    payload = _evidence_payload(profile)
+    payload["evidence_path"] = str((tmp_path / "missing_decision_equivalence.json").resolve())
+    payload["content_hash"] = compute_evidence_content_hash(payload)
+    evidence_path = tmp_path / "missing_decision_equivalence.json"
+    evidence_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ApprovedProfileError, match="paper_validation_evidence_decision_equivalence_missing"):
+        promote_profile_mode(
+            parent_profile=profile,
+            target_mode="live_dry_run",
+            paper_validation_evidence=str(evidence_path),
+        )
+
+
+def test_profile_promote_fails_when_decision_equivalence_hash_mismatches(tmp_path: Path) -> None:
+    profile_path = _write_profile_with_source(tmp_path)
+    profile = load_approved_profile(profile_path)
+    payload = _evidence_payload(profile)
+    payload["evidence_path"] = str((tmp_path / "bad_decision_hash.json").resolve())
+    _attach_decision_equivalence_report(tmp_path, payload, profile)
+    payload["decision_equivalence_content_hash"] = "sha256:bad"
+    payload["content_hash"] = compute_evidence_content_hash(payload)
+    evidence_path = tmp_path / "bad_decision_hash.json"
+    evidence_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ApprovedProfileError, match="paper_validation_evidence_decision_equivalence_hash_mismatch"):
+        promote_profile_mode(
+            parent_profile=profile,
+            target_mode="live_dry_run",
+            paper_validation_evidence=str(evidence_path),
+        )
+
+
+def test_profile_promote_fails_when_decision_equivalence_mismatch_count_nonzero(tmp_path: Path) -> None:
+    profile_path = _write_profile_with_source(tmp_path)
+    profile = load_approved_profile(profile_path)
+    payload = _evidence_payload(profile)
+    payload["evidence_path"] = str((tmp_path / "decision_mismatch_count.json").resolve())
+    report_path = _attach_decision_equivalence_report(tmp_path, payload, profile)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["ok"] = False
+    report["mismatched_decision_count"] = 1
+    report["mismatch_count"] = 1
+    report["reason_codes"] = ["decision_side_mismatch"]
+    report["content_hash"] = compute_decision_equivalence_hash(report)
+    report_path.write_text(json.dumps(report, sort_keys=True) + "\n", encoding="utf-8")
+    payload["decision_equivalence_content_hash"] = report["content_hash"]
+    payload["content_hash"] = compute_evidence_content_hash(payload)
+    evidence_path = tmp_path / "decision_mismatch_count.json"
+    evidence_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ApprovedProfileError, match="paper_validation_evidence_decision_equivalence_mismatch_count_nonzero"):
+        promote_profile_mode(
+            parent_profile=profile,
+            target_mode="live_dry_run",
+            paper_validation_evidence=str(evidence_path),
+        )
+
+
 def test_profile_promote_rejects_repo_local_evidence_path(tmp_path: Path) -> None:
     profile_path = _write_profile_with_source(tmp_path)
 
@@ -1212,6 +1341,7 @@ def test_changing_evidence_content_changes_child_profile_hash(tmp_path: Path) ->
     second_payload["net_pnl"] = 100.0
     second_payload["expectancy_per_trade"] = 20.0
     second_payload["evidence_path"] = str((tmp_path / "paper_validation_b.json").resolve())
+    _attach_decision_equivalence_report(tmp_path, second_payload, parent)
     second_payload["content_hash"] = compute_evidence_content_hash(second_payload)
     second_evidence = _write_evidence(
         tmp_path,
@@ -1400,6 +1530,7 @@ def test_profile_promote_accepts_managed_data_reports_evidence_path(tmp_path: Pa
     parent = _profile(str(promotion_path))
     payload = _evidence_payload(parent)
     payload["evidence_path"] = str(evidence_path.resolve())
+    _attach_decision_equivalence_report(tmp_path, payload, parent)
     payload["content_hash"] = compute_evidence_content_hash(payload)
     evidence_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
 

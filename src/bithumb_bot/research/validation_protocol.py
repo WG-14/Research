@@ -14,6 +14,7 @@ from .execution_calibration import compare_calibration_to_scenario
 from .execution_model import FixedBpsExecutionModel, StressExecutionModel, model_params_hash
 from .experiment_manifest import DateRange, ExecutionScenario, ExperimentManifest
 from .hashing import sha256_prefixed
+from .lineage import build_research_lineage
 from .parameter_space import candidate_id, iter_parameter_candidates
 from .promotion_gate import build_candidate_profile
 from .report_writer import ResearchReportPaths, write_research_report
@@ -31,6 +32,8 @@ def run_research_backtest(
     manager: PathManager,
     generated_at: str | None = None,
     execution_calibration: dict[str, Any] | None = None,
+    manifest_path: str | None = None,
+    command_args: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     snapshots = {
         "train": load_dataset_split(db_path=db_path, manifest=manifest, split_name="train"),
@@ -56,6 +59,10 @@ def run_research_backtest(
         candidates=candidates,
         report_kind="backtest",
         generated_at=generated_at,
+        manifest_path=manifest_path,
+        command_name="research-backtest",
+        command_args=command_args,
+        execution_calibration=execution_calibration,
     )
     paths, content_hash = write_research_report(
         manager=manager,
@@ -75,6 +82,8 @@ def run_research_walk_forward(
     manager: PathManager,
     generated_at: str | None = None,
     execution_calibration: dict[str, Any] | None = None,
+    manifest_path: str | None = None,
+    command_args: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if manifest.walk_forward is None:
         raise ResearchValidationError("walk_forward_missing")
@@ -97,6 +106,10 @@ def run_research_walk_forward(
         candidates=candidates,
         report_kind="walk_forward",
         generated_at=generated_at,
+        manifest_path=manifest_path,
+        command_name="research-walk-forward",
+        command_args=command_args,
+        execution_calibration=execution_calibration,
     )
     paths, content_hash = write_research_report(
         manager=manager,
@@ -691,16 +704,65 @@ def _report_payload(
     candidates: list[dict[str, Any]],
     report_kind: str,
     generated_at: str | None,
+    manifest_path: str | None = None,
+    command_name: str | None = None,
+    command_args: dict[str, Any] | None = None,
+    execution_calibration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     best = next((candidate for candidate in candidates if candidate["acceptance_gate_result"] == "PASS"), None)
     warnings = sorted({warning for candidate in candidates for warning in candidate.get("warnings", [])})
+    dataset_hash = combined_dataset_fingerprint(snapshots)
+    repository_version = _repository_version()
+    calibration_hash = (
+        str(execution_calibration.get("content_hash"))
+        if isinstance(execution_calibration, dict) and execution_calibration.get("content_hash")
+        else None
+    )
+    parameter_grid_size = 1
+    for values in manifest.parameter_space.values():
+        parameter_grid_size *= len(values)
+    failed_count = sum(1 for candidate in candidates if candidate.get("acceptance_gate_result") != "PASS")
+    lineage = build_research_lineage(
+        experiment_id=manifest.experiment_id,
+        experiment_family_id=str(manifest.raw.get("experiment_family_id") or manifest.experiment_id),
+        hypothesis_id=manifest.raw.get("hypothesis_id"),
+        hypothesis_status=manifest.raw.get("hypothesis_status") or "pre_registered",
+        pre_registered_at=manifest.raw.get("pre_registered_at"),
+        manifest_path=manifest_path,
+        manifest_hash=manifest.manifest_hash(),
+        manifest_canonical_hash=manifest.manifest_hash(),
+        dataset_snapshot_id=manifest.dataset.snapshot_id,
+        dataset_content_hash=dataset_hash,
+        dataset_split_hash=sha256_prefixed({
+            snapshot.split_name: snapshot.date_range.as_dict()
+            for snapshot in snapshots
+        }),
+        data_source_fingerprint=sha256_prefixed({
+            "source": manifest.dataset.source,
+            "market": manifest.market,
+            "interval": manifest.interval,
+            "snapshot_id": manifest.dataset.snapshot_id,
+        }),
+        repository_version=repository_version,
+        command_name=command_name or f"research-{report_kind}",
+        command_args=command_args or {},
+        cost_execution_model_hash=sha256_prefixed(manifest.execution_model.as_dict()),
+        execution_calibration_artifact_hash=calibration_hash,
+        search_budget=parameter_grid_size,
+        parameter_grid_size=parameter_grid_size,
+        attempt_index=int(manifest.raw.get("attempt_index") or 1),
+        failed_candidate_count=failed_count,
+        holdout_reuse_count=int(manifest.raw.get("holdout_reuse_count") or 0),
+        dataset_reuse_policy=str(manifest.raw.get("dataset_reuse_policy") or "single_final_holdout_for_experiment_family"),
+        created_at=generated_at,
+    )
     return {
         "report_kind": report_kind,
         "experiment_id": manifest.experiment_id,
         "hypothesis": manifest.hypothesis,
         "manifest_hash": manifest.manifest_hash(),
         "dataset_snapshot_id": manifest.dataset.snapshot_id,
-        "dataset_content_hash": combined_dataset_fingerprint(snapshots),
+        "dataset_content_hash": dataset_hash,
         "market": manifest.market,
         "interval": manifest.interval,
         "dataset_splits": {
@@ -728,11 +790,24 @@ def _report_payload(
         "allowed_live_regimes": best.get("allowed_live_regimes") if best else None,
         "blocked_live_regimes": best.get("blocked_live_regimes") if best else None,
         "candidate_count": len(candidates),
+        "experiment_family_id": lineage.get("experiment_family_id"),
+        "hypothesis_id": lineage.get("hypothesis_id"),
+        "hypothesis_status": lineage.get("hypothesis_status"),
+        "pre_registered_gate": bool(lineage.get("pre_registered_at") or lineage.get("hypothesis_status")),
+        "search_budget": lineage.get("search_budget"),
+        "parameter_space_hash": sha256_prefixed(manifest.parameter_space),
+        "parameter_grid_size": lineage.get("parameter_grid_size"),
+        "attempt_index": lineage.get("attempt_index"),
+        "failed_candidate_count": lineage.get("failed_candidate_count"),
+        "holdout_reuse_count": lineage.get("holdout_reuse_count"),
+        "dataset_reuse_policy": lineage.get("dataset_reuse_policy"),
         "best_candidate_id": best.get("parameter_candidate_id") if best else None,
         "gate_result": "PASS" if best else "FAIL",
         "warnings": warnings,
         "candidates": candidates,
-        "repository_version": _repository_version(),
+        "repository_version": repository_version,
+        "lineage": lineage,
+        "lineage_hash": lineage["lineage_hash"],
         "generated_at": generated_at or datetime.now(timezone.utc).isoformat(),
     }
 

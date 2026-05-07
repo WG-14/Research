@@ -6,7 +6,8 @@ import pytest
 
 from bithumb_bot.paths import PathManager
 from bithumb_bot.research import cli as research_cli
-from bithumb_bot.research.hashing import sha256_prefixed
+from bithumb_bot.research.hashing import content_hash_payload, sha256_prefixed
+from bithumb_bot.research.lineage import build_research_lineage, reproduce_promotion
 from bithumb_bot.research.promotion_gate import PromotionGateError, build_candidate_profile, promote_candidate
 from bithumb_bot.storage_io import write_json_atomic
 
@@ -97,14 +98,60 @@ def _candidate(**overrides):
 
 def _write_report(manager: PathManager, candidate: dict[str, object]) -> None:
     path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
-    write_json_atomic(
-        path,
-        {
-            "experiment_id": "promo_exp",
-            "manifest_hash": "sha256:manifest",
-            "candidates": [candidate],
-        },
+    payload = {
+        "experiment_id": "promo_exp",
+        "manifest_hash": "sha256:manifest",
+        "dataset_snapshot_id": "snap",
+        "dataset_content_hash": "sha256:dataset",
+        "repository_version": "test",
+        "candidates": [candidate],
+    }
+    payload["content_hash"] = sha256_prefixed(content_hash_payload(payload))
+    write_json_atomic(path, payload)
+
+
+def _write_report_with_lineage(manager: PathManager, candidate: dict[str, object]) -> None:
+    path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    lineage = build_research_lineage(
+        experiment_id="promo_exp",
+        experiment_family_id="family_001",
+        hypothesis_id="hypothesis_001",
+        hypothesis_status="pre_registered",
+        manifest_hash="sha256:manifest",
+        dataset_snapshot_id="snap",
+        dataset_content_hash="sha256:dataset",
+        repository_version="test",
+        command_name="research-backtest",
+        command_args={"manifest": "/external/manifest.json"},
+        search_budget=4,
+        parameter_grid_size=4,
+        attempt_index=2,
+        failed_candidate_count=1,
+        holdout_reuse_count=3,
+        dataset_reuse_policy="visible_reuse_not_hard_blocked",
+        created_at="2026-05-04T00:00:00+00:00",
     )
+    payload = {
+        "experiment_id": "promo_exp",
+        "manifest_hash": "sha256:manifest",
+        "dataset_snapshot_id": "snap",
+        "dataset_content_hash": "sha256:dataset",
+        "repository_version": "test",
+        "experiment_family_id": "family_001",
+        "hypothesis_id": "hypothesis_001",
+        "hypothesis_status": "pre_registered",
+        "search_budget": 4,
+        "parameter_grid_size": 4,
+        "attempt_index": 2,
+        "failed_candidate_count": 1,
+        "holdout_reuse_count": 3,
+        "dataset_reuse_policy": "visible_reuse_not_hard_blocked",
+        "lineage": lineage,
+        "lineage_hash": lineage["lineage_hash"],
+        "candidates": [candidate],
+    }
+    payload["content_hash"] = sha256_prefixed(content_hash_payload(payload))
+    write_json_atomic(path, payload)
 
 
 def _walk_forward_candidate(backtest_candidate: dict[str, object], **overrides) -> dict[str, object]:
@@ -132,14 +179,13 @@ def _walk_forward_candidate(backtest_candidate: dict[str, object], **overrides) 
 
 def _write_walk_forward_report(manager: PathManager, candidate: dict[str, object]) -> None:
     path = manager.data_dir() / "reports" / "research" / "promo_exp" / "walk_forward_report.json"
-    write_json_atomic(
-        path,
-        {
-            "experiment_id": "promo_exp",
-            "manifest_hash": "sha256:manifest",
-            "candidates": [candidate],
-        },
-    )
+    payload = {
+        "experiment_id": "promo_exp",
+        "manifest_hash": "sha256:manifest",
+        "candidates": [candidate],
+    }
+    payload["content_hash"] = sha256_prefixed(content_hash_payload(payload))
+    write_json_atomic(path, payload)
 
 
 def test_promotion_refuses_candidate_without_validation_evidence(tmp_path, monkeypatch) -> None:
@@ -284,6 +330,129 @@ def test_promotion_artifact_records_no_walk_forward_evidence_when_not_required(t
     assert result.artifact["allowed_regimes"] == ["uptrend_normal_vol_volume_increasing"]
     assert result.artifact["blocked_regimes"] == ["sideways_low_vol_volume_decreasing"]
     assert result.artifact["live_regime_policy"]["missing_policy_behavior"] == "fail_closed"
+
+
+def test_lineage_backed_promotion_records_reproducibility_fields(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate(walk_forward_required=False)
+    _write_report_with_lineage(manager, candidate)
+
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    summary = reproduce_promotion(result.artifact_path).summary
+
+    assert result.artifact["lineage_required"] is True
+    assert result.artifact["legacy_compatibility_used"] is False
+    assert result.artifact["lineage_hash"].startswith("sha256:")
+    assert result.artifact["experiment_family_id"] == "family_001"
+    assert result.artifact["hypothesis_id"] == "hypothesis_001"
+    assert result.artifact["search_budget"] == 4
+    assert result.artifact["parameter_grid_size"] == 4
+    assert result.artifact["attempt_index"] == 2
+    assert result.artifact["failed_candidate_count"] == 1
+    assert result.artifact["holdout_reuse_count"] == 3
+    assert result.artifact["dataset_reuse_policy"] == "visible_reuse_not_hard_blocked"
+    assert summary["ok"] is True
+    assert summary["lineage_hash"] == result.artifact["lineage_hash"]
+    assert summary["candidate_profile_hash"] == result.artifact["candidate_profile_hash"]
+
+
+def test_reproduce_fails_closed_when_lineage_missing(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    _write_report(manager, _candidate())
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+    summary = reproduce_promotion(result.artifact_path).summary
+
+    assert summary["ok"] is False
+    assert summary["reason"] == "lineage_missing"
+    assert summary["legacy_compatibility_used"] is True
+
+
+def test_reproduce_reports_backtest_hash_mismatch(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate(walk_forward_required=False)
+    _write_report_with_lineage(manager, candidate)
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    payload = {"experiment_id": "promo_exp", "content_hash": "sha256:drifted", "candidates": []}
+    write_json_atomic(report_path, payload)
+
+    summary = reproduce_promotion(result.artifact_path).summary
+
+    assert summary["ok"] is False
+    assert summary["reason"] == "backtest_report_hash_mismatch"
+    assert summary["mismatches"][0]["field"] == "backtest_report_hash"
+
+
+def test_reproduce_reports_lineage_hash_mismatch(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate(walk_forward_required=False)
+    _write_report_with_lineage(manager, candidate)
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    artifact = dict(result.artifact)
+    artifact["lineage"] = dict(artifact["lineage"])
+    artifact["lineage"]["holdout_reuse_count"] = 99
+    artifact.pop("content_hash")
+    artifact["content_hash"] = sha256_prefixed(content_hash_payload(artifact))
+    write_json_atomic(result.artifact_path, artifact)
+
+    summary = reproduce_promotion(result.artifact_path).summary
+
+    assert summary["ok"] is False
+    assert summary["reason"] == "lineage_hash_mismatch"
+
+
+def test_reproduce_reports_manifest_and_dataset_mismatches(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate(walk_forward_required=False)
+    _write_report_with_lineage(manager, candidate)
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    artifact = dict(result.artifact)
+    artifact["manifest_hash"] = "sha256:other_manifest"
+    artifact["dataset_content_hash"] = "sha256:other_dataset"
+    artifact.pop("content_hash")
+    artifact["content_hash"] = sha256_prefixed(content_hash_payload(artifact))
+    write_json_atomic(result.artifact_path, artifact)
+
+    summary = reproduce_promotion(result.artifact_path).summary
+
+    assert summary["ok"] is False
+    assert {item["reason"] for item in summary["mismatches"]} >= {
+        "manifest_hash_mismatch",
+        "dataset_content_hash_mismatch",
+    }
+
+
+def test_reproduce_reports_command_args_hash_mismatch(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate(walk_forward_required=False)
+    _write_report_with_lineage(manager, candidate)
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    artifact = dict(result.artifact)
+    artifact["command_args_hash_expected"] = "sha256:other_args"
+    artifact.pop("content_hash")
+    artifact["content_hash"] = sha256_prefixed(content_hash_payload(artifact))
+    write_json_atomic(result.artifact_path, artifact)
+
+    summary = reproduce_promotion(result.artifact_path).summary
+
+    assert summary["ok"] is False
+    assert summary["reason"] == "command_args_hash_mismatch"
+
+
+def test_reproduce_reports_walk_forward_required_but_missing(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate(walk_forward_required=True)
+    _write_report_with_lineage(manager, candidate)
+    _write_walk_forward_report(manager, _walk_forward_candidate(candidate))
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    walk_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "walk_forward_report.json"
+    walk_path.unlink()
+
+    summary = reproduce_promotion(result.artifact_path).summary
+
+    assert summary["ok"] is False
+    assert summary["reason"] == "walk_forward_required_but_missing"
 
 
 def test_promotion_refuses_old_candidate_without_regime_policy(tmp_path, monkeypatch) -> None:

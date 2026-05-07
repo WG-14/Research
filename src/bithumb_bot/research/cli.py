@@ -8,6 +8,7 @@ from bithumb_bot.config import PATH_MANAGER, settings
 from .experiment_manifest import ManifestValidationError, load_manifest
 from .execution_calibration import ExecutionCalibrationError, load_calibration_artifact
 from .promotion_gate import PromotionGateError, promote_candidate
+from .lineage import reproduce_promotion
 from .run_summary import ResearchRunSummary, build_research_run_summary
 from .validation_protocol import ResearchValidationError, run_research_backtest, run_research_walk_forward
 
@@ -21,6 +22,11 @@ def cmd_research_backtest(*, manifest_path: str, execution_calibration_path: str
             db_path=settings.DB_PATH,
             manager=PATH_MANAGER,
             execution_calibration=calibration,
+            manifest_path=manifest_path,
+            command_args={
+                "manifest": manifest_path,
+                "execution_calibration": execution_calibration_path,
+            },
         )
     except (ManifestValidationError, ExecutionCalibrationError, ResearchValidationError, OSError, ValueError) as exc:
         print(f"[RESEARCH-BACKTEST] error={exc}")
@@ -38,12 +44,23 @@ def cmd_research_walk_forward(*, manifest_path: str, execution_calibration_path:
             db_path=settings.DB_PATH,
             manager=PATH_MANAGER,
             execution_calibration=calibration,
+            manifest_path=manifest_path,
+            command_args={
+                "manifest": manifest_path,
+                "execution_calibration": execution_calibration_path,
+            },
         )
     except (ManifestValidationError, ExecutionCalibrationError, ResearchValidationError, OSError, ValueError) as exc:
         print(f"[RESEARCH-WALK-FORWARD] error={exc}")
         return 1
     _print_report_summary("RESEARCH-WALK-FORWARD", report)
     return 0
+
+
+def cmd_research_reproduce(*, promotion_path: str) -> int:
+    result = reproduce_promotion(promotion_path)
+    print(json.dumps(result.summary, ensure_ascii=False, sort_keys=True, indent=2))
+    return 0 if result.ok else 1
 
 
 def cmd_research_promote_candidate(*, experiment_id: str, candidate_id: str) -> int:

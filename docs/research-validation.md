@@ -131,12 +131,23 @@ If fewer than `walk_forward.min_windows` complete windows exist, the command fai
 It verifies that the backtest/OOS candidate exists, has validation evidence, passed the acceptance gate, and has a candidate profile hash.
 It recomputes `sha256_prefixed(build_candidate_profile(candidate))` for the backtest/OOS candidate and refuses promotion with `backtest_candidate_profile_hash_mismatch` if the report was tampered with after generation.
 
+Research reports now carry deterministic experiment lineage. Lineage records the experiment id, experiment family id, hypothesis id/status, manifest hash and canonical hash, dataset snapshot id, dataset content and split hashes, safe data-source fingerprint, repository version, command name and normalized command-args hash, cost/execution model hash, calibration hash when present, search budget, parameter grid size, attempt index, failed-candidate count, holdout reuse count, and dataset reuse policy. `lineage_hash` excludes volatile creation time. The hash proves the recorded lineage did not drift; it does not by itself prove the experiment can be reproduced.
+
 When walk-forward evidence is required, promotion also requires the matching candidate in `walk_forward_report.json` to pass real rolling walk-forward validation.
 The walk-forward candidate must match the backtest/OOS candidate's experiment, strategy name, parameter candidate id, parameter values, cost model, and manifest hash, and its candidate profile hash is independently recomputed.
 Missing, mismatched, failed, or tampered walk-forward evidence is reported with source-specific reasons such as `walk_forward_missing`, `walk_forward_candidate_mismatch`, `walk_forward_gate_not_passed`, `walk_forward_metrics_missing`, or `walk_forward_candidate_profile_hash_mismatch`.
 
-The promotion artifact binds the evidence sources by recording `validation_evidence_source`, `backtest_candidate_profile_hash`, `backtest_candidate_profile_verified`, `walk_forward_required`, `walk_forward_evidence_source`, `walk_forward_candidate_profile_hash`, and `walk_forward_candidate_profile_verified`.
+The promotion artifact binds the evidence sources by recording `lineage_hash`, `validation_evidence_source`, `backtest_report_path`, `backtest_report_hash`, `backtest_candidate_profile_hash`, `backtest_candidate_profile_verified`, `walk_forward_required`, `walk_forward_report_path`, `walk_forward_report_hash`, `walk_forward_evidence_source`, `walk_forward_candidate_profile_hash`, and `walk_forward_candidate_profile_verified`.
 If walk-forward is not required, the promotion artifact explicitly records `walk_forward_required=false` and null walk-forward evidence hash/source fields.
+
+Before generating an approved profile, run reproducibility verification:
+
+```bash
+uv run bithumb-bot research-reproduce \
+  --promotion "$DATA_ROOT/paper/reports/research/<experiment>/promotion_<candidate>.json"
+```
+
+`research-reproduce` loads the promotion artifact, verifies the promotion content hash, validates lineage, reopens recorded backtest and walk-forward reports when required, verifies their content hashes, and reports specific failure reasons such as `lineage_missing`, `lineage_hash_mismatch`, `backtest_report_hash_mismatch`, `walk_forward_required_but_missing`, `walk_forward_report_hash_mismatch`, `dataset_content_hash_mismatch`, `candidate_hash_mismatch`, `command_args_hash_mismatch`, and `calibration_hash_mismatch`. Old promotion artifacts without lineage are explicit `legacy_compatibility_used=true` and fail reproducibility verification instead of being treated as full lifecycle evidence.
 
 Promotion writes an operator-reviewable artifact only after these checks pass. It does not edit `.env`, `BITHUMB_ENV_FILE_LIVE`, `BITHUMB_ENV_FILE_PAPER`, or live secrets.
 
@@ -197,13 +208,31 @@ uv run bithumb-bot profile-promote \
 ```
 
 Each transition verifies the parent profile, reopens and rehashes the parent source promotion artifact, rechecks parent evidence artifact hashes when present, records `parent_profile_hash`, and refuses mode skipping before any child profile is written. Source promotion and evidence artifact paths must exist, resolve outside the repository, and have their byte content hash stored in the profile. Current custody policy rejects repository-local artifacts and accepts absolute repository-external artifacts, including managed `DATA_ROOT/<mode>/reports/...` paths; operators are responsible for preserving external absolute source/evidence artifacts outside managed roots. Those fields are included in the child profile hash. `profile-generate` creates paper profiles only; live-compatible profiles must come from `profile-promote`. Live dry-run startup accepts only a verified `live_dry_run` approved profile selected by `APPROVED_STRATEGY_PROFILE_PATH` or its older alias when the canonical selector is unset. Live armed execution accepts only a verified `small_live` approved profile selected the same way.
-`profile-promote` requires typed semantic evidence for both paper validation and live readiness. Evidence artifacts are `reports` artifacts and must carry `evidence_schema_version=1`, `evidence_type`, mode, market, interval, strategy name, approved profile hash, source promotion hash, observation start/end/duration, decision counts, blocked-decision counts, closed lifecycle counts, gross/fee/net PnL, expectancy/profit-factor/fee-drag fields when applicable, execution-quality status and breach count, unresolved open order count, recovery blocker count, runtime/profile drift status, `db_data_fingerprint`, thresholds, and a deterministic `content_hash`. `generated_at` is operator context and is excluded from the deterministic hash.
+`profile-promote` requires typed semantic evidence for both paper validation and live readiness. Evidence artifacts are `reports` artifacts and must carry `evidence_schema_version=1`, `evidence_type`, mode, market, interval, strategy name, approved profile hash, source promotion hash, observation start/end/duration, decision counts, blocked-decision counts, closed lifecycle counts, gross/fee/net PnL, expectancy/profit-factor/fee-drag fields when applicable, execution-quality status and breach count, unresolved open order count, recovery blocker count, runtime/profile drift status, `db_data_fingerprint`, thresholds, decision-equivalence report path/content hash, and a deterministic `content_hash`. `generated_at` is operator context and is excluded from the deterministic hash.
 
 Typed paper/live readiness evidence validation exists as a promotion contract. Effective promotion thresholds are repository-trusted policy, not self-declared evidence policy. Evidence artifact thresholds are retained as report metadata and must be at least as strict as the repository policy; weaker artifact thresholds fail closed with a policy-threshold reason code. `db_data_fingerprint` must be a non-empty `sha256:` value so the observation source is auditable. Live readiness rejects `execution_quality_status=not_applicable` by default; promotion to `small_live` requires real execution-quality applicability unless the repository policy is deliberately changed. Promotion fails closed when any required semantic field is missing, malformed, below threshold, weaker than trusted policy, or mismatched with the parent approved profile.
 
 `strategy_performance.py` remains an operational closed-lifecycle guard over `trade_lifecycles`; it is not a research approval mechanism and is not a substitute for research promotion, paper validation evidence, or live readiness evidence. Root/simple smoke backtests remain smoke-only and must not be used as promotion evidence.
 
-The `decision-equivalence` command is a credential-free intermediate contract for comparing research-generated decisions with runtime or paper decision telemetry exported for the same candle snapshot and approved profile. It compares signal timestamp, candle basis, side, strategy name, profile hash, market, interval, fee/slippage model hashes, and blocked/rejected decision state, then emits an operator-readable pass/fail report with mismatch reason codes and a deterministic content hash. It does not call live broker APIs and does not prove execution quality, orderbook/depth behavior, or intra-candle path behavior.
+The `decision-equivalence` command is a credential-free intermediate contract for comparing research-generated decisions with runtime or paper decision telemetry exported for the same candle snapshot and approved profile. It compares signal timestamp, candle basis, side, strategy name, profile hash, market, interval, fee/slippage model hashes, and blocked/rejected decision state, then emits an operator-readable pass/fail report with mismatch reason codes and a deterministic content hash. It does not call live broker APIs and does not prove execution quality, orderbook/depth behavior, or intra-candle path behavior. Profile transition evidence now fails closed when decision-equivalence evidence is missing, hash-mismatched, bound to the wrong profile or dataset, blocked, not ok, or carries any nonzero mismatch count.
+
+Official lifecycle:
+
+```text
+hypothesis / manifest
+-> dataset snapshot
+-> research-backtest
+-> research-walk-forward
+-> research-promote-candidate
+-> research-reproduce
+-> approved profile generation
+-> profile verification
+-> decision equivalence / paper validation evidence
+-> live-dry-run readiness
+-> small-live promotion
+```
+
+Smoke backtests are quick diagnostics only. Official research evidence is the managed research report plus lineage. Promotion evidence is the promotion artifact and its `content_hash`/`lineage_hash`. Approved profile evidence is the profile artifact plus source promotion verification. Decision-equivalence evidence is the deterministic comparison report embedded in paper/live transition evidence. Runtime observability is the startup and decision context audit fields, including profile hash, promotion hash, lineage hash, manifest hash, dataset hash, backtest/walk-forward hashes when present, decision-equivalence hash, block reason, missing/mismatch lists, and whether legacy compatibility was used.
 
 Runtime still keeps research separated from live execution: profiles verify approved values; they do not auto-apply values to env files and do not arm live trading.
 

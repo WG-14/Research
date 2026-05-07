@@ -9,6 +9,7 @@ from bithumb_bot.paths import PathManager, PathPolicyError
 from bithumb_bot.storage_io import write_json_atomic
 
 from .hashing import content_hash_payload, sha256_prefixed
+from .lineage import build_promotion_lineage, validate_lineage_artifact, LineageValidationError
 
 
 class PromotionGateError(ValueError):
@@ -233,6 +234,13 @@ def promote_candidate(
             candidate_id=candidate_id,
             backtest_candidate=backtest.candidate,
         )
+    base_lineage = report.get("lineage") if isinstance(report.get("lineage"), dict) else None
+    lineage: dict[str, Any] | None = None
+    if base_lineage is not None:
+        try:
+            validate_lineage_artifact(base_lineage)
+        except LineageValidationError as exc:
+            raise PromotionGateError(f"promotion refused: {exc}") from exc
 
     candidate = backtest.candidate
     profile = backtest.profile
@@ -244,6 +252,7 @@ def promote_candidate(
         | set(calibration_warning_reasons)
     )
     artifact = {
+        "promotion_schema_version": 1,
         "strategy_name": candidate["strategy_name"],
         "strategy_profile_id": f"{experiment_id}_{candidate_id}",
         "strategy_profile_source_experiment": experiment_id,
@@ -255,6 +264,25 @@ def promote_candidate(
         "market": report.get("market"),
         "interval": report.get("interval"),
         "repository_version": candidate.get("repository_version") or report.get("repository_version"),
+        "lineage_required": base_lineage is not None,
+        "legacy_compatibility_used": base_lineage is None,
+        "lineage_hash": None,
+        "backtest_report_path": str(candidate_report_path.resolve()),
+        "backtest_report_hash": report.get("content_hash"),
+        "walk_forward_report_path": str((research_report_dir / "walk_forward_report.json").resolve()) if walk_forward_required else None,
+        "walk_forward_report_hash": None,
+        "execution_calibration_artifact_hash": _candidate_calibration_hash(candidate),
+        "experiment_family_id": report.get("experiment_family_id"),
+        "hypothesis_id": report.get("hypothesis_id"),
+        "hypothesis_status": report.get("hypothesis_status"),
+        "pre_registered_gate": report.get("pre_registered_gate"),
+        "search_budget": report.get("search_budget"),
+        "parameter_space_hash": report.get("parameter_space_hash"),
+        "parameter_grid_size": report.get("parameter_grid_size"),
+        "attempt_index": report.get("attempt_index"),
+        "failed_candidate_count": report.get("failed_candidate_count"),
+        "holdout_reuse_count": report.get("holdout_reuse_count"),
+        "dataset_reuse_policy": report.get("dataset_reuse_policy"),
         "candidate_profile": profile,
         "candidate_profile_hash": verified_profile_hash,
         "verified_candidate_profile_hash": verified_profile_hash,
@@ -291,9 +319,28 @@ def promote_candidate(
         "operator_next_step": "Review this artifact before manual paper env/profile consideration.",
         "generated_at": generated_at or datetime.now(timezone.utc).isoformat(),
     }
+    if walk_forward_required:
+        with (research_report_dir / "walk_forward_report.json").open("r", encoding="utf-8") as handle:
+            walk_report = json.load(handle)
+        artifact["walk_forward_report_hash"] = walk_report.get("content_hash")
+    path = manager.data_dir() / "reports" / "research" / experiment_id / f"promotion_{candidate_id}.json"
+    if base_lineage is not None:
+        lineage = build_promotion_lineage(
+            base_lineage=base_lineage,
+            backtest_report_path=str(candidate_report_path.resolve()),
+            backtest_report_hash=str(report.get("content_hash") or ""),
+            walk_forward_report_path=artifact["walk_forward_report_path"],
+            walk_forward_report_hash=artifact["walk_forward_report_hash"],
+            candidate_id=candidate_id,
+            candidate_profile_hash=verified_profile_hash,
+            promotion_artifact_path=str(path.resolve()),
+            created_at=artifact["generated_at"],
+        )
+        artifact["lineage"] = lineage
+        artifact["lineage_hash"] = lineage["lineage_hash"]
     content_hash = sha256_prefixed(content_hash_payload(artifact))
     artifact["content_hash"] = content_hash
-    path = manager.data_dir() / "reports" / "research" / experiment_id / f"promotion_{candidate_id}.json"
+    content_hash = str(artifact["content_hash"])
     _ensure_research_output_path_allowed(manager, path)
     write_json_atomic(path, artifact)
     return PromotionResult(artifact=artifact, artifact_path=path, content_hash=content_hash)
@@ -386,3 +433,10 @@ def _execution_calibration_warning_reasons(candidate: dict[str, Any]) -> list[st
     if not isinstance(gate, dict) or gate.get("status") != "FAIL":
         return []
     return [str(reason) for reason in gate.get("reasons") or ["execution_calibration_failed"]]
+
+
+def _candidate_calibration_hash(candidate: dict[str, Any]) -> str | None:
+    gate = candidate.get("execution_calibration_gate")
+    if isinstance(gate, dict) and isinstance(gate.get("artifact_hash"), str):
+        return str(gate["artifact_hash"])
+    return None

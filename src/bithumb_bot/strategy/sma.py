@@ -1144,6 +1144,16 @@ class SmaWithFilterStrategy:
                 if isinstance(self.candidate_regime_policy, dict)
                 else None
             ),
+            "lineage_hash": (
+                self.candidate_regime_policy.get("lineage_hash")
+                if isinstance(self.candidate_regime_policy, dict)
+                else None
+            ),
+            "legacy_compatibility_used": (
+                self.candidate_regime_policy.get("legacy_compatibility_used")
+                if isinstance(self.candidate_regime_policy, dict)
+                else None
+            ),
             "paper_validation_evidence_path": (
                 self.candidate_regime_policy.get("paper_validation_evidence_path")
                 if isinstance(self.candidate_regime_policy, dict)
@@ -1161,6 +1171,16 @@ class SmaWithFilterStrategy:
             ),
             "live_readiness_evidence_content_hash": (
                 self.candidate_regime_policy.get("live_readiness_evidence_content_hash")
+                if isinstance(self.candidate_regime_policy, dict)
+                else None
+            ),
+            "decision_equivalence_report_path": (
+                self.candidate_regime_policy.get("decision_equivalence_report_path")
+                if isinstance(self.candidate_regime_policy, dict)
+                else None
+            ),
+            "decision_equivalence_content_hash": (
+                self.candidate_regime_policy.get("decision_equivalence_content_hash")
                 if isinstance(self.candidate_regime_policy, dict)
                 else None
             ),

@@ -210,6 +210,9 @@ def test_decision_context_includes_approved_profile_audit_fields() -> None:
         "candidate_profile_hash": "sha256:candidate",
         "manifest_hash": "sha256:manifest",
         "dataset_content_hash": "sha256:dataset",
+        "lineage_hash": "sha256:lineage",
+        "legacy_compatibility_used": False,
+        "decision_equivalence_content_hash": "sha256:decision",
         "approved_profile_mode": "small_live",
         "approved_profile_verification_ok": True,
         "approved_profile_block_reason": "ok",
@@ -232,6 +235,9 @@ def test_decision_context_includes_approved_profile_audit_fields() -> None:
     assert decision.context["candidate_profile_hash"] == "sha256:candidate"
     assert decision.context["manifest_hash"] == "sha256:manifest"
     assert decision.context["dataset_content_hash"] == "sha256:dataset"
+    assert decision.context["lineage_hash"] == "sha256:lineage"
+    assert decision.context["legacy_compatibility_used"] is False
+    assert decision.context["decision_equivalence_content_hash"] == "sha256:decision"
 
 
 def test_replay_fingerprint_preserves_distinct_through_ts_ms() -> None:

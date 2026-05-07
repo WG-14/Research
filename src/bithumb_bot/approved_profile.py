@@ -10,7 +10,9 @@ from typing import Any
 
 from .paths import PathManager, PathPolicyError
 from .evidence_chain import validate_profile_transition_evidence
+from .decision_equivalence import compute_decision_equivalence_hash
 from .research.hashing import content_hash_payload, sha256_prefixed
+from .research.lineage import validate_lineage_artifact, LineageValidationError
 from .research.promotion_gate import build_candidate_profile
 from .storage_io import write_json_atomic
 
@@ -62,6 +64,7 @@ class ProfileVerificationResult:
     profile_path: str | None
     profile_hash: str | None
     promotion_hash: str | None
+    lineage_hash: str | None
     candidate_profile_hash: str | None
     manifest_hash: str | None
     dataset_content_hash: str | None
@@ -93,11 +96,15 @@ class ProfileVerificationResult:
             "legacy_candidate_profile_path_used": False,
             "source_promotion_artifact_path": profile.get("source_promotion_artifact_path"),
             "promotion_content_hash": self.promotion_hash,
+            "lineage_hash": self.lineage_hash,
+            "legacy_compatibility_used": bool(profile.get("legacy_compatibility_used")),
             "candidate_profile_hash": self.candidate_profile_hash,
             "manifest_hash": self.manifest_hash,
             "dataset_content_hash": self.dataset_content_hash,
             "paper_validation_evidence_path": profile.get("paper_validation_evidence_path"),
             "paper_validation_evidence_content_hash": profile.get("paper_validation_evidence_content_hash"),
+            "decision_equivalence_report_path": profile.get("decision_equivalence_report_path"),
+            "decision_equivalence_content_hash": profile.get("decision_equivalence_content_hash"),
             "live_readiness_evidence_path": profile.get("live_readiness_evidence_path"),
             "live_readiness_evidence_content_hash": profile.get("live_readiness_evidence_content_hash"),
             "approved_profile_mismatch_count": len(self.mismatches),
@@ -231,6 +238,19 @@ def verify_promotion_artifact(payload: dict[str, Any]) -> dict[str, Any]:
         raise ApprovedProfileError("promotion_candidate_profile_hash_mismatch")
     if sha256_prefixed(build_candidate_profile(_candidate_like_from_promotion(payload))) != expected_profile_hash:
         raise ApprovedProfileError("promotion_candidate_profile_rebuild_mismatch")
+    if payload.get("lineage_required"):
+        lineage = payload.get("lineage")
+        if not isinstance(lineage, dict):
+            raise ApprovedProfileError("lineage_missing")
+        try:
+            validated_lineage = validate_lineage_artifact(lineage)
+        except LineageValidationError as exc:
+            raise ApprovedProfileError(str(exc)) from exc
+        if validated_lineage.get("lineage_hash") != payload.get("lineage_hash"):
+            raise ApprovedProfileError("lineage_hash_mismatch")
+        for key in ("manifest_hash", "dataset_content_hash", "candidate_profile_hash"):
+            if not _values_equal(payload.get(key), validated_lineage.get(key)):
+                raise ApprovedProfileError(f"lineage_{key}_mismatch")
     live_regime_policy = payload.get("live_regime_policy")
     if not isinstance(live_regime_policy, dict):
         raise ApprovedProfileError("promotion_regime_policy_missing")
@@ -313,9 +333,23 @@ def build_approved_profile(
         "profile_mode": normalized_mode,
         "source_promotion_artifact_path": str(resolved_source_path),
         "source_promotion_content_hash": source_hash,
+        "lineage_hash": verified_promotion.get("lineage_hash"),
+        "legacy_compatibility_used": bool(verified_promotion.get("legacy_compatibility_used")),
         "candidate_profile_hash": verified_promotion.get("candidate_profile_hash"),
         "manifest_hash": verified_promotion.get("manifest_hash"),
         "dataset_content_hash": verified_promotion.get("dataset_content_hash"),
+        "experiment_family_id": verified_promotion.get("experiment_family_id"),
+        "hypothesis_id": verified_promotion.get("hypothesis_id"),
+        "hypothesis_status": verified_promotion.get("hypothesis_status"),
+        "search_budget": verified_promotion.get("search_budget"),
+        "parameter_space_hash": verified_promotion.get("parameter_space_hash"),
+        "parameter_grid_size": verified_promotion.get("parameter_grid_size"),
+        "attempt_index": verified_promotion.get("attempt_index"),
+        "failed_candidate_count": verified_promotion.get("failed_candidate_count"),
+        "holdout_reuse_count": verified_promotion.get("holdout_reuse_count"),
+        "dataset_reuse_policy": verified_promotion.get("dataset_reuse_policy"),
+        "backtest_report_hash": verified_promotion.get("backtest_report_hash"),
+        "walk_forward_report_hash": verified_promotion.get("walk_forward_report_hash"),
         "repository_version": repository_version or verified_promotion.get("repository_version") or "unknown",
         "strategy_name": verified_promotion.get("strategy_name"),
         "market": str(market),
@@ -422,6 +456,11 @@ def verify_profile_source_artifact(profile: dict[str, Any]) -> dict[str, Any]:
     for key in ("candidate_profile_hash", "manifest_hash", "dataset_content_hash", "strategy_name"):
         if not _values_equal(validated.get(key), promotion.get(key)):
             raise ApprovedProfileError(f"source_promotion_{key}_mismatch")
+    if promotion.get("lineage_required"):
+        if not str(validated.get("lineage_hash") or "").strip():
+            raise ApprovedProfileError("lineage_hash_missing")
+        if validated.get("lineage_hash") != promotion.get("lineage_hash"):
+            raise ApprovedProfileError("source_promotion_lineage_hash_mismatch")
     return promotion
 
 
@@ -464,6 +503,11 @@ def verify_profile_evidence_artifacts(profile: dict[str, Any]) -> None:
                 expected_mode=expected_mode,
                 parent_profile=evidence_parent,
                 evidence_path=resolved,
+            )
+            _validate_decision_equivalence_evidence(
+                payload,
+                label=label,
+                parent_profile=evidence_parent,
             )
         except ApprovedProfileError:
             raise
@@ -525,6 +569,8 @@ def load_profile_or_promotion_regime_policy(
                     "approved_profile_hash": profile.get(PROFILE_HASH_FIELD),
                     "source_promotion_content_hash": profile.get("source_promotion_content_hash"),
                     "promotion_content_hash": profile.get("source_promotion_content_hash"),
+                    "lineage_hash": profile.get("lineage_hash"),
+                    "legacy_compatibility_used": bool(profile.get("legacy_compatibility_used")),
                     "source_promotion_artifact_path": profile.get("source_promotion_artifact_path"),
                     "candidate_profile_hash": profile.get("candidate_profile_hash"),
                     "manifest_hash": profile.get("manifest_hash"),
@@ -557,6 +603,8 @@ def load_profile_or_promotion_regime_policy(
                     "approved_profile_hash": profile.get(PROFILE_HASH_FIELD),
                     "source_promotion_content_hash": profile.get("source_promotion_content_hash"),
                     "promotion_content_hash": profile.get("source_promotion_content_hash"),
+                    "lineage_hash": profile.get("lineage_hash"),
+                    "legacy_compatibility_used": bool(profile.get("legacy_compatibility_used")),
                     "source_promotion_artifact_path": profile.get("source_promotion_artifact_path"),
                     "candidate_profile_hash": profile.get("candidate_profile_hash"),
                     "manifest_hash": profile.get("manifest_hash"),
@@ -592,6 +640,8 @@ def load_profile_or_promotion_regime_policy(
                 "approved_profile_contract_scope": approved_profile_contract_scope,
                 "source_promotion_content_hash": profile.get("source_promotion_content_hash"),
                 "promotion_content_hash": profile.get("source_promotion_content_hash"),
+                "lineage_hash": profile.get("lineage_hash"),
+                "legacy_compatibility_used": bool(profile.get("legacy_compatibility_used")),
                 "source_promotion_artifact_path": profile.get("source_promotion_artifact_path"),
                 "candidate_profile_hash": profile.get("candidate_profile_hash"),
                 "manifest_hash": profile.get("manifest_hash"),
@@ -940,6 +990,7 @@ def _verification_result(
         profile_path=None if path is None else str(Path(path).expanduser().resolve()),
         profile_hash=None if profile is None else str(profile.get(PROFILE_HASH_FIELD) or ""),
         promotion_hash=None if profile is None else str(profile.get("source_promotion_content_hash") or ""),
+        lineage_hash=None if profile is None else str(profile.get("lineage_hash") or ""),
         candidate_profile_hash=None if profile is None else str(profile.get("candidate_profile_hash") or ""),
         manifest_hash=None if profile is None else str(profile.get("manifest_hash") or ""),
         dataset_content_hash=None if profile is None else str(profile.get("dataset_content_hash") or ""),
@@ -1008,9 +1059,18 @@ def promote_profile_mode(
             parent_profile=parent,
             evidence_path=evidence_path,
         )
+        _validate_decision_equivalence_evidence(
+            _load_json(evidence_path),
+            label="paper_validation_evidence",
+            parent_profile=parent,
+        )
         child["paper_validation_evidence_path"] = str(evidence_path)
         child["paper_validation_evidence_content_hash"] = evidence_hash
         child["paper_validation_approved_profile_hash"] = parent[PROFILE_HASH_FIELD]
+        _copy_decision_equivalence_fields(
+            child,
+            _load_json(evidence_path),
+        )
         child.pop("live_readiness_evidence_path", None)
         child.pop("live_readiness_evidence_content_hash", None)
         child.pop("live_readiness_approved_profile_hash", None)
@@ -1039,9 +1099,18 @@ def promote_profile_mode(
             parent_profile=parent,
             evidence_path=evidence_path,
         )
+        _validate_decision_equivalence_evidence(
+            _load_json(evidence_path),
+            label="live_readiness_evidence",
+            parent_profile=parent,
+        )
         child["live_readiness_evidence_path"] = str(evidence_path)
         child["live_readiness_evidence_content_hash"] = evidence_hash
         child["live_readiness_approved_profile_hash"] = parent[PROFILE_HASH_FIELD]
+        _copy_decision_equivalence_fields(
+            child,
+            _load_json(evidence_path),
+        )
     child["generated_at"] = generated_at or datetime.now(timezone.utc).isoformat()
     child.pop(PROFILE_HASH_FIELD, None)
     child[PROFILE_HASH_FIELD] = compute_approved_profile_hash(child)
@@ -1072,3 +1141,54 @@ def _validate_transition_evidence_file(
         raise ApprovedProfileError(str(exc)) from exc
     if expected_hash is not None and semantic_hash != expected_hash:
         raise ApprovedProfileError(f"{label}_content_hash_mismatch")
+
+
+def _copy_decision_equivalence_fields(child: dict[str, Any], evidence: dict[str, Any]) -> None:
+    child["decision_equivalence_report_path"] = evidence.get("decision_equivalence_report_path")
+    child["decision_equivalence_content_hash"] = evidence.get("decision_equivalence_content_hash")
+    child["decision_equivalence_matched_decision_count"] = evidence.get("matched_decision_count")
+    child["decision_equivalence_mismatch_count"] = evidence.get("mismatch_count")
+
+
+def _validate_decision_equivalence_evidence(
+    payload: dict[str, Any],
+    *,
+    label: str,
+    parent_profile: dict[str, Any],
+) -> None:
+    path_value = str(payload.get("decision_equivalence_report_path") or "").strip()
+    hash_value = str(payload.get("decision_equivalence_content_hash") or "").strip()
+    if not path_value or not hash_value:
+        raise ApprovedProfileError(f"{label}_decision_equivalence_missing")
+    resolved = resolve_runtime_artifact_path(path_value, label=f"{label}_decision_equivalence")
+    report = _load_json(resolved)
+    recorded_hash = str(report.get("content_hash") or "").strip()
+    if recorded_hash != hash_value:
+        raise ApprovedProfileError(f"{label}_decision_equivalence_hash_mismatch")
+    if compute_decision_equivalence_hash(report) != hash_value:
+        raise ApprovedProfileError(f"{label}_decision_equivalence_hash_mismatch")
+    expected_profile_hash = str(parent_profile.get(PROFILE_HASH_FIELD) or "").strip()
+    actual_profile_hash = str(
+        report.get("approved_profile_hash")
+        or report.get("profile_content_hash")
+        or payload.get("decision_equivalence_approved_profile_hash")
+        or ""
+    ).strip()
+    if actual_profile_hash != expected_profile_hash:
+        raise ApprovedProfileError(f"{label}_decision_equivalence_profile_hash_mismatch")
+    dataset_hash = str(parent_profile.get("dataset_content_hash") or "").strip()
+    actual_dataset_hash = str(
+        report.get("dataset_content_hash")
+        or report.get("data_fingerprint")
+        or payload.get("decision_equivalence_dataset_content_hash")
+        or ""
+    ).strip()
+    if dataset_hash and actual_dataset_hash and actual_dataset_hash != dataset_hash:
+        raise ApprovedProfileError(f"{label}_decision_equivalence_dataset_hash_mismatch")
+    mismatch_count = int(report.get("mismatch_count") or report.get("mismatched_decision_count") or 0)
+    if mismatch_count > 0:
+        raise ApprovedProfileError(f"{label}_decision_equivalence_mismatch_count_nonzero")
+    if bool(report.get("blocked_decision_equivalence")):
+        raise ApprovedProfileError(f"{label}_decision_equivalence_blocked")
+    if report.get("ok") is not True:
+        raise ApprovedProfileError(f"{label}_decision_equivalence_not_ok")

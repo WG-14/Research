@@ -153,6 +153,7 @@ from .strategy_replay import load_replay_candles
 from .research.cli import (
     cmd_research_backtest,
     cmd_research_promote_candidate,
+    cmd_research_reproduce,
     cmd_research_walk_forward,
 )
 from .profile_cli import (
@@ -7172,6 +7173,12 @@ def main(argv: list[str] | None = None) -> int:
     research_promote.add_argument("--experiment-id", required=True)
     research_promote.add_argument("--candidate-id", required=True)
 
+    research_reproduce = sub.add_parser(
+        "research-reproduce",
+        help="verify a promotion artifact and its recorded experiment lineage",
+    )
+    research_reproduce.add_argument("--promotion", required=True)
+
     profile_generate = sub.add_parser(
         "profile-generate",
         help="generate an approved profile artifact from a reviewed promotion artifact",
@@ -7521,6 +7528,8 @@ def main(argv: list[str] | None = None) -> int:
             experiment_id=str(args.experiment_id),
             candidate_id=str(args.candidate_id),
         )
+    elif args.cmd == "research-reproduce":
+        return cmd_research_reproduce(promotion_path=str(args.promotion))
     elif args.cmd == "profile-generate":
         return cmd_profile_generate(
             promotion_path=str(args.promotion),
