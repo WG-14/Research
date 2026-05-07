@@ -224,3 +224,49 @@ def test_print_report_summary_renders_operator_diagnostics(capsys) -> None:
     assert "walk_forward_window_summary=window_count:5,pass:0,fail:5" in output
     assert "top_window_fail_reasons=test_metrics_gate_incompatible:1" in output
     assert "next_action=do_not_promote_review_walk_forward_windows" in output
+
+
+def test_print_report_summary_renders_top_of_book_warning_context(capsys) -> None:
+    report = _report(
+        candidates=[
+            _candidate(
+                "candidate_001",
+                gate="PASS",
+                fail_reasons=[],
+            )
+        ],
+        best_candidate_id="candidate_001",
+        gate_result="PASS",
+    )
+    report["warnings"] = ["top_of_book_optional_coverage_warning"]
+    report["top_of_book_quality_summary"] = {
+        "requested": True,
+        "required": False,
+        "gate_status": "WARN",
+        "coverage_pct": 50.0,
+        "joined_quote_count": 10,
+        "missing_quote_count": 10,
+        "join_tolerance_ms": 3000,
+        "affected_splits": [
+            {"split_name": "validation", "top_of_book_missing_count": 10},
+        ],
+        "next_action": (
+            "collect orderbook top snapshots with sync-orderbook-top, rerun research-backtest, "
+            "and verify top_of_book_coverage_pct"
+        ),
+    }
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+
+    output = capsys.readouterr().out
+    assert "warnings=top_of_book_optional_coverage_warning" in output
+    assert "top_of_book_quote_coverage=requested=1 required=0 gate_status=WARN coverage_pct=50.0" in output
+    assert "joined_count=10 missing_count=10 join_tolerance_ms=3000 affected_splits=validation" in output
+    assert (
+        "top_of_book_limitations=best_bid_ask_only_not_full_depth,"
+        "intra_candle_path_unavailable,execution_reference_price_candle_close"
+    ) in output
+    assert (
+        "top_of_book_next_action=collect orderbook top snapshots with sync-orderbook-top, "
+        "rerun research-backtest, and verify top_of_book_coverage_pct"
+    ) in output

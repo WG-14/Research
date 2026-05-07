@@ -133,12 +133,7 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     print(f"  content_hash={report.get('content_hash')}")
     warnings = report.get("warnings") or []
     print(f"  warnings={','.join(str(item) for item in warnings) if warnings else 'none'}")
-    quote_missing = _top_of_book_missing(report)
-    if quote_missing:
-        print(
-            "  top_of_book_missing=collect orderbook top snapshots with sync-orderbook-top, "
-            "rerun research-backtest, and verify top_of_book_coverage_pct"
-        )
+    _print_top_of_book_summary(report)
 
 
 def _format_counts(counts: dict[str, int]) -> str:
@@ -163,11 +158,31 @@ def _format_walk_forward_window_summary(summary: ResearchRunSummary) -> str:
     )
 
 
-def _top_of_book_missing(report: dict[str, object]) -> bool:
-    quality = report.get("dataset_quality_reports")
-    if not isinstance(quality, dict):
-        return False
-    for payload in quality.values():
-        if isinstance(payload, dict) and int(payload.get("top_of_book_missing_count") or 0) > 0:
-            return True
-    return False
+def _print_top_of_book_summary(report: dict[str, object]) -> None:
+    summary = report.get("top_of_book_quality_summary")
+    if not isinstance(summary, dict) or not bool(summary.get("requested")):
+        return
+    affected = summary.get("affected_splits")
+    affected_names = []
+    if isinstance(affected, list):
+        affected_names = [
+            str(item.get("split_name"))
+            for item in affected
+            if isinstance(item, dict) and item.get("split_name")
+        ]
+    print(
+        "  top_of_book_quote_coverage="
+        f"requested=1 required={1 if summary.get('required') else 0} "
+        f"gate_status={summary.get('gate_status')} "
+        f"coverage_pct={summary.get('coverage_pct')} "
+        f"joined_count={summary.get('joined_quote_count')} "
+        f"missing_count={summary.get('missing_quote_count')} "
+        f"join_tolerance_ms={summary.get('join_tolerance_ms')} "
+        f"affected_splits={','.join(affected_names) if affected_names else 'none'}"
+    )
+    print(
+        "  top_of_book_limitations="
+        "best_bid_ask_only_not_full_depth,intra_candle_path_unavailable,execution_reference_price_candle_close"
+    )
+    if summary.get("next_action"):
+        print(f"  top_of_book_next_action={summary.get('next_action')}")

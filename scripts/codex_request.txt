@@ -1,261 +1,241 @@
 You are Codex working directly in the GitHub repository `WG-14/bithumb-bot`.
 
-The previous P0/P1 patches appear to have closed the urgent research evidence gaps:
+The latest patches appear to have closed the urgent P0 evidence-chain gaps and implemented the first top-of-book research data layer:
 
-* `DatasetQualityReport` exists and is wired into research backtest/walk-forward, candidate gates, promotion/profile evidence, and documentation.
-* Dataset quality coverage now uses expected buckets actually present, not raw row count.
-* Long-range missing diagnostics are bounded.
-* Execution calibration now checks partial fill rate, unfilled rate, sample count, and execution-quality gate status against scenario assumptions.
-* Legacy/no-lineage dataset-quality bypass is explicit and warning-backed.
-* pytest has reportedly passed.
+* `orderbook_top_snapshots` schema exists.
+* top-of-book public quote validation/storage exists.
+* `sync-orderbook-top` exists.
+* `dataset.top_of_book` manifest parsing exists and fails closed on unsupported fields.
+* research dataset loading can join nearest top-of-book snapshots by candle timestamp and tolerance.
+* dataset quality reports include quote coverage when top-of-book is configured.
+* `ExecutionRequest` receives `best_bid`, `best_ask`, and `spread_bps` when joined quote data exists.
+* docs now correctly say top-of-book is not full depth and does not solve intra-candle path.
+* pytest reportedly passes.
 
-Your task is **not** to redo those P0/P1 fixes unless verification proves they are incomplete. Your task is to move to the next structural step: add a **top-of-book research data layer** so the repository can begin validating execution feasibility instead of relying only on candle-close execution assumptions.
+Your task is **not** to redo the top-of-book implementation. Your task is to perform the next small hardening pass:
 
-Keep the core concern sharp:
+1. Remove or isolate test-only strategy names from the production/operator-facing research strategy registry.
+2. Improve operator visibility for optional top-of-book quote coverage warnings.
+3. Keep quote-aware execution policy out of scope unless a minimal, fully tested hook already exists.
 
-The repo is becoming a reproducible, evidence-bound automatic trading experiment system. Candle-only research remains valid only for candle-appropriate directional/filter strategies. It is still not enough for spread-sensitive, liquidity-sensitive, partial-fill-sensitive, microstructure, or intra-candle-path-sensitive strategies. The next design change should add top-of-book snapshots and quote-aware research evidence without pretending top-of-book is full orderbook depth or tick-level path data.
+Do not weaken the core problem statement:
 
-Do not turn this into generic market-data cleanup. Implement concrete repository changes that can be verified and tested.
+This repository is becoming a reproducible, evidence-bound automatic trading experiment system. Candle-only research remains valid only for candle-appropriate strategies. Top-of-book metadata improves execution feasibility evidence, but it is still not full orderbook depth, queue position, tick data, market impact, or intra-candle path. Operator-facing research reports must make missing optional quote coverage visible without silently treating it as full evidence.
+
+Do not turn this into generic cleanup. Make concrete, testable repository changes.
 
 Inspect first:
 
-* `src/bithumb_bot/db_core.py`
-* `src/bithumb_bot/marketdata.py`
-* `src/bithumb_bot/public_api_orderbook.py`
+* `src/bithumb_bot/research/strategy_registry.py`
+* `src/bithumb_bot/research/validation_protocol.py`
 * `src/bithumb_bot/research/dataset_snapshot.py`
 * `src/bithumb_bot/research/backtest_engine.py`
-* `src/bithumb_bot/research/execution_model/base.py`
-* `src/bithumb_bot/research/execution_model/fixed_bps.py`
-* `src/bithumb_bot/research/execution_model/stress.py`
-* `src/bithumb_bot/research/validation_protocol.py`
+* `src/bithumb_bot/research/cli.py`
 * `src/bithumb_bot/research/experiment_manifest.py`
-* `src/bithumb_bot/research/strategy_registry.py`
-* CLI command registration in `src/bithumb_bot/app.py` and research CLI modules
-* existing tests for dataset quality, execution calibration, research reproducibility, schema, and CLI behavior
+* `src/bithumb_bot/research/execution_model/base.py`
+* `src/bithumb_bot/app.py`
+* `src/bithumb_bot/orderbook_top_store.py`
+* `tests/test_orderbook_top_store.py`
+* existing tests covering research backtest, dataset quality, CLI summaries, strategy registry, promotion, and reproducibility
 * `docs/research-validation.md`
 
-Maintain these as hypotheses until verified in code.
+Keep these as hypotheses until verified in code.
 
 Hypothesis 1:
-The repo already has public top-of-book fetch helpers, but no persisted `orderbook_top_snapshots` research data table.
+A test-only strategy name such as `top_of_book_required_test` is exposed through the production research strategy registry and can be used in a real operator manifest.
 
 Verification:
-Inspect `marketdata.py`, `public_api_orderbook.py`, and `db_core.py`. Confirm whether a table exists and whether any command stores validated best bid/ask snapshots.
-
-If not implemented, add it.
-
-Required schema:
-
-```sql
-CREATE TABLE IF NOT EXISTS orderbook_top_snapshots (
-    ts INTEGER NOT NULL,
-    pair TEXT NOT NULL,
-    bid_price REAL NOT NULL,
-    ask_price REAL NOT NULL,
-    spread_bps REAL NOT NULL,
-    source TEXT NOT NULL,
-    observed_at_epoch_sec REAL,
-    PRIMARY KEY (ts, pair, source)
-);
-```
-
-Add an index suitable for nearest-snapshot lookup:
-
-```sql
-CREATE INDEX IF NOT EXISTS idx_orderbook_top_pair_ts
-ON orderbook_top_snapshots(pair, ts);
-```
-
-Validation requirements:
-
-* bid and ask must be finite positive numbers.
-* bid must be `<= ask`.
-* spread_bps must be finite and non-negative.
-* pair/market normalization must follow the repo’s existing market normalization conventions.
-* `source` must be explicit, for example `bithumb_public_v1_orderbook`.
-* Do not store fabricated quotes.
-* Do not claim this table contains full depth.
-
-Hypothesis 2:
-Research backtests currently have `ExecutionRequest.best_bid`, `best_ask`, and `spread_bps` fields available, but the research path still leaves them empty because it only uses candle close as the execution reference.
-
-Verification:
-Inspect `run_sma_backtest()` and execution model call sites. Confirm whether bid/ask/spread are ever populated from research data.
-
-If not implemented, add quote-aware research join as an optional dataset layer.
-
-Design requirements:
-
-* Do not break existing candle-only SMA research.
-* Add optional top-of-book support for research datasets.
-* Join signal candle timestamp to the nearest orderbook top snapshot within a configurable tolerance.
-* Default tolerance should be conservative and explicit, for example 3000 ms, unless a better existing interval/tolerance policy exists.
-* If no quote snapshot exists within tolerance, record missing quote coverage explicitly.
-* Do not fabricate best bid/ask from candle OHLC.
-* Do not fail candle-only SMA research by default just because top-of-book is absent.
-* Do allow future strategies to require quote data and fail closed when it is absent.
-
-Implementation options:
-Prefer a small, typed dataset extension over a large manifest redesign. A practical first version can add:
-
-```json
-"dataset": {
-  "source": "sqlite_candles",
-  "snapshot_id": "...",
-  "top_of_book": {
-    "source": "sqlite_orderbook_top_snapshots",
-    "required": false,
-    "join_tolerance_ms": 3000,
-    "missing_policy": "warn"
-  },
-  "train": {...},
-  "validation": {...}
-}
-```
-
-If changing manifest schema is too large, implement the internal loader and report fields first, and document that quote join is opt-in through a new explicit manifest field. Unsupported or unknown top-of-book fields must fail manifest parsing rather than being silently ignored.
-
-Hypothesis 3:
-Dataset quality reports now cover candles well, but they do not yet include quote coverage when top-of-book data is part of the research contract.
-
-Verification:
-Inspect `DatasetQualityReport` payload construction. Confirm whether top-of-book availability, joined quote count, missing quote count, stale quote count, and join tolerance are tracked.
-
-If not, extend dataset quality reporting when top-of-book is configured.
-
-Required quote coverage fields when top-of-book is requested:
-
-```json
-{
-  "top_of_book_requested": true,
-  "top_of_book_required": false,
-  "top_of_book_source": "sqlite_orderbook_top_snapshots",
-  "top_of_book_join_tolerance_ms": 3000,
-  "top_of_book_expected_signal_count": 123,
-  "top_of_book_joined_count": 120,
-  "top_of_book_missing_count": 3,
-  "top_of_book_missing_sample": [ ... ],
-  "top_of_book_coverage_pct": 97.56097561,
-  "top_of_book_gate_status": "PASS|WARN|FAIL",
-  "top_of_book_gate_reasons": []
-}
-```
-
-Policy:
-
-* If top-of-book is optional and missing, report WARN or explicit limitation, not silent PASS.
-* If top-of-book is required and missing or below threshold, fail closed.
-* If top-of-book is not configured, keep current candle-only limitation fields explicit:
-
-  * `top_of_book_available=false`
-  * `orderbook_depth_available=false`
-  * `intra_candle_path_available=false`
-
-Hypothesis 4:
-Execution models can carry quote fields in metadata, but fixed-bps/stress execution still uses candle close as the reference price. The first quote-aware step should populate metadata and optionally add spread-based gating/cost adjustment without pretending to model full depth.
-
-Verification:
-Inspect `ExecutionRequest`, `ExecutionFill`, `FixedBpsExecutionModel`, and `StressExecutionModel`.
+Inspect `strategy_registry.py` and all tests that depend on this name. Determine whether it is intended to be a production-supported strategy or only a test hook.
 
 Required behavior:
+Production/operator-facing strategy names must remain clean. Test-only strategy names must not look like real supported strategies.
 
-* When a quote snapshot is joined, pass `best_bid`, `best_ask`, and `spread_bps` into `ExecutionRequest`.
-* Ensure `ExecutionFill.as_dict()` records these values.
-* Keep `reference_price` behavior explicit.
-* Do not replace reference price with bid/ask unless you implement and test a clear quote-aware execution policy.
-* Add an optional spread gate or warning metadata if simple and low-risk:
+Acceptable fixes:
 
-  * Example: if `spread_bps > max_allowed_spread_bps`, the scenario can block the trade or record an execution warning.
-* If spread gate is too broad for this pass, do not implement it. Instead ensure quote metadata is present in execution metadata so future spread-gate work is straightforward.
-
-Hypothesis 5:
-The repository still lacks a strategy/data requirement contract distinguishing candle-appropriate strategies from quote-sensitive or microstructure-sensitive strategies.
-
-Verification:
-Inspect `strategy_registry.py` and manifest parsing. Determine whether research strategies can declare required data sources.
-
-Implement minimally:
-
-* Keep `sma_with_filter` runnable with candles.
-* Add a registry-level data requirement declaration, even if only used by current/future validation.
-* Example:
+Option A — preferred:
+Rename the test-only strategy to a clearly private test hook, for example:
 
 ```python
-required_data = ("candles",)
-optional_data = ("top_of_book",)
-unsupported_without = ()
+"__test_top_of_book_required__"
 ```
 
-* Add a path for future strategies to require `top_of_book`.
-* If a strategy requires `top_of_book` and manifest/dataset lacks it, fail closed with a reason such as:
+and make the naming convention explicit in tests.
+
+Option B:
+Remove the test-only strategy from `resolve_research_strategy()` and keep only a test helper for data requirement validation.
+
+Option C:
+Gate test-only strategy resolution behind an explicit internal/test flag, if such a pattern already exists in the repo.
+
+Constraints:
+
+* `sma_with_filter` must remain supported with `required_data=("candles",)` and `optional_data=("top_of_book",)`.
+* Unknown real strategy names must continue to fail with an operator-readable unsupported strategy error.
+* Do not add fake microstructure strategy support.
+* Do not make `top_of_book_required_test` appear in docs as a production strategy.
+* If any test-only strategy remains, its name must clearly communicate that it is not an operator strategy.
+
+Reason code requirement:
+If a strategy requires top-of-book and the manifest lacks `dataset.top_of_book`, fail closed with:
 
 ```text
 research_data_requirement_top_of_book_missing
 ```
 
-* Do not add fake microstructure strategy support.
+or preserve this exact existing reason if already implemented.
+
+Hypothesis 2:
+Optional top-of-book missing coverage currently appears inside split-level dataset quality reports as `top_of_book_gate_status="WARN"`, but may not be visible in candidate-level warnings or the CLI summary. Operators should not need to open raw JSON to notice optional quote coverage problems.
+
+Verification:
+Inspect report payload construction and research CLI summary formatting. Determine whether optional quote WARN is propagated to:
+
+* top-level report summary
+* candidate `warnings`
+* CLI output / operator next action
+
+Required behavior:
+When `dataset.top_of_book` is configured with `required=false` and quote coverage is incomplete, research should still run, but the warning must be visible.
+
+Add candidate warning, for example:
+
+```text
+top_of_book_optional_coverage_warning
+```
+
+Include enough context in report payload or CLI output to show:
+
+* `top_of_book_gate_status`
+* `top_of_book_coverage_pct`
+* `top_of_book_missing_count`
+* affected split names
+* next action
+
+Suggested next action text:
+
+```text
+collect orderbook top snapshots with sync-orderbook-top, rerun research-backtest, and verify top_of_book_coverage_pct
+```
+
+Required behavior for required top-of-book:
+If `dataset.top_of_book.required=true` or `missing_policy=fail`, missing or insufficient quote coverage must remain fail-closed and must propagate deterministic reasons into candidate gates. Do not convert required failures into warnings.
+
+Hypothesis 3:
+Top-of-book execution metadata is now carried through research trades, but fill pricing still uses candle close plus fixed/stress bps. This is acceptable for this patch, but docs and reports must not imply quote-aware execution pricing.
+
+Verification:
+Inspect execution metadata and docs. Confirm that quote fields are metadata only unless an explicit execution model changes reference pricing.
+
+Required behavior:
+
+* Keep `reference_price` as candle close unless there is already an explicit quote-aware execution model.
+* Continue recording `best_bid`, `best_ask`, and `spread_bps` when joined quotes exist.
+* Continue recording limitations when quotes are absent.
+* Do not implement spread gate or quote-aware execution pricing in this patch unless it is already partially implemented and can be finished safely with tests.
+* Do not claim full depth, market impact, queue position, or intra-candle path support.
+
+Hypothesis 4:
+CLI coverage for `sync-orderbook-top` may be incomplete even if the command function exists.
+
+Verification:
+Inspect command registration in `app.py` and tests. Confirm whether `sync-orderbook-top` is registered, callable, and tested with mocked public API output.
+
+If missing or weak, add tests for:
+
+* command registration
+* mocked successful quote fetch
+* DB row written
+* output includes pair, bid, ask, spread_bps, source, row_count
+* output includes next action
+* invalid quote fails before insert
+* no repo-local artifact writes
+
+Do not call the real Bithumb API in tests.
+
+Hypothesis 5:
+The top-of-book feature is documented, but operator-facing failure modes may still be too buried.
+
+Verification:
+Inspect `docs/research-validation.md` and any runbook or operator reporting docs.
+
+Required docs updates:
+Only update docs to match implemented behavior.
+
+Ensure docs clearly state:
+
+* `sma_with_filter` supports candle-only research.
+* `dataset.top_of_book` is optional unless required by strategy or manifest.
+* optional top-of-book missing coverage produces visible warning, not silent success.
+* required top-of-book missing coverage fails closed.
+* top-of-book is not full depth.
+* top-of-book does not solve intra-candle path.
+* `sync-orderbook-top` collects only current public best bid/ask snapshots.
+* research quote joins use nearest snapshot within tolerance.
+* operators should rerun research after collecting quote snapshots.
+* quote-aware execution pricing, spread gate, full depth, ticks, and path replay remain future work unless implemented.
 
 Scope limits:
 
-This patch should implement P2 top-of-book snapshot and quote-aware research metadata. It should not attempt full orderbook depth, trade ticks, intra-candle path reconstruction, or full quote-aware slippage modeling unless the implementation is small, obvious, and fully tested.
+This is a hardening and observability patch, not a new execution model patch.
 
-Specifically out of scope unless already trivial:
+Out of scope unless already trivial and fully tested:
 
-* full depth snapshots
-* tick trade tape
+* spread gate
+* quote-aware fill pricing
+* full orderbook depth
+* trade ticks
 * queue position
+* market impact
 * intra-candle path reconstruction
-* latency-aware quote replay beyond simple nearest snapshot
-* market impact model
+* latency-aware quote replay
 * live order policy changes
 * live arming behavior changes
 
 Testing requirements:
 
-Add or update tests. Do not rely only on manual review.
+Add or update tests. Do not rely on manual review.
 
 Minimum tests:
 
-Schema / storage:
+Strategy registry / data requirements:
 
-1. `ensure_schema()` creates `orderbook_top_snapshots`.
-2. Valid top-of-book snapshot insert succeeds.
-3. Invalid quote with bid > ask fails validation before insert.
-4. Non-positive bid/ask fails validation before insert.
-5. spread_bps is computed correctly.
-6. Upsert/primary-key behavior is deterministic.
+1. `sma_with_filter` remains a supported production research strategy.
+2. `sma_with_filter` has candles required and top-of-book optional.
+3. Unknown strategy names fail clearly.
+4. Any test-only top-of-book-required strategy name is clearly private or test-scoped.
+5. A top-of-book-required test hook fails closed when `dataset.top_of_book` is absent.
+6. The fail reason includes `research_data_requirement_top_of_book_missing`.
 
-CLI / ingestion:
+Optional quote warning visibility:
 
-7. If adding a command such as `sync-orderbook-top`, test it with mocked public API output.
-8. Command output should include pair, bid, ask, spread_bps, source, and row count.
-9. Command must not write repo-local artifacts.
+7. Optional top-of-book configured but missing quotes does not fail candidate solely because quotes are missing.
+8. The report includes `top_of_book_gate_status="WARN"`.
+9. Candidate warnings include `top_of_book_optional_coverage_warning` or equivalent deterministic warning.
+10. CLI summary prints top-of-book coverage status, missing count, and next action.
+11. The warning is deterministic and included in content-hashed report payload if appropriate.
 
-Research join:
+Required quote fail-closed:
 
-10. When top-of-book is configured and snapshots exist within tolerance, research execution metadata includes `best_bid`, `best_ask`, and `spread_bps`.
-11. When top-of-book is configured but missing within tolerance, dataset quality/reporting records missing quote count and sample.
-12. Optional top-of-book missing does not break candle-only SMA research.
-13. Required top-of-book missing fails closed with a deterministic reason.
-14. Joined quote snapshot must be the nearest within tolerance, not an arbitrary row.
-15. Quote join must be deterministic when multiple candidates are equally near; define and test tie-break behavior.
-
-Dataset quality:
-
-16. Quote coverage fields appear only when top-of-book is requested or configured.
-17. Existing candle quality tests still pass.
-18. `content_hash` remains deterministic with quote coverage fields.
-
-Strategy data contract:
-
-19. `sma_with_filter` remains valid with candle-only data.
-20. A test-only or registry-level strategy requiring top-of-book fails closed when top-of-book is absent.
-21. Unknown data requirement fields or unsupported dataset source fields fail parsing rather than being ignored.
+12. Required top-of-book missing quotes fails dataset quality and candidate gate.
+13. Gate reasons include top-of-book missing or coverage-below-threshold reason.
+14. Promotion remains impossible for failed required quote coverage.
 
 Execution metadata:
 
-22. `ExecutionFill.as_dict()` includes joined `best_bid`, `best_ask`, and `spread_bps` when present.
-23. Candle-only execution metadata continues to explicitly record no quote/depth/path data.
+15. When joined quotes exist, research trade execution metadata includes `best_bid`, `best_ask`, and `spread_bps`.
+16. When quotes are absent, execution metadata does not fabricate values.
+17. Existing candle-only research still works and records the correct limitations.
+
+CLI / ingestion:
+
+18. `sync-orderbook-top` is registered and callable.
+19. Mocked quote fetch writes one DB row.
+20. CLI output includes pair, bid, ask, spread_bps, source, row_count, and next action.
+21. Tests do not hit the real network.
+
+Regression:
+
+22. Existing dataset quality, execution calibration, promotion, and research reproducibility tests still pass.
 
 Run at least:
 
@@ -263,7 +243,7 @@ Run at least:
 uv run pytest -q
 ```
 
-If full pytest is too slow, run the relevant subsets first, then run full pytest if feasible. In the final report, state exactly what was run.
+If full pytest is too slow, run targeted subsets first, then full pytest if feasible. In the final report, state exactly what was run.
 
 Operational and recovery constraints:
 
@@ -271,50 +251,30 @@ Operational and recovery constraints:
 * Do not change live arming behavior.
 * Do not change real order submission behavior.
 * Do not write runtime artifacts into the repository.
-* Use existing `PathManager` / runtime data policy where applicable.
+* Use existing runtime DB/path policy.
 * Preserve deterministic hashing.
 * Do not silently ignore unsupported manifest fields.
-* Do not fabricate quotes or depth.
-* Keep all new failure reasons deterministic, reason-coded, and searchable.
+* Do not fabricate quote/depth/path data.
+* Keep new warnings and fail reasons deterministic, reason-coded, and searchable.
 * Avoid heavy dependencies.
-* Keep this patch reversible and safe if operators choose not to collect top-of-book data.
+* Keep top-of-book optional for current SMA research unless explicitly required.
 
 Observability requirements:
 
-Reports should make the following visible:
+Research reports and CLI summaries should make the following visible when relevant:
 
-* whether top-of-book was requested
-* whether it was required
+* top-of-book requested
+* top-of-book required
 * join tolerance
 * joined quote count
 * missing quote count
 * quote coverage percentage
-* quote gate status and reasons
-* whether execution metadata was quote-aware or candle-close-only
+* quote gate status
+* affected split names
+* whether this is a warning or a fail-closed condition
+* next action for operators
 * explicit limitation that top-of-book is not full depth
 * explicit limitation that intra-candle path is still unavailable
-
-CLI/operator output should include concrete next actions on failure, for example:
-
-```text
-top_of_book_missing: collect orderbook top snapshots with sync-orderbook-top, rerun research-backtest, and verify top_of_book_coverage_pct.
-```
-
-Documentation requirements:
-
-Update `docs/research-validation.md` after code changes.
-
-Must clarify:
-
-* Candle-only research remains valid only for candle-appropriate strategies.
-* Top-of-book snapshots are optional unless required by strategy or manifest.
-* Top-of-book is not full orderbook depth.
-* Top-of-book does not solve intra-candle path.
-* Quote coverage is now part of dataset quality when configured.
-* Missing required quote coverage fails closed.
-* Optional quote coverage must be visible and warning-like, not silently ignored.
-* How to collect top-of-book snapshots.
-* How to rerun research after quote data is collected.
 
 Final report format:
 
@@ -336,7 +296,7 @@ Return a concise engineering report with these sections:
 3. Implemented Changes
 
    * Files changed
-   * New schemas, functions, commands, manifest fields, report fields, and reason codes
+   * New or changed strategy names, warning codes, report fields, CLI output, tests
    * Backward compatibility behavior
 
 4. Validation and Tests
@@ -347,22 +307,24 @@ Return a concise engineering report with these sections:
 
 5. Operational Impact
 
-   * How operators collect top-of-book snapshots
-   * How quote coverage failures surface
+   * How operators see optional quote warnings
+   * How required quote failures surface
    * How candle-only research behavior changes or does not change
    * Whether promotion/live readiness behavior changed
 
 6. Remaining Risks / Follow-up
 
-   * full orderbook depth
-   * trade ticks
-   * intra-candle path
-   * quote-aware slippage model
+   * quote-aware execution pricing
    * spread gate
-   * long-range historical quote backfill
+   * full depth
+   * trade ticks
+   * queue position
+   * market impact
+   * intra-candle path
+   * long-range quote backfill
 
 7. Suggested Next PRs
 
-   * P2/P3 priority list for anything not completed
+   * P1/P2/P3 priority list for anything not completed
 
 Do not produce a generic architecture essay. Make concrete repository changes where feasible, run tests, and report with exact file/function references.

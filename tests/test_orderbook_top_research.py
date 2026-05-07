@@ -11,6 +11,7 @@ from bithumb_bot.paths import PathManager
 from bithumb_bot.research.backtest_engine import run_sma_backtest
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot, build_dataset_quality_report, load_dataset_split
 from bithumb_bot.research.experiment_manifest import DateRange, ManifestValidationError, parse_manifest
+from bithumb_bot.research.strategy_registry import TEST_TOP_OF_BOOK_REQUIRED_STRATEGY
 from bithumb_bot.research.validation_protocol import ResearchValidationError, run_research_backtest
 
 
@@ -151,8 +152,51 @@ def test_required_top_of_book_missing_fails_dataset_quality_and_candidate_gate(t
     )
 
     assert report["dataset_quality_gate_status"] == "FAIL"
+    assert report["best_candidate_id"] is None
+    assert report["gate_result"] == "FAIL"
     assert "dataset_quality_train_top_of_book_missing" in report["candidates"][0]["gate_fail_reasons"]
     assert report["dataset_quality_reports"]["train"]["top_of_book_gate_status"] == "FAIL"
+    assert report["top_of_book_quality_summary"]["gate_status"] == "FAIL"
+    assert report["top_of_book_quality_summary"]["fail_closed"] is True
+
+
+def test_optional_top_of_book_missing_is_visible_warning_not_candidate_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "quotes.sqlite"
+    _create_candle_db(db_path)
+    manifest = _manifest(
+        top_of_book={
+            "source": "sqlite_orderbook_top_snapshots",
+            "required": False,
+            "missing_policy": "warn",
+            "join_tolerance_ms": 3000,
+        }
+    )
+
+    report = run_research_backtest(
+        manifest=manifest,
+        db_path=db_path,
+        manager=_manager(tmp_path, monkeypatch),
+        generated_at="2026-05-07T00:00:00+00:00",
+    )
+
+    candidate = report["candidates"][0]
+    summary = report["top_of_book_quality_summary"]
+    assert report["dataset_quality_gate_status"] == "PASS"
+    assert report["dataset_quality_reports"]["train"]["top_of_book_gate_status"] == "WARN"
+    assert "top_of_book_optional_coverage_warning" in report["warnings"]
+    assert "top_of_book_optional_coverage_warning" in candidate["warnings"]
+    assert "dataset_quality_train_top_of_book_missing" not in candidate["gate_fail_reasons"]
+    assert summary["gate_status"] == "WARN"
+    assert summary["coverage_pct"] == 0.0
+    assert summary["missing_quote_count"] == 2880
+    assert [item["split_name"] for item in summary["affected_splits"]] == ["train", "validation"]
+    assert summary["next_action"] == (
+        "collect orderbook top snapshots with sync-orderbook-top, rerun research-backtest, "
+        "and verify top_of_book_coverage_pct"
+    )
 
 
 def test_research_backtest_metadata_includes_joined_top_of_book(tmp_path: Path, monkeypatch) -> None:
@@ -189,9 +233,11 @@ def test_research_backtest_metadata_includes_joined_top_of_book(tmp_path: Path, 
     assert metadata[0]["best_bid"] == 99.0
     assert metadata[0]["best_ask"] == 101.0
     assert metadata[0]["spread_bps"] == 200.0
+    assert metadata[0]["reference_price"] in {98.0, 99.0, 100.0, 101.0, 102.0}
     assert report["dataset_quality_reports"]["train"]["top_of_book_gate_status"] == "PASS"
     assert report["data_limitations"]["top_of_book_available"] is True
     assert report["data_limitations"]["orderbook_depth_available"] is False
+    assert report["data_limitations"]["execution_reference_price"] == "candle_close"
 
 
 def test_strategy_requiring_top_of_book_fails_closed_when_manifest_lacks_it(tmp_path: Path, monkeypatch) -> None:
@@ -200,7 +246,7 @@ def test_strategy_requiring_top_of_book_fails_closed_when_manifest_lacks_it(tmp_
 
     with pytest.raises(ResearchValidationError, match="research_data_requirement_top_of_book_missing"):
         run_research_backtest(
-            manifest=_manifest(strategy_name="top_of_book_required_test"),
+            manifest=_manifest(strategy_name=TEST_TOP_OF_BOOK_REQUIRED_STRATEGY),
             db_path=db_path,
             manager=_manager(tmp_path, monkeypatch),
         )

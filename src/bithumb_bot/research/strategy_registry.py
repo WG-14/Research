@@ -25,16 +25,19 @@ class ResearchStrategyDataRequirements:
     unsupported_without: tuple[str, ...] = ()
 
 
+TEST_TOP_OF_BOOK_REQUIRED_STRATEGY = "__test_top_of_book_required__"
+
+
 def research_strategy_data_requirements(strategy_name: str) -> ResearchStrategyDataRequirements:
     if strategy_name == "sma_with_filter":
         return ResearchStrategyDataRequirements(required_data=("candles",), optional_data=("top_of_book",))
-    if strategy_name == "top_of_book_required_test":
+    if strategy_name == TEST_TOP_OF_BOOK_REQUIRED_STRATEGY:
         return ResearchStrategyDataRequirements(required_data=("candles", "top_of_book"))
     raise ResearchStrategyRegistryError(f"unsupported research strategy: {strategy_name}")
 
 
 def resolve_research_strategy(strategy_name: str) -> ResearchStrategyRunner:
-    if strategy_name in {"sma_with_filter", "top_of_book_required_test"}:
+    if strategy_name in {"sma_with_filter", TEST_TOP_OF_BOOK_REQUIRED_STRATEGY}:
         return _run_sma_with_filter
     raise ResearchStrategyRegistryError(f"unsupported research strategy: {strategy_name}")
 

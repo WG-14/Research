@@ -252,6 +252,10 @@ def test_cmd_sync_orderbook_top_persists_validated_quote(monkeypatch, capsys, _s
     assert "spread_bps=200.00000000" in captured.out
     assert "source=bithumb_public_v1_orderbook" in captured.out
     assert "row_count=1" in captured.out
+    assert (
+        "next_action=collect orderbook top snapshots with sync-orderbook-top, "
+        "rerun research-backtest, and verify top_of_book_coverage_pct"
+    ) in captured.out
     with sqlite3.connect(settings.DB_PATH) as conn:
         row = conn.execute(
             "SELECT ts, pair, bid_price, ask_price, spread_bps, source FROM orderbook_top_snapshots"
@@ -264,6 +268,17 @@ def test_cmd_sync_orderbook_top_persists_validated_quote(monkeypatch, capsys, _s
         200.0,
         "bithumb_public_v1_orderbook",
     )
+
+
+def test_sync_orderbook_top_is_registered_in_main_dispatch(monkeypatch, capsys, _settings_guard) -> None:
+    calls: list[str | None] = []
+    monkeypatch.setattr("bithumb_bot.app.cmd_sync_orderbook_top", lambda pair=None: calls.append(pair))
+
+    from bithumb_bot.app import main
+
+    assert main(["sync-orderbook-top", "--pair", "BTC_KRW"]) == 0
+
+    assert calls == ["BTC_KRW"]
 
 
 def test_cmd_ticker_uses_canonical_market_input(monkeypatch, capsys, _settings_guard) -> None:

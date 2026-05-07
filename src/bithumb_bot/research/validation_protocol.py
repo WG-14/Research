@@ -34,6 +34,13 @@ class ResearchValidationError(ValueError):
     pass
 
 
+TOP_OF_BOOK_OPTIONAL_COVERAGE_WARNING = "top_of_book_optional_coverage_warning"
+TOP_OF_BOOK_OPERATOR_NEXT_ACTION = (
+    "collect orderbook top snapshots with sync-orderbook-top, rerun research-backtest, "
+    "and verify top_of_book_coverage_pct"
+)
+
+
 def run_research_backtest(
     *,
     manifest: ExperimentManifest,
@@ -153,6 +160,8 @@ def _evaluate_candidates(
     dataset_hash = combined_dataset_fingerprint(tuple(snapshots.values()))
     dataset_quality_hash = combined_dataset_quality_hash(tuple(quality_reports.values()))
     dataset_quality_status, dataset_quality_reasons = _combined_dataset_quality_gate(quality_reports)
+    dataset_warning_codes = _dataset_quality_warning_codes(quality_reports)
+    top_of_book_quality_summary = _top_of_book_quality_summary(quality_reports)
     runner = resolve_research_strategy(manifest.strategy_name)
 
     for scenario_index, scenario in enumerate(manifest.execution_model.scenarios):
@@ -356,6 +365,7 @@ def _evaluate_candidates(
                         split_name: report.content_hash
                         for split_name, report in sorted(quality_reports.items())
                     },
+                    "top_of_book_quality_summary": top_of_book_quality_summary,
                     "strategy_name": manifest.strategy_name,
                     "parameter_candidate_id": base["candidate_id"],
                     "parameter_values": params,
@@ -374,7 +384,9 @@ def _evaluate_candidates(
             )
             candidate_payload["scenario_results"].append(scenario_result)
             candidate_payload["warnings"] = sorted(
-                set(candidate_payload.get("warnings") or ()) | set(base.get("warnings") or ())
+                set(candidate_payload.get("warnings") or ())
+                | set(base.get("warnings") or ())
+                | set(dataset_warning_codes)
             )
             if candidate_payload.get("_primary_scenario_result") is None:
                 candidate_payload["_primary_scenario_result"] = scenario_result
@@ -760,6 +772,9 @@ def _report_payload(
     dataset_quality_status, dataset_quality_reasons = _combined_dataset_quality_gate(
         {report.payload["split_name"]: report for report in quality_reports}
     )
+    top_of_book_quality_summary = _top_of_book_quality_summary(
+        {str(report.payload["split_name"]): report for report in quality_reports}
+    )
     top_of_book_requested = manifest.dataset.top_of_book is not None
     top_of_book_joined_count = sum(
         int(report.payload.get("top_of_book_joined_count") or 0)
@@ -847,7 +862,11 @@ def _report_payload(
             "intra_candle_path_available": False,
             "execution_reference_price": "candle_close",
             "intra_candle_policy": "close_price_only_no_intracandle_path",
+            "top_of_book_join_tolerance_ms": (
+                manifest.dataset.top_of_book.join_tolerance_ms if manifest.dataset.top_of_book else None
+            ),
         },
+        "top_of_book_quality_summary": top_of_book_quality_summary,
         "strategy_name": manifest.strategy_name,
         "regime_classifier_version": MARKET_REGIME_VERSION,
         "regime_acceptance_gate": manifest.acceptance_gate.regime_acceptance_gate.as_dict(),
@@ -1001,6 +1020,103 @@ def _combined_dataset_quality_gate(
             for reason in report.quality_gate_reasons or ("dataset_quality_failed",):
                 reasons.append(f"dataset_quality_{split_name}_{reason}")
     return ("PASS" if not reasons else "FAIL", reasons)
+
+
+def _dataset_quality_warning_codes(reports: dict[str, DatasetQualityReport]) -> list[str]:
+    summary = _top_of_book_quality_summary(reports)
+    if summary.get("gate_status") == "WARN":
+        return [TOP_OF_BOOK_OPTIONAL_COVERAGE_WARNING]
+    return []
+
+
+def _top_of_book_quality_summary(reports: dict[str, DatasetQualityReport]) -> dict[str, Any]:
+    requested_reports = [
+        (split_name, report.payload)
+        for split_name, report in sorted(reports.items())
+        if bool(report.payload.get("top_of_book_requested"))
+    ]
+    if not requested_reports:
+        return {
+            "requested": False,
+            "required": False,
+            "gate_status": "NOT_REQUESTED",
+            "joined_quote_count": 0,
+            "missing_quote_count": 0,
+            "expected_signal_count": 0,
+            "coverage_pct": None,
+            "affected_splits": [],
+            "next_action": None,
+            "limitations": [
+                "top_of_book_not_requested",
+                "orderbook_depth_unavailable",
+                "intra_candle_path_unavailable",
+            ],
+        }
+
+    expected = sum(int(payload.get("top_of_book_expected_signal_count") or 0) for _, payload in requested_reports)
+    joined = sum(int(payload.get("top_of_book_joined_count") or 0) for _, payload in requested_reports)
+    missing = sum(int(payload.get("top_of_book_missing_count") or 0) for _, payload in requested_reports)
+    statuses = [str(payload.get("top_of_book_gate_status") or "UNKNOWN") for _, payload in requested_reports]
+    gate_status = "PASS"
+    if "FAIL" in statuses:
+        gate_status = "FAIL"
+    elif "WARN" in statuses:
+        gate_status = "WARN"
+    elif any(status != "PASS" for status in statuses):
+        gate_status = "UNKNOWN"
+    affected_splits = [
+        {
+            "split_name": str(split_name),
+            "top_of_book_gate_status": str(payload.get("top_of_book_gate_status") or "UNKNOWN"),
+            "top_of_book_coverage_pct": payload.get("top_of_book_coverage_pct"),
+            "top_of_book_missing_count": int(payload.get("top_of_book_missing_count") or 0),
+            "top_of_book_joined_count": int(payload.get("top_of_book_joined_count") or 0),
+            "top_of_book_required": bool(payload.get("top_of_book_required")),
+            "top_of_book_gate_reasons": [str(item) for item in payload.get("top_of_book_gate_reasons") or []],
+        }
+        for split_name, payload in requested_reports
+        if str(payload.get("top_of_book_gate_status") or "UNKNOWN") != "PASS"
+        or int(payload.get("top_of_book_missing_count") or 0) > 0
+    ]
+    coverage_pct = round((joined / expected * 100.0), 8) if expected else 0.0
+    required = any(bool(payload.get("top_of_book_required")) for _, payload in requested_reports)
+    join_tolerances = sorted(
+        {
+            int(payload.get("top_of_book_join_tolerance_ms"))
+            for _, payload in requested_reports
+            if payload.get("top_of_book_join_tolerance_ms") is not None
+        }
+    )
+    sources = sorted(
+        {
+            str(payload.get("top_of_book_source"))
+            for _, payload in requested_reports
+            if payload.get("top_of_book_source")
+        }
+    )
+    return {
+        "requested": True,
+        "required": required,
+        "fail_closed": gate_status == "FAIL",
+        "gate_status": gate_status,
+        "joined_quote_count": joined,
+        "missing_quote_count": missing,
+        "expected_signal_count": expected,
+        "coverage_pct": coverage_pct,
+        "join_tolerance_ms": join_tolerances[0] if len(join_tolerances) == 1 else join_tolerances,
+        "sources": sources,
+        "affected_splits": affected_splits,
+        "warning_code": TOP_OF_BOOK_OPTIONAL_COVERAGE_WARNING if gate_status == "WARN" else None,
+        "next_action": TOP_OF_BOOK_OPERATOR_NEXT_ACTION if gate_status in {"WARN", "FAIL"} else None,
+        "limitations": [
+            "top_of_book_is_best_bid_ask_only_not_full_depth",
+            "queue_position_unavailable",
+            "market_impact_unavailable",
+            "trade_ticks_unavailable",
+            "intra_candle_path_unavailable",
+            "execution_reference_price_remains_candle_close",
+        ],
+    }
 
 
 def _rolling_walk_forward_windows(manifest: ExperimentManifest) -> list[dict[str, DateRange]]:

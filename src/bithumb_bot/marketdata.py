@@ -249,7 +249,8 @@ def cmd_sync_orderbook_top(quiet: bool = False, pair: str | None = None) -> None
             f"spread_bps={snapshot.spread_bps:.8f} source={snapshot.source} row_count={row_count}"
         )
         print(
-            "  next_action=rerun research-backtest and verify top_of_book_coverage_pct when manifests request top_of_book"
+            "  next_action=collect orderbook top snapshots with sync-orderbook-top, rerun research-backtest, "
+            "and verify top_of_book_coverage_pct"
         )
 
 

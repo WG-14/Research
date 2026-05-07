@@ -46,6 +46,7 @@ def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
         "dataset_quality_gate_status": candidate.get("dataset_quality_gate_status"),
         "dataset_quality_gate_reasons": candidate.get("dataset_quality_gate_reasons"),
         "dataset_quality_report_hashes": candidate.get("dataset_quality_report_hashes"),
+        "top_of_book_quality_summary": candidate.get("top_of_book_quality_summary"),
         "regime_classifier_version": candidate.get("regime_classifier_version"),
         "allowed_live_regimes": candidate.get("allowed_live_regimes"),
         "blocked_live_regimes": candidate.get("blocked_live_regimes"),
