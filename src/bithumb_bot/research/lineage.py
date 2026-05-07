@@ -70,6 +70,7 @@ def build_research_lineage(
     manifest_path: str | None = None,
     dataset_snapshot_id: str | None = None,
     dataset_content_hash: str | None = None,
+    dataset_quality_hash: str | None = None,
     dataset_split_hash: str | None = None,
     data_source_fingerprint: str | None = None,
     repository_version: str | None = None,
@@ -102,6 +103,7 @@ def build_research_lineage(
         "manifest_canonical_hash": manifest_canonical_hash or manifest_hash,
         "dataset_snapshot_id": dataset_snapshot_id,
         "dataset_content_hash": dataset_content_hash,
+        "dataset_quality_hash": dataset_quality_hash,
         "dataset_split_hash": dataset_split_hash or dataset_content_hash,
         "data_source_fingerprint": data_source_fingerprint,
         "repository_version": repository_version,
@@ -181,6 +183,7 @@ def reproduce_promotion(promotion_path: str | Path) -> ReproducibilityResult:
         "lineage_hash": None,
         "manifest_hash": None,
         "dataset_content_hash": None,
+        "dataset_quality_hash": None,
         "backtest_report_hash": None,
         "walk_forward_report_hash": None,
         "candidate_profile_hash": None,
@@ -220,6 +223,7 @@ def reproduce_promotion(promotion_path: str | Path) -> ReproducibilityResult:
     summary["lineage_hash"] = lineage.get("lineage_hash")
     summary["manifest_hash"] = lineage.get("manifest_hash")
     summary["dataset_content_hash"] = lineage.get("dataset_content_hash")
+    summary["dataset_quality_hash"] = lineage.get("dataset_quality_hash")
     summary["backtest_report_hash"] = lineage.get("backtest_report_hash")
     summary["walk_forward_report_hash"] = lineage.get("walk_forward_report_hash")
     summary["candidate_profile_hash"] = lineage.get("candidate_profile_hash")
@@ -232,6 +236,14 @@ def reproduce_promotion(promotion_path: str | Path) -> ReproducibilityResult:
         lineage.get("dataset_content_hash"),
         "dataset_content_hash_mismatch",
     )
+    if promotion.get("dataset_quality_hash") or lineage.get("dataset_quality_hash"):
+        _compare(
+            summary,
+            "dataset_quality_hash",
+            promotion.get("dataset_quality_hash"),
+            lineage.get("dataset_quality_hash"),
+            "dataset_quality_hash_mismatch",
+        )
     _compare(
         summary,
         "candidate_profile_hash",

@@ -42,6 +42,10 @@ def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
         "manifest_hash": candidate.get("manifest_hash"),
         "dataset_snapshot_id": candidate.get("dataset_snapshot_id"),
         "dataset_content_hash": candidate.get("dataset_content_hash"),
+        "dataset_quality_hash": candidate.get("dataset_quality_hash"),
+        "dataset_quality_gate_status": candidate.get("dataset_quality_gate_status"),
+        "dataset_quality_gate_reasons": candidate.get("dataset_quality_gate_reasons"),
+        "dataset_quality_report_hashes": candidate.get("dataset_quality_report_hashes"),
         "regime_classifier_version": candidate.get("regime_classifier_version"),
         "allowed_live_regimes": candidate.get("allowed_live_regimes"),
         "blocked_live_regimes": candidate.get("blocked_live_regimes"),
@@ -85,6 +89,7 @@ def evaluate_candidate_for_promotion(candidate: dict[str, Any]) -> tuple[bool, l
     if candidate.get("walk_forward_required") and candidate.get("walk_forward_gate_result") != "PASS":
         reasons.append("walk_forward_gate_not_passed")
     _extend_final_holdout_reasons(candidate, reasons)
+    _extend_dataset_quality_reasons(candidate, reasons)
     _extend_scenario_policy_reasons(candidate, reasons)
     _extend_execution_calibration_reasons(candidate, reasons)
     profile_hash = candidate.get("candidate_profile_hash")
@@ -117,6 +122,7 @@ def validate_backtest_candidate_for_promotion(candidate: dict[str, Any] | None) 
     if not _candidate_has_regime_policy(candidate):
         reasons.extend(["backtest_regime_policy_missing", "regime_policy_missing"])
     _extend_final_holdout_reasons(candidate, reasons, prefix="backtest_")
+    _extend_dataset_quality_reasons(candidate, reasons, prefix="backtest_")
     _extend_scenario_policy_reasons(candidate, reasons, prefix="backtest_")
     _extend_execution_calibration_reasons(candidate, reasons, prefix="backtest_")
     return not reasons, reasons
@@ -160,6 +166,21 @@ def _extend_final_holdout_reasons(
         reasons.extend([f"{prefix}final_holdout_evidence_missing", "final_holdout_evidence_missing"])
     elif metrics.get("trade_count") is None:
         reasons.extend([f"{prefix}final_holdout_evidence_missing", "final_holdout_evidence_missing"])
+
+
+def _extend_dataset_quality_reasons(
+    candidate: dict[str, Any],
+    reasons: list[str],
+    *,
+    prefix: str = "",
+) -> None:
+    status = candidate.get("dataset_quality_gate_status")
+    if status is None:
+        return
+    if status != "PASS":
+        quality_reasons = [str(item) for item in candidate.get("dataset_quality_gate_reasons") or ["dataset_quality_failed"]]
+        reasons.extend([f"{prefix}{reason}" for reason in quality_reasons])
+        reasons.extend(quality_reasons)
 
 
 def _extend_scenario_policy_reasons(
@@ -233,6 +254,7 @@ def promote_candidate(
     backtest_report_hash = _verify_report_content_hash(report, label="backtest_report")
     if report.get("experiment_id") != experiment_id:
         raise PromotionGateError("candidate report experiment_id mismatch")
+    _verify_report_dataset_quality(report)
     candidates = report.get("candidates")
     if not isinstance(candidates, list):
         raise PromotionGateError("candidate report does not contain candidates")
@@ -280,6 +302,9 @@ def promote_candidate(
         "manifest_hash": candidate["manifest_hash"],
         "dataset_snapshot_id": candidate["dataset_snapshot_id"],
         "dataset_content_hash": candidate["dataset_content_hash"],
+        "dataset_quality_hash": candidate.get("dataset_quality_hash"),
+        "dataset_quality_gate_status": candidate.get("dataset_quality_gate_status"),
+        "dataset_quality_gate_reasons": candidate.get("dataset_quality_gate_reasons"),
         "market": report.get("market"),
         "interval": report.get("interval"),
         "repository_version": candidate.get("repository_version") or report.get("repository_version"),
@@ -445,6 +470,23 @@ def _ensure_research_output_path_allowed(manager: PathManager, path: Path) -> No
     resolved = path.resolve()
     if PathManager._is_within(resolved, project_root):
         raise PathPolicyError(f"research output path must be outside repository: {resolved}")
+
+
+def _verify_report_dataset_quality(report: dict[str, Any]) -> None:
+    lineage_present = isinstance(report.get("lineage"), dict)
+    if not lineage_present:
+        return
+    if report.get("dataset_quality_gate_status") is None:
+        raise PromotionGateError("promotion refused: dataset_quality_missing")
+    if report.get("dataset_quality_gate_status") != "PASS":
+        reasons = [str(item) for item in report.get("dataset_quality_gate_reasons") or ["dataset_quality_failed"]]
+        raise PromotionGateError(f"promotion refused: {','.join(reasons)}")
+    quality_hash = str(report.get("dataset_quality_hash") or "")
+    if not quality_hash.startswith("sha256:"):
+        raise PromotionGateError("promotion refused: dataset_quality_hash_missing")
+    quality_reports = report.get("dataset_quality_reports")
+    if not isinstance(quality_reports, dict) or not quality_reports:
+        raise PromotionGateError("promotion refused: dataset_quality_report_missing")
 
 
 def _execution_calibration_warning_reasons(candidate: dict[str, Any]) -> list[str]:

@@ -39,9 +39,10 @@ def _create_db(path: Path) -> None:
             )
             """
         )
+        pattern = [100, 99, 98, 97, 99, 102, 105, 104, 103, 100, 98, 96]
         for day in ("2023-01-01", "2023-01-02", "2023-01-03"):
-            closes = [100, 99, 98, 97, 99, 102, 105, 104, 103, 100, 98, 96]
-            for index, close in enumerate(closes):
+            for index in range(24 * 60):
+                close = pattern[index % len(pattern)]
                 conn.execute(
                     """
                     INSERT INTO candles(ts, pair, interval, open, high, low, close, volume)
@@ -291,6 +292,77 @@ def test_research_backtest_fails_candidate_when_calibration_breaches_assumptions
 
     assert report["gate_result"] == "FAIL"
     assert "execution_calibration_p90_slippage_exceeds_assumption" in report["candidates"][0]["gate_fail_reasons"]
+
+
+def test_research_backtest_fails_candidate_when_required_calibration_missing(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["execution_model"] = {
+        "type": "fixed_bps",
+        "fee_rate": 0.0,
+        "slippage_bps": 5,
+        "calibration_required": True,
+    }
+    manifest = parse_manifest(payload)
+
+    report = run_research_backtest(
+        manifest=manifest,
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    assert report["gate_result"] == "FAIL"
+    assert "execution_calibration_missing" in report["candidates"][0]["gate_fail_reasons"]
+
+
+def test_research_backtest_fails_candidate_when_calibration_market_mismatches(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["execution_model"] = {
+        "type": "fixed_bps",
+        "fee_rate": 0.0,
+        "slippage_bps": 50,
+        "calibration_required": True,
+    }
+    manifest = parse_manifest(payload)
+    calibration = build_calibration_artifact(
+        summary={
+            "sample_count": 50,
+            "median_slippage_vs_signal_bps": 1.0,
+            "p90_slippage_vs_signal_bps": 2.0,
+            "p95_slippage_vs_signal_bps": 3.0,
+            "p95_submit_to_fill_ms": 0,
+            "partial_fill_rate": 0.0,
+            "unfilled_rate": 0.0,
+            "model_breach_rate": 0.0,
+            "quality_gate_status": "PASS",
+        },
+        market="KRW-ETH",
+        interval="1m",
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    report = run_research_backtest(
+        manifest=manifest,
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+        execution_calibration=calibration,
+    )
+
+    assert report["gate_result"] == "FAIL"
+    assert "execution_calibration_market_mismatch" in report["candidates"][0]["gate_fail_reasons"]
 
 
 def test_research_backtest_aggregates_scenarios_and_promotion_refuses_failed_stress(

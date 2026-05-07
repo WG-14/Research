@@ -1,178 +1,322 @@
-You are Codex working directly in the `WG-14/bithumb-bot` repository.
+You are Codex working directly in the GitHub repository `WG-14/bithumb-bot`.
 
-Task: apply a narrow but important follow-up hardening patch. The previous patch mostly closed the major reproducibility gaps: `research-reproduce` now recomputes report hashes, lineage-less promotion is no longer silently allowed by default, and decision-equivalence is tied into profile transition evidence. However, one remaining evidence-chain gap likely still exists: `research-promote-candidate` itself may bind source report hashes from embedded `content_hash` fields without recomputing those hashes from report body content.
+Your task is to review, verify, modify, and test the repository so that the current research/data limitation is addressed as a structural reliability problem, not as a narrow patch. Treat the following as the starting analysis, but do not assume every hypothesis is true. Verify it against the repository first. 
 
-Do not treat this as generic cleanup. The goal is to make promotion fail closed at artifact creation time, not only later during `research-reproduce`.
+Core concern:
 
-Core hypothesis:
-`promote_candidate()` may still trust `backtest_report.json["content_hash"]` and `walk_forward_report.json["content_hash"]` instead of recomputing each report’s canonical content hash before creating a promotion artifact.
+The repository already has a strong research evidence pipeline, but the market data contract is not yet fully closed around data sufficiency, dataset quality, execution feasibility, and reproducible promotion evidence. The immediate issue is not merely “the research dataset uses candles.” The deeper issue may be that the chain:
 
-Verify this hypothesis from code before changing anything.
+market data source → dataset quality proof → execution model calibration → research promotion → approved profile / operational readiness
 
-Inspect these files first:
+is still partly optional, partly documented, or partly disconnected in code.
 
-* `src/bithumb_bot/research/promotion_gate.py`
-* `src/bithumb_bot/research/lineage.py`
-* `src/bithumb_bot/research/report_writer.py`
-* `src/bithumb_bot/research/cli.py`
-* `src/bithumb_bot/app.py`
-* existing tests for promotion gate, lineage, research reproduce, and CLI dispatch
+Do not dilute this problem into generic “add better data validation.” Keep the priorities sharp:
 
-Expected current risk:
-`research-reproduce` may now catch tampered reports, but `research-promote-candidate` may still create a promotion artifact from a tampered source report if the stale embedded `content_hash` field remains unchanged. That means promotion and reproduction do not yet share the same trust model.
+1. First prove whether the existing candle dataset is research-grade.
+2. Then bind execution-quality calibration into research/promotion evidence.
+3. Then add top-of-book snapshots as a second research data layer.
+4. Then make strategy/data-source requirements explicit so unsupported strategies fail closed.
+5. Preserve reproducibility, observability, and recovery safety.
 
-Required design change:
-Promotion must verify source report truth before binding report hashes into the promotion artifact.
+Repository areas to inspect first:
 
-Implement a promotion-gate helper similar to:
+* `docs/research-validation.md`
+* `src/bithumb_bot/research/dataset_snapshot.py`
+* `src/bithumb_bot/research/experiment_manifest.py`
+* `src/bithumb_bot/research/backtest_engine.py`
+* `src/bithumb_bot/research/execution_model/*`
+* `src/bithumb_bot/execution_quality.py`
+* `src/bithumb_bot/research/execution_calibration.py`
+* `src/bithumb_bot/marketdata.py`
+* `src/bithumb_bot/db_core.py`
+* CLI/bootstrap/command registration paths
+* tests covering research reproducibility, execution quality, promotion, CLI behavior, and schema
 
-```python
-def _verify_report_content_hash(report: dict[str, Any], *, label: str) -> str:
-    expected = str(report.get("content_hash") or "").strip()
-    if not expected.startswith("sha256:"):
-        raise PromotionGateError(f"promotion refused: {label}_content_hash_missing")
-    actual = sha256_prefixed(
-        content_hash_payload({k: v for k, v in report.items() if k != "content_hash"})
-    )
-    if actual != expected:
-        raise PromotionGateError(f"promotion refused: {label}_hash_mismatch")
-    return actual
-```
+Important starting observations to verify, not blindly assume:
 
-If the repository already has a report-writer-specific canonical hash helper, use that instead. Do not introduce a second incompatible hash convention.
+* The research manifest currently appears to require `dataset.source=sqlite_candles`.
+* Candle snapshots appear to include only `ts, pair, interval, open, high, low, close, volume`.
+* `DatasetSnapshot.content_hash()` appears to prove payload identity but not dataset suitability.
+* The candle table primary key prevents duplicate keys but does not prove full expected coverage.
+* The backtest path appears to use candle close as the reference price and does not appear to populate `best_bid`, `best_ask`, or `spread_bps` in `ExecutionRequest`.
+* `ExecutionRequest` / `ExecutionFill` already have fields for quote/spread/depth-related metadata.
+* `marketdata.py` already has public orderbook top fetch helpers.
+* `execution_quality.py` and `execution_calibration.py` already provide a path from real fills to calibration metrics, but calibration may not be mandatory for all research promotion paths.
+* Documentation acknowledges that candle datasets do not contain orderbook depth or intra-candle path data.
 
-Wire this into `promote_candidate()`:
+Maintain hypotheses as hypotheses. For each hypothesis below, either verify, refute, or mark as partially supported with exact code evidence.
 
-* Immediately after loading `backtest_report.json`, recompute and verify its canonical report hash.
-* Use the verified hash, not `report.get("content_hash")`, when setting:
+Hypothesis 1:
+The candle-centered research data contract causes the system to overestimate what kinds of strategy edges can be validated. SMA-style directional/filter research may be acceptable with candles, but spread-sensitive, latency-sensitive, partial-fill-sensitive, microstructure, or intra-candle path-dependent strategies are not adequately validated.
 
-  * `backtest_report_hash`
-  * promotion lineage `backtest_report_hash`
-* If walk-forward is required, immediately after loading `walk_forward_report.json`, recompute and verify its canonical report hash.
-* Use the verified walk-forward hash, not `walk_report.get("content_hash")`, when setting:
+How to verify or refute:
+Compare the current research execution path with the data required to model spread, fill latency, partial fill, unfilled orders, and quote availability. Check whether any research strategy can currently require top-of-book or richer data. Check whether `ExecutionRequest.best_bid`, `best_ask`, and `spread_bps` are populated in research backtests. If they are not, confirm whether this is intentional and documented.
 
-  * `walk_forward_report_hash`
-  * promotion lineage `walk_forward_report_hash`
-* Preserve existing candidate/profile/lineage/walk-forward consistency checks.
-* Do not weaken `allow_legacy_lineage` behavior.
-* Do not make hash mismatch recoverable or warning-only.
+Hypothesis 2:
+`DatasetSnapshot.content_hash()` proves reproducibility of a candle payload but not research suitability. The system may need a separate `DatasetQualityReport` artifact that proves coverage, interval consistency, missing buckets, OHLC invariants, and schema/source fingerprint.
 
-Required failure behavior:
+How to verify or refute:
+Inspect dataset loading and report generation. Determine whether current reports include expected candle count, actual candle count, missing bucket count/ranges, OHLC violations, non-positive prices, negative volume, interval mismatch, split coverage percentage, DB schema fingerprint, and dataset quality hash. If not present, implement it.
 
-* Backtest report body tampered while old embedded `content_hash` remains → promotion fails.
-* Walk-forward report body tampered while old embedded `content_hash` remains → promotion fails.
-* Missing backtest report `content_hash` → promotion fails with a source-specific missing reason.
-* Missing walk-forward report `content_hash` when walk-forward is required → promotion fails with a source-specific missing reason.
-* Valid report hashes → promotion still passes.
-* `research-reproduce` behavior must remain unchanged or stricter.
+Hypothesis 3:
+Execution-quality calibration exists but may not be a hard promotion contract. If `execution_model.calibration_required=true` is optional or not consistently enforced, candidates can be promoted using arbitrary fixed-bps assumptions.
 
-Required tests:
+How to verify or refute:
+Inspect manifest parsing, research report generation, promotion, reproduction, and calibration comparison logic. Confirm whether calibration artifact content hash, market/interval binding, p90/p95 slippage, p95 latency, partial-fill rate, and model-breach rate are enforced before promotion. If enforcement exists, document exactly where. If gaps exist, patch them fail-closed.
 
-Add or update deterministic tests for:
+Hypothesis 4:
+The ingestion path may be optimized for recent candle upsert, not durable long-range research dataset construction. Long train/validation/final_holdout splits may therefore be under-covered unless an explicit coverage/backfill process exists.
 
-* valid lineage-backed promotion still passes
-* backtest report body tampered but stale embedded `content_hash` left unchanged → `promote_candidate()` fails with `backtest_report_hash_mismatch`
-* backtest report missing `content_hash` → fails with `backtest_report_content_hash_missing`
-* walk-forward required, walk-forward report body tampered but stale embedded `content_hash` left unchanged → fails with `walk_forward_report_hash_mismatch`
-* walk-forward required, walk-forward report missing `content_hash` → fails with `walk_forward_report_content_hash_missing`
-* promotion artifact uses verified recomputed hashes in both top-level fields and lineage fields
-* `research-reproduce` still passes for a valid promotion artifact produced by `promote_candidate()`
+How to verify or refute:
+Inspect `cmd_sync`, any backfill commands, dataset loading, and tests. Determine whether long historical ranges can be constructed and verified. Do not implement a full historical backfill unless necessary for the current scoped fix, but ensure dataset quality reports expose insufficient range coverage clearly.
 
-Also confirm parser-level CLI wiring:
+Hypothesis 5:
+The research/runtime separation is safety-positive, but the research data layer is still effectively single-source. A typed market-data contract may be needed so strategies can declare required vs optional market data, and unsupported research configurations fail closed.
 
-* Verify that top-level argparse dispatch in `app.py` exposes `--allow-legacy-lineage` for `research-promote-candidate`.
-* If missing, add it.
-* Add or update a CLI-level test if the repo already has CLI dispatch tests.
-* If the flag is already correctly wired, do not change it unnecessarily; mention it in the final report.
+How to verify or refute:
+Inspect the strategy registry, manifest schema, and research engine. Determine whether a strategy can declare required data sources. If not, implement the minimal contract needed to prevent future misuse without breaking current candle-based SMA research.
 
-Observability and recovery requirements:
+Implementation priority:
 
-* Failure messages must identify the exact source artifact:
+P0 — Must implement if missing:
+Add a `DatasetQualityReport` mechanism for SQLite candle research datasets.
 
-  * `backtest_report_hash_mismatch`
-  * `backtest_report_content_hash_missing`
-  * `walk_forward_report_hash_mismatch`
-  * `walk_forward_report_content_hash_missing`
-* Do not emit vague errors like `invalid_report`.
-* Do not log secrets or raw private environment values.
-* Operator recovery should be obvious from the reason:
+Required behavior:
 
-  * regenerate the backtest report
-  * regenerate the walk-forward report
-  * rerun promotion after source evidence is restored
+* Produce a deterministic JSON-compatible payload for each dataset split.
+* Include at least:
 
-Documentation:
+  * `schema_version`
+  * `artifact_type = "dataset_quality_report"`
+  * `source`
+  * `market`
+  * `interval`
+  * `snapshot_id`
+  * `split_name`
+  * `start_ts`
+  * `end_ts`
+  * `expected_candle_count`
+  * `actual_candle_count`
+  * `coverage_pct`
+  * `missing_bucket_count`
+  * compact missing bucket ranges or a bounded sample plus total count
+  * `duplicate_key_count`
+  * `non_monotonic_ts_count`
+  * `interval_mismatch_count` or equivalent interval consistency metric
+  * `ohlc_violation_count`, using `low <= open <= high`, `low <= close <= high`, and `low <= high`
+  * `non_positive_price_count`
+  * `negative_volume_count`
+  * `first_ts`
+  * `last_ts`
+  * `db_schema_fingerprint`
+  * `dataset_content_hash`
+  * `quality_gate_status`
+  * `quality_gate_reasons`
+  * deterministic `content_hash`, excluding volatile timestamps
+* Compute expected candle count from manifest date range and interval.
+* Support the repository’s current interval conventions. If interval parsing is incomplete, implement the minimum safe parser and fail closed for unsupported intervals.
+* Do not silently pass unknown interval formats.
+* Integrate the report into research output lineage/reporting so dataset suitability is visible and hash-bound.
+* Make promotion fail closed, or at minimum research gate fail closed, when dataset quality is materially insufficient.
+* Preserve backwards compatibility where appropriate, but do not let compatibility hide quality failures for new research artifacts.
 
-Update the relevant docs/runbook if they currently imply source evidence is hash-verified during promotion. Make the behavior explicit:
+Suggested gate policy:
 
-```text
-research-promote-candidate recomputes canonical backtest/walk-forward report hashes before binding them into the promotion artifact. It does not trust embedded report content_hash fields.
-```
+* Missing report: fail for new-generation research promotion.
+* Coverage below a strict threshold: fail.
+* Any OHLC invariant violation: fail.
+* Any non-positive price: fail.
+* Negative volume: fail.
+* Duplicate primary keys should normally be impossible at DB level, but if detected through raw diagnostics, fail or warn with explicit reason.
+* Missing candles: fail unless a clearly named policy allows warning mode for smoke-only diagnostics. Do not allow warning-mode output to become promotion evidence.
 
-Also clarify that:
+P1 — Must inspect and patch if incomplete:
+Bind execution-quality calibration more tightly to research/promotion.
 
-```text
-research-reproduce repeats the same source artifact truth check later.
-```
+Required behavior:
 
-Scope control:
+* Confirm `execution-quality-report --write-calibration` exists and works. If advertised but not wired, wire it.
+* Ensure calibration artifacts are deterministic where appropriate and include content hash.
+* Ensure calibration artifact validation checks:
 
-* Do not rewrite the trading strategy.
-* Do not redesign the entire lineage system.
-* Do not change decision-equivalence policy unless a test must be adjusted because this patch affects fixtures.
-* Do not weaken approved-profile, evidence-chain, path-policy, or runtime verification.
-* Do not silently accept malformed reports.
-* Do not fabricate orderbook/depth/intra-candle data.
-* Keep this patch focused on promotion-time source report hash verification and CLI flag confirmation.
+  * artifact type
+  * content hash, when required
+  * market match
+  * interval match
+  * sufficient sample count
+  * p90/p95 slippage vs research assumptions
+  * p95 full-fill latency vs research assumptions
+  * model breach rate threshold
+* Ensure promotion/reproduction/reporting surfaces calibration status, hash, and failure reasons.
+* If `execution_model.calibration_required=true`, missing/malformed/mismatched calibration must fail closed.
+* Do not make all legacy artifacts invalid unless the repository already has a legacy escape-hatch pattern. If compatibility is needed, make it explicit, auditable, and not the default for new artifacts.
 
-Run tests:
+P2 — Implement only if feasible within this pass without destabilizing P0/P1:
+Add top-of-book snapshot storage as a second data layer.
 
-Run targeted tests first, then full pytest.
+Required behavior if implemented:
 
-At minimum:
+* Add an `orderbook_top_snapshots` table through schema management:
 
-```bash
-pytest tests -q
-```
+  * `ts INTEGER NOT NULL`
+  * `pair TEXT NOT NULL`
+  * `bid_price REAL NOT NULL`
+  * `ask_price REAL NOT NULL`
+  * `spread_bps REAL NOT NULL`
+  * `source TEXT NOT NULL`
+  * `observed_at_epoch_sec REAL`
+  * appropriate primary key and index
+* Reuse existing validated orderbook top fetch helpers rather than duplicating validation logic.
+* Add a command or ingestion helper to store top-of-book snapshots.
+* Validate:
 
-If narrower tests exist for promotion, lineage, reproduce, approved profile, or CLI dispatch, run those explicitly before the full suite.
+  * bid and ask finite and positive
+  * bid <= ask
+  * spread_bps finite and non-negative
+  * market/pair normalized consistently with existing market code handling
+* Do not pretend top-of-book is full market depth.
+* If research join is implemented, use a nearest-snapshot-within-tolerance policy and record missing quote count.
+* Populate `ExecutionRequest.best_bid`, `best_ask`, and `spread_bps` only when joined data is actually available.
+* If quote data is absent, emit explicit metadata rather than fabricating quotes.
+* Include quote coverage metrics in dataset quality reporting if quote snapshots become part of the research data contract.
+
+P3 — Design, document, and implement minimally if low-risk:
+Introduce a typed market-data requirement contract.
+
+Required behavior:
+
+* Keep current `sma_with_filter` usable with candles.
+* Allow strategies to declare required and optional research data sources.
+* Microstructure/spread-sensitive strategies must not be allowed to run or promote on candle-only data.
+* If full implementation is too broad, add documentation plus a small enforceable hook or registry field that makes the future extension obvious and testable.
+* Do not break existing approved-profile or research lifecycle contracts.
+
+Intra-candle path limitation:
+
+* Do not pretend candle OHLC contains path data.
+* Preserve or strengthen explicit metadata such as `close_price_only_no_intracandle_path`.
+* If adding path stress is feasible, add scenarios such as next-open, adverse OHLC, or one-candle delayed execution.
+* If not implementing path stress now, add explicit report fields and docs explaining that candidate evidence remains path-limited unless such stress is present.
+* Do not allow path-sensitive strategies to pass promotion on close-only evidence without an explicit fail-closed or compatibility policy.
+
+Testing requirements:
+
+Add or update tests. Do not rely only on manual review.
+
+Minimum expected tests:
+
+1. Dataset quality report passes for complete, valid candle data.
+2. Dataset quality report detects missing candles and returns deterministic fail reason.
+3. Dataset quality report detects OHLC invariant violations.
+4. Dataset quality report detects non-positive prices.
+5. Dataset quality report detects negative volume.
+6. Dataset quality report content hash is deterministic and excludes volatile timestamps.
+7. Research report or lineage includes dataset quality hash/status.
+8. Promotion or research gate refuses materially insufficient dataset quality for new artifacts.
+9. Manifest/source parsing still rejects unsupported dataset source unless explicitly extended.
+10. Execution calibration required path fails closed on missing calibration.
+11. Execution calibration required path fails closed on market/interval mismatch.
+12. Execution calibration required path fails closed when p90/p95 slippage exceeds assumptions.
+13. If top-of-book storage is implemented:
+
+    * schema exists
+    * invalid bid/ask fails
+    * spread is computed correctly
+    * research join handles missing quote snapshots explicitly
+14. Existing fast regression tests still pass.
+
+Run at least:
+
+* `uv run pytest -q`
+* If the repository has targeted markers or slow tests relevant to research/promotion, run the smallest relevant subset and report exactly what was run.
+
+Operational/recovery constraints:
+
+* Do not weaken live safety gates.
+* Do not change live arming behavior.
+* Do not write runtime artifacts into the repository.
+* Use existing `PathManager` / storage policy patterns.
+* New artifacts must be repository-external where the existing policy requires it.
+* Any new CLI output must be operator-readable and include concrete next actions on failure.
+* Failure modes should be reason-coded, deterministic, and searchable.
+* Do not silently ignore unsupported fields in new contracts.
+* Preserve deterministic hashing behavior.
+* Avoid adding heavyweight dependencies unless strictly necessary.
+
+Observability requirements:
+
+* Reports should expose:
+
+  * dataset quality status
+  * fail reasons
+  * dataset content hash
+  * dataset quality hash
+  * calibration status and hash where applicable
+  * quote coverage if top-of-book is used
+  * explicit limitation flags for missing orderbook depth and missing intra-candle path
+* CLI summaries should include the nearest actionable failure, not just a pass/fail boolean.
+* Promotion/reproduction diagnostics should make it obvious whether failure came from dataset quality, calibration, manifest mismatch, or evidence hash drift.
+
+Documentation requirements:
+
+Update docs only after code behavior is implemented or deliberately scoped as future work.
+
+At minimum update:
+
+* `docs/research-validation.md`
+* any relevant runbook or operator reporting document
+* example manifest if calibration/dataset quality behavior affects normal usage
+
+Do not oversell the change. Be explicit:
+
+* Candle-only research remains valid only for candle-appropriate strategies.
+* Top-of-book is not full depth.
+* No intra-candle path is available unless explicitly modeled.
+* Calibration evidence reduces but does not eliminate execution-model error.
 
 Final report format:
 
-```text
-Summary
-- What changed and why.
+Return a concise but complete engineering report with these sections:
 
-Hypothesis evaluated
-- Hypothesis: confirmed / partially confirmed / rejected.
-  Evidence:
-  Changes:
+1. Summary
 
-Design changes
-- Modified modules:
-- New/changed helpers:
-- New/changed validation rules:
-- CLI flag status:
+   * What structural gap was found.
+   * What was changed.
+   * What remains intentionally out of scope.
 
-Tests
-- New tests:
-- Updated tests:
-- Negative cases:
-- Positive cases:
-- Commands run:
-- Result:
+2. Hypothesis Review
 
-Observability / recovery
-- New failure reasons:
-- Operator recovery path:
+   * For each hypothesis 1–5:
 
-Docs
-- Files updated:
-- Behavior clarified:
+     * status: verified / refuted / partially verified / not fully investigated
+     * code evidence
+     * resulting action
 
-Known limitations / follow-up
-- Anything intentionally not solved in this patch.
-```
+3. Implemented Changes
 
-The central priority is this: promotion and reproduction must share the same evidence trust model. `research-promote-candidate` must not merely copy embedded source report hashes into a promotion artifact; it must recompute and verify source report truth before creating that artifact.
+   * Files changed.
+   * New data structures, schemas, commands, report fields, or gates.
+   * Backward compatibility behavior.
+
+4. Validation and Tests
+
+   * Exact commands run.
+   * Test results.
+   * Any tests not run and why.
+
+5. Operational Impact
+
+   * How operators will see dataset quality failures.
+   * How calibration failures surface.
+   * Whether promotion/live readiness behavior changed.
+
+6. Remaining Risks / Follow-up
+
+   * Especially top-of-book, full depth, intra-candle path, and long-range backfill limitations.
+
+7. Suggested Next PRs
+
+   * Prioritized as P0/P1/P2/P3 if not all were completed.
+
+Do not produce a generic architectural essay. Make concrete repository changes where feasible, test them, and report with exact file/function references.
 

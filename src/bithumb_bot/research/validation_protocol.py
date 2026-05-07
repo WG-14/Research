@@ -9,7 +9,15 @@ from typing import Any
 from bithumb_bot.paths import PathManager
 from bithumb_bot.market_regime import MARKET_REGIME_VERSION, evaluate_regime_acceptance_gate
 
-from .dataset_snapshot import DatasetSnapshot, combined_dataset_fingerprint, load_dataset_range, load_dataset_split
+from .dataset_snapshot import (
+    DatasetQualityReport,
+    DatasetSnapshot,
+    build_dataset_quality_report,
+    combined_dataset_fingerprint,
+    combined_dataset_quality_hash,
+    load_dataset_range,
+    load_dataset_split,
+)
 from .execution_calibration import compare_calibration_to_scenario
 from .execution_model import FixedBpsExecutionModel, StressExecutionModel, model_params_hash
 from .experiment_manifest import DateRange, ExecutionScenario, ExperimentManifest
@@ -45,17 +53,20 @@ def run_research_backtest(
             manifest=manifest,
             split_name="final_holdout",
         )
+    quality_reports = _quality_reports(db_path=db_path, snapshots=snapshots)
     _require_enough_candles(snapshots.values())
 
     candidates = _evaluate_candidates(
         manifest=manifest,
         snapshots=snapshots,
+        quality_reports=quality_reports,
         include_walk_forward=False,
         execution_calibration=execution_calibration,
     )
     report = _report_payload(
         manifest=manifest,
         snapshots=tuple(snapshots.values()),
+        quality_reports=tuple(quality_reports.values()),
         candidates=candidates,
         report_kind="backtest",
         generated_at=generated_at,
@@ -93,16 +104,19 @@ def run_research_walk_forward(
             f"walk_forward_insufficient_windows: available={len(windows)} min_windows={manifest.walk_forward.min_windows}"
         )
     snapshots = _load_walk_forward_snapshots(db_path=db_path, manifest=manifest, windows=windows)
+    quality_reports = _quality_reports(db_path=db_path, snapshots=snapshots)
     _require_enough_candles(snapshots.values())
     candidates = _evaluate_candidates(
         manifest=manifest,
         snapshots=snapshots,
+        quality_reports=quality_reports,
         include_walk_forward=True,
         execution_calibration=execution_calibration,
     )
     report = _report_payload(
         manifest=manifest,
         snapshots=tuple(snapshots.values()),
+        quality_reports=tuple(quality_reports.values()),
         candidates=candidates,
         report_kind="walk_forward",
         generated_at=generated_at,
@@ -126,6 +140,7 @@ def _evaluate_candidates(
     *,
     manifest: ExperimentManifest,
     snapshots: dict[str, DatasetSnapshot],
+    quality_reports: dict[str, DatasetQualityReport],
     include_walk_forward: bool,
     execution_calibration: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
@@ -133,6 +148,8 @@ def _evaluate_candidates(
     aggregates: dict[str, dict[str, Any]] = {}
     manifest_hash = manifest.manifest_hash()
     dataset_hash = combined_dataset_fingerprint(tuple(snapshots.values()))
+    dataset_quality_hash = combined_dataset_quality_hash(tuple(quality_reports.values()))
+    dataset_quality_status, dataset_quality_reasons = _combined_dataset_quality_gate(quality_reports)
     runner = resolve_research_strategy(manifest.strategy_name)
 
     for scenario_index, scenario in enumerate(manifest.execution_model.scenarios):
@@ -274,6 +291,8 @@ def _evaluate_candidates(
                 include_walk_forward=include_walk_forward,
                 regime_gate_result=regime_gate.as_dict(),
                 execution_calibration_gate=calibration_gate,
+                dataset_quality_status=dataset_quality_status,
+                dataset_quality_reasons=dataset_quality_reasons,
             )
             cost_model = {
                 "fee_rate": scenario.fee_rate,
@@ -320,6 +339,13 @@ def _evaluate_candidates(
                     "manifest_hash": manifest_hash,
                     "dataset_snapshot_id": manifest.dataset.snapshot_id,
                     "dataset_content_hash": dataset_hash,
+                    "dataset_quality_hash": dataset_quality_hash,
+                    "dataset_quality_gate_status": dataset_quality_status,
+                    "dataset_quality_gate_reasons": dataset_quality_reasons,
+                    "dataset_quality_report_hashes": {
+                        split_name: report.content_hash
+                        for split_name, report in sorted(quality_reports.items())
+                    },
                     "strategy_name": manifest.strategy_name,
                     "parameter_candidate_id": base["candidate_id"],
                     "parameter_values": params,
@@ -400,6 +426,9 @@ def _apply_scenario_policy(*, manifest: ExperimentManifest, candidate: dict[str,
         reasons.append("scenario_result_missing")
     elif policy == "legacy_cost_model_single_pass":
         if not pass_results:
+            for item in fail_results:
+                for reason in item.get("scenario_fail_reasons") or []:
+                    reasons.append(str(reason))
             reasons.append("scenario_policy_no_passing_base_scenario")
     elif policy == "single_scenario":
         if len(scenario_results) != 1:
@@ -457,9 +486,13 @@ def _gate_result(
     include_walk_forward: bool,
     regime_gate_result: dict[str, Any] | None = None,
     execution_calibration_gate: dict[str, Any] | None = None,
+    dataset_quality_status: str = "PASS",
+    dataset_quality_reasons: list[str] | None = None,
 ) -> tuple[str, list[str]]:
     gate = manifest.acceptance_gate
     reasons: list[str] = []
+    if dataset_quality_status != "PASS":
+        reasons.extend(dataset_quality_reasons or ["dataset_quality_failed"])
     if int(validation_metrics.get("trade_count") or 0) < gate.min_trade_count:
         reasons.append("min_trade_count_failed")
     if float(validation_metrics.get("max_drawdown_pct") or 0.0) > gate.max_mdd_pct:
@@ -701,6 +734,7 @@ def _report_payload(
     *,
     manifest: ExperimentManifest,
     snapshots: tuple[DatasetSnapshot, ...],
+    quality_reports: tuple[DatasetQualityReport, ...],
     candidates: list[dict[str, Any]],
     report_kind: str,
     generated_at: str | None,
@@ -712,6 +746,10 @@ def _report_payload(
     best = next((candidate for candidate in candidates if candidate["acceptance_gate_result"] == "PASS"), None)
     warnings = sorted({warning for candidate in candidates for warning in candidate.get("warnings", [])})
     dataset_hash = combined_dataset_fingerprint(snapshots)
+    dataset_quality_hash = combined_dataset_quality_hash(quality_reports)
+    dataset_quality_status, dataset_quality_reasons = _combined_dataset_quality_gate(
+        {report.payload["split_name"]: report for report in quality_reports}
+    )
     repository_version = _repository_version()
     calibration_hash = (
         str(execution_calibration.get("content_hash"))
@@ -733,6 +771,7 @@ def _report_payload(
         manifest_canonical_hash=manifest.manifest_hash(),
         dataset_snapshot_id=manifest.dataset.snapshot_id,
         dataset_content_hash=dataset_hash,
+        dataset_quality_hash=dataset_quality_hash,
         dataset_split_hash=sha256_prefixed({
             snapshot.split_name: snapshot.date_range.as_dict()
             for snapshot in snapshots
@@ -763,6 +802,13 @@ def _report_payload(
         "manifest_hash": manifest.manifest_hash(),
         "dataset_snapshot_id": manifest.dataset.snapshot_id,
         "dataset_content_hash": dataset_hash,
+        "dataset_quality_hash": dataset_quality_hash,
+        "dataset_quality_gate_status": dataset_quality_status,
+        "dataset_quality_gate_reasons": dataset_quality_reasons,
+        "dataset_quality_reports": {
+            str(report.payload["split_name"]): report.payload
+            for report in quality_reports
+        },
         "market": manifest.market,
         "interval": manifest.interval,
         "dataset_splits": {
@@ -770,8 +816,19 @@ def _report_payload(
                 "date_range": snapshot.date_range.as_dict(),
                 "candle_count": len(snapshot.candles),
                 "content_hash": snapshot.content_hash(),
+                "quality_hash": next(
+                    report.content_hash for report in quality_reports if report.payload["split_name"] == snapshot.split_name
+                ),
             }
             for snapshot in snapshots
+        },
+        "data_limitations": {
+            "candle_only": True,
+            "top_of_book_available": False,
+            "orderbook_depth_available": False,
+            "intra_candle_path_available": False,
+            "execution_reference_price": "candle_close",
+            "intra_candle_policy": "close_price_only_no_intracandle_path",
         },
         "strategy_name": manifest.strategy_name,
         "regime_classifier_version": MARKET_REGIME_VERSION,
@@ -898,6 +955,28 @@ def _require_enough_candles(snapshots: Any) -> None:
     for snapshot in snapshots:
         if len(snapshot.candles) == 0:
             raise ResearchValidationError(f"dataset split {snapshot.split_name} has no candles")
+
+
+def _quality_reports(
+    *,
+    db_path: str | Path,
+    snapshots: dict[str, DatasetSnapshot],
+) -> dict[str, DatasetQualityReport]:
+    return {
+        split_name: build_dataset_quality_report(db_path=db_path, snapshot=snapshot)
+        for split_name, snapshot in snapshots.items()
+    }
+
+
+def _combined_dataset_quality_gate(
+    reports: dict[str, DatasetQualityReport],
+) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    for split_name, report in sorted(reports.items()):
+        if report.quality_gate_status != "PASS":
+            for reason in report.quality_gate_reasons or ("dataset_quality_failed",):
+                reasons.append(f"dataset_quality_{split_name}_{reason}")
+    return ("PASS" if not reasons else "FAIL", reasons)
 
 
 def _rolling_walk_forward_windows(manifest: ExperimentManifest) -> list[dict[str, DateRange]]:

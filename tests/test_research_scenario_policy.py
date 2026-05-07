@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
+from bithumb_bot.research.dataset_snapshot import Candle, DatasetQualityReport, DatasetSnapshot
 from bithumb_bot.research.experiment_manifest import parse_manifest
 from bithumb_bot.research.validation_protocol import _apply_scenario_policy, _report_payload
 
@@ -59,6 +59,17 @@ def _candidate(candidate_id: str, *, base: str, stress: str) -> dict[str, object
             },
         ],
     }
+
+
+def _quality_report(snapshot: DatasetSnapshot) -> DatasetQualityReport:
+    payload = {
+        "artifact_type": "dataset_quality_report",
+        "split_name": snapshot.split_name,
+        "quality_gate_status": "PASS",
+        "quality_gate_reasons": [],
+        "content_hash": "sha256:quality",
+    }
+    return DatasetQualityReport(payload=payload)
 
 
 def test_must_pass_policy_fails_when_base_passes_but_stress_fails() -> None:
@@ -138,6 +149,7 @@ def test_best_candidate_id_uses_aggregated_candidate_policy_result() -> None:
     report = _report_payload(
         manifest=manifest,
         snapshots=(snapshot,),
+        quality_reports=(_quality_report(snapshot),),
         candidates=[failed, passed],
         report_kind="backtest",
         generated_at="2026-05-07T00:00:00+00:00",
