@@ -1,309 +1,158 @@
 You are Codex working directly in the `WG-14/bithumb-bot` repository.
 
-Task: apply a follow-up hardening patch. The previous patch moved the repo in the right direction, but the current `main` branch still has reproducibility and fail-closed gaps. Do not treat this as a cosmetic cleanup. The goal is to make the repo closer to a lineage-backed, reproducible, fail-closed automated trading experiment system.
+Task: apply a narrow but important follow-up hardening patch. The previous patch mostly closed the major reproducibility gaps: `research-reproduce` now recomputes report hashes, lineage-less promotion is no longer silently allowed by default, and decision-equivalence is tied into profile transition evidence. However, one remaining evidence-chain gap likely still exists: `research-promote-candidate` itself may bind source report hashes from embedded `content_hash` fields without recomputing those hashes from report body content.
 
-Preserve the priorities below. Do not weaken them into generic testing or logging work.
+Do not treat this as generic cleanup. The goal is to make promotion fail closed at artifact creation time, not only later during `research-reproduce`.
 
-Core problem:
-The repo now appears to have stronger typed evidence validation, decision-equivalence diagnostics, lineage artifacts, and `research-reproduce`, but three critical gaps may remain:
+Core hypothesis:
+`promote_candidate()` may still trust `backtest_report.json["content_hash"]` and `walk_forward_report.json["content_hash"]` instead of recomputing each report’s canonical content hash before creating a promotion artifact.
 
-1. `research-reproduce` may trust an artifact’s embedded `content_hash` instead of recomputing the artifact’s canonical hash from its body.
-2. promotion may silently fall back to legacy/no-lineage mode when a research report lacks lineage.
-3. decision-equivalence may still be treated as a diagnostic/reporting tool instead of mandatory profile transition evidence.
+Verify this hypothesis from code before changing anything.
 
-Treat these as hypotheses. Verify each from code before changing anything. If a hypothesis is already false, document why and only adjust tests/docs if needed.
+Inspect these files first:
 
-Work in this order.
-
-1. Inspect current code and tests
-
-Check these files first:
-
-* `src/bithumb_bot/research/lineage.py`
 * `src/bithumb_bot/research/promotion_gate.py`
+* `src/bithumb_bot/research/lineage.py`
+* `src/bithumb_bot/research/report_writer.py`
 * `src/bithumb_bot/research/cli.py`
-* `src/bithumb_bot/approved_profile.py`
-* `src/bithumb_bot/evidence_chain.py`
-* `src/bithumb_bot/decision_equivalence.py`
-* `src/bithumb_bot/profile_cli.py`
 * `src/bithumb_bot/app.py`
-* existing tests related to:
+* existing tests for promotion gate, lineage, research reproduce, and CLI dispatch
 
-  * research lineage
-  * `research-reproduce`
-  * promotion gate
-  * approved profile verification
-  * profile transition evidence
-  * decision equivalence
-  * CLI argument wiring
+Expected current risk:
+`research-reproduce` may now catch tampered reports, but `research-promote-candidate` may still create a promotion artifact from a tampered source report if the stale embedded `content_hash` field remains unchanged. That means promotion and reproduction do not yet share the same trust model.
 
-Do not assume pytest passing means the system is closed. Look for cases where tests only verify happy paths or only compare recorded hash fields without recomputing canonical content.
+Required design change:
+Promotion must verify source report truth before binding report hashes into the promotion artifact.
 
-2. Hypothesis A: `research-reproduce` trusts report `content_hash`
-
-Verify whether `reproduce_promotion()` or its helper, likely `_verify_artifact_hash()`, opens backtest/walk-forward reports and does something equivalent to:
+Implement a promotion-gate helper similar to:
 
 ```python
-actual = str(payload.get("content_hash") or "")
+def _verify_report_content_hash(report: dict[str, Any], *, label: str) -> str:
+    expected = str(report.get("content_hash") or "").strip()
+    if not expected.startswith("sha256:"):
+        raise PromotionGateError(f"promotion refused: {label}_content_hash_missing")
+    actual = sha256_prefixed(
+        content_hash_payload({k: v for k, v in report.items() if k != "content_hash"})
+    )
+    if actual != expected:
+        raise PromotionGateError(f"promotion refused: {label}_hash_mismatch")
+    return actual
 ```
 
-If yes, fix it.
+If the repository already has a report-writer-specific canonical hash helper, use that instead. Do not introduce a second incompatible hash convention.
 
-Required design:
-`research-reproduce` must not trust the artifact’s embedded `content_hash` for backtest/walk-forward reports. It must recompute the report’s canonical content hash from the loaded artifact body, excluding the `content_hash` field, using the repo’s deterministic hash conventions.
+Wire this into `promote_candidate()`:
 
-Preferred implementation:
+* Immediately after loading `backtest_report.json`, recompute and verify its canonical report hash.
+* Use the verified hash, not `report.get("content_hash")`, when setting:
 
-```python
-actual = sha256_prefixed(
-    content_hash_payload({k: v for k, v in payload.items() if k != "content_hash"})
-)
-```
+  * `backtest_report_hash`
+  * promotion lineage `backtest_report_hash`
+* If walk-forward is required, immediately after loading `walk_forward_report.json`, recompute and verify its canonical report hash.
+* Use the verified walk-forward hash, not `walk_report.get("content_hash")`, when setting:
 
-If the repo has a report-writer-specific official hash helper, use that instead. Do not create a conflicting hash convention.
+  * `walk_forward_report_hash`
+  * promotion lineage `walk_forward_report_hash`
+* Preserve existing candidate/profile/lineage/walk-forward consistency checks.
+* Do not weaken `allow_legacy_lineage` behavior.
+* Do not make hash mismatch recoverable or warning-only.
 
 Required failure behavior:
 
-* If the report body is changed but the old `content_hash` field remains, `research-reproduce` must fail.
-* Backtest report tamper should report `backtest_report_hash_mismatch`.
-* Walk-forward report tamper should report `walk_forward_report_hash_mismatch`.
-* The structured output should include the expected and actual hashes in `mismatches`.
+* Backtest report body tampered while old embedded `content_hash` remains → promotion fails.
+* Walk-forward report body tampered while old embedded `content_hash` remains → promotion fails.
+* Missing backtest report `content_hash` → promotion fails with a source-specific missing reason.
+* Missing walk-forward report `content_hash` when walk-forward is required → promotion fails with a source-specific missing reason.
+* Valid report hashes → promotion still passes.
+* `research-reproduce` behavior must remain unchanged or stricter.
 
 Required tests:
 
-* valid promotion + valid lineage + valid report artifacts → `research-reproduce` returns `ok=true`
-* backtest report body tampered, old `content_hash` left unchanged → `ok=false`, reason `backtest_report_hash_mismatch`
-* walk-forward report body tampered, old `content_hash` left unchanged → `ok=false`, reason `walk_forward_report_hash_mismatch`
-* embedded report `content_hash` tampered while body unchanged → fail clearly
-* missing report file still produces the existing missing-artifact reason
+Add or update deterministic tests for:
 
-3. Hypothesis B: promotion silently allows no-lineage reports
+* valid lineage-backed promotion still passes
+* backtest report body tampered but stale embedded `content_hash` left unchanged → `promote_candidate()` fails with `backtest_report_hash_mismatch`
+* backtest report missing `content_hash` → fails with `backtest_report_content_hash_missing`
+* walk-forward required, walk-forward report body tampered but stale embedded `content_hash` left unchanged → fails with `walk_forward_report_hash_mismatch`
+* walk-forward required, walk-forward report missing `content_hash` → fails with `walk_forward_report_content_hash_missing`
+* promotion artifact uses verified recomputed hashes in both top-level fields and lineage fields
+* `research-reproduce` still passes for a valid promotion artifact produced by `promote_candidate()`
 
-Verify whether `promote_candidate()` does this:
+Also confirm parser-level CLI wiring:
 
-* read `report.get("lineage")`
-* if lineage exists, validate it
-* if lineage is missing, create promotion artifact with:
+* Verify that top-level argparse dispatch in `app.py` exposes `--allow-legacy-lineage` for `research-promote-candidate`.
+* If missing, add it.
+* Add or update a CLI-level test if the repo already has CLI dispatch tests.
+* If the flag is already correctly wired, do not change it unnecessarily; mention it in the final report.
 
-  * `lineage_required=false`
-  * `legacy_compatibility_used=true`
-  * no hard failure
+Observability and recovery requirements:
 
-If yes, fix it.
+* Failure messages must identify the exact source artifact:
 
-Required design:
-New promotion must be lineage-backed by default. Legacy/no-lineage promotion is allowed only with explicit operator intent.
+  * `backtest_report_hash_mismatch`
+  * `backtest_report_content_hash_missing`
+  * `walk_forward_report_hash_mismatch`
+  * `walk_forward_report_content_hash_missing`
+* Do not emit vague errors like `invalid_report`.
+* Do not log secrets or raw private environment values.
+* Operator recovery should be obvious from the reason:
 
-Implement:
+  * regenerate the backtest report
+  * regenerate the walk-forward report
+  * rerun promotion after source evidence is restored
 
-```python
-promote_candidate(
-    *,
-    experiment_id: str,
-    candidate_id: str,
-    manager: PathManager,
-    generated_at: str | None = None,
-    allow_legacy_lineage: bool = False,
-) -> PromotionResult:
+Documentation:
+
+Update the relevant docs/runbook if they currently imply source evidence is hash-verified during promotion. Make the behavior explicit:
+
+```text
+research-promote-candidate recomputes canonical backtest/walk-forward report hashes before binding them into the promotion artifact. It does not trust embedded report content_hash fields.
 ```
 
-Default behavior:
+Also clarify that:
 
-* If `backtest_report.json` has no valid `lineage`, promotion must fail with:
-
-  * `promotion refused: lineage_missing`
-
-Explicit compatibility behavior:
-
-* If `allow_legacy_lineage=True`, no-lineage promotion may proceed.
-* The artifact must include:
-
-  * `legacy_compatibility_used=true`
-  * `lineage_required=false`
-  * `lineage_hash=None`
-  * a clear warning such as `legacy_lineage_compatibility_used`
-* CLI output must print that warning.
-* Audit/verification output must continue to expose `legacy_compatibility_used`.
-
-CLI wiring:
-Add an explicit CLI flag:
-
-```bash
-uv run bithumb-bot research-promote-candidate \
-  --experiment-id <id> \
-  --candidate-id <id> \
-  --allow-legacy-lineage
+```text
+research-reproduce repeats the same source artifact truth check later.
 ```
 
-Do not make this the default. Do not silently enable it based on environment variables.
+Scope control:
 
-Required tests:
+* Do not rewrite the trading strategy.
+* Do not redesign the entire lineage system.
+* Do not change decision-equivalence policy unless a test must be adjusted because this patch affects fixtures.
+* Do not weaken approved-profile, evidence-chain, path-policy, or runtime verification.
+* Do not silently accept malformed reports.
+* Do not fabricate orderbook/depth/intra-candle data.
+* Keep this patch focused on promotion-time source report hash verification and CLI flag confirmation.
 
-* report with valid lineage → promotion passes
-* report without lineage → promotion fails by default with `lineage_missing`
-* report without lineage + explicit `allow_legacy_lineage=True` → promotion passes and artifact has `legacy_compatibility_used=true`
-* CLI passes the flag through correctly
-* CLI without the flag fails on no-lineage report
-* invalid lineage hash still fails closed
-
-4. Hypothesis C: decision-equivalence is not mandatory transition evidence
-
-Verify whether paper validation evidence and/or live readiness evidence can pass without decision-equivalence. Inspect:
-
-* `approved_profile.verify_profile_evidence_artifacts`
-* any `_validate_decision_equivalence_evidence` helper
-* `evidence_chain.validate_profile_transition_evidence`
-* profile promotion CLI paths
-* tests for missing or failed decision-equivalence reports
-
-If decision-equivalence is already mandatory and well-tested, document the evidence and only add missing edge tests. If it is not mandatory, fix it.
-
-Required design:
-Decision-equivalence must be mandatory for profile transition evidence where the system is trying to prove research/paper/runtime continuity.
-
-At minimum:
-
-* `paper_validation_evidence` must include:
-
-  * `decision_equivalence_report_path`
-  * `decision_equivalence_content_hash`
-* `live_readiness_evidence` must either also require the same fields, or the code must define an explicit policy explaining why only paper validation requires it. Prefer requiring it for both unless existing design clearly says otherwise.
-
-Decision-equivalence validation must fail closed when:
-
-* path missing
-* hash missing
-* report file missing
-* report hash mismatch
-* report `ok` is false
-* `mismatched_decision_count > 0`
-* `missing_research_decisions` is non-empty
-* `missing_runtime_decisions` is non-empty
-* profile hash mismatch
-* market mismatch
-* interval mismatch
-* data/db fingerprint mismatch, if both evidence and report provide comparable fingerprints
-
-Hash rule:
-Do not trust the report’s embedded `content_hash`. Recompute it from canonical report body excluding `content_hash`, using the repo’s deterministic hash convention.
-
-Required tests:
-
-* paper validation evidence missing decision-equivalence fields → fail
-* live readiness evidence missing decision-equivalence fields → fail, unless explicitly documented otherwise
-* decision-equivalence report path missing → fail
-* decision-equivalence hash mismatch → fail
-* decision-equivalence `ok=false` → fail
-* `mismatched_decision_count > 0` → fail
-* non-empty `missing_research_decisions` → fail
-* non-empty `missing_runtime_decisions` → fail
-* profile hash mismatch → fail
-* market mismatch → fail
-* interval mismatch → fail
-* valid decision-equivalence report → profile transition evidence passes
-
-5. Observability and recovery
-
-Add or preserve structured failure output. Operators must be able to recover without guessing.
-
-For `research-reproduce`, ensure JSON output includes:
-
-* `ok`
-* `reason`
-* `promotion_path`
-* `promotion_content_hash`
-* `lineage_hash`
-* `manifest_hash`
-* `dataset_content_hash`
-* `backtest_report_hash`
-* `walk_forward_report_hash`
-* `candidate_profile_hash`
-* `mismatches`
-* `missing_artifacts`
-* `legacy_compatibility_used`
-
-For profile/evidence verification, ensure audit fields include:
-
-* approved profile hash
-* source promotion hash
-* lineage hash
-* decision-equivalence path
-* decision-equivalence hash
-* exact block reason
-* mismatch list where available
-* whether legacy compatibility was used
-
-Failure reasons should be precise. Avoid vague messages like `invalid_evidence` when the real reason is `decision_equivalence_hash_mismatch`.
-
-Do not log secrets, API keys, raw private environment variables, account balances beyond existing safe diagnostics, or exchange credentials. Use safe fingerprints only.
-
-6. Documentation
-
-Update docs/runbooks if behavior changes.
-
-Required documentation updates:
-
-* `research-promote-candidate` now requires lineage by default.
-* `--allow-legacy-lineage` is an explicit compatibility escape hatch, not the normal path.
-* `research-reproduce` recomputes artifact hashes and does not trust embedded `content_hash`.
-* decision-equivalence is mandatory transition evidence for paper/live readiness, or explicitly document the narrower policy if you choose one.
-* Explain operator recovery:
-
-  * regenerate research report if report hash mismatch
-  * rerun walk-forward if walk-forward artifact missing/mismatched
-  * rerun decision-equivalence if profile/market/interval/data fingerprint mismatch
-  * avoid promoting legacy lineage except for explicitly reviewed historical artifacts
-
-7. Scope control
-
-Do not rewrite the trading strategy.
-
-Do not add a large statistical research framework.
-
-Do not fabricate orderbook/depth/intra-candle data.
-
-Do not weaken existing approved profile, promotion, evidence, path, runtime, or hash verification.
-
-Do not make new fail-closed paths fail-open for convenience.
-
-Do not silently accept legacy/no-lineage artifacts.
-
-8. Run tests
+Run tests:
 
 Run targeted tests first, then full pytest.
 
-At minimum run:
+At minimum:
 
 ```bash
 pytest tests -q
 ```
 
-If the repo has narrower test files for lineage, promotion, approved profile, and evidence chain, run those explicitly too.
+If narrower tests exist for promotion, lineage, reproduce, approved profile, or CLI dispatch, run those explicitly before the full suite.
 
-9. Final report format
-
-When finished, report exactly in this structure:
+Final report format:
 
 ```text
 Summary
 - What changed and why.
 
-Hypotheses evaluated
-- Hypothesis A: confirmed / partially confirmed / rejected.
-  Evidence:
-  Changes:
-- Hypothesis B: confirmed / partially confirmed / rejected.
-  Evidence:
-  Changes:
-- Hypothesis C: confirmed / partially confirmed / rejected.
+Hypothesis evaluated
+- Hypothesis: confirmed / partially confirmed / rejected.
   Evidence:
   Changes:
 
 Design changes
 - Modified modules:
-- New/changed CLI flags:
-- New/changed artifact validation rules:
-- Backward compatibility behavior:
+- New/changed helpers:
+- New/changed validation rules:
+- CLI flag status:
 
 Tests
 - New tests:
@@ -315,7 +164,6 @@ Tests
 
 Observability / recovery
 - New failure reasons:
-- New audit fields or structured output:
 - Operator recovery path:
 
 Docs
@@ -326,5 +174,5 @@ Known limitations / follow-up
 - Anything intentionally not solved in this patch.
 ```
 
-The central priority is not “make tests pass.” The central priority is to close the remaining gap between a good validation feature and a reproducible automated trading experiment system: promotion must be lineage-backed by default, reproduction must recompute artifact truth instead of trusting recorded hash fields, and profile transition evidence must prove decision equivalence before strategies move closer to operation.
+The central priority is this: promotion and reproduction must share the same evidence trust model. `research-promote-candidate` must not merely copy embedded source report hashes into a promotion artifact; it must recompute and verify source report truth before creating that artifact.
 

@@ -198,6 +198,10 @@ def _write_walk_forward_report(manager: PathManager, candidate: dict[str, object
     write_json_atomic(path, payload)
 
 
+def _canonical_report_hash(payload: dict[str, object]) -> str:
+    return sha256_prefixed(content_hash_payload({key: value for key, value in payload.items() if key != "content_hash"}))
+
+
 def test_promotion_refuses_candidate_without_validation_evidence(tmp_path, monkeypatch) -> None:
     manager = _manager(tmp_path, monkeypatch)
     candidate = _candidate(validation_metrics=None)
@@ -320,6 +324,78 @@ def test_promotion_artifact_records_backtest_and_walk_forward_evidence_hashes(tm
     assert result.artifact["walk_forward_evidence_source"] == "walk_forward_report.json"
     assert result.artifact["walk_forward_candidate_profile_hash"] == walk_forward_candidate["candidate_profile_hash"]
     assert result.artifact["walk_forward_candidate_profile_verified"] is True
+
+
+def test_promotion_artifact_uses_verified_report_hashes_in_artifact_and_lineage(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    backtest_candidate = _candidate(walk_forward_required=True)
+    walk_forward_candidate = _walk_forward_candidate(backtest_candidate)
+    _write_report(manager, backtest_candidate)
+    _write_walk_forward_report(manager, walk_forward_candidate)
+
+    backtest_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    walk_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "walk_forward_report.json"
+    expected_backtest_hash = _canonical_report_hash(json.loads(backtest_path.read_text(encoding="utf-8")))
+    expected_walk_hash = _canonical_report_hash(json.loads(walk_path.read_text(encoding="utf-8")))
+
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+    assert result.artifact["backtest_report_hash"] == expected_backtest_hash
+    assert result.artifact["walk_forward_report_hash"] == expected_walk_hash
+    assert result.artifact["lineage"]["backtest_report_hash"] == expected_backtest_hash
+    assert result.artifact["lineage"]["walk_forward_report_hash"] == expected_walk_hash
+
+
+def test_promotion_refuses_backtest_body_tamper_with_stale_embedded_hash(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    _write_report(manager, _candidate())
+    report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["dataset_content_hash"] = "sha256:tampered_dataset"
+    write_json_atomic(report_path, payload)
+
+    with pytest.raises(PromotionGateError, match="backtest_report_hash_mismatch"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_promotion_refuses_backtest_missing_content_hash(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    _write_report(manager, _candidate())
+    report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload.pop("content_hash", None)
+    write_json_atomic(report_path, payload)
+
+    with pytest.raises(PromotionGateError, match="backtest_report_content_hash_missing"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_promotion_refuses_walk_forward_body_tamper_with_stale_embedded_hash(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    backtest_candidate = _candidate(walk_forward_required=True)
+    _write_report(manager, backtest_candidate)
+    _write_walk_forward_report(manager, _walk_forward_candidate(backtest_candidate))
+    walk_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "walk_forward_report.json"
+    payload = json.loads(walk_path.read_text(encoding="utf-8"))
+    payload["manifest_hash"] = "sha256:tampered_manifest"
+    write_json_atomic(walk_path, payload)
+
+    with pytest.raises(PromotionGateError, match="walk_forward_report_hash_mismatch"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_promotion_refuses_walk_forward_missing_content_hash(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    backtest_candidate = _candidate(walk_forward_required=True)
+    _write_report(manager, backtest_candidate)
+    _write_walk_forward_report(manager, _walk_forward_candidate(backtest_candidate))
+    walk_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "walk_forward_report.json"
+    payload = json.loads(walk_path.read_text(encoding="utf-8"))
+    payload.pop("content_hash", None)
+    write_json_atomic(walk_path, payload)
+
+    with pytest.raises(PromotionGateError, match="walk_forward_report_content_hash_missing"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
 
 
 def test_promotion_artifact_records_no_walk_forward_evidence_when_not_required(tmp_path, monkeypatch) -> None:

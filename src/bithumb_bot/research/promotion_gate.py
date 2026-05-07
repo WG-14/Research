@@ -28,6 +28,7 @@ class ValidatedCandidate:
     candidate: dict[str, Any]
     profile: dict[str, Any]
     profile_hash: str
+    source_report_hash: str | None = None
 
 
 def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -201,6 +202,18 @@ def _validated_backtest_candidate(candidate: dict[str, Any] | None) -> Validated
     return ValidatedCandidate(candidate=candidate, profile=profile, profile_hash=sha256_prefixed(profile))
 
 
+def _verify_report_content_hash(report: dict[str, Any], *, label: str) -> str:
+    expected = str(report.get("content_hash") or "").strip()
+    if not expected.startswith("sha256:"):
+        raise PromotionGateError(f"promotion refused: {label}_content_hash_missing")
+    actual = sha256_prefixed(
+        content_hash_payload({key: value for key, value in report.items() if key != "content_hash"})
+    )
+    if actual != expected:
+        raise PromotionGateError(f"promotion refused: {label}_hash_mismatch")
+    return actual
+
+
 def promote_candidate(
     *,
     experiment_id: str,
@@ -217,6 +230,7 @@ def promote_candidate(
 
     with candidate_report_path.open("r", encoding="utf-8") as handle:
         report = json.load(handle)
+    backtest_report_hash = _verify_report_content_hash(report, label="backtest_report")
     if report.get("experiment_id") != experiment_id:
         raise PromotionGateError("candidate report experiment_id mismatch")
     candidates = report.get("candidates")
@@ -273,7 +287,7 @@ def promote_candidate(
         "legacy_compatibility_used": base_lineage is None,
         "lineage_hash": None,
         "backtest_report_path": str(candidate_report_path.resolve()),
-        "backtest_report_hash": report.get("content_hash"),
+        "backtest_report_hash": backtest_report_hash,
         "walk_forward_report_path": str((research_report_dir / "walk_forward_report.json").resolve()) if walk_forward_required else None,
         "walk_forward_report_hash": None,
         "execution_calibration_artifact_hash": _candidate_calibration_hash(candidate),
@@ -325,15 +339,13 @@ def promote_candidate(
         "generated_at": generated_at or datetime.now(timezone.utc).isoformat(),
     }
     if walk_forward_required:
-        with (research_report_dir / "walk_forward_report.json").open("r", encoding="utf-8") as handle:
-            walk_report = json.load(handle)
-        artifact["walk_forward_report_hash"] = walk_report.get("content_hash")
+        artifact["walk_forward_report_hash"] = walk_forward.source_report_hash if walk_forward else None
     path = manager.data_dir() / "reports" / "research" / experiment_id / f"promotion_{candidate_id}.json"
     if base_lineage is not None:
         lineage = build_promotion_lineage(
             base_lineage=base_lineage,
             backtest_report_path=str(candidate_report_path.resolve()),
-            backtest_report_hash=str(report.get("content_hash") or ""),
+            backtest_report_hash=backtest_report_hash,
             walk_forward_report_path=artifact["walk_forward_report_path"],
             walk_forward_report_hash=artifact["walk_forward_report_hash"],
             candidate_id=candidate_id,
@@ -380,6 +392,7 @@ def validate_walk_forward_candidate_for_promotion(
 
     with path.open("r", encoding="utf-8") as handle:
         report = json.load(handle)
+    report_hash = _verify_report_content_hash(report, label="walk_forward_report")
     if report.get("experiment_id") != experiment_id:
         raise PromotionGateError("promotion refused: walk_forward_report_experiment_id_mismatch")
     candidates = report.get("candidates")
@@ -419,7 +432,12 @@ def validate_walk_forward_candidate_for_promotion(
     verified_profile_hash = sha256_prefixed(profile)
     if verified_profile_hash != profile_hash:
         raise PromotionGateError("promotion refused: walk_forward_candidate_profile_hash_mismatch")
-    return ValidatedCandidate(candidate=candidate, profile=profile, profile_hash=verified_profile_hash)
+    return ValidatedCandidate(
+        candidate=candidate,
+        profile=profile,
+        profile_hash=verified_profile_hash,
+        source_report_hash=report_hash,
+    )
 
 
 def _ensure_research_output_path_allowed(manager: PathManager, path: Path) -> None:

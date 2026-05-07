@@ -7,7 +7,7 @@ import pytest
 from bithumb_bot.paths import PathManager
 from bithumb_bot.research.backtest_engine import BacktestRun
 from bithumb_bot.research.experiment_manifest import ManifestValidationError, parse_manifest
-from bithumb_bot.research.hashing import sha256_prefixed
+from bithumb_bot.research.hashing import content_hash_payload, sha256_prefixed
 from bithumb_bot.research.metrics import ResearchMetrics
 from bithumb_bot.research.promotion_gate import PromotionGateError, build_candidate_profile, promote_candidate
 from bithumb_bot.research.validation_protocol import (
@@ -147,9 +147,11 @@ def test_walk_forward_required_refuses_missing_evidence(tmp_path, monkeypatch) -
     }
     candidate["candidate_profile_hash"] = "sha256:placeholder"
     candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+    report = {"experiment_id": "walk_unit", "candidates": [candidate]}
+    report["content_hash"] = sha256_prefixed(content_hash_payload(report))
     write_json_atomic(
         manager.data_dir() / "reports" / "research" / "walk_unit" / "backtest_report.json",
-        {"experiment_id": "walk_unit", "candidates": [candidate]},
+        report,
     )
 
     with pytest.raises(PromotionGateError, match="walk_forward_missing"):
