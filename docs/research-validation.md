@@ -49,7 +49,7 @@ Required sections:
 - `dataset.source=sqlite_candles`, `dataset.snapshot_id`, `train`, `validation`, optional `final_holdout`
 - `parameter_space`
 - `cost_model.fee_rate`, `cost_model.slippage_bps` for legacy fixed-bps manifests
-- `execution_model` for normalized fixed-bps or stress execution scenarios. Stress scenarios may configure slippage bps, latency, partial-fill rate, order-failure rate, market-order extra cost, scenario policy, seed, and calibration requirements. Unsupported execution-model fields fail manifest parsing rather than being ignored.
+- `execution_model` for normalized fixed-bps or stress execution scenarios. Stress scenarios may configure slippage bps, latency, partial-fill rate, order-failure rate, market-order extra cost, scenario policy, scenario role, seed, and calibration requirements. Unsupported execution-model fields fail manifest parsing rather than being ignored.
 - `acceptance_gate`
 
 Optional section:
@@ -76,7 +76,7 @@ DATA_ROOT/<mode>/reports/research/<experiment_id>/...
 ```
 
 Reports include manifest hash, dataset fingerprint, candidate profile hash, content hash, repository version, metrics, gate results, and artifact paths.
-Reports aggregate by stable `parameter_candidate_id`; they do not treat each execution scenario as a separate promotion candidate. Each top-level candidate contains `scenario_policy`, pass/fail counts, required scenario count, `final_holdout_present`, and `scenario_results[]`. Each scenario result records scenario identity, role, execution model payload/hash, cost model, train/validation/final-holdout/walk-forward metrics when present, regime gate result, execution-calibration gate, scenario acceptance result, fail reasons, and execution metadata. Candle datasets do not contain orderbook depth or intra-candle path data; trade metadata records that limitation instead of fabricating quotes or depth.
+Reports aggregate by stable `parameter_candidate_id`; they do not treat each execution scenario as a separate promotion candidate. Each top-level candidate contains `scenario_policy`, pass/fail counts, required scenario count, required scenario ids, `final_holdout_present`, `final_holdout_required_for_promotion`, `candidate_profile_hash`, and `scenario_results[]`. Each scenario result records scenario identity, `scenario_role`, `scenario_role_source`, execution model payload/hash, cost model, train/validation/final-holdout/walk-forward metrics when present, regime gate result, execution-calibration gate, scenario acceptance result, fail reasons, and execution metadata. Candle datasets do not contain orderbook depth or intra-candle path data; trade metadata records that limitation instead of fabricating quotes or depth.
 `generated_at` is included for operator context but excluded from the deterministic `content_hash`.
 
 The research CLI prints an operator-facing run summary derived from the report payload without mutating the persisted artifact. The summary includes candidate gate counts, top candidate fail reasons, walk-forward window counts, top window fail reasons, promotion eligibility, nearest failed candidate diagnostics, and a conservative next action.
@@ -91,9 +91,13 @@ Supported scenario policies are `legacy_cost_model_single_pass`, `single_scenari
 
 `legacy_cost_model_single_pass` preserves old fixed-bps cost-model behavior: a parameter candidate can pass if one legacy fixed-bps scenario passes. This is retained for compatibility only.
 
+When an `execution_model` omits `scenario_policy`, parsing defaults by generated scenario count: exactly one generated scenario uses `single_scenario`; multiple generated scenarios use `must_pass_base_and_survive_stress`. This prevents a scalar execution model from silently requiring stress-suite evidence that does not exist. Legacy `cost_model`-only manifests still use `legacy_cost_model_single_pass`.
+
 `single_scenario` requires exactly one scenario result and that result must pass.
 
 `must_pass_base_and_survive_stress` is evaluated at the same parameter-candidate level. The base scenario and every required stress scenario must be present for that same `parameter_candidate_id`; a base-only pass or stress-only pass is not promotion evidence. Required scenario failures produce fail reasons such as `scenario_policy_no_passing_base_scenario`, `scenario_policy_no_passing_stress_scenario`, `scenario_policy_required_scenario_failed:<scenario_id>:<reason>`, `scenario_result_missing`, or `scenario_policy_unsupported`.
+
+`execution_model.scenario_role` is optional and, when supplied, must be either `base` or `stress`. A scalar manifest role applies to all generated scenario products and is emitted as `scenario_role_source=manifest`. When omitted, roles are derived deterministically as scenario index 0 = `base` and later scenarios = `stress`, emitted as `scenario_role_source=derived`. Manifest-supplied roles are safer for multi-scenario experiments because operators can inspect intent directly; if all generated scenarios are `base`, `must_pass_base_and_survive_stress` fails with `scenario_policy_no_passing_stress_scenario`, and if all are `stress`, it fails with `scenario_policy_no_passing_base_scenario`.
 
 Unsupported scenario policies fail closed. `best_candidate_id` is selected only from top-level aggregated candidates whose policy result is `PASS`.
 
@@ -107,7 +111,7 @@ Parameter-space list ordering is not semantic evidence. The manifest hash normal
 
 Execution calibration artifacts are bound to the manifest market and interval. A mismatch fails the research gate with `execution_calibration_market_mismatch` or `execution_calibration_interval_mismatch`.
 
-When `execution_model.calibration_required=true`, the calibration artifact must carry a valid `content_hash`. Missing hashes fail with `execution_calibration_content_hash_missing`; hash mismatches still fail with `execution_calibration_content_hash_mismatch`. If calibration is optional and strictness is `warn`, missing or failing calibration remains explicit in the report but does not by itself promote a candidate.
+When `execution_model.calibration_required=true`, the calibration artifact must carry a valid `content_hash`. Missing hashes fail with `execution_calibration_content_hash_missing`; hash mismatches still fail with `execution_calibration_content_hash_mismatch`. If calibration is optional and strictness is `warn`, missing or failing calibration remains explicit in the report but does not by itself fail an otherwise passing candidate. Promotion artifacts expose warn-mode breaches at top level through `has_execution_calibration_warning`, `execution_calibration_warning_reasons`, and `promotion_warnings`; operators must review those warnings before using any promoted profile.
 
 Walk-forward reports include rolling train/test windows, per-window metrics, pass/fail reasons, and aggregate evidence:
 

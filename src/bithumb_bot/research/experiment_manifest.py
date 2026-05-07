@@ -85,6 +85,8 @@ class ExecutionScenario:
     seed: int | None = None
     source: str = "execution_model"
     scenario_policy: str = "single_scenario"
+    scenario_role: str = "base"
+    scenario_role_source: str = "derived"
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -98,6 +100,8 @@ class ExecutionScenario:
             "seed": self.seed,
             "source": self.source,
             "scenario_policy": self.scenario_policy,
+            "scenario_role": self.scenario_role,
+            "scenario_role_source": self.scenario_role_source,
         }
 
 
@@ -339,6 +343,7 @@ def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelC
         "order_failure_rate",
         "market_order_extra_cost_bps",
         "scenario_policy",
+        "scenario_role",
         "seed",
         "calibration_required",
         "calibration_strictness",
@@ -349,7 +354,17 @@ def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelC
     model_type = _required_str(value, "type")
     if model_type not in {"fixed_bps", "stress"}:
         raise ManifestValidationError("execution_model.type must be fixed_bps or stress")
-    scenario_policy = str(value.get("scenario_policy") or "must_pass_base_and_survive_stress").strip()
+    explicit_scenario_policy = value.get("scenario_policy")
+    scenario_policy = str(explicit_scenario_policy or "").strip()
+    if scenario_policy and scenario_policy not in {
+        "single_scenario",
+        "must_pass_base_and_survive_stress",
+    }:
+        raise ManifestValidationError(
+            "execution_model.scenario_policy must be single_scenario or must_pass_base_and_survive_stress"
+        )
+    scenario_role = _optional_scenario_role(value.get("scenario_role"))
+    scenario_role_source = "manifest" if scenario_role is not None else "derived"
     strictness = str(value.get("calibration_strictness") or "fail").strip().lower()
     if strictness not in {"fail", "warn"}:
         raise ManifestValidationError("execution_model.calibration_strictness must be fail or warn")
@@ -362,9 +377,10 @@ def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelC
     seed = value.get("seed")
     parsed_seed = None if seed is None else int(seed)
     scenarios = []
-    for fee, slippage, latency, partial, failure, extra in itertools.product(
+    for index, (fee, slippage, latency, partial, failure, extra) in enumerate(itertools.product(
         fees, slippages, latencies, partial_rates, failure_rates, market_extra
-    ):
+    )):
+        active_role = scenario_role or _derived_scenario_role(index)
         scenarios.append(
             ExecutionScenario(
                 type=model_type,
@@ -376,11 +392,32 @@ def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelC
                 market_order_extra_cost_bps=float(extra),
                 seed=parsed_seed,
                 source="execution_model",
-                scenario_policy=scenario_policy,
+                scenario_policy=scenario_policy or "pending_default",
+                scenario_role=active_role,
+                scenario_role_source=scenario_role_source,
             )
         )
     if not scenarios:
         raise ManifestValidationError("execution_model produced no scenarios")
+    if not scenario_policy:
+        scenario_policy = "single_scenario" if len(scenarios) == 1 else "must_pass_base_and_survive_stress"
+        scenarios = [
+            ExecutionScenario(
+                type=scenario.type,
+                fee_rate=scenario.fee_rate,
+                slippage_bps=scenario.slippage_bps,
+                latency_ms=scenario.latency_ms,
+                partial_fill_rate=scenario.partial_fill_rate,
+                order_failure_rate=scenario.order_failure_rate,
+                market_order_extra_cost_bps=scenario.market_order_extra_cost_bps,
+                seed=scenario.seed,
+                source=scenario.source,
+                scenario_policy=scenario_policy,
+                scenario_role=scenario.scenario_role,
+                scenario_role_source=scenario.scenario_role_source,
+            )
+            for scenario in scenarios
+        ]
     return ExecutionModelConfig(
         scenarios=tuple(scenarios),
         source="execution_model",
@@ -388,6 +425,21 @@ def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelC
         calibration_required=bool(value.get("calibration_required", False)),
         calibration_strictness=strictness,
     )
+
+
+def _optional_scenario_role(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        raise ManifestValidationError("execution_model.scenario_role must be a scalar base or stress value")
+    role = str(value).strip()
+    if role not in {"base", "stress"}:
+        raise ManifestValidationError("execution_model.scenario_role must be base or stress")
+    return role
+
+
+def _derived_scenario_role(index: int) -> str:
+    return "base" if index == 0 else "stress"
 
 
 def _number_array(payload: dict[str, Any], key: str, *, default: tuple[float, ...]) -> tuple[float, ...]:

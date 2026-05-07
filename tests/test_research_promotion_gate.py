@@ -342,6 +342,49 @@ def test_promotion_allows_optional_warn_calibration_breach(tmp_path, monkeypatch
     result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
 
     assert result.artifact["gate_result"] == "PASS"
+    assert result.artifact["has_execution_calibration_warning"] is True
+    assert result.artifact["execution_calibration_warning_reasons"] == ["execution_calibration_content_hash_missing"]
+    assert "execution_calibration_content_hash_missing" in result.artifact["promotion_warnings"]
+
+
+def test_promotion_artifact_records_empty_calibration_warning_fields_when_no_breach(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate(
+        execution_calibration_required=False,
+        execution_calibration_strictness="warn",
+        execution_calibration_gate={
+            "status": "PASS",
+            "reasons": [],
+            "artifact_hash": "sha256:calibration",
+        },
+    )
+    _write_report(manager, candidate)
+
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+    assert result.artifact["gate_result"] == "PASS"
+    assert result.artifact["has_execution_calibration_warning"] is False
+    assert result.artifact["execution_calibration_warning_reasons"] == []
+    assert result.artifact["promotion_warnings"] == []
+
+
+def test_candidate_profile_hash_changes_when_calibration_warning_evidence_changes() -> None:
+    clean = _candidate(
+        execution_calibration_required=False,
+        execution_calibration_strictness="warn",
+        execution_calibration_gate={"status": "PASS", "reasons": [], "artifact_hash": "sha256:calibration"},
+    )
+    warned = _candidate(
+        execution_calibration_required=False,
+        execution_calibration_strictness="warn",
+        execution_calibration_gate={
+            "status": "FAIL",
+            "reasons": ["execution_calibration_p95_latency_exceeds_assumption"],
+            "artifact_hash": "sha256:calibration",
+        },
+    )
+
+    assert clean["candidate_profile_hash"] != warned["candidate_profile_hash"]
 
 
 def test_promotion_refuses_missing_final_holdout_evidence(tmp_path, monkeypatch) -> None:

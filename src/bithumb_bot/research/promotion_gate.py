@@ -30,6 +30,7 @@ class ValidatedCandidate:
 
 
 def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
+    warning_reasons = _execution_calibration_warning_reasons(candidate)
     profile = {
         "strategy_name": candidate.get("strategy_name"),
         "candidate_id": candidate.get("parameter_candidate_id"),
@@ -48,6 +49,8 @@ def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
         "scenario_pass_count": candidate.get("scenario_pass_count"),
         "scenario_fail_count": candidate.get("scenario_fail_count"),
         "required_scenario_count": candidate.get("required_scenario_count"),
+        "has_execution_calibration_warning": bool(warning_reasons),
+        "execution_calibration_warning_reasons": warning_reasons,
         "final_holdout_present": candidate.get("final_holdout_present"),
         "final_holdout_required_for_promotion": candidate.get("final_holdout_required_for_promotion"),
         "final_holdout_metrics": candidate.get("final_holdout_metrics"),
@@ -235,6 +238,11 @@ def promote_candidate(
     profile = backtest.profile
     verified_profile_hash = backtest.profile_hash
     walk_forward_required = bool(candidate.get("walk_forward_required"))
+    calibration_warning_reasons = _execution_calibration_warning_reasons(candidate)
+    promotion_warnings = sorted(
+        set(str(item) for item in candidate.get("promotion_warnings") or [])
+        | set(calibration_warning_reasons)
+    )
     artifact = {
         "strategy_name": candidate["strategy_name"],
         "strategy_profile_id": f"{experiment_id}_{candidate_id}",
@@ -265,6 +273,9 @@ def promote_candidate(
         "scenario_pass_count": candidate.get("scenario_pass_count"),
         "scenario_fail_count": candidate.get("scenario_fail_count"),
         "required_scenario_count": candidate.get("required_scenario_count"),
+        "has_execution_calibration_warning": bool(calibration_warning_reasons),
+        "execution_calibration_warning_reasons": calibration_warning_reasons,
+        "promotion_warnings": promotion_warnings,
         "regime_classifier_version": candidate["regime_classifier_version"],
         "allowed_regimes": list(candidate["allowed_live_regimes"]),
         "blocked_regimes": list(candidate["blocked_live_regimes"]),
@@ -364,3 +375,14 @@ def _ensure_research_output_path_allowed(manager: PathManager, path: Path) -> No
     resolved = path.resolve()
     if PathManager._is_within(resolved, project_root):
         raise PathPolicyError(f"research output path must be outside repository: {resolved}")
+
+
+def _execution_calibration_warning_reasons(candidate: dict[str, Any]) -> list[str]:
+    if candidate.get("execution_calibration_required"):
+        return []
+    if candidate.get("execution_calibration_strictness") != "warn":
+        return []
+    gate = candidate.get("execution_calibration_gate")
+    if not isinstance(gate, dict) or gate.get("status") != "FAIL":
+        return []
+    return [str(reason) for reason in gate.get("reasons") or ["execution_calibration_failed"]]

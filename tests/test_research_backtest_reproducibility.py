@@ -4,6 +4,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from bithumb_bot.paths import PathManager
 from bithumb_bot.research.backtest_engine import run_sma_backtest
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
@@ -11,6 +13,7 @@ from bithumb_bot.research.execution_calibration import build_calibration_artifac
 from bithumb_bot.research.execution_model import FixedBpsExecutionModel, StressExecutionModel
 from bithumb_bot.research.experiment_manifest import parse_manifest
 from bithumb_bot.research.parameter_space import candidate_id
+from bithumb_bot.research.promotion_gate import PromotionGateError, promote_candidate
 from bithumb_bot.research.validation_protocol import run_research_backtest
 
 
@@ -288,6 +291,53 @@ def test_research_backtest_fails_candidate_when_calibration_breaches_assumptions
 
     assert report["gate_result"] == "FAIL"
     assert "execution_calibration_p90_slippage_exceeds_assumption" in report["candidates"][0]["gate_fail_reasons"]
+
+
+def test_research_backtest_aggregates_scenarios_and_promotion_refuses_failed_stress(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["experiment_id"] = "scenario_aggregation_integration"
+    payload["execution_model"] = {
+        "type": "stress",
+        "fee_rate": [0.0],
+        "slippage_bps": [0.0],
+        "order_failure_rate": [0.0, 1.0],
+        "seed": 42,
+    }
+    manifest = parse_manifest(payload)
+
+    report = run_research_backtest(
+        manifest=manifest,
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    assert report["candidate_count"] == 1
+    candidate = report["candidates"][0]
+    assert candidate["scenario_policy"] == "must_pass_base_and_survive_stress"
+    assert len(candidate["scenario_results"]) == 2
+    assert [result["scenario_role"] for result in candidate["scenario_results"]] == ["base", "stress"]
+    assert [result["scenario_role_source"] for result in candidate["scenario_results"]] == ["derived", "derived"]
+    assert candidate["acceptance_gate_result"] == "FAIL"
+    assert candidate["scenario_fail_count"] > 0
+    assert "scenario_policy_no_passing_stress_scenario" in candidate["gate_fail_reasons"]
+    assert candidate["candidate_profile_hash"].startswith("sha256:")
+    assert Path(report["artifact_paths"]["report_path"]).exists()
+
+    with pytest.raises(PromotionGateError, match="scenario_policy"):
+        promote_candidate(
+            experiment_id="scenario_aggregation_integration",
+            candidate_id=candidate["parameter_candidate_id"],
+            manager=manager,
+        )
 
 
 def test_stress_report_is_candidate_order_independent(tmp_path, monkeypatch) -> None:

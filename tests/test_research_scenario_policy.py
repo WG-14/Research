@@ -89,6 +89,28 @@ def test_must_pass_policy_passes_only_when_base_and_stress_pass() -> None:
     assert candidate["gate_fail_reasons"] == []
 
 
+def test_must_pass_policy_fails_when_no_base_role_exists() -> None:
+    candidate = _candidate("candidate_a", base="PASS", stress="PASS")
+    for result in candidate["scenario_results"]:
+        result["scenario_role"] = "stress"
+
+    _apply_scenario_policy(manifest=_manifest(), candidate=candidate)
+
+    assert candidate["acceptance_gate_result"] == "FAIL"
+    assert "scenario_policy_no_passing_base_scenario" in candidate["gate_fail_reasons"]
+
+
+def test_must_pass_policy_fails_when_no_stress_role_exists() -> None:
+    candidate = _candidate("candidate_a", base="PASS", stress="PASS")
+    for result in candidate["scenario_results"]:
+        result["scenario_role"] = "base"
+
+    _apply_scenario_policy(manifest=_manifest(), candidate=candidate)
+
+    assert candidate["acceptance_gate_result"] == "FAIL"
+    assert "scenario_policy_no_passing_stress_scenario" in candidate["gate_fail_reasons"]
+
+
 def test_best_candidate_id_uses_aggregated_candidate_policy_result() -> None:
     manifest = _manifest()
     failed = _candidate("candidate_a", base="PASS", stress="FAIL")

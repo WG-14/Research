@@ -271,7 +271,8 @@ def _evaluate_candidates(
                 "scenario_id": scenario_id,
                 "scenario_index": scenario_index,
                 "scenario_type": scenario.type,
-                "scenario_role": _scenario_role(scenario, scenario_index),
+                "scenario_role": scenario.scenario_role,
+                "scenario_role_source": scenario.scenario_role_source,
                 "execution_model": execution_model_payload,
                 "execution_model_hash": execution_model_payload["model_params_hash"],
                 "model_params_hash": execution_model_payload["model_params_hash"],
@@ -358,6 +359,13 @@ def _evaluate_candidates(
                 "parameter_stability": primary.get("parameter_stability"),
             }
         )
+        warning_reasons = _execution_calibration_warning_reasons(candidate_payload)
+        candidate_payload["has_execution_calibration_warning"] = bool(warning_reasons)
+        candidate_payload["execution_calibration_warning_reasons"] = warning_reasons
+        if warning_reasons:
+            candidate_payload["warnings"] = sorted(
+                set(candidate_payload.get("warnings") or ()) | set(warning_reasons)
+            )
         candidate_payload["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate_payload))
         rows.append(candidate_payload)
     return sorted(rows, key=_candidate_rank_key)
@@ -384,6 +392,8 @@ def _apply_scenario_policy(*, manifest: ExperimentManifest, candidate: dict[str,
         if len(scenario_results) != 1:
             reasons.append("scenario_policy_unsupported")
         elif not pass_results:
+            for reason in scenario_results[0].get("scenario_fail_reasons") or []:
+                reasons.append(str(reason))
             reasons.append("scenario_policy_required_scenario_failed")
     elif policy == "must_pass_base_and_survive_stress":
         base_results = [item for item in scenario_results if item.get("scenario_role") == "base"]
@@ -755,12 +765,6 @@ def _scenario_id(scenario: ExecutionScenario, scenario_index: int) -> str:
     return f"scenario_{scenario_index + 1:03d}_{scenario.type}_{digest}"
 
 
-def _scenario_role(scenario: ExecutionScenario, scenario_index: int) -> str:
-    if scenario_index == 0:
-        return "base"
-    return "stress"
-
-
 def _seed_context(
     *,
     manifest_hash: str,
@@ -789,6 +793,17 @@ def _execution_metadata(trades: Any) -> list[dict[str, Any]]:
         if isinstance(trade, dict) and isinstance(trade.get("execution"), dict):
             metadata.append(dict(trade["execution"]))
     return metadata
+
+
+def _execution_calibration_warning_reasons(candidate: dict[str, Any]) -> list[str]:
+    if candidate.get("execution_calibration_required"):
+        return []
+    if candidate.get("execution_calibration_strictness") != "warn":
+        return []
+    gate = candidate.get("execution_calibration_gate")
+    if not isinstance(gate, dict) or gate.get("status") != "FAIL":
+        return []
+    return [str(reason) for reason in gate.get("reasons") or ["execution_calibration_failed"]]
 
 
 def _candidate_rank_key(candidate: dict[str, Any]) -> tuple[int, float, float]:

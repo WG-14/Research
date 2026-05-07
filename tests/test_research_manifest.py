@@ -69,6 +69,72 @@ def test_manifest_parses_execution_model_scenarios() -> None:
     assert {scenario.type for scenario in manifest.execution_model.scenarios} == {"stress"}
 
 
+def test_execution_model_single_generated_scenario_defaults_to_single_scenario_policy() -> None:
+    payload = _manifest()
+    payload["execution_model"] = {
+        "type": "fixed_bps",
+        "fee_rate": [0.0004],
+        "slippage_bps": [10],
+    }
+
+    manifest = parse_manifest(payload)
+
+    assert len(manifest.execution_model.scenarios) == 1
+    assert manifest.execution_model.scenario_policy == "single_scenario"
+    assert manifest.execution_model.scenarios[0].scenario_policy == "single_scenario"
+
+
+def test_execution_model_multiple_generated_scenarios_defaults_to_base_and_stress_policy() -> None:
+    payload = _manifest()
+    payload["execution_model"] = {
+        "type": "stress",
+        "fee_rate": [0.0004],
+        "slippage_bps": [5, 20],
+    }
+
+    manifest = parse_manifest(payload)
+
+    assert len(manifest.execution_model.scenarios) == 2
+    assert manifest.execution_model.scenario_policy == "must_pass_base_and_survive_stress"
+    assert [scenario.scenario_role for scenario in manifest.execution_model.scenarios] == ["base", "stress"]
+    assert {scenario.scenario_role_source for scenario in manifest.execution_model.scenarios} == {"derived"}
+
+
+def test_legacy_cost_model_manifest_keeps_legacy_single_pass_policy() -> None:
+    manifest = parse_manifest(_manifest())
+
+    assert manifest.execution_model.source == "legacy_cost_model"
+    assert manifest.execution_model.scenario_policy == "legacy_cost_model_single_pass"
+
+
+def test_manifest_supplied_scenario_role_is_applied_to_generated_scenarios() -> None:
+    payload = _manifest()
+    payload["execution_model"] = {
+        "type": "fixed_bps",
+        "fee_rate": [0.0004],
+        "slippage_bps": [5, 20],
+        "scenario_role": "base",
+    }
+
+    manifest = parse_manifest(payload)
+
+    assert {scenario.scenario_role for scenario in manifest.execution_model.scenarios} == {"base"}
+    assert {scenario.scenario_role_source for scenario in manifest.execution_model.scenarios} == {"manifest"}
+
+
+def test_manifest_rejects_invalid_scenario_role() -> None:
+    payload = _manifest()
+    payload["execution_model"] = {
+        "type": "fixed_bps",
+        "fee_rate": [0.0004],
+        "slippage_bps": [5],
+        "scenario_role": "primary",
+    }
+
+    with pytest.raises(ManifestValidationError, match="execution_model.scenario_role"):
+        parse_manifest(payload)
+
+
 def test_manifest_parses_valid_walk_forward_config() -> None:
     payload = _manifest()
     payload["walk_forward"] = {
