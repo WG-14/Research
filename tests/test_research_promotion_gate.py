@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from bithumb_bot.paths import PathManager
+from bithumb_bot.research import cli as research_cli
 from bithumb_bot.research.hashing import sha256_prefixed
 from bithumb_bot.research.promotion_gate import PromotionGateError, build_candidate_profile, promote_candidate
 from bithumb_bot.storage_io import write_json_atomic
@@ -366,6 +367,90 @@ def test_promotion_artifact_records_empty_calibration_warning_fields_when_no_bre
     assert result.artifact["has_execution_calibration_warning"] is False
     assert result.artifact["execution_calibration_warning_reasons"] == []
     assert result.artifact["promotion_warnings"] == []
+
+
+def test_promotion_cli_prints_optional_warn_calibration_breach(tmp_path, monkeypatch, capsys) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
+    candidate = _candidate(
+        execution_calibration_required=False,
+        execution_calibration_strictness="warn",
+        execution_calibration_gate={
+            "status": "FAIL",
+            "reasons": ["execution_calibration_p95_slippage_exceeds_assumption"],
+            "artifact_hash": "sha256:calibration",
+        },
+    )
+    _write_report(manager, candidate)
+
+    status = research_cli.cmd_research_promote_candidate(
+        experiment_id="promo_exp",
+        candidate_id="candidate_001",
+    )
+
+    output = capsys.readouterr().out
+    assert status == 0
+    assert "  has_execution_calibration_warning=1" in output
+    assert (
+        "  execution_calibration_warning_reasons="
+        "execution_calibration_p95_slippage_exceeds_assumption"
+    ) in output
+    assert "  promotion_warnings=execution_calibration_p95_slippage_exceeds_assumption" in output
+
+
+def test_promotion_cli_prints_empty_warning_fields_when_no_breach(tmp_path, monkeypatch, capsys) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
+    candidate = _candidate(
+        execution_calibration_required=False,
+        execution_calibration_strictness="warn",
+        execution_calibration_gate={
+            "status": "PASS",
+            "reasons": [],
+            "artifact_hash": "sha256:calibration",
+        },
+    )
+    _write_report(manager, candidate)
+
+    status = research_cli.cmd_research_promote_candidate(
+        experiment_id="promo_exp",
+        candidate_id="candidate_001",
+    )
+
+    output = capsys.readouterr().out
+    assert status == 0
+    assert "  has_execution_calibration_warning=0" in output
+    assert "  execution_calibration_warning_reasons=none" in output
+    assert "  promotion_warnings=none" in output
+
+
+def test_promotion_cli_refuses_required_calibration_failure_without_success_block(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
+    candidate = _candidate(
+        execution_calibration_required=True,
+        execution_calibration_gate={
+            "status": "FAIL",
+            "reasons": ["execution_calibration_p95_slippage_exceeds_assumption"],
+            "artifact_hash": "sha256:calibration",
+        },
+    )
+    _write_report(manager, candidate)
+
+    status = research_cli.cmd_research_promote_candidate(
+        experiment_id="promo_exp",
+        candidate_id="candidate_001",
+    )
+
+    output = capsys.readouterr().out
+    assert status == 1
+    assert "[RESEARCH-PROMOTE-CANDIDATE] error=promotion refused:" in output
+    assert "execution_calibration_p95_slippage_exceeds_assumption" in output
+    assert "  gate_result=PASS" not in output
+    assert "  artifact_path=" not in output
+    assert "  has_execution_calibration_warning=" not in output
 
 
 def test_candidate_profile_hash_changes_when_calibration_warning_evidence_changes() -> None:

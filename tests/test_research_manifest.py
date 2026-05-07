@@ -122,6 +122,56 @@ def test_manifest_supplied_scenario_role_is_applied_to_generated_scenarios() -> 
     assert {scenario.scenario_role_source for scenario in manifest.execution_model.scenarios} == {"manifest"}
 
 
+@pytest.mark.parametrize("role", ["base", "stress"])
+def test_manifest_rejects_scalar_role_conflicting_with_base_and_stress_policy(role: str) -> None:
+    payload = _manifest()
+    payload["execution_model"] = {
+        "type": "fixed_bps",
+        "fee_rate": [0.0004],
+        "slippage_bps": [5, 20],
+        "scenario_policy": "must_pass_base_and_survive_stress",
+        "scenario_role": role,
+    }
+
+    with pytest.raises(
+        ManifestValidationError,
+        match="execution_model.scenario_role conflicts with must_pass_base_and_survive_stress",
+    ):
+        parse_manifest(payload)
+
+
+def test_manifest_allows_scalar_role_with_single_scenario_policy_for_legacy_parse_contract() -> None:
+    payload = _manifest()
+    payload["execution_model"] = {
+        "type": "fixed_bps",
+        "fee_rate": [0.0004],
+        "slippage_bps": [5, 20],
+        "scenario_policy": "single_scenario",
+        "scenario_role": "base",
+    }
+
+    manifest = parse_manifest(payload)
+
+    assert manifest.execution_model.scenario_policy == "single_scenario"
+    assert len(manifest.execution_model.scenarios) == 2
+    assert {scenario.scenario_role for scenario in manifest.execution_model.scenarios} == {"base"}
+
+
+def test_manifest_allows_derived_roles_with_base_and_stress_policy() -> None:
+    payload = _manifest()
+    payload["execution_model"] = {
+        "type": "fixed_bps",
+        "fee_rate": [0.0004],
+        "slippage_bps": [5, 20],
+        "scenario_policy": "must_pass_base_and_survive_stress",
+    }
+
+    manifest = parse_manifest(payload)
+
+    assert [scenario.scenario_role for scenario in manifest.execution_model.scenarios] == ["base", "stress"]
+    assert {scenario.scenario_role_source for scenario in manifest.execution_model.scenarios} == {"derived"}
+
+
 def test_manifest_rejects_invalid_scenario_role() -> None:
     payload = _manifest()
     payload["execution_model"] = {

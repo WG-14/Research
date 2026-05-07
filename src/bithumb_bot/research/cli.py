@@ -62,6 +62,18 @@ def cmd_research_promote_candidate(*, experiment_id: str, candidate_id: str) -> 
     print(f"  gate_result={result.artifact['gate_result']}")
     print(f"  artifact_path={result.artifact_path}")
     print(f"  content_hash={result.content_hash}")
+    print(
+        "  has_execution_calibration_warning="
+        f"{1 if result.artifact.get('has_execution_calibration_warning') else 0}"
+    )
+    print(
+        "  execution_calibration_warning_reasons="
+        f"{_format_items(tuple(str(item) for item in result.artifact.get('execution_calibration_warning_reasons') or []))}"
+    )
+    print(
+        "  promotion_warnings="
+        f"{_format_items(tuple(str(item) for item in result.artifact.get('promotion_warnings') or []))}"
+    )
     print(f"  operator_next_step={result.artifact['operator_next_step']}")
     return 0
 

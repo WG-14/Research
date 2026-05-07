@@ -40,7 +40,7 @@ def _create_db(path: Path) -> None:
             """
         )
         for day in ("2023-01-01", "2023-01-02", "2023-01-03"):
-            closes = [100, 99, 98, 99, 101, 103, 102, 100, 98, 97, 99, 102, 104, 103]
+            closes = [100, 99, 98, 97, 99, 102, 105, 104, 103, 100, 98, 96]
             for index, close in enumerate(closes):
                 conn.execute(
                     """
@@ -326,9 +326,16 @@ def test_research_backtest_aggregates_scenarios_and_promotion_refuses_failed_str
     assert len(candidate["scenario_results"]) == 2
     assert [result["scenario_role"] for result in candidate["scenario_results"]] == ["base", "stress"]
     assert [result["scenario_role_source"] for result in candidate["scenario_results"]] == ["derived", "derived"]
+    assert candidate["required_scenario_count"] == 2
+    assert len(candidate["required_scenario_ids"]) == 2
     assert candidate["acceptance_gate_result"] == "FAIL"
     assert candidate["scenario_fail_count"] > 0
+    assert report["gate_result"] == "FAIL"
     assert "scenario_policy_no_passing_stress_scenario" in candidate["gate_fail_reasons"]
+    assert any(
+        str(reason).startswith("scenario_policy_required_scenario_failed:")
+        for reason in candidate["gate_fail_reasons"]
+    )
     assert candidate["candidate_profile_hash"].startswith("sha256:")
     assert Path(report["artifact_paths"]["report_path"]).exists()
 
@@ -338,6 +345,61 @@ def test_research_backtest_aggregates_scenarios_and_promotion_refuses_failed_str
             candidate_id=candidate["parameter_candidate_id"],
             manager=manager,
         )
+
+
+def test_research_backtest_promotes_candidate_when_base_and_stress_pass(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["experiment_id"] = "scenario_aggregation_positive_integration"
+    payload["execution_model"] = {
+        "type": "stress",
+        "fee_rate": [0.0],
+        "slippage_bps": [0.0, 0.0],
+        "order_failure_rate": [0.0],
+        "seed": 42,
+    }
+    manifest = parse_manifest(payload)
+
+    report = run_research_backtest(
+        manifest=manifest,
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    assert report["candidate_count"] == 1
+    assert report["gate_result"] == "PASS"
+    candidate = report["candidates"][0]
+    assert candidate["acceptance_gate_result"] == "PASS"
+    assert candidate["scenario_policy"] == "must_pass_base_and_survive_stress"
+    assert len(candidate["scenario_results"]) == 2
+    assert candidate["scenario_pass_count"] == 2
+    assert candidate["scenario_fail_count"] == 0
+    assert candidate["required_scenario_count"] == 2
+    assert [result["scenario_role"] for result in candidate["scenario_results"]] == ["base", "stress"]
+    assert [result["scenario_role_source"] for result in candidate["scenario_results"]] == ["derived", "derived"]
+    assert candidate["final_holdout_present"] is True
+    assert candidate["final_holdout_metrics"]["trade_count"] is not None
+    assert candidate["candidate_profile_hash"].startswith("sha256:")
+
+    result = promote_candidate(
+        experiment_id="scenario_aggregation_positive_integration",
+        candidate_id=candidate["parameter_candidate_id"],
+        manager=manager,
+    )
+
+    assert result.artifact["gate_result"] == "PASS"
+    assert result.artifact["scenario_policy"] == "must_pass_base_and_survive_stress"
+    assert result.artifact["scenario_pass_count"] == 2
+    assert result.artifact["scenario_fail_count"] == 0
+    assert result.artifact["candidate_profile_hash"] == candidate["candidate_profile_hash"]
 
 
 def test_stress_report_is_candidate_order_independent(tmp_path, monkeypatch) -> None:

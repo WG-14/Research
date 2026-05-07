@@ -1,372 +1,337 @@
-You are Codex working directly inside the `WG-14/bithumb-bot` repository.
+You are Codex working directly inside the `WG-14/bithumb-bot` repository on the `main` branch.
 
-Your task is to perform the next stabilization patch after the previous research-validation, scenario-aggregation, stress-determinism, calibration-binding, and final-holdout promotion-gate patches.
+Your task is to perform the next stabilization patch after the prior research-validation patches. The previous P0/P1 structural issues appear mostly resolved: scenario aggregation exists, `scenario_role` is now first-class, single-scenario policy defaulting was improved, calibration warnings are included in candidate/promotion artifacts, and pytest reportedly passes. Do not treat this as finished. The remaining work is to make operator-visible warnings harder to miss, reject impossible policy/role combinations earlier, and add full-pipeline regression coverage.
 
-Do not treat the previous pytest pass as sufficient. The major P0 failures appear to have been mostly closed, but the current system still has policy-semantics ambiguity, single-scenario compatibility risk, weak warning observability for calibration breaches, and insufficient full-pipeline integration coverage.
-
-Source context: the latest review concluded that scenario aggregation, deterministic stress execution, calibration market/interval/hash binding, and final-holdout promotion checks are now largely present, but additional P1/P2 patches are needed for scenario-policy defaults, explicit scenario roles, warning calibration observability, and integration tests. 
+This patch is not a large redesign. It is an operational observability and policy-prevalidation hardening patch.
 
 ## Mission
 
-Make scenario policy semantics explicit, predictable, and test-locked.
+Lock down the research-promotion pipeline so that:
 
-This patch is not about adding new trading features. It is about removing ambiguity from the research-validation and promotion pipeline so that future strategy candidates are evaluated and promoted under clear, auditable, machine-checkable policy rules.
+1. an operator running the promotion CLI cannot miss warning-mode calibration breaches;
+2. impossible `scenario_policy` + scalar `scenario_role` combinations fail at manifest-parse time instead of after a long research run;
+3. the actual `run_research_backtest()` path is covered by integration tests, not only unit tests of policy helpers;
+4. docs clearly explain scalar `scenario_role` behavior and warning-mode calibration semantics.
 
-The system must not silently infer unsafe policy behavior, must not confuse a single execution scenario with a base-plus-stress scenario suite, and must not hide optional calibration warnings inside a passing promotion artifact.
+Do not weaken any existing fail-closed behavior.
 
 ## Scope boundaries
 
-Do not rewrite the full research pipeline.
+Do not rewrite the research pipeline.
 
-Do not weaken any existing fail-closed promotion behavior.
+Do not change live-trading execution behavior.
 
-Do not relax final-holdout requirements, walk-forward requirements, calibration-required checks, regime-policy checks, profile-hash checks, or scenario-policy checks.
+Do not relax promotion gates, final-holdout requirements, scenario-policy enforcement, calibration-required enforcement, profile-hash verification, walk-forward checks, or regime-policy checks.
 
-Do not introduce live-trading behavior changes.
+Do not remove legacy `cost_model` compatibility.
 
-Do not fake orderbook, spread, depth, or fill data.
+Do not fake exchange data, orderbook data, bid/ask spread, or fill data.
 
-Do not remove legacy manifest compatibility unless the unsafe behavior cannot be fixed without explicit validation.
+Do not treat warning-mode calibration failures as hard failures unless the existing policy already requires that. The goal is to make warnings visible, not to change optional-warn semantics into fail-closed semantics.
 
-Do not claim success based only on unit tests. Add or update integration tests that exercise `run_research_backtest()` and promotion flow using synthetic data.
+Do not claim success based only on unit tests. Add or verify full integration coverage.
 
 ## Hypotheses to verify or falsify
 
-Before coding, inspect the repository and classify each hypothesis as confirmed, partially confirmed, or rejected.
+Before patching, inspect the repository and classify each hypothesis as confirmed, partially confirmed, or rejected.
 
-### Hypothesis 1: single-scenario `execution_model` manifests may default to an overly strict scenario policy
-
-Expected current risk:
-
-* `_parse_execution_model()` may default `scenario_policy` to `must_pass_base_and_survive_stress` whenever `execution_model` is present.
-* A manifest with exactly one execution scenario may therefore require both base and stress evidence even though only one scenario exists.
-* This can cause confusing candidate failures for otherwise valid single-scenario research runs.
-
-Concrete example to test:
-
-```json
-{
-  "execution_model": {
-    "type": "fixed_bps",
-    "fee_rate": [0.0004],
-    "slippage_bps": [10]
-  }
-}
-```
-
-Expected safe behavior:
-
-* Either default to `single_scenario` when exactly one scenario is generated;
-* Or require explicit `scenario_policy` whenever `execution_model` is supplied;
-* But do not silently apply `must_pass_base_and_survive_stress` to a single generated scenario.
-
-### Hypothesis 2: base/stress scenario role assignment is still implicit and can become ambiguous
+### Hypothesis 1: promotion CLI still hides warning-mode calibration breaches
 
 Expected current risk:
 
-* Reports contain `scenario_role`, and `_apply_scenario_policy()` uses `base` vs `stress`.
-* But `ExecutionScenario` may not have a first-class `scenario_role` field.
-* Role assignment may be derived internally from scenario index or heuristic cost assumptions.
-* This becomes ambiguous when manifests generate multiple scenarios from arrays such as:
-
-```text
-slippage_bps=[5, 10, 20]
-latency_ms=[0, 1000]
-partial_fill_rate=[0.0, 0.05]
-```
-
-Expected safe behavior:
-
-* Scenario role should be explicit in the schema when supplied.
-* If role is derived, the report should clearly state that it was derived and how.
-* `must_pass_base_and_survive_stress` should require at least one base scenario and at least one stress scenario.
-* Ambiguous role assignment should not silently pass.
-
-### Hypothesis 3: optional `calibration_strictness="warn"` breaches may be too quiet in promotion artifacts
-
-Expected current risk:
-
-* Optional calibration warning mode may allow promotion even when the calibration gate is `FAIL`.
-* That may be acceptable by policy, but the promotion artifact may only show `gate_result = PASS`, making the warning easy for an operator to miss.
-
-Expected safe behavior:
-
-* Promotion may proceed in warning mode, but the artifact must clearly expose:
+* `promote_candidate()` writes top-level artifact fields such as:
 
   * `has_execution_calibration_warning`;
   * `execution_calibration_warning_reasons`;
   * `promotion_warnings`.
-* CLI/report summaries should also surface warning counts or warning reasons where practical.
+* But `cmd_research_promote_candidate()` may still print only:
 
-### Hypothesis 4: scenario-policy tests are still too unit-level and do not fully protect the actual pipeline
+  * `gate_result`;
+  * `artifact_path`;
+  * `content_hash`;
+  * `operator_next_step`.
+
+If true, an operator who only reads CLI output can miss an optional calibration breach even though the artifact contains it.
+
+Required behavior:
+
+* The promotion CLI must print warning information directly when promotion succeeds.
+* At minimum, print:
+
+  * `has_execution_calibration_warning=1/0`;
+  * `execution_calibration_warning_reasons=...`;
+  * `promotion_warnings=...`.
+
+### Hypothesis 2: impossible scalar `scenario_role` + `must_pass_base_and_survive_stress` combinations are only rejected after running research
 
 Expected current risk:
 
-* Tests may directly exercise `_apply_scenario_policy()` and `_report_payload()`.
-* But they may not run the actual `run_research_backtest()` path with:
+* If an execution model generates multiple scenarios and the manifest supplies scalar `scenario_role="base"`, all scenarios become base.
+* If `scenario_policy="must_pass_base_and_survive_stress"`, the candidate will eventually fail because there is no stress scenario.
+* This is fail-closed but late. It wastes research runtime and makes the manifest contract less clear.
 
-  * manifest parsing;
-  * execution scenario generation;
-  * candidate aggregation;
-  * scenario role assignment;
-  * candidate profile hash generation;
-  * report writer payload structure;
-  * promotion refusal behavior.
+Required behavior:
 
-Expected safe behavior:
-
-* Add at least one full integration test using synthetic SQLite candles and a manifest.
-* The test should prove that `run_research_backtest()` emits one aggregated candidate per parameter candidate, with multiple `scenario_results`, correct top-level gate result, and promotion refusal when required scenario evidence fails.
-
-## Required patch priorities
-
-### P1: Fix single-scenario scenario-policy default
-
-Implement one of the following safe designs.
-
-Preferred design:
-
-* Generate scenarios first.
-* If `execution_model.scenario_policy` is absent:
-
-  * use `single_scenario` when exactly one scenario is generated;
-  * use `must_pass_base_and_survive_stress` when multiple scenarios are generated.
-* Preserve `legacy_cost_model_single_pass` for legacy `cost_model`-only manifests.
-
-Alternative acceptable design:
-
-* If `execution_model` is supplied and `scenario_policy` is absent, raise `ManifestValidationError`.
-* Error text must clearly say that `execution_model.scenario_policy` is required to avoid ambiguous validation policy.
-
-Do not keep the current behavior if it silently treats a single generated scenario as `must_pass_base_and_survive_stress`.
-
-Tests required:
-
-* Single generated execution scenario with no explicit policy parses as `single_scenario`, or fails with a clear manifest validation error if you choose explicit-only policy.
-* Multiple generated execution scenarios with no explicit policy parse as `must_pass_base_and_survive_stress`, or fail with a clear manifest validation error if explicit-only policy is chosen.
-* Legacy `cost_model` manifests still parse as `legacy_cost_model_single_pass`.
-
-### P1: Add first-class `scenario_role` support
-
-Patch the manifest/schema layer so `ExecutionScenario` can carry:
+* If the manifest explicitly sets `scenario_policy="must_pass_base_and_survive_stress"` and explicitly sets scalar `scenario_role` so all generated scenarios have only one role, reject at manifest parse time.
+* Error message should be explicit:
 
 ```text
-scenario_role: "base" | "stress"
-scenario_role_source: "manifest" | "derived"
+execution_model.scenario_role conflicts with must_pass_base_and_survive_stress
 ```
 
-Required behavior:
+Do not reject this combination when the policy is `single_scenario`.
 
-* `execution_model.scenario_role` may be optional in manifests.
-* If supplied, validate it strictly as `base` or `stress`.
-* If not supplied, preserve current derived behavior, but record `scenario_role_source = "derived"`.
-* If supplied, record `scenario_role_source = "manifest"`.
-* Scenario payloads and reports must include both `scenario_role` and `scenario_role_source`.
-* `_apply_scenario_policy()` must use the scenario result role, not an undocumented heuristic.
+Do not reject derived roles where generated scenarios include both base and stress.
 
-For generated scenario products:
+Do not reject legacy `cost_model` manifests.
 
-* If the manifest supplies a scalar `scenario_role`, apply it to all generated scenarios.
-* If the manifest supplies role arrays or per-scenario roles, implement only if it fits cleanly. Otherwise do not add a half-supported schema.
-* If multiple generated scenarios all have role `base` and policy is `must_pass_base_and_survive_stress`, the candidate must fail because no stress scenario exists.
-* If multiple generated scenarios all have role `stress` and policy is `must_pass_base_and_survive_stress`, the candidate must fail because no base scenario exists.
+### Hypothesis 3: full `run_research_backtest()` scenario aggregation may still lack integration coverage
 
-Tests required:
+Expected current risk:
 
-* Manifest-supplied `scenario_role = "base"` appears in scenario reports with `scenario_role_source = "manifest"`.
-* Missing scenario role is derived and reported as `scenario_role_source = "derived"`.
-* `must_pass_base_and_survive_stress` fails when no base role exists.
-* `must_pass_base_and_survive_stress` fails when no stress role exists.
-* Unsupported role values fail manifest validation.
+* Unit tests cover `_apply_scenario_policy()` and manifest parsing.
+* But there may not be a full integration test that exercises:
 
-### P1/P2: Surface optional calibration warnings in promotion artifacts
-
-Patch promotion artifact creation so optional warn-mode calibration breaches are visible at top level.
+  * SQLite candle fixture;
+  * manifest parsing;
+  * scenario generation;
+  * `run_research_backtest()`;
+  * candidate aggregation;
+  * scenario result reporting;
+  * candidate profile hash generation;
+  * promotion refusal for failed scenario policy.
 
 Required behavior:
 
-* If `execution_calibration_required=false`, `execution_calibration_strictness="warn"`, and `execution_calibration_gate.status == "FAIL"`:
+* Add or verify a full-pipeline test using synthetic SQLite candle data.
+* It should call `run_research_backtest()` directly.
+* It should assert the final report structure, not only helper functions.
+* It should attempt `promote_candidate()` and verify refusal when scenario-policy evidence fails.
 
-  * promotion may still pass;
-  * artifact must contain `has_execution_calibration_warning = true`;
-  * artifact must contain `execution_calibration_warning_reasons`;
-  * artifact must include those reasons in `promotion_warnings`.
-* If no warn-mode calibration breach exists:
+### Hypothesis 4: docs may not clearly explain scalar `scenario_role` behavior and warning calibration visibility
 
-  * `has_execution_calibration_warning = false`;
-  * `execution_calibration_warning_reasons = []`;
-  * `promotion_warnings` should still exist, even if empty.
-* Do not downgrade required calibration failures into warnings.
-* Do not allow `calibration_required=true` failures to promote.
+Expected current risk:
+
+* Docs may mention scenario roles and calibration warnings generally.
+* But they may not clearly state that scalar `execution_model.scenario_role` applies to every generated scenario.
+* They may not explain that warning-mode calibration breaches are allowed but must be operator-visible in promotion artifacts and CLI output.
+
+Required behavior:
+
+* Update docs/runbooks with repository-specific guidance.
+* Do not write generic trading advice.
+
+## Required patches
+
+### P1: Print promotion warnings in the CLI
+
+Patch `src/bithumb_bot/research/cli.py`, specifically `cmd_research_promote_candidate()`.
+
+After successful promotion, print:
+
+```text
+has_execution_calibration_warning=1/0
+execution_calibration_warning_reasons=<comma-separated list or none>
+promotion_warnings=<comma-separated list or none>
+```
+
+Use the artifact fields produced by `promote_candidate()`.
+
+Suggested format:
+
+```text
+  has_execution_calibration_warning=1
+  execution_calibration_warning_reasons=execution_calibration_p95_slippage_exceeds_assumption
+  promotion_warnings=execution_calibration_p95_slippage_exceeds_assumption
+```
+
+If no warnings exist:
+
+```text
+  has_execution_calibration_warning=0
+  execution_calibration_warning_reasons=none
+  promotion_warnings=none
+```
 
 Tests required:
 
-* Optional warn calibration breach promotes but records top-level warning fields.
-* Required calibration breach still refuses promotion.
-* No calibration breach produces empty warning fields.
-* Candidate profile hash and promotion artifact hash include the warning evidence where appropriate.
+* Promotion CLI output includes warning fields when warn-mode calibration breach exists.
+* Promotion CLI output includes `none`/`0` values when no warnings exist.
+* Required calibration failure still refuses promotion and does not print a successful promotion block.
 
-### P1: Add full `run_research_backtest()` integration coverage for scenario aggregation
+### P1/P2: Reject impossible scalar role/policy combinations at manifest parse time
 
-Add a full integration test using synthetic SQLite candles and a manifest.
+Patch `src/bithumb_bot/research/experiment_manifest.py`.
 
-Required test behavior:
+Required behavior:
 
-* Build a tiny SQLite candle dataset fixture.
-* Use `run_research_backtest()` directly, not only `_apply_scenario_policy()`.
-* Configure an execution model that generates at least two scenarios.
-* Make one base scenario pass and one stress scenario fail, using a deterministic mechanism such as:
+* After generated scenarios are built and the final scenario policy is known, validate policy/role consistency.
+* If:
 
-  * `order_failure_rate=[0.0, 1.0]`;
-  * or `slippage_bps=[0.0, very_high]`;
-  * or another reliable synthetic setup.
-* Assert:
+  * `scenario_policy == "must_pass_base_and_survive_stress"`;
+  * `scenario_role_source == "manifest"` for all generated scenarios;
+  * all generated scenarios have only one role, either all `base` or all `stress`;
+  * scenario count is greater than one;
+* then raise `ManifestValidationError` with:
 
-  * the report contains one aggregated candidate for the same `parameter_candidate_id`;
-  * that candidate contains `scenario_results` with length 2 or the expected scenario count;
-  * top-level `acceptance_gate_result == "FAIL"`;
-  * `scenario_fail_count > 0`;
-  * `gate_fail_reasons` includes scenario-policy failure;
-  * `candidate_profile_hash` exists and covers scenario evidence.
-* Write the report via the existing report writer path if practical.
-* Attempt promotion and assert it is refused for the scenario-policy reason.
+```text
+execution_model.scenario_role conflicts with must_pass_base_and_survive_stress
+```
 
-Also add a positive integration case if feasible:
+Do not block:
 
-* base scenario passes;
-* stress scenario passes;
-* candidate top-level gate passes;
-* promotion is allowed only when final-holdout and other required evidence are present.
+* `single_scenario` policy with scalar role;
+* legacy `cost_model` policy;
+* derived roles that include both base and stress;
+* explicit configurations that can actually produce both required roles.
 
-Do not make tests brittle by depending on real exchange data or live credentials.
+Tests required:
+
+* Multi-scenario manifest with `scenario_policy="must_pass_base_and_survive_stress"` and scalar `scenario_role="base"` is rejected.
+* Same with scalar `scenario_role="stress"` is rejected.
+* Multi-scenario manifest with `scenario_policy="single_scenario"` and scalar role is not rejected by this new check, though existing single-scenario policy rules may still later mark multi-scenario reports ineligible if applicable.
+* Multi-scenario manifest with derived roles `[base, stress]` remains valid.
+* Legacy `cost_model` manifest remains valid.
+
+### P1: Add full `run_research_backtest()` integration coverage
+
+Add a new integration test file if one does not already exist, for example:
+
+```text
+tests/test_research_backtest_integration.py
+```
+
+Use synthetic SQLite candles. Do not require network, real exchange data, or live credentials.
+
+The test should:
+
+1. create a temporary SQLite database with the `candles` table schema expected by `load_dataset_split`;
+2. insert enough candles for train, validation, and final_holdout date ranges;
+3. build a manifest with:
+
+   * one parameter candidate;
+   * final holdout present;
+   * execution model generating at least two scenarios;
+   * `scenario_policy="must_pass_base_and_survive_stress"`;
+   * one base scenario that can pass;
+   * one stress scenario that deterministically fails, using something reliable such as `order_failure_rate=[0.0, 1.0]` or another existing deterministic failure mechanism;
+4. call `run_research_backtest()`;
+5. assert:
+
+   * `candidate_count == 1`;
+   * the candidate has `scenario_results`;
+   * `len(scenario_results) == 2` or the exact generated scenario count;
+   * top-level `acceptance_gate_result == "FAIL"`;
+   * `scenario_fail_count > 0`;
+   * `gate_fail_reasons` includes a scenario-policy failure;
+   * `candidate_profile_hash` exists;
+   * scenario result objects include `scenario_role` and `scenario_role_source`;
+6. write the report through existing report writer behavior if `run_research_backtest()` already does so;
+7. call `promote_candidate()` and assert it refuses promotion with a scenario-policy reason.
+
+Also add a positive integration case if practical:
+
+* both base and stress scenarios pass;
+* final holdout evidence exists;
+* candidate top-level gate is `PASS`;
+* promotion succeeds.
+
+If a positive case is too brittle due to SMA signal behavior, document why and keep the negative integration case.
+
+### P2: Update docs/runbooks
+
+Update the relevant repository docs. Prefer existing research-validation docs/runbooks over adding a disconnected new file.
+
+Docs must explain:
+
+* `execution_model.scenario_policy` defaults:
+
+  * one generated scenario → `single_scenario`;
+  * multiple generated scenarios → `must_pass_base_and_survive_stress`;
+  * legacy `cost_model` → `legacy_cost_model_single_pass`;
+* `execution_model.scenario_role` behavior:
+
+  * scalar role applies to all generated scenarios;
+  * missing role is derived;
+  * derived role source is recorded as `scenario_role_source="derived"`;
+  * manifest role source is recorded as `scenario_role_source="manifest"`;
+* why scalar role plus `must_pass_base_and_survive_stress` can be invalid for multi-scenario manifests;
+* optional calibration warning behavior:
+
+  * warning-mode calibration breaches may allow promotion;
+  * warnings must appear in candidate profile, promotion artifact, and promotion CLI output;
+  * required calibration failures still refuse promotion;
+* smoke backtests remain invalid as evidence for promotion, approved profiles, live readiness, or capital allocation.
 
 ## Observability requirements
 
-Research reports must make scenario semantics inspectable without reading code.
+Promotion CLI output must be operator-visible and not require opening the JSON artifact to notice calibration warnings.
 
-Each scenario result should include:
+Promotion artifacts should continue to include:
 
 ```text
-scenario_id
-scenario_index
-scenario_type
-scenario_role
-scenario_role_source
-execution_model
-execution_model_hash
-model_params_hash
-cost_model
-execution_calibration_gate
-scenario_acceptance_gate_result
-scenario_fail_reasons
+has_execution_calibration_warning
+execution_calibration_warning_reasons
+promotion_warnings
 ```
 
-Each top-level candidate should include:
+Candidate profile hashes should continue to cover warning evidence where appropriate.
+
+Research reports should continue to include:
 
 ```text
-parameter_candidate_id
-parameter_values
 scenario_policy
 scenario_results
+scenario_role
+scenario_role_source
 scenario_pass_count
 scenario_fail_count
 required_scenario_count
 required_scenario_ids
-acceptance_gate_result
 gate_fail_reasons
-final_holdout_present
-final_holdout_required_for_promotion
 candidate_profile_hash
 ```
 
-Promotion artifacts should include:
-
-```text
-scenario_policy
-scenario_pass_count
-scenario_fail_count
-required_scenario_count
-has_execution_calibration_warning
-execution_calibration_warning_reasons
-promotion_warnings
-final_holdout_present
-final_holdout_required_for_promotion
-```
-
-If a warning-mode calibration breach is present, it must be visible at the top level of the promotion artifact.
-
 ## Recovery and safety requirements
 
-All ambiguous policy behavior must fail safely or be made explicit.
+All new behavior must preserve fail-closed safety.
 
-If scenario policy is unsupported, fail manifest validation or mark candidates ineligible with `scenario_policy_unsupported`.
+If manifest role/policy combination is impossible, fail early at manifest parse time.
 
-If `must_pass_base_and_survive_stress` has no base scenario, fail with:
+If optional warn-mode calibration breach exists, promotion may proceed only if all hard gates pass, and the warning must be printed and recorded.
 
-```text
-scenario_policy_no_passing_base_scenario
-```
+If required calibration fails, promotion must still be refused.
 
-If `must_pass_base_and_survive_stress` has no stress scenario, fail with:
+If final holdout is required and missing, promotion must still be refused.
 
-```text
-scenario_policy_no_passing_stress_scenario
-```
+If scenario policy fails, promotion must still be refused.
 
-If scenario role is invalid, fail manifest validation.
+Do not delete or overwrite unrelated research artifacts.
 
-If optional calibration warning mode is used, promotion may proceed only if all hard gates pass, and the warning must be recorded.
-
-If required calibration fails, promotion must remain refused.
-
-If final holdout is required and missing, promotion must remain refused.
-
-Do not delete existing research artifacts during normal runs.
-
-Do not overwrite reports except through existing safe atomic report-writing conventions.
-
-## Documentation requirements
-
-Update repository docs/runbooks to explain:
-
-* scenario policy defaults;
-* when `single_scenario` is used;
-* when `must_pass_base_and_survive_stress` is used;
-* how `scenario_role` works;
-* how derived scenario roles are assigned;
-* why manifest-supplied roles are safer for multi-scenario experiments;
-* how optional calibration warning mode appears in promotion artifacts;
-* that warning-mode calibration breaches are not hard failures but must be operator-visible;
-* that smoke backtests remain invalid as evidence for promotion, approved profiles, live readiness, or capital allocation;
-* that pytest passing is not equivalent to promotion readiness.
-
-Keep the docs specific to `WG-14/bithumb-bot`. Do not write generic trading advice.
+Use existing atomic write conventions.
 
 ## Suggested implementation order
 
-1. Inspect current files:
+1. Inspect:
 
+   * `src/bithumb_bot/research/cli.py`
    * `src/bithumb_bot/research/experiment_manifest.py`
    * `src/bithumb_bot/research/validation_protocol.py`
    * `src/bithumb_bot/research/promotion_gate.py`
-   * `src/bithumb_bot/research/execution_calibration.py`
-   * `tests/test_research_scenario_policy.py`
-   * `tests/test_research_promotion_gate.py`
+   * existing research tests
    * existing research docs/runbooks
 
 2. Add failing tests for:
 
-   * single-scenario default behavior;
-   * explicit and derived scenario role reporting;
-   * missing base/stress role under `must_pass_base_and_survive_stress`;
-   * optional warn calibration artifact visibility;
-   * full `run_research_backtest()` scenario aggregation and promotion refusal.
+   * promotion CLI warning output;
+   * manifest role/policy conflict rejection;
+   * full `run_research_backtest()` aggregation + promotion refusal.
 
 3. Patch implementation.
 
 4. Update docs.
 
-5. Run the full test suite.
+5. Run full pytest.
 
 ## Final report format
 
@@ -383,23 +348,19 @@ For each hypothesis:
 
 # Design Changes Implemented
 - Files changed
-- New fields, schemas, or report structures
+- New validation rules
+- New CLI output fields
 - Backward compatibility behavior
 
-# Scenario Policy Defaults
-- How single-scenario defaults are handled
-- How multi-scenario defaults are handled
-- Legacy cost-model behavior
+# Promotion Warning Observability
+- CLI behavior
+- Artifact behavior
+- Required vs optional calibration behavior
 
-# Scenario Role Semantics
-- Manifest-supplied role behavior
-- Derived role behavior
-- Fail-closed behavior for missing base/stress roles
-
-# Calibration Warning Observability
-- New promotion artifact fields
-- Required vs optional behavior
-- Warning-mode behavior
+# Scenario Role / Policy Prevalidation
+- New manifest validation rule
+- Allowed combinations
+- Rejected combinations
 
 # Integration Coverage
 - New full-pipeline tests
@@ -422,5 +383,5 @@ For each hypothesis:
 - Migration concerns for old reports or promotion artifacts
 ```
 
-Do not claim success unless tests actually pass.
+Do not claim success unless the tests actually pass.
 

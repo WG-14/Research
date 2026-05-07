@@ -418,6 +418,11 @@ def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelC
             )
             for scenario in scenarios
         ]
+    _validate_scenario_policy_role_consistency(
+        explicit_scenario_policy=explicit_scenario_policy,
+        scenario_policy=scenario_policy,
+        scenarios=tuple(scenarios),
+    )
     return ExecutionModelConfig(
         scenarios=tuple(scenarios),
         source="execution_model",
@@ -440,6 +445,25 @@ def _optional_scenario_role(value: Any) -> str | None:
 
 def _derived_scenario_role(index: int) -> str:
     return "base" if index == 0 else "stress"
+
+
+def _validate_scenario_policy_role_consistency(
+    *,
+    explicit_scenario_policy: Any,
+    scenario_policy: str,
+    scenarios: tuple[ExecutionScenario, ...],
+) -> None:
+    if str(explicit_scenario_policy or "").strip() != "must_pass_base_and_survive_stress":
+        return
+    if scenario_policy != "must_pass_base_and_survive_stress" or len(scenarios) <= 1:
+        return
+    if not all(scenario.scenario_role_source == "manifest" for scenario in scenarios):
+        return
+    roles = {scenario.scenario_role for scenario in scenarios}
+    if roles in ({"base"}, {"stress"}):
+        raise ManifestValidationError(
+            "execution_model.scenario_role conflicts with must_pass_base_and_survive_stress"
+        )
 
 
 def _number_array(payload: dict[str, Any], key: str, *, default: tuple[float, ...]) -> tuple[float, ...]:
