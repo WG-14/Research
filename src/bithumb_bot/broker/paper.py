@@ -126,7 +126,7 @@ def _validate_unit_interval_config(name: str, value: object) -> float:
 
 
 def _validate_paper_execution_config() -> None:
-    _paper_execution_model_name()
+    model = _paper_execution_model_name()
     latency_ms = int(getattr(settings, "PAPER_EXECUTION_LATENCY_MS", 0))
     if latency_ms < 0:
         raise ValueError(f"PAPER_EXECUTION_LATENCY_MS must be >= 0, got {latency_ms!r}")
@@ -134,10 +134,15 @@ def _validate_paper_execution_config() -> None:
         "PAPER_EXECUTION_PARTIAL_FILL_RATE",
         getattr(settings, "PAPER_EXECUTION_PARTIAL_FILL_RATE", 0.0),
     )
-    _validate_unit_interval_config(
+    partial_fraction = _validate_unit_interval_config(
         "PAPER_EXECUTION_PARTIAL_FILL_FRACTION",
         getattr(settings, "PAPER_EXECUTION_PARTIAL_FILL_FRACTION", 0.5),
     )
+    if model == "stress" and (partial_fraction <= 0.0 or partial_fraction >= 1.0):
+        raise ValueError(
+            "PAPER_EXECUTION_PARTIAL_FILL_FRACTION must be > 0 and < 1 "
+            f"for paper partial-fill semantics, got {partial_fraction!r}"
+        )
     _validate_unit_interval_config(
         "PAPER_EXECUTION_ORDER_FAILURE_RATE",
         getattr(settings, "PAPER_EXECUTION_ORDER_FAILURE_RATE", 0.0),

@@ -17,6 +17,8 @@ Stress mode reads:
 - `PAPER_EXECUTION_PARTIAL_FILL_FRACTION`
 - `PAPER_EXECUTION_ORDER_FAILURE_RATE`
 
+When stress mode is active, `PAPER_EXECUTION_PARTIAL_FILL_FRACTION` must be strictly between `0` and `1`. Boundary values are rejected because a stress result marked `partial` must carry a real partial fill: not zero filled and not fully filled.
+
 The adapter derives deterministic outcomes from the configured seed, model parameters, intent key, signal timestamp, side, symbol, requested quantity, and reference price. Do not include random client-order UUIDs in replay expectations.
 
 ## Lifecycle Semantics

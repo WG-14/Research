@@ -1,10 +1,10 @@
 You are Codex working directly in the GitHub repository `WG-14/bithumb-bot`.
 
-Use the attached review as source context, but verify every claim against the current repository before modifying code. Do not treat the review as automatically true. 
+Use the attached latest review as source context, but verify every claim against the current repository before modifying code. Do not treat the review as automatically true. 
 
-Your task is to review the recently patched paper stress execution implementation and apply the next necessary hardening patch. The current patch appears to have moved in the right direction: paper execution now has an immediate adapter, a stress adapter backed by the research `StressExecutionModel`, `FAILED`/`PARTIAL` handling, execution evidence in `order_events.submit_evidence`, deterministic replay tests, and documentation. However, do not stop at “pytest passes.” The highest-priority remaining risk is that paper stress partial/open orders may block only the same intent through dedup, while still allowing a new timestamp or different-side intent to start another order lifecycle while an unresolved/open order remains.
+Your task is to review the current paper stress execution patch and apply the next necessary hardening patch. The current implementation appears to have resolved the major lifecycle gaps: paper stress execution now has an unresolved-order gate, fail-closed model/rate validation, SELL stress coverage, and latency tests. The remaining priority is a smaller but important lifecycle semantics bug: `PAPER_EXECUTION_PARTIAL_FILL_FRACTION` currently appears to allow boundary values `0.0` and `1.0`, which can make a stress result say `fill_status="partial"` while the actual filled quantity is zero or fully filled.
 
-Do not generalize this into broad advice. Work in this repo, verify the code, patch what is necessary, and add tests that would fail before the patch.
+Do not turn this into general advice. Work in this repo, verify the code, patch the edge case, and add tests that would fail before the patch.
 
 ## Primary files to inspect
 
@@ -12,337 +12,197 @@ Inspect these files first:
 
 * `src/bithumb_bot/broker/paper.py`
 * `src/bithumb_bot/broker/paper_execution.py`
-* `src/bithumb_bot/oms.py`
-* `src/bithumb_bot/risk.py`
-* `src/bithumb_bot/execution.py`
-* `src/bithumb_bot/config.py`
 * `src/bithumb_bot/research/execution_model/stress.py`
 * `tests/test_paper_stress_execution.py`
 * `tests/test_paper_orderbook.py`
-* `.env.example`
 * `docs/paper-execution-lifecycle.md`
-* `docs/live_dry_run_checklist.md`
+* `.env.example`
 
 Also search before adding new code:
 
 ```text
-evaluate_unresolved_order_gate
-OPEN_ORDER_STATUSES
+PAPER_EXECUTION_PARTIAL_FILL_FRACTION
+_validate_paper_execution_config
+_validate_unit_interval_config
+StressPaperExecutionAdapter
+StressExecutionModel
+fill_status == "partial"
+remaining_qty
 PARTIAL
-SUBMIT_UNKNOWN
-ACCOUNTING_PENDING
-RECOVERY_REQUIRED
-CANCEL_REQUESTED
-claim_order_intent_dedup
-update_order_intent_dedup
-PAPER_EXECUTION_MODEL
-PAPER_EXECUTION_PARTIAL_FILL_RATE
-PAPER_EXECUTION_ORDER_FAILURE_RATE
-PAPER_EXECUTION_LATENCY_MS
 ```
 
 ## Working hypotheses to verify, not assume
 
 Keep these hypotheses explicit. Confirm, refine, or refute each one in the final report.
 
-### H1: The recent patch correctly introduced paper stress execution, but only same-intent dedup is tested
+### H1: The major paper lifecycle patch is now mostly in place
 
-Verify whether `tests/test_paper_stress_execution.py` currently proves that a partial stress order blocks the same intent, but does not prove that an open `PARTIAL` order blocks a new intent with a different timestamp or different side.
+Verify whether paper execution currently:
 
-Validation:
-
-* Inspect the partial duplicate test.
-* Check whether it uses the same `ts` and same intent key.
-* Check whether any test attempts a second order with a different `ts`, different side, or different lot/intent key while the first order is still `PARTIAL`.
-
-Refutation:
-
-* If a test already proves global unresolved-order blocking for paper after `PARTIAL`, document it and strengthen only the missing edge cases.
-
-### H2: Paper execution does not currently call the global unresolved-order gate before creating a new order intent
-
-Verify whether `paper_execute()` calls `evaluate_unresolved_order_gate()` before sizing/claiming/recording a new order, especially after a previous stress order remains `PARTIAL`.
-
-Validation:
-
-* Inspect imports and call flow in `src/bithumb_bot/broker/paper.py`.
-* Confirm whether `evaluate_unresolved_order_gate()` is used in paper.
-* Confirm that `oms.py` treats `PARTIAL`, `SUBMIT_UNKNOWN`, `ACCOUNTING_PENDING`, `RECOVERY_REQUIRED`, and `CANCEL_REQUESTED` as open/unresolved statuses.
+* imports and calls `evaluate_unresolved_order_gate`
+* blocks a new order when a previous `PARTIAL` order remains open
+* validates `PAPER_EXECUTION_MODEL`
+* validates latency/rate settings
+* has BUY and SELL stress tests
+* asserts latency in fill/trade timestamps and evidence
 
 Refutation:
 
-* If paper already gates all new submissions on unresolved open orders, document the exact path and add a regression test if missing.
+* If any of these are missing or broken, fix them before the smaller boundary patch.
 
-### H3: Without a paper unresolved-order gate, stress rehearsal can understate live OMS risk
+### H2: `PAPER_EXECUTION_PARTIAL_FILL_FRACTION=0.0` can produce contradictory evidence/status semantics
 
-The live runtime uses unresolved/open order checks to prevent new submissions while risky order states remain. Paper stress rehearsal should exercise the same failure family. If paper only blocks duplicate intent keys, it can still allow a new intent while an earlier partial order remains open.
+Verify whether the current validation allows `0.0`.
 
-Validation:
+Risk:
 
-* Simulate or reason from code: stress partial BUY at `ts1`, then a BUY or SELL at `ts2`.
-* Determine whether a second order can be created if the intent key differs.
-
-Refutation:
-
-* If current paper logic blocks this through another gate, document that gate and prove it with a test.
-
-### H4: Paper stress configuration currently may fail open on invalid values
-
-Verify whether invalid `PAPER_EXECUTION_MODEL` silently falls back to immediate mode, and whether stress numeric settings are range-checked.
-
-Validation:
-
-* Inspect `_paper_execution_model_name()` and adapter construction.
-* Check whether `PAPER_EXECUTION_MODEL=stres` raises an error or silently uses immediate mode.
-* Check whether latency, partial fill rate, partial fill fraction, and failure rate are validated.
+* Research stress model can emit `fill_status="partial"` with `filled_qty=0`.
+* Paper execution may record partial-style evidence, then later classify the order as `FAILED` because `filled_qty <= 0`.
+* This creates a mismatch between stress evidence and final order state.
 
 Refutation:
 
-* If configuration validation already fails closed, add or verify tests proving it.
+* If the current code already rejects `0.0`, document the exact validation and ensure there is a regression test.
 
-### H5: Current stress tests are BUY-heavy and do not sufficiently cover SELL lifecycle complexity
+### H3: `PAPER_EXECUTION_PARTIAL_FILL_FRACTION=1.0` can leave a fully filled order as `PARTIAL`
 
-SELL uses lot authority, dust/open exposure, and exit sizing. A SELL partial stress case can expose lifecycle and recovery issues that BUY tests do not.
+Verify whether the current validation allows `1.0`.
 
-Validation:
+Risk:
 
-* Inspect current paper stress tests.
-* Check whether there are SELL partial/failure tests.
-* Check whether partial SELL leaves the order `PARTIAL` and applies only the filled quantity.
-
-Refutation:
-
-* If SELL stress tests already cover partial/failure and lot behavior, document them.
-
-### H6: Latency evidence is documented but not directly asserted
-
-Verify whether tests assert that configured stress latency is persisted in evidence and shifts `fills.fill_ts` / `trades.ts`.
-
-Validation:
-
-* Inspect paper stress tests.
-* Check whether `PAPER_EXECUTION_LATENCY_MS` is asserted against `fills.fill_ts`, `trades.ts`, and `order_events.submit_evidence`.
+* Research stress model can emit `fill_status="partial"` with `filled_qty == requested_qty`.
+* Paper execution may set final status to `PARTIAL` based only on `fill_status`, even though `qty_filled == qty_req`.
+* This can leave a fully filled order open in OMS/dedup, causing unresolved-order gate to block future paper execution forever or until manual cleanup.
 
 Refutation:
 
-* If already tested, document the evidence.
+* If current code normalizes this to `FILLED`, document the exact path and add a test proving it.
 
-## Design priority
+### H4: Boundary fraction validation is the correct first fix
 
-Prioritize lifecycle safety over cosmetic changes.
+The priority fix is to fail closed on invalid partial-fill semantics rather than trying to reinterpret boundary partial results after execution.
 
-Do not:
+Expected rule:
 
-* add another random branch inside `paper_execute()`
-* mark partial fills as terminal `FILLED`
-* release dedup for `PARTIAL`, `SUBMIT_UNKNOWN`, `ACCOUNTING_PENDING`, or `RECOVERY_REQUIRED`
-* silently fall back from invalid stress config to immediate mode
-* weaken existing lot/dust, guardrail, fee, dedup, or accounting behavior
-* make risky live order behavior changes
+* `PAPER_EXECUTION_PARTIAL_FILL_FRACTION` must be strictly greater than `0.0` and strictly less than `1.0` for paper stress semantics.
 
-The patch must preserve the core direction: paper runtime should rehearse the same failure families live OMS must survive.
+Refinement:
 
-## Required patch 1: Add unresolved-order gate to paper execution
+* If repository conventions strongly prefer conditional validation, it is acceptable to require `0 < fraction < 1` only when `PAPER_EXECUTION_MODEL=stress`. Do not silently allow boundary values in active stress mode.
 
-Add a paper unresolved-order gate before creating/claiming a new order intent.
+## Required patch
 
-The intended behavior:
+Patch paper stress configuration validation so `PAPER_EXECUTION_PARTIAL_FILL_FRACTION` cannot be `0.0` or `1.0` in stress mode.
+
+Preferred behavior:
 
 ```text
-If any unresolved/open order exists locally:
-  PENDING_SUBMIT
-  NEW
-  PARTIAL
-  SUBMIT_UNKNOWN
-  ACCOUNTING_PENDING
-  RECOVERY_REQUIRED
-  CANCEL_REQUESTED
-
-Then paper_execute() must not create a new paper order intent.
-It must return None.
-It must emit durable/loggable evidence explaining the skip.
+PAPER_EXECUTION_MODEL=stress
+PAPER_EXECUTION_PARTIAL_FILL_FRACTION=0.0  -> ValueError
+PAPER_EXECUTION_MODEL=stress
+PAPER_EXECUTION_PARTIAL_FILL_FRACTION=1.0  -> ValueError
 ```
 
-Use the existing OMS helper if appropriate:
+Error message should mention `PAPER_EXECUTION_PARTIAL_FILL_FRACTION` and clearly state that paper partial-fill semantics require a value strictly between 0 and 1.
+
+A straightforward implementation is acceptable:
 
 ```python
-evaluate_unresolved_order_gate(
-    conn,
-    now_ms=...,
-    max_open_order_age_sec=int(settings.MAX_OPEN_ORDER_AGE_SEC),
+partial_fraction = _validate_unit_interval_config(
+    "PAPER_EXECUTION_PARTIAL_FILL_FRACTION",
+    getattr(settings, "PAPER_EXECUTION_PARTIAL_FILL_FRACTION", 0.5),
 )
+if partial_fraction <= 0.0 or partial_fraction >= 1.0:
+    raise ValueError(
+        "PAPER_EXECUTION_PARTIAL_FILL_FRACTION must be > 0 and < 1 "
+        f"for paper partial-fill semantics, got {partial_fraction!r}"
+    )
 ```
 
-Prefer placing this after `init_portfolio(conn)` and before sizing/intent-claiming/order creation. Preserve default immediate behavior; ordinary immediate paper orders should still terminalize as `FILLED` and therefore not block the next order unless an open/unresolved order actually remains.
+Place this where it best fits the current repository style. If `_validate_paper_execution_config()` already exists, prefer updating it rather than adding a second validation path.
 
-Expected evidence:
+## Required tests
 
-* At least a run log entry using repo style, for example `format_log_kv`.
-* Prefer also recording a durable `order_events` row if there is an existing suitable helper and no unsafe fake order id is required.
-* A notification is acceptable if consistent with existing paper skip behavior.
-* Do not create a second order as a way to record the block.
+Add focused tests that would fail before this patch.
 
-If durable event recording for a skip without a new order is awkward, document the tradeoff and at minimum add a test using `caplog` or DB state to prove the gate fired.
-
-## Required test for patch 1
-
-Add a regression test that fails before the gate.
-
-Suggested name:
+Suggested test:
 
 ```python
-test_partial_stress_order_blocks_new_intent_with_different_timestamp
+@pytest.mark.parametrize("invalid_fraction", [0.0, 1.0])
+def test_invalid_paper_partial_fill_fraction_boundary_fails_closed(invalid_fraction):
+    old_model = _set("PAPER_EXECUTION_MODEL", "stress")
+    old_fraction = _set("PAPER_EXECUTION_PARTIAL_FILL_FRACTION", invalid_fraction)
+    try:
+        with pytest.raises(ValueError, match="PAPER_EXECUTION_PARTIAL_FILL_FRACTION"):
+            paper._validate_paper_execution_config()
+    finally:
+        _set("PAPER_EXECUTION_PARTIAL_FILL_FRACTION", old_fraction)
+        _set("PAPER_EXECUTION_MODEL", old_model)
 ```
 
-Test shape:
+If direct helper testing is not the repo style, call `paper.paper_execute()` with minimal setup, but avoid making the boundary validation test depend on unrelated orderbook/DB behavior if possible.
+
+Also ensure existing valid stress configuration still passes:
 
 ```text
-1. Configure:
-   PAPER_EXECUTION_MODEL=stress
-   PAPER_EXECUTION_PARTIAL_FILL_RATE=1.0
-   PAPER_EXECUTION_PARTIAL_FILL_FRACTION=0.5
-   PAPER_EXECUTION_ORDER_FAILURE_RATE=0.0
-
-2. Prepare BUY with valid top-of-book.
-
-3. Execute BUY at ts1.
-   Expect:
-   - trade is not None
-   - one order exists
-   - order status is PARTIAL
-   - order_intent_dedup remains PARTIAL
-
-4. Execute another paper order at ts2 != ts1.
-   Prefer a SELL if setup is feasible because SELL after partial BUY is the stronger lifecycle test.
-   Otherwise use BUY with a different timestamp and explain why SELL setup was not suitable.
-
-5. Expect:
-   - second trade is None
-   - orders count remains 1
-   - fills/trades count does not increase
-   - original order remains PARTIAL
-   - order_intent_dedup remains PARTIAL
-   - log or durable evidence identifies unresolved/open order gate blocking the second submission
+PAPER_EXECUTION_PARTIAL_FILL_FRACTION=0.5
 ```
 
-If SELL requires lot setup that makes the test too large, add the BUY-different-timestamp test first and then add a separate SELL coverage test below.
+Do not weaken existing tests for:
 
-## Required patch 2: Fail closed on invalid paper execution configuration
+* unresolved-order gate
+* duplicate intent
+* SELL partial/failure
+* latency timestamp shift
+* deterministic replay
+* failure without fills/trades
 
-Add explicit validation for:
+## Optional improvement, lower priority
+
+Currently verify whether `paper_execute()` fetches orderbook before checking unresolved order gate. If open order exists, fetching orderbook first can hide the unresolved-gate skip behind an orderbook failure. This is not the primary fix, but if the refactor is small and safe, prefer this order:
 
 ```text
-PAPER_EXECUTION_MODEL in {"immediate", "stress"}
-PAPER_EXECUTION_LATENCY_MS >= 0
-0 <= PAPER_EXECUTION_PARTIAL_FILL_RATE <= 1
-0 <= PAPER_EXECUTION_PARTIAL_FILL_FRACTION <= 1
-0 <= PAPER_EXECUTION_ORDER_FAILURE_RATE <= 1
+validate config
+resolve market
+open DB
+init portfolio
+evaluate unresolved order gate
+then fetch orderbook / quote
 ```
 
-Use the existing repository style for config parsing/validation. You may implement validation in `paper.py`, `paper_execution.py`, or `config.py`; choose the lowest-risk location that makes tests clear and does not break import-time behavior unexpectedly.
-
-Important:
-
-* `PAPER_EXECUTION_MODEL=stres` must not silently use immediate mode.
-* Invalid rates must not silently clamp except where the existing research model intentionally clamps `partial_fill_fraction`; paper runtime config should still fail closed.
-* Negative latency must fail closed.
-
-Add tests:
-
-```python
-test_invalid_paper_execution_model_fails_closed
-test_invalid_paper_stress_rate_fails_closed
-test_invalid_paper_stress_latency_fails_closed
-```
-
-These tests may call the relevant helper directly or call `paper_execute()` if that is the cleanest path. Avoid making tests brittle around unrelated orderbook setup if direct helper tests are clearer.
-
-## Strongly recommended patch 3: Add SELL stress lifecycle coverage
-
-Add SELL stress tests if feasible within this change.
-
-Suggested tests:
-
-```python
-test_stress_partial_sell_keeps_order_partial_and_applies_only_filled_qty
-test_stress_failed_sell_does_not_change_portfolio_lots_fills_or_trades
-```
-
-Expected for partial SELL:
-
-* Existing open lot/position is prepared.
-* Stress SELL executes with partial fill.
-* Order status is `PARTIAL`.
-* `orders.qty_filled < orders.qty_req`.
-* Fill/trade qty equals only the partial filled qty.
-* Evidence has `fill_status="partial"` and positive `remaining_qty`.
-* The order remains open in dedup.
-
-Expected for failed SELL:
-
-* Order is `FAILED`.
-* No fill/trade is inserted.
-* Portfolio and lot state are unchanged except for appropriate order/evidence records.
-* Dedup follows existing failed-order release semantics.
-
-If full SELL lot assertions are too large, at least add one SELL stress partial test proving status/fill/trade/evidence behavior, and document remaining lot-depth coverage as future work.
-
-## Strongly recommended patch 4: Assert latency behavior
-
-Add a latency test.
-
-Suggested name:
-
-```python
-test_stress_latency_shifts_fill_ts_and_is_persisted_in_evidence
-```
-
-Expected:
-
-* Configure `PAPER_EXECUTION_LATENCY_MS`, for example `250`.
-* Execute stress fill.
-* Assert:
-
-```text
-fills.fill_ts == signal_ts + PAPER_EXECUTION_LATENCY_MS
-trades.ts == signal_ts + PAPER_EXECUTION_LATENCY_MS
-order_events.submit_evidence.latency_ms == PAPER_EXECUTION_LATENCY_MS
-```
-
-Also assert the evidence still contains model name/version/hash and derived seed hash.
+If this reorder touches many compatibility paths or legacy tests, do not over-scope. Document it as remaining work.
 
 ## Recovery and observability requirements
 
-The patch must preserve recovery safety:
+This patch must preserve lifecycle safety:
 
-* Open orders must remain visible through `OPEN_ORDER_STATUSES`.
-* `PARTIAL` must not be treated as terminal.
-* Failed orders should follow existing `ORDER_INTENT_DEDUP_RELEASE_STATUSES` behavior.
-* No second unsafe paper order should be created while a prior paper order is unresolved.
-* If you add a skip log/event, include enough detail to diagnose:
+* `PARTIAL` must remain open only when `0 < qty_filled < qty_req`.
+* A fully filled order must not be left as `PARTIAL`.
+* A zero-filled “partial” must not be recorded as partial evidence and then failed later.
+* Dedup semantics must not be weakened.
+* Unresolved-order gate behavior must remain unchanged.
+* No new DB schema is needed for this patch.
 
-  * mode
-  * symbol
-  * signal
-  * reason code
-  * reason text
-  * whether the blocking state was unresolved/open order
+If you update docs, keep them precise:
 
-Do not add a new database schema unless absolutely necessary. Prefer existing `order_events`, logs, or notifier patterns.
+* Stress partial-fill fraction must be strictly between 0 and 1.
+* Boundary values are rejected because they break paper lifecycle semantics.
+* Async delayed fill scheduling and live-dry-run chaos remain future work unless actually implemented and tested.
 
 ## Scope boundaries
 
-This task is paper-runtime hardening. Do not implement a full live-dry-run chaos broker in this patch.
+Do not:
 
-However, keep the documentation honest:
-
-* Paper stress execution rehearses deterministic paper lifecycle failure families.
-* Live dry-run chaos scenarios remain future work unless you actually implement and test them.
-* Do not claim live dry-run now rehearses submit timeout, broker reject, partial fill, fee pending, or order-not-ready paths unless code and tests prove it.
+* implement live-dry-run chaos broker in this patch
+* redesign `StressExecutionModel`
+* change real live order submission
+* relax paper stress validation
+* silently clamp `PAPER_EXECUTION_PARTIAL_FILL_FRACTION`
+* reinterpret `partial_fill_fraction=1.0` as filled unless you also prove and document that semantics across evidence, status, dedup, and tests; failing closed is preferred
 
 ## Tests to run
 
-Run the focused tests first:
+Run focused tests first:
 
 ```bash
 pytest tests/test_paper_stress_execution.py -q
@@ -358,8 +218,6 @@ pytest tests/test_operator_commands.py -q
 pytest tests/test_research_backtest_reproducibility.py -q
 ```
 
-If you add or modify configuration validation, run any existing config/env tests that are relevant.
-
 If a test fails for reasons unrelated to this patch, document the exact command, failure, and why it is unrelated. Do not hide failures.
 
 ## Final report format
@@ -369,7 +227,7 @@ When finished, report in exactly this structure:
 ```text
 Summary
 - What changed.
-- Whether this was a code patch, test-only patch, or documentation patch.
+- Whether this was a code patch, test patch, or documentation patch.
 - Whether default immediate paper behavior remains preserved.
 
 Hypothesis Review
@@ -377,23 +235,18 @@ Hypothesis Review
 - H2: confirmed/refined/refuted, with repo evidence.
 - H3: confirmed/refined/refuted, with repo evidence.
 - H4: confirmed/refined/refuted, with repo evidence.
-- H5: confirmed/refined/refuted, with repo evidence.
-- H6: confirmed/refined/refuted, with repo evidence.
 
 Implementation Details
 - Files changed.
-- Where the unresolved-order gate is applied.
-- How invalid paper execution config fails closed.
-- Any SELL stress coverage added.
-- Any latency assertions added.
-- Any observability/log/event behavior added.
+- Where partial-fill fraction boundary validation was added.
+- Whether validation applies only in stress mode or globally, and why.
+- Any docs updated.
 
 Behavioral Guarantees
-- What happens after a stress partial order remains open.
-- What happens when a second intent arrives with a different timestamp or side.
-- What happens for invalid paper execution config.
-- What happens for stress failure.
-- What happens for stress latency.
+- What happens for `PAPER_EXECUTION_PARTIAL_FILL_FRACTION=0.0`.
+- What happens for `PAPER_EXECUTION_PARTIAL_FILL_FRACTION=1.0`.
+- What happens for normal `0 < fraction < 1`.
+- Why this prevents `fill_status="partial"` from contradicting actual fill quantity/status.
 - Dedup/recovery implications.
 
 Tests
@@ -403,13 +256,13 @@ Tests
 - Pass/fail results.
 
 Remaining Gaps
-- Whether live-dry-run chaos remains future work.
+- Whether orderbook-before-unresolved-gate ordering remains as-is.
 - Whether async delayed fill scheduling remains future work.
-- Any SELL lot-depth or recovery scenario not yet covered.
+- Whether live-dry-run chaos remains future work.
 
 Do Not Overclaim
 - Explicitly state anything not implemented.
 ```
 
-The priority is to close the remaining lifecycle safety gap: after paper stress creates an open/unresolved order such as `PARTIAL`, paper must rehearse the live OMS rule that new submissions are blocked until the unresolved order is resolved.
+The priority is to preserve paper stress lifecycle truthfulness: a `PARTIAL` status must mean a real partial fill, not zero fill and not full fill.
 

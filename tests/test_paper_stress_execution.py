@@ -330,6 +330,28 @@ def test_invalid_paper_stress_rate_fails_closed(setting_name: str, invalid_value
         _set("PAPER_EXECUTION_MODEL", old_model)
 
 
+@pytest.mark.parametrize("invalid_fraction", [0.0, 1.0])
+def test_invalid_paper_partial_fill_fraction_boundary_fails_closed(invalid_fraction: float):
+    old_model = _set("PAPER_EXECUTION_MODEL", "stress")
+    old_fraction = _set("PAPER_EXECUTION_PARTIAL_FILL_FRACTION", invalid_fraction)
+    try:
+        with pytest.raises(ValueError, match="PAPER_EXECUTION_PARTIAL_FILL_FRACTION"):
+            paper._validate_paper_execution_config()
+    finally:
+        _set("PAPER_EXECUTION_PARTIAL_FILL_FRACTION", old_fraction)
+        _set("PAPER_EXECUTION_MODEL", old_model)
+
+
+def test_valid_paper_partial_fill_fraction_passes_stress_validation():
+    old_model = _set("PAPER_EXECUTION_MODEL", "stress")
+    old_fraction = _set("PAPER_EXECUTION_PARTIAL_FILL_FRACTION", 0.5)
+    try:
+        paper._validate_paper_execution_config()
+    finally:
+        _set("PAPER_EXECUTION_PARTIAL_FILL_FRACTION", old_fraction)
+        _set("PAPER_EXECUTION_MODEL", old_model)
+
+
 def test_invalid_paper_stress_latency_fails_closed():
     old_model = _set("PAPER_EXECUTION_MODEL", "stress")
     old_latency = _set("PAPER_EXECUTION_LATENCY_MS", -1)
