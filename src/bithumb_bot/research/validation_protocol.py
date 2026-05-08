@@ -885,7 +885,7 @@ def _report_payload(
             "intra_candle_path_available": False,
             "execution_reference_price": manifest.execution_timing.fill_reference_policy,
             "intra_candle_policy": _policy_intra_candle_limitation(manifest.execution_timing.fill_reference_policy),
-            "portfolio_event_time_policy": "fill_applied_after_signal_close_mark_when_reference_at_or_after_signal_close",
+            "portfolio_event_time_policy": "fills_apply_when_fill_reference_ts_reaches_mark_or_decision_boundary",
             "top_of_book_join_tolerance_ms": (
                 manifest.dataset.top_of_book.join_tolerance_ms if manifest.dataset.top_of_book else None
             ),
@@ -989,7 +989,19 @@ def _execution_metadata(trades: Any) -> list[dict[str, Any]]:
     metadata: list[dict[str, Any]] = []
     for trade in trades:
         if isinstance(trade, dict) and isinstance(trade.get("execution"), dict):
-            metadata.append(dict(trade["execution"]))
+            item = dict(trade["execution"])
+            for key in (
+                "record_type",
+                "is_execution_attempt",
+                "is_filled_trade",
+                "is_skipped_execution",
+                "is_failed_execution",
+                "portfolio_effective_ts",
+                "portfolio_applied",
+            ):
+                if key in trade:
+                    item[key] = trade[key]
+            metadata.append(item)
     return metadata
 
 
@@ -1020,8 +1032,21 @@ def _execution_reality_summary(
             if item.get("latency_reference_policy_warning")
         ],
     )
+    filled = [item for item in execution_metadata if bool(item.get("is_filled_trade"))]
+    skipped = [item for item in execution_metadata if bool(item.get("is_skipped_execution"))]
+    failed = [item for item in execution_metadata if bool(item.get("is_failed_execution"))]
+    closed = [
+        item
+        for item in filled
+        if str(item.get("side") or "").upper() == "SELL" and bool(item.get("portfolio_applied"))
+    ]
     return {
         **coverage,
+        "execution_attempt_count": len(execution_metadata),
+        "filled_execution_count": len(filled),
+        "skipped_execution_count": len(skipped),
+        "failed_execution_count": len(failed),
+        "closed_trade_count": len(closed),
         "execution_reality_gate_status": gate["status"],
         "execution_reality_gate_reasons": gate["reasons"],
         "execution_reality_gate": gate,
@@ -1077,6 +1102,13 @@ def _report_signal_quote_coverage_summary(candidates: list[dict[str, Any]]) -> d
                     "p95_quote_age_ms_on_signal",
                     "execution_reference_policy",
                     "execution_reality_level",
+                    "latency_applied_to_submit_ts_count",
+                    "latency_applied_to_fill_reference_count",
+                    "execution_attempt_count",
+                    "filled_execution_count",
+                    "skipped_execution_count",
+                    "failed_execution_count",
+                    "closed_trade_count",
                 )
             }
     return None

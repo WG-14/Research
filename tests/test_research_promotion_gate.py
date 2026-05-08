@@ -987,6 +987,44 @@ def test_promotion_cli_allows_legacy_lineage_with_explicit_flag(tmp_path, monkey
     assert "  dataset_quality_legacy_bypass_used=1" in output
 
 
+def test_allow_legacy_lineage_does_not_bypass_execution_reality_gate(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate(
+        execution_timing_policy={
+            "signal_basis": "closed_candle",
+            "decision_time": "candle_close",
+            "decision_guard_ms": 0,
+            "fill_reference_policy": "candle_close_legacy",
+            "quote_selection": "first_after_or_equal",
+            "max_quote_wait_ms": 3000,
+            "missing_quote_policy": "warn",
+            "allow_same_candle_close_fill": True,
+            "source": "legacy_default",
+        },
+        execution_reality_summary={
+            "signal_event_count": 4,
+            "fillable_signal_event_count": 4,
+            "missing_quote_on_signal_count": 0,
+            "quote_after_decision_coverage_pct": None,
+            "median_quote_age_ms_on_signal": None,
+            "p95_quote_age_ms_on_signal": None,
+            "execution_reference_policy": "candle_close_legacy",
+            "execution_reality_level": "candle_close_optimistic",
+            "execution_reality_gate_status": "FAIL",
+            "execution_reality_gate_reasons": ["execution_reference_price_candle_close_not_promotable"],
+        },
+    )
+    _write_report_without_lineage(manager, candidate)
+
+    with pytest.raises(PromotionGateError, match="execution_reference_price_candle_close_not_promotable"):
+        promote_candidate(
+            experiment_id="promo_exp",
+            candidate_id="candidate_001",
+            manager=manager,
+            allow_legacy_lineage=True,
+        )
+
+
 def test_promotion_cli_argument_wires_allow_legacy_lineage(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

@@ -1,14 +1,14 @@
 You are Codex working directly in the GitHub repository `WG-14/bithumb-bot`.
 
-Source context for the task priorities is the post-patch review note attached to this conversation. Treat it as guidance, not as proof; verify everything against the repository before changing code. 
+Source context for this task is the attached post-patch review. Treat it as guidance, not as proven fact; verify every claim against the repository before changing code. 
 
-Your task is to harden the recently added research execution-timing system. The previous patch appears to have introduced `ExecutionTimingPolicy`, `SignalEvent`, `ExecutionReferenceEvent`, quote-after-decision reference selection, latency-adjusted top-of-book references, execution realism metadata, candidate profile hashing, promotion fail-closed behavior, and tests for core invariants. Do not undo that design direction. Your job is to close the remaining correctness, observability, recovery, and promotion-safety gaps.
+Your task is to harden the research backtest execution-timing system after the recent patches. The previous patches appear to have fixed many of the original issues: execution timing policy, signal/decision/fill reference separation, quote-after-decision selection, latency-adjusted top-of-book, promotion fail-closed behavior, dataset quality wording, missing quote semantics, trade timestamp disambiguation, and several regression tests. Do not revert that direction. Your job is to close the remaining gap: **future fill events can still update portfolio state too early**, which can corrupt strategy state, action gating, equity/MDD, and promotion-grade reproducibility.
 
-Do not generalize this into abstract advice. Inspect, patch, and test the actual `WG-14/bithumb-bot` codebase.
+Do not turn this into general advice. Inspect, patch, and test the actual code in `WG-14/bithumb-bot`.
 
 Core problem to preserve:
 
-The repository is evolving from an optimistic candle-close backtest into an operation-ready automatic-trading research system. The key invariant is: a backtest must be able to prove when a signal became knowable, when the decision was made, when the order would be submitted, what market evidence was used as the fill reference, how latency affected that reference, and whether the resulting candidate is promotable. Passing `pytest` is not enough if the timing contract is still internally inconsistent.
+A backtest must prove when a signal became knowable, when the decision was made, when the order would be submitted, when the fill reference became available, what market evidence was used, how latency affected submit/reference timing, when portfolio state changed, and whether the resulting candidate is promotable. Passing `pytest` is not enough if `cash`, `qty`, action gating, or reports still behave as if a future fill already happened.
 
 Start by inspecting at least these files:
 
@@ -27,225 +27,183 @@ Start by inspecting at least these files:
 * `tests/test_orderbook_top_research.py`
 * `tests/test_research_promotion_gate.py`
 * `tests/test_dataset_quality_report.py`
-* Any new or related execution-timing tests
+* Any new tests related to execution timing, missing quote policy, latency, promotion, or MDD/equity timing
 
-Keep the following as hypotheses until verified or falsified in code:
+Keep the following as hypotheses until verified or falsified:
 
-H1. The new top-of-book event quote preload horizon may be too short for `latency_adjusted_orderbook`. The required query horizon may be `last_candle_close + decision_guard_ms + max_scenario_latency_ms + max_quote_wait_ms`, but the current implementation may only use something like `last_candle_close + max(latency_ms, max_quote_wait_ms)`.
+H1. Delayed fills may still update `cash` and `qty` immediately inside the signal loop, even when `fill_reference_ts` is later than the current candle close or later than the next mark. This can make future fills affect current or next-candle strategy state too early.
 
-H2. Top-level trade records may still use `ts=signal_candle_start_ts`, even though the real execution reference timestamp is `fill_reference_ts` or `submit_ts_assumption`. Execution metadata may be correct, but downstream users may still see an ambiguous trade timestamp.
+H2. The existing fix may protect only the signal candle close equity calculation by using pre-fill `mark_cash` and `mark_qty`, but may not implement true event-time portfolio state. If so, long-latency `latency_adjusted_orderbook` fills can still distort subsequent action gating and portfolio state.
 
-H3. Stress latency may still become metadata-only when a scenario has `latency_ms > 0` but the timing policy is not latency-aware, such as `next_candle_open` or `first_orderbook_after_decision`. This can partially reintroduce the old “latency does not move the price reference” problem.
+H3. A pending BUY fill that is not yet effective may still set `qty > 0` immediately, thereby blocking subsequent BUY signals or allowing SELL logic before the fill timestamp.
 
-H4. Delayed fills may still update `cash` and `qty` immediately inside the signal candle loop, and MDD/equity may still be computed at the signal candle close using post-fill state. This can distort drawdown and equity timing under `next_candle_open` and quote-after-decision policies.
+H4. A skipped execution currently enters the `trades` list as an execution attempt. That may be useful for observability, but downstream code may still interpret all entries as filled trades unless the record type is explicit.
 
-H5. `missing_quote_policy` may parse `fail`, `skip`, and `warn`, but runtime behavior may not distinguish them clearly enough. They may all become failed fills plus different gate behavior. That is not a sufficiently explicit execution contract.
+H5. Latency metadata currently distinguishes `latency_applied_to_reference`, but operators may still not be able to tell whether latency was applied to submit time separately from fill-reference selection. This can obscure whether latency was modeled as timing-only or price-reference-moving.
 
-H6. Dataset quality limitations may still hard-code `execution_reference_price="candle_close"` and `intra_candle_policy="close_price_only_no_intracandle_path"` even when the configured execution timing policy is `next_candle_open` or quote-aware. Dataset quality should describe data capability, not misstate the active execution policy.
+H6. `allow_legacy_lineage=True` may bypass lineage or dataset quality compatibility checks. It must not bypass execution reality refusal. Legacy lineage compatibility must not make candle-close or non-promotable execution evidence promotable.
 
-H7. `first_quote_after_or_equal()` may sort all execution quotes on every signal lookup. This may be acceptable for small test data but can become a scalability issue when top-of-book snapshots are dense.
+H7. Quote lookup may still scan all sorted quotes for every signal. This is no longer the top correctness risk, but dense top-of-book data can make the backtest scale poorly.
 
 Implementation priorities:
 
-P0. Fix the event quote preload horizon for latency-aware execution.
+P0. Implement event-time-safe portfolio state for delayed fills, or fail closed when safe event-time accounting is not available.
 
-Inspect `load_dataset_range()` and `_load_top_of_book_event_quotes()` in `dataset_snapshot.py`. If the execution quote query horizon is not long enough for:
+Inspect `run_sma_backtest()` carefully. If the engine updates `cash`, `qty`, `entry_cost_basis`, `entry_fee`, `entry_slippage`, or position state immediately after creating a fill whose `fill_reference_ts` is in the future relative to the current candle mark, fix it.
 
-```text
-last_candle_start_ts
-+ interval_ms
-+ execution_timing.decision_guard_ms
-+ max_scenario_latency_ms
-+ execution_timing.max_quote_wait_ms
-```
+Preferred design:
 
-then fix it.
+Introduce a minimal pending execution mechanism inside `run_sma_backtest()`:
 
-Do not mix nearest-join quality tolerance with execution-after-decision quote selection. `join_tolerance_ms` is for candle-nearest quality joins; execution event quote preloading must be based on the timing policy and scenario latency. If the code still uses `max(join_tolerance_ms, max_quote_wait_ms, max_latency_ms)`, replace it with a clearly named execution quote lookahead, for example:
+* When a fill is created and `fill_reference_ts` is greater than the current candle close timestamp, do not immediately apply its portfolio effects.
+* Store it as a pending fill event with:
 
-```text
-execution_quote_lookahead_ms =
-    decision_guard_ms
-    + max_scenario_latency_ms
-    + max_quote_wait_ms
-```
+  * fill object
+  * side
+  * fill_reference_ts
+  * quantity
+  * cash/qty delta
+  * fee/slippage
+  * entry/exit regime snapshots
+  * accounting metadata needed to finalize the trade
+* At the beginning of each candle iteration, before computing action eligibility for that candle, apply all pending fills whose `fill_reference_ts` is at or before the current decision/mark boundary chosen by the timing model.
+* Action gating must use only effective portfolio state plus any explicitly tracked pending state. It must not treat a future BUY as current `qty > 0`.
+* SELL logic must not be enabled by a BUY fill before that BUY’s `fill_reference_ts`.
+* Equity/MDD marks must use portfolio state that is effective at that mark time, not state from future fills.
+* Preserve deterministic results.
 
-Then `_load_top_of_book_event_quotes()` should query through:
-
-```text
-last_candle_start_ts + interval_ms + execution_quote_lookahead_ms
-```
-
-Add a DB-backed test:
+If implementing full pending-fill accounting is too invasive, add a fail-closed guard for promotion-grade evidence:
 
 ```text
-test_latency_adjusted_orderbook_loads_quote_after_latency_plus_wait
+if fill_reference_ts > next_candle_close_ts or fill_reference_ts crosses the next mark boundary:
+    do not apply the fill early
+    record delayed_fill_crosses_mark_boundary
+    fail the scenario/candidate when promotion-grade execution is required
 ```
 
-The test must create candles and a top-of-book snapshot after the last relevant candle close by more than `max(latency, max_wait)` but within `latency + max_wait`. It must prove the loader retrieves the quote and the backtest can use it as the latency-adjusted fill reference.
-
-P0. Separate top-level trade timestamps from signal timestamps.
-
-Inspect `_trade()` and `_trade_from_fill()` in `backtest_engine.py`. If top-level `trade["ts"]` still equals `fill.signal_ts`, preserve backward compatibility but add unambiguous timestamp fields:
-
-```python
-trade["signal_ts"] = fill.signal_ts
-trade["decision_ts"] = fill.decision_ts
-trade["submit_ts_assumption"] = fill.submit_ts_assumption
-trade["fill_ts"] = fill.fill_reference_ts
-trade["fill_reference_ts"] = fill.fill_reference_ts
-trade["event_ts_role"] = "signal_ts_legacy"
-```
-
-Do not remove or silently redefine the existing `ts` field unless all downstream tests and reports are intentionally migrated. The immediate goal is to make ambiguity impossible while preserving compatibility.
-
-Add a test:
-
-```text
-test_trade_top_level_records_signal_and_fill_timestamps_separately
-```
-
-It must verify that for `next_candle_open` or `first_orderbook_after_decision`, top-level trade metadata contains distinct signal, decision, submit, and fill timestamps, and that `fill_ts` is not equal to `signal_candle_start_ts` when execution occurs later.
-
-P1. Make stress latency policy consistency explicit and fail-closed for promotion-grade evidence.
-
-Inspect how `resolve_execution_reference()` receives `model_latency_ms`, how `StressExecutionModel` sets `submit_ts_assumption`, and how scenario/candidate gates are built in `validation_protocol.py`.
-
-If a scenario has `latency_ms > 0` and the active `fill_reference_policy` does not apply latency to the reference selection, record this explicitly. Add metadata such as:
-
-```text
-latency_applied_to_reference: true | false
-latency_reference_policy_warning: execution_latency_not_applied_to_reference_policy
-```
-
-For promotion-grade candidates, fail closed when stress latency is configured but not applied to the fill reference. Use a clear reason:
-
-```text
-execution_latency_not_applied_to_reference_policy
-```
-
-Do not silently treat stress latency as harmless metadata. If preserving legacy behavior is necessary, keep it as a warning only for explicitly legacy/non-promotable modes, and make that visible in the candidate/report warnings.
-
-Add a test:
-
-```text
-test_stress_latency_non_latency_policy_is_flagged_or_failed
-```
-
-The test must prove that a stress scenario with non-zero latency under a non-latency-aware policy cannot be promoted as if latency affected the reference. It should either fail the candidate gate or record a non-promotable warning, depending on the policy configuration. Prefer fail-closed when `min_execution_reality_level_for_promotion` is set or when the scenario is part of `must_pass_base_and_survive_stress`.
-
-P1. Correct or explicitly disclose delayed-fill equity/MDD timing.
-
-Inspect the equity and MDD calculation in `run_sma_backtest()`. If the engine updates `cash`/`qty` immediately after a delayed execution reference and then computes same-loop equity using the signal candle close, this is a timing bug for `next_candle_open`, `first_orderbook_after_decision`, and `latency_adjusted_orderbook`.
-
-Preferred design change:
-
-Implement a minimal event-time-aware accounting update so that delayed fills do not affect the signal candle close equity. At minimum:
-
-* compute the current candle close equity using the pre-fill portfolio state when the fill reference occurs after the signal candle close;
-* apply the fill to `cash`/`qty` only for marks at or after the fill reference event;
-* preserve deterministic behavior and do not break trade metrics.
-
-If a full event-driven portfolio ledger is too invasive, implement an explicit `portfolio_event_time_policy` field in reports and execution metadata, and add a limitation such as:
-
-```text
-portfolio_event_time_policy: immediate_fill_application_for_accounting_simplification
-portfolio_event_time_warning: delayed_fill_equity_timing_approximation
-```
-
-However, prefer the actual timing fix over merely documenting the approximation.
-
-Add a test:
-
-```text
-test_next_open_fill_does_not_affect_signal_candle_close_equity
-```
-
-Construct a dataset where immediate post-fill marking would materially alter MDD or peak. The test should fail on the old immediate-update behavior and pass only when the signal candle close equity is computed from pre-fill state, or when the explicit limitation is present if you choose the disclosure-only route. If you choose disclosure-only, explain why in the final report.
-
-P1. Clarify and enforce `missing_quote_policy` semantics.
-
-Inspect `ExecutionTimingPolicy`, `resolve_execution_reference()`, `run_sma_backtest()`, `execution_reality_gate()`, and report generation.
-
-Make `fail`, `skip`, and `warn` operationally distinct:
-
-```text
-fail:
-  - missing execution quote creates failed execution evidence
-  - scenario/candidate gate fails with a clear reason
-  - reason example: quote_after_decision_signal_coverage_below_threshold or missing_quote_failed
-
-skip:
-  - no fill and no position update
-  - execution attempt is recorded as skipped, not filled and not silently omitted
-  - reason example: missing_quote_skipped
-  - signal quote coverage still counts the signal event
-
-warn:
-  - no fallback to candle close unless a separate explicit fallback policy exists
-  - execution attempt is recorded as skipped_with_warning or failed_with_warning
-  - report warnings include missing_quote_warning
-  - promotion-grade candidates should not pass if required quote coverage is below the configured threshold
-```
-
-Do not allow missing quote behavior to silently fall back to candle close under quote-aware policies. If no fallback is explicitly configured, missing quote means no executable reference.
+Do not silently document this away unless there is a clear, tested non-promotable limitation in reports and candidate profiles. Prefer actual pending-fill handling.
 
 Add tests:
 
 ```text
-test_missing_quote_policy_fail_fails_candidate
-test_missing_quote_policy_skip_records_skip_not_failed_fill
-test_missing_quote_policy_warn_records_warning_without_promotion_grade_pass
+test_latency_fill_after_next_candle_close_does_not_update_position_early
+test_pending_buy_fill_does_not_enable_sell_before_fill_ts
+test_delayed_fill_crossing_mark_boundary_is_failed_or_pending_not_early_applied
 ```
 
-Ensure signal quote coverage remains accurate even when an execution attempt is skipped. If current coverage is computed only from trades, add a separate execution-attempt metadata collection or make skipped attempts appear in execution metadata without affecting position or closed-trade metrics.
+The tests must fail against an implementation that immediately updates `qty` before `fill_reference_ts`.
 
-P2. Make dataset quality limitations capability-based or execution-policy-aware.
+P1. Make filled trades and execution attempts explicit.
 
-Inspect `build_dataset_quality_report()` in `dataset_snapshot.py`. If it still hard-codes:
+Inspect `_trade()`, `_trade_from_fill()`, report execution metadata extraction, regime aggregation, and run summaries. Skipped or failed execution attempts should remain observable, but downstream consumers must not confuse them with filled trades.
+
+Add explicit fields to every trade/execution-attempt record:
+
+```python
+trade["record_type"] = "filled_trade" | "execution_attempt"
+trade["is_execution_attempt"] = True
+trade["is_filled_trade"] = bool(fill.filled_qty > 0 and fill.fill_status in {"filled", "partial"})
+trade["is_skipped_execution"] = bool(fill.fill_status in {"skipped", "skipped_with_warning"})
+trade["is_failed_execution"] = bool(fill.fill_status == "failed")
+```
+
+If the existing `trades` list is now actually a mixed execution-event log, keep the list for compatibility but make the distinction impossible to miss.
+
+Update report-level summaries where appropriate:
 
 ```text
-execution_reference_price: candle_close
-intra_candle_policy: close_price_only_no_intracandle_path
+execution_attempt_count
+filled_execution_count
+skipped_execution_count
+failed_execution_count
+closed_trade_count
 ```
 
-then replace those fields with capability-oriented wording, for example:
+Do not let skipped execution attempts inflate filled trade counts, closed trade counts, regime trade counts, win rate, profit factor, or promotion evidence.
+
+Add tests:
 
 ```text
-execution_reference_price: configured_by_execution_timing_policy
-available_execution_reference_sources:
-  - candle_ohlcv
-  - top_of_book_if_requested
-orderbook_depth_available: false
-top_of_book_is_full_depth: false
-intra_candle_path_available: false
+test_skipped_execution_attempt_is_not_counted_as_filled_trade
+test_report_separates_execution_attempt_count_from_closed_trade_count
+test_regime_coverage_does_not_treat_skipped_execution_as_filled_trade
 ```
 
-Alternatively, pass the active execution timing policy into dataset quality reporting and make the limitation policy-aware. Do not let dataset quality reports claim candle-close execution when the active run uses `next_candle_open` or quote-aware execution.
+P1. Split latency submit timing from latency fill-reference timing.
 
-Add or update tests in `tests/test_dataset_quality_report.py` and/or `tests/test_orderbook_top_research.py` so the dataset quality report no longer contradicts the active execution policy.
+Inspect `ExecutionRequest`, `ExecutionFill`, `ExecutionReferenceEvent`, `FixedBpsExecutionModel`, `StressExecutionModel`, and report metadata.
 
-P2. Avoid repeated quote sorting in hot paths.
+Add or verify separate fields:
 
-Inspect `first_quote_after_or_equal()` in `execution_timing.py`. If it sorts all quotes on every lookup, replace that with one of the following:
+```text
+latency_applied_to_submit_ts: true|false
+latency_applied_to_fill_reference: true|false
+latency_reference_policy_warning: null|string
+```
 
-* a sorted quote tuple/index stored on `DatasetSnapshot`;
-* a helper that sorts once per backtest run;
-* a cursor-based lookup for monotonic signal times.
+If the current field is only `latency_applied_to_reference`, keep it for compatibility but add the clearer fields. Operators must be able to distinguish:
 
-Keep this change small and deterministic. Add a focused test only if the refactor is non-trivial. Correctness takes priority over this optimization, so do not destabilize P0/P1 fixes for performance.
+* latency changed `submit_ts_assumption`;
+* latency changed quote/fill-reference selection;
+* latency was configured but did not affect reference selection.
+
+Update CLI/report output if needed so this distinction is visible in execution reality summaries or execution metadata.
+
+Add tests:
+
+```text
+test_latency_submit_and_reference_application_are_reported_separately
+test_non_latency_policy_records_submit_latency_but_reference_latency_warning
+test_latency_adjusted_policy_records_submit_and_reference_latency_applied
+```
+
+P1. Prove legacy lineage compatibility cannot bypass execution reality refusal.
+
+Inspect `promotion_gate.py`, especially `promote_candidate(..., allow_legacy_lineage=True)`, `validate_backtest_candidate_for_promotion()`, `_extend_execution_reality_reasons()`, and report hash/profile validation.
+
+Add a regression test:
+
+```text
+test_allow_legacy_lineage_does_not_bypass_execution_reality_gate
+```
+
+Construct or reuse a candidate/report that has acceptable legacy lineage conditions but uses non-promotable execution evidence, such as:
+
+* `fill_reference_policy="candle_close_legacy"`;
+* `execution_reality_level="candle_close_optimistic"`;
+* `execution_reality_gate_status="FAIL"`;
+* or missing execution reality summary.
+
+Then call promotion with `allow_legacy_lineage=True`. It must still refuse promotion with execution-reality reasons, not only lineage/dataset reasons.
+
+P2. Improve quote lookup scalability without changing semantics.
+
+Inspect `first_quote_after_or_equal()` and `DatasetSnapshot.sorted_execution_top_of_book_quotes()`.
+
+If lookup still scans all quotes for every signal, replace it with a deterministic indexed lookup:
+
+* sort execution top-of-book quotes once per dataset/run;
+* use `bisect` on `(quote.ts, quote.source)` or a cursor for monotonic signal times;
+* preserve deterministic tie-breaking by timestamp then source;
+* do not change quote selection semantics.
+
+This is lower priority than P0/P1. Do it only if it is low-risk. Add a test if the refactor is non-trivial:
+
+```text
+test_quote_lookup_preserves_first_after_or_equal_tie_break
+```
 
 Scope rules:
 
-* Do not revert the new `ExecutionTimingPolicy` / `SignalEvent` / `ExecutionReferenceEvent` architecture.
-* Do not reintroduce same-candle-close execution as promotion-grade evidence.
+* Do not revert the `ExecutionTimingPolicy`, `SignalEvent`, `ExecutionReferenceEvent`, quote-after-decision, latency-adjusted reference, missing quote, or promotion fail-closed architecture.
+* Do not reintroduce same-close execution as promotion-grade evidence.
 * Do not use live network calls in tests.
-* Do not implement full-depth orderbook replay unless the repo already has full-depth data structures and tests. If full depth is unavailable, keep `top_of_book_is_full_depth=false` visible.
 * Do not modify live trading behavior except where metadata/reporting integration is clearly necessary and covered by tests.
-* Preserve deterministic reproducibility. Same manifest + same dataset + same timing policy + same seed must produce the same report hashes.
-* Preserve backward compatibility where reasonable, but do not let compatibility obscure execution timing semantics.
-* Prefer additive fields over breaking existing JSON consumers unless a field is demonstrably unsafe.
-* If you choose a disclosure-only mitigation for any P1 item, the limitation must appear in reports, candidate profile/hash inputs, and CLI summary where relevant.
+* Preserve deterministic reproducibility: same manifest + same dataset + same timing policy + same seed must produce the same report hashes.
+* Prefer additive fields over breaking existing JSON consumers.
+* If a field such as `trade["ts"]` is preserved for compatibility, add explicit replacement fields and clearly label legacy semantics.
+* If full event-time pending-fill accounting is not implemented, the fail-closed guard and report limitation must be explicit, tested, and included in candidate profile/hash inputs.
+* Do not implement full-depth orderbook replay unless the repository already has full-depth data structures and tests. If full depth is unavailable, keep `top_of_book_is_full_depth=false` visible.
 
 Required tests to run:
 
@@ -255,7 +213,7 @@ At minimum run:
 pytest -q tests/test_research_backtest_reproducibility.py tests/test_orderbook_top_research.py tests/test_research_promotion_gate.py tests/test_dataset_quality_report.py
 ```
 
-Also run any tests you add or modify.
+Also run any new or modified tests.
 
 If feasible, run:
 
@@ -276,45 +234,46 @@ Return a concise but complete implementation report with exactly these sections:
 
 2. `Design changes made`
 
-   * Summarize the changes to quote preload horizon, trade timestamps, latency-policy consistency, equity/MDD timing, missing quote semantics, dataset quality limitations, and quote lookup performance.
-   * Explicitly state how the changes prevent this class of execution realism bugs.
+   * Summarize pending-fill or delayed-fill fail-closed handling.
+   * Summarize execution-attempt vs filled-trade separation.
+   * Summarize latency submit/reference metadata changes.
+   * Summarize promotion legacy-lineage guard changes.
+   * Summarize quote lookup optimization if implemented.
 
 3. `Behavior before vs after`
 
-   * Cover `latency_adjusted_orderbook` preload behavior.
-   * Cover top-level trade timestamp meaning.
-   * Cover stress latency under non-latency-aware policies.
-   * Cover delayed-fill equity/MDD behavior.
-   * Cover `missing_quote_policy=fail|skip|warn`.
-   * Cover dataset quality limitation wording.
+   * Explain how delayed fills affected portfolio state before.
+   * Explain how portfolio state is now updated only at valid event time, or how future fills are fail-closed.
+   * Explain how skipped/failed/fill attempts are represented.
+   * Explain how latency submit timing differs from latency reference timing.
+   * Explain how legacy lineage compatibility interacts with execution reality gates.
 
 4. `Tests added/updated`
 
    * List each test name and the invariant it locks.
-   * Include any existing tests you updated.
+   * Include any existing tests updated.
 
 5. `Promotion and safety impact`
 
-   * State when a candidate fails due to quote preload/missing quote/latency policy issues.
-   * State whether legacy or non-promotable behavior is still allowed and how it is labeled.
+   * State when delayed fills, missing execution reality, candle-close legacy evidence, or non-applied latency causes candidate failure.
+   * State whether any legacy/non-promotable behavior is still allowed and how it is labeled.
    * State what operators will see in reports and CLI.
 
 6. `Observability and reproducibility`
 
    * List new or changed metadata/report fields.
    * State whether manifest hash, dataset hash, candidate profile hash, or content hash behavior changed.
-   * State how skipped/missing quote execution attempts remain observable.
+   * State how pending, skipped, failed, and filled execution events remain observable.
 
 7. `Limitations and follow-up`
 
    * Explicitly mention no full-depth or intra-candle-path replay unless implemented.
-   * Mention any remaining accounting approximation if delayed-fill equity was not fully event-driven.
-   * Mention any performance tradeoff if quote lookup optimization was deferred.
+   * Mention any remaining event-time accounting approximation if pending-fill handling is not fully implemented.
+   * Mention quote lookup performance tradeoffs if cursor/bisect optimization was deferred.
 
 8. `Commands run`
 
    * Include exact commands and pass/fail results.
    * If any command was not run, say so and why.
 
-Do not submit a final answer that only says tests pass. The final report must prove that the repository now has a tighter, auditable execution timing contract rather than a patch that merely satisfies the existing tests.
-
+Do not submit a final answer that only says tests pass. The final report must prove that portfolio state, execution evidence, promotion gates, and reports now obey the same event-time execution contract.

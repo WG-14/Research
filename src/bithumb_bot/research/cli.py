@@ -145,7 +145,12 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
             f"missing_quote_warning_count={signal_coverage.get('missing_quote_warning_count')} "
             f"quote_after_decision_coverage_pct={signal_coverage.get('quote_after_decision_coverage_pct')} "
             f"median_quote_age_ms={signal_coverage.get('median_quote_age_ms_on_signal')} "
-            f"p95_quote_age_ms={signal_coverage.get('p95_quote_age_ms_on_signal')}"
+            f"p95_quote_age_ms={signal_coverage.get('p95_quote_age_ms_on_signal')} "
+            f"latency_submit_count={signal_coverage.get('latency_applied_to_submit_ts_count')} "
+            f"latency_reference_count={signal_coverage.get('latency_applied_to_fill_reference_count')} "
+            f"execution_attempt_count={signal_coverage.get('execution_attempt_count')} "
+            f"filled_execution_count={signal_coverage.get('filled_execution_count')} "
+            f"closed_trade_count={signal_coverage.get('closed_trade_count')}"
         )
     print(f"  next_action={summary.next_action}")
     print(f"  report_path={artifact_paths.get('report_path')}")

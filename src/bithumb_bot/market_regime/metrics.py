@@ -60,7 +60,7 @@ def _max_consecutive_losses(values: list[float]) -> int:
 
 def aggregate_regime_coverage(*, snapshots: Iterable[Any], trades: Iterable[dict[str, Any]]) -> tuple[RegimeCoverageRow, ...]:
     snapshot_list = list(snapshots)
-    trade_list = list(trades)
+    trade_list = [trade for trade in trades if _is_filled_trade(trade)]
     total = len(snapshot_list)
     rows: list[RegimeCoverageRow] = []
     for dimension in ("price_regime", "volatility_bucket", "volume_bucket", "composite_regime"):
@@ -91,7 +91,13 @@ def aggregate_regime_performance(
     coverage: Iterable[RegimeCoverageRow],
     start_cash: float,
 ) -> tuple[RegimePerformanceRow, ...]:
-    closed = [trade for trade in trades if str(trade.get("side") or "").upper() == "SELL"]
+    closed = [
+        trade
+        for trade in trades
+        if _is_filled_trade(trade)
+        and trade.get("portfolio_applied", True) is True
+        and str(trade.get("side") or "").upper() == "SELL"
+    ]
     coverage_lookup = {(row.dimension, row.regime): row for row in coverage}
     rows: list[RegimePerformanceRow] = []
     for dimension in ("price_regime", "volatility_bucket", "volume_bucket", "composite_regime"):
@@ -149,3 +155,18 @@ def aggregate_regime_performance(
                 )
             )
     return tuple(rows)
+
+
+def _is_filled_trade(trade: dict[str, Any]) -> bool:
+    if "is_filled_trade" in trade:
+        return bool(trade.get("is_filled_trade"))
+    execution = trade.get("execution")
+    if isinstance(execution, dict):
+        status = str(execution.get("fill_status") or "")
+        return float(execution.get("filled_qty") or 0.0) > 0.0 and status in {"filled", "partial"}
+    side = str(trade.get("side") or "").upper()
+    if side == "SELL" and (trade.get("net_pnl") is not None or trade.get("closed_trade_pnl") is not None):
+        return True
+    if side == "BUY" and trade.get("entry_regime_snapshot") is not None:
+        return True
+    return float(trade.get("qty") or 0.0) > 0.0

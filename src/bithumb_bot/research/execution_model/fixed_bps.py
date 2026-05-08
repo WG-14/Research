@@ -80,6 +80,8 @@ class FixedBpsExecutionModel:
             top_of_book_is_full_depth=request.top_of_book_is_full_depth,
             execution_reference_failure_reason=request.execution_reference_failure_reason,
             latency_applied_to_reference=request.latency_applied_to_reference,
+            latency_applied_to_submit_ts=request.latency_applied_to_submit_ts,
+            latency_applied_to_fill_reference=request.latency_applied_to_fill_reference,
             latency_reference_policy_warning=request.latency_reference_policy_warning,
             feature_snapshot=request.feature_snapshot,
             regime_snapshot=request.regime_snapshot,

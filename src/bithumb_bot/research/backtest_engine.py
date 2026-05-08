@@ -18,6 +18,7 @@ from .execution_timing import (
     ExecutionReferenceEvent,
     SignalEvent,
     build_signal_event,
+    candle_close_ts,
     resolve_execution_reference,
 )
 from .experiment_manifest import ExecutionTimingPolicy
@@ -36,6 +37,20 @@ class BacktestRun:
     warnings: tuple[str, ...]
     regime_performance: tuple[RegimePerformanceRow, ...] = ()
     regime_coverage: tuple[RegimeCoverageRow, ...] = ()
+
+
+@dataclass
+class _PendingFill:
+    fill: ExecutionFill
+    trade_index: int
+    side: str
+    effective_ts: int
+    qty: float
+    fee: float
+    slippage: float
+    cash_delta: float
+    entry_regime_snapshot: dict[str, object] | None = None
+    exit_regime_snapshot: dict[str, object] | None = None
 
 
 def run_sma_backtest(
@@ -89,6 +104,7 @@ def run_sma_backtest(
     fee_total = 0.0
     slippage_total = 0.0
     trades: list[dict[str, object]] = []
+    pending_fills: list[_PendingFill] = []
     closed_pnls: list[float] = []
     prev_above: bool | None = None
     model = execution_model or FixedBpsExecutionModel(fee_rate=fee_rate, slippage_bps=slippage_bps)
@@ -96,9 +112,38 @@ def run_sma_backtest(
 
     for index in range(long_n, len(candles)):
         candle = candles[index]
+        mark_boundary_ts = candle_close_ts(candle, interval=dataset.interval)
+        decision_boundary_ts = mark_boundary_ts + int(timing_policy.decision_guard_ms)
+        cash, qty, entry_cost_basis, entry_regime_snapshot, entry_fee, entry_slippage, fee_total, slippage_total = _apply_pending_fills(
+            pending_fills=pending_fills,
+            trades=trades,
+            boundary_ts=mark_boundary_ts,
+            cash=cash,
+            qty=qty,
+            entry_cost_basis=entry_cost_basis,
+            entry_regime_snapshot=entry_regime_snapshot,
+            entry_fee=entry_fee,
+            entry_slippage=entry_slippage,
+            fee_total=fee_total,
+            slippage_total=slippage_total,
+            closed_pnls=closed_pnls,
+        )
         mark_cash = cash
         mark_qty = qty
-        delayed_fill_in_signal_loop = False
+        cash, qty, entry_cost_basis, entry_regime_snapshot, entry_fee, entry_slippage, fee_total, slippage_total = _apply_pending_fills(
+            pending_fills=pending_fills,
+            trades=trades,
+            boundary_ts=decision_boundary_ts,
+            cash=cash,
+            qty=qty,
+            entry_cost_basis=entry_cost_basis,
+            entry_regime_snapshot=entry_regime_snapshot,
+            entry_fee=entry_fee,
+            entry_slippage=entry_slippage,
+            fee_total=fee_total,
+            slippage_total=slippage_total,
+            closed_pnls=closed_pnls,
+        )
         prev_short = _sma(closes, short_n, index)
         prev_long = _sma(closes, long_n, index)
         curr_short = _sma(closes, short_n, index + 1)
@@ -118,10 +163,13 @@ def run_sma_backtest(
         regime_snapshots.append(regime_snapshot)
 
         action = "HOLD"
+        pending_buy_qty = sum(item.qty for item in pending_fills if item.side == "BUY")
+        pending_sell_qty = sum(item.qty for item in pending_fills if item.side == "SELL")
+        sellable_qty = max(0.0, qty - pending_sell_qty)
         if gap_ratio >= min_gap and range_ratio >= min_range and prev_above is not None:
-            if not prev_above and above and qty <= 0.0:
+            if not prev_above and above and qty <= 0.0 and pending_buy_qty <= 0.0:
                 action = "BUY"
-            elif prev_above and not above and qty > 0.0:
+            elif prev_above and not above and sellable_qty > 0.0:
                 action = "SELL"
 
         if action == "BUY":
@@ -177,7 +225,6 @@ def run_sma_backtest(
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
                 prev_above = above
                 continue
-            delayed_fill_in_signal_loop = _fill_occurs_at_or_after_signal_close(fill)
             exec_price = float(fill.avg_fill_price)
             fee = fill.fee
             received_qty = fill.filled_qty
@@ -185,26 +232,35 @@ def run_sma_backtest(
             reference_cost = float(fill.reference_price) * received_qty
             slipped_cost = exec_price * received_qty
             buy_slippage = max(0.0, slipped_cost - reference_cost)
-            slippage_total += buy_slippage
-            cash -= actual_spend
-            qty += received_qty
-            entry_cost_basis = actual_spend
-            entry_regime_snapshot = dict(regime_snapshot)
-            entry_fee = fee
-            entry_slippage = buy_slippage
-            fee_total += fee
-            trades.append(
-                _trade_from_fill(
-                    fill,
-                    cash=cash,
-                    asset_qty=qty,
-                    pnl=None,
-                    entry_regime_snapshot=entry_regime_snapshot,
-                    exit_regime_snapshot=None,
-                    net_pnl=None,
-                    fee_total=fee,
-                    slippage_total=buy_slippage,
-                )
+            pending = _PendingFill(
+                fill=fill,
+                trade_index=len(trades),
+                side="BUY",
+                effective_ts=_fill_effective_ts(fill),
+                qty=received_qty,
+                fee=fee,
+                slippage=buy_slippage,
+                cash_delta=-actual_spend,
+                entry_regime_snapshot=dict(regime_snapshot),
+            )
+            trades.append(_pending_trade_from_fill(fill, cash=cash, asset_qty=qty))
+            if pending.effective_ts <= mark_boundary_ts:
+                mark_cash += pending.cash_delta
+                mark_qty += pending.qty
+            pending_fills.append(pending)
+            cash, qty, entry_cost_basis, entry_regime_snapshot, entry_fee, entry_slippage, fee_total, slippage_total = _apply_pending_fills(
+                pending_fills=pending_fills,
+                trades=trades,
+                boundary_ts=decision_boundary_ts,
+                cash=cash,
+                qty=qty,
+                entry_cost_basis=entry_cost_basis,
+                entry_regime_snapshot=entry_regime_snapshot,
+                entry_fee=entry_fee,
+                entry_slippage=entry_slippage,
+                fee_total=fee_total,
+                slippage_total=slippage_total,
+                closed_pnls=closed_pnls,
             )
         elif action == "SELL":
             signal = build_signal_event(
@@ -236,7 +292,7 @@ def run_sma_backtest(
                     timing_policy=timing_policy,
                     side="SELL",
                     fee_rate=fee_rate,
-                    requested_qty=qty,
+                    requested_qty=sellable_qty,
                 )
                 warnings.extend(_execution_reference_warnings(fill))
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
@@ -248,7 +304,7 @@ def run_sma_backtest(
                     decision_ts=signal.decision_ts,
                     side="SELL",
                     reference_price=float(reference.fill_reference_price),
-                    requested_qty=qty,
+                    requested_qty=sellable_qty,
                     fee_rate=fee_rate,
                     **_timing_request_fields(signal, reference, timing_policy),
                 )
@@ -258,52 +314,67 @@ def run_sma_backtest(
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
                 prev_above = above
                 continue
-            delayed_fill_in_signal_loop = _fill_occurs_at_or_after_signal_close(fill)
             exec_price = float(fill.avg_fill_price)
             sell_qty = fill.filled_qty
             gross = sell_qty * exec_price
             fee = fill.fee
             reference_proceeds = float(fill.reference_price) * sell_qty
             sell_slippage = max(0.0, reference_proceeds - gross)
-            slippage_total += sell_slippage
             net_proceeds = gross - fee
-            filled_fraction = sell_qty / qty if qty > 0.0 else 0.0
-            pnl = net_proceeds - (entry_cost_basis * filled_fraction)
-            cash += net_proceeds
-            qty = max(0.0, qty - sell_qty)
-            entry_cost_basis = entry_cost_basis * (1.0 - filled_fraction) if qty > 0.0 else 0.0
-            fee_total += fee
-            if fill.fill_status == "filled":
-                closed_pnls.append(pnl)
-            trade_fee_total = entry_fee + fee
-            trade_slippage_total = entry_slippage + sell_slippage
-            trades.append(
-                _trade_from_fill(
-                    fill,
-                    cash=cash,
-                    asset_qty=qty,
-                    pnl=pnl,
-                    entry_regime_snapshot=entry_regime_snapshot,
-                    exit_regime_snapshot=dict(regime_snapshot),
-                    net_pnl=pnl,
-                    fee_total=trade_fee_total,
-                    slippage_total=trade_slippage_total,
-                )
+            pending = _PendingFill(
+                fill=fill,
+                trade_index=len(trades),
+                side="SELL",
+                effective_ts=_fill_effective_ts(fill),
+                qty=sell_qty,
+                fee=fee,
+                slippage=sell_slippage,
+                cash_delta=net_proceeds,
+                entry_regime_snapshot=entry_regime_snapshot,
+                exit_regime_snapshot=dict(regime_snapshot),
             )
-            if qty <= 0.0:
-                entry_regime_snapshot = None
-                entry_fee = 0.0
-                entry_slippage = 0.0
+            trades.append(_pending_trade_from_fill(fill, cash=cash, asset_qty=qty))
+            if pending.effective_ts <= mark_boundary_ts:
+                mark_cash += pending.cash_delta
+                mark_qty = max(0.0, mark_qty - pending.qty)
+            pending_fills.append(pending)
+            cash, qty, entry_cost_basis, entry_regime_snapshot, entry_fee, entry_slippage, fee_total, slippage_total = _apply_pending_fills(
+                pending_fills=pending_fills,
+                trades=trades,
+                boundary_ts=decision_boundary_ts,
+                cash=cash,
+                qty=qty,
+                entry_cost_basis=entry_cost_basis,
+                entry_regime_snapshot=entry_regime_snapshot,
+                entry_fee=entry_fee,
+                entry_slippage=entry_slippage,
+                fee_total=fee_total,
+                slippage_total=slippage_total,
+                closed_pnls=closed_pnls,
+            )
 
-        equity_cash = mark_cash if delayed_fill_in_signal_loop else cash
-        equity_qty = mark_qty if delayed_fill_in_signal_loop else qty
-        equity = equity_cash + equity_qty * candle.close
+        equity = mark_cash + mark_qty * candle.close
         peak = max(peak, equity)
         if peak > 0.0:
             max_drawdown = max(max_drawdown, (peak - equity) / peak)
         prev_above = above
 
     last = candles[-1]
+    last_mark_ts = candle_close_ts(last, interval=dataset.interval)
+    cash, qty, entry_cost_basis, entry_regime_snapshot, entry_fee, entry_slippage, fee_total, slippage_total = _apply_pending_fills(
+        pending_fills=pending_fills,
+        trades=trades,
+        boundary_ts=last_mark_ts,
+        cash=cash,
+        qty=qty,
+        entry_cost_basis=entry_cost_basis,
+        entry_regime_snapshot=entry_regime_snapshot,
+        entry_fee=entry_fee,
+        entry_slippage=entry_slippage,
+        fee_total=fee_total,
+        slippage_total=slippage_total,
+        closed_pnls=closed_pnls,
+    )
     final_equity = cash + qty * last.close
     return_pct = ((final_equity / START_CASH_KRW) - 1.0) * 100.0
     metrics = _metrics(
@@ -328,6 +399,79 @@ def run_sma_backtest(
 
 def _sma(values: list[float], n: int, end: int) -> float:
     return sum(values[end - n : end]) / n
+
+
+def _apply_pending_fills(
+    *,
+    pending_fills: list[_PendingFill],
+    trades: list[dict[str, object]],
+    boundary_ts: int,
+    cash: float,
+    qty: float,
+    entry_cost_basis: float,
+    entry_regime_snapshot: dict[str, object] | None,
+    entry_fee: float,
+    entry_slippage: float,
+    fee_total: float,
+    slippage_total: float,
+    closed_pnls: list[float],
+) -> tuple[float, float, float, dict[str, object] | None, float, float, float, float]:
+    ready = sorted(
+        [item for item in pending_fills if item.effective_ts <= int(boundary_ts)],
+        key=lambda item: (item.effective_ts, item.trade_index),
+    )
+    for pending in ready:
+        pending_fills.remove(pending)
+        trade = trades[pending.trade_index]
+        fill = pending.fill
+        if pending.side == "BUY":
+            cash += pending.cash_delta
+            qty += pending.qty
+            entry_cost_basis = abs(pending.cash_delta)
+            entry_regime_snapshot = pending.entry_regime_snapshot
+            entry_fee = pending.fee
+            entry_slippage = pending.slippage
+            fee_total += pending.fee
+            slippage_total += pending.slippage
+            _mark_trade_applied(
+                trade,
+                cash=cash,
+                asset_qty=qty,
+                pnl=None,
+                entry_regime_snapshot=entry_regime_snapshot,
+                exit_regime_snapshot=None,
+                net_pnl=None,
+                fee_total=pending.fee,
+                slippage_total=pending.slippage,
+            )
+        else:
+            filled_fraction = pending.qty / qty if qty > 0.0 else 0.0
+            pnl = pending.cash_delta - (entry_cost_basis * filled_fraction)
+            cash += pending.cash_delta
+            qty = max(0.0, qty - pending.qty)
+            entry_cost_basis = entry_cost_basis * (1.0 - filled_fraction) if qty > 0.0 else 0.0
+            fee_total += pending.fee
+            slippage_total += pending.slippage
+            if fill.fill_status in {"filled", "partial"}:
+                closed_pnls.append(pnl)
+            trade_fee_total = entry_fee + pending.fee
+            trade_slippage_total = entry_slippage + pending.slippage
+            _mark_trade_applied(
+                trade,
+                cash=cash,
+                asset_qty=qty,
+                pnl=pnl,
+                entry_regime_snapshot=pending.entry_regime_snapshot,
+                exit_regime_snapshot=pending.exit_regime_snapshot,
+                net_pnl=pnl,
+                fee_total=trade_fee_total,
+                slippage_total=trade_slippage_total,
+            )
+            if qty <= 0.0:
+                entry_regime_snapshot = None
+                entry_fee = 0.0
+                entry_slippage = 0.0
+    return cash, qty, entry_cost_basis, entry_regime_snapshot, entry_fee, entry_slippage, fee_total, slippage_total
 
 
 def _timing_request_fields(
@@ -430,6 +574,8 @@ def _failed_fill(
         top_of_book_is_full_depth=reference.top_of_book_is_full_depth,
         execution_reference_failure_reason=reference.failure_reason,
         latency_applied_to_reference=reference.latency_applied_to_reference,
+        latency_applied_to_submit_ts=reference.latency_applied_to_submit_ts,
+        latency_applied_to_fill_reference=reference.latency_applied_to_fill_reference,
         latency_reference_policy_warning=reference.latency_reference_policy_warning,
         feature_snapshot=signal.feature_snapshot,
         regime_snapshot=signal.regime_snapshot,
@@ -520,13 +666,66 @@ def _trade_from_fill(
     trade["fill_reference_ts"] = fill.fill_reference_ts
     trade["event_ts_role"] = "signal_ts_legacy"
     trade["execution"] = fill.as_dict()
+    _annotate_execution_record_type(trade, fill)
+    trade["portfolio_effective_ts"] = fill.fill_reference_ts
+    trade["portfolio_applied"] = trade["is_filled_trade"]
     return trade
 
 
-def _fill_occurs_at_or_after_signal_close(fill: Any) -> bool:
-    if fill.fill_reference_ts is None or fill.signal_candle_close_ts is None:
-        return False
-    return int(fill.fill_reference_ts) >= int(fill.signal_candle_close_ts)
+def _pending_trade_from_fill(fill: Any, *, cash: float, asset_qty: float) -> dict[str, object]:
+    trade = _trade_from_fill(fill, cash=cash, asset_qty=asset_qty, pnl=None)
+    trade["portfolio_effective_ts"] = _fill_effective_ts(fill)
+    trade["portfolio_applied"] = False
+    return trade
+
+
+def _mark_trade_applied(
+    trade: dict[str, object],
+    *,
+    cash: float,
+    asset_qty: float,
+    pnl: float | None,
+    entry_regime_snapshot: dict[str, object] | None,
+    exit_regime_snapshot: dict[str, object] | None,
+    net_pnl: float | None,
+    fee_total: float | None,
+    slippage_total: float | None,
+) -> None:
+    entry_regime = entry_regime_snapshot.get("composite_regime") if entry_regime_snapshot is not None else None
+    exit_regime = exit_regime_snapshot.get("composite_regime") if exit_regime_snapshot is not None else None
+    trade.update(
+        {
+            "cash": float(cash),
+            "asset_qty": float(asset_qty),
+            "closed_trade_pnl": pnl,
+            "net_pnl": net_pnl,
+            "fee_total": fee_total,
+            "slippage_total": slippage_total,
+            "entry_regime": entry_regime,
+            "exit_regime": exit_regime,
+            "entry_regime_snapshot": entry_regime_snapshot,
+            "exit_regime_snapshot": exit_regime_snapshot,
+            "portfolio_applied": True,
+        }
+    )
+
+
+def _fill_effective_ts(fill: Any) -> int:
+    if fill.fill_reference_ts is not None:
+        return int(fill.fill_reference_ts)
+    return int(fill.submit_ts_assumption)
+
+
+def _annotate_execution_record_type(trade: dict[str, object], fill: Any) -> None:
+    status = str(getattr(fill, "fill_status", ""))
+    is_filled = float(getattr(fill, "filled_qty", 0.0) or 0.0) > 0.0 and status in {"filled", "partial"}
+    is_skipped = status in {"skipped", "skipped_with_warning"}
+    is_failed = status == "failed"
+    trade["record_type"] = "filled_trade" if is_filled else "execution_attempt"
+    trade["is_execution_attempt"] = True
+    trade["is_filled_trade"] = is_filled
+    trade["is_skipped_execution"] = is_skipped
+    trade["is_failed_execution"] = is_failed
 
 
 def _execution_reference_warnings(fill: Any) -> list[str]:

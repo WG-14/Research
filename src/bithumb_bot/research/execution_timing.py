@@ -47,6 +47,8 @@ class ExecutionReferenceEvent:
     top_of_book_is_full_depth: bool = False
     failure_reason: str | None = None
     latency_applied_to_reference: bool = False
+    latency_applied_to_submit_ts: bool = False
+    latency_applied_to_fill_reference: bool = False
     latency_reference_policy_warning: str | None = None
 
     def request_fields(self) -> dict[str, object]:
@@ -66,6 +68,8 @@ class ExecutionReferenceEvent:
             "top_of_book_is_full_depth": self.top_of_book_is_full_depth,
             "execution_reference_failure_reason": self.failure_reason,
             "latency_applied_to_reference": self.latency_applied_to_reference,
+            "latency_applied_to_submit_ts": self.latency_applied_to_submit_ts,
+            "latency_applied_to_fill_reference": self.latency_applied_to_fill_reference,
             "latency_reference_policy_warning": self.latency_reference_policy_warning,
         }
 
@@ -117,6 +121,7 @@ def resolve_execution_reference(
     latency_ms = max(0, int(model_latency_ms))
     submit_ts = int(signal.decision_ts) + latency_ms
     latency_applied_to_reference = policy.fill_reference_policy == "latency_adjusted_orderbook"
+    latency_applied_to_submit_ts = latency_ms > 0
     latency_warning = (
         "execution_latency_not_applied_to_reference_policy"
         if latency_ms > 0 and not latency_applied_to_reference
@@ -138,6 +143,8 @@ def resolve_execution_reference(
             execution_reality_level="candle_close_optimistic",
             intra_candle_policy="close_price_only_no_intracandle_path",
             latency_applied_to_reference=False,
+            latency_applied_to_submit_ts=latency_applied_to_submit_ts,
+            latency_applied_to_fill_reference=False,
             latency_reference_policy_warning=latency_warning,
         )
     if policy.fill_reference_policy == "next_candle_open":
@@ -166,6 +173,8 @@ def resolve_execution_reference(
             execution_reality_level="candle_next_open",
             intra_candle_policy="next_candle_open_no_intracandle_path",
             latency_applied_to_reference=False,
+            latency_applied_to_submit_ts=latency_applied_to_submit_ts,
+            latency_applied_to_fill_reference=False,
             latency_reference_policy_warning=latency_warning,
         )
     if policy.fill_reference_policy in {"first_orderbook_after_decision", "latency_adjusted_orderbook"}:
@@ -200,6 +209,8 @@ def resolve_execution_reference(
             execution_reality_level=reality,
             intra_candle_policy="top_of_book_snapshot_no_depth_no_queue",
             latency_applied_to_reference=latency_applied_to_reference,
+            latency_applied_to_submit_ts=latency_applied_to_submit_ts,
+            latency_applied_to_fill_reference=latency_applied_to_reference,
             latency_reference_policy_warning=latency_warning,
         )
     raise ValueError(f"unsupported fill_reference_policy: {policy.fill_reference_policy}")
@@ -286,6 +297,8 @@ def signal_quote_coverage_summary(
         item for item in execution_metadata
         if item.get("execution_reference_failure_reason") == "missing_quote_warning"
     ]
+    submit_latency = [item for item in execution_metadata if item.get("latency_applied_to_submit_ts") is True]
+    reference_latency = [item for item in execution_metadata if item.get("latency_applied_to_fill_reference") is True]
     coverage = (len(quote_ages) / signal_count * 100.0) if signal_count else None
     return {
         "signal_event_count": signal_count,
@@ -298,6 +311,8 @@ def signal_quote_coverage_summary(
         "p95_quote_age_ms_on_signal": _percentile(quote_ages, 95) if quote_ages else None,
         "execution_reference_policy": policy.fill_reference_policy,
         "execution_reality_level": _summary_reality_level(execution_metadata),
+        "latency_applied_to_submit_ts_count": len(submit_latency),
+        "latency_applied_to_fill_reference_count": len(reference_latency),
     }
 
 
@@ -311,6 +326,7 @@ def _failed_reference(
     model_latency_ms: int = 0,
 ) -> ExecutionReferenceEvent:
     latency_applied_to_reference = policy.fill_reference_policy == "latency_adjusted_orderbook"
+    latency_applied_to_submit_ts = int(model_latency_ms) > 0
     latency_warning = (
         "execution_latency_not_applied_to_reference_policy"
         if int(model_latency_ms) > 0 and not latency_applied_to_reference
@@ -331,6 +347,8 @@ def _failed_reference(
         intra_candle_policy="reference_unavailable",
         failure_reason=reason,
         latency_applied_to_reference=latency_applied_to_reference,
+        latency_applied_to_submit_ts=latency_applied_to_submit_ts,
+        latency_applied_to_fill_reference=latency_applied_to_reference,
         latency_reference_policy_warning=latency_warning,
     )
 
