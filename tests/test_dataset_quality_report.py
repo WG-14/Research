@@ -101,6 +101,14 @@ def test_dataset_quality_report_passes_complete_valid_candles(tmp_path: Path) ->
     assert report.payload["present_expected_bucket_count"] == 1440
     assert report.payload["coverage_pct"] == 100.0
     assert report.content_hash.startswith("sha256:")
+    limitations = report.payload["limitations"]
+    assert limitations["execution_reference_price"] == "configured_by_execution_timing_policy"
+    assert limitations["available_execution_reference_sources"] == [
+        "candle_ohlcv",
+        "top_of_book_if_requested",
+    ]
+    assert limitations["intra_candle_policy"] == "configured_by_execution_timing_policy"
+    assert limitations["top_of_book_is_full_depth"] is False
 
 
 def test_dataset_quality_report_detects_missing_candles_deterministically(tmp_path: Path) -> None:

@@ -96,6 +96,9 @@ def run_sma_backtest(
 
     for index in range(long_n, len(candles)):
         candle = candles[index]
+        mark_cash = cash
+        mark_qty = qty
+        delayed_fill_in_signal_loop = False
         prev_short = _sma(closes, short_n, index)
         prev_long = _sma(closes, long_n, index)
         curr_short = _sma(closes, short_n, index + 1)
@@ -153,6 +156,7 @@ def run_sma_backtest(
                     fee_rate=fee_rate,
                     requested_notional=cash * BUY_FRACTION,
                 )
+                warnings.extend(_execution_reference_warnings(fill))
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
                 prev_above = above
                 continue
@@ -168,10 +172,12 @@ def run_sma_backtest(
                     **_timing_request_fields(signal, reference, timing_policy),
                 )
             )
+            warnings.extend(_execution_reference_warnings(fill))
             if fill.fill_status == "failed" or fill.avg_fill_price is None or fill.filled_qty <= 0.0:
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
                 prev_above = above
                 continue
+            delayed_fill_in_signal_loop = _fill_occurs_at_or_after_signal_close(fill)
             exec_price = float(fill.avg_fill_price)
             fee = fill.fee
             received_qty = fill.filled_qty
@@ -232,6 +238,7 @@ def run_sma_backtest(
                     fee_rate=fee_rate,
                     requested_qty=qty,
                 )
+                warnings.extend(_execution_reference_warnings(fill))
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
                 prev_above = above
                 continue
@@ -246,10 +253,12 @@ def run_sma_backtest(
                     **_timing_request_fields(signal, reference, timing_policy),
                 )
             )
+            warnings.extend(_execution_reference_warnings(fill))
             if fill.fill_status == "failed" or fill.avg_fill_price is None or fill.filled_qty <= 0.0:
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
                 prev_above = above
                 continue
+            delayed_fill_in_signal_loop = _fill_occurs_at_or_after_signal_close(fill)
             exec_price = float(fill.avg_fill_price)
             sell_qty = fill.filled_qty
             gross = sell_qty * exec_price
@@ -286,7 +295,9 @@ def run_sma_backtest(
                 entry_fee = 0.0
                 entry_slippage = 0.0
 
-        equity = cash + qty * candle.close
+        equity_cash = mark_cash if delayed_fill_in_signal_loop else cash
+        equity_qty = mark_qty if delayed_fill_in_signal_loop else qty
+        equity = equity_cash + equity_qty * candle.close
         peak = max(peak, equity)
         if peak > 0.0:
             max_drawdown = max(max_drawdown, (peak - equity) / peak)
@@ -404,7 +415,7 @@ def _failed_fill(
         fee=0.0,
         slippage_bps=0.0,
         latency_ms=_model_latency_ms(model),
-        fill_status="failed",
+        fill_status=_failed_fill_status(reference.failure_reason),
         model_name=getattr(model, "name", "unknown"),
         model_version=getattr(model, "version", "unknown"),
         model_params_hash=model_params_hash(model.params_payload()),
@@ -418,10 +429,20 @@ def _failed_fill(
         top_of_book_source=reference.quote_source,
         top_of_book_is_full_depth=reference.top_of_book_is_full_depth,
         execution_reference_failure_reason=reference.failure_reason,
+        latency_applied_to_reference=reference.latency_applied_to_reference,
+        latency_reference_policy_warning=reference.latency_reference_policy_warning,
         feature_snapshot=signal.feature_snapshot,
         regime_snapshot=signal.regime_snapshot,
         intra_candle_policy=reference.intra_candle_policy,
     )
+
+
+def _failed_fill_status(reason: str | None) -> str:
+    if reason == "missing_quote_skipped":
+        return "skipped"
+    if reason == "missing_quote_warning":
+        return "skipped_with_warning"
+    return "failed"
 
 
 def _trade(
@@ -492,8 +513,29 @@ def _trade_from_fill(
         fee_total=fee_total,
         slippage_total=slippage_total,
     )
+    trade["signal_ts"] = fill.signal_ts
+    trade["decision_ts"] = fill.decision_ts
+    trade["submit_ts_assumption"] = fill.submit_ts_assumption
+    trade["fill_ts"] = fill.fill_reference_ts
+    trade["fill_reference_ts"] = fill.fill_reference_ts
+    trade["event_ts_role"] = "signal_ts_legacy"
     trade["execution"] = fill.as_dict()
     return trade
+
+
+def _fill_occurs_at_or_after_signal_close(fill: Any) -> bool:
+    if fill.fill_reference_ts is None or fill.signal_candle_close_ts is None:
+        return False
+    return int(fill.fill_reference_ts) >= int(fill.signal_candle_close_ts)
+
+
+def _execution_reference_warnings(fill: Any) -> list[str]:
+    warnings: list[str] = []
+    if getattr(fill, "execution_reference_failure_reason", None) == "missing_quote_warning":
+        warnings.append("missing_quote_warning")
+    if getattr(fill, "latency_reference_policy_warning", None):
+        warnings.append(str(fill.latency_reference_policy_warning))
+    return warnings
 
 
 def _empty_metrics(parameter_stability_score: float | None) -> ResearchMetrics:

@@ -393,6 +393,70 @@ def test_latency_changes_fill_reference_quote() -> None:
     assert slow.trades[0]["execution"]["submit_ts_assumption"] == decision_ts + 700
     assert slow.trades[0]["execution"]["quote_ts"] == decision_ts + 800
     assert slow.trades[0]["execution"]["fill_reference_price"] == 130.0
+    assert slow.trades[0]["execution"]["latency_applied_to_reference"] is True
+    assert slow.trades[0]["execution"]["latency_reference_policy_warning"] is None
+
+
+def test_latency_adjusted_orderbook_loads_quote_after_latency_plus_wait(tmp_path: Path) -> None:
+    db_path = tmp_path / "quotes.sqlite"
+    conn = ensure_db(str(db_path))
+    base_ts = _ts("2023-01-01", 0)
+    try:
+        closes = [100.0, 90.0, 100.0, 80.0, 100.0]
+        for index, close in enumerate(closes):
+            conn.execute(
+                """
+                INSERT INTO candles(ts, pair, interval, open, high, low, close, volume)
+                VALUES (?, 'KRW-BTC', '1m', ?, ?, ?, ?, 1.0)
+                """,
+                (base_ts + index * 60_000, close, close + 1.0, close - 1.0, close),
+            )
+        signal_close_ts = base_ts + 5 * 60_000
+        late_quote_ts = signal_close_ts + 10_000
+        upsert_orderbook_top_snapshot(
+            conn,
+            build_orderbook_top_snapshot(
+                ts=late_quote_ts,
+                pair="KRW-BTC",
+                bid_price=120.0,
+                ask_price=140.0,
+                source="bithumb_public_v1_orderbook",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    payload = _manifest(top_of_book={"source": "sqlite_orderbook_top_snapshots", "missing_policy": "warn"}).raw
+    payload["execution_model"] = {
+        "type": "stress",
+        "fee_rate": 0.0,
+        "slippage_bps": 0.0,
+        "latency_ms": 7000,
+    }
+    payload["execution_timing"] = {
+        "fill_reference_policy": "latency_adjusted_orderbook",
+        "max_quote_wait_ms": 5000,
+        "missing_quote_policy": "fail",
+        "allow_same_candle_close_fill": False,
+    }
+    manifest = parse_manifest(payload)
+
+    snapshot = load_dataset_split(db_path=db_path, manifest=manifest, split_name="train")
+    result = run_sma_backtest(
+        dataset=snapshot,
+        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        execution_model=StressExecutionModel(fee_rate=0.0, slippage_bps=0.0, latency_ms=7000, seed=1),
+        execution_timing_policy=manifest.execution_timing,
+    )
+
+    assert snapshot.top_of_book_event_quotes[-1].ts == late_quote_ts
+    execution = result.trades[0]["execution"]
+    assert execution["submit_ts_assumption"] == signal_close_ts + 7000
+    assert execution["quote_ts"] == late_quote_ts
+    assert execution["quote_age_ms"] == 3000
+    assert execution["fill_reference_price"] == 140.0
 
 
 def test_top_of_book_model_uses_ask_for_buy_bid_for_sell() -> None:
@@ -458,6 +522,193 @@ def test_execution_metadata_includes_reference_source_and_quote_age() -> None:
         assert key in execution
     assert execution["quote_age_ms"] == 250
     assert execution["top_of_book_is_full_depth"] is False
+
+
+def test_trade_top_level_records_signal_and_fill_timestamps_separately() -> None:
+    base_ts = 1_700_000_000_000
+    dataset = _signal_dataset(base_ts=base_ts, quotes=())
+
+    result = run_sma_backtest(
+        dataset=dataset,
+        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        execution_timing_policy=ExecutionTimingPolicy(
+            fill_reference_policy="next_candle_open",
+            allow_same_candle_close_fill=False,
+            source="test",
+        ),
+    )
+
+    trade = result.trades[0]
+    assert trade["ts"] == base_ts + 4 * 60_000
+    assert trade["event_ts_role"] == "signal_ts_legacy"
+    assert trade["signal_ts"] == base_ts + 4 * 60_000
+    assert trade["decision_ts"] == base_ts + 5 * 60_000
+    assert trade["submit_ts_assumption"] == base_ts + 5 * 60_000
+    assert trade["fill_ts"] == base_ts + 5 * 60_000
+    assert trade["fill_reference_ts"] == base_ts + 5 * 60_000
+    assert trade["fill_ts"] != trade["signal_ts"]
+
+
+def test_next_open_fill_does_not_affect_signal_candle_close_equity() -> None:
+    base_ts = 1_700_000_000_000
+    closes = [100.0, 90.0, 100.0, 80.0, 100.0, 1.0]
+    opens = [100.0, 90.0, 100.0, 80.0, 100.0, 1.0]
+    dataset = DatasetSnapshot(
+        snapshot_id="unit",
+        source="sqlite_candles",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="train",
+        date_range=DateRange(start="2023-01-01", end="2023-01-01"),
+        candles=tuple(
+            Candle(
+                ts=base_ts + index * 60_000,
+                open=opens[index],
+                high=max(opens[index], close) + 1.0,
+                low=min(opens[index], close) - 1.0,
+                close=close,
+                volume=1.0,
+            )
+            for index, close in enumerate(closes)
+        ),
+    )
+
+    result = run_sma_backtest(
+        dataset=dataset,
+        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        execution_timing_policy=ExecutionTimingPolicy(
+            fill_reference_policy="next_candle_open",
+            allow_same_candle_close_fill=False,
+            source="test",
+        ),
+    )
+
+    assert result.trades[0]["execution"]["fill_reference_ts"] == base_ts + 5 * 60_000
+    assert result.metrics.max_drawdown_pct == 0.0
+
+
+def test_stress_latency_non_latency_policy_is_flagged_or_failed(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "quotes.sqlite"
+    _create_candle_db(db_path)
+    raw = _manifest().raw
+    raw["execution_model"] = {
+        "type": "stress",
+        "fee_rate": [0.0],
+        "slippage_bps": [0.0],
+        "latency_ms": [500],
+    }
+    raw["execution_timing"] = {
+        "fill_reference_policy": "next_candle_open",
+        "allow_same_candle_close_fill": False,
+        "min_execution_reality_level_for_promotion": "candle_next_open",
+    }
+    manifest = parse_manifest(raw)
+
+    report = run_research_backtest(
+        manifest=manifest,
+        db_path=db_path,
+        manager=_manager(tmp_path, monkeypatch),
+        generated_at="2026-05-07T00:00:00+00:00",
+    )
+
+    candidate = report["candidates"][0]
+    summary = candidate["execution_reality_summary"]
+    execution = candidate["scenario_results"][0]["validation_execution_metadata"][0]
+    assert execution["latency_applied_to_reference"] is False
+    assert execution["latency_reference_policy_warning"] == "execution_latency_not_applied_to_reference_policy"
+    assert summary["execution_reality_gate_status"] == "FAIL"
+    assert "execution_latency_not_applied_to_reference_policy" in candidate["gate_fail_reasons"]
+
+
+def test_missing_quote_policy_fail_fails_candidate(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "quotes.sqlite"
+    _create_candle_db(db_path)
+    raw = _manifest(top_of_book={"source": "sqlite_orderbook_top_snapshots", "missing_policy": "warn"}).raw
+    raw["execution_timing"] = {
+        "fill_reference_policy": "first_orderbook_after_decision",
+        "max_quote_wait_ms": 1000,
+        "missing_quote_policy": "fail",
+        "allow_same_candle_close_fill": False,
+    }
+    manifest = parse_manifest(raw)
+
+    report = run_research_backtest(
+        manifest=manifest,
+        db_path=db_path,
+        manager=_manager(tmp_path, monkeypatch),
+        generated_at="2026-05-07T00:00:00+00:00",
+    )
+
+    candidate = report["candidates"][0]
+    execution = candidate["scenario_results"][0]["validation_execution_metadata"][0]
+    assert report["gate_result"] == "FAIL"
+    assert execution["fill_status"] == "failed"
+    assert execution["execution_reference_failure_reason"] == "missing_quote_failed"
+    assert "quote_after_decision_signal_coverage_below_threshold" in candidate["gate_fail_reasons"]
+
+
+def test_missing_quote_policy_skip_records_skip_not_failed_fill() -> None:
+    base_ts = 1_700_000_000_000
+    dataset = _signal_dataset(base_ts=base_ts, quotes=())
+
+    result = run_sma_backtest(
+        dataset=dataset,
+        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        execution_timing_policy=ExecutionTimingPolicy(
+            fill_reference_policy="first_orderbook_after_decision",
+            max_quote_wait_ms=1000,
+            missing_quote_policy="skip",
+            allow_same_candle_close_fill=False,
+            source="test",
+        ),
+    )
+
+    execution = result.trades[0]["execution"]
+    assert execution["fill_status"] == "skipped"
+    assert execution["execution_reference_failure_reason"] == "missing_quote_skipped"
+    assert execution["filled_qty"] == 0.0
+    assert result.trades[0]["asset_qty"] == 0.0
+
+
+def test_missing_quote_policy_warn_records_warning_without_promotion_grade_pass(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "quotes.sqlite"
+    _create_candle_db(db_path)
+    raw = _manifest(top_of_book={"source": "sqlite_orderbook_top_snapshots", "missing_policy": "warn"}).raw
+    raw["execution_timing"] = {
+        "fill_reference_policy": "first_orderbook_after_decision",
+        "max_quote_wait_ms": 1000,
+        "missing_quote_policy": "warn",
+        "allow_same_candle_close_fill": False,
+        "min_execution_reality_level_for_promotion": "top_of_book_after_decision",
+    }
+    manifest = parse_manifest(raw)
+
+    report = run_research_backtest(
+        manifest=manifest,
+        db_path=db_path,
+        manager=_manager(tmp_path, monkeypatch),
+        generated_at="2026-05-07T00:00:00+00:00",
+    )
+
+    candidate = report["candidates"][0]
+    execution = candidate["scenario_results"][0]["validation_execution_metadata"][0]
+    summary = report["signal_quote_coverage_summary"]
+    assert execution["fill_status"] == "skipped_with_warning"
+    assert execution["execution_reference_failure_reason"] == "missing_quote_warning"
+    assert "missing_quote_warning" in report["warnings"]
+    assert summary["signal_event_count"] > 0
+    assert summary["skipped_execution_signal_count"] == summary["signal_event_count"]
+    assert report["gate_result"] == "FAIL"
+    assert "quote_after_decision_signal_coverage_below_threshold" in candidate["gate_fail_reasons"]
 
 
 def test_signal_event_quote_coverage_reported(tmp_path: Path, monkeypatch) -> None:

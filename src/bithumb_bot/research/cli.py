@@ -141,6 +141,8 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
             f"signal_event_count={signal_coverage.get('signal_event_count')} "
             f"fillable_signal_event_count={signal_coverage.get('fillable_signal_event_count')} "
             f"missing_quote_on_signal_count={signal_coverage.get('missing_quote_on_signal_count')} "
+            f"skipped_execution_signal_count={signal_coverage.get('skipped_execution_signal_count')} "
+            f"missing_quote_warning_count={signal_coverage.get('missing_quote_warning_count')} "
             f"quote_after_decision_coverage_pct={signal_coverage.get('quote_after_decision_coverage_pct')} "
             f"median_quote_age_ms={signal_coverage.get('median_quote_age_ms_on_signal')} "
             f"p95_quote_age_ms={signal_coverage.get('p95_quote_age_ms_on_signal')}"

@@ -37,6 +37,8 @@ class ExecutionRequest:
     top_of_book_source: str | None = None
     top_of_book_is_full_depth: bool | None = None
     execution_reference_failure_reason: str | None = None
+    latency_applied_to_reference: bool | None = None
+    latency_reference_policy_warning: str | None = None
     feature_snapshot: dict[str, Any] | None = None
     regime_snapshot: dict[str, Any] | None = None
     intra_candle_policy: str = "close_price_only_no_intracandle_path"
@@ -82,6 +84,8 @@ class ExecutionFill:
     top_of_book_source: str | None = None
     top_of_book_is_full_depth: bool | None = None
     execution_reference_failure_reason: str | None = None
+    latency_applied_to_reference: bool | None = None
+    latency_reference_policy_warning: str | None = None
     feature_snapshot: dict[str, Any] | None = None
     regime_snapshot: dict[str, Any] | None = None
     intra_candle_policy: str = "close_price_only_no_intracandle_path"
@@ -129,6 +133,8 @@ class ExecutionFill:
             "top_of_book_source": self.top_of_book_source,
             "top_of_book_is_full_depth": self.top_of_book_is_full_depth,
             "execution_reference_failure_reason": self.execution_reference_failure_reason,
+            "latency_applied_to_reference": self.latency_applied_to_reference,
+            "latency_reference_policy_warning": self.latency_reference_policy_warning,
             "feature_snapshot": self.feature_snapshot,
             "regime_snapshot": self.regime_snapshot,
             "intra_candle_policy": self.intra_candle_policy,

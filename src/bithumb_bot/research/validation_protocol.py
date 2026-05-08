@@ -885,6 +885,7 @@ def _report_payload(
             "intra_candle_path_available": False,
             "execution_reference_price": manifest.execution_timing.fill_reference_policy,
             "intra_candle_policy": _policy_intra_candle_limitation(manifest.execution_timing.fill_reference_policy),
+            "portfolio_event_time_policy": "fill_applied_after_signal_close_mark_when_reference_at_or_after_signal_close",
             "top_of_book_join_tolerance_ms": (
                 manifest.dataset.top_of_book.join_tolerance_ms if manifest.dataset.top_of_book else None
             ),
@@ -1013,6 +1014,11 @@ def _execution_reality_summary(
         observed_levels=observed_levels,
         fill_reference_sources=sources,
         quote_coverage_pct=coverage.get("quote_after_decision_coverage_pct"),
+        latency_reference_warnings=[
+            str(item.get("latency_reference_policy_warning"))
+            for item in execution_metadata
+            if item.get("latency_reference_policy_warning")
+        ],
     )
     return {
         **coverage,
@@ -1064,6 +1070,8 @@ def _report_signal_quote_coverage_summary(candidates: list[dict[str, Any]]) -> d
                     "signal_event_count",
                     "fillable_signal_event_count",
                     "missing_quote_on_signal_count",
+                    "skipped_execution_signal_count",
+                    "missing_quote_warning_count",
                     "quote_after_decision_coverage_pct",
                     "median_quote_age_ms_on_signal",
                     "p95_quote_age_ms_on_signal",

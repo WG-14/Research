@@ -128,6 +128,8 @@ class StressExecutionModel:
             top_of_book_source=request.top_of_book_source or request.quote_source,
             top_of_book_is_full_depth=request.top_of_book_is_full_depth,
             execution_reference_failure_reason=request.execution_reference_failure_reason,
+            latency_applied_to_reference=request.latency_applied_to_reference,
+            latency_reference_policy_warning=request.latency_reference_policy_warning,
             feature_snapshot=request.feature_snapshot,
             regime_snapshot=request.regime_snapshot,
             intra_candle_policy=request.intra_candle_policy,

@@ -118,6 +118,15 @@ class DatasetSnapshot:
             return self.top_of_book_event_quotes
         return tuple(quote for quote in self.top_of_book_quotes if quote is not None)
 
+    def sorted_execution_top_of_book_quotes(self) -> tuple[TopOfBookQuote, ...]:
+        quotes = self.execution_top_of_book_quotes()
+        if all(
+            (int(prev.ts), str(prev.source)) <= (int(curr.ts), str(curr.source))
+            for prev, curr in zip(quotes, quotes[1:])
+        ):
+            return quotes
+        return tuple(sorted(quotes, key=lambda quote: (int(quote.ts), str(quote.source))))
+
 
 @dataclass(frozen=True)
 class DatasetQualityReport:
@@ -193,17 +202,18 @@ def load_dataset_range(
             join_tolerance_ms=top_of_book_spec.join_tolerance_ms,
             quote_source=top_of_book_spec.quote_source,
         )
+        execution_quote_lookahead_ms = (
+            int(manifest.execution_timing.decision_guard_ms)
+            + int(max((scenario.latency_ms for scenario in manifest.execution_model.scenarios), default=0))
+            + int(manifest.execution_timing.max_quote_wait_ms)
+        )
         top_of_book_event_quotes = _load_top_of_book_event_quotes(
             db_path=db_path,
             market=manifest.market,
             interval=manifest.interval,
             candles=candles,
             quote_source=top_of_book_spec.quote_source,
-            max_wait_ms=max(
-                int(top_of_book_spec.join_tolerance_ms),
-                int(manifest.execution_timing.max_quote_wait_ms),
-                int(max((scenario.latency_ms for scenario in manifest.execution_model.scenarios), default=0)),
-            ),
+            execution_quote_lookahead_ms=execution_quote_lookahead_ms,
         )
     return DatasetSnapshot(
         snapshot_id=manifest.dataset.snapshot_id,
@@ -330,8 +340,12 @@ def build_dataset_quality_report(
             "orderbook_depth_available": False,
             "top_of_book_available": any(quote is not None for quote in snapshot.top_of_book_quotes),
             "intra_candle_path_available": False,
-            "execution_reference_price": "candle_close",
-            "intra_candle_policy": "close_price_only_no_intracandle_path",
+            "execution_reference_price": "configured_by_execution_timing_policy",
+            "available_execution_reference_sources": [
+                "candle_ohlcv",
+                "top_of_book_if_requested",
+            ],
+            "intra_candle_policy": "configured_by_execution_timing_policy",
             "top_of_book_is_full_depth": False,
         },
     }
@@ -551,12 +565,12 @@ def _load_top_of_book_event_quotes(
     interval: str,
     candles: tuple[Candle, ...],
     quote_source: str | None,
-    max_wait_ms: int,
+    execution_quote_lookahead_ms: int,
 ) -> tuple[TopOfBookQuote, ...]:
     if not candles:
         return ()
     start_ts = int(candles[0].ts)
-    end_ts = int(candles[-1].ts) + _interval_ms(interval) + int(max_wait_ms)
+    end_ts = int(candles[-1].ts) + _interval_ms(interval) + int(execution_quote_lookahead_ms)
     conn = sqlite3.connect(f"file:{Path(db_path).expanduser().resolve()}?mode=ro", uri=True)
     try:
         table = conn.execute(
