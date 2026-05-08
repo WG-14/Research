@@ -302,6 +302,64 @@ def test_partial_stress_order_blocks_new_intent_with_different_timestamp(
         _restore(old)
 
 
+def test_unresolved_paper_order_gate_runs_before_orderbook_fetch(
+    tmp_path: Path,
+    monkeypatch,
+    caplog,
+):
+    old = _configure_stress(
+        tmp_path,
+        db_name="stress_unresolved_gate_before_orderbook.sqlite",
+        partial_rate=1.0,
+        partial_fraction=0.5,
+    )
+    try:
+        fetch_calls = {"count": 0}
+
+        def _fetch_once(_market: str):
+            fetch_calls["count"] += 1
+            if fetch_calls["count"] > 1:
+                raise AssertionError("orderbook fetch should not run while an unresolved order is open")
+            return BestQuote(market="KRW-BTC", bid_price=100.0, ask_price=100.0)
+
+        monkeypatch.setattr(paper, "fetch_orderbook_top", _fetch_once)
+        conn = ensure_db()
+        set_portfolio(conn, cash_krw=1_000_000, asset_qty=0.0)
+        conn.close()
+
+        first = paper.paper_execute("BUY", ts=1_700_000_000_000, price=100.0)
+
+        caplog.set_level(logging.INFO, logger="bithumb_bot.run")
+        second = paper.paper_execute("SELL", ts=1_700_000_060_000, price=100.0)
+
+        assert first is not None
+        assert second is None
+        assert fetch_calls["count"] == 1
+
+        conn = ensure_db()
+        order = conn.execute("SELECT status FROM orders ORDER BY id DESC LIMIT 1").fetchone()
+        order_count = conn.execute("SELECT COUNT(*) AS n FROM orders").fetchone()["n"]
+        fill_count = conn.execute("SELECT COUNT(*) AS n FROM fills").fetchone()["n"]
+        trade_count = conn.execute("SELECT COUNT(*) AS n FROM trades").fetchone()["n"]
+        dedup = conn.execute("SELECT order_status FROM order_intent_dedup").fetchone()
+        conn.close()
+
+        assert order is not None
+        assert order["status"] == "PARTIAL"
+        assert order_count == 1
+        assert fill_count == 1
+        assert trade_count == 1
+        assert dedup is not None
+        assert dedup["order_status"] == "PARTIAL"
+        assert any(
+            "[SKIP] unresolved order gate" in record.getMessage()
+            and "reason_code=UNRESOLVED_OPEN_ORDER_PRESENT" in record.getMessage()
+            for record in caplog.records
+        )
+    finally:
+        _restore(old)
+
+
 def test_invalid_paper_execution_model_fails_closed():
     old = _set("PAPER_EXECUTION_MODEL", "stres")
     try:

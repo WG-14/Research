@@ -1,165 +1,39 @@
 You are Codex working directly in the GitHub repository `WG-14/bithumb-bot`.
 
-Use the attached latest review as source context, but verify every claim against the current repository before modifying code. Do not treat the review as automatically true. 
+Use the attached review chain as context only, not as authoritative truth. Verify the current repository state before changing anything. The prior reviews explain why paper execution must evolve from immediate-fill simulation into reproducible lifecycle rehearsal, why unresolved/open orders must block new paper submissions, and why partial-fill boundary semantics must fail closed.   
 
-Your task is to review the current paper stress execution patch and apply the next necessary hardening patch. The current implementation appears to have resolved the major lifecycle gaps: paper stress execution now has an unresolved-order gate, fail-closed model/rate validation, SELL stress coverage, and latency tests. The remaining priority is a smaller but important lifecycle semantics bug: `PAPER_EXECUTION_PARTIAL_FILL_FRACTION` currently appears to allow boundary values `0.0` and `1.0`, which can make a stress result say `fill_status="partial"` while the actual filled quantity is zero or fully filled.
+Your task is to review the current patched state and decide whether the remaining low-priority observability refactor should be applied now: move the paper unresolved-order gate before orderbook fetching, so an existing `PARTIAL`/open order is always diagnosed as an unresolved-order block instead of being hidden behind an orderbook fetch failure.
 
-Do not turn this into general advice. Work in this repo, verify the code, patch the edge case, and add tests that would fail before the patch.
+Do not generalize this into broad advice. Work in this repo, verify the current code, patch only if safe, and add focused tests that would fail before the refactor.
 
-## Primary files to inspect
+## Current priority
 
-Inspect these files first:
+The previous mandatory paper stress lifecycle issues appear to be fixed:
 
-* `src/bithumb_bot/broker/paper.py`
-* `src/bithumb_bot/broker/paper_execution.py`
-* `src/bithumb_bot/research/execution_model/stress.py`
-* `tests/test_paper_stress_execution.py`
-* `tests/test_paper_orderbook.py`
-* `docs/paper-execution-lifecycle.md`
-* `.env.example`
+* paper stress execution uses deterministic adapter behavior
+* `PARTIAL` remains open and blocks later submissions
+* invalid stress model/rates/latency fail closed
+* `PAPER_EXECUTION_PARTIAL_FILL_FRACTION` rejects `0.0` and `1.0` in stress mode
+* BUY/SELL stress partial/failure tests exist
+* latency is persisted and shifts fill/trade timestamps
 
-Also search before adding new code:
+Treat this as a hypothesis until verified.
 
-```text
-PAPER_EXECUTION_PARTIAL_FILL_FRACTION
-_validate_paper_execution_config
-_validate_unit_interval_config
-StressPaperExecutionAdapter
-StressExecutionModel
-fill_status == "partial"
-remaining_qty
-PARTIAL
-```
-
-## Working hypotheses to verify, not assume
-
-Keep these hypotheses explicit. Confirm, refine, or refute each one in the final report.
-
-### H1: The major paper lifecycle patch is now mostly in place
-
-Verify whether paper execution currently:
-
-* imports and calls `evaluate_unresolved_order_gate`
-* blocks a new order when a previous `PARTIAL` order remains open
-* validates `PAPER_EXECUTION_MODEL`
-* validates latency/rate settings
-* has BUY and SELL stress tests
-* asserts latency in fill/trade timestamps and evidence
-
-Refutation:
-
-* If any of these are missing or broken, fix them before the smaller boundary patch.
-
-### H2: `PAPER_EXECUTION_PARTIAL_FILL_FRACTION=0.0` can produce contradictory evidence/status semantics
-
-Verify whether the current validation allows `0.0`.
-
-Risk:
-
-* Research stress model can emit `fill_status="partial"` with `filled_qty=0`.
-* Paper execution may record partial-style evidence, then later classify the order as `FAILED` because `filled_qty <= 0`.
-* This creates a mismatch between stress evidence and final order state.
-
-Refutation:
-
-* If the current code already rejects `0.0`, document the exact validation and ensure there is a regression test.
-
-### H3: `PAPER_EXECUTION_PARTIAL_FILL_FRACTION=1.0` can leave a fully filled order as `PARTIAL`
-
-Verify whether the current validation allows `1.0`.
-
-Risk:
-
-* Research stress model can emit `fill_status="partial"` with `filled_qty == requested_qty`.
-* Paper execution may set final status to `PARTIAL` based only on `fill_status`, even though `qty_filled == qty_req`.
-* This can leave a fully filled order open in OMS/dedup, causing unresolved-order gate to block future paper execution forever or until manual cleanup.
-
-Refutation:
-
-* If current code normalizes this to `FILLED`, document the exact path and add a test proving it.
-
-### H4: Boundary fraction validation is the correct first fix
-
-The priority fix is to fail closed on invalid partial-fill semantics rather than trying to reinterpret boundary partial results after execution.
-
-Expected rule:
-
-* `PAPER_EXECUTION_PARTIAL_FILL_FRACTION` must be strictly greater than `0.0` and strictly less than `1.0` for paper stress semantics.
-
-Refinement:
-
-* If repository conventions strongly prefer conditional validation, it is acceptable to require `0 < fraction < 1` only when `PAPER_EXECUTION_MODEL=stress`. Do not silently allow boundary values in active stress mode.
-
-## Required patch
-
-Patch paper stress configuration validation so `PAPER_EXECUTION_PARTIAL_FILL_FRACTION` cannot be `0.0` or `1.0` in stress mode.
-
-Preferred behavior:
+The remaining issue is lower priority but useful for operational observability:
 
 ```text
-PAPER_EXECUTION_MODEL=stress
-PAPER_EXECUTION_PARTIAL_FILL_FRACTION=0.0  -> ValueError
-PAPER_EXECUTION_MODEL=stress
-PAPER_EXECUTION_PARTIAL_FILL_FRACTION=1.0  -> ValueError
+Current likely flow:
+validate config
+resolve market
+fetch orderbook / quote
+open DB
+init portfolio
+evaluate unresolved order gate
 ```
 
-Error message should mention `PAPER_EXECUTION_PARTIAL_FILL_FRACTION` and clearly state that paper partial-fill semantics require a value strictly between 0 and 1.
+This means an existing unresolved/open order may not be logged as an unresolved-order gate block if orderbook fetching fails first.
 
-A straightforward implementation is acceptable:
-
-```python
-partial_fraction = _validate_unit_interval_config(
-    "PAPER_EXECUTION_PARTIAL_FILL_FRACTION",
-    getattr(settings, "PAPER_EXECUTION_PARTIAL_FILL_FRACTION", 0.5),
-)
-if partial_fraction <= 0.0 or partial_fraction >= 1.0:
-    raise ValueError(
-        "PAPER_EXECUTION_PARTIAL_FILL_FRACTION must be > 0 and < 1 "
-        f"for paper partial-fill semantics, got {partial_fraction!r}"
-    )
-```
-
-Place this where it best fits the current repository style. If `_validate_paper_execution_config()` already exists, prefer updating it rather than adding a second validation path.
-
-## Required tests
-
-Add focused tests that would fail before this patch.
-
-Suggested test:
-
-```python
-@pytest.mark.parametrize("invalid_fraction", [0.0, 1.0])
-def test_invalid_paper_partial_fill_fraction_boundary_fails_closed(invalid_fraction):
-    old_model = _set("PAPER_EXECUTION_MODEL", "stress")
-    old_fraction = _set("PAPER_EXECUTION_PARTIAL_FILL_FRACTION", invalid_fraction)
-    try:
-        with pytest.raises(ValueError, match="PAPER_EXECUTION_PARTIAL_FILL_FRACTION"):
-            paper._validate_paper_execution_config()
-    finally:
-        _set("PAPER_EXECUTION_PARTIAL_FILL_FRACTION", old_fraction)
-        _set("PAPER_EXECUTION_MODEL", old_model)
-```
-
-If direct helper testing is not the repo style, call `paper.paper_execute()` with minimal setup, but avoid making the boundary validation test depend on unrelated orderbook/DB behavior if possible.
-
-Also ensure existing valid stress configuration still passes:
-
-```text
-PAPER_EXECUTION_PARTIAL_FILL_FRACTION=0.5
-```
-
-Do not weaken existing tests for:
-
-* unresolved-order gate
-* duplicate intent
-* SELL partial/failure
-* latency timestamp shift
-* deterministic replay
-* failure without fills/trades
-
-## Optional improvement, lower priority
-
-Currently verify whether `paper_execute()` fetches orderbook before checking unresolved order gate. If open order exists, fetching orderbook first can hide the unresolved-gate skip behind an orderbook failure. This is not the primary fix, but if the refactor is small and safe, prefer this order:
+Preferred flow:
 
 ```text
 validate config
@@ -167,38 +41,218 @@ resolve market
 open DB
 init portfolio
 evaluate unresolved order gate
-then fetch orderbook / quote
+fetch orderbook / quote
 ```
 
-If this reorder touches many compatibility paths or legacy tests, do not over-scope. Document it as remaining work.
+This should not change successful immediate or stress execution behavior. It should only make already-unresolved paper state fail earlier and more observably.
 
-## Recovery and observability requirements
+## Primary files to inspect
 
-This patch must preserve lifecycle safety:
+Inspect these first:
 
-* `PARTIAL` must remain open only when `0 < qty_filled < qty_req`.
-* A fully filled order must not be left as `PARTIAL`.
-* A zero-filled “partial” must not be recorded as partial evidence and then failed later.
-* Dedup semantics must not be weakened.
-* Unresolved-order gate behavior must remain unchanged.
-* No new DB schema is needed for this patch.
+* `src/bithumb_bot/broker/paper.py`
+* `src/bithumb_bot/broker/paper_execution.py`
+* `src/bithumb_bot/oms.py`
+* `src/bithumb_bot/config.py`
+* `tests/test_paper_stress_execution.py`
+* `tests/test_paper_orderbook.py`
+* `docs/paper-execution-lifecycle.md`
 
-If you update docs, keep them precise:
+Search for:
 
-* Stress partial-fill fraction must be strictly between 0 and 1.
-* Boundary values are rejected because they break paper lifecycle semantics.
-* Async delayed fill scheduling and live-dry-run chaos remain future work unless actually implemented and tested.
+```text
+paper_execute
+_get_fill_price
+_get_paper_quote_context
+fetch_orderbook_top
+evaluate_unresolved_order_gate
+PAPER_EXECUTION_PARTIAL_FILL_FRACTION
+test_partial_stress_order_blocks_new_intent_with_different_timestamp
+[SKIP] unresolved order gate
+```
 
-## Scope boundaries
+## Working hypotheses to verify, not assume
+
+Keep these hypotheses explicit. Confirm, refine, or refute them in the final report.
+
+### H1: Core paper stress lifecycle safety is now implemented
+
+Verify that current code already has:
+
+* stress adapter backed by research stress execution
+* `PARTIAL` order status for real partial fills
+* `FAILED` with no fill/trade for stress failure
+* unresolved-order gate for open paper orders
+* fail-closed config validation
+* strict `0 < PAPER_EXECUTION_PARTIAL_FILL_FRACTION < 1` in stress mode
+* BUY/SELL partial/failure tests
+* latency timestamp/evidence test
+
+If any of these are missing or broken, prioritize fixing the missing core lifecycle item before the low-priority refactor.
+
+### H2: `paper_execute()` still fetches orderbook before checking unresolved/open orders
+
+Verify the actual call order in `src/bithumb_bot/broker/paper.py`.
+
+Refutation:
+
+* If unresolved-order gate already runs before orderbook fetch, do not refactor. Add a regression test if missing.
+
+### H3: Fetch-before-gate can hide the useful unresolved-order diagnostic
+
+If a `PARTIAL` order exists and the next `paper_execute()` call hits an orderbook fetch failure first, the operator sees `paper_execute blocked: orderbook fetch failed` instead of the more accurate unresolved-order gate block.
+
+Validation:
+
+* Inspect current flow.
+* Add a test that proves orderbook is not called when an unresolved order already exists.
+
+### H4: Moving the gate earlier is safe only if legacy quote/fill-price monkeypatch compatibility is preserved
+
+`paper.py` appears to preserve compatibility with callers/tests that monkeypatch `_get_fill_price`. Do not break that.
+
+Validation:
+
+* Run existing `tests/test_paper_orderbook.py`.
+* Preserve the behavior of patched `_get_fill_price` when no unresolved order exists.
+* Ensure DB connections are closed correctly if orderbook fetching returns `None` after the gate.
+
+## Required patch, if H2 is confirmed
+
+Refactor `paper_execute()` so the unresolved-order gate runs before orderbook quote loading.
+
+Target behavior:
+
+```text
+1. Validate paper execution config.
+2. Resolve canonical market.
+3. Open DB connection.
+4. init_portfolio(conn).
+5. evaluate_unresolved_order_gate(...).
+6. If gate blocked:
+   - log `[SKIP] unresolved order gate`
+   - notify consistently with existing paper skip style
+   - commit if needed
+   - return None
+   - do not fetch orderbook
+   - do not call patched `_get_fill_price`
+   - do not create orders/fills/trades
+7. Only if gate is clear:
+   - fetch orderbook / build quote context / resolve fill price
+   - continue existing sizing, dedup, order recording, stress/immediate execution flow
+```
+
+Be careful with connection lifetime. If quote fetching now happens inside the DB `try/finally`, make sure the connection is closed on all returns and exceptions.
 
 Do not:
 
-* implement live-dry-run chaos broker in this patch
-* redesign `StressExecutionModel`
-* change real live order submission
-* relax paper stress validation
-* silently clamp `PAPER_EXECUTION_PARTIAL_FILL_FRACTION`
-* reinterpret `partial_fill_fraction=1.0` as filled unless you also prove and document that semantics across evidence, status, dedup, and tests; failing closed is preferred
+* change live order behavior
+* weaken dedup
+* release `PARTIAL` dedup
+* mark partial fills as `FILLED`
+* add DB schema
+* remove existing monkeypatch compatibility branches unless tests prove they are obsolete and you replace them safely
+
+## Required test
+
+Add a regression test that fails before this refactor.
+
+Suggested name:
+
+```python
+test_unresolved_paper_order_gate_runs_before_orderbook_fetch
+```
+
+Test shape:
+
+```text
+1. Configure stress paper execution:
+   PAPER_EXECUTION_MODEL=stress
+   PAPER_EXECUTION_PARTIAL_FILL_RATE=1.0
+   PAPER_EXECUTION_PARTIAL_FILL_FRACTION=0.5
+   PAPER_EXECUTION_ORDER_FAILURE_RATE=0.0
+
+2. Patch orderbook fetch for the first call to return a valid BestQuote.
+   Track call count.
+
+3. Execute BUY at ts1.
+   Expect:
+   - trade is not None
+   - one order exists
+   - order status is PARTIAL
+   - one orderbook fetch occurred
+
+4. Make the orderbook fetch function fail if called again, for example by raising AssertionError.
+
+5. Execute another paper order at ts2, preferably SELL or a different timestamp BUY.
+
+6. Expect:
+   - second result is None
+   - no exception from the failing orderbook fetch
+   - orderbook fetch call count did not increase
+   - order count remains 1
+   - fill/trade counts remain unchanged
+   - original order remains PARTIAL
+   - dedup remains PARTIAL
+   - log records unresolved-order gate block
+```
+
+This test must prove the gate runs before quote fetching.
+
+If the current code already gates before orderbook fetch, keep the same test as regression coverage.
+
+## Existing tests that must remain valid
+
+Do not weaken or remove these behavioral assertions:
+
+* stress failure records `FAILED` with no fills/trades
+* stress partial keeps order `PARTIAL`
+* partial order blocks duplicate intent
+* partial order blocks new timestamp/different-side intent
+* invalid model fails closed
+* invalid stress rates fail closed
+* invalid latency fails closed
+* invalid partial-fill boundary values `0.0` and `1.0` fail closed
+* valid partial-fill fraction `0.5` passes
+* SELL partial/failure coverage
+* latency shifts fill/trade timestamps and is persisted in evidence
+* existing paper orderbook behavior
+
+## Optional documentation update
+
+If you perform the refactor, update `docs/paper-execution-lifecycle.md` with one concise sentence:
+
+```text
+When an unresolved/open paper order already exists, paper execution evaluates the unresolved-order gate before loading a new orderbook quote, so the skip is diagnosed as an order-lifecycle block rather than a market-data failure.
+```
+
+Do not overstate this as async delayed-fill support or live-dry-run chaos support.
+
+## Recovery and observability requirements
+
+The refactor must preserve:
+
+* `PARTIAL` remains visible through `OPEN_ORDER_STATUSES`
+* no new order is created while unresolved/open order exists
+* unresolved skip log includes mode, symbol, signal/side, reason code, and reason text
+* no orderbook fetch is attempted when the unresolved gate blocks
+* no fill/trade/portfolio mutation occurs on the blocked second call
+* failed stress orders still release dedup according to existing OMS rules
+* no schema changes
+
+## Scope boundaries
+
+This patch is paper-runtime observability and diagnosis ordering only.
+
+Do not implement:
+
+* live-dry-run chaos broker
+* async delayed fill scheduler
+* new promotion gate
+* broad order lifecycle service
+* real live order behavior changes
+
+If moving the gate before quote fetching proves risky because it breaks legacy tests or requires broad restructuring, stop after adding a focused test and report exactly why the refactor should be deferred.
 
 ## Tests to run
 
@@ -218,7 +272,7 @@ pytest tests/test_operator_commands.py -q
 pytest tests/test_research_backtest_reproducibility.py -q
 ```
 
-If a test fails for reasons unrelated to this patch, document the exact command, failure, and why it is unrelated. Do not hide failures.
+If any test fails for unrelated reasons, document the exact command, failure, and why it is unrelated. Do not hide failures.
 
 ## Final report format
 
@@ -227,8 +281,9 @@ When finished, report in exactly this structure:
 ```text
 Summary
 - What changed.
-- Whether this was a code patch, test patch, or documentation patch.
+- Whether this was code, test, and/or documentation.
 - Whether default immediate paper behavior remains preserved.
+- Whether this was an optional observability refactor or a core safety fix.
 
 Hypothesis Review
 - H1: confirmed/refined/refuted, with repo evidence.
@@ -238,15 +293,16 @@ Hypothesis Review
 
 Implementation Details
 - Files changed.
-- Where partial-fill fraction boundary validation was added.
-- Whether validation applies only in stress mode or globally, and why.
+- New call order in paper_execute().
+- How monkeypatch/backward compatibility was preserved.
+- What log/notification behavior occurs on unresolved-order gate block.
 - Any docs updated.
 
 Behavioral Guarantees
-- What happens for `PAPER_EXECUTION_PARTIAL_FILL_FRACTION=0.0`.
-- What happens for `PAPER_EXECUTION_PARTIAL_FILL_FRACTION=1.0`.
-- What happens for normal `0 < fraction < 1`.
-- Why this prevents `fill_status="partial"` from contradicting actual fill quantity/status.
+- What happens when a PARTIAL order exists and the next paper call would otherwise fetch orderbook.
+- What happens when there is no unresolved order.
+- What happens for existing stress partial/failure behavior.
+- What happens for invalid paper stress config.
 - Dedup/recovery implications.
 
 Tests
@@ -256,13 +312,13 @@ Tests
 - Pass/fail results.
 
 Remaining Gaps
-- Whether orderbook-before-unresolved-gate ordering remains as-is.
 - Whether async delayed fill scheduling remains future work.
 - Whether live-dry-run chaos remains future work.
+- Whether broader lifecycle service refactor remains future work.
 
 Do Not Overclaim
 - Explicitly state anything not implemented.
 ```
 
-The priority is to preserve paper stress lifecycle truthfulness: a `PARTIAL` status must mean a real partial fill, not zero fill and not full fill.
+The priority is not to add new failure simulation. The priority is to make the existing paper stress lifecycle more diagnosable: when an unresolved paper order already exists, the system should say “unresolved order gate blocked this” before touching market data.
 

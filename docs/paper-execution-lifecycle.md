@@ -25,6 +25,8 @@ The adapter derives deterministic outcomes from the configured seed, model param
 
 In stress partial-fill scenarios, paper execution records the requested order quantity, applies only the filled quantity to fills/trades/portfolio, sets order status to `PARTIAL`, and keeps the intent dedup row open as `PARTIAL`.
 
+When an unresolved/open paper order already exists, paper execution evaluates the unresolved-order gate before loading a new orderbook quote, so the skip is diagnosed as an order-lifecycle block rather than a market-data failure.
+
 In stress failure scenarios, paper execution records the order and execution evidence, marks the order `FAILED`, releases failed-intent dedup according to the existing OMS rule, and does not insert fills or trades.
 
 Latency is recorded as evidence and shifts the fill timestamp used for accounting, but this first slice does not implement asynchronous delayed fill scheduling.

@@ -334,18 +334,6 @@ def paper_execute(
 ) -> dict[str, Any] | None:
     _validate_paper_execution_config()
     market = _resolve_orderbook_market()
-    quote_context: _PaperQuoteContext | None = None
-    if _get_fill_price.__module__ == __name__ and _get_fill_price.__name__ == "_get_fill_price":
-        quote_context = _get_paper_quote_context(signal, market=market)
-        fill_price = quote_context.fill_price if quote_context is not None else None
-    elif "market" in inspect.signature(_get_fill_price).parameters:
-        fill_price = _get_fill_price(signal, market=market)
-    else:
-        # Preserve compatibility with tests or callers that still patch the
-        # older single-argument helper.
-        fill_price = _get_fill_price(signal)
-    if fill_price is None:
-        return None
     fee_rate = max(0.0, float(settings.PAPER_FEE_RATE))
 
     conn = ensure_db()
@@ -377,6 +365,18 @@ def paper_execute(
                 f"reason_code={reason_code} reason={gate_reason} unresolved_open_order=1"
             )
             conn.commit()
+            return None
+        quote_context: _PaperQuoteContext | None = None
+        if _get_fill_price.__module__ == __name__ and _get_fill_price.__name__ == "_get_fill_price":
+            quote_context = _get_paper_quote_context(signal, market=market)
+            fill_price = quote_context.fill_price if quote_context is not None else None
+        elif "market" in inspect.signature(_get_fill_price).parameters:
+            fill_price = _get_fill_price(signal, market=market)
+        else:
+            # Preserve compatibility with tests or callers that still patch the
+            # older single-argument helper.
+            fill_price = _get_fill_price(signal)
+        if fill_price is None:
             return None
         cash, qty = get_portfolio(conn)
         rules = get_effective_order_rules(settings.PAIR).rules
