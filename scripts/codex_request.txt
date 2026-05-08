@@ -1,415 +1,376 @@
 You are Codex working directly in the GitHub repository `WG-14/bithumb-bot`.
 
-Use the attached Korean review as source context, but do not merely restate it; verify it against the repository before changing code. 
+Use the attached review as source context, but verify every claim against the current repository before modifying code. Do not treat the review as automatically true. 
 
-Your task is to turn the current paper trading path into a more reproducible, observable, and operationally realistic execution rehearsal system. Do not reduce this to a cosmetic patch or a random failure-rate tweak inside `paper_execute()`. The core concern is not simply that paper trading is “too simple”; the stronger hypothesis is that execution realism is currently split across research backtests, paper runtime, and live runtime instead of being connected through a shared order lifecycle adapter.
+Your task is to review the recently patched paper stress execution implementation and apply the next necessary hardening patch. The current patch appears to have moved in the right direction: paper execution now has an immediate adapter, a stress adapter backed by the research `StressExecutionModel`, `FAILED`/`PARTIAL` handling, execution evidence in `order_events.submit_evidence`, deterministic replay tests, and documentation. However, do not stop at “pytest passes.” The highest-priority remaining risk is that paper stress partial/open orders may block only the same intent through dedup, while still allowing a new timestamp or different-side intent to start another order lifecycle while an unresolved/open order remains.
 
-## Primary files and areas to inspect
+Do not generalize this into broad advice. Work in this repo, verify the code, patch what is necessary, and add tests that would fail before the patch.
 
-Start by inspecting these repository areas:
+## Primary files to inspect
+
+Inspect these files first:
 
 * `src/bithumb_bot/broker/paper.py`
-* `src/bithumb_bot/research/execution_model/base.py`
-* `src/bithumb_bot/research/execution_model/stress.py`
+* `src/bithumb_bot/broker/paper_execution.py`
 * `src/bithumb_bot/oms.py`
+* `src/bithumb_bot/risk.py`
 * `src/bithumb_bot/execution.py`
-* `src/bithumb_bot/broker/base.py`
-* `src/bithumb_bot/execution_models.py`
-* `src/bithumb_bot/execution_planner.py`
-* `src/bithumb_bot/broker/live_submit_orchestrator.py`
-* `src/bithumb_bot/broker/live_submission_execution.py`
+* `src/bithumb_bot/config.py`
+* `src/bithumb_bot/research/execution_model/stress.py`
+* `tests/test_paper_stress_execution.py`
 * `tests/test_paper_orderbook.py`
-* `tests/test_research_backtest_reproducibility.py`
+* `.env.example`
+* `docs/paper-execution-lifecycle.md`
 * `docs/live_dry_run_checklist.md`
 
-Also search the repo for related existing utilities before adding new ones: `StressExecutionModel`, `ExecutionRequest`, `ExecutionFill`, `BrokerOrder`, `BrokerFill`, `SubmitPlan`, `OrderIntent`, `record_order_if_missing`, `apply_fill_and_trade`, `set_status`, `record_status_transition`, `claim_order_intent_dedup`, `update_order_intent_dedup`, `OPEN_ORDER_STATUSES`, `PARTIAL`, `SUBMIT_UNKNOWN`, `RECOVERY_REQUIRED`.
+Also search before adding new code:
+
+```text
+evaluate_unresolved_order_gate
+OPEN_ORDER_STATUSES
+PARTIAL
+SUBMIT_UNKNOWN
+ACCOUNTING_PENDING
+RECOVERY_REQUIRED
+CANCEL_REQUESTED
+claim_order_intent_dedup
+update_order_intent_dedup
+PAPER_EXECUTION_MODEL
+PAPER_EXECUTION_PARTIAL_FILL_RATE
+PAPER_EXECUTION_ORDER_FAILURE_RATE
+PAPER_EXECUTION_LATENCY_MS
+```
 
 ## Working hypotheses to verify, not assume
 
-Keep these as hypotheses. For each one, inspect the repository and either confirm, refine, or refute it in the final report.
+Keep these hypotheses explicit. Confirm, refine, or refute each one in the final report.
 
-### H1: Execution lifecycle is split into three disconnected models
+### H1: The recent patch correctly introduced paper stress execution, but only same-intent dedup is tested
 
-Research has `StressExecutionModel`; live runtime has OMS submit/reconcile states; paper runtime mostly has immediate fill accounting. Verify whether `paper_execute()` currently bypasses `ExecutionRequest`, `StressExecutionModel`, `Broker.place_order`, `SubmitPlan`, and live-style submit/application lifecycle.
-
-Validation:
-
-* Trace `paper_execute()` from signal to DB writes.
-* Identify whether it directly calls fill accounting and then sets `FILLED`.
-* Identify whether stress execution can currently be injected into paper runtime by configuration.
-
-Refutation:
-
-* If there is already a paper runtime stress adapter that persists partial/failure/latency into orders/fills/trades/status, document it and improve tests instead of duplicating it.
-
-### H2: OMS supports richer states, but paper does not exercise them
-
-Verify whether OMS supports `PARTIAL`, `SUBMIT_UNKNOWN`, `ACCOUNTING_PENDING`, `RECOVERY_REQUIRED`, `CANCEL_REQUESTED`, `FAILED`, `FILLED`, but paper only uses a shortened path.
+Verify whether `tests/test_paper_stress_execution.py` currently proves that a partial stress order blocks the same intent, but does not prove that an open `PARTIAL` order blocks a new intent with a different timestamp or different side.
 
 Validation:
 
-* Inspect status transition rules and unresolved order gates.
-* Create or inspect tests showing whether paper orders can remain open, become partial, become submit-unknown, or require recovery.
+* Inspect the partial duplicate test.
+* Check whether it uses the same `ts` and same intent key.
+* Check whether any test attempts a second order with a different `ts`, different side, or different lot/intent key while the first order is still `PARTIAL`.
 
 Refutation:
 
-* If paper already has deterministic lifecycle tests covering these states, document the evidence and strengthen gaps only.
+* If a test already proves global unresolved-order blocking for paper after `PARTIAL`, document it and strengthen only the missing edge cases.
 
-### H3: Research stress execution is auditable but not connected to paper runtime evidence
+### H2: Paper execution does not currently call the global unresolved-order gate before creating a new order intent
 
-Verify whether research execution stores model name/version/params hash/seed/fill status/remaining qty, while paper DB evidence does not.
+Verify whether `paper_execute()` calls `evaluate_unresolved_order_gate()` before sizing/claiming/recording a new order, especially after a previous stress order remains `PARTIAL`.
 
 Validation:
 
-* Compare `ExecutionFill.as_dict()` with paper order/fill/trade/order_event records.
-* Look for paper DB fields or event payloads containing stress model evidence.
+* Inspect imports and call flow in `src/bithumb_bot/broker/paper.py`.
+* Confirm whether `evaluate_unresolved_order_gate()` is used in paper.
+* Confirm that `oms.py` treats `PARTIAL`, `SUBMIT_UNKNOWN`, `ACCOUNTING_PENDING`, `RECOVERY_REQUIRED`, and `CANCEL_REQUESTED` as open/unresolved statuses.
 
 Refutation:
 
-* If this evidence is already persisted for paper runs, add regression tests that prove it.
+* If paper already gates all new submissions on unresolved open orders, document the exact path and add a regression test if missing.
 
-### H4: live-dry-run is an operational checklist, not deterministic failure injection
+### H3: Without a paper unresolved-order gate, stress rehearsal can understate live OMS risk
 
-Verify whether live dry-run checks operational safety but does not force submit timeout, broker reject, partial fill, fee pending, order-not-ready, recovery-required, or delayed fill scenarios.
+The live runtime uses unresolved/open order checks to prevent new submissions while risky order states remain. Paper stress rehearsal should exercise the same failure family. If paper only blocks duplicate intent keys, it can still allow a new intent while an earlier partial order remains open.
 
 Validation:
 
-* Inspect `docs/live_dry_run_checklist.md` and live dry-run implementation paths.
-* Determine whether a dry-run/chaos broker or scenario runner already exists.
+* Simulate or reason from code: stress partial BUY at `ts1`, then a BUY or SELL at `ts2`.
+* Determine whether a second order can be created if the intent key differs.
 
 Refutation:
 
-* If such a tool exists, document it and connect it to tests and promotion/readiness checks.
+* If current paper logic blocks this through another gate, document that gate and prove it with a test.
 
-### H5: Ledger robustness can hide lifecycle incompleteness
+### H4: Paper stress configuration currently may fail open on invalid values
 
-Verify whether `apply_fill_and_trade()` is robust against duplicate/overfill/fee/accounting issues, but paper applies fills immediately rather than through delayed lifecycle events.
+Verify whether invalid `PAPER_EXECUTION_MODEL` silently falls back to immediate mode, and whether stress numeric settings are range-checked.
 
 Validation:
 
-* Inspect fill application and order status updates.
-* Add tests proving that partial fills leave `orders.qty_filled < orders.qty_req`, order status remains `PARTIAL`, and no false `FILLED` terminal state is recorded.
+* Inspect `_paper_execution_model_name()` and adapter construction.
+* Check whether `PAPER_EXECUTION_MODEL=stres` raises an error or silently uses immediate mode.
+* Check whether latency, partial fill rate, partial fill fraction, and failure rate are validated.
 
 Refutation:
 
-* If the current code already enforces these paper semantics, preserve them and focus on missing observability/replay.
+* If configuration validation already fails closed, add or verify tests proving it.
+
+### H5: Current stress tests are BUY-heavy and do not sufficiently cover SELL lifecycle complexity
+
+SELL uses lot authority, dust/open exposure, and exit sizing. A SELL partial stress case can expose lifecycle and recovery issues that BUY tests do not.
+
+Validation:
+
+* Inspect current paper stress tests.
+* Check whether there are SELL partial/failure tests.
+* Check whether partial SELL leaves the order `PARTIAL` and applies only the filled quantity.
+
+Refutation:
+
+* If SELL stress tests already cover partial/failure and lot behavior, document them.
+
+### H6: Latency evidence is documented but not directly asserted
+
+Verify whether tests assert that configured stress latency is persisted in evidence and shifts `fills.fill_ts` / `trades.ts`.
+
+Validation:
+
+* Inspect paper stress tests.
+* Check whether `PAPER_EXECUTION_LATENCY_MS` is asserted against `fills.fill_ts`, `trades.ts`, and `order_events.submit_evidence`.
+
+Refutation:
+
+* If already tested, document the evidence.
 
 ## Design priority
 
-Prioritize a structural design change over symptom patches.
-
-Do not implement this as:
-
-* “randomly return `None` from `paper_execute()`”
-* “sometimes halve the qty inside `paper_execute()`”
-* “add a hardcoded failed-order branch without OMS lifecycle evidence”
-* “mark partial fills as `FILLED` just because some trade was recorded”
-
-Instead, introduce or refactor toward a common execution lifecycle abstraction that can support:
-
-```text
-Strategy signal
-  -> order intent / sizing / submit plan
-  -> execution adapter
-  -> order lifecycle events
-  -> OMS status transitions
-  -> fill accounting
-  -> reconcile / recovery / terminalization
-```
-
-The first implementation slice may be smaller than this full design, but it must move in that direction and not make later convergence harder.
-
-## Required implementation direction
-
-### 1. Preserve existing paper behavior by default
-
-Current paper behavior using top-of-book, spread validation, slippage, guardrails, sizing, lot/dust handling, dedup, and ledger writes should continue to pass existing tests.
-
-Introduce a default adapter or equivalent abstraction, for example:
-
-```text
-ImmediateTopOfBookPaperAdapter
-```
-
-This adapter should preserve the current behavior when stress execution is disabled.
-
-### 2. Add a deterministic stress paper execution path
-
-Add a stress-enabled paper execution path that reuses or adapts the existing research `StressExecutionModel` rather than inventing a separate nondeterministic implementation.
-
-The stress path must support at least these deterministic scenarios:
-
-* full fill
-* partial fill
-* order failure before fill accounting
-* submit unknown / delayed fill if feasible in the first implementation slice
-* latency evidence, even if actual scheduling is implemented later
-
-Use deterministic seed/hash semantics. Do not use uncontrolled randomness.
-
-Suggested configuration names may include:
-
-```text
-PAPER_EXECUTION_MODEL=immediate|stress
-PAPER_EXECUTION_STRESS_SEED
-PAPER_EXECUTION_LATENCY_MS
-PAPER_EXECUTION_PARTIAL_FILL_RATE
-PAPER_EXECUTION_PARTIAL_FILL_FRACTION
-PAPER_EXECUTION_ORDER_FAILURE_RATE
-```
-
-If the repository already has different naming conventions, follow those conventions.
-
-### 3. Apply lifecycle semantics, not just fill math
-
-For a stress partial fill:
-
-* create/order-record the requested qty
-* apply only the filled qty to fills/trades/portfolio
-* keep the order status as `PARTIAL`
-* ensure `qty_filled < qty_req`
-* preserve remaining qty evidence
-* do not update intent dedup as terminal `FILLED`
-
-For a stress failure:
-
-* create an order or intent record if the failure occurs after intent/submission staging
-* mark order/intent as `FAILED`
-* do not create fills or trades
-* include failure evidence in order events or another durable diagnostic location
-
-For a submit unknown / delayed scenario if implemented:
-
-* leave order in `SUBMIT_UNKNOWN`, `NEW`, or another appropriate open/recovery state according to existing OMS semantics
-* ensure unresolved order gates can see it
-* ensure duplicate intents do not silently create another order
-* include replayable evidence showing why it is unresolved
-
-### 4. Persist observability and replay evidence
-
-Persist enough evidence to reproduce and audit the paper stress result. Prefer existing DB/event structures if possible; add schema migration only if necessary.
-
-At minimum, preserve these values in a durable place such as `order_events.message`, `submit_evidence`, a JSON evidence column, or explicit columns if the schema already supports them:
-
-```text
-execution_model_name
-execution_model_version
-execution_model_params_hash
-base_seed
-derived_seed_hash
-fill_status
-requested_qty
-filled_qty
-remaining_qty
-latency_ms
-best_bid
-best_ask
-spread_bps
-quote_source
-quote_age_ms
-execution_reality_level
-```
-
-If some fields are unavailable in paper runtime, record explicit `null`/`unknown` values rather than silently omitting the execution evidence.
-
-### 5. Keep recovery and dedup semantics safe
-
-Ensure the stress paper path respects existing OMS/dedup safety:
-
-* `claim_order_intent_dedup`
-* `update_order_intent_dedup`
-* `OPEN_ORDER_STATUSES`
-* terminal vs non-terminal status rules
-* unresolved order gate behavior
-* status transition validation where applicable
-
-Do not release dedup for a `PARTIAL`, `SUBMIT_UNKNOWN`, `ACCOUNTING_PENDING`, or `RECOVERY_REQUIRED` order as if it were terminal.
-
-### 6. Avoid breaking live trading paths
-
-This task is primarily paper-runtime hardening. Do not make risky live-order behavioral changes unless they are small, well-tested, and necessary for shared lifecycle utilities.
-
-If you introduce shared lifecycle helpers, prove they preserve existing live tests.
-
-### 7. Document live-dry-run chaos gap without over-scoping
-
-If adding a full `LiveDryRunChaosBroker` is too large for this change, add a focused design note or TODO-backed test scaffolding that makes the gap explicit.
-
-The design should call for deterministic dry-run scenarios such as:
-
-```text
-submit_timeout_then_reconcile
-broker_reject_under_min_total
-partial_fill_then_fee_pending
-order_not_ready_then_recovery_required
-```
-
-Do not claim the live dry-run gap is solved unless code and tests actually exercise it.
-
-## Tests to add or update
-
-Add focused regression tests. Prefer small, deterministic unit tests over broad integration tests.
-
-At minimum, add tests covering:
-
-### Existing behavior preservation
-
-* Existing `tests/test_paper_orderbook.py` tests still pass.
-* Immediate/default paper execution still fills using validated top-of-book with spread/slippage and records order/fill/trade as before.
-
-### Stress failure
-
-A test where stress paper execution has `order_failure_rate=1.0`.
-
-Expected:
-
-* `paper_execute()` returns `None` or a clear non-trade result, consistent with repo conventions.
-* order or intent evidence is recorded if the failure occurs after intent staging.
-* order status is `FAILED`.
-* no fill is inserted.
-* no trade is inserted.
-* dedup is released or marked according to existing failed-order semantics.
-
-### Stress partial fill
-
-A test where stress paper execution has `partial_fill_rate=1.0` and `partial_fill_fraction=0.5`.
-
-Expected:
-
-* one order exists
-* one fill/trade exists for only the partial qty
-* `orders.qty_filled` equals the partial qty
-* `orders.qty_req` remains the full requested qty
-* order status is `PARTIAL`
-* remaining qty is positive and persisted in evidence
-* order intent dedup remains non-terminal/open
-* no false `FILLED` status is written
-
-### Deterministic replay
-
-A test where the same seed, request inputs, and stress params produce identical fill status, filled qty, remaining qty, model params hash, and derived seed hash across repeated runs or isolated DBs.
-
-### Observability
-
-A test that reads `order_events`, `fills`, `trades`, or whichever durable evidence sink you choose and verifies that stress execution evidence is present.
-
-### Unresolved gate / duplicate protection if delayed or partial orders remain open
-
-A test that creates a partial or submit-unknown paper order, then attempts the same intent again.
-
-Expected:
-
-* duplicate intent is blocked or unresolved gate blocks new submission
-* no second unsafe order is created
-* logs/events explain the skip
-
-## Suggested implementation shape
-
-You may choose the exact structure after inspecting the code, but a good direction is:
-
-```text
-src/bithumb_bot/broker/paper_execution.py
-  PaperExecutionRequest
-  PaperExecutionResult
-  ImmediateTopOfBookPaperAdapter
-  StressPaperExecutionAdapter
-
-src/bithumb_bot/order_lifecycle.py
-  small lifecycle helpers if needed:
-    apply_paper_execution_result(...)
-    mark_order_partial(...)
-    mark_order_failed(...)
-    mark_order_submit_unknown(...)
-```
-
-Keep this lightweight. Do not over-engineer a full framework if a smaller adapter plus tests can establish the direction.
-
-When adapting `StressExecutionModel`, map paper runtime data into `ExecutionRequest` using:
-
-* signal ts
-* decision ts
-* side
-* reference price
-* requested qty or notional
-* fee rate
-* best bid/ask
-* spread bps
-* quote source if available
-* latency settings
-* seed derivation inputs that include client order id or intent key only if that preserves deterministic replay expectations
-
-Be careful: using a UUID client order id in seed derivation may break deterministic replay. Prefer stable inputs such as intent key, signal ts, side, symbol, strategy context, requested qty, model params hash, and explicit base seed.
-
-## Database and schema guidance
-
-Before adding columns, inspect current schema creation/migration code.
-
-Prefer using existing event/evidence fields where possible. If you add schema fields:
-
-* add migration/backfill-safe logic
-* ensure existing DBs do not break
-* add tests against a fresh temp DB
-* add tests against an existing minimal DB if the repo has migration test helpers
-
-## Documentation updates
-
-Update or add concise docs explaining:
-
-* immediate paper execution mode
-* stress paper execution mode
-* deterministic seed/replay behavior
-* what partial/failure/latency does and does not simulate
-* how this differs from live dry-run
-* remaining gap for full live-dry-run chaos rehearsal if not implemented
-
-Good candidate docs:
-
-* `docs/runbooks/research-to-paper.md`
-* `docs/live_dry_run_checklist.md`
-* or a new focused doc such as `docs/paper-execution-lifecycle.md`
-
-Do not overstate completion. If live-dry-run chaos is not implemented, explicitly say it remains future work.
-
-## Commands to run
-
-Run the most relevant tests first, then broader regression if feasible:
-
-```bash
-pytest tests/test_paper_orderbook.py -q
-pytest tests/test_research_backtest_reproducibility.py -q
-pytest tests/test_ledger_atomicity.py -q
-pytest tests/test_recovery_restart_regression.py -q
-pytest tests/test_operator_commands.py -q
-```
-
-Also run any new test file you add, for example:
-
-```bash
-pytest tests/test_paper_stress_execution.py -q
-```
-
-If some tests fail for reasons unrelated to this change, document the exact failures and why they are unrelated. Do not hide them.
-
-## Non-goals for this change
+Prioritize lifecycle safety over cosmetic changes.
 
 Do not:
 
-* change real live order submission semantics unless absolutely necessary
-* weaken existing guardrails, lot/dust handling, fee validation, or dedup protection
-* replace research `StressExecutionModel` with a separate unseeded random simulator
-* mark partial fills as terminal filled
-* silently drop unresolved paper orders from dedup/gating
-* turn the final report into generic advice
+* add another random branch inside `paper_execute()`
+* mark partial fills as terminal `FILLED`
+* release dedup for `PARTIAL`, `SUBMIT_UNKNOWN`, `ACCOUNTING_PENDING`, or `RECOVERY_REQUIRED`
+* silently fall back from invalid stress config to immediate mode
+* weaken existing lot/dust, guardrail, fee, dedup, or accounting behavior
+* make risky live order behavior changes
+
+The patch must preserve the core direction: paper runtime should rehearse the same failure families live OMS must survive.
+
+## Required patch 1: Add unresolved-order gate to paper execution
+
+Add a paper unresolved-order gate before creating/claiming a new order intent.
+
+The intended behavior:
+
+```text
+If any unresolved/open order exists locally:
+  PENDING_SUBMIT
+  NEW
+  PARTIAL
+  SUBMIT_UNKNOWN
+  ACCOUNTING_PENDING
+  RECOVERY_REQUIRED
+  CANCEL_REQUESTED
+
+Then paper_execute() must not create a new paper order intent.
+It must return None.
+It must emit durable/loggable evidence explaining the skip.
+```
+
+Use the existing OMS helper if appropriate:
+
+```python
+evaluate_unresolved_order_gate(
+    conn,
+    now_ms=...,
+    max_open_order_age_sec=int(settings.MAX_OPEN_ORDER_AGE_SEC),
+)
+```
+
+Prefer placing this after `init_portfolio(conn)` and before sizing/intent-claiming/order creation. Preserve default immediate behavior; ordinary immediate paper orders should still terminalize as `FILLED` and therefore not block the next order unless an open/unresolved order actually remains.
+
+Expected evidence:
+
+* At least a run log entry using repo style, for example `format_log_kv`.
+* Prefer also recording a durable `order_events` row if there is an existing suitable helper and no unsafe fake order id is required.
+* A notification is acceptable if consistent with existing paper skip behavior.
+* Do not create a second order as a way to record the block.
+
+If durable event recording for a skip without a new order is awkward, document the tradeoff and at minimum add a test using `caplog` or DB state to prove the gate fired.
+
+## Required test for patch 1
+
+Add a regression test that fails before the gate.
+
+Suggested name:
+
+```python
+test_partial_stress_order_blocks_new_intent_with_different_timestamp
+```
+
+Test shape:
+
+```text
+1. Configure:
+   PAPER_EXECUTION_MODEL=stress
+   PAPER_EXECUTION_PARTIAL_FILL_RATE=1.0
+   PAPER_EXECUTION_PARTIAL_FILL_FRACTION=0.5
+   PAPER_EXECUTION_ORDER_FAILURE_RATE=0.0
+
+2. Prepare BUY with valid top-of-book.
+
+3. Execute BUY at ts1.
+   Expect:
+   - trade is not None
+   - one order exists
+   - order status is PARTIAL
+   - order_intent_dedup remains PARTIAL
+
+4. Execute another paper order at ts2 != ts1.
+   Prefer a SELL if setup is feasible because SELL after partial BUY is the stronger lifecycle test.
+   Otherwise use BUY with a different timestamp and explain why SELL setup was not suitable.
+
+5. Expect:
+   - second trade is None
+   - orders count remains 1
+   - fills/trades count does not increase
+   - original order remains PARTIAL
+   - order_intent_dedup remains PARTIAL
+   - log or durable evidence identifies unresolved/open order gate blocking the second submission
+```
+
+If SELL requires lot setup that makes the test too large, add the BUY-different-timestamp test first and then add a separate SELL coverage test below.
+
+## Required patch 2: Fail closed on invalid paper execution configuration
+
+Add explicit validation for:
+
+```text
+PAPER_EXECUTION_MODEL in {"immediate", "stress"}
+PAPER_EXECUTION_LATENCY_MS >= 0
+0 <= PAPER_EXECUTION_PARTIAL_FILL_RATE <= 1
+0 <= PAPER_EXECUTION_PARTIAL_FILL_FRACTION <= 1
+0 <= PAPER_EXECUTION_ORDER_FAILURE_RATE <= 1
+```
+
+Use the existing repository style for config parsing/validation. You may implement validation in `paper.py`, `paper_execution.py`, or `config.py`; choose the lowest-risk location that makes tests clear and does not break import-time behavior unexpectedly.
+
+Important:
+
+* `PAPER_EXECUTION_MODEL=stres` must not silently use immediate mode.
+* Invalid rates must not silently clamp except where the existing research model intentionally clamps `partial_fill_fraction`; paper runtime config should still fail closed.
+* Negative latency must fail closed.
+
+Add tests:
+
+```python
+test_invalid_paper_execution_model_fails_closed
+test_invalid_paper_stress_rate_fails_closed
+test_invalid_paper_stress_latency_fails_closed
+```
+
+These tests may call the relevant helper directly or call `paper_execute()` if that is the cleanest path. Avoid making tests brittle around unrelated orderbook setup if direct helper tests are clearer.
+
+## Strongly recommended patch 3: Add SELL stress lifecycle coverage
+
+Add SELL stress tests if feasible within this change.
+
+Suggested tests:
+
+```python
+test_stress_partial_sell_keeps_order_partial_and_applies_only_filled_qty
+test_stress_failed_sell_does_not_change_portfolio_lots_fills_or_trades
+```
+
+Expected for partial SELL:
+
+* Existing open lot/position is prepared.
+* Stress SELL executes with partial fill.
+* Order status is `PARTIAL`.
+* `orders.qty_filled < orders.qty_req`.
+* Fill/trade qty equals only the partial filled qty.
+* Evidence has `fill_status="partial"` and positive `remaining_qty`.
+* The order remains open in dedup.
+
+Expected for failed SELL:
+
+* Order is `FAILED`.
+* No fill/trade is inserted.
+* Portfolio and lot state are unchanged except for appropriate order/evidence records.
+* Dedup follows existing failed-order release semantics.
+
+If full SELL lot assertions are too large, at least add one SELL stress partial test proving status/fill/trade/evidence behavior, and document remaining lot-depth coverage as future work.
+
+## Strongly recommended patch 4: Assert latency behavior
+
+Add a latency test.
+
+Suggested name:
+
+```python
+test_stress_latency_shifts_fill_ts_and_is_persisted_in_evidence
+```
+
+Expected:
+
+* Configure `PAPER_EXECUTION_LATENCY_MS`, for example `250`.
+* Execute stress fill.
+* Assert:
+
+```text
+fills.fill_ts == signal_ts + PAPER_EXECUTION_LATENCY_MS
+trades.ts == signal_ts + PAPER_EXECUTION_LATENCY_MS
+order_events.submit_evidence.latency_ms == PAPER_EXECUTION_LATENCY_MS
+```
+
+Also assert the evidence still contains model name/version/hash and derived seed hash.
+
+## Recovery and observability requirements
+
+The patch must preserve recovery safety:
+
+* Open orders must remain visible through `OPEN_ORDER_STATUSES`.
+* `PARTIAL` must not be treated as terminal.
+* Failed orders should follow existing `ORDER_INTENT_DEDUP_RELEASE_STATUSES` behavior.
+* No second unsafe paper order should be created while a prior paper order is unresolved.
+* If you add a skip log/event, include enough detail to diagnose:
+
+  * mode
+  * symbol
+  * signal
+  * reason code
+  * reason text
+  * whether the blocking state was unresolved/open order
+
+Do not add a new database schema unless absolutely necessary. Prefer existing `order_events`, logs, or notifier patterns.
+
+## Scope boundaries
+
+This task is paper-runtime hardening. Do not implement a full live-dry-run chaos broker in this patch.
+
+However, keep the documentation honest:
+
+* Paper stress execution rehearses deterministic paper lifecycle failure families.
+* Live dry-run chaos scenarios remain future work unless you actually implement and test them.
+* Do not claim live dry-run now rehearses submit timeout, broker reject, partial fill, fee pending, or order-not-ready paths unless code and tests prove it.
+
+## Tests to run
+
+Run the focused tests first:
+
+```bash
+pytest tests/test_paper_stress_execution.py -q
+pytest tests/test_paper_orderbook.py -q
+```
+
+Then run adjacent regression tests if feasible:
+
+```bash
+pytest tests/test_ledger_atomicity.py -q
+pytest tests/test_recovery_restart_regression.py -q
+pytest tests/test_operator_commands.py -q
+pytest tests/test_research_backtest_reproducibility.py -q
+```
+
+If you add or modify configuration validation, run any existing config/env tests that are relevant.
+
+If a test fails for reasons unrelated to this patch, document the exact command, failure, and why it is unrelated. Do not hide failures.
 
 ## Final report format
 
-When finished, report in this exact structure:
+When finished, report in exactly this structure:
 
 ```text
 Summary
-- What changed at a design level.
-- Whether default paper behavior is preserved.
-- Whether stress paper execution is now implemented, partially implemented, or deferred.
+- What changed.
+- Whether this was a code patch, test-only patch, or documentation patch.
+- Whether default immediate paper behavior remains preserved.
 
 Hypothesis Review
 - H1: confirmed/refined/refuted, with repo evidence.
@@ -417,36 +378,38 @@ Hypothesis Review
 - H3: confirmed/refined/refuted, with repo evidence.
 - H4: confirmed/refined/refuted, with repo evidence.
 - H5: confirmed/refined/refuted, with repo evidence.
+- H6: confirmed/refined/refuted, with repo evidence.
 
 Implementation Details
 - Files changed.
-- New adapter/lifecycle components.
-- DB/schema changes, if any.
-- Configuration added or reused.
-- Observability fields persisted.
+- Where the unresolved-order gate is applied.
+- How invalid paper execution config fails closed.
+- Any SELL stress coverage added.
+- Any latency assertions added.
+- Any observability/log/event behavior added.
 
 Behavioral Guarantees
-- Immediate mode behavior.
-- Stress failure behavior.
-- Stress partial fill behavior.
-- Dedup/unresolved-order behavior.
-- Replay/determinism behavior.
-- Recovery implications.
+- What happens after a stress partial order remains open.
+- What happens when a second intent arrives with a different timestamp or side.
+- What happens for invalid paper execution config.
+- What happens for stress failure.
+- What happens for stress latency.
+- Dedup/recovery implications.
 
 Tests
 - New tests added.
 - Existing tests updated.
-- Exact test commands run.
+- Exact pytest commands run.
 - Pass/fail results.
 
 Remaining Gaps
-- What is still not solved.
-- Especially whether live-dry-run chaos rehearsal is implemented or only documented.
-- Risks and follow-up tasks.
+- Whether live-dry-run chaos remains future work.
+- Whether async delayed fill scheduling remains future work.
+- Any SELL lot-depth or recovery scenario not yet covered.
 
 Do Not Overclaim
-- Explicitly state any uncertainty or unimplemented part.
+- Explicitly state anything not implemented.
 ```
 
-The priority is to evolve `WG-14/bithumb-bot` from “paper execution with realistic price and ledger accounting” into “paper execution that rehearses the same failure families the live OMS must survive,” while preserving reproducibility, recovery safety, and operational observability.
+The priority is to close the remaining lifecycle safety gap: after paper stress creates an open/unresolved order such as `PARTIAL`, paper must rehearse the live OMS rule that new submissions are blocked until the unresolved order is resolved.
 

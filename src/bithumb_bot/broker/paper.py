@@ -29,6 +29,7 @@ from ..oms import (
     build_client_order_id,
     build_order_intent_key,
     claim_order_intent_dedup,
+    evaluate_unresolved_order_gate,
     new_client_order_id,
     payload_fingerprint,
     record_submit_attempt,
@@ -44,6 +45,7 @@ from .paper_execution import (
 
 POSITION_EPSILON = 1e-12
 RUN_LOG = logging.getLogger("bithumb_bot.run")
+_PAPER_EXECUTION_MODELS = {"immediate", "stress"}
 
 
 @dataclass(frozen=True)
@@ -109,7 +111,37 @@ def _get_paper_quote_context(signal: str, *, market: str) -> _PaperQuoteContext 
 
 
 def _paper_execution_model_name() -> str:
-    return str(getattr(settings, "PAPER_EXECUTION_MODEL", "immediate") or "immediate").strip().lower()
+    model = str(getattr(settings, "PAPER_EXECUTION_MODEL", "immediate") or "immediate").strip().lower()
+    if model not in _PAPER_EXECUTION_MODELS:
+        allowed = ", ".join(sorted(_PAPER_EXECUTION_MODELS))
+        raise ValueError(f"PAPER_EXECUTION_MODEL must be one of {{{allowed}}}, got {model!r}")
+    return model
+
+
+def _validate_unit_interval_config(name: str, value: object) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0.0 or parsed > 1.0:
+        raise ValueError(f"{name} must be a finite value between 0 and 1, got {parsed!r}")
+    return parsed
+
+
+def _validate_paper_execution_config() -> None:
+    _paper_execution_model_name()
+    latency_ms = int(getattr(settings, "PAPER_EXECUTION_LATENCY_MS", 0))
+    if latency_ms < 0:
+        raise ValueError(f"PAPER_EXECUTION_LATENCY_MS must be >= 0, got {latency_ms!r}")
+    _validate_unit_interval_config(
+        "PAPER_EXECUTION_PARTIAL_FILL_RATE",
+        getattr(settings, "PAPER_EXECUTION_PARTIAL_FILL_RATE", 0.0),
+    )
+    _validate_unit_interval_config(
+        "PAPER_EXECUTION_PARTIAL_FILL_FRACTION",
+        getattr(settings, "PAPER_EXECUTION_PARTIAL_FILL_FRACTION", 0.5),
+    )
+    _validate_unit_interval_config(
+        "PAPER_EXECUTION_ORDER_FAILURE_RATE",
+        getattr(settings, "PAPER_EXECUTION_ORDER_FAILURE_RATE", 0.0),
+    )
 
 
 def _paper_stress_seed() -> int | None:
@@ -295,6 +327,7 @@ def paper_execute(
     decision_reason: str | None = None,
     exit_rule_name: str | None = None,
 ) -> dict[str, Any] | None:
+    _validate_paper_execution_config()
     market = _resolve_orderbook_market()
     quote_context: _PaperQuoteContext | None = None
     if _get_fill_price.__module__ == __name__ and _get_fill_price.__name__ == "_get_fill_price":
@@ -315,6 +348,31 @@ def paper_execute(
     intent_key = ""
     try:
         init_portfolio(conn)
+        gate_blocked, reason_code, gate_reason = evaluate_unresolved_order_gate(
+            conn,
+            now_ms=int(ts),
+            max_open_order_age_sec=int(settings.MAX_OPEN_ORDER_AGE_SEC),
+        )
+        if gate_blocked:
+            RUN_LOG.info(
+                format_log_kv(
+                    "[SKIP] unresolved order gate",
+                    mode=settings.MODE,
+                    symbol=market,
+                    signal=str(signal).upper(),
+                    side=str(signal).upper(),
+                    signal_ts=int(ts),
+                    reason_code=reason_code,
+                    reason=gate_reason,
+                    unresolved_open_order=1,
+                )
+            )
+            notify(
+                f"event=paper_order_skip mode={settings.MODE} symbol={market} signal={str(signal).upper()} "
+                f"reason_code={reason_code} reason={gate_reason} unresolved_open_order=1"
+            )
+            conn.commit()
+            return None
         cash, qty = get_portfolio(conn)
         rules = get_effective_order_rules(settings.PAIR).rules
         lot_snapshot = summarize_position_lots(conn, pair=settings.PAIR)
