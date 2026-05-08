@@ -86,6 +86,7 @@ def run_sma_backtest(
             warnings=("not_enough_candles",),
             regime_performance=(),
             regime_coverage=(),
+            execution_event_summary=empty_execution_event_summary(),
         )
 
     closes = [candle.close for candle in candles]
@@ -836,6 +837,10 @@ def execution_event_summary(trades: Any) -> dict[str, object]:
         "pending_execution_after_dataset_end_count": len(pending_after_end),
         "execution_event_timeline_incomplete": bool(pending_after_end),
     }
+
+
+def empty_execution_event_summary() -> dict[str, object]:
+    return execution_event_summary(())
 
 
 def _execution_reference_warnings(fill: Any) -> list[str]:

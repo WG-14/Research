@@ -85,6 +85,7 @@ def cmd_research_promote_candidate(
     print(f"  gate_result={result.artifact['gate_result']}")
     print(f"  artifact_path={result.artifact_path}")
     print(f"  content_hash={result.content_hash}")
+    _print_execution_event_summary(result.artifact.get("execution_event_summary"))
     print(
         "  has_execution_calibration_warning="
         f"{1 if result.artifact.get('has_execution_calibration_warning') else 0}"
@@ -178,6 +179,23 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     warnings = report.get("warnings") or []
     print(f"  warnings={','.join(str(item) for item in warnings) if warnings else 'none'}")
     _print_top_of_book_summary(report)
+
+
+def _print_execution_event_summary(summary: object) -> None:
+    if not isinstance(summary, dict):
+        return
+    print(
+        "  execution_event_summary="
+        f"execution_attempt_count={summary.get('execution_attempt_count')} "
+        f"execution_filled_count={summary.get('execution_filled_count')} "
+        f"portfolio_applied_trade_count={summary.get('portfolio_applied_trade_count')} "
+        f"pending_execution_count={summary.get('pending_execution_count')} "
+        f"pending_execution_after_dataset_end_count={summary.get('pending_execution_after_dataset_end_count')} "
+        f"skipped_execution_count={summary.get('skipped_execution_count')} "
+        f"failed_execution_count={summary.get('failed_execution_count')} "
+        f"closed_trade_count={summary.get('closed_trade_count')} "
+        f"execution_event_timeline_incomplete={summary.get('execution_event_timeline_incomplete')}"
+    )
 
 
 def _format_counts(counts: dict[str, int]) -> str:

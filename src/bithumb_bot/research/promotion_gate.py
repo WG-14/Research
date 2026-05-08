@@ -425,6 +425,11 @@ def promote_candidate(
         "scenario_policy": candidate.get("scenario_policy"),
         "execution_timing_policy": candidate.get("execution_timing_policy"),
         "execution_reality_summary": candidate.get("execution_reality_summary"),
+        "execution_event_summary": _candidate_execution_event_summary(candidate),
+        "train_execution_event_summary": candidate.get("train_execution_event_summary"),
+        "validation_execution_event_summary": candidate.get("validation_execution_event_summary"),
+        "final_holdout_execution_event_summary": candidate.get("final_holdout_execution_event_summary"),
+        **_candidate_execution_event_summary_counts(candidate),
         "scenario_pass_count": candidate.get("scenario_pass_count"),
         "scenario_fail_count": candidate.get("scenario_fail_count"),
         "required_scenario_count": candidate.get("required_scenario_count"),
@@ -593,3 +598,21 @@ def _candidate_calibration_hash(candidate: dict[str, Any]) -> str | None:
     if isinstance(gate, dict) and isinstance(gate.get("artifact_hash"), str):
         return str(gate["artifact_hash"])
     return None
+
+
+def _candidate_execution_event_summary(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    summary = candidate.get("execution_event_summary")
+    if not isinstance(summary, dict):
+        summary = candidate.get("validation_execution_event_summary")
+    return dict(summary) if isinstance(summary, dict) else None
+
+
+def _candidate_execution_event_summary_counts(candidate: dict[str, Any]) -> dict[str, Any]:
+    summary = _candidate_execution_event_summary(candidate) or {}
+    return {
+        "pending_execution_after_dataset_end_count": int(summary.get("pending_execution_after_dataset_end_count") or 0),
+        "execution_event_timeline_incomplete": bool(summary.get("execution_event_timeline_incomplete")),
+        "portfolio_applied_trade_count": int(summary.get("portfolio_applied_trade_count") or 0),
+        "execution_filled_count": int(summary.get("execution_filled_count") or summary.get("filled_execution_count") or 0),
+        "closed_trade_count": int(summary.get("closed_trade_count") or 0),
+    }

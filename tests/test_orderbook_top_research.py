@@ -8,7 +8,7 @@ import pytest
 from bithumb_bot.db_core import ensure_db
 from bithumb_bot.orderbook_top_store import build_orderbook_top_snapshot, upsert_orderbook_top_snapshot
 from bithumb_bot.paths import PathManager
-from bithumb_bot.research.backtest_engine import run_sma_backtest
+from bithumb_bot.research.backtest_engine import empty_execution_event_summary, run_sma_backtest
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot, build_dataset_quality_report, load_dataset_split
 from bithumb_bot.research.execution_model import StressExecutionModel
 from bithumb_bot.research.execution_timing import first_quote_after_or_equal
@@ -372,6 +372,25 @@ def test_quote_lookup_preserves_first_after_or_equal_tie_break() -> None:
     assert quote.ask_price == 102.0
 
 
+def test_quote_lookup_returns_same_result_as_linear_scan_for_unsorted_input() -> None:
+    base_ts = 1_700_000_000_000
+    dataset = _signal_dataset(
+        base_ts=base_ts,
+        quotes=(
+            build_dataset_quote(candle_ts=base_ts + 30_000, bid=99.0, ask=101.0),
+            build_dataset_quote(candle_ts=base_ts + 10_000, bid=98.0, ask=102.0),
+            build_dataset_quote(candle_ts=base_ts + 20_000, bid=97.0, ask=103.0),
+        ),
+    )
+    target_ts = base_ts + 15_000
+    sorted_quotes = sorted(dataset.execution_top_of_book_quotes(), key=lambda quote: (int(quote.ts), str(quote.source)))
+    expected = next((quote for quote in sorted_quotes if int(quote.ts) >= target_ts), None)
+
+    quote = first_quote_after_or_equal(dataset=dataset, target_ts=target_ts, max_wait_ms=20_000)
+
+    assert quote == expected
+
+
 def test_latency_changes_fill_reference_quote() -> None:
     base_ts = 1_700_000_000_000
     decision_ts = base_ts + 5 * 60_000
@@ -712,6 +731,35 @@ def test_delayed_fill_crossing_mark_boundary_is_pending_not_early_applied() -> N
     assert result.execution_event_summary["pending_execution_after_dataset_end_count"] == 1
     assert result.execution_event_summary["execution_event_timeline_incomplete"] is True
     assert all(row.trade_count == 0 for row in result.regime_coverage)
+
+
+def test_not_enough_candles_backtest_has_empty_execution_event_summary() -> None:
+    base_ts = 1_700_000_000_000
+    dataset = _signal_dataset(base_ts=base_ts, quotes=(), closes=(100, 101, 102))
+
+    result = run_sma_backtest(
+        dataset=dataset,
+        parameter_values={"SMA_SHORT": 2, "SMA_LONG": 5},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+    )
+
+    assert result.warnings == ("not_enough_candles",)
+    assert result.execution_event_summary == empty_execution_event_summary()
+
+
+def test_empty_execution_event_summary_schema_matches_non_empty_summary() -> None:
+    base_ts = 1_700_000_000_000
+    dataset = _signal_dataset(base_ts=base_ts, quotes=())
+
+    result = run_sma_backtest(
+        dataset=dataset,
+        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+    )
+
+    assert set(empty_execution_event_summary()) == set(result.execution_event_summary or {})
 
 
 def test_stress_latency_non_latency_policy_is_flagged_or_failed(tmp_path: Path, monkeypatch) -> None:

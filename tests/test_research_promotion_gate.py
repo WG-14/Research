@@ -394,6 +394,69 @@ def test_promotion_artifact_uses_verified_candidate_profile_hash(tmp_path, monke
     assert result.artifact["strategy_profile_hash"] == expected_hash
 
 
+def test_promotion_artifact_exposes_execution_event_summary_top_level(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate()
+    _write_report(manager, candidate)
+
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+    assert result.artifact["execution_event_summary"] == candidate["execution_event_summary"]
+    assert result.artifact["train_execution_event_summary"] == candidate.get("train_execution_event_summary")
+    assert result.artifact["validation_execution_event_summary"] == candidate.get("validation_execution_event_summary")
+    assert result.artifact["final_holdout_execution_event_summary"] == candidate.get("final_holdout_execution_event_summary")
+    assert result.artifact["pending_execution_after_dataset_end_count"] == 0
+    assert result.artifact["execution_event_timeline_incomplete"] is False
+    assert result.artifact["portfolio_applied_trade_count"] == 8
+    assert result.artifact["execution_filled_count"] == 8
+    assert result.artifact["closed_trade_count"] == 4
+
+
+def test_promotion_artifact_execution_event_summary_matches_candidate_profile(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate()
+    _write_report(manager, candidate)
+
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+    profile = result.artifact["candidate_profile"]
+    assert result.artifact["execution_event_summary"] == profile["execution_event_summary"]
+    assert result.artifact["train_execution_event_summary"] == profile["train_execution_event_summary"]
+    assert result.artifact["validation_execution_event_summary"] == profile["validation_execution_event_summary"]
+    assert (
+        result.artifact["final_holdout_execution_event_summary"]
+        == profile["final_holdout_execution_event_summary"]
+    )
+
+
+def test_promotion_artifact_hash_changes_when_execution_event_summary_changes(tmp_path, monkeypatch) -> None:
+    clean_manager = _manager(tmp_path / "clean", monkeypatch)
+    clean_candidate = _candidate()
+    _write_report(clean_manager, clean_candidate)
+    clean = promote_candidate(
+        experiment_id="promo_exp",
+        candidate_id="candidate_001",
+        manager=clean_manager,
+        generated_at="2026-05-07T00:00:00+00:00",
+    )
+
+    changed_manager = _manager(tmp_path / "changed", monkeypatch)
+    changed_summary = dict(clean_candidate["execution_event_summary"])
+    changed_summary["execution_attempt_count"] = 9
+    changed_summary["skipped_execution_count"] = 1
+    changed_candidate = _candidate(execution_event_summary=changed_summary)
+    _write_report(changed_manager, changed_candidate)
+    changed = promote_candidate(
+        experiment_id="promo_exp",
+        candidate_id="candidate_001",
+        manager=changed_manager,
+        generated_at="2026-05-07T00:00:00+00:00",
+    )
+
+    assert clean.content_hash != changed.content_hash
+    assert clean.artifact["execution_event_summary"] != changed.artifact["execution_event_summary"]
+
+
 def test_promotion_artifact_records_backtest_and_walk_forward_evidence_hashes(tmp_path, monkeypatch) -> None:
     manager = _manager(tmp_path, monkeypatch)
     backtest_candidate = _candidate(walk_forward_required=True)
@@ -947,6 +1010,32 @@ def test_promotion_cli_prints_empty_warning_fields_when_no_breach(tmp_path, monk
     assert "  has_execution_calibration_warning=0" in output
     assert "  execution_calibration_warning_reasons=none" in output
     assert "  promotion_warnings=none" in output
+
+
+def test_promotion_cli_prints_execution_event_summary(tmp_path, monkeypatch, capsys) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
+    _write_report(manager, _candidate())
+
+    status = research_cli.cmd_research_promote_candidate(
+        experiment_id="promo_exp",
+        candidate_id="candidate_001",
+    )
+
+    output = capsys.readouterr().out
+    assert status == 0
+    assert (
+        "  execution_event_summary="
+        "execution_attempt_count=8 "
+        "execution_filled_count=8 "
+        "portfolio_applied_trade_count=8 "
+        "pending_execution_count=0 "
+        "pending_execution_after_dataset_end_count=0 "
+        "skipped_execution_count=0 "
+        "failed_execution_count=0 "
+        "closed_trade_count=4 "
+        "execution_event_timeline_incomplete=False"
+    ) in output
 
 
 def test_promotion_cli_refuses_required_calibration_failure_without_success_block(

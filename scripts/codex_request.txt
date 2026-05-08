@@ -2,15 +2,25 @@ You are Codex working directly in the GitHub repository `WG-14/bithumb-bot`.
 
 Use the attached post-patch review as source context, but do not treat it as proven fact. Verify every claim against the repository before changing code. 
 
-Your task is to harden the current research execution-timing system after the latest pending-fill patch. The repository has already moved in the right direction: `run_sma_backtest()` appears to use `_PendingFill`, delayed portfolio application, event-time boundaries, execution timing metadata, and explicit trade record annotations. Do not revert that architecture. Your job is to close the remaining semantic gap: **an exchange/execution fill and a backtest portfolio-applied trade must never be confused in regime evidence, reports, promotion gates, or operator-facing summaries.**
+Your task is to perform a final hardening pass on the research execution-timing system. The latest review concluded that the major structural safety issues are largely closed: execution-side fills and portfolio-effective trades appear to be separated, regime evidence appears to use effective trades, execution event summaries appear to flow into reports/candidate profiles/promotion gates, and CLI output appears to expose execution event counts. Your job is not to reopen the large design. Your job is to verify that these safety invariants truly hold in `WG-14/bithumb-bot`, then apply only small, targeted patches for remaining observability, schema consistency, operator convenience, and low-risk performance issues.
 
-The core invariant to preserve is:
+Do not generalize this into advice. Inspect, patch, and test the actual repository.
 
-> A backtest must distinguish an execution attempt, an execution-side fill, a pending execution, and a portfolio-applied trade. Promotion evidence must be based on events that are actually effective in the simulated portfolio timeline, not merely on fills that occurred after the dataset’s final mark or before the portfolio state was updated.
+Core invariant to preserve:
 
-Do not soften this into general advice. Inspect, patch, and test the actual `WG-14/bithumb-bot` code.
+> A backtest must never confuse an execution-side fill with a portfolio-effective trade. Regime evidence, report summaries, promotion gates, promotion artifacts, and operator-facing CLI output must make it clear whether an event was attempted, filled at the execution layer, pending, skipped, failed, applied to the simulated portfolio, or closed as PnL evidence.
 
-Inspect at least these files first:
+Current working judgment to verify:
+
+* No major structural patch should be necessary if the current code already enforces the invariant above.
+* Remaining work, if confirmed, should be small and additive:
+
+  * expose execution event summary at promotion artifact top-level;
+  * provide empty execution summaries on `not_enough_candles` / empty backtest paths;
+  * show execution event summaries in `research-promote-candidate` CLI output;
+  * optionally optimize top-of-book quote lookup with bisect/cursor if low risk.
+
+Start by inspecting at least these files:
 
 * `src/bithumb_bot/research/backtest_engine.py`
 * `src/bithumb_bot/research/execution_timing.py`
@@ -21,266 +31,172 @@ Inspect at least these files first:
 * `src/bithumb_bot/research/validation_protocol.py`
 * `src/bithumb_bot/research/promotion_gate.py`
 * `src/bithumb_bot/research/cli.py`
+* `src/bithumb_bot/research/run_summary.py`
 * `src/bithumb_bot/market_regime/metrics.py`
 * `tests/test_orderbook_top_research.py`
 * `tests/test_research_backtest_reproducibility.py`
 * `tests/test_research_promotion_gate.py`
 * `tests/test_dataset_quality_report.py`
-* Any new execution timing / pending fill / promotion tests
+* Any current execution-timing, pending-fill, execution-event-summary, promotion, or CLI tests
 
-Keep the following as hypotheses until verified or falsified:
+Keep these as hypotheses until verified or falsified:
 
-H1. `_pending_trade_from_fill()` may create records where `record_type="filled_trade"` and `is_filled_trade=True` while `portfolio_applied=False`. That may be technically true from an execution-fill perspective but semantically unsafe for portfolio/regime/promotion evidence.
+H1. The major safety invariant is now satisfied: execution-side fills and portfolio-applied trades are not conflated in trade records, regime coverage/performance, report summaries, candidate profiles, or promotion gates.
 
-H2. `aggregate_regime_coverage()` may still count `portfolio_applied=False` pending fills as regime `trade_count` evidence because it filters on `_is_filled_trade()` but may not require portfolio application.
+H2. `run_sma_backtest()` may still return `BacktestRun.execution_event_summary=None` on early-return paths such as `not_enough_candles`, causing schema inconsistency for direct callers and tests.
 
-H3. `aggregate_regime_performance()` appears safer because it requires `portfolio_applied=True` for closed SELL performance, but coverage and performance may now disagree when pending fills exist.
+H3. Promotion artifacts may include execution event summaries only inside `candidate_profile`, not as top-level fields. This is hash-safe but less operator-friendly.
 
-H4. Report-level and candidate-level summaries may not yet expose explicit counts for execution attempts, execution fills, portfolio-applied trades, pending executions, skipped executions, failed executions, and closed trades.
+H4. `research-promote-candidate` CLI output may not show execution event summary fields even though `research-backtest` does. This weakens operator observability at the promotion step.
 
-H5. Pending fills that remain unapplied after the final dataset mark may be safe for portfolio equity, but promotion-grade candidates should not silently ignore them. They should be visible and either fail-closed or be explicitly non-promotable.
+H5. Top-of-book quote lookup may still perform a linear scan for each signal. This is not a correctness issue, but dense quote data can make research runs scale poorly.
 
-H6. Operator-facing CLI output may show signal quote coverage and skipped/warning counts, but may not yet show the new execution-event vs portfolio-trade distinction.
+H6. Adding top-level promotion artifact fields must not weaken promotion gates, bypass candidate profile hash validation, or change safety semantics.
 
-H7. Quote lookup may still be linear over sorted top-of-book quotes. This is lower priority than semantics, but dense top-of-book data can make research runs scale poorly.
+H7. Existing report/candidate/profile hashes should remain deterministic. Hashes may change only where new deterministic fields are intentionally added.
 
 Implementation priorities:
 
-P0. Separate execution-fill semantics from portfolio-applied trade semantics.
+P0. Verify safety invariants before patching.
 
-Inspect `_trade_from_fill()`, `_pending_trade_from_fill()`, `_mark_trade_applied()`, and `_annotate_execution_record_type()` in `backtest_engine.py`.
+Before making changes, confirm the following in code and tests:
 
-If pending records can show:
+* `record_type`, `is_execution_filled`, `is_portfolio_applied_trade`, `is_effective_trade`, `portfolio_application_status`, `portfolio_applied`, and related fields do not label pending executions as portfolio-applied trades.
+* `aggregate_regime_coverage()` and `aggregate_regime_performance()` count only effective/portfolio-applied trades as regime trade evidence.
+* Validation reports carry execution event summaries for train/validation/final holdout.
+* Candidate profiles include execution event summaries in the profile hash.
+* Promotion refuses incomplete execution timelines and pending execution after dataset end.
+* `allow_legacy_lineage=True` does not bypass execution reality or execution event completeness checks.
 
-```text
-record_type = "filled_trade"
-is_filled_trade = true
-portfolio_applied = false
-```
+If any of these fail, fix them as safety bugs before addressing P1/P2. Add regression tests for any failed invariant.
 
-then fix the naming and metadata so the distinction is impossible to miss.
+P1. Add top-level execution event summary fields to promotion artifacts.
 
-Add or normalize these fields on every execution/trade record:
+Inspect `promote_candidate()` in `promotion_gate.py`.
 
-```python
-trade["is_execution_attempt"] = True
-trade["is_execution_filled"] = bool(fill.filled_qty > 0 and fill.fill_status in {"filled", "partial"})
-trade["is_portfolio_applied_trade"] = bool(trade["is_execution_filled"] and trade.get("portfolio_applied") is True)
-trade["is_effective_trade"] = trade["is_portfolio_applied_trade"]
-trade["is_skipped_execution"] = bool(fill.fill_status in {"skipped", "skipped_with_warning"})
-trade["is_failed_execution"] = bool(fill.fill_status == "failed")
-trade["portfolio_application_status"] = "pending" | "applied" | "not_applicable"
-```
-
-Keep legacy fields such as `is_filled_trade` if existing consumers/tests depend on them, but either redefine them safely or add clear compatibility semantics. A safe compatibility approach is:
-
-```python
-trade["is_filled_trade"] = trade["is_portfolio_applied_trade"]
-trade["is_execution_filled"] = execution-side fill status
-```
-
-If that would break too much, keep `is_filled_trade` but add `is_portfolio_applied_trade` and make all internal evidence/gates use the portfolio-applied field.
-
-Use explicit `record_type` values, for example:
+If execution event summaries are only available inside `candidate_profile`, copy the most important summaries to the promotion artifact top level for operator readability. Add deterministic fields such as:
 
 ```text
-portfolio_trade
-pending_execution
-skipped_execution
-failed_execution
-```
-
-Do not leave `pending_execution` rows labeled as `filled_trade` unless a separate field makes the portfolio distinction unambiguous.
-
-Add tests:
-
-```text
-test_pending_execution_is_not_labeled_as_portfolio_trade
-test_pending_execution_has_execution_filled_but_not_portfolio_applied_trade
-test_applied_fill_becomes_portfolio_trade_after_effective_ts
-test_skipped_and_failed_executions_have_not_applicable_portfolio_application_status
-```
-
-P0. Ensure regime coverage excludes pending unapplied fills.
-
-Inspect `aggregate_regime_coverage()` and `_is_filled_trade()` in `src/bithumb_bot/market_regime/metrics.py`.
-
-If coverage uses execution-filled pending rows as regime trade evidence, change it. Regime evidence should count portfolio-effective trades, not merely execution fills that never affected portfolio state during the dataset.
-
-Add a helper such as:
-
-```python
-def _is_effective_trade(trade: dict[str, Any]) -> bool:
-    if "is_portfolio_applied_trade" in trade:
-        return bool(trade["is_portfolio_applied_trade"])
-    if "portfolio_applied" in trade:
-        return _is_filled_trade(trade) and bool(trade["portfolio_applied"])
-    return _is_filled_trade(trade)
-```
-
-Then use `_is_effective_trade()` in regime coverage and performance where appropriate. Coverage BUY counts must not include pending unapplied BUY fills. Performance SELL counts must continue to require portfolio-applied SELLs.
-
-Add tests:
-
-```text
-test_regime_coverage_excludes_pending_unapplied_fills
-test_pending_unapplied_fill_does_not_increase_regime_trade_count
-test_regime_coverage_and_performance_do_not_disagree_due_to_pending_execution
-```
-
-P0. Report pending executions at dataset end and fail or warn for promotion-grade evidence.
-
-Inspect `run_sma_backtest()` end-of-loop pending fill handling and report generation in `validation_protocol.py`.
-
-If fills remain pending after the final mark, they must be counted and surfaced. Add deterministic summary fields at run/candidate/report level:
-
-```text
-pending_execution_at_end_count
+execution_event_summary
+train_execution_event_summary
+validation_execution_event_summary
+final_holdout_execution_event_summary
 pending_execution_after_dataset_end_count
 execution_event_timeline_incomplete
+portfolio_applied_trade_count
+execution_filled_count
+closed_trade_count
 ```
 
-Promotion-grade candidates should not silently pass when they have pending executions after the dataset’s final effective mark. Implement one of the following:
+Use existing candidate fields as the source. Do not recompute with different semantics inside promotion. Do not weaken or bypass existing candidate profile hash validation.
 
-Preferred:
+Add or update tests:
 
 ```text
-fail candidate gate with pending_execution_after_dataset_end
+test_promotion_artifact_exposes_execution_event_summary_top_level
+test_promotion_artifact_execution_event_summary_matches_candidate_profile
+test_promotion_artifact_hash_changes_when_execution_event_summary_changes
 ```
 
-Acceptable only for explicitly non-promotion research mode:
+P1. Ensure early-return backtests include an empty execution event summary.
 
-```text
-warning pending_execution_after_dataset_end
-promotion_allowed = false
+Inspect `run_sma_backtest()` early-return paths, especially `not_enough_candles`.
+
+If early returns produce `BacktestRun.execution_event_summary=None`, add a deterministic empty summary helper, for example:
+
+```python
+empty_execution_event_summary() -> dict[str, object]
 ```
 
-Do not let final pending executions disappear only because final equity ignores them.
+It should include all normal summary keys with zero counts and `execution_event_timeline_incomplete=False`, unless the code has a better explicit reason to mark the timeline incomplete.
 
-Add tests:
-
-```text
-test_pending_execution_after_final_mark_is_reported
-test_pending_execution_after_final_mark_is_not_promotable
-test_pending_execution_after_dataset_end_affects_candidate_profile_hash
-```
-
-P1. Add report-level execution event summaries.
-
-Inspect `_execution_metadata()`, `_report_payload()`, `_evaluate_candidates()`, run summary helpers, and CLI output.
-
-Add an `execution_event_summary` to scenario results, candidates, and top-level reports where useful. Include at least:
+Expected keys include at least:
 
 ```text
 execution_attempt_count
 execution_filled_count
+filled_execution_count
 portfolio_applied_trade_count
 pending_execution_count
-skipped_execution_count
-failed_execution_count
-closed_trade_count
 pending_execution_at_end_count
-execution_event_timeline_incomplete
-```
-
-Make the source of truth explicit:
-
-* `execution_attempt_count`: all records with `is_execution_attempt=True`
-* `execution_filled_count`: execution-side fills, regardless of portfolio application
-* `portfolio_applied_trade_count`: fills applied to portfolio state
-* `closed_trade_count`: closed SELL trades counted in PnL metrics
-* `pending_execution_count`: execution-side fills not applied to portfolio
-* `skipped_execution_count`: skipped/skipped_with_warning
-* `failed_execution_count`: failed
-
-Include the summary in candidate profile hashing. A candidate with pending execution evidence must have a different profile hash than the same candidate with fully applied portfolio evidence.
-
-Add tests:
-
-```text
-test_report_separates_execution_attempt_count_from_closed_trade_count
-test_execution_event_summary_counts_pending_skipped_failed_and_applied_events
-test_candidate_profile_hash_changes_when_pending_execution_summary_changes
-```
-
-P1. Update promotion gate to use portfolio-applied evidence, not execution-filled evidence.
-
-Inspect `promotion_gate.py`, especially:
-
-* `build_candidate_profile()`
-* `evaluate_candidate_for_promotion()`
-* `validate_backtest_candidate_for_promotion()`
-* `_extend_execution_reality_reasons()`
-* scenario policy handling
-
-Ensure promotion refuses or marks non-promotable candidates when:
-
-```text
-pending_execution_after_dataset_end_count > 0
-execution_event_timeline_incomplete is true
-portfolio_applied_trade_count is insufficient even if execution_filled_count is nonzero
-execution_reality_summary is missing or inconsistent
-```
-
-Do not allow `allow_legacy_lineage=True` to bypass execution event completeness or execution reality refusal.
-
-Add tests:
-
-```text
-test_allow_legacy_lineage_does_not_bypass_pending_execution_refusal
-test_promotion_uses_portfolio_applied_trade_count_not_execution_filled_count
-test_promotion_refuses_execution_event_timeline_incomplete
-```
-
-P1. Make CLI and operator summaries show execution-event distinction.
-
-Inspect `research/cli.py` and `research/run_summary.py`.
-
-Add concise CLI output fields:
-
-```text
-execution_attempt_count
-execution_filled_count
-portfolio_applied_trade_count
-pending_execution_count
+pending_execution_after_dataset_end_count
 skipped_execution_count
 failed_execution_count
 closed_trade_count
 execution_event_timeline_incomplete
 ```
 
-Keep existing signal quote coverage output, but do not rely on it as the only execution observability surface.
+Add tests:
 
-P2. Improve quote lookup with bisect or cursor if low-risk.
+```text
+test_not_enough_candles_backtest_has_empty_execution_event_summary
+test_empty_execution_event_summary_schema_matches_non_empty_summary
+```
+
+P1. Add execution event summary output to `research-promote-candidate` CLI.
+
+Inspect `cmd_research_promote_candidate()` in `research/cli.py`.
+
+If promotion output does not show execution event summary fields, add concise output lines using the artifact fields from P1. Include:
+
+```text
+execution_attempt_count
+execution_filled_count
+portfolio_applied_trade_count
+pending_execution_count
+pending_execution_after_dataset_end_count
+skipped_execution_count
+failed_execution_count
+closed_trade_count
+execution_event_timeline_incomplete
+```
+
+Keep output stable and deterministic. Do not print huge nested JSON blobs unless necessary.
+
+Add tests if CLI tests exist. If not, add a focused test only if the repository already has a pattern for CLI output tests. Otherwise document the absence of a CLI test pattern in the final report.
+
+P2. Optional low-risk quote lookup optimization.
 
 Inspect `first_quote_after_or_equal()` and `DatasetSnapshot.sorted_execution_top_of_book_quotes()`.
 
-If lookup still scans all sorted quotes for every signal, replace it with deterministic indexed lookup if low-risk:
+If the lookup still linearly scans all sorted quotes for every signal and a low-risk improvement is straightforward, implement a deterministic bisect or cursor-based lookup:
 
-* build sorted quote keys once;
-* use `bisect_left(target_ts)` or `(ts, source)` keys;
-* preserve first-after-or-equal semantics;
-* preserve deterministic tie-break by timestamp then source.
+* keep timestamp/source deterministic tie-breaks;
+* do not change first-after-or-equal semantics;
+* avoid mutable global cache;
+* preserve dataset fingerprint determinism;
+* avoid over-engineering.
 
-Add a focused test if changed:
+Possible design:
+
+```python
+sorted_quotes = dataset.sorted_execution_top_of_book_quotes()
+quote_keys = tuple((quote.ts, quote.source) for quote in sorted_quotes)
+idx = bisect_left(...)
+```
+
+If the refactor would be invasive, defer it and explain why.
+
+Add a test if optimized:
 
 ```text
 test_quote_lookup_preserves_first_after_or_equal_tie_break
+test_quote_lookup_returns_same_result_as_linear_scan_for_unsorted_input
 ```
-
-Do not let this optimization distract from P0/P1 correctness.
 
 Scope rules:
 
 * Do not revert the event-time execution architecture.
+* Do not change live trading behavior.
 * Do not reintroduce candle-close or same-candle execution as promotion-grade evidence.
-* Do not treat execution-side fill and portfolio-applied trade as the same concept.
-* Do not use live network calls in tests.
-* Do not modify live trading behavior unless clearly necessary and covered by tests.
+* Do not treat execution-side fills and portfolio-applied trades as the same concept.
+* Do not weaken promotion refusal for execution reality, incomplete execution timelines, or pending execution after dataset end.
+* Do not remove legacy compatibility fields unless all downstream use is intentionally migrated and tested.
+* Prefer additive fields over breaking JSON consumers.
 * Preserve deterministic reproducibility.
-* Prefer additive fields over breaking JSON consumers, but do not preserve unsafe semantics internally.
-* If legacy fields remain, document their compatibility role in code/tests and route new internal logic through the safer fields.
-* Do not implement full-depth orderbook replay unless the repository already has full-depth structures and tests. Keep `top_of_book_is_full_depth=false` visible where applicable.
+* Do not use live network calls in tests.
+* Do not implement full-depth orderbook replay. Keep `top_of_book_is_full_depth=false` visible where applicable.
+* If a hypothesis is already falsified by current code, do not patch it merely to satisfy this prompt. Report the verification evidence.
 
 Required tests to run:
 
@@ -307,24 +223,22 @@ Return a concise but complete implementation report with exactly these sections:
 1. `Hypotheses checked`
 
    * For H1 through H7, state `verified`, `falsified`, or `partially verified`.
-   * Include the concrete files/functions/tests used as evidence.
+   * Include concrete files/functions/tests used as evidence.
 
 2. `Design changes made`
 
-   * Summarize execution-fill vs portfolio-applied trade separation.
-   * Summarize regime coverage/performance changes.
-   * Summarize pending execution end-of-dataset handling.
-   * Summarize execution event summaries and candidate profile hashing.
-   * Summarize promotion gate changes.
+   * Summarize any top-level promotion artifact changes.
+   * Summarize any empty execution summary schema changes.
+   * Summarize any promotion CLI output changes.
    * Summarize quote lookup optimization if implemented.
+   * State explicitly if no safety patch was needed because existing code already satisfied the invariant.
 
 3. `Behavior before vs after`
 
-   * Explain how pending fills were represented before.
-   * Explain how pending, skipped, failed, execution-filled, and portfolio-applied records are represented now.
-   * Explain how regime coverage counts trade evidence now.
-   * Explain how final pending executions affect reports and promotion.
-   * Explain how CLI/operator summaries changed.
+   * Explain how operators see execution event summaries before vs after.
+   * Explain early-return backtest summary behavior before vs after.
+   * Explain whether promotion artifacts now expose execution event summaries directly.
+   * Explain whether quote lookup behavior changed or was deferred.
 
 4. `Tests added/updated`
 
@@ -333,20 +247,21 @@ Return a concise but complete implementation report with exactly these sections:
 
 5. `Promotion and safety impact`
 
-   * State when pending executions or incomplete execution timelines block promotion.
-   * State how portfolio-applied trade counts differ from execution-filled counts in promotion evidence.
-   * State whether any legacy/non-promotable behavior remains and how it is labeled.
+   * State whether promotion gate semantics changed.
+   * State whether execution event summaries are now visible at promotion artifact top-level.
+   * State whether pending/incomplete execution timelines still block promotion.
+   * State whether `allow_legacy_lineage=True` remains unable to bypass execution reality/event completeness checks.
 
 6. `Observability and reproducibility`
 
-   * List new or changed metadata/report fields.
-   * State whether manifest hash, dataset hash, candidate profile hash, or content hash behavior changed.
-   * State how pending/skipped/failed/execution-filled/portfolio-applied events remain observable.
+   * List new or changed metadata/report/artifact/CLI fields.
+   * State whether candidate profile hash, promotion artifact hash, report content hash, or manifest hash behavior changed.
+   * State how deterministic behavior was preserved.
 
 7. `Limitations and follow-up`
 
-   * Explicitly mention no full-depth or intra-candle-path replay unless implemented.
-   * Mention any remaining event-time accounting approximation.
+   * Mention no full-depth or intra-candle-path replay unless implemented.
+   * Mention any remaining operator convenience gaps.
    * Mention quote lookup performance if optimization was deferred.
 
 8. `Commands run`
@@ -354,4 +269,4 @@ Return a concise but complete implementation report with exactly these sections:
    * Include exact commands and pass/fail results.
    * If any command was not run, say so and why.
 
-Do not submit a final answer that only says tests pass. The final report must prove that execution-side fills and backtest portfolio-effective trades are no longer conflated in regime evidence, reports, promotion gates, or operator-facing summaries.
+Do not submit a final answer that only says tests pass. The final report must prove that the repository now has no remaining required structural patch, and that any changes made improve observability or schema consistency without weakening the execution-time safety contract.
