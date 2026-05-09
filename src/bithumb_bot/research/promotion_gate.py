@@ -787,7 +787,9 @@ def _metrics_v2_compact(metrics: object, *, prefix: str) -> dict[str, object]:
             f"{prefix}_avg_holding_time_ms": None,
             f"{prefix}_open_position_at_end": None,
             f"{prefix}_fee_drag_ratio": None,
+            f"{prefix}_fee_drag_ratio_basis": None,
             f"{prefix}_slippage_drag_ratio": None,
+            f"{prefix}_slippage_drag_ratio_basis": None,
         }
     return_risk = metrics.get("return_risk") if isinstance(metrics.get("return_risk"), dict) else {}
     trade_quality = metrics.get("trade_quality") if isinstance(metrics.get("trade_quality"), dict) else {}
@@ -800,5 +802,7 @@ def _metrics_v2_compact(metrics: object, *, prefix: str) -> dict[str, object]:
         f"{prefix}_avg_holding_time_ms": time_exposure.get("avg_holding_time_ms"),
         f"{prefix}_open_position_at_end": return_risk.get("open_position_at_end"),
         f"{prefix}_fee_drag_ratio": cost_execution.get("fee_drag_ratio"),
+        f"{prefix}_fee_drag_ratio_basis": cost_execution.get("fee_drag_ratio_basis"),
         f"{prefix}_slippage_drag_ratio": cost_execution.get("slippage_drag_ratio"),
+        f"{prefix}_slippage_drag_ratio_basis": cost_execution.get("slippage_drag_ratio_basis"),
     }

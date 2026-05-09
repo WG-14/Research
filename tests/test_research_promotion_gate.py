@@ -190,7 +190,9 @@ def _metrics_v2_payload(*, schema_version: int = 2) -> dict[str, object]:
             "fee_total": 1.0,
             "slippage_total": 1.0,
             "fee_drag_ratio": 0.001,
+            "fee_drag_ratio_basis": "traded_notional",
             "slippage_drag_ratio": 0.001,
+            "slippage_drag_ratio_basis": "traded_notional",
             "filled_execution_count": 8,
             "partial_fill_count": 0,
             "failed_execution_count": 0,
@@ -638,6 +640,8 @@ def test_promotion_artifact_exposes_metrics_contract_evidence_top_level_and_stri
     assert result.artifact["metrics_contract_required"] is True
     assert result.artifact["metrics_v2_summary"]["validation_cagr_pct"] == 12.0
     assert result.artifact["metrics_v2_summary"]["validation_open_position_at_end"] is False
+    assert result.artifact["metrics_v2_summary"]["validation_fee_drag_ratio_basis"] == "traded_notional"
+    assert result.artifact["metrics_v2_summary"]["final_holdout_slippage_drag_ratio_basis"] == "traded_notional"
     json.dumps(result.artifact, allow_nan=False)
 
 

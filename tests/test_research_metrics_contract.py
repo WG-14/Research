@@ -144,11 +144,42 @@ def test_cost_drag_uses_total_traded_notional_denominator() -> None:
     )
 
     assert zero_cost.cost_execution.fee_drag_ratio == 0.0
+    assert zero_cost.cost_execution.fee_drag_ratio_basis == "traded_notional"
     assert zero_cost.cost_execution.slippage_drag_ratio == 0.0
+    assert zero_cost.cost_execution.slippage_drag_ratio_basis == "traded_notional"
     assert stressed.cost_execution.fee_total == 4.0
     assert stressed.cost_execution.slippage_total == 6.0
     assert stressed.cost_execution.fee_drag_ratio == 0.004
+    assert stressed.cost_execution.fee_drag_ratio_basis == "traded_notional"
     assert stressed.cost_execution.slippage_drag_ratio == 0.006
+    assert stressed.cost_execution.slippage_drag_ratio_basis == "traded_notional"
+    payload = stressed.as_dict()
+    assert payload["cost_execution"]["fee_drag_ratio_basis"] == "traded_notional"
+    assert payload["cost_execution"]["slippage_drag_ratio_basis"] == "traded_notional"
+    json.dumps(payload, allow_nan=False)
+
+
+def test_cost_drag_basis_is_present_when_ratio_is_null_and_strict_json() -> None:
+    metrics = build_metrics_v2(
+        starting_cash=1000.0,
+        final_cash=1000.0,
+        final_asset_qty=0.0,
+        final_mark_price=0.0,
+        equity_curve=(_point(0, 1000.0), _point(1000, 1000.0)),
+        position_intervals=(),
+        closed_trades=(),
+        execution_records=(),
+    )
+
+    payload = metrics.as_dict()
+
+    assert metrics.cost_execution.fee_drag_ratio is None
+    assert metrics.cost_execution.fee_drag_ratio_basis == "traded_notional"
+    assert metrics.cost_execution.slippage_drag_ratio is None
+    assert metrics.cost_execution.slippage_drag_ratio_basis == "traded_notional"
+    assert payload["cost_execution"]["fee_drag_ratio_basis"] == "traded_notional"
+    assert payload["cost_execution"]["slippage_drag_ratio_basis"] == "traded_notional"
+    json.dumps(payload, allow_nan=False)
 
 
 def test_execution_count_is_separate_from_closed_trade_count() -> None:

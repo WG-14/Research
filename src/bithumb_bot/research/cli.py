@@ -206,7 +206,9 @@ def _print_metrics_v2_summary(report: dict[str, object]) -> None:
         f"avg_holding_time_ms={time_exposure.get('avg_holding_time_ms')} "
         f"open_position_at_end={return_risk.get('open_position_at_end')} "
         f"fee_drag_ratio={cost_execution.get('fee_drag_ratio')} "
-        f"slippage_drag_ratio={cost_execution.get('slippage_drag_ratio')}"
+        f"fee_drag_ratio_basis={cost_execution.get('fee_drag_ratio_basis')} "
+        f"slippage_drag_ratio={cost_execution.get('slippage_drag_ratio')} "
+        f"slippage_drag_ratio_basis={cost_execution.get('slippage_drag_ratio_basis')}"
     )
 
 

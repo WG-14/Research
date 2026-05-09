@@ -12,6 +12,8 @@ STRATEGY_SAMPLE_INSUFFICIENT = "STRATEGY_SAMPLE_INSUFFICIENT"
 STRATEGY_NET_PNL_NEGATIVE = "STRATEGY_NET_PNL_NEGATIVE"
 STRATEGY_PROFIT_FACTOR_LOW = "STRATEGY_PROFIT_FACTOR_LOW"
 STRATEGY_FEE_DRAG_EXCESSIVE = "STRATEGY_FEE_DRAG_EXCESSIVE"
+FEE_DRAG_RATIO_BASIS_TRADED_NOTIONAL = "traded_notional"
+FEE_TO_GROSS_PNL_RATIO_BASIS = "gross_pnl_abs"
 
 
 @dataclass(frozen=True)
@@ -25,6 +27,10 @@ class StrategyPerformanceSummary:
     profit_factor: float | None
     profit_factor_unbounded: bool
     fee_drag_ratio: float | None
+    fee_drag_ratio_basis: str
+    fee_to_gross_pnl_ratio: float | None
+    fee_to_gross_pnl_ratio_basis: str
+    traded_notional_total: float | None
     worst_trade: float | None
     best_trade: float | None
     by_strategy_name: dict[str, dict[str, float | int]] = field(default_factory=dict)
@@ -42,6 +48,10 @@ class StrategyPerformanceSummary:
             "profit_factor": self.profit_factor,
             "profit_factor_unbounded": self.profit_factor_unbounded,
             "fee_drag_ratio": self.fee_drag_ratio,
+            "fee_drag_ratio_basis": self.fee_drag_ratio_basis,
+            "fee_to_gross_pnl_ratio": self.fee_to_gross_pnl_ratio,
+            "fee_to_gross_pnl_ratio_basis": self.fee_to_gross_pnl_ratio_basis,
+            "traded_notional_total": self.traded_notional_total,
             "worst_trade": self.worst_trade,
             "best_trade": self.best_trade,
             "by_strategy_name": self.by_strategy_name,
@@ -83,6 +93,10 @@ def _empty_summary() -> StrategyPerformanceSummary:
         profit_factor=None,
         profit_factor_unbounded=False,
         fee_drag_ratio=None,
+        fee_drag_ratio_basis=FEE_DRAG_RATIO_BASIS_TRADED_NOTIONAL,
+        fee_to_gross_pnl_ratio=None,
+        fee_to_gross_pnl_ratio_basis=FEE_TO_GROSS_PNL_RATIO_BASIS,
+        traded_notional_total=None,
         worst_trade=None,
         best_trade=None,
     )
@@ -125,6 +139,7 @@ def fetch_strategy_performance_summary(
         return _empty_summary()
     if not {"gross_pnl", "fee_total", "net_pnl", "exit_ts"}.issubset(cols):
         return _empty_summary()
+    has_notional_cols = {"matched_qty", "entry_price", "exit_price"}.issubset(cols)
 
     filters: list[str] = []
     params: list[object] = []
@@ -143,6 +158,7 @@ def fetch_strategy_performance_summary(
             gross_pnl,
             fee_total,
             net_pnl
+            {", matched_qty, entry_price, exit_price" if has_notional_cols else ""}
         FROM trade_lifecycles
         {where}
         ORDER BY exit_ts DESC, id DESC
@@ -157,11 +173,27 @@ def fetch_strategy_performance_summary(
     gross_pnl = float(sum(float(row["gross_pnl"] or 0.0) for row in rows))
     fee_total = float(sum(float(row["fee_total"] or 0.0) for row in rows))
     net_pnl = float(sum(net_values))
+    traded_notional_total = (
+        float(
+            sum(
+                abs(float(row["matched_qty"] or 0.0) * float(row["entry_price"] or 0.0))
+                + abs(float(row["matched_qty"] or 0.0) * float(row["exit_price"] or 0.0))
+                for row in rows
+            )
+        )
+        if has_notional_cols
+        else None
+    )
     wins = [pnl for pnl in net_values if pnl > 0.0]
     losses = [pnl for pnl in net_values if pnl < 0.0]
     profit_factor_unbounded = bool(wins and not losses)
     profit_factor = (sum(wins) / abs(sum(losses))) if losses else None
-    fee_drag_ratio = (fee_total / abs(gross_pnl)) if abs(gross_pnl) > 1e-12 else None
+    fee_drag_ratio = (
+        (fee_total / traded_notional_total)
+        if traded_notional_total is not None and traded_notional_total > 1e-12
+        else None
+    )
+    fee_to_gross_pnl_ratio = (fee_total / abs(gross_pnl)) if abs(gross_pnl) > 1e-12 else None
     return StrategyPerformanceSummary(
         sample_count=len(rows),
         gross_pnl=gross_pnl,
@@ -172,6 +204,10 @@ def fetch_strategy_performance_summary(
         profit_factor=profit_factor,
         profit_factor_unbounded=profit_factor_unbounded,
         fee_drag_ratio=fee_drag_ratio,
+        fee_drag_ratio_basis=FEE_DRAG_RATIO_BASIS_TRADED_NOTIONAL,
+        fee_to_gross_pnl_ratio=fee_to_gross_pnl_ratio,
+        fee_to_gross_pnl_ratio_basis=FEE_TO_GROSS_PNL_RATIO_BASIS,
+        traded_notional_total=traded_notional_total,
         worst_trade=min(net_values),
         best_trade=max(net_values),
         by_strategy_name=_bucket(rows, "strategy_name"),
@@ -202,6 +238,7 @@ def evaluate_strategy_performance_gate(
         "min_net_pnl_krw": float(getattr(settings, "LIVE_PERFORMANCE_GATE_MIN_NET_PNL_KRW", 0.0)),
         "min_profit_factor": float(getattr(settings, "LIVE_PERFORMANCE_GATE_MIN_PROFIT_FACTOR", 1.0)),
         "max_fee_drag_ratio": getattr(settings, "LIVE_PERFORMANCE_GATE_MAX_FEE_DRAG_RATIO", None),
+        "max_fee_drag_ratio_basis": FEE_TO_GROSS_PNL_RATIO_BASIS,
     }
     if not enabled:
         return StrategyPerformanceGateResult(
@@ -242,10 +279,13 @@ def evaluate_strategy_performance_gate(
     max_fee_drag = thresholds["max_fee_drag_ratio"]
     if allowed and max_fee_drag not in (None, "", "0"):
         max_fee_drag_float = float(max_fee_drag)
-        if summary.fee_drag_ratio is not None and summary.fee_drag_ratio > max_fee_drag_float:
+        if summary.fee_to_gross_pnl_ratio is not None and summary.fee_to_gross_pnl_ratio > max_fee_drag_float:
             allowed = False
             reason_code = STRATEGY_FEE_DRAG_EXCESSIVE
-            reason = f"fee_drag_ratio={summary.fee_drag_ratio:.6f} above max={max_fee_drag_float:.6f}"
+            reason = (
+                f"fee_to_gross_pnl_ratio={summary.fee_to_gross_pnl_ratio:.6f} "
+                f"basis={summary.fee_to_gross_pnl_ratio_basis} above max={max_fee_drag_float:.6f}"
+            )
 
     return StrategyPerformanceGateResult(
         enabled=True,

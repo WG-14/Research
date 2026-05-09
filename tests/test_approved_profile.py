@@ -232,6 +232,7 @@ def _evidence_payload(profile: dict[str, object], *, evidence_type: str = "paper
         "expectancy_per_trade": 180.0,
         "profit_factor": 2.0,
         "fee_drag_ratio": 0.1,
+        "fee_drag_ratio_basis": "traded_notional",
         "execution_quality_status": "pass",
         "execution_quality_breach_count": 0,
         "unresolved_open_orders_count": 0,

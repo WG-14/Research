@@ -331,6 +331,8 @@ Typical metrics:
 - Holding-time summary
 - Reason-linkage summary
 
+Runtime experiment and strategy-performance summaries include explicit drag-ratio bases. `fee_drag_ratio` is a traded-notional ratio when matched lifecycle quantity and entry/exit prices are available. The historical runtime fee ratio is exposed as `fee_to_gross_pnl_ratio` with `fee_to_gross_pnl_ratio_basis=gross_pnl_abs`; values with different bases should not be compared as equivalent.
+
 Example:
 
 ```bash

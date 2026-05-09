@@ -216,6 +216,10 @@ def validate_profile_transition_evidence(
     for key in ("expectancy_per_trade", "profit_factor", "fee_drag_ratio"):
         if payload.get(key) is not None:
             _number(payload.get(key), f"{prefix}_schema_invalid:{key}")
+    if payload.get("fee_drag_ratio") is not None:
+        basis = str(payload.get("fee_drag_ratio_basis") or "").strip()
+        if basis not in {"traded_notional", "gross_pnl_abs"}:
+            raise EvidenceValidationError(f"{prefix}_schema_invalid:fee_drag_ratio_basis")
 
     execution_quality_status = str(payload.get("execution_quality_status") or "").strip().lower()
     if execution_quality_status not in {"pass", "ok", "not_applicable"}:

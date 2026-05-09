@@ -236,7 +236,12 @@ def test_print_report_summary_renders_metrics_v2_for_passing_candidate(capsys) -
                     "return_risk": {"cagr_pct": 12.5, "open_position_at_end": False},
                     "trade_quality": {"expectancy_per_trade_krw": 250.0},
                     "time_exposure": {"exposure_time_pct": 25.0, "avg_holding_time_ms": 600000.0},
-                    "cost_execution": {"fee_drag_ratio": 0.001, "slippage_drag_ratio": 0.002},
+                    "cost_execution": {
+                        "fee_drag_ratio": 0.001,
+                        "fee_drag_ratio_basis": "traded_notional",
+                        "slippage_drag_ratio": 0.002,
+                        "slippage_drag_ratio_basis": "traded_notional",
+                    },
                 },
             }
         ],
@@ -249,7 +254,8 @@ def test_print_report_summary_renders_metrics_v2_for_passing_candidate(capsys) -
     output = capsys.readouterr().out
     assert "metrics_v2_summary=schema=2 cagr_pct=12.5 expectancy_per_trade_krw=250.0" in output
     assert "exposure_time_pct=25.0 avg_holding_time_ms=600000.0 open_position_at_end=False" in output
-    assert "fee_drag_ratio=0.001 slippage_drag_ratio=0.002" in output
+    assert "fee_drag_ratio=0.001 fee_drag_ratio_basis=traded_notional" in output
+    assert "slippage_drag_ratio=0.002 slippage_drag_ratio_basis=traded_notional" in output
 
 
 def test_print_report_summary_renders_top_of_book_warning_context(capsys) -> None:

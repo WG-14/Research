@@ -7,6 +7,7 @@ from typing import Any
 
 
 METRICS_SCHEMA_VERSION = 2
+DRAG_RATIO_BASIS_TRADED_NOTIONAL = "traded_notional"
 MS_PER_YEAR = 365.0 * 24.0 * 60.0 * 60.0 * 1000.0
 MS_PER_DAY = 24.0 * 60.0 * 60.0 * 1000.0
 
@@ -145,9 +146,14 @@ class CostExecutionMetrics:
     quote_coverage_pct: float | None
     median_quote_age_ms: float | None
     p95_quote_age_ms: float | None
+    fee_drag_ratio_basis: str = field(default=DRAG_RATIO_BASIS_TRADED_NOTIONAL, init=False)
+    slippage_drag_ratio_basis: str = field(default=DRAG_RATIO_BASIS_TRADED_NOTIONAL, init=False)
 
     def as_dict(self) -> dict[str, object]:
-        return self.__dict__.copy()
+        payload = self.__dict__.copy()
+        payload["fee_drag_ratio_basis"] = self.fee_drag_ratio_basis
+        payload["slippage_drag_ratio_basis"] = self.slippage_drag_ratio_basis
+        return payload
 
 
 @dataclass(frozen=True)

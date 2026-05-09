@@ -170,6 +170,8 @@ def test_experiment_report_command_writes_report_and_prints_warning(tmp_path, mo
     assert payload["attribution_quality"]["unattributed_trade_count"] == 1
     assert payload["recovery_attribution_quality_signals"]["unresolved_attribution_count"] == 1
     assert payload["recovery_attribution_quality_signals"]["ambiguous_linkage_after_recent_reconcile"] is True
+    assert payload["experiment_expectancy_metrics"]["fee_drag_ratio_basis"] == "traded_notional"
+    assert payload["experiment_expectancy_metrics"]["fee_to_gross_pnl_ratio_basis"] == "gross_pnl_abs"
     assert payload["experiment_expectancy_metrics"]["regime_pnl_skew_ratio"] == 100.0 / 101.0
     assert (
         max(row["absolute_pnl_concentration"] for row in payload["market_regime_bucket_performance"])
