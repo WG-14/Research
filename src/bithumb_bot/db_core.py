@@ -7,9 +7,10 @@ import sqlite3
 from decimal import Decimal, ROUND_HALF_EVEN
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
-from .config import prepare_db_path_for_connection, settings
+from .config import prepare_db_path_for_connection, resolve_db_path_for_connection, settings
 from .dust import OPEN_EXPOSURE_LOT_STATE, lot_state_quantity_contract
 from .sqlite_resilience import configure_connection
 from .decision_context import (
@@ -32,6 +33,8 @@ FEE_PENDING_ACCOUNTING_REPAIR_EVENT_TYPE = "fee_pending_accounting_repair"
 POSITION_AUTHORITY_REPAIR_EVENT_TYPE = "position_authority_repair"
 BROKER_FILL_OBSERVATION_EVENT_TYPE = "broker_fill_observation"
 ACCOUNTING_PROJECTION_MODEL = "authoritative_accounting_projection_v1"
+OPERATIONAL_SCHEMA_VERSION = 1
+OPERATIONAL_SCHEMA_META_KEY = "operational_schema"
 AUTHORITATIVE_ACCOUNTING_EVENT_FAMILIES = (
     "fills",
     "external_cash_adjustments",
@@ -52,6 +55,96 @@ FILL_FEE_ACCOUNTING_STATUS_PENDING = "principal_applied_fee_pending"
 FILL_FEE_ACCOUNTING_STATUS_BLOCKED = "fee_validation_blocked"
 FEE_PENDING_REPAIR_PROVENANCE_ORDER_LEVEL_ALLOCATED = "order_level_paid_fee_validated_allocated"
 FEE_PENDING_REPAIR_FEE_ROUNDING_TOLERANCE_KRW = 0.01
+
+
+class SchemaValidationError(RuntimeError):
+    pass
+
+
+REQUIRED_RUNTIME_TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "portfolio": (
+        "id",
+        "cash_krw",
+        "asset_qty",
+        "cash_available",
+        "cash_locked",
+        "asset_available",
+        "asset_locked",
+    ),
+    "trades": (
+        "id",
+        "ts",
+        "pair",
+        "interval",
+        "side",
+        "price",
+        "qty",
+        "fee",
+        "cash_after",
+        "asset_after",
+    ),
+    "orders": (
+        "id",
+        "client_order_id",
+        "status",
+        "side",
+        "qty_req",
+        "qty_filled",
+        "local_intent_state",
+    ),
+    "fills": (
+        "id",
+        "client_order_id",
+        "fill_ts",
+        "price",
+        "qty",
+        "fee",
+        "fee_accounting_status",
+        "trade_id",
+    ),
+    "order_events": ("id", "client_order_id", "event_type", "event_ts"),
+    "bot_health": ("id", "recovery_required_count", "unresolved_open_order_count", "startup_gate_reason"),
+    "open_position_lots": (
+        "id",
+        "pair",
+        "entry_trade_id",
+        "qty_open",
+        "executable_lot_count",
+        "dust_tracking_lot_count",
+        "position_semantic_basis",
+        "position_state",
+    ),
+    "trade_lifecycles": ("id", "entry_trade_id", "exit_trade_id", "matched_qty", "net_pnl"),
+    "external_cash_adjustments": ("id", "adjustment_key", "event_type", "event_ts", "delta_amount"),
+    "manual_flat_accounting_repairs": ("id", "repair_key", "event_type", "event_ts", "repair_basis"),
+    "external_position_adjustments": ("id", "adjustment_key", "event_type", "event_ts", "adjustment_basis"),
+    "fee_gap_accounting_repairs": ("id", "repair_key", "event_type", "event_ts", "repair_basis"),
+    "fee_pending_accounting_repairs": ("id", "repair_key", "event_type", "event_ts", "repair_basis"),
+    "position_authority_repairs": ("id", "repair_key", "event_type", "event_ts", "repair_basis"),
+    "position_authority_projection_publications": (
+        "id",
+        "publication_key",
+        "publication_type",
+        "pair",
+        "target_trade_id",
+        "publish_basis",
+    ),
+    "broker_fill_observations": (
+        "id",
+        "event_type",
+        "event_ts",
+        "client_order_id",
+        "fill_ts",
+        "price",
+        "qty",
+        "accounting_status",
+    ),
+    "schema_meta": ("key", "schema_version", "schema_fingerprint", "accounting_projection_model", "updated_ts"),
+}
+REQUIRED_RUNTIME_TRIGGERS = (
+    "trg_open_position_lots_validate_insert",
+    "trg_open_position_lots_validate_update",
+)
 
 
 @dataclass(frozen=True)
@@ -319,6 +412,291 @@ def ensure_db(db_path: str | None = None, *, ensure_schema_ready: bool = True) -
     return conn
 
 
+def _table_names(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name NOT LIKE 'sqlite_%'
+        """
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> dict[str, sqlite3.Row | tuple[Any, ...]]:
+    if table not in _table_names(conn):
+        return {}
+    return {str(row[1]): row for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _trigger_names(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def _row_value(row: sqlite3.Row | tuple[Any, ...], key: str, index: int) -> Any:
+    if isinstance(row, sqlite3.Row):
+        return row[key]
+    return row[index]
+
+
+def _preflight_unsupported_schema(conn: sqlite3.Connection) -> None:
+    columns = set(_table_columns(conn, "portfolio"))
+    if not columns:
+        return
+    current_aggregate = {"cash_krw", "asset_qty"}
+    old_aggregate = {"cash", "qty"}
+    if old_aggregate.issubset(columns) and not current_aggregate.issubset(columns):
+        raise SchemaValidationError(
+            "unsupported legacy DB schema detected: portfolio(cash, qty). "
+            "This schema cannot be opened for trading, reporting, or repair. "
+            "Restore a current DB backup or run an explicit reviewed migration that maps "
+            "cash->cash_krw and qty->asset_qty after preserving a DB backup."
+        )
+    if not current_aggregate.issubset(columns):
+        missing = ", ".join(sorted(current_aggregate - columns))
+        present = ", ".join(sorted(columns))
+        raise SchemaValidationError(
+            "malformed DB schema detected: portfolio table is missing required aggregate "
+            f"column(s): {missing}; present_columns={present}. "
+            "Restore a valid DB backup or run a reviewed repair before operating."
+        )
+
+
+def _ensure_schema_meta_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_meta (
+            key TEXT PRIMARY KEY,
+            schema_version INTEGER NOT NULL,
+            schema_fingerprint TEXT NOT NULL,
+            accounting_projection_model TEXT NOT NULL,
+            updated_ts INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        )
+        """
+    )
+    _ensure_column(conn, "schema_meta", "schema_version", "schema_version INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "schema_meta", "schema_fingerprint", "schema_fingerprint TEXT NOT NULL DEFAULT ''")
+    _ensure_column(
+        conn,
+        "schema_meta",
+        "accounting_projection_model",
+        "accounting_projection_model TEXT NOT NULL DEFAULT ''",
+    )
+    _ensure_column(conn, "schema_meta", "updated_ts", "updated_ts INTEGER NOT NULL DEFAULT 0")
+
+
+def runtime_schema_fingerprint(conn: sqlite3.Connection) -> str:
+    payload: dict[str, object] = {"tables": {}, "triggers": sorted(_trigger_names(conn))}
+    tables_payload: dict[str, object] = {}
+    for table in sorted(REQUIRED_RUNTIME_TABLE_COLUMNS):
+        column_rows = _table_columns(conn, table)
+        columns_payload: list[dict[str, object]] = []
+        for column in sorted(column_rows):
+            row = column_rows[column]
+            columns_payload.append(
+                {
+                    "name": str(row[1]),
+                    "type": str(row[2]),
+                    "notnull": int(row[3]),
+                    "pk": int(row[5]),
+                }
+            )
+        tables_payload[table] = columns_payload
+    payload["tables"] = tables_payload
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _runtime_schema_errors(conn: sqlite3.Connection, *, require_metadata: bool) -> list[str]:
+    errors: list[str] = []
+    tables = _table_names(conn)
+    for table, required_columns in REQUIRED_RUNTIME_TABLE_COLUMNS.items():
+        if table not in tables:
+            errors.append(f"missing required table: {table}")
+            continue
+        columns = set(_table_columns(conn, table))
+        missing = sorted(set(required_columns) - columns)
+        if missing:
+            errors.append(f"table {table} missing required column(s): {', '.join(missing)}")
+
+    portfolio_columns = set(_table_columns(conn, "portfolio"))
+    if {"cash", "qty"}.issubset(portfolio_columns) and not {"cash_krw", "asset_qty"}.issubset(portfolio_columns):
+        errors.append("unsupported legacy table shape: portfolio(cash, qty)")
+
+    triggers = _trigger_names(conn)
+    missing_triggers = sorted(set(REQUIRED_RUNTIME_TRIGGERS) - triggers)
+    if missing_triggers:
+        errors.append(f"missing required trigger(s): {', '.join(missing_triggers)}")
+
+    if "portfolio" in tables and {"id", "cash_krw", "asset_qty", "cash_available", "cash_locked", "asset_available", "asset_locked"}.issubset(portfolio_columns):
+        rows = conn.execute(
+            """
+            SELECT id, cash_krw, asset_qty, cash_available, cash_locked, asset_available, asset_locked
+            FROM portfolio
+            """
+        ).fetchall()
+        for row in rows:
+            row_id = int(_row_value(row, "id", 0))
+            cash_total = normalize_cash_amount(
+                float(_row_value(row, "cash_available", 3)) + float(_row_value(row, "cash_locked", 4))
+            )
+            asset_total = normalize_asset_qty(
+                float(_row_value(row, "asset_available", 5)) + float(_row_value(row, "asset_locked", 6))
+            )
+            if row_id != 1:
+                errors.append(f"portfolio contains invalid row id={row_id}; only id=1 is supported")
+            if abs(normalize_cash_amount(float(_row_value(row, "cash_krw", 1))) - cash_total) > 1e-8:
+                errors.append(
+                    f"portfolio cash total mismatch for id={row_id}: "
+                    "cash_krw must equal cash_available + cash_locked"
+                )
+            if abs(normalize_asset_qty(float(_row_value(row, "asset_qty", 2))) - asset_total) > 1e-12:
+                errors.append(
+                    f"portfolio asset total mismatch for id={row_id}: "
+                    "asset_qty must equal asset_available + asset_locked"
+                )
+
+    if require_metadata and "schema_meta" in tables:
+        row = conn.execute(
+            """
+            SELECT schema_version, schema_fingerprint, accounting_projection_model
+            FROM schema_meta
+            WHERE key=?
+            """,
+            (OPERATIONAL_SCHEMA_META_KEY,),
+        ).fetchone()
+        current_fingerprint = runtime_schema_fingerprint(conn)
+        if row is None:
+            errors.append("schema_meta missing operational_schema row")
+        else:
+            schema_version = int(_row_value(row, "schema_version", 0))
+            schema_fingerprint = str(_row_value(row, "schema_fingerprint", 1))
+            projection_model = str(_row_value(row, "accounting_projection_model", 2))
+            if schema_version != OPERATIONAL_SCHEMA_VERSION:
+                errors.append(
+                    f"schema_meta version mismatch: expected={OPERATIONAL_SCHEMA_VERSION} got={schema_version}"
+                )
+            if projection_model != ACCOUNTING_PROJECTION_MODEL:
+                errors.append(
+                    "schema_meta accounting projection model mismatch: "
+                    f"expected={ACCOUNTING_PROJECTION_MODEL} got={projection_model}"
+                )
+            if schema_fingerprint != current_fingerprint:
+                errors.append("schema_meta fingerprint mismatch")
+
+    return errors
+
+
+def _update_schema_metadata(conn: sqlite3.Connection) -> None:
+    fingerprint = runtime_schema_fingerprint(conn)
+    conn.execute(
+        """
+        INSERT INTO schema_meta(key, schema_version, schema_fingerprint, accounting_projection_model, updated_ts)
+        VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+        ON CONFLICT(key) DO UPDATE SET
+            schema_version=excluded.schema_version,
+            schema_fingerprint=excluded.schema_fingerprint,
+            accounting_projection_model=excluded.accounting_projection_model,
+            updated_ts=excluded.updated_ts
+        """,
+        (
+            OPERATIONAL_SCHEMA_META_KEY,
+            OPERATIONAL_SCHEMA_VERSION,
+            fingerprint,
+            ACCOUNTING_PROJECTION_MODEL,
+        ),
+    )
+
+
+def assert_current_schema(conn: sqlite3.Connection) -> None:
+    errors = _runtime_schema_errors(conn, require_metadata=True)
+    if errors:
+        raise SchemaValidationError(
+            "DB schema validation failed before runtime operation: "
+            + "; ".join(errors)
+            + ". Restore a current DB backup or run a reviewed DB repair/migration before operating."
+        )
+
+
+def build_runtime_schema_diagnostics(conn: sqlite3.Connection) -> dict[str, object]:
+    tables = _table_names(conn)
+    missing_tables = sorted(set(REQUIRED_RUNTIME_TABLE_COLUMNS) - tables)
+    missing_columns: dict[str, list[str]] = {}
+    for table, required_columns in REQUIRED_RUNTIME_TABLE_COLUMNS.items():
+        if table not in tables:
+            continue
+        columns = set(_table_columns(conn, table))
+        missing = sorted(set(required_columns) - columns)
+        if missing:
+            missing_columns[table] = missing
+
+    portfolio_columns = set(_table_columns(conn, "portfolio"))
+    legacy_schema_detected = bool(
+        {"cash", "qty"}.issubset(portfolio_columns) and not {"cash_krw", "asset_qty"}.issubset(portfolio_columns)
+    )
+    malformed_portfolio = bool(portfolio_columns and not {"cash_krw", "asset_qty"}.issubset(portfolio_columns))
+    missing_triggers = sorted(set(REQUIRED_RUNTIME_TRIGGERS) - _trigger_names(conn))
+    errors = _runtime_schema_errors(conn, require_metadata=True)
+    schema_meta = None
+    if "schema_meta" in tables:
+        row = conn.execute(
+            """
+            SELECT key, schema_version, schema_fingerprint, accounting_projection_model, updated_ts
+            FROM schema_meta
+            WHERE key=?
+            """,
+            (OPERATIONAL_SCHEMA_META_KEY,),
+        ).fetchone()
+        if row is not None:
+            schema_meta = {
+                "key": _row_value(row, "key", 0),
+                "schema_version": _row_value(row, "schema_version", 1),
+                "schema_fingerprint": _row_value(row, "schema_fingerprint", 2),
+                "accounting_projection_model": _row_value(row, "accounting_projection_model", 3),
+                "updated_ts": _row_value(row, "updated_ts", 4),
+            }
+    recommendation = "schema_current"
+    if legacy_schema_detected:
+        recommendation = "restore_current_backup_or_run_reviewed_legacy_cash_qty_migration_before_operating"
+    elif malformed_portfolio or missing_tables or missing_columns or missing_triggers:
+        recommendation = "restore_valid_backup_or_run_reviewed_db_repair_before_operating"
+    elif errors:
+        recommendation = "run_db_initialization_or_review_schema_metadata_before_operating"
+
+    return {
+        "status": "PASS" if not errors else "FAIL",
+        "schema_version": OPERATIONAL_SCHEMA_VERSION,
+        "accounting_projection_model": ACCOUNTING_PROJECTION_MODEL,
+        "schema_fingerprint": runtime_schema_fingerprint(conn),
+        "schema_meta": schema_meta,
+        "legacy_schema_detected": legacy_schema_detected,
+        "malformed_portfolio_detected": malformed_portfolio,
+        "missing_tables": missing_tables,
+        "missing_columns": missing_columns,
+        "missing_triggers": missing_triggers,
+        "validation_errors": errors,
+        "recommended_action": recommendation,
+    }
+
+
+def diagnose_db_path(db_path: str | None = None) -> dict[str, object]:
+    path = resolve_db_path_for_connection(db_path or settings.DB_PATH, mode=settings.MODE)
+    if path != ":memory:" and not Path(path).exists():
+        return {
+            "status": "FAIL",
+            "db_path": path,
+            "exists": False,
+            "validation_errors": ["database file does not exist"],
+            "recommended_action": "run canonical initialization with bithumb_bot.db_core.ensure_db before operating",
+        }
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    try:
+        return {"db_path": path, "exists": True, **build_runtime_schema_diagnostics(conn)}
+    finally:
+        conn.close()
+
+
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
     cols = conn.execute(f"PRAGMA table_info({table})").fetchall()
     names = {str(row[1]) for row in cols}
@@ -399,6 +777,8 @@ def _ensure_open_position_lot_invariant_triggers(conn: sqlite3.Connection) -> No
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
+    _preflight_unsupported_schema(conn)
+
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS candles (
@@ -2036,7 +2416,17 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
 
+    _ensure_schema_meta_table(conn)
+    structural_errors = _runtime_schema_errors(conn, require_metadata=False)
+    if structural_errors:
+        raise SchemaValidationError(
+            "DB schema validation failed during initialization: "
+            + "; ".join(structural_errors)
+            + ". Restore a current DB backup or run a reviewed DB repair/migration before operating."
+        )
+    _update_schema_metadata(conn)
     conn.commit()
+    assert_current_schema(conn)
 
 
 def record_strategy_decision(

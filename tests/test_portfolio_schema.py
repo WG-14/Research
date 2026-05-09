@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
+from bithumb_bot import db_schema
 from bithumb_bot.db_core import (
+    ACCOUNTING_PROJECTION_MODEL,
+    OPERATIONAL_SCHEMA_VERSION,
+    SchemaValidationError,
+    assert_current_schema,
+    build_runtime_schema_diagnostics,
     ensure_db,
     get_portfolio,
     get_portfolio_breakdown,
@@ -15,12 +23,67 @@ from bithumb_bot.db_core import (
 def test_schema_bootstrap_creates_portfolio_split_columns(tmp_path):
     conn = ensure_db(str(tmp_path / "bootstrap.sqlite"))
     cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(portfolio)").fetchall()}
+    meta = conn.execute(
+        "SELECT schema_version, accounting_projection_model FROM schema_meta WHERE key='operational_schema'"
+    ).fetchone()
+    assert_current_schema(conn)
     conn.close()
 
     assert "cash_available" in cols
     assert "cash_locked" in cols
     assert "asset_available" in cols
     assert "asset_locked" in cols
+    assert int(meta["schema_version"]) == OPERATIONAL_SCHEMA_VERSION
+    assert str(meta["accounting_projection_model"]) == ACCOUNTING_PROJECTION_MODEL
+
+
+def test_empty_db_opened_by_ensure_db_produces_validated_current_schema(tmp_path):
+    db_path = tmp_path / "empty.sqlite"
+    db_path.touch()
+
+    conn = ensure_db(str(db_path))
+    try:
+        assert_current_schema(conn)
+        diagnostics = build_runtime_schema_diagnostics(conn)
+    finally:
+        conn.close()
+
+    assert diagnostics["status"] == "PASS"
+
+
+def test_current_db_reopened_by_ensure_db_still_validates(tmp_path):
+    db_path = tmp_path / "current.sqlite"
+    conn = ensure_db(str(db_path))
+    conn.close()
+
+    reopened = ensure_db(str(db_path))
+    try:
+        assert_current_schema(reopened)
+        diagnostics = build_runtime_schema_diagnostics(reopened)
+    finally:
+        reopened.close()
+
+    assert diagnostics["status"] == "PASS"
+
+
+def test_deprecated_db_schema_module_no_longer_creates_cash_qty_portfolio(tmp_path):
+    conn = sqlite3.connect(str(tmp_path / "deprecated-module.sqlite"))
+    conn.row_factory = sqlite3.Row
+    with pytest.warns(DeprecationWarning):
+        db_schema.ensure_schema(conn)
+    with pytest.warns(DeprecationWarning):
+        db_schema.init_portfolio(conn, 123_456.0)
+    cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(portfolio)").fetchall()}
+    row = conn.execute(
+        "SELECT cash_krw, asset_qty, cash_available, cash_locked, asset_available, asset_locked FROM portfolio WHERE id=1"
+    ).fetchone()
+    conn.close()
+
+    assert "cash" not in cols
+    assert "qty" not in cols
+    assert {"cash_krw", "asset_qty", "cash_available", "cash_locked", "asset_available", "asset_locked"} <= cols
+    assert float(row["cash_krw"]) == 123_456.0
+    assert float(row["cash_available"]) == 123_456.0
 
 
 def test_schema_bootstrap_creates_candles_pair_interval_ts_index(tmp_path):
@@ -96,6 +159,64 @@ def test_portfolio_schema_upgrade_backfills_from_legacy_aggregate_columns(tmp_pa
     assert float(row["cash_locked"]) == 0.0
     assert float(row["asset_available"]) == 0.42
     assert float(row["asset_locked"]) == 0.0
+
+
+def test_old_cash_qty_portfolio_schema_is_rejected_before_runtime_use(tmp_path):
+    db_path = tmp_path / "old-cash-qty.sqlite"
+    legacy = sqlite3.connect(str(db_path))
+    legacy.execute(
+        """
+        CREATE TABLE portfolio (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            cash REAL NOT NULL,
+            qty REAL NOT NULL
+        )
+        """
+    )
+    legacy.execute("INSERT INTO portfolio(id, cash, qty) VALUES (1, 456789.0, 0.42)")
+    legacy.commit()
+
+    diagnostics = build_runtime_schema_diagnostics(legacy)
+    legacy.close()
+
+    assert diagnostics["legacy_schema_detected"] is True
+    assert diagnostics["status"] == "FAIL"
+    with pytest.raises(SchemaValidationError, match=r"portfolio\(cash, qty\)"):
+        ensure_db(str(db_path))
+
+
+def test_malformed_partial_portfolio_schema_fails_with_clear_schema_error(tmp_path):
+    db_path = tmp_path / "malformed-portfolio.sqlite"
+    malformed = sqlite3.connect(str(db_path))
+    malformed.execute(
+        """
+        CREATE TABLE portfolio (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            cash_krw REAL NOT NULL
+        )
+        """
+    )
+    malformed.commit()
+    malformed.close()
+
+    with pytest.raises(SchemaValidationError, match="portfolio table is missing required aggregate column"):
+        ensure_db(str(db_path))
+
+
+def test_portfolio_total_mismatch_fails_schema_validation_before_runtime_use(tmp_path):
+    db_path = tmp_path / "portfolio-mismatch.sqlite"
+    conn = ensure_db(str(db_path))
+    conn.execute(
+        """
+        INSERT INTO portfolio(id, cash_krw, asset_qty, cash_available, cash_locked, asset_available, asset_locked)
+        VALUES (1, 100.0, 1.0, 90.0, 0.0, 1.0, 0.0)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SchemaValidationError, match="portfolio cash total mismatch"):
+        ensure_db(str(db_path))
 
 
 def test_set_portfolio_legacy_api_still_works(tmp_path):

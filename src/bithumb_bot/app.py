@@ -24,6 +24,7 @@ from datetime import datetime, timezone, timedelta
 from .marketdata import cmd_sync, cmd_sync_orderbook_top, cmd_ticker, cmd_candles
 from .db_core import (
     compute_accounting_replay,
+    diagnose_db_path,
     ensure_db,
     get_broker_fill_observation_summary,
     get_external_cash_adjustment_summary,
@@ -2301,6 +2302,25 @@ def cmd_audit_ledger() -> None:
         raise SystemExit(1)
 
     print("[AUDIT-LEDGER] OK")
+
+
+def cmd_validate_db(*, as_json: bool = False) -> int:
+    diagnostics = diagnose_db_path(settings.DB_PATH)
+    if as_json:
+        print(json.dumps(diagnostics, ensure_ascii=False, sort_keys=True, indent=2))
+    else:
+        print(
+            "db_schema_status="
+            f"{diagnostics.get('status')} "
+            f"schema_version={diagnostics.get('schema_version')} "
+            f"accounting_projection_model={diagnostics.get('accounting_projection_model')} "
+            f"legacy_schema_detected={int(bool(diagnostics.get('legacy_schema_detected')))} "
+            f"malformed_portfolio_detected={int(bool(diagnostics.get('malformed_portfolio_detected')))} "
+            f"recommended_action={diagnostics.get('recommended_action')}"
+        )
+        for error in diagnostics.get("validation_errors") or []:
+            print(f"schema_error={error}")
+    return 0 if diagnostics.get("status") == "PASS" else 1
 
 
 
@@ -6879,6 +6899,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status")
     sub.add_parser("audit")
     sub.add_parser("check")
+    validate_db = sub.add_parser("validate-db", help="validate operational DB schema without applying repair")
+    validate_db.add_argument("--json", action="store_true")
     config_dump = sub.add_parser(
         "config-dump",
         help="show bootstrap-loaded effective config for operator validation",
@@ -7389,6 +7411,8 @@ def main(argv: list[str] | None = None) -> int:
         cmd_config_dump(masked=bool(args.masked))
     elif args.cmd == "health":
         cmd_health()
+    elif args.cmd == "validate-db":
+        raise SystemExit(cmd_validate_db(as_json=bool(args.json)))
     elif args.cmd == "trades":
         cmd_trades(args.limit)
     elif args.cmd == "orders":

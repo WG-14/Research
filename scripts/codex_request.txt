@@ -1,351 +1,296 @@
-You are Codex operating directly inside GitHub repository `WG-14/bithumb-bot`.
+You are working in the GitHub repository `WG-14/bithumb-bot`.
 
-Continue from the latest metrics-contract and fee-drag-basis patches. Do not treat the current state as complete merely because pytest passed. The larger design goal remains: this repo must maintain one coherent, reproducible performance/evidence contract across research, promotion, runtime reports, and typed paper/live readiness evidence. This is not about adding isolated fields; it is about making artifacts safe, deterministic, operator-readable, and fail-closed when external evidence is malformed.
+Use the prior DB schema duplication analysis as the source context: 
 
-The latest review suggests the `fee_drag_ratio` denominator/basis inconsistency has been fixed. The remaining recommended hardening is narrower but important: typed evidence validation should reject non-finite numeric values with explicit `EvidenceValidationError` reason codes, not leak generic `ValueError` from JSON hashing or silently accept `Infinity` / `-Infinity`.
+Your task is to directly inspect, verify, patch, and test the repository around the DB schema duplication problem. Do not treat the initial diagnosis as proven. Start from it as a set of hypotheses, then confirm, refine, or falsify them from the actual code.
 
-Treat this as a hypothesis until verified in the repo.
+Core problem to investigate:
 
-Do not ask clarification questions. Inspect, verify, patch, test, and report.
+The repository appears to contain two competing DB schema authorities:
 
-## Inspect first
+* `src/bithumb_bot/db_schema.py` appears to define an older schema where `portfolio` uses `cash` and `qty`, and `trades` uses older accounting columns.
+* `src/bithumb_bot/db_core.py` appears to define the current runtime schema where `portfolio` uses `cash_krw`, `asset_qty`, `cash_available`, `cash_locked`, `asset_available`, `asset_locked`, plus order/fill/repair/observation tables.
+* Runtime code appears to use `db_core.ensure_db()`, but the old `db_schema.py` module may still allow stale scripts or experiments to create a structurally wrong database.
 
-Before modifying code, inspect at least:
+Do not solve this as a cosmetic cleanup. The goal is to make the repository more robust, reproducible, recoverable, and operational as an automated trading experiment system. Prioritize design-level prevention of the whole problem family over symptom patches.
 
-* `src/bithumb_bot/evidence_chain.py`
-* `src/bithumb_bot/research/hashing.py`
-* `src/bithumb_bot/storage_io.py`
-* `src/bithumb_bot/research/metrics_contract.py`
-* `src/bithumb_bot/strategy_performance.py`
-* `src/bithumb_bot/research/promotion_gate.py`
-* `src/bithumb_bot/approved_profile.py`
-* `src/bithumb_bot/profile_cli.py` or other profile promotion/verification code if present
-* `docs/research-validation.md`
-* `docs/OPERATOR_REPORTING.md`
-* tests covering evidence validation, approved profiles, profile promotion, strict JSON, research metrics, and strategy performance.
+Required investigation:
 
-Search the repo for:
+1. Search the full repository for all references to:
 
-```text
-validate_profile_transition_evidence
-compute_evidence_content_hash
-validate_evidence_content_hash
-EvidenceValidationError
-fee_drag_ratio
-allow_nan
-math.isfinite
-float("inf")
-Infinity
-NaN
-```
+   * `db_schema`
+   * `ensure_schema`
+   * `init_portfolio`
+   * `ensure_db`
+   * `portfolio`
+   * `cash`
+   * `qty`
+   * `cash_krw`
+   * `asset_qty`
+   * `cash_available`
+   * `asset_available`
+   * raw `sqlite3.connect`
 
-## Current working hypotheses
+2. Determine whether `db_schema.py` is still imported or used by any production, script, test, CLI, or migration path.
 
-### H1: `fee_drag_ratio` basis inconsistency is fixed
+3. Compare the schema created by `db_schema.py` against the schema expected by `db_core.py`.
 
-Verify but do not repatch unless needed.
+4. Specifically verify what happens when a database is first created using the old `db_schema.py` path and then later opened through `db_core.ensure_db()`.
 
-Expected current behavior:
+5. Inspect whether `db_core.ensure_schema()` currently performs a safe migration from:
 
-* Research `metrics_v2.cost_execution.fee_drag_ratio` uses `traded_notional`.
-* Research `metrics_v2.cost_execution.fee_drag_ratio_basis == "traded_notional"`.
-* Runtime `StrategyPerformanceSummary.fee_drag_ratio` either also uses `traded_notional` when lifecycle notional fields exist, or explicitly states its basis.
-* Historical runtime gross-PnL-based fee ratio is separated as `fee_to_gross_pnl_ratio` with `fee_to_gross_pnl_ratio_basis == "gross_pnl_abs"`.
-* Runtime gate compatibility threshold clearly states the basis it uses.
+   * empty database
+   * current database
+   * aggregate-only legacy database with `cash_krw` / `asset_qty`
+   * older legacy database with `cash` / `qty`
+   * partially malformed database
 
-If this is already true, leave it alone except for any tests impacted by this task.
+6. Check whether runtime startup has a fail-fast schema validation gate, or whether a bad DB can partially initialize and fail later in trading/reporting/repair logic.
 
-### H2: Typed evidence numeric validation does not consistently reject non-finite values with `EvidenceValidationError`
+7. Check whether the repository has explicit schema versioning, schema metadata, schema migration registry, or runtime schema fingerprinting for the operational accounting schema.
 
-Inspect `evidence_chain.py`.
+Root-cause hypotheses to validate or falsify:
 
-The likely issue is:
+Hypothesis 1:
+The repository has split schema authority. `db_schema.py` and `db_core.py` both expose schema/portfolio initialization responsibility, but they create incompatible schema shapes.
 
-* `_number()` may reject `NaN` via `parsed != parsed`.
-* `_number()` may not reject `inf` or `-inf`.
-* `compute_evidence_content_hash()` / `validate_evidence_content_hash()` may fail on non-finite floats because canonical JSON uses `allow_nan=False`, but that failure may surface as a generic `ValueError`, not a stable `EvidenceValidationError`.
-* Operator-facing profile promotion failures may therefore be less recoverable and less reason-coded than the rest of the evidence contract.
+Verification:
+Create or simulate a DB using `db_schema.ensure_schema()` and `db_schema.init_portfolio()`, then run `db_core.ensure_db(path)` against it. The result must be either a fully migrated current schema or an explicit unsupported-schema error. Silent partial success, generic SQLite `OperationalError`, or a DB left with mixed old/new columns confirms the hypothesis.
 
-### H3: String forms like `"Infinity"` may bypass JSON strictness and only fail if `_number()` is finite-aware
+Hypothesis 2:
+The current migration approach relies too heavily on `CREATE TABLE IF NOT EXISTS` and incremental `ALTER TABLE ADD COLUMN`, which does not safely detect or repair pre-existing incompatible tables.
 
-Python `json.dumps(..., allow_nan=False)` rejects non-finite float values, but a string such as `"Infinity"` is valid JSON. If `_number("Infinity", ...)` converts to `float("inf")`, it must be rejected as non-finite with the supplied schema reason.
+Verification:
+Build tests around legacy fixture matrices and inspect the resulting table definitions, required columns, and portfolio invariants after `ensure_db()`.
 
-### H4: Current tests may cover strict JSON in research artifacts but not typed paper/live evidence validation
+Hypothesis 3:
+Current tests cover only a newer legacy schema generation, likely `cash_krw` / `asset_qty`, but not the older `cash` / `qty` schema still constructible from `db_schema.py`.
 
-Inspect tests. If no test pins `validate_profile_transition_evidence()` behavior for non-finite evidence fields, add one.
+Verification:
+Inspect existing tests, especially portfolio schema tests. Add a failing regression test for the `cash` / `qty` legacy DB path before patching.
 
-## Design goal
+Hypothesis 4:
+The repository has evolved into an event/repair/observation-based accounting system, but DB schema management has not evolved to the same operational rigor.
 
-Do not add a one-off check only for `fee_drag_ratio`.
+Verification:
+Inspect accounting replay, reporting, repair, order/fill, and observation code. Determine whether schema readiness, portfolio projection consistency, repair table existence, and trigger existence are enforced before runtime operations.
 
-Patch the typed evidence validation boundary so all numeric fields parsed through the evidence schema are finite and reason-coded. This should cover:
+Implementation priorities:
 
-* `gross_pnl`
-* `fee_total`
-* `net_pnl`
-* `expectancy_per_trade`
-* `profit_factor`
-* `fee_drag_ratio`
-* observation duration
-* thresholds
-* any other numeric field passed through `_number()`
+Priority 1 — eliminate the ability to create a new stale DB from `db_schema.py`.
 
-The solution should be small but structural:
+Preferred design:
 
-1. `_number()` must reject `NaN`, `Infinity`, and `-Infinity`.
-2. Content-hash validation should convert canonical JSON non-finite failures into `EvidenceValidationError` with a stable reason.
-3. Tests should prove both raw float non-finite values and string non-finite values fail with operator-readable reason codes.
+* If `db_schema.py` has no legitimate internal use, remove it or convert it into a non-DDL compatibility layer.
+* It must no longer contain executable old DDL that creates `portfolio(cash, qty)`.
+* If deleting it would break imports, replace it with a thin shim that delegates to `db_core` or raises a clear deprecation error.
+* In either case, it must be impossible for this module to create the old `cash` / `qty` schema.
 
-## Implementation requirements
+Acceptable outcomes:
 
-### 1. Harden `_number()`
+* Delete `db_schema.py` and update imports/tests accordingly.
+* Or replace it with a compatibility wrapper:
 
-In `src/bithumb_bot/evidence_chain.py`, update `_number()` to use `math.isfinite()`.
+  * `ensure_schema = db_core.ensure_schema`
+  * `init_portfolio = db_core.init_portfolio`
+* Or make it fail explicitly with an actionable message:
 
-Expected shape:
+  * “`bithumb_bot.db_schema` is deprecated. Use `bithumb_bot.db_core.ensure_db()`. Run the DB migration/doctor command before operating.”
 
-```python
-import math
+Do not leave the old DDL in place.
 
-def _number(value: object, reason: str) -> float:
-    if isinstance(value, bool):
-        raise EvidenceValidationError(reason)
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise EvidenceValidationError(reason) from exc
-    if not math.isfinite(parsed):
-        raise EvidenceValidationError(reason)
-    return parsed
-```
+Priority 2 — add explicit legacy schema regression tests.
 
-Preserve existing behavior for valid integers/floats/numeric strings.
+Add tests that cover at least:
 
-Do not accept booleans.
+* Empty DB opened by `db_core.ensure_db()`
+* Current DB reopened by `db_core.ensure_db()`
+* Legacy aggregate DB with `portfolio(cash_krw, asset_qty)` upgraded to current available/locked columns
+* Old DB with `portfolio(cash, qty)` created from the old schema shape
+* Malformed/partial `portfolio` table
 
-### 2. Harden content-hash validation boundary
+For the old `cash` / `qty` path, choose one policy and test it explicitly:
 
-Inspect `compute_evidence_content_hash()` and `validate_evidence_content_hash()`.
+Policy A: migrate it safely to the current schema.
+Required behavior:
 
-If `sha256_prefixed(...)` or canonical JSON serialization can raise `ValueError` on non-finite payload values, catch it and raise `EvidenceValidationError` with a stable reason.
+* `cash` maps to `cash_krw`
+* `qty` maps to `asset_qty`
+* `cash_available = cash_krw`
+* `cash_locked = 0`
+* `asset_available = asset_qty`
+* `asset_locked = 0`
+* no old `cash` / `qty` dependency remains in runtime logic
 
-Recommended reason code:
+Policy B: reject it explicitly.
+Required behavior:
 
-```text
-<label>_schema_invalid:non_finite_json
-```
+* `ensure_db()` fails before trading/reporting/repair code runs
+* error message clearly identifies legacy `portfolio(cash, qty)`
+* error message gives an actionable recovery path
 
-or, if the codebase already prefers a different style, use the closest existing schema-invalid pattern. Keep it stable and test it.
+Do not allow:
 
-Suggested shape:
+* silent mixed schema
+* generic `sqlite3.OperationalError`
+* later runtime failure
+* partial migration without invariant validation
 
-```python
-def validate_evidence_content_hash(payload: dict[str, Any], *, label: str) -> str:
-    expected = payload.get(EVIDENCE_HASH_FIELD)
-    if not isinstance(expected, str) or not expected.startswith("sha256:"):
-        raise EvidenceValidationError(f"{label}_schema_invalid:content_hash_missing")
-    try:
-        actual = compute_evidence_content_hash(payload)
-    except ValueError as exc:
-        raise EvidenceValidationError(f"{label}_schema_invalid:non_finite_json") from exc
-    if actual != expected:
-        raise EvidenceValidationError(f"{label}_content_hash_mismatch")
-    return actual
-```
+Priority 3 — add a runtime schema validation gate.
 
-If `compute_evidence_content_hash()` is used elsewhere and should also fail with `EvidenceValidationError`, consider adding a helper rather than duplicating behavior. Avoid broad exception swallowing.
+Implement or strengthen a function such as:
 
-### 3. Preserve strict JSON behavior
+* `assert_current_schema(conn)`
+* `validate_runtime_schema(conn)`
+* or equivalent inside `db_core.py`
 
-Do not weaken `allow_nan=False` in hashing or storage. If anything, keep it strict.
+It should verify, at minimum:
 
-Do not allow non-finite values into persisted artifacts just to make validation pass.
+* `portfolio` exists
+* `portfolio` has required current columns:
 
-### 4. Keep scope narrow
+  * `cash_krw`
+  * `asset_qty`
+  * `cash_available`
+  * `cash_locked`
+  * `asset_available`
+  * `asset_locked`
+* old-only `portfolio(cash, qty)` is not accepted as current schema
+* `trades` has current accounting columns such as `cash_after` and `asset_after`
+* required order/fill/repair/observation tables exist if they are part of the current operational schema
+* required triggers exist, especially open-position/lot invariant triggers if applicable
+* portfolio totals are internally consistent:
 
-Do not change strategy logic, research metrics formulas, runtime performance gate thresholds, live arming, broker behavior, `.env`, secrets, path policy, or external artifacts.
+  * `cash_krw == cash_available + cash_locked` within tolerance
+  * `asset_qty == asset_available + asset_locked` within tolerance
+* schema validation errors are typed or at least clear, specific, and actionable
 
-Do not claim this task makes the system live-ready.
+Wire this validation into `ensure_db()` after schema creation/migration, unless there is already a well-defined reason to skip it. If a skip flag exists or is added, it must not be used by normal trading/reporting/repair entrypoints.
 
-This is a typed-evidence validation hardening patch.
+Priority 4 — introduce minimal schema metadata or lay the foundation for it.
 
-## Testing requirements
+If the repository already has schema metadata, use it. Otherwise, add a minimal operational schema metadata mechanism if feasible within this patch:
 
-Add or update tests that directly exercise `validate_profile_transition_evidence()` or the evidence validation function used by profile transitions.
+* `schema_meta`
+* `schema_version`
+* `schema_fingerprint`
+* `accounting_projection_model`
+* migration/applied timestamp
 
-Use the repo’s existing test style and fixtures. If a helper already builds valid paper/live evidence payloads, reuse it.
+Do not over-engineer a large migration framework if that would exceed the scope, but do not ignore the design issue. If a full migration registry is too large for this patch, implement a small current-version marker and document the next step.
 
-At minimum add tests for:
+Priority 5 — improve recovery and observability.
 
-### 1. Raw non-finite float in typed evidence
+Add or extend a DB diagnostic path if the repository has an existing CLI/reporting structure. Prefer a command or function with JSON-friendly output such as:
 
-Create a valid typed evidence payload, then set:
+* `db-doctor`
+* `doctor-db`
+* `validate-db`
+* or equivalent naming consistent with the repo
 
-```python
-payload["fee_drag_ratio"] = float("inf")
-```
+It should report:
 
-or another optional numeric field. Ensure the payload has a content hash state that reaches validation in a meaningful way.
+* current schema version or absence of schema metadata
+* schema fingerprint or required-table/column status
+* legacy schema detected
+* missing tables
+* missing columns
+* portfolio total consistency
+* accounting projection consistency if already available
+* open orders / recovery-required count if already available
+* unresolved fee pending count if already available
+* repair/observation table availability
+* recommended action
 
-Expected:
+If adding a CLI command is too large, at least add a reusable diagnostic function and tests, then explain in the final report why CLI integration was deferred.
 
-* `validate_profile_transition_evidence(...)` raises `EvidenceValidationError`
-* it does not leak plain `ValueError`
-* the reason is stable, ideally:
+Scope constraints:
 
-  * `<label>_schema_invalid:non_finite_json` if failure occurs during content-hash validation, or
-  * `<label>_schema_invalid:fee_drag_ratio` if failure occurs during numeric field validation.
+* Do not rewrite the whole DB layer.
+* Do not make speculative trading logic changes.
+* Do not weaken accounting invariants to make tests pass.
+* Do not hide legacy schema problems by renaming columns without verifying downstream expectations.
+* Do not silently drop operational data.
+* Any destructive migration must require an explicit backup/recovery path.
+* Preserve existing behavior for valid current DBs.
+* Keep research-only read-only SQLite access separate from operational DB access.
+* Raw `sqlite3.connect` may remain in tests, fixtures, migrations, and read-only research loaders, but production trading/reporting/repair paths should use the canonical DB gateway.
 
-Be explicit in the assertion.
+Testing requirements:
 
-### 2. String `"Infinity"` in typed evidence
+Run the relevant test suite. At minimum:
 
-Create a valid payload with:
+* run existing DB/portfolio/accounting tests
+* run new legacy schema tests
+* run any reporting/repair tests affected by schema validation
+* run full `pytest` if practical
 
-```python
-payload["fee_drag_ratio"] = "Infinity"
-```
+Add tests that prove:
 
-Because this is JSON-valid as a string, content hashing may succeed if the content hash is recomputed. Validation must still reject it when `_number()` parses the field.
+1. `db_schema.py` can no longer create `portfolio(cash, qty)`.
+2. A DB with `portfolio(cash, qty)` is either safely migrated or explicitly rejected.
+3. `ensure_db()` produces a validated current schema.
+4. Valid current DBs still pass.
+5. Legacy aggregate DBs with `cash_krw` / `asset_qty` still upgrade correctly.
+6. Portfolio available/locked totals are preserved and validated.
+7. Bad schemas fail early with clear messages.
+8. Observability/doctor output identifies legacy or malformed schema states.
 
-Expected:
+Expected final design direction:
 
-* `EvidenceValidationError`
-* reason includes `<label>_schema_invalid:fee_drag_ratio`
+The canonical DB authority must be `db_core.ensure_db()` and the current schema definitions behind it. `db_schema.py` must not remain an independent executable schema source. `ensure_db()` should become an operational safety gate, not just a best-effort table creator.
 
-Also test `"-Infinity"` if easy.
+The intended long-term model is:
 
-### 3. String `"NaN"` in typed evidence
+* DB schema creation, migration, validation, and recovery diagnostics live behind one canonical path.
+* `portfolio` is treated as a materialized projection of authoritative accounting events, not as an unconstrained primary source of truth.
+* Repairs, observations, fills, and projections are tied to explicit schema/version assumptions.
+* Any legacy schema is either migrated deterministically or rejected before runtime automation starts.
 
-Same as above, but with:
+Final report format:
 
-```python
-payload["expectancy_per_trade"] = "NaN"
-```
+After making changes, report in this exact structure:
 
-or another numeric field.
+1. Summary
 
-Expected:
+   * What was changed
+   * Whether the original diagnosis was confirmed, refined, or falsified
 
-* `EvidenceValidationError`
-* field-specific schema-invalid reason.
+2. Root-cause hypotheses
 
-### 4. Valid finite numeric string still works
+   * Hypothesis 1 result: confirmed/refined/falsified
+   * Evidence
+   * Patch or mitigation
+   * Remaining risk
 
-Use a numeric string such as:
+   Repeat for each hypothesis.
 
-```python
-payload["fee_drag_ratio"] = "0.001"
-```
+3. Design changes
 
-Expected:
+   * Canonical schema authority
+   * Legacy schema handling
+   * Runtime validation
+   * Migration/versioning metadata
+   * Observability/recovery additions
 
-* validation does not fail because of numeric parsing
-* content hash remains deterministic if recomputed properly.
+4. Tests added or changed
 
-### 5. Strict JSON regression
+   * List each new test and what failure mode it prevents
 
-Ensure existing strict JSON tests still pass.
+5. Commands run
 
-If relevant, add an evidence-specific strict JSON test:
+   * Exact commands
+   * Pass/fail result
 
-```python
-json.dumps(valid_evidence_payload, allow_nan=False)
-```
+6. Operational impact
 
-### 6. Existing evidence/profile tests remain green
+   * What happens now if an old `cash` / `qty` DB appears
+   * What happens now on a valid current DB
+   * How an operator should diagnose or recover
 
-Run profile/evidence-related tests in addition to targeted new tests.
+7. Deferred work
 
-## Suggested test locations
+   * Only include real deferred work
+   * Do not use this section to hide required fixes
 
-Likely files:
-
-* `tests/test_approved_profile.py`
-* `tests/test_evidence_chain.py` if it exists
-* `tests/test_profile_cli.py` or profile promotion tests if present
-* create `tests/test_evidence_chain.py` if no focused file exists.
-
-Prefer focused unit tests over large integration tests unless the repo already has good fixtures for profile promotion evidence.
-
-## Suggested commands
-
-Run targeted tests first, then broader suite:
-
-```bash
-uv run pytest tests/test_evidence_chain.py
-uv run pytest tests/test_approved_profile.py
-uv run pytest tests/test_research_metrics_contract.py
-uv run pytest tests/test_strategy_performance_gate.py
-uv run pytest tests/test_research_promotion_gate.py
-uv run pytest
-```
-
-Adjust file names to the actual repo. If a command is unavailable or the full suite is too slow, run the closest relevant subset and report exactly what was not run and why.
-
-## Documentation updates
-
-Update docs only if behavior or reason codes change.
-
-At minimum, if you add `non_finite_json` or similar, update `docs/research-validation.md` or the relevant evidence/profile section to state:
-
-* typed paper/live readiness evidence rejects `Infinity`, `-Infinity`, `NaN`, and numeric strings that parse to non-finite values
-* failures are reported with stable schema-invalid reason codes
-* evidence artifacts remain strict JSON and deterministic-hash artifacts
-* this hardening improves artifact recoverability and operator diagnosis, not live readiness.
-
-Keep documentation concise.
-
-## Backward compatibility and recovery requirements
-
-* Existing valid evidence artifacts must continue to validate.
-* Invalid non-finite evidence artifacts should fail earlier and more clearly.
-* Failure must be `EvidenceValidationError`, not generic `ValueError`, when going through evidence validation.
-* Do not change evidence schema version unless absolutely necessary.
-* Do not change content hash semantics except to wrap non-finite serialization failures in a stable evidence-validation error.
-* Do not change runtime strategy behavior.
-
-## Final report format
-
-When finished, report in this exact structure:
-
-```text
-Summary
-- What changed and why.
-
-Hypotheses verified/refuted
-- H1:
-- H2:
-- H3:
-- H4:
-
-Design decisions
-- Numeric validation boundary:
-- Content-hash non-finite handling:
-- Reason-code choice:
-- Backward compatibility choices:
-
-Files changed
-- path: purpose
-
-New/changed reason codes
-- code: meaning
-
-Tests added/updated
-- test path/name: what it proves
-
-Commands run
-- command: pass/fail
-- command not run: reason
-
-Operational impact
-- What operators will now see when malformed typed evidence contains Infinity/NaN.
-- What recovery action is clearer now.
-- What remains out of scope.
-
-Risks and follow-up
-- Any remaining evidence validation edge cases.
-- Any future work needed for automated paper/live evidence artifact generation.
-```
-
-Do not claim live readiness. This patch is about making typed evidence validation more deterministic, recoverable, and operator-readable.
+Be strict. The patch is successful only if it prevents the old schema path from recurring and makes schema mismatch detectable before live trading, repair, or reporting logic can operate on a bad DB.
