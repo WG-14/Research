@@ -23,6 +23,7 @@ class StrategyPerformanceSummary:
     expectancy_per_trade: float
     win_rate: float
     profit_factor: float | None
+    profit_factor_unbounded: bool
     fee_drag_ratio: float | None
     worst_trade: float | None
     best_trade: float | None
@@ -39,6 +40,7 @@ class StrategyPerformanceSummary:
             "win_rate": self.win_rate,
             "win_rate_pct": self.win_rate * 100.0,
             "profit_factor": self.profit_factor,
+            "profit_factor_unbounded": self.profit_factor_unbounded,
             "fee_drag_ratio": self.fee_drag_ratio,
             "worst_trade": self.worst_trade,
             "best_trade": self.best_trade,
@@ -79,6 +81,7 @@ def _empty_summary() -> StrategyPerformanceSummary:
         expectancy_per_trade=0.0,
         win_rate=0.0,
         profit_factor=None,
+        profit_factor_unbounded=False,
         fee_drag_ratio=None,
         worst_trade=None,
         best_trade=None,
@@ -156,7 +159,8 @@ def fetch_strategy_performance_summary(
     net_pnl = float(sum(net_values))
     wins = [pnl for pnl in net_values if pnl > 0.0]
     losses = [pnl for pnl in net_values if pnl < 0.0]
-    profit_factor = (sum(wins) / abs(sum(losses))) if losses else (None if not wins else float("inf"))
+    profit_factor_unbounded = bool(wins and not losses)
+    profit_factor = (sum(wins) / abs(sum(losses))) if losses else None
     fee_drag_ratio = (fee_total / abs(gross_pnl)) if abs(gross_pnl) > 1e-12 else None
     return StrategyPerformanceSummary(
         sample_count=len(rows),
@@ -166,6 +170,7 @@ def fetch_strategy_performance_summary(
         expectancy_per_trade=net_pnl / len(rows),
         win_rate=len(wins) / len(rows),
         profit_factor=profit_factor,
+        profit_factor_unbounded=profit_factor_unbounded,
         fee_drag_ratio=fee_drag_ratio,
         worst_trade=min(net_values),
         best_trade=max(net_values),
@@ -227,7 +232,10 @@ def evaluate_strategy_performance_gate(
         allowed = False
         reason_code = STRATEGY_NET_PNL_NEGATIVE
         reason = f"net_pnl={summary.net_pnl:.6f} below min={float(thresholds['min_net_pnl_krw']):.6f}"
-    elif summary.profit_factor is None or summary.profit_factor < float(thresholds["min_profit_factor"]):
+    elif (
+        summary.profit_factor_unbounded is not True
+        and (summary.profit_factor is None or summary.profit_factor < float(thresholds["min_profit_factor"]))
+    ):
         allowed = False
         reason_code = STRATEGY_PROFIT_FACTOR_LOW
         reason = f"profit_factor={summary.profit_factor} below min={float(thresholds['min_profit_factor']):.6f}"
@@ -252,4 +260,3 @@ def evaluate_strategy_performance_gate(
         summary=summary,
         thresholds=thresholds,
     )
-

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -10,9 +12,9 @@ from bithumb_bot.paths import PathManager
 from bithumb_bot.canonical_decision import export_research_decisions, export_runtime_replay_decisions
 from bithumb_bot.decision_equivalence import compare_decision_equivalence
 from bithumb_bot.research.backtest_engine import run_sma_backtest
-from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
+from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot, TopOfBookQuote
 from bithumb_bot.research.execution_calibration import build_calibration_artifact
-from bithumb_bot.research.execution_model import FixedBpsExecutionModel, StressExecutionModel
+from bithumb_bot.research.execution_model import ExecutionFill, ExecutionRequest, FixedBpsExecutionModel, StressExecutionModel
 from bithumb_bot.research.experiment_manifest import ExecutionTimingPolicy, parse_manifest
 from bithumb_bot.research.parameter_space import candidate_id
 from bithumb_bot.research.promotion_gate import PromotionGateError, promote_candidate
@@ -89,6 +91,84 @@ def _manifest() -> dict[str, object]:
     }
 
 
+class _FailSellExecutionModel:
+    name = "fail_sell_test"
+    version = "test_v1"
+
+    def __init__(self) -> None:
+        self._fixed = FixedBpsExecutionModel(fee_rate=0.0, slippage_bps=0.0)
+
+    def params_payload(self) -> dict[str, object]:
+        return {"type": self.name, "version": self.version}
+
+    def simulate(self, request: ExecutionRequest) -> ExecutionFill:
+        fill = self._fixed.simulate(request)
+        if str(request.side).upper() != "SELL":
+            return fill
+        return replace(
+            fill,
+            filled_qty=0.0,
+            remaining_qty=float(request.requested_qty or 0.0),
+            avg_fill_price=None,
+            fee=0.0,
+            fill_status="failed",
+            model_name=self.name,
+            model_version=self.version,
+        )
+
+
+class _PartialSellExecutionModel:
+    name = "partial_sell_test"
+    version = "test_v1"
+
+    def __init__(self) -> None:
+        self._fixed = FixedBpsExecutionModel(fee_rate=0.0, slippage_bps=0.0)
+
+    def params_payload(self) -> dict[str, object]:
+        return {"type": self.name, "version": self.version}
+
+    def simulate(self, request: ExecutionRequest) -> ExecutionFill:
+        fill = self._fixed.simulate(request)
+        if str(request.side).upper() != "SELL":
+            return fill
+        filled_qty = float(fill.filled_qty) * 0.5
+        return replace(
+            fill,
+            filled_qty=filled_qty,
+            remaining_qty=max(0.0, float(fill.requested_qty) - filled_qty),
+            fee=0.0,
+            fill_status="partial",
+            model_name=self.name,
+            model_version=self.version,
+        )
+
+
+def _snapshot_from_closes(closes: list[float], *, quotes: tuple[TopOfBookQuote, ...] = ()) -> DatasetSnapshot:
+    base_ts = 1_700_000_000_000
+    candles = tuple(
+        Candle(
+            ts=base_ts + index * 60_000,
+            open=float(close),
+            high=max(float(close), 130.0),
+            low=min(float(close), 100.0) * 0.9,
+            close=float(close),
+            volume=1.0,
+        )
+        for index, close in enumerate(closes)
+    )
+    manifest = parse_manifest(_manifest())
+    return DatasetSnapshot(
+        snapshot_id="unit",
+        source="sqlite_candles",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="validation",
+        date_range=manifest.dataset.split.validation,
+        candles=candles,
+        top_of_book_event_quotes=quotes,
+    )
+
+
 def test_same_manifest_and_dataset_produce_same_content_hash(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -118,6 +198,8 @@ def test_same_manifest_and_dataset_produce_same_content_hash(tmp_path, monkeypat
     assert first["candidates"][0]["validation_metrics_v2"]["metrics_schema_version"] == 2
     assert first["candidates"][0]["final_holdout_metrics_v2"]["metrics_schema_version"] == 2
     assert first["best_validation_metrics_v2"]["metrics_schema_version"] == 2
+    json.dumps(first, allow_nan=False)
+    json.dumps(first["candidates"][0], allow_nan=False)
     assert first["candidates"][0]["market_regime_bucket_performance"]
     assert first["candidates"][0]["market_regime_coverage"]
     assert "regime_gate_result" in first["candidates"][0]
@@ -169,6 +251,94 @@ def test_sma_backtest_attaches_entry_and_exit_regime_snapshots() -> None:
     assert result.metrics_v2.time_exposure.exposure_time_pct is not None
     assert result.decisions
     assert {"raw_signal", "final_signal", "position_state_hash"} <= set(result.decisions[0])
+
+
+def test_failed_sell_records_failure_candle_equity_and_mdd() -> None:
+    snapshot = _snapshot_from_closes([100, 90, 100, 80, 100, 130, 50, 40, 30, 20])
+
+    result = run_sma_backtest(
+        dataset=snapshot,
+        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        execution_model=_FailSellExecutionModel(),
+    )
+
+    sell = [trade for trade in result.trades if trade["side"] == "SELL"][0]
+    failure_mark = next(point for point in result.equity_curve if point.ts == sell["decision_ts"])
+    assert sell["execution"]["fill_status"] == "failed"
+    assert failure_mark.asset_qty > 0.0
+    assert failure_mark.equity == pytest.approx(505000.0)
+    assert result.metrics.max_drawdown_pct > 60.0
+    assert result.metrics_v2 is not None
+    assert result.metrics_v2.return_risk.max_drawdown_pct == pytest.approx(result.metrics.max_drawdown_pct)
+
+
+def test_missing_quote_skipped_sell_records_failure_candle_equity_and_mdd() -> None:
+    base_ts = 1_700_000_000_000
+    buy_decision_ts = base_ts + 5 * 60_000
+    snapshot = _snapshot_from_closes(
+        [100, 90, 100, 80, 100, 130, 50, 40, 30, 20],
+        quotes=(
+            TopOfBookQuote(
+                ts=buy_decision_ts,
+                pair="KRW-BTC",
+                bid_price=99.9,
+                ask_price=100.1,
+                spread_bps=20.0,
+                source="test",
+            ),
+        ),
+    )
+
+    result = run_sma_backtest(
+        dataset=snapshot,
+        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        execution_timing_policy=ExecutionTimingPolicy(
+            fill_reference_policy="first_orderbook_after_decision",
+            missing_quote_policy="warn",
+            allow_same_candle_close_fill=False,
+            source="test",
+        ),
+    )
+
+    sell = [trade for trade in result.trades if trade["side"] == "SELL"][0]
+    failure_mark = next(point for point in result.equity_curve if point.ts == sell["decision_ts"])
+    assert sell["execution"]["fill_status"] == "skipped_with_warning"
+    assert failure_mark.asset_qty > 0.0
+    assert failure_mark.equity == pytest.approx(504505.49450549454)
+    assert result.metrics.max_drawdown_pct > 60.0
+    assert result.metrics_v2 is not None
+    assert result.metrics_v2.return_risk.max_drawdown_pct == pytest.approx(result.metrics.max_drawdown_pct)
+
+
+def test_partial_sell_keeps_residual_position_open_in_metrics_v2() -> None:
+    snapshot = _snapshot_from_closes([100, 90, 100, 80, 100, 130, 120, 110, 90, 80])
+
+    result = run_sma_backtest(
+        dataset=snapshot,
+        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        execution_model=_PartialSellExecutionModel(),
+    )
+
+    assert result.metrics_v2 is not None
+    assert result.metrics.trade_count == 1
+    assert result.metrics_v2.return_risk.open_position_at_end is True
+    assert result.metrics_v2.return_risk.unrealized_pnl_end == pytest.approx(-99000.0)
+    assert result.metrics_v2.trade_quality.closed_trade_count == 1
+    assert result.closed_trades[0].net_pnl == pytest.approx(99000.0)
+    assert len(result.position_intervals) == 1
+    assert result.position_intervals[0].close_ts is None
+    assert result.metrics_v2.time_exposure.exposure_time_pct is not None
+    assert result.metrics_v2.time_exposure.exposure_time_pct > 0.0
+    assert result.metrics_v2.cost_execution.filled_execution_count == 2
+    assert result.metrics_v2.cost_execution.partial_fill_count == 1
+    assert result.metrics_v2.cost_execution.failed_execution_count == 0
+    assert result.metrics_v2.cost_execution.skipped_execution_count == 0
 
 
 def test_research_runtime_decision_generation_gap_is_visible_not_silent() -> None:
@@ -465,6 +635,42 @@ def test_reproducibility_hash_changes_when_execution_timing_policy_changes(tmp_p
 
     assert legacy["manifest_hash"] != next_open["manifest_hash"]
     assert legacy["candidates"][0]["candidate_profile_hash"] != next_open["candidates"][0]["candidate_profile_hash"]
+
+
+def test_metrics_gate_threshold_change_changes_manifest_and_candidate_evidence_hash(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    base_payload = _manifest()
+    base_payload["acceptance_gate"]["metrics_contract_required"] = True
+    base_payload["acceptance_gate"]["min_cagr_pct"] = 1.0
+    changed_payload = _manifest()
+    changed_payload["acceptance_gate"]["metrics_contract_required"] = True
+    changed_payload["acceptance_gate"]["min_cagr_pct"] = 2.0
+    base_manifest = parse_manifest(base_payload)
+    changed_manifest = parse_manifest(changed_payload)
+
+    base_report = run_research_backtest(
+        manifest=base_manifest,
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+    changed_report = run_research_backtest(
+        manifest=changed_manifest,
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    assert base_report["manifest_hash"] != changed_report["manifest_hash"]
+    assert base_report["candidates"][0]["metrics_gate_policy"]["min_cagr_pct"] == 1.0
+    assert changed_report["candidates"][0]["metrics_gate_policy"]["min_cagr_pct"] == 2.0
+    assert base_report["candidates"][0]["metrics_gate_policy_hash"] != changed_report["candidates"][0]["metrics_gate_policy_hash"]
+    assert base_report["candidates"][0]["candidate_profile_hash"] != changed_report["candidates"][0]["candidate_profile_hash"]
 
 
 def test_research_backtest_fails_candidate_when_calibration_breaches_assumptions(tmp_path, monkeypatch) -> None:

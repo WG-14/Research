@@ -217,6 +217,7 @@ def evaluate_regime_acceptance_gate(
             _row_regime(row): {
                 "trade_count": int(_row_value(row, "trade_count", 0) or 0),
                 "profit_factor": _row_value(row, "profit_factor"),
+                "profit_factor_unbounded": _row_value(row, "profit_factor_unbounded", False) is True,
                 "expectancy": _row_value(row, "expectancy"),
                 "net_pnl": float(_row_value(row, "net_pnl", 0.0) or 0.0),
             }
@@ -233,6 +234,7 @@ def evaluate_regime_acceptance_gate(
         evidence[_row_regime(row)] = {
             "trade_count": int(_row_value(row, "trade_count", 0) or 0),
             "profit_factor": _row_value(row, "profit_factor"),
+            "profit_factor_unbounded": _row_value(row, "profit_factor_unbounded", False) is True,
             "expectancy": _row_value(row, "expectancy"),
             "net_pnl": float(_row_value(row, "net_pnl", 0.0) or 0.0),
             "candle_count": int(_row_value(row, "candle_count", 0) or 0),
@@ -258,7 +260,14 @@ def evaluate_regime_acceptance_gate(
 
     for regime, min_pf in gate.min_profit_factor_by_regime.items():
         rows = [row for row in performance_rows if _matches(row, regime)]
-        pf_values = [float(_row_value(row, "profit_factor")) for row in rows if _row_value(row, "profit_factor") is not None]
+        bounded_rows = [row for row in rows if _row_value(row, "profit_factor_unbounded", False) is not True]
+        pf_values = [
+            float(_row_value(row, "profit_factor"))
+            for row in bounded_rows
+            if _row_value(row, "profit_factor") is not None
+        ]
+        if rows and not bounded_rows:
+            continue
         if not pf_values or min(pf_values) < float(min_pf):
             actual = min(pf_values) if pf_values else None
             reasons.append(f"regime_gate_failed: {regime} profit_factor={actual} < min={float(min_pf)}")

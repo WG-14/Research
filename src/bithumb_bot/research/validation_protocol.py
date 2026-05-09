@@ -27,6 +27,7 @@ from .execution_timing import execution_reality_gate, signal_quote_coverage_summ
 from .experiment_manifest import DateRange, ExecutionScenario, ExperimentManifest
 from .hashing import sha256_prefixed
 from .lineage import build_research_lineage
+from .metrics_gate_policy import metrics_gate_policy_from_acceptance_gate, metrics_gate_policy_hash
 from .metrics_contract import METRICS_SCHEMA_VERSION
 from .parameter_space import candidate_id, iter_parameter_candidates
 from .promotion_gate import build_candidate_profile
@@ -167,6 +168,8 @@ def _evaluate_candidates(
     dataset_warning_codes = _dataset_quality_warning_codes(quality_reports)
     top_of_book_quality_summary = _top_of_book_quality_summary(quality_reports)
     runner = resolve_research_strategy(manifest.strategy_name)
+    metrics_gate_policy = metrics_gate_policy_from_acceptance_gate(manifest.acceptance_gate)
+    metrics_gate_policy_digest = metrics_gate_policy_hash(metrics_gate_policy)
 
     for scenario_index, scenario in enumerate(manifest.execution_model.scenarios):
         scenario_id = _scenario_id(scenario, scenario_index)
@@ -380,6 +383,8 @@ def _evaluate_candidates(
                 "validation_metrics": validation_metrics,
                 "final_holdout_metrics": final_holdout_metrics,
                 "metrics_schema_version": METRICS_SCHEMA_VERSION,
+                "metrics_gate_policy": metrics_gate_policy,
+                "metrics_gate_policy_hash": metrics_gate_policy_digest,
                 "train_metrics_v2": train_metrics_v2,
                 "validation_metrics_v2": validation_metrics_v2,
                 "final_holdout_metrics_v2": final_holdout_metrics_v2,
@@ -430,6 +435,9 @@ def _evaluate_candidates(
                     "final_holdout_required_for_promotion": manifest.acceptance_gate.final_holdout_required_for_promotion,
                     "final_holdout_present": "final_holdout" in snapshots,
                     "walk_forward_required": manifest.acceptance_gate.walk_forward_required,
+                    "metrics_gate_policy": metrics_gate_policy,
+                    "metrics_gate_policy_hash": metrics_gate_policy_digest,
+                    "metrics_contract_required": bool(manifest.acceptance_gate.metrics_contract_required),
                     "regime_classifier_version": MARKET_REGIME_VERSION,
                     "warnings": [],
                     "repository_version": _repository_version(),
@@ -459,6 +467,9 @@ def _evaluate_candidates(
                 "validation_metrics": primary.get("validation_metrics"),
                 "final_holdout_metrics": primary.get("final_holdout_metrics"),
                 "metrics_schema_version": primary.get("metrics_schema_version"),
+                "metrics_gate_policy": primary.get("metrics_gate_policy") or candidate_payload.get("metrics_gate_policy"),
+                "metrics_gate_policy_hash": primary.get("metrics_gate_policy_hash") or candidate_payload.get("metrics_gate_policy_hash"),
+                "metrics_contract_required": bool(manifest.acceptance_gate.metrics_contract_required),
                 "train_metrics_v2": primary.get("train_metrics_v2"),
                 "validation_metrics_v2": primary.get("validation_metrics_v2"),
                 "final_holdout_metrics_v2": primary.get("final_holdout_metrics_v2"),
@@ -613,7 +624,7 @@ def _gate_result(
     if float(validation_metrics.get("max_drawdown_pct") or 0.0) > gate.max_mdd_pct:
         reasons.append("max_drawdown_failed")
     profit_factor = validation_metrics.get("profit_factor")
-    if profit_factor is None or float(profit_factor) < gate.min_profit_factor:
+    if not _profit_factor_passes(profit_factor, validation_metrics.get("profit_factor_unbounded"), gate.min_profit_factor):
         reasons.append("profit_factor_failed")
     if gate.oos_return_must_be_positive and float(validation_metrics.get("return_pct") or 0.0) <= 0.0:
         reasons.append("validation_return_not_positive")
@@ -622,6 +633,8 @@ def _gate_result(
     reasons.extend(_metrics_v2_gate_reasons(gate=gate, metrics_v2=validation_metrics_v2, prefix=""))
     if final_holdout_metrics_v2 is not None:
         reasons.extend(_metrics_v2_gate_reasons(gate=gate, metrics_v2=final_holdout_metrics_v2, prefix="final_holdout_"))
+    elif gate.metrics_contract_required and gate.final_holdout_required_for_promotion and final_holdout_metrics is not None:
+        reasons.append("final_holdout_metrics_v2_missing")
     if gate.parameter_stability_required and (stability_score is None or stability_score < 0.5):
         reasons.append("parameter_stability_failed")
     if gate.walk_forward_required:
@@ -826,11 +839,19 @@ def _validation_metrics_gate_compatible(manifest: ExperimentManifest, metrics: d
     if float(metrics.get("max_drawdown_pct") or 0.0) > gate.max_mdd_pct:
         return False
     profit_factor = metrics.get("profit_factor")
-    if profit_factor is None or float(profit_factor) < gate.min_profit_factor:
+    if not _profit_factor_passes(profit_factor, metrics.get("profit_factor_unbounded"), gate.min_profit_factor):
         return False
     if gate.oos_return_must_be_positive and float(metrics.get("return_pct") or 0.0) <= 0.0:
         return False
     return True
+
+
+def _profit_factor_passes(value: Any, unbounded: Any, minimum: float) -> bool:
+    if unbounded is True:
+        return True
+    if value is None:
+        return False
+    return float(value) >= float(minimum)
 
 
 def _walk_forward_metrics(
@@ -1100,6 +1121,11 @@ def _report_payload(
         "execution_model": manifest.execution_model.as_dict(),
         "execution_model_source": manifest.execution_model.source,
         "metrics_schema_version": METRICS_SCHEMA_VERSION,
+        "metrics_gate_policy": metrics_gate_policy_from_acceptance_gate(manifest.acceptance_gate),
+        "metrics_gate_policy_hash": metrics_gate_policy_hash(
+            metrics_gate_policy_from_acceptance_gate(manifest.acceptance_gate)
+        ),
+        "metrics_contract_required": bool(manifest.acceptance_gate.metrics_contract_required),
         "deployment_tier": manifest.deployment_tier,
         "execution_calibration_required": manifest.execution_model.calibration_required,
         "market_regime_bucket_performance": (

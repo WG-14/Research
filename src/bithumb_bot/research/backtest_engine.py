@@ -274,6 +274,15 @@ def run_sma_backtest(
                 )
                 warnings.extend(_execution_reference_warnings(fill))
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
+                peak, max_drawdown = _record_equity_mark(
+                    equity_curve=equity_curve,
+                    ts=mark_boundary_ts,
+                    cash=mark_cash,
+                    qty=mark_qty,
+                    mark_price=candle.close,
+                    peak=peak,
+                    max_drawdown=max_drawdown,
+                )
                 prev_above = above
                 continue
             spend = cash * BUY_FRACTION
@@ -291,6 +300,15 @@ def run_sma_backtest(
             warnings.extend(_execution_reference_warnings(fill))
             if fill.fill_status == "failed" or fill.avg_fill_price is None or fill.filled_qty <= 0.0:
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
+                peak, max_drawdown = _record_equity_mark(
+                    equity_curve=equity_curve,
+                    ts=mark_boundary_ts,
+                    cash=mark_cash,
+                    qty=mark_qty,
+                    mark_price=candle.close,
+                    peak=peak,
+                    max_drawdown=max_drawdown,
+                )
                 prev_above = above
                 continue
             exec_price = float(fill.avg_fill_price)
@@ -312,7 +330,7 @@ def run_sma_backtest(
                 entry_regime_snapshot=dict(regime_snapshot),
             )
             trades.append(_pending_trade_from_fill(fill, cash=cash, asset_qty=qty))
-            if pending.effective_ts <= mark_boundary_ts:
+            if _fill_applies_to_mark(fill=pending.fill, effective_ts=pending.effective_ts, mark_boundary_ts=mark_boundary_ts):
                 mark_cash += pending.cash_delta
                 mark_qty += pending.qty
             pending_fills.append(pending)
@@ -364,6 +382,15 @@ def run_sma_backtest(
                 )
                 warnings.extend(_execution_reference_warnings(fill))
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
+                peak, max_drawdown = _record_equity_mark(
+                    equity_curve=equity_curve,
+                    ts=mark_boundary_ts,
+                    cash=mark_cash,
+                    qty=mark_qty,
+                    mark_price=candle.close,
+                    peak=peak,
+                    max_drawdown=max_drawdown,
+                )
                 prev_above = above
                 continue
             fill = model.simulate(
@@ -380,6 +407,15 @@ def run_sma_backtest(
             warnings.extend(_execution_reference_warnings(fill))
             if fill.fill_status == "failed" or fill.avg_fill_price is None or fill.filled_qty <= 0.0:
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
+                peak, max_drawdown = _record_equity_mark(
+                    equity_curve=equity_curve,
+                    ts=mark_boundary_ts,
+                    cash=mark_cash,
+                    qty=mark_qty,
+                    mark_price=candle.close,
+                    peak=peak,
+                    max_drawdown=max_drawdown,
+                )
                 prev_above = above
                 continue
             exec_price = float(fill.avg_fill_price)
@@ -402,7 +438,7 @@ def run_sma_backtest(
                 exit_regime_snapshot=dict(regime_snapshot),
             )
             trades.append(_pending_trade_from_fill(fill, cash=cash, asset_qty=qty))
-            if pending.effective_ts <= mark_boundary_ts:
+            if _fill_applies_to_mark(fill=pending.fill, effective_ts=pending.effective_ts, mark_boundary_ts=mark_boundary_ts):
                 mark_cash += pending.cash_delta
                 mark_qty = max(0.0, mark_qty - pending.qty)
             pending_fills.append(pending)
@@ -421,18 +457,15 @@ def run_sma_backtest(
                 closed_pnls=closed_pnls,
             )
 
-        equity = mark_cash + mark_qty * candle.close
-        equity_curve.append(
-            EquityPoint(
-                ts=mark_boundary_ts,
-                equity=equity,
-                cash=mark_cash,
-                asset_qty=mark_qty,
-            )
+        peak, max_drawdown = _record_equity_mark(
+            equity_curve=equity_curve,
+            ts=mark_boundary_ts,
+            cash=mark_cash,
+            qty=mark_qty,
+            mark_price=candle.close,
+            peak=peak,
+            max_drawdown=max_drawdown,
         )
-        peak = max(peak, equity)
-        if peak > 0.0:
-            max_drawdown = max(max_drawdown, (peak - equity) / peak)
         prev_above = above
 
     last = candles[-1]
@@ -505,6 +538,42 @@ def run_sma_backtest(
 
 def _sma(values: list[float], n: int, end: int) -> float:
     return sum(values[end - n : end]) / n
+
+
+def _record_equity_mark(
+    *,
+    equity_curve: list[EquityPoint],
+    ts: int,
+    cash: float,
+    qty: float,
+    mark_price: float,
+    peak: float,
+    max_drawdown: float,
+) -> tuple[float, float]:
+    equity = float(cash) + float(qty) * float(mark_price)
+    equity_curve.append(
+        EquityPoint(
+            ts=int(ts),
+            equity=equity,
+            cash=float(cash),
+            asset_qty=float(qty),
+        )
+    )
+    peak = max(float(peak), equity)
+    if peak > 0.0:
+        max_drawdown = max(float(max_drawdown), (peak - equity) / peak)
+    return peak, max_drawdown
+
+
+def _fill_applies_to_mark(*, fill: Any, effective_ts: int, mark_boundary_ts: int) -> bool:
+    if int(effective_ts) < int(mark_boundary_ts):
+        return True
+    if int(effective_ts) > int(mark_boundary_ts):
+        return False
+    return (
+        bool(getattr(fill, "allow_same_candle_close_fill", False))
+        and str(getattr(fill, "fill_reference_policy", "")) == "candle_close_legacy"
+    )
 
 
 def _apply_pending_fills(
@@ -1205,7 +1274,8 @@ def _metrics(
 ) -> ResearchMetrics:
     wins = [pnl for pnl in closed_pnls if pnl > 0.0]
     losses = [pnl for pnl in closed_pnls if pnl < 0.0]
-    profit_factor = (sum(wins) / abs(sum(losses))) if losses else (float("inf") if wins else None)
+    profit_factor_unbounded = bool(wins and not losses)
+    profit_factor = (sum(wins) / abs(sum(losses))) if losses else None
     largest_abs = max((abs(pnl) for pnl in closed_pnls), default=0.0)
     total_abs = sum(abs(pnl) for pnl in closed_pnls)
     return ResearchMetrics(
@@ -1221,6 +1291,7 @@ def _metrics(
         max_consecutive_losses=_max_consecutive_losses(closed_pnls),
         single_trade_dependency_score=(largest_abs / total_abs) if total_abs > 0.0 else None,
         parameter_stability_score=parameter_stability_score,
+        profit_factor_unbounded=profit_factor_unbounded,
     )
 
 

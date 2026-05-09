@@ -16,6 +16,7 @@ class RegimePerformanceRow:
     net_pnl: float
     return_pct: float
     profit_factor: float | None
+    profit_factor_unbounded: bool
     win_rate: float
     expectancy: float | None
     max_drawdown: float
@@ -124,7 +125,8 @@ def aggregate_regime_performance(
             largest_abs = max((abs(value) for value in values), default=0.0)
             gross_profit = sum(wins)
             gross_loss = abs(sum(losses))
-            profit_factor = (gross_profit / gross_loss) if gross_loss > 0.0 else (float("inf") if wins else None)
+            profit_factor_unbounded = bool(wins and gross_loss <= 0.0)
+            profit_factor = (gross_profit / gross_loss) if gross_loss > 0.0 else None
             running = 0.0
             peak = 0.0
             max_dd = 0.0
@@ -144,6 +146,7 @@ def aggregate_regime_performance(
                     net_pnl=sum(values),
                     return_pct=(sum(values) / float(start_cash)) * 100.0 if start_cash > 0.0 else 0.0,
                     profit_factor=profit_factor,
+                    profit_factor_unbounded=profit_factor_unbounded,
                     win_rate=(len(wins) / len(values)) if values else 0.0,
                     expectancy=(sum(values) / len(values)) if values else None,
                     max_drawdown=max_dd,

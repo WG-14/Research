@@ -11,6 +11,8 @@ from bithumb_bot.storage_io import write_json_atomic
 from .hashing import content_hash_payload, sha256_prefixed
 from .lineage import build_promotion_lineage, validate_lineage_artifact, LineageValidationError
 from .deployment_policy import validate_production_calibration_policy
+from .metrics_contract import METRICS_SCHEMA_VERSION
+from .metrics_gate_policy import metrics_gate_policy_hash
 
 
 class PromotionGateError(ValueError):
@@ -71,6 +73,9 @@ def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
         "final_holdout_metrics": candidate.get("final_holdout_metrics"),
         "validation_metrics": candidate.get("validation_metrics"),
         "metrics_schema_version": candidate.get("metrics_schema_version"),
+        "metrics_gate_policy": candidate.get("metrics_gate_policy"),
+        "metrics_gate_policy_hash": candidate.get("metrics_gate_policy_hash"),
+        "metrics_contract_required": bool(candidate.get("metrics_contract_required")),
         "validation_metrics_v2": candidate.get("validation_metrics_v2"),
         "final_holdout_metrics_v2": candidate.get("final_holdout_metrics_v2"),
         "walk_forward_metrics": candidate.get("walk_forward_metrics"),
@@ -116,6 +121,7 @@ def evaluate_candidate_for_promotion(candidate: dict[str, Any]) -> tuple[bool, l
     _extend_execution_event_reasons(candidate, reasons)
     _extend_execution_calibration_reasons(candidate, reasons)
     _extend_production_calibration_policy_reasons(candidate, reasons)
+    _extend_metrics_contract_reasons(candidate, reasons)
     profile_hash = candidate.get("candidate_profile_hash")
     if not profile_hash:
         reasons.append("candidate_profile_hash_missing")
@@ -152,7 +158,61 @@ def validate_backtest_candidate_for_promotion(candidate: dict[str, Any] | None) 
     _extend_execution_event_reasons(candidate, reasons, prefix="backtest_")
     _extend_execution_calibration_reasons(candidate, reasons, prefix="backtest_")
     _extend_production_calibration_policy_reasons(candidate, reasons, prefix="backtest_")
+    _extend_metrics_contract_reasons(candidate, reasons, prefix="backtest_")
     return not reasons, reasons
+
+
+def _extend_metrics_contract_reasons(
+    candidate: dict[str, Any],
+    reasons: list[str],
+    *,
+    prefix: str = "",
+) -> None:
+    policy = candidate.get("metrics_gate_policy")
+    policy_hash = candidate.get("metrics_gate_policy_hash")
+    policy_required = bool(candidate.get("metrics_contract_required"))
+    if isinstance(policy, dict):
+        policy_required = policy_required or bool(policy.get("metrics_contract_required"))
+    elif policy_required:
+        reasons.extend([f"{prefix}metrics_gate_policy_missing", "metrics_gate_policy_missing"])
+
+    if policy_required or isinstance(policy, dict) or policy_hash is not None:
+        if not isinstance(policy, dict):
+            reasons.extend([f"{prefix}metrics_gate_policy_missing", "metrics_gate_policy_missing"])
+        elif not isinstance(policy_hash, str) or not policy_hash.startswith("sha256:"):
+            reasons.extend([f"{prefix}metrics_gate_policy_hash_missing", "metrics_gate_policy_hash_missing"])
+        elif metrics_gate_policy_hash(policy) != policy_hash:
+            reasons.extend([f"{prefix}metrics_gate_policy_hash_mismatch", "metrics_gate_policy_hash_mismatch"])
+
+    if not policy_required:
+        return
+    _extend_metrics_v2_presence_reasons(
+        candidate.get("validation_metrics_v2"),
+        reasons,
+        missing_code="validation_metrics_v2_missing",
+        prefix=prefix,
+    )
+    if candidate.get("final_holdout_required_for_promotion") is not False:
+        _extend_metrics_v2_presence_reasons(
+            candidate.get("final_holdout_metrics_v2"),
+            reasons,
+            missing_code="final_holdout_metrics_v2_missing",
+            prefix=prefix,
+        )
+
+
+def _extend_metrics_v2_presence_reasons(
+    metrics_v2: object,
+    reasons: list[str],
+    *,
+    missing_code: str,
+    prefix: str,
+) -> None:
+    if not isinstance(metrics_v2, dict):
+        reasons.extend([f"{prefix}{missing_code}", missing_code])
+        return
+    if int(metrics_v2.get("metrics_schema_version") or 0) != METRICS_SCHEMA_VERSION:
+        reasons.extend([f"{prefix}metrics_contract_missing", "metrics_contract_missing"])
 
 
 def _extend_production_calibration_policy_reasons(
@@ -464,6 +524,13 @@ def promote_candidate(
         "final_holdout_required_for_promotion": candidate.get("final_holdout_required_for_promotion") is not False,
         "final_holdout_present": candidate.get("final_holdout_present") is True,
         "final_holdout_metrics": candidate.get("final_holdout_metrics"),
+        "metrics_schema_version": candidate.get("metrics_schema_version"),
+        "validation_metrics_v2": candidate.get("validation_metrics_v2"),
+        "final_holdout_metrics_v2": candidate.get("final_holdout_metrics_v2"),
+        "metrics_gate_policy": candidate.get("metrics_gate_policy"),
+        "metrics_gate_policy_hash": candidate.get("metrics_gate_policy_hash"),
+        "metrics_contract_required": bool(candidate.get("metrics_contract_required")),
+        "metrics_v2_summary": _promotion_metrics_v2_summary(candidate),
         "scenario_policy": candidate.get("scenario_policy"),
         "execution_timing_policy": candidate.get("execution_timing_policy"),
         "execution_reality_summary": candidate.get("execution_reality_summary"),
@@ -582,6 +649,9 @@ def validate_walk_forward_candidate_for_promotion(
     _extend_final_holdout_reasons(candidate, reasons := [], prefix="walk_forward_")
     if reasons:
         raise PromotionGateError(f"promotion refused: {','.join(reasons)}")
+    _extend_metrics_contract_reasons(candidate, reasons := [], prefix="walk_forward_")
+    if reasons:
+        raise PromotionGateError(f"promotion refused: {','.join(reasons)}")
     _extend_scenario_policy_reasons(candidate, reasons := [], prefix="walk_forward_")
     if reasons:
         raise PromotionGateError(f"promotion refused: {','.join(reasons)}")
@@ -698,4 +768,37 @@ def _candidate_execution_event_summary_counts(candidate: dict[str, Any]) -> dict
         "portfolio_applied_trade_count": int(summary.get("portfolio_applied_trade_count") or 0),
         "execution_filled_count": int(summary.get("execution_filled_count") or summary.get("filled_execution_count") or 0),
         "closed_trade_count": int(summary.get("closed_trade_count") or 0),
+    }
+
+
+def _promotion_metrics_v2_summary(candidate: dict[str, Any]) -> dict[str, object]:
+    return {
+        **_metrics_v2_compact(candidate.get("validation_metrics_v2"), prefix="validation"),
+        **_metrics_v2_compact(candidate.get("final_holdout_metrics_v2"), prefix="final_holdout"),
+    }
+
+
+def _metrics_v2_compact(metrics: object, *, prefix: str) -> dict[str, object]:
+    if not isinstance(metrics, dict):
+        return {
+            f"{prefix}_cagr_pct": None,
+            f"{prefix}_expectancy_per_trade_krw": None,
+            f"{prefix}_exposure_time_pct": None,
+            f"{prefix}_avg_holding_time_ms": None,
+            f"{prefix}_open_position_at_end": None,
+            f"{prefix}_fee_drag_ratio": None,
+            f"{prefix}_slippage_drag_ratio": None,
+        }
+    return_risk = metrics.get("return_risk") if isinstance(metrics.get("return_risk"), dict) else {}
+    trade_quality = metrics.get("trade_quality") if isinstance(metrics.get("trade_quality"), dict) else {}
+    time_exposure = metrics.get("time_exposure") if isinstance(metrics.get("time_exposure"), dict) else {}
+    cost_execution = metrics.get("cost_execution") if isinstance(metrics.get("cost_execution"), dict) else {}
+    return {
+        f"{prefix}_cagr_pct": return_risk.get("cagr_pct"),
+        f"{prefix}_expectancy_per_trade_krw": trade_quality.get("expectancy_per_trade_krw"),
+        f"{prefix}_exposure_time_pct": time_exposure.get("exposure_time_pct"),
+        f"{prefix}_avg_holding_time_ms": time_exposure.get("avg_holding_time_ms"),
+        f"{prefix}_open_position_at_end": return_risk.get("open_position_at_end"),
+        f"{prefix}_fee_drag_ratio": cost_execution.get("fee_drag_ratio"),
+        f"{prefix}_slippage_drag_ratio": cost_execution.get("slippage_drag_ratio"),
     }

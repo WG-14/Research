@@ -10,6 +10,7 @@ from bithumb_bot import app as app_module
 from bithumb_bot.research import cli as research_cli
 from bithumb_bot.research.hashing import content_hash_payload, sha256_prefixed
 from bithumb_bot.research.lineage import build_research_lineage, compute_lineage_hash, reproduce_promotion
+from bithumb_bot.research.metrics_gate_policy import metrics_gate_policy_hash
 from bithumb_bot.research.promotion_gate import PromotionGateError, build_candidate_profile, promote_candidate
 from bithumb_bot.storage_io import write_json_atomic
 
@@ -146,6 +147,92 @@ def _candidate(**overrides):
     payload.update(overrides)
     explicit_hash = payload.pop("candidate_profile_hash", None)
     payload["candidate_profile_hash"] = explicit_hash or sha256_prefixed(build_candidate_profile(payload))
+    return payload
+
+
+def _metrics_v2_payload(*, schema_version: int = 2) -> dict[str, object]:
+    return {
+        "metrics_schema_version": schema_version,
+        "return_risk": {
+            "total_return_pct": 1.0,
+            "cagr_pct": 12.0,
+            "max_drawdown_pct": 1.0,
+            "realized_return_pct": 1.0,
+            "unrealized_pnl_end": 0.0,
+            "open_position_at_end": False,
+        },
+        "trade_quality": {
+            "closed_trade_count": 4,
+            "execution_count": 8,
+            "win_rate": 0.75,
+            "avg_win": 100.0,
+            "avg_loss": -50.0,
+            "payoff_ratio": 2.0,
+            "profit_factor": 2.0,
+            "profit_factor_unbounded": False,
+            "expectancy_per_trade_krw": 50.0,
+            "expectancy_per_trade_pct": 0.5,
+            "max_consecutive_losses": 1,
+            "single_trade_dependency_score": 0.25,
+        },
+        "time_exposure": {
+            "period_start_ts": 1,
+            "period_end_ts": 2,
+            "elapsed_ms": 1,
+            "calendar_days": 0.1,
+            "active_bar_count": 2,
+            "exposure_time_pct": 25.0,
+            "avg_holding_time_ms": 600000.0,
+            "median_holding_time_ms": 600000.0,
+            "max_holding_time_ms": 600000,
+        },
+        "cost_execution": {
+            "fee_total": 1.0,
+            "slippage_total": 1.0,
+            "fee_drag_ratio": 0.001,
+            "slippage_drag_ratio": 0.001,
+            "filled_execution_count": 8,
+            "partial_fill_count": 0,
+            "failed_execution_count": 0,
+            "skipped_execution_count": 0,
+            "quote_coverage_pct": 100.0,
+            "median_quote_age_ms": 1.0,
+            "p95_quote_age_ms": 2.0,
+        },
+        "limitation_reasons": [],
+    }
+
+
+def _metrics_gate_policy(**overrides) -> dict[str, object]:
+    policy = {
+        "metrics_schema_version": 2,
+        "min_cagr_pct": 1.0,
+        "min_expectancy_per_trade_krw": 1.0,
+        "min_expectancy_per_trade_pct": 0.1,
+        "max_exposure_time_pct": 80.0,
+        "max_avg_holding_time_minutes": 60.0,
+        "max_fee_drag_ratio": 0.01,
+        "max_slippage_drag_ratio": 0.01,
+        "reject_open_position_at_end": True,
+        "metrics_contract_required": True,
+    }
+    policy.update(overrides)
+    return policy
+
+
+def _candidate_with_required_metrics_contract(**overrides) -> dict[str, object]:
+    policy = _metrics_gate_policy()
+    payload = _candidate(
+        metrics_schema_version=2,
+        validation_metrics_v2=_metrics_v2_payload(),
+        final_holdout_metrics_v2=_metrics_v2_payload(),
+        metrics_gate_policy=policy,
+        metrics_gate_policy_hash=metrics_gate_policy_hash(policy),
+        metrics_contract_required=True,
+    )
+    payload.update(overrides)
+    payload.pop("candidate_profile_hash", None)
+    payload["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(payload))
     return payload
 
 
@@ -490,6 +577,68 @@ def test_promotion_artifact_exposes_execution_event_summary_top_level(tmp_path, 
     assert result.artifact["portfolio_applied_trade_count"] == 8
     assert result.artifact["execution_filled_count"] == 8
     assert result.artifact["closed_trade_count"] == 4
+
+
+def test_candidate_profile_hash_binds_metrics_gate_policy() -> None:
+    candidate = _candidate_with_required_metrics_contract()
+    changed_policy = dict(candidate["metrics_gate_policy"])
+    changed_policy["min_cagr_pct"] = 2.0
+    changed = dict(candidate)
+    changed["metrics_gate_policy"] = changed_policy
+    changed["metrics_gate_policy_hash"] = metrics_gate_policy_hash(changed_policy)
+    changed.pop("candidate_profile_hash", None)
+
+    assert metrics_gate_policy_hash(candidate["metrics_gate_policy"]) == candidate["metrics_gate_policy_hash"]
+    assert sha256_prefixed(build_candidate_profile(candidate)) != sha256_prefixed(build_candidate_profile(changed))
+
+
+def test_promotion_refuses_required_metrics_contract_when_validation_v2_removed(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate_with_required_metrics_contract(validation_metrics_v2=None)
+    candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+    _write_report(manager, candidate)
+
+    with pytest.raises(PromotionGateError, match="validation_metrics_v2_missing"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_promotion_refuses_required_metrics_contract_when_schema_mismatches(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate_with_required_metrics_contract(validation_metrics_v2=_metrics_v2_payload(schema_version=1))
+    candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+    _write_report(manager, candidate)
+
+    with pytest.raises(PromotionGateError, match="metrics_contract_missing"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_promotion_refuses_metrics_gate_policy_hash_mismatch(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate_with_required_metrics_contract(metrics_gate_policy_hash="sha256:tampered")
+    candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+    _write_report(manager, candidate)
+
+    with pytest.raises(PromotionGateError, match="metrics_gate_policy_hash_mismatch"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_promotion_artifact_exposes_metrics_contract_evidence_top_level_and_strict_json(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate_with_required_metrics_contract()
+    json.dumps(build_candidate_profile(candidate), allow_nan=False)
+    _write_report(manager, candidate)
+
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+    assert result.artifact["metrics_schema_version"] == 2
+    assert result.artifact["validation_metrics_v2"] == candidate["validation_metrics_v2"]
+    assert result.artifact["final_holdout_metrics_v2"] == candidate["final_holdout_metrics_v2"]
+    assert result.artifact["metrics_gate_policy"] == candidate["metrics_gate_policy"]
+    assert result.artifact["metrics_gate_policy_hash"] == candidate["metrics_gate_policy_hash"]
+    assert result.artifact["metrics_contract_required"] is True
+    assert result.artifact["metrics_v2_summary"]["validation_cagr_pct"] == 12.0
+    assert result.artifact["metrics_v2_summary"]["validation_open_position_at_end"] is False
+    json.dumps(result.artifact, allow_nan=False)
 
 
 def test_promotion_artifact_execution_event_summary_matches_candidate_profile(tmp_path, monkeypatch) -> None:

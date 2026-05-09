@@ -626,6 +626,8 @@ def test_next_open_fill_does_not_affect_signal_candle_close_equity() -> None:
     )
 
     assert result.trades[0]["execution"]["fill_reference_ts"] == base_ts + 5 * 60_000
+    signal_close_mark = next(point for point in result.equity_curve if point.ts == base_ts + 5 * 60_000)
+    assert signal_close_mark.equity == 1_000_000.0
     assert result.metrics.max_drawdown_pct == 0.0
 
 

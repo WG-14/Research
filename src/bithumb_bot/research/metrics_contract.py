@@ -106,6 +106,7 @@ class TradeQualityMetrics:
     avg_loss: float | None
     payoff_ratio: float | None
     profit_factor: float | None
+    profit_factor_unbounded: bool
     expectancy_per_trade_krw: float | None
     expectancy_per_trade_pct: float | None
     max_consecutive_losses: int
@@ -206,7 +207,10 @@ def build_metrics_v2(
     losses = [value for value in net_values if value < 0.0]
     gross_profit = sum(wins)
     gross_loss = abs(sum(losses))
-    profit_factor = (gross_profit / gross_loss) if gross_loss > 0.0 else (float("inf") if wins else None)
+    profit_factor_unbounded = bool(wins and gross_loss <= 0.0)
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0.0 else None
+    if profit_factor_unbounded:
+        limitations.append("profit_factor_unbounded_no_losses")
     avg_win = (gross_profit / len(wins)) if wins else None
     avg_loss = (sum(losses) / len(losses)) if losses else None
     payoff_ratio = (avg_win / abs(avg_loss)) if avg_win is not None and avg_loss not in (None, 0.0) else None
@@ -265,6 +269,7 @@ def build_metrics_v2(
             avg_loss=avg_loss,
             payoff_ratio=payoff_ratio,
             profit_factor=profit_factor,
+            profit_factor_unbounded=profit_factor_unbounded,
             expectancy_per_trade_krw=(realized_pnl / len(net_values)) if net_values else None,
             expectancy_per_trade_pct=expectancy_pct,
             max_consecutive_losses=_max_consecutive_losses(net_values),

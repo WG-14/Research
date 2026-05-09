@@ -13,7 +13,7 @@ def _ensure_parent(path: Path) -> None:
 
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:
     _ensure_parent(path)
-    line = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     with path.open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(line)
         handle.write("\n")
@@ -34,5 +34,5 @@ def write_text_atomic(path: Path, text: str) -> None:
 
 
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False)
     write_text_atomic(path, serialized + "\n")

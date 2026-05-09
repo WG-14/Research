@@ -1,478 +1,407 @@
-You are Codex operating directly inside the GitHub repository `WG-14/bithumb-bot`.
+You are Codex operating directly inside GitHub repository `WG-14/bithumb-bot`.
 
-Context source: this task is based on the prior repository review and root-cause analysis supplied by the user. Keep the core concern and priorities intact: the likely issue is not merely that a few metrics are missing, but that the repository does not yet have one unified, promotion-grade performance metrics contract spanning research, promotion, reporting, and runtime evidence. Treat this as a hypothesis to verify in the repo, not as a fact. 
+Continue from the latest metrics-contract patch. Do not treat the previous patch as complete merely because pytest passed. The core concern remains: this repository must evolve from “a backtest with more fields” into a reproducible, promotion-grade automated-trading research system where research metrics, gates, candidate profiles, promotion artifacts, and runtime evidence are bound by a consistent metrics contract.
 
-Your job is to inspect, verify, design, implement, test, and report changes that move the repo toward a more robust, reproducible, and operationally usable automated-trading research system.
+Do not soften this into general advice. Inspect the actual repo, verify the hypotheses below, make the necessary patches, add tests, and report exactly what changed.
 
-Do not turn this into generic advice. Work against the actual repository. Do not ask clarification questions. Make reasonable implementation choices, document them, and preserve backward compatibility unless the repo already has an explicit fail-closed contract requiring otherwise.
+Do not ask clarification questions. Make reasonable implementation choices, keep backward compatibility unless an explicit fail-closed policy requires otherwise, and do not edit secrets, `.env`, live runtime configuration, or external artifacts.
 
-## Primary problem statement
+## Current known context to verify
 
-The current working hypothesis is:
+A recent patch appears to have added or modified:
 
-`ResearchMetrics` and the research acceptance/promotion flow already include important fields such as total return, MDD, profit factor, win rate, trade count, max consecutive losses, fees, slippage, and stability. However, promotion-grade research metrics do not clearly include CAGR, average holding time, exposure/time-in-market, global expectancy per trade, open-position-at-end state, and realized/unrealized separation. More importantly, research metrics, regime metrics, runtime performance metrics, acceptance gates, candidate profiles, and promotion artifacts appear to use related but not fully unified metric definitions.
+* `src/bithumb_bot/research/metrics_contract.py`
+* `MetricContractV2`
+* `build_metrics_v2()`
+* `BacktestRun.metrics_v2`
+* `equity_curve`, `position_intervals`, `closed_trades`
+* optional metrics gate fields in `AcceptanceGate`
+* `train_metrics_v2`, `validation_metrics_v2`, `final_holdout_metrics_v2`
+* CLI `metrics_v2_summary`
+* docs and tests around metrics contract, gate reasons, and runtime parity
 
-The goal is not a symptom patch such as “add CAGR as one extra field.” The goal is to introduce a non-breaking metrics contract and shared calculation path that makes these metrics first-class, deterministic, observable, testable, and safe for future promotion/readiness gates.
+This direction is correct, but there are likely remaining gaps around strict JSON reproducibility, metrics gate policy binding, equity/MDD marking during failed/skipped execution branches, partial SELL residual-position behavior, and promotion artifact observability.
 
-## Files and areas to inspect first
+Treat all of these as hypotheses until you verify them in the repository.
 
-Inspect the repo directly before modifying anything. At minimum inspect:
+## Inspect first
 
-* `src/bithumb_bot/research/metrics.py`
+Before changing code, inspect at least:
+
+* `src/bithumb_bot/research/metrics_contract.py`
 * `src/bithumb_bot/research/backtest_engine.py`
 * `src/bithumb_bot/research/validation_protocol.py`
 * `src/bithumb_bot/research/experiment_manifest.py`
 * `src/bithumb_bot/research/promotion_gate.py`
+* `src/bithumb_bot/research/lineage.py`
 * `src/bithumb_bot/research/report_writer.py`
-* `src/bithumb_bot/research/run_summary.py`
 * `src/bithumb_bot/research/cli.py`
-* `src/bithumb_bot/research/execution_model/`
-* `src/bithumb_bot/research/execution_timing.py`
+* `src/bithumb_bot/research/run_summary.py`
+* `src/bithumb_bot/research/hashing.py`
+* `src/bithumb_bot/storage_io.py`
+* `src/bithumb_bot/research/execution_model/stress.py`
 * `src/bithumb_bot/market_regime/metrics.py`
 * `src/bithumb_bot/strategy_performance.py`
 * `docs/research-validation.md`
-* `examples/research/*.json`
-* relevant tests under `tests/`, especially research backtest, walk-forward, promotion, manifest, reproducibility, operator reporting, regime, and strategy performance tests.
+* `examples/research/sma_filter_manifest.example.json`
+* `examples/research/sma_filter_manifest.production.example.json`
+* relevant tests under `tests/`, especially:
 
-Also confirm that root `backtest.py` and `backtest2.py` remain smoke/compatibility paths and are not used as promotion-grade evidence.
+  * `tests/test_research_metrics_contract.py`
+  * `tests/test_research_backtest_reproducibility.py`
+  * `tests/test_research_parameter_stability.py`
+  * `tests/test_research_promotion_gate.py`
+  * `tests/test_research_manifest.py`
+  * `tests/test_research_cli_summary.py`
+  * `tests/test_strategy_performance_gate.py`
+
+Also confirm that root smoke backtest paths remain smoke-only and are not promoted as evidence.
 
 ## Hypotheses to verify or refute
 
-Keep these hypotheses as hypotheses until you verify them in code and tests.
+### H1: `MetricContractV2` may emit non-finite numeric values into JSON artifacts
 
-### H1: Research core metrics are narrower than the operational metric set required for automated trading
+Specifically verify whether `profit_factor=float("inf")`, `NaN`, or any other non-finite float can reach:
 
-Check whether `ResearchMetrics` and generated `train_metrics`, `validation_metrics`, `final_holdout_metrics`, and walk-forward metrics include:
+* `metrics_v2.as_dict()`
+* research reports
+* candidate profiles
+* promotion artifacts
+* lineage or reproducibility hashing
 
-* CAGR
-* average/median/max holding time
-* exposure time / time in market
-* global expectancy per closed trade
-* open position at end
-* realized vs unrealized PnL separation
-* fee drag ratio
-* slippage drag ratio
-* execution count vs closed trade count separation
+This is a P0 issue if true. Python’s default `json.dumps()` may serialize `Infinity`, but that is not strict JSON. Promotion-grade research artifacts must be strict JSON-compatible for external validation, deterministic hashing, and long-term preservation.
 
-If these are absent or only available in another subsystem, document that.
+### H2: Metrics gate policy is not sufficiently bound into candidate/profile/promotion evidence
 
-### H2: Acceptance gates do not currently evaluate time-normalized return, capital exposure, or expectancy
+Verify whether the actual metrics policy used for the candidate is first-class evidence, not merely the resulting `metrics_v2` values.
 
-Inspect `AcceptanceGate`, `_parse_acceptance_gate`, `_gate_result`, candidate ranking, and promotion validation. Determine whether candidates with equal total return/PF but very different duration, exposure, holding time, or expectancy would be treated equivalently.
+The applied thresholds and flags must be inspectable and hash-bound:
 
-### H3: Metric definitions are fragmented across research, regime, and runtime layers
+* `min_cagr_pct`
+* `min_expectancy_per_trade_krw`
+* `min_expectancy_per_trade_pct`
+* `max_exposure_time_pct`
+* `max_avg_holding_time_minutes`
+* `max_fee_drag_ratio`
+* `max_slippage_drag_ratio`
+* `reject_open_position_at_end`
+* `metrics_contract_required`
 
-Compare definitions in research metrics, `market_regime/metrics.py`, `strategy_performance.py`, and reporting/evidence code. Identify whether expectancy, profit factor, win rate, fee drag, and drawdown use identical units and formulas.
+If these are only in the manifest but not clearly bound into the candidate profile / promotion artifact, patch it.
 
-### H4: Execution realism is improved but still limited by data availability
+### H3: Failed or skipped execution branches may skip equity-curve and MDD marking
 
-Confirm what is currently supported: candle close, next candle open, top-of-book after decision, latency-adjusted top-of-book, stress execution, calibration, quote coverage, and dataset quality. Also confirm limitations around full depth, queue position, trade ticks, market impact, and intra-candle path.
+Inspect `run_sma_backtest()` branches where execution reference is missing, fill fails, or execution is skipped. If those branches append a trade and `continue` before the common equity/MDD mark, then a candle can be omitted from the equity curve and risk metrics can be understated.
 
-Do not implement full-depth/tick replay unless it is already in scope and infrastructure exists. This task is metrics-contract-first.
+This is critical when:
 
-### H5: Open position, holding time, and exposure are not first-class ledgers
+* an exit SELL fails while a position is open
+* missing quote skips an execution
+* stress execution failure occurs
+* a large adverse candle happens during the failed/skipped execution path
 
-Inspect whether `run_sma_backtest` has a durable equity curve, position timeline, closed trade ledger, and fill ledger sufficient for deterministic metrics. If not, implement the minimum first-class structures needed.
+### H4: Partial SELL residual-position behavior may not be integration-tested
 
-### H6: Naively changing metrics could break report hashes, candidate profile hashes, promotion artifacts, and reproducibility
+The metrics calculator may test partial/failure/skipped execution counts, but verify whether an end-to-end SMA backtest with partial SELL leaves the residual position correctly represented.
 
-Before changing profile/hash payloads, inspect how `content_hash`, `candidate_profile_hash`, lineage, and promotion verification are computed. Preserve backward compatibility for old artifacts where possible. New metrics must be deterministic and hash-safe.
+The integration behavior must be pinned by tests:
 
-## Design priority
+* `open_position_at_end=true`
+* `unrealized_pnl_end` is based on the residual position
+* closed trade records include only realized closed quantity/PnL
+* holding interval is not falsely treated as fully closed
+* exposure time includes the still-open interval through period end
 
-Prefer a structural change over symptom patches.
+### H5: Promotion artifact observability may still require opening nested candidate profile internals
 
-The preferred direction is:
+Operators should be able to open a promotion artifact and immediately see metrics contract evidence and applied metrics gate policy. If `metrics_v2` and policy details are only buried inside `candidate_profile`, improve top-level promotion artifact observability.
+
+## Priorities
+
+Implement in this order.
+
+### P0 — Eliminate non-finite JSON from metrics, reports, hashes, and promotion artifacts
+
+No research/promotion/report artifact should contain `Infinity`, `-Infinity`, or `NaN`.
+
+Preferred approaches, in order:
+
+1. Make `MetricContractV2` emit finite numbers or `None` only.
+2. For unbounded profit factor, use:
+
+   * `profit_factor: null`
+   * `profit_factor_unbounded: true`
+   * `limitation_reasons` containing a stable code such as `profit_factor_unbounded_no_losses`
+3. Add a strict JSON sanitizer or validation function at artifact boundaries so future non-finite values fail early.
+4. Update `hashing.canonical_json_bytes()` and/or artifact writing paths if needed so non-finite payloads cannot silently become non-standard JSON.
+
+Do not merely rely on Python’s permissive `json.dumps()` behavior.
+
+Add tests that prove:
+
+```python
+json.dumps(payload, allow_nan=False)
+```
+
+passes for:
+
+* `metrics_v2.as_dict()`
+* a research backtest report payload
+* candidate profile payload
+* promotion artifact payload where feasible
+
+Also test an all-winning closed-trade sample to ensure no `Infinity` reaches serialized artifacts.
+
+### P1 — Bind metrics gate policy into candidate/profile/promotion evidence
+
+Add a deterministic metrics gate policy payload, for example:
 
 ```text
-execution/fill events
--> closed trade ledger
--> position timeline
--> equity curve
--> shared metrics calculator
--> metrics_v2 / metrics contract
--> report artifacts
--> optional acceptance gate extensions
--> promotion/profile observability
--> runtime parity groundwork
+metrics_gate_policy:
+  metrics_schema_version
+  min_cagr_pct
+  min_expectancy_per_trade_krw
+  min_expectancy_per_trade_pct
+  max_exposure_time_pct
+  max_avg_holding_time_minutes
+  max_fee_drag_ratio
+  max_slippage_drag_ratio
+  reject_open_position_at_end
+  metrics_contract_required
+metrics_gate_policy_hash
 ```
 
-Do not only add fields directly to `ResearchMetrics` unless the repo structure makes that the safest bridge. Keep the existing `ResearchMetrics` / `metrics` output backward-compatible. Add a non-breaking `metrics_v2`, `metrics_schema_version`, or similarly explicit contract.
+Implementation requirements:
 
-## Implementation requirements
+* Build this from `manifest.acceptance_gate`, not from ad hoc candidate state.
+* Attach it to each candidate payload.
+* Attach it to each scenario result if scenario-level evaluation needs it, or clearly document candidate-level binding.
+* Include it in `build_candidate_profile()`.
+* Include it in promotion artifact top-level fields.
+* Include `metrics_schema_version`, `validation_metrics_v2`, and `final_holdout_metrics_v2` in promotion artifact top-level fields, or add a compact `metrics_v2_summary` plus full candidate profile reference if full payload size is a concern.
+* If `metrics_contract_required=true` and `validation_metrics_v2` is missing or schema mismatched, promotion validation must fail closed with stable reason codes.
+* If final holdout is required and present, enforce the same contract for `final_holdout_metrics_v2`.
 
-### 1. Add a deterministic metrics contract
+Add tests that prove:
 
-Add a new research metrics contract in an appropriate module, for example:
-
-* `src/bithumb_bot/research/metrics_contract.py`, or
-* an extension of `src/bithumb_bot/research/metrics.py` if that is cleaner.
-
-The contract should support at least the following fields, either as nested dataclasses or a stable dictionary schema:
-
-```text
-metrics_schema_version: 2
-
-return_risk:
-  total_return_pct
-  cagr_pct
-  max_drawdown_pct
-  realized_return_pct
-  unrealized_pnl_end
-  open_position_at_end
-
-trade_quality:
-  closed_trade_count
-  execution_count
-  win_rate
-  avg_win
-  avg_loss
-  payoff_ratio
-  profit_factor
-  expectancy_per_trade_krw
-  expectancy_per_trade_pct
-  max_consecutive_losses
-  single_trade_dependency_score
-
-time_exposure:
-  period_start_ts
-  period_end_ts
-  elapsed_ms
-  calendar_days
-  active_bar_count
-  exposure_time_pct
-  avg_holding_time_ms
-  median_holding_time_ms
-  max_holding_time_ms
-
-cost_execution:
-  fee_total
-  slippage_total
-  fee_drag_ratio
-  slippage_drag_ratio
-  filled_execution_count
-  partial_fill_count
-  failed_execution_count
-  skipped_execution_count
-  quote_coverage_pct
-  median_quote_age_ms
-  p95_quote_age_ms
-```
-
-If any field cannot be computed safely from current data, expose it as `None` and add a clear limitation/reason field rather than fabricating it.
-
-### 2. Define formulas explicitly in code and docs
-
-Use deterministic, documented formulas. Suggested definitions:
-
-* `total_return_pct`: same meaning as current `return_pct`.
-* `cagr_pct`: annualized return over elapsed calendar time; return `None` if elapsed time is zero or invalid.
-* `realized_return_pct`: realized closed-trade net PnL divided by starting cash.
-* `unrealized_pnl_end`: final equity minus cash minus realized basis as appropriate; if exact basis is not safely available, compute from final mark and open position cost basis and document the formula.
-* `open_position_at_end`: true if the simulation ends with nonzero asset quantity or an open position interval.
-* `expectancy_per_trade_krw`: mean net PnL over closed trades.
-* `expectancy_per_trade_pct`: mean closed-trade return percentage using entry notional/cost basis if available; otherwise `None` with a limitation reason.
-* `payoff_ratio`: `avg_win / abs(avg_loss)`, `None` if no losses or no wins unless the repo already has a preferred convention.
-* `exposure_time_pct`: total time with active position divided by elapsed evaluation window.
-* `avg/median/max_holding_time_ms`: computed over closed position intervals only; open interval should be separately represented and should not silently contaminate closed holding-time stats.
-* `fee_drag_ratio` and `slippage_drag_ratio`: define against a stable denominator; prefer absolute gross PnL or total traded notional if available. Choose one, document it, and test it.
-* `execution_count`: execution attempts, not closed trades.
-* `closed_trade_count`: closed SELL-side realized trades/position closures.
-
-Align these definitions with `strategy_performance.py` and `market_regime/metrics.py` where possible. If formulas diverge, either unify them or explicitly document why.
-
-### 3. Add first-class ledgers or timeline data needed for metrics_v2
-
-Modify `run_sma_backtest` and `BacktestRun` carefully so metrics can be calculated from deterministic structures, not ad hoc counters only.
-
-At minimum, expose or internally build:
-
-* an equity curve or equity checkpoint list
-* a position timeline / exposure intervals
-* a closed trade ledger or closed position records
-* enough fill/execution metadata to distinguish:
-
-  * attempted execution
-  * filled execution
-  * partial fill
-  * failed execution
-  * skipped execution
-  * portfolio-applied trade
-  * closed trade
-
-Avoid a large rewrite if unnecessary, but do not hide the problem by deriving holding/exposure from incomplete data.
-
-Existing `trades`, `execution_event_summary`, and pending-fill logic may be reused, but make the data model clear and testable.
-
-### 4. Preserve existing metrics and reports
-
-Do not remove or rename the current `metrics` / `ResearchMetrics` fields. Existing code and tests should still pass.
-
-Add new fields as additional output:
-
-* `train_metrics_v2`
-* `validation_metrics_v2`
-* `final_holdout_metrics_v2`
-* per-window walk-forward `metrics_v2` where appropriate
-* top-level schema metadata such as `metrics_schema_version`
-* candidate/profile fields only in a backward-compatible way
-
-If `build_candidate_profile()` includes new metrics, do it conditionally or with schema-version care so historical artifacts do not break unexpectedly. Promotion for new production-bound candidates may fail closed on missing metrics contract, but old legacy compatibility behavior should remain explicit and reason-coded.
-
-### 5. Extend acceptance gates without breaking old manifests
-
-Add optional acceptance gate fields. Suggested optional keys:
-
-```json
-{
-  "min_cagr_pct": null,
-  "min_expectancy_per_trade_krw": null,
-  "min_expectancy_per_trade_pct": null,
-  "max_exposure_time_pct": null,
-  "max_avg_holding_time_minutes": null,
-  "max_fee_drag_ratio": null,
-  "max_slippage_drag_ratio": null,
-  "reject_open_position_at_end": false,
-  "metrics_contract_required": false
-}
-```
-
-Implementation rules:
-
-* If a new gate field is absent or `null`, preserve existing behavior.
-* If a new gate field is present, evaluate it using `metrics_v2`.
-* Missing required metric values should fail with stable reason codes, not silently pass.
-* For `deployment_tier` values beyond `research_only`, consider fail-closed behavior if `metrics_contract_required=true` or if production policy already indicates that missing evidence should fail.
-* Keep manifest parsing strict: reject unsupported new fields if the repo’s parser is strict elsewhere.
-* Add `as_dict()` support and docs.
+* changing only a metrics threshold changes the manifest hash and candidate/profile evidence hash
+* `metrics_contract_required=true` with removed or malformed `validation_metrics_v2` refuses promotion
+* promotion artifact exposes the applied metrics gate policy without requiring deep candidate-profile inspection
+* policy hash is deterministic
 
 Use stable reason codes such as:
 
 ```text
-metrics_contract_missing
+metrics_gate_policy_missing
+metrics_gate_policy_hash_missing
+metrics_gate_policy_hash_mismatch
 metrics_v2_missing
-metrics_v2_required_field_missing
-min_cagr_failed
-min_expectancy_per_trade_krw_failed
-min_expectancy_per_trade_pct_failed
-max_exposure_time_failed
-max_avg_holding_time_failed
-max_fee_drag_ratio_failed
-max_slippage_drag_ratio_failed
-open_position_at_end_failed
+metrics_contract_missing
+validation_metrics_v2_missing
+final_holdout_metrics_v2_missing
 ```
 
-Adapt names to existing reason-code style.
+Adapt to existing naming conventions, but keep the meaning explicit.
 
-### 6. Improve candidate ranking if the repo has a ranking key
+### P1 — Ensure equity and MDD are marked for failed/skipped execution paths
 
-Inspect candidate ranking. If ranking currently overweights raw return, update it carefully so passing candidates are ordered by operational robustness. A reasonable priority is:
+Refactor `run_sma_backtest()` so every evaluated candle records equity and updates drawdown consistently, even if an execution reference is missing, execution is skipped, or fill fails.
 
-1. scenario policy pass
-2. validation/final-holdout/walk-forward pass
-3. no open position at end
-4. lower MDD
-5. higher expectancy
-6. sufficient trade count
-7. lower fee/slippage drag
-8. better CAGR or exposure-adjusted return
-9. lower single-trade dependency
+Preferred implementation:
 
-Do not break deterministic sorting. Add tests if ranking behavior changes.
+* Introduce a helper such as `_record_equity_mark(...)`.
+* Avoid `continue` paths that bypass the common mark/update block.
+* If a `continue` is necessary, call the mark helper before continuing.
+* Keep legacy `max_drawdown_pct` and `metrics_v2.return_risk.max_drawdown_pct` aligned unless there is a documented reason.
 
-### 7. Add observability
+Add tests with synthetic candles and execution failure/skip behavior:
 
-Update CLI/report summaries to expose the new contract without overwhelming output. At minimum show:
+1. Position is open.
+2. SELL signal occurs.
+3. SELL execution fails or is skipped.
+4. The failure candle has a large adverse price move.
+5. Assert:
 
-* `metrics_schema_version`
-* validation/final-holdout `cagr_pct`
-* `expectancy_per_trade_krw`
-* `exposure_time_pct`
-* `avg_holding_time_ms` or minutes
-* `open_position_at_end`
-* fee/slippage drag if available
-* new gate fail reasons
+   * `equity_curve` includes the failure/skip candle mark
+   * legacy `max_drawdown_pct` reflects the adverse mark
+   * `metrics_v2.return_risk.max_drawdown_pct` reflects the adverse mark
+   * no duplicate or missing equity marks distort exposure time
 
-Reports must carry enough data for an operator to understand why a candidate passed or failed without manually recomputing metrics.
+### P2 — Add partial SELL residual-position integration tests
 
-### 8. Document scope and limitations
+Use `StressExecutionModel` or a test execution model that creates a partial SELL.
 
-Update `docs/research-validation.md` and example manifests.
+Create an integration test through `run_sma_backtest()` where:
 
-Docs must state:
+* a BUY fills
+* a SELL partially fills
+* the dataset ends before the remaining position is fully closed
 
-* root/simple smoke backtests are still not promotion evidence
-* `metrics_v2` is the promotion-grade metrics contract extension
-* exact formulas for CAGR, expectancy, exposure, holding time, fee drag, and slippage drag
-* how new acceptance gate fields behave
-* what remains out of scope:
+Assert:
 
-  * full orderbook depth
-  * queue position
-  * tick replay
-  * market impact
-  * intra-candle path reconstruction
-* how production-bound candidates should require stronger execution timing / top-of-book / calibration evidence
+* `metrics_v2.return_risk.open_position_at_end is True`
+* `metrics_v2.return_risk.unrealized_pnl_end` reflects the residual position
+* `metrics_v2.trade_quality.closed_trade_count` counts only realized closed records
+* `position_intervals` do not falsely show a fully closed interval for the residual position
+* `metrics_v2.time_exposure.exposure_time_pct` includes exposure through period end
+* execution counts distinguish filled/partial/failed/skipped correctly
+* legacy metrics remain backward-compatible
 
-Do not claim execution realism that the repo does not implement.
+If current implementation already behaves correctly, add the test and leave code unchanged. If it fails, fix the ledger logic.
+
+### P2 — Improve promotion artifact operator observability
+
+Operators should not need to reverse-engineer nested structures to answer:
+
+* What metrics schema was used?
+* What validation/final-holdout metrics_v2 values were promoted?
+* What metrics gate policy was applied?
+* Was `metrics_contract_required` true?
+* Was there an open position at end?
+* What CAGR, expectancy, exposure, holding-time, and drag values supported the promotion?
+
+Add top-level promotion fields such as:
+
+```text
+metrics_schema_version
+validation_metrics_v2
+final_holdout_metrics_v2
+metrics_gate_policy
+metrics_gate_policy_hash
+metrics_contract_required
+```
+
+If full payloads are too large, add a compact top-level summary:
+
+```text
+metrics_v2_summary:
+  validation_cagr_pct
+  validation_expectancy_per_trade_krw
+  validation_exposure_time_pct
+  validation_avg_holding_time_ms
+  validation_open_position_at_end
+  validation_fee_drag_ratio
+  validation_slippage_drag_ratio
+  final_holdout_cagr_pct
+  final_holdout_expectancy_per_trade_krw
+  final_holdout_exposure_time_pct
+  final_holdout_open_position_at_end
+```
+
+But do not remove the hash-bound full evidence from candidate profile.
+
+Update CLI promotion output if useful, but do not spam low-value fields.
+
+## Scope boundaries
+
+Do not implement unrelated strategy changes.
+
+Do not implement full orderbook depth, queue position, tick replay, market impact, or intra-candle path reconstruction in this task. If current docs mention those as limitations, preserve that limitation.
+
+Do not modify live arming, secrets, `.env`, broker behavior, or production runtime behavior beyond evidence/reporting contracts needed for this patch.
+
+Do not change root smoke backtest status. Root/simple backtests must remain non-promotion evidence.
 
 ## Testing requirements
 
-Add or update tests before considering the task complete. Use deterministic synthetic data where possible.
+Add or update targeted tests first, then run the relevant suite.
 
-### Golden metrics tests
+At minimum add tests for:
 
-Create unit tests for the shared metrics calculator covering:
+### Strict JSON / finite metrics
 
-1. Same total return over different elapsed periods:
+* all-win sample does not emit `Infinity`
+* `json.dumps(metrics_v2.as_dict(), allow_nan=False)` passes
+* research report payload passes strict JSON serialization
+* candidate profile payload passes strict JSON serialization
+* promotion artifact payload passes strict JSON serialization where feasible
 
-   * 1 month +10% vs 1 year +10%
-   * total return may match; CAGR must differ.
+### Metrics gate policy binding
 
-2. Same return with different exposure:
+* policy payload exists in candidates
+* policy hash is deterministic
+* policy is included in candidate profile hash
+* promotion artifact exposes policy/hash top-level
+* tampering or removing required v2 metrics refuses promotion
+* changing threshold changes evidence hash
 
-   * always in position vs only 10% of the period in position
-   * `exposure_time_pct` must differ.
+### Failed/skipped execution equity marking
 
-3. Open position at end:
+* failed SELL while in position still records equity mark
+* skipped execution due to missing quote still records equity mark
+* MDD includes the adverse candle
+* metrics_v2 and legacy MDD do not diverge unexpectedly
 
-   * `open_position_at_end=true`
-   * unrealized PnL separated
-   * closed-trade stats do not falsely count the open position as closed.
+### Partial SELL residual-position integration
 
-4. Trade quality:
+* partial SELL leaves open position at end
+* residual unrealized PnL is separated
+* exposure includes open interval
+* closed trade ledger does not over-close
+* execution counts remain correct
 
-   * 10 small wins and 1 large loss
-   * verify PF, expectancy, payoff ratio, max consecutive losses, single-trade dependency.
+### Regression tests
 
-5. Cost drag:
+Run or update existing tests that cover:
 
-   * zero-fee/zero-slippage vs stressed fee/slippage
-   * verify fee/slippage totals and drag ratios.
-
-6. Execution count vs closed trade count:
-
-   * include partial fills, failed executions, and skipped executions
-   * ensure counts do not collapse into one ambiguous trade count.
-
-### Backtest integration tests
-
-Add or update tests that run `run_sma_backtest` on synthetic candles and verify:
-
-* `metrics` remains present and backward-compatible
-* `metrics_v2` is present
-* `train_metrics_v2`, `validation_metrics_v2`, and `final_holdout_metrics_v2` appear in reports where applicable
-* open positions and exposure are reported correctly
-* report content hash remains deterministic
-
-### Gate tests
-
-Add tests for new acceptance gate fields:
-
-* missing optional fields preserve old behavior
-* explicit `min_cagr_pct` can fail a candidate
-* explicit expectancy threshold can fail a candidate
-* explicit exposure threshold can fail a candidate
-* `reject_open_position_at_end=true` fails when appropriate
-* missing required `metrics_v2` fails with stable reason code when contract is required
-* old manifests still parse and run
-
-### Parity tests
-
-Where feasible, add a test that uses the same closed-trade ledger to compare common definitions with runtime/regime performance calculations. At minimum ensure expectancy, PF, win rate, and fee drag are not silently inconsistent across research and runtime-style calculations.
-
-### Reproducibility/hash tests
-
-Run and update relevant tests around:
-
-* research backtest reproducibility
-* report content hashes
-* candidate profile hashes
-* promotion gate validation
-* walk-forward
 * manifest parsing
-* CLI summary if existing tests assert output
+* research backtest reproducibility
+* promotion gate
+* CLI summary
+* strategy performance parity
+* walk-forward if impacted
+* lineage/reproduce if impacted
 
-Make sure generated timestamps do not enter deterministic hashes unless the repo already intentionally includes them.
-
-## Backward compatibility and recovery requirements
-
-* Existing `ResearchMetrics` must remain available.
-* Existing manifests without new fields must continue to work.
-* Existing smoke backtest isolation must remain intact.
-* Existing promotion/reproduce behavior should not break for historical artifacts unless there is already an explicit fail-closed policy. If historical compatibility is limited, expose a stable reason code and document it.
-* New production-bound metrics contract enforcement must fail closed only where explicitly configured or clearly required by repository policy.
-* If a report hash or candidate profile hash changes for new reports, this is acceptable only if deterministic and documented.
-* Do not edit secrets, `.env`, live runtime configuration, or external artifacts.
-* Do not move research artifacts into the repository.
-
-## Suggested implementation shape
-
-You may choose a different shape if the repo structure demands it, but prefer this direction:
-
-1. Introduce a shared metrics module:
-
-   * `MetricContractV2`
-   * `EquityPoint`
-   * `PositionInterval`
-   * `ClosedTradeRecord`
-   * `build_metrics_v2(...)`
-   * stable `as_dict()`
-
-2. Extend `BacktestRun`:
-
-   * keep existing fields
-   * add `metrics_v2`
-   * optionally add `equity_curve`, `position_intervals`, `closed_trades` if useful and not too invasive
-
-3. Update `run_sma_backtest`:
-
-   * record enough equity/position/closed-trade data
-   * compute old metrics as before
-   * compute `metrics_v2` from shared calculator
-
-4. Update `validation_protocol.py`:
-
-   * propagate `*_metrics_v2`
-   * use new gate checks only when configured
-   * preserve old gate behavior otherwise
-
-5. Update `experiment_manifest.py`:
-
-   * parse optional new gate fields
-   * strict validation
-   * `as_dict()` support
-
-6. Update promotion/profile code:
-
-   * include metrics contract metadata in new candidate profiles in a backward-compatible way
-   * add fail-closed reason codes only when required
-
-7. Update CLI/report docs/tests.
-
-## Commands to run
-
-Run the smallest relevant test slice first, then the broader suite. Use the repo’s existing tooling. Likely commands include:
+Suggested commands:
 
 ```bash
+uv run pytest tests/test_research_metrics_contract.py
 uv run pytest tests/test_research_manifest.py
-uv run pytest tests/test_research_walk_forward.py
 uv run pytest tests/test_research_backtest_reproducibility.py
-uv run pytest tests/test_experiment_report.py
+uv run pytest tests/test_research_parameter_stability.py
+uv run pytest tests/test_research_promotion_gate.py
+uv run pytest tests/test_research_cli_summary.py
 uv run pytest tests/test_strategy_performance_gate.py
-uv run pytest tests/test_market_regime.py
 uv run pytest
 ```
 
-If any command is unavailable or too slow in the environment, run the closest feasible subset and report exactly what was and was not run.
+If the full suite is too slow or unavailable, run the closest relevant subset and report exactly what was not run and why.
+
+## Backward compatibility and recovery requirements
+
+* Existing legacy `ResearchMetrics` output must remain present.
+* Existing manifests without new metrics gate fields must continue to parse and run.
+* Existing `metrics_v2` schema version should remain explicit.
+* If schema changes are required, add version-safe compatibility rather than silently changing semantics.
+* Historical artifacts should not be retroactively invalidated unless an explicit fail-closed path requires it.
+* New strict JSON enforcement must fail early with actionable reason codes.
+* Promotion refusal reason codes must be stable and operator-readable.
+* Report and profile hashes must remain deterministic.
+* Generated timestamps must remain excluded from deterministic hashes where the repo already excludes them.
+
+## Documentation updates
+
+Update `docs/research-validation.md` and examples as needed.
+
+Docs must clearly state:
+
+* strict JSON artifacts do not contain `Infinity`, `NaN`, or other non-finite values
+* how unbounded profit factor is represented
+* what `metrics_gate_policy` is
+* what `metrics_gate_policy_hash` proves and does not prove
+* how `metrics_contract_required` behaves
+* promotion artifacts expose metrics contract evidence at top level
+* failed/skipped execution still contributes to equity/MDD marking
+* partial SELL residual positions remain open and affect exposure/unrealized PnL
+* full depth, queue position, tick replay, market impact, and intra-candle path reconstruction remain out of scope unless separately implemented
 
 ## Final report format
 
-At the end, provide a concise but complete report with these sections:
+When finished, report in this exact structure:
 
 ```text
 Summary
-- What changed and why.
+- Concise description of what changed and why.
 
 Hypotheses verified/refuted
 - H1:
@@ -480,13 +409,13 @@ Hypotheses verified/refuted
 - H3:
 - H4:
 - H5:
-- H6:
 
-Design decisions
-- Metrics contract shape:
-- Formula definitions:
-- Backward compatibility choices:
-- Hash/reproducibility choices:
+Patches made
+- P0:
+- P1 metrics gate policy binding:
+- P1 failed/skipped equity marking:
+- P2 partial SELL integration:
+- P2 promotion observability:
 
 Files changed
 - path: purpose
@@ -494,16 +423,24 @@ Files changed
 New/changed reason codes
 - code: meaning
 
+Strict JSON guarantees
+- What payloads were checked with allow_nan=False.
+- How unbounded profit factor is represented.
+
 Tests added/updated
-- test name/path: what it proves
+- test path/name: what it proves
 
 Commands run
 - command: pass/fail
 - command not run: reason
 
+Backward compatibility
+- Existing behavior preserved:
+- Intentional behavior changes:
+
 Operational impact
-- What operators will now see in reports/CLI.
-- What new gates can prevent.
+- What operators will now see in reports/CLI/promotion artifacts.
+- What gates now prevent.
 - What remains out of scope.
 
 Risks and follow-up
@@ -511,4 +448,4 @@ Risks and follow-up
 - Any future work needed to connect runtime trade_lifecycles to the same metrics contract.
 ```
 
-Do not claim the system is live-ready merely because tests pass. The expected outcome is a safer, more reproducible research/promotion metrics foundation, not a live-trading endorsement.
+Do not claim live readiness. A passing test suite means the metrics/promotion contract is safer and more reproducible; it does not prove the strategy is live-ready.

@@ -17,12 +17,14 @@ class ResearchMetrics:
     max_consecutive_losses: int
     single_trade_dependency_score: float | None
     parameter_stability_score: float | None
+    profit_factor_unbounded: bool = False
 
     def as_dict(self) -> dict[str, object]:
         return {
             "return_pct": self.return_pct,
             "max_drawdown_pct": self.max_drawdown_pct,
             "profit_factor": self.profit_factor,
+            "profit_factor_unbounded": self.profit_factor_unbounded,
             "trade_count": self.trade_count,
             "win_rate": self.win_rate,
             "avg_win": self.avg_win,

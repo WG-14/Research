@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -11,6 +12,7 @@ from bithumb_bot.research.metrics_contract import (
     PositionInterval,
     build_metrics_v2,
 )
+from bithumb_bot.research.hashing import canonical_json_bytes
 
 
 def _point(ts: int, equity: float, cash: float | None = None, qty: float = 0.0) -> EquityPoint:
@@ -173,3 +175,31 @@ def test_execution_count_is_separate_from_closed_trade_count() -> None:
     assert metrics.cost_execution.failed_execution_count == 1
     assert metrics.cost_execution.skipped_execution_count == 1
     assert math.isclose(metrics.cost_execution.quote_coverage_pct or 0.0, 0.0)
+
+
+def test_all_winning_closed_trades_emit_strict_json_profit_factor_unbounded() -> None:
+    metrics = build_metrics_v2(
+        starting_cash=1000.0,
+        final_cash=1040.0,
+        final_asset_qty=0.0,
+        final_mark_price=0.0,
+        equity_curve=(_point(0, 1000.0), _point(1000, 1040.0)),
+        position_intervals=(PositionInterval(open_ts=100, close_ts=900),),
+        closed_trades=(
+            ClosedTradeRecord(exit_ts=500, net_pnl=20.0, return_pct=2.0),
+            ClosedTradeRecord(exit_ts=900, net_pnl=20.0, return_pct=2.0),
+        ),
+        execution_records=(),
+    )
+
+    payload = metrics.as_dict()
+
+    assert payload["trade_quality"]["profit_factor"] is None
+    assert payload["trade_quality"]["profit_factor_unbounded"] is True
+    assert "profit_factor_unbounded_no_losses" in payload["limitation_reasons"]
+    json.dumps(payload, allow_nan=False)
+
+
+def test_research_canonical_hashing_rejects_non_finite_json() -> None:
+    with pytest.raises(ValueError):
+        canonical_json_bytes({"bad": float("inf")})
