@@ -45,6 +45,12 @@ archive/
 *.sqlite3
 *.db
 
+# Transient Codex/request prompt artifacts
+scripts/codex_request.txt
+codex_request.txt
+.codex_request*.txt
+*.codex_request.txt
+
 # =========================
 # Test / coverage / caches
 # =========================
