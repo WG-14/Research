@@ -1755,6 +1755,61 @@ def test_recovery_report_classifies_general_balance_split_mismatch_blocker(tmp_p
     assert report["blocker_summary_view"][0]["summary"] == "portfolio cash split does not match broker snapshot"
 
 
+def test_live_dry_run_reconcile_uses_accounts_cash_not_start_cash_for_resume(monkeypatch, tmp_path):
+    _set_tmp_db(tmp_path)
+    original_mode = settings.MODE
+    original_live_dry_run = settings.LIVE_DRY_RUN
+    original_live_real_order_armed = settings.LIVE_REAL_ORDER_ARMED
+    original_start_cash = settings.START_CASH_KRW
+    object.__setattr__(settings, "MODE", "live")
+    object.__setattr__(settings, "LIVE_DRY_RUN", True)
+    object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", False)
+    object.__setattr__(settings, "START_CASH_KRW", 1_000_000.0)
+
+    conn = ensure_db()
+    try:
+        init_portfolio(conn)
+        set_portfolio_breakdown(
+            conn,
+            cash_available=395113.99879,
+            cash_locked=0.0,
+            asset_available=0.0,
+            asset_locked=0.0,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    class _AccountsTruthBroker:
+        def get_balance_snapshot(self):
+            return BalanceSnapshot(
+                source_id="accounts_v1_rest_snapshot",
+                observed_ts_ms=1710000000000,
+                asset_ts_ms=1710000000000,
+                balance=BrokerBalance(
+                    cash_available=395113.99879,
+                    cash_locked=0.0,
+                    asset_available=0.0,
+                    asset_locked=0.0,
+                ),
+            )
+
+    try:
+        reconcile_with_broker(_AccountsTruthBroker())
+        eligible, blockers = evaluate_resume_eligibility()
+        report = _load_recovery_report()
+    finally:
+        object.__setattr__(settings, "MODE", original_mode)
+        object.__setattr__(settings, "LIVE_DRY_RUN", original_live_dry_run)
+        object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", original_live_real_order_armed)
+        object.__setattr__(settings, "START_CASH_KRW", original_start_cash)
+
+    assert "BALANCE_SPLIT_MISMATCH" not in {blocker.code for blocker in blockers}
+    assert "PORTFOLIO_BROKER_CASH_MISMATCH" not in report["resume_blocker_reason_codes"]
+    assert report["runtime_readiness"]["broker_position_evidence"]["balance_authority"] == "accounts_v1_rest_snapshot"
+    assert report["runtime_readiness"]["broker_position_evidence"]["simulation_balance_source"] == "dry_run_static"
+
+
 def test_recovery_report_classifies_external_cash_adjustment_missing_blocker(
     monkeypatch, tmp_path
 ):
@@ -3099,6 +3154,102 @@ def test_broker_diagnose_fails_when_tracked_chance_contract_change_is_detected(m
     assert "[FAIL] chance contract drift canary:" in out
     assert "change_detected=1" in out
     assert "changed_fields=bid_types:['limit', 'price']->['market']" in out
+
+
+def test_broker_diagnose_live_dry_run_separates_accounts_truth_from_static_cash(monkeypatch, tmp_path, capsys):
+    _set_tmp_db(tmp_path)
+    original_mode = settings.MODE
+    original_live_dry_run = settings.LIVE_DRY_RUN
+    original_live_real_order_armed = settings.LIVE_REAL_ORDER_ARMED
+    original_start_cash = settings.START_CASH_KRW
+    object.__setattr__(settings, "MODE", "live")
+    object.__setattr__(app_module.settings, "MODE", "live")
+    object.__setattr__(settings, "LIVE_DRY_RUN", True)
+    object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", False)
+    object.__setattr__(settings, "START_CASH_KRW", 1_000_000.0)
+
+    monkeypatch.setenv("NOTIFIER_WEBHOOK_URL", "https://example.com/hook")
+    monkeypatch.setattr("bithumb_bot.app.validate_live_mode_preflight", lambda _cfg: None)
+
+    class _DiagBroker:
+        def get_balance_snapshot(self):
+            return BalanceSnapshot(
+                source_id="accounts_v1_rest_snapshot",
+                observed_ts_ms=1710000000000,
+                asset_ts_ms=1710000000000,
+                balance=BrokerBalance(395113.99879, 0.0, 0.0, 0.0),
+            )
+
+        def get_open_orders(
+            self,
+            *,
+            exchange_order_ids: list[str] | tuple[str, ...] | None = None,
+            client_order_ids: list[str] | tuple[str, ...] | None = None,
+        ):
+            return []
+
+        def get_accounts_validation_diagnostics(self):
+            return {
+                "reason": "ok",
+                "row_count": 1,
+                "currencies": ["KRW"],
+                "missing_required_currencies": [],
+                "duplicate_currencies": [],
+                "execution_mode": "live_dry_run_unarmed",
+                "quote_currency": "KRW",
+                "base_currency": "BTC",
+                "base_currency_missing_policy": "allow_zero_position_start_in_dry_run",
+                "preflight_outcome": "pass_no_position_allowed",
+                "flat_start_allowed": False,
+                "flat_start_reason": "dry_run_unarmed_allowance",
+            }
+
+    monkeypatch.setattr("bithumb_bot.broker.bithumb.BithumbBroker", lambda: _DiagBroker())
+    monkeypatch.setattr(
+        "bithumb_bot.app.get_effective_order_rules",
+        lambda _pair: order_rules.RuleResolution(
+            rules=order_rules.DerivedOrderConstraints(
+                min_qty=0.0001,
+                qty_step=0.0001,
+                min_notional_krw=5000.0,
+                max_qty_decimals=8,
+                bid_min_total_krw=5000.0,
+                ask_min_total_krw=5000.0,
+                bid_price_unit=1.0,
+                ask_price_unit=1.0,
+                order_types=("limit", "price"),
+                bid_types=("limit", "price"),
+                ask_types=("limit", "market"),
+                order_sides=("bid", "ask"),
+            ),
+            source={
+                "min_qty": "local_fallback",
+                "qty_step": "local_fallback",
+                "min_notional_krw": "local_fallback",
+                "max_qty_decimals": "local_fallback",
+                "bid_min_total_krw": "chance_doc",
+                "ask_min_total_krw": "chance_doc",
+                "bid_price_unit": "chance_doc",
+                "ask_price_unit": "chance_doc",
+            },
+        ),
+    )
+
+    try:
+        cmd_broker_diagnose()
+    finally:
+        object.__setattr__(settings, "MODE", original_mode)
+        object.__setattr__(app_module.settings, "MODE", original_mode)
+        object.__setattr__(settings, "LIVE_DRY_RUN", original_live_dry_run)
+        object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", original_live_real_order_armed)
+        object.__setattr__(settings, "START_CASH_KRW", original_start_cash)
+
+    out = capsys.readouterr().out
+    assert "accounts_v1_cash=395113.99879" in out
+    assert "dry_run_static_cash=1000000.00000" in out
+    assert "balance_authority=accounts_v1_rest_snapshot" in out
+    assert "simulation_balance_source=dry_run_static" in out
+    assert "cash_available=1,000,000" not in out
 
 
 def test_broker_diagnose_partial_failure(monkeypatch, tmp_path, capsys):

@@ -4713,6 +4713,35 @@ class OrderRuleSnapshotRecord:
     source_json: str
 
 
+_UNTRUSTED_ORDER_RULE_FALLBACK_REASON_PREFIXES = (
+    "AUTH_",
+    "ACCOUNTS_AUTH_",
+    "TRANSPORT_",
+    "SERVER_",
+    "RATE_LIMITED",
+    "TEMPORARY",
+)
+_TRUSTED_ORDER_RULE_SOURCE_MODES = frozenset({"exchange", "merged"})
+
+
+def order_rule_snapshot_trust_level(record: OrderRuleSnapshotRecord | None) -> str:
+    if record is None:
+        return "missing"
+    source_mode = str(record.source_mode or "").strip().lower()
+    reason = str(record.fallback_reason_code or "").strip().upper()
+    if bool(record.fallback_used):
+        return "untrusted_fallback"
+    if source_mode not in _TRUSTED_ORDER_RULE_SOURCE_MODES:
+        return "untrusted_source_mode"
+    if reason and any(reason.startswith(prefix) for prefix in _UNTRUSTED_ORDER_RULE_FALLBACK_REASON_PREFIXES):
+        return "quarantined_failure"
+    return "trusted_exchange_verified"
+
+
+def order_rule_snapshot_is_trusted_baseline(record: OrderRuleSnapshotRecord | None) -> bool:
+    return order_rule_snapshot_trust_level(record) == "trusted_exchange_verified"
+
+
 def record_order_rule_snapshot(
     conn: sqlite3.Connection,
     *,
@@ -4807,6 +4836,51 @@ def fetch_latest_order_rule_snapshot(
         ).fetchone()
     if row is None:
         return None
+    return OrderRuleSnapshotRecord(
+        market=str(row["market"]),
+        fetched_ts=int(row["fetched_ts"]),
+        source_mode=str(row["source_mode"]),
+        fallback_used=bool(int(row["fallback_used"])),
+        fallback_reason_code=str(row["fallback_reason_code"] or ""),
+        fallback_reason_summary=str(row["fallback_reason_summary"] or ""),
+        rule_signature=str(row["rule_signature"]),
+        rules_json=str(row["rules_json"]),
+        source_json=str(row["source_json"]),
+    )
+
+
+def fetch_latest_trusted_order_rule_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    market: str | None = None,
+) -> OrderRuleSnapshotRecord | None:
+    params: tuple[str, ...]
+    market_clause = ""
+    if market:
+        market_clause = "AND market=?"
+        params = (str(market),)
+    else:
+        params = ()
+    rows = conn.execute(
+        f"""
+        SELECT market, fetched_ts, source_mode, fallback_used, fallback_reason_code,
+               fallback_reason_summary, rule_signature, rules_json, source_json
+        FROM order_rule_snapshots
+        WHERE COALESCE(fallback_used, 0)=0
+          AND COALESCE(source_mode, '') IN ('exchange', 'merged')
+          AND (
+              COALESCE(fallback_reason_code, '')=''
+              AND COALESCE(fallback_reason_summary, '')=''
+          )
+          {market_clause}
+        ORDER BY fetched_ts DESC, id DESC
+        LIMIT 1
+        """,
+        params,
+    ).fetchall()
+    if not rows:
+        return None
+    row = rows[0]
     return OrderRuleSnapshotRecord(
         market=str(row["market"]),
         fetched_ts=int(row["fetched_ts"]),

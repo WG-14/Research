@@ -18,6 +18,12 @@ from typing import TypedDict
 import httpx
 
 from ..config import settings
+from ..balance_authority import (
+    BROKER_TRUTH_ACCOUNTS_V1,
+    BROKER_TRUTH_MYASSET_WS,
+    SIMULATION_DRY_RUN_STATIC,
+    resolve_balance_authority_matrix,
+)
 from ..marketdata import fetch_orderbook_top, validated_best_quote_ask_price
 from ..markets import ExchangeMarketCodeError, canonical_market_id, parse_documented_market_code
 from ..observability import format_log_kv
@@ -1414,6 +1420,7 @@ class BithumbBroker:
             "live_real_order_armed": bool(settings.LIVE_REAL_ORDER_ARMED),
             "ws_myasset_enabled": bool(settings.BITHUMB_WS_MYASSET_ENABLED),
             "balance_source_selected": self.get_balance_source_id(),
+            "balance_authority_matrix": self.get_balance_authority_matrix(),
             "api_key_present": bool(self.api_key),
             "api_key_length": len(self.api_key or ""),
             "api_secret_present": bool(self.api_secret),
@@ -1512,14 +1519,26 @@ class BithumbBroker:
     def get_balance_source_id(self) -> str:
         source = self._balance_source
         if isinstance(source, AccountsV1BalanceSource):
-            return AccountsV1BalanceSource.SOURCE_ID
+            return BROKER_TRUTH_ACCOUNTS_V1
         if isinstance(source, MyAssetWsBalanceSource):
-            return MyAssetWsBalanceSource.SOURCE_ID
+            return BROKER_TRUTH_MYASSET_WS
         if isinstance(source, DryRunBalanceSource):
-            return "dry_run_static"
-        if self.dry_run:
-            return "dry_run_static"
-        return MyAssetWsBalanceSource.SOURCE_ID if bool(settings.BITHUMB_WS_MYASSET_ENABLED) else AccountsV1BalanceSource.SOURCE_ID
+            return SIMULATION_DRY_RUN_STATIC
+        matrix = resolve_balance_authority_matrix(
+            mode=str(settings.MODE),
+            live_dry_run=bool(self.dry_run),
+            live_real_order_armed=bool(settings.LIVE_REAL_ORDER_ARMED),
+            myasset_ws_enabled=bool(settings.BITHUMB_WS_MYASSET_ENABLED),
+        )
+        return str(matrix.balance_authority)
+
+    def get_balance_authority_matrix(self) -> dict[str, object]:
+        return resolve_balance_authority_matrix(
+            mode=str(settings.MODE),
+            live_dry_run=bool(self.dry_run),
+            live_real_order_armed=bool(settings.LIVE_REAL_ORDER_ARMED),
+            myasset_ws_enabled=bool(settings.BITHUMB_WS_MYASSET_ENABLED),
+        ).as_dict()
 
     def _get_balance_source(self) -> BalanceSource:
         source = self._balance_source
@@ -1529,7 +1548,7 @@ class BithumbBroker:
         return source
 
     def _build_balance_source(self) -> BalanceSource:
-        if self.dry_run:
+        if self.dry_run and str(settings.MODE).strip().lower() != "live":
             return DryRunBalanceSource()
         order_currency, payment_currency = self._pair()
         if bool(settings.BITHUMB_WS_MYASSET_ENABLED):

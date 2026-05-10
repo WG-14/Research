@@ -18,6 +18,7 @@ from .broker.base import (
     BrokerTemporaryError,
 )
 from .broker.balance_source import fetch_balance_snapshot
+from .balance_authority import resolve_balance_authority_matrix
 from .broker.order_rules import get_effective_order_rules
 from .config import settings
 from .db_core import (
@@ -2412,6 +2413,13 @@ def reconcile_with_broker(broker: Broker) -> None:
 
         balance_snapshot = fetch_balance_snapshot(broker)
         bal = balance_snapshot.balance
+        balance_authority = resolve_balance_authority_matrix(
+            mode=str(settings.MODE),
+            live_dry_run=bool(settings.LIVE_DRY_RUN),
+            live_real_order_armed=bool(settings.LIVE_REAL_ORDER_ARMED),
+            myasset_ws_enabled=bool(settings.BITHUMB_WS_MYASSET_ENABLED),
+        )
+        metadata.update(balance_authority.as_dict())
         metadata["balance_source"] = str(balance_snapshot.source_id or "-")
         metadata["balance_observed_ts_ms"] = int(balance_snapshot.observed_ts_ms)
         metadata["balance_asset_ts_ms"] = int(balance_snapshot.asset_ts_ms)

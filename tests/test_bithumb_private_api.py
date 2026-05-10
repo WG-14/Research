@@ -5585,27 +5585,35 @@ def test_balance_source_diagnostics_include_source_and_observed_timestamp(monkey
     assert int(diag["last_observed_ts_ms"]) > 0
 
 
-def test_balance_source_injection_uses_dry_run_source_when_dryrun_enabled(monkeypatch):
+def test_live_dry_run_balance_source_uses_accounts_truth_not_start_cash(monkeypatch):
     _configure_live()
     object.__setattr__(settings, "MODE", "live")
     object.__setattr__(settings, "LIVE_DRY_RUN", True)
+    object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", False)
     object.__setattr__(settings, "START_CASH_KRW", 12345.0)
 
     broker = BithumbBroker()
 
-    # dry source should not call private accounts endpoint when dry-run is enabled
     monkeypatch.setattr(
         broker,
         "_get_private",
-        lambda endpoint, params, retry_safe=False: (_ for _ in ()).throw(RuntimeError("should not call private API")),
+        lambda endpoint, params, retry_safe=False: [
+            {"currency": "KRW", "balance": "395113.99879", "locked": "0"},
+        ],
     )
 
-    bal = broker.get_balance()
+    snapshot = broker.get_balance_snapshot()
+    bal = snapshot.balance
     diag = broker.get_accounts_validation_diagnostics()
 
-    assert bal.cash_available == 12345.0
-    assert broker.get_balance_source_id() == "dry_run_static"
-    assert diag["reason"] == "not_applicable"
+    assert snapshot.source_id == "accounts_v1_rest_snapshot"
+    assert bal.cash_available == pytest.approx(395113.99879)
+    assert bal.asset_available == 0.0
+    assert broker.get_balance_source_id() == "accounts_v1_rest_snapshot"
+    assert diag["reason"] == "ok"
+    assert diag["preflight_outcome"] == "pass_no_position_allowed"
+    assert broker.get_balance_authority_matrix()["balance_authority"] == "accounts_v1_rest_snapshot"
+    assert broker.get_balance_authority_matrix()["simulation_balance_source"] == "dry_run_static"
 
 
 def test_balance_source_feature_flag_off_keeps_accounts_v1_snapshot_path(monkeypatch):

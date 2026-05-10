@@ -473,6 +473,53 @@ def test_live_preflight_accepts_approved_profile_alias_selector(
     config.validate_live_mode_preflight(settings)
 
 
+def test_live_execution_contract_emits_safe_env_metadata_and_lints(monkeypatch, tmp_path):
+    env_file = tmp_path / "live.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "MODE=live",
+                "BITHUMB_API_KEY=raw-key",
+                "BITHUMB_API_SECRET=raw-secret",
+                "BUY_PRICE_NONE_MARKET_TO_PRICE_ALIAS_ENABLED=true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    object.__setattr__(settings, "MODE", "live")
+    object.__setattr__(settings, "BITHUMB_API_KEY", "raw-key")
+    object.__setattr__(settings, "BITHUMB_API_SECRET", "raw-secret")
+    object.__setattr__(settings, "APPROVED_STRATEGY_PROFILE_PATH", "<verified-live_dry_run-profile>")
+    object.__setattr__(settings, "MAX_DAILY_ORDER_COUNT", 500)
+    monkeypatch.setenv("BUY_PRICE_NONE_MARKET_TO_PRICE_ALIAS_ENABLED", "true")
+    monkeypatch.setenv("BITHUMB_API_SECRET", "raw-secret ")
+
+    summary = config.live_execution_contract_summary(
+        settings,
+        env_summary={
+            "source_key": "BITHUMB_ENV_FILE_LIVE",
+            "env_file": str(env_file),
+            "loaded": True,
+            "exists": True,
+            "override": False,
+        },
+    )
+    rendered = str(summary)
+
+    assert summary["explicit_env_file"]["mtime_ns"]
+    assert summary["explicit_env_file"]["inode"]
+    assert summary["api_key_length"] == len("raw-key")
+    assert summary["api_key_hash_prefix"]
+    assert summary["api_secret_length"] == len("raw-secret")
+    assert summary["api_secret_hash_prefix"]
+    assert "raw-key" not in rendered
+    assert "raw-secret" not in rendered
+    assert "approved_profile_placeholder" in summary["live_env_contract_lints"]
+    assert "deprecated_ignored_env_key:BUY_PRICE_NONE_MARKET_TO_PRICE_ALIAS_ENABLED" in summary["live_env_contract_lints"]
+    assert "secret_bearing_key_has_surrounding_whitespace:BITHUMB_API_SECRET" in summary["live_env_contract_lints"]
+    assert "risky_live_limit:MAX_DAILY_ORDER_COUNT>=500" in summary["live_env_contract_lints"]
+
+
 def test_live_execution_contract_log_emits_redacted_fingerprint(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,

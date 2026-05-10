@@ -4,6 +4,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Callable, Protocol
 from ..config import prepare_db_path_for_connection, settings
+from ..balance_authority import resolve_balance_authority_matrix
 from ..dust import dust_qty_gap_tolerance
 from ..position_state_snapshot import build_canonical_position_snapshot
 from .accounts_v1 import AccountsRequiredCurrencyMissingError
@@ -47,7 +48,14 @@ class LiveAccountEvidence:
         return float(self.quote_available) + float(self.quote_locked)
 
     def as_broker_position_evidence(self, *, balance_source_stale: bool = False) -> dict[str, object]:
+        authority = resolve_balance_authority_matrix(
+            mode=str(settings.MODE),
+            live_dry_run=bool(settings.LIVE_DRY_RUN),
+            live_real_order_armed=bool(settings.LIVE_REAL_ORDER_ARMED),
+            myasset_ws_enabled=bool(settings.BITHUMB_WS_MYASSET_ENABLED),
+        )
         return {
+            **authority.as_dict(),
             "broker_qty_known": bool(self.base_qty_known),
             "broker_qty": float(self.broker_qty),
             "broker_qty_value_source": self.evidence_policy,
@@ -67,10 +75,19 @@ class LiveAccountEvidence:
             "asset_locked": float(self.base_locked),
             "cash_available": float(self.quote_available),
             "cash_locked": float(self.quote_locked),
+            "broker_cash_known": bool(self.quote_qty_known),
+            "broker_cash_total": float(self.broker_cash_total),
         }
 
     def as_decision_context_fields(self, *, local_qty: float | None = None, canonical_position_state: str = "") -> dict[str, object]:
+        authority = resolve_balance_authority_matrix(
+            mode=str(settings.MODE),
+            live_dry_run=bool(settings.LIVE_DRY_RUN),
+            live_real_order_armed=bool(settings.LIVE_REAL_ORDER_ARMED),
+            myasset_ws_enabled=bool(settings.BITHUMB_WS_MYASSET_ENABLED),
+        )
         fields = {
+            **authority.as_dict(),
             "balance_source": self.source,
             "balance_observed_ts_ms": int(self.observed_ts_ms),
             "balance_source_preflight_outcome": self.preflight_outcome,

@@ -2705,11 +2705,20 @@ def cmd_broker_diagnose() -> None:
         raise SystemExit(1)
 
     from .broker.bithumb import BithumbBroker, classify_private_api_error
+    from .broker.balance_source import BalanceSnapshot
+    from .balance_authority import resolve_balance_authority_matrix
+    from .config import live_execution_contract_fingerprint, live_execution_contract_summary
 
     broker = BithumbBroker()
     checks: list[dict[str, str | bool]] = []
     account_validation_reason = "not_checked"
     account_validation_last_failure_reason = "none"
+    authority_matrix = resolve_balance_authority_matrix(
+        mode=str(settings.MODE),
+        live_dry_run=bool(settings.LIVE_DRY_RUN),
+        live_real_order_armed=bool(settings.LIVE_REAL_ORDER_ARMED),
+        myasset_ws_enabled=bool(settings.BITHUMB_WS_MYASSET_ENABLED),
+    ).as_dict()
 
     def add_check(name: str, status: str, detail: str, *, critical: bool) -> None:
         checks.append({"name": name, "status": status, "detail": detail, "critical": critical})
@@ -2741,8 +2750,18 @@ def cmd_broker_diagnose() -> None:
         add_check("config/env loaded", "FAIL", str(e), critical=True)
 
     balance = None
+    balance_source_id = str(authority_matrix.get("balance_authority") or "unknown")
     try:
-        balance = broker.get_balance()
+        snapshot_getter = getattr(broker, "get_balance_snapshot", None)
+        if callable(snapshot_getter):
+            snapshot = snapshot_getter()
+            if isinstance(snapshot, BalanceSnapshot):
+                balance = snapshot.balance
+                balance_source_id = str(snapshot.source_id or balance_source_id)
+            else:
+                balance = broker.get_balance()
+        else:
+            balance = broker.get_balance()
         account_validation_reason = "ok"
         add_check("broker authentication", "PASS", "private API reachable", critical=True)
     except Exception as e:
@@ -2763,8 +2782,13 @@ def cmd_broker_diagnose() -> None:
 
     if balance is not None:
         balance_summary = (
-            f"cash_available={balance.cash_available:,.0f} cash_locked={balance.cash_locked:,.0f} "
-            f"asset_available={balance.asset_available:.8f} asset_locked={balance.asset_locked:.8f}"
+            f"balance_authority={authority_matrix.get('balance_authority') or balance_source_id} "
+            f"broker_truth_source={authority_matrix.get('broker_cash_truth') or balance_source_id} "
+            f"simulation_balance_source={authority_matrix.get('simulation_balance_source') or 'none'} "
+            f"accounts_v1_cash={balance.cash_available:.5f} accounts_v1_cash_locked={balance.cash_locked:.5f} "
+            f"accounts_v1_asset_qty={balance.asset_available:.8f} accounts_v1_asset_locked={balance.asset_locked:.8f} "
+            f"source_id={balance_source_id} "
+            f"dry_run_static_cash={float(settings.START_CASH_KRW):.5f}"
         )
         add_check("balance query", "PASS", balance_summary, critical=True)
 
@@ -2944,6 +2968,43 @@ def cmd_broker_diagnose() -> None:
                 f"last_success={account_diag_raw.get('last_success_reason') or '-'} "
                 f"last_failure={account_validation_last_failure_reason}"
             ),
+            critical=False,
+        )
+
+    try:
+        env_summary = get_last_explicit_env_load_summary().as_dict()
+        contract_summary = live_execution_contract_summary(settings, env_summary=env_summary)
+        explicit_env = contract_summary.get("explicit_env") if isinstance(contract_summary.get("explicit_env"), dict) else {}
+        explicit_env_file = contract_summary.get("explicit_env_file") if isinstance(contract_summary.get("explicit_env_file"), dict) else {}
+        code_provenance = contract_summary.get("code_provenance") if isinstance(contract_summary.get("code_provenance"), dict) else {}
+        approved_profile = contract_summary.get("approved_profile") if isinstance(contract_summary.get("approved_profile"), dict) else {}
+        add_check(
+            "env contract fingerprint",
+            "PASS",
+            (
+                f"env_contract_fingerprint={live_execution_contract_fingerprint(contract_summary)} "
+                f"env_source_key={explicit_env.get('source_key') or '-'} "
+                f"env_file={explicit_env.get('env_file') or '-'} "
+                f"env_exists={1 if explicit_env.get('exists') else 0} "
+                f"env_loaded={1 if explicit_env.get('loaded') else 0} "
+                f"env_file_mtime_ns={explicit_env_file.get('mtime_ns') or '-'} "
+                f"env_file_inode={explicit_env_file.get('inode') or '-'} "
+                f"api_key_length={contract_summary.get('api_key_length')} "
+                f"api_key_hash_prefix={contract_summary.get('api_key_hash_prefix') or '-'} "
+                f"api_secret_length={contract_summary.get('api_secret_length')} "
+                f"api_secret_hash_prefix={contract_summary.get('api_secret_hash_prefix') or '-'} "
+                f"git_sha={code_provenance.get('commit_sha') or '-'} "
+                f"git_dirty={code_provenance.get('working_tree_dirty')} "
+                f"approved_profile_loaded={approved_profile.get('approved_profile_loaded')} "
+                f"approved_profile_block_reason={approved_profile.get('approved_profile_block_reason') or '-'}"
+            ),
+            critical=False,
+        )
+    except Exception as exc:
+        add_check(
+            "env contract fingerprint",
+            "WARN",
+            f"unavailable ({type(exc).__name__}: {exc})",
             critical=False,
         )
 
@@ -4312,6 +4373,19 @@ def cmd_recovery_report(*, as_json: bool = False) -> None:
         f"tradeability_reason={report.get('tradeability_reason') or 'none'} "
         f"primary_reason={report.get('primary_reason') or 'none'} "
         f"projection_reason={report.get('projection_reason') or 'none'}"
+    )
+    broker_position_evidence = (
+        runtime_readiness.get("broker_position_evidence")
+        if isinstance(runtime_readiness.get("broker_position_evidence"), dict)
+        else {}
+    )
+    print(
+        "    "
+        f"balance_authority={broker_position_evidence.get('balance_authority') or '-'} "
+        f"broker_truth_source={broker_position_evidence.get('broker_cash_truth') or '-'} "
+        f"simulation_balance_source={broker_position_evidence.get('simulation_balance_source') or '-'} "
+        f"broker_cash_total={float(broker_position_evidence.get('broker_cash_total') or 0.0):.5f} "
+        f"base_currency_missing_policy={broker_position_evidence.get('base_currency_missing_policy') or '-'}"
     )
     print(f"    tradeability_resume_safety={report.get('tradeability_resume_safety') or 'none'}")
     resume_blockers = report.get("resume_blockers") or []
@@ -6291,11 +6365,22 @@ def cmd_reconcile(*, broker_factory=None, reconcile_fn=None) -> None:
     resume_allowed, resume_blocks = evaluate_resume_eligibility()
     resume_blockers, resume_blocker_reason_codes = _resume_blocker_summary(resume_blocks)
     state = runtime_state.snapshot()
+    reconcile_metadata = {}
+    if state.last_reconcile_metadata:
+        try:
+            parsed = json.loads(str(state.last_reconcile_metadata))
+            reconcile_metadata = parsed if isinstance(parsed, dict) else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            reconcile_metadata = {}
     _print_operator_command_contract(
         "RECONCILE",
         postcondition=(
             f"last_reconcile_status={state.last_reconcile_status or 'none'}; "
             f"last_reconcile_reason_code={state.last_reconcile_reason_code or 'none'}; "
+            f"balance_authority={reconcile_metadata.get('balance_authority') or '-'}; "
+            f"broker_truth_source={reconcile_metadata.get('broker_cash_truth') or '-'}; "
+            f"simulation_balance_source={reconcile_metadata.get('simulation_balance_source') or '-'}; "
+            f"broker_cash_total={float(reconcile_metadata.get('broker_cash_available') or 0.0) + float(reconcile_metadata.get('broker_cash_locked') or 0.0):.5f}; "
             f"resume_gate_blocked={1 if state.resume_gate_blocked else 0}; "
             f"resume_allowed={1 if resume_allowed else 0}; "
             f"resume_blockers={resume_blockers}; "

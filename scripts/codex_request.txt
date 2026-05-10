@@ -1,320 +1,315 @@
-You are Codex working directly inside the GitHub repository `WG-14/bithumb-bot`.
+You are Codex working directly in the GitHub repository `WG-14/bithumb-bot`.
 
-Continue from the completed DB schema-duplication patch. Pytest reportedly passes, but do not treat the patch as complete merely because tests pass. Inspect the actual repository state and determine whether any additional patch is still needed.
+Do not treat the current diagnosis as proven fact. Start from the EC2 evidence below as the incident context, then verify or falsify each hypothesis by inspecting and testing the repository.
 
-The core issue remains operational DB safety for an automated trading experiment system: schema creation, migration, validation, recovery diagnostics, and operator-facing observability must make it impossible to silently operate on a stale or malformed DB. The previous high-priority problem was the old `db_schema.py` path that could create `portfolio(cash, qty)`. That appears to be fixed, but verify it directly.
+Incident context:
 
-Do not ask clarification questions. Inspect, patch only if needed, test, and report.
+* EC2 live dry-run environment: `MODE=live`, `LIVE_DRY_RUN=true`, `LIVE_REAL_ORDER_ARMED=false`.
+* After cleaning `live.verify.env`, Bithumb private API authentication now succeeds:
 
-## Current context to verify
+  * `/v1/accounts` returns HTTP 200.
+  * `/v1/orders/chance` returns HTTP 200.
+  * `/v1/accounts` returns KRW balance `395113.99879`, matching the mobile app.
+* A stale `order_rule_snapshots` row caused a false canary failure:
 
-The latest repo state appears to have addressed the major DB schema duplication issue:
+  * `id=8700`
+  * `source_mode=local_fallback`
+  * `fallback_used=1`
+  * `fallback_reason_code=AUTH_JWT_VERIFICATION`
+  * Once deleted, `broker-diagnose` changed from `overall=FAIL` to `overall=WARN`, and `chance contract drift canary` passed with `change_detected=0`.
+* Remaining blocker:
 
-* `src/bithumb_bot/db_schema.py` no longer owns old DDL.
-* `db_schema.ensure_schema()` appears to warn and delegate to `db_core.ensure_schema()`.
-* `db_schema.init_portfolio()` appears to initialize the current `cash_krw`, `asset_qty`, available/locked portfolio shape.
-* `src/bithumb_bot/db_core.py` appears to define:
+  * `BALANCE_SPLIT_MISMATCH`
+  * `local=395113.99879`
+  * `broker=1000000`
+  * `delta=604886.00121`
+* The `broker=1000000` value appears to come from `DryRunBalanceSource -> settings.START_CASH_KRW`, not from `/v1/accounts`.
+* Do not “fix” this by adjusting the DB cash to `1,000,000`. Local cash already matches the real account balance.
+* Current concern: the live dry-run system is mixing real exchange/account evidence, simulation balance, and local fallback snapshots into the same broker-truth layer.
 
-  * `SchemaValidationError`
-  * `OPERATIONAL_SCHEMA_VERSION`
-  * `OPERATIONAL_SCHEMA_META_KEY`
-  * required runtime table/column contracts
-  * required trigger contracts
-  * runtime schema fingerprinting
-  * schema diagnostics
-  * `assert_current_schema()`
-  * fail-fast rejection for old `portfolio(cash, qty)`
-* `tests/test_portfolio_schema.py` appears to cover:
+Your job is to turn this into a robust, reproducible, operator-safe live dry-run / live promotion system. Prioritize design changes over symptom patches.
 
-  * empty DB bootstrap
-  * current DB reopen
-  * deprecated `db_schema` shim behavior
-  * aggregate legacy `portfolio(cash_krw, asset_qty)` backfill
-  * old `portfolio(cash, qty)` rejection
-  * malformed partial portfolio rejection
-  * portfolio available/locked total mismatch rejection
+Work in the repo. Inspect at least these areas before patching:
 
-Treat all of this as a hypothesis until verified from the code.
-
-## Primary task
-
-Determine whether the DB schema duplication problem needs any additional patch.
-
-My current hypothesis is:
-
-> No additional large structural patch is needed for the original DB schema duplication issue. The remaining useful patch, if not already implemented, is a small observability fix in `build_runtime_schema_diagnostics()`: it currently reports `"schema_version": OPERATIONAL_SCHEMA_VERSION` and `"accounting_projection_model": ACCOUNTING_PROJECTION_MODEL`, which are expected code-side values, not necessarily DB-observed values. This can confuse operators when diagnosing malformed or legacy DBs because a failing DB may still show `"schema_version": 1`.
-
-Keep this hypothesis as a hypothesis. Verify it directly.
-
-## Inspect first
-
-Inspect at least:
-
-* `src/bithumb_bot/db_schema.py`
+* `src/bithumb_bot/broker/balance_source.py`
+* `src/bithumb_bot/broker/bithumb.py`
+* `src/bithumb_bot/runtime_readiness.py`
+* `src/bithumb_bot/reporting.py`
+* `src/bithumb_bot/config.py`
 * `src/bithumb_bot/db_core.py`
-* `tests/test_portfolio_schema.py`
-* any tests touching schema diagnostics
-* any CLI or reporting command that exposes `diagnose_db_path()` or `build_runtime_schema_diagnostics()`
-* all usages of:
+* order-rule sync / snapshot logic
+* broker diagnose / recovery-report / reconcile command paths
+* relevant tests:
 
-  * `build_runtime_schema_diagnostics`
-  * `diagnose_db_path`
-  * `schema_version`
-  * `accounting_projection_model`
-  * `schema_meta`
-  * `ensure_schema_ready=False`
-  * `db_schema`
+  * `tests/test_live_preflight.py`
+  * `tests/test_order_rules_sync.py`
+  * `tests/test_operator_commands.py`
+  * `tests/test_bithumb_private_api.py`
+  * any recovery/readiness tests
 
-Confirm whether the old `portfolio(cash, qty)` DDL is fully gone from production code. It may remain only as a test fixture or simulated legacy DB shape.
+Core hypotheses to validate or falsify:
 
-## Hypotheses to verify or refute
+1. Live dry-run broker truth is currently mixed with simulation balance.
 
-### H1: The original high-risk schema duplication path is now blocked
+   * Validate whether `MODE=live + LIVE_DRY_RUN=true + /v1/accounts success` can still cause `DryRunBalanceSource` or `START_CASH_KRW` to enter recovery/resume/broker-local convergence as broker truth.
+   * If confirmed, redesign so real account evidence and simulation balance are separate authorities.
+   * In live dry-run:
 
-Verify:
+     * `broker_cash_truth` must be `/v1/accounts` / `accounts_v1_rest_snapshot`.
+     * `broker_position_truth` must be `/v1/accounts` / `accounts_v1_rest_snapshot`.
+     * `dry_run_static` may be used only for execution simulation or no-submit simulation, never as broker truth for resume safety.
 
-* `db_schema.py` cannot create `portfolio(cash, qty)`.
-* It either delegates to `db_core` or fails explicitly.
-* Tests prove the deprecated module no longer creates old columns.
-* Old `portfolio(cash, qty)` DBs are rejected before trading/reporting/repair runtime use.
+2. Fallback order-rule snapshots can currently become durable canary baselines.
 
-If false, fix this first. Do not proceed to minor observability work until this is safe.
+   * Validate whether `order_rule_snapshots` rows with `fallback_used=1`, `source_mode=local_fallback`, or auth-failure reasons can be selected as canary baselines.
+   * If confirmed, change baseline selection so `fallback_used=1` and auth-failed snapshots are excluded.
+   * Prefer a clear trust policy over ad hoc filtering:
 
-### H2: Runtime schema validation now fails fast on unsupported or malformed schemas
+     * trusted baseline: exchange-verified or merged exchange snapshot with `fallback_used=0`
+     * untrusted/quarantine: local fallback, auth-failed fallback, transport-failed fallback
+   * Fallback snapshots may remain useful as emergency runtime fallback evidence, but must not become drift baselines.
 
-Verify:
+3. Env/runtime provenance is not strong enough for live operations.
 
-* `db_core.ensure_db()` with normal defaults runs schema creation/migration and validation.
-* `portfolio(cash, qty)` is rejected with `SchemaValidationError`, not a late generic SQLite failure.
-* malformed portfolio schemas fail early with clear messages.
-* valid current DBs still pass.
-* aggregate legacy `cash_krw` / `asset_qty` DBs still upgrade correctly.
+   * Validate whether service, CLI, healthcheck, and backup/timer paths can load different env sources or hide meaningful config drift.
+   * Strengthen live command output with an env contract fingerprint:
 
-If false, patch validation and tests before any cosmetic diagnostics work.
+     * env source key
+     * env file path
+     * env file exists/loaded
+     * env file mtime/inode if feasible
+     * API key length
+     * API secret length
+     * safe hash prefix of sensitive values, never raw secrets
+     * git SHA / dirty status
+   * Emit a clear event if sensitive credential length/fingerprint changes across live runs, without exposing secrets.
 
-### H3: No production path normally bypasses schema validation
+4. `broker-diagnose` currently allows misleading PASS output.
 
-Verify usage of `ensure_schema_ready=False`.
+   * Validate whether `broker-diagnose` shows `balance query: cash_available=1,000,000 PASS` in live dry-run even when `/v1/accounts` returns `395113.99879`.
+   * Redesign output so operators can distinguish:
 
-Allowed:
+     * `accounts_v1_cash`
+     * `accounts_v1_asset_qty`
+     * `dry_run_static_cash`
+     * `balance_authority`
+     * `simulation_balance_source`
+   * PASS/WARN/FAIL should be authority-aware, not just “a balance object exists”.
 
-* tests
-* explicit diagnostics
-* controlled low-level internals, if justified
+5. Live experiment promotion is not fully reproducible yet.
 
-Not allowed:
+   * Validate whether a live dry-run can be reconstructed from a single manifest.
+   * If not, introduce or propose an `ExperimentManifest` / live run manifest that records:
 
-* normal trading
-* reporting
-* repair
-* live startup
-* runtime commands that can operate on DB state
+     * git SHA and dirty status
+     * env fingerprint
+     * approved profile path/hash/status
+     * order-rule snapshot id/signature/trust level
+     * account snapshot hash or sanitized evidence summary
+     * DB schema fingerprint
+     * strategy params
+     * execution engine / target-delta shadow flags
+     * decision telemetry range
+   * All recovery reports and decision telemetry should be able to reference this manifest id.
 
-If a production path bypasses validation, either remove that bypass or add a clear test proving it is safe and cannot operate on malformed DBs.
+Implementation priorities:
 
-### H4: Diagnostics currently blur expected schema version and observed DB schema version
+1. Implement a Balance Authority Matrix.
 
-Verify `build_runtime_schema_diagnostics()`.
+   * Add explicit code-level policy for which source is authoritative for each use case:
 
-If it returns:
+     * broker account truth
+     * broker position truth
+     * resume/recovery safety gate
+     * order sizing
+     * simulation balance
+     * paper portfolio balance
+   * Live dry-run must use accounts-v1 evidence for broker truth when `/v1/accounts` succeeds.
+   * Missing BTC row in live dry-run with KRW present must be treated as known-zero BTC only when policy allows `pass_no_position_allowed`.
+   * Do not allow `START_CASH_KRW` to influence live recovery/resume safety.
 
-```python
-"schema_version": OPERATIONAL_SCHEMA_VERSION
-"accounting_projection_model": ACCOUNTING_PROJECTION_MODEL
-```
+2. Implement or harden Snapshot Trust Policy for order rules.
 
-then this is expected/code-side information, not necessarily observed DB metadata.
+   * Ensure canary baseline selection excludes:
 
-This is not a large blocking safety bug, but it is an operator observability problem. A malformed, legacy, or metadata-mismatched DB should not appear to have schema version `1` unless that is clearly labeled as the expected version.
+     * `fallback_used=1`
+     * `source_mode=local_fallback`
+     * `fallback_reason_code` indicating auth/transport failure
+   * Keep fallback rows only as fallback evidence, not trusted exchange baselines.
+   * Add structured trust metadata where appropriate; if a schema migration is too broad for this patch, implement safe selection rules and document a follow-up migration.
 
-## Patch requirements if H4 is confirmed
+3. Redesign diagnostics and reports around evidence authority.
 
-Make a small, backward-compatible diagnostics patch.
+   * `broker-diagnose` must show actual account evidence separately from dry-run simulation balance.
+   * `recovery-report` and readiness output must show:
 
-Do not remove existing fields yet if downstream code or tests may rely on them.
+     * selected broker truth source
+     * selected simulation source
+     * whether base row was missing and why that is allowed
+     * whether the source is trusted, fallback, stale, or quarantined
+   * The output should make it impossible to mistake `START_CASH_KRW=1000000` for real broker cash.
 
-Add explicit expected vs observed fields:
+4. Add a live env lint / contract check if feasible in scope.
 
-```python
-"expected_schema_version": OPERATIONAL_SCHEMA_VERSION
-"observed_schema_version": <schema_meta.schema_version if present else None>
-"expected_accounting_projection_model": ACCOUNTING_PROJECTION_MODEL
-"observed_accounting_projection_model": <schema_meta.accounting_projection_model if present else None>
-```
+   * At minimum, add code/tests for detecting:
 
-Recommended compatibility policy:
+     * placeholder values such as `<verified-live_dry_run-profile>`
+     * trailing whitespace on secret-bearing keys
+     * deprecated ignored keys like `BUY_PRICE_NONE_MARKET_TO_PRICE_ALIAS_ENABLED`
+     * paper-only keys in live env
+     * risky live limits such as `MAX_DAILY_ORDER_COUNT=500`
+     * missing approved profile for real live promotion
+   * Do not print raw secrets.
 
-* Keep `"schema_version"` for now as a compatibility alias for `expected_schema_version`.
-* Keep `"accounting_projection_model"` for now as a compatibility alias for `expected_accounting_projection_model`.
-* Do not let those legacy names be the only version/model signals.
-* If the DB has no `schema_meta` row, observed values must be `None`.
-* If the DB has a mismatched `schema_meta` row, diagnostics must show the observed mismatched value and include a validation error.
-* If the DB is current, expected and observed values should match.
+Testing requirements:
 
-Make the diagnostic output operator-safe:
+Add focused regression tests. Do not rely on real Bithumb network calls in tests.
 
-* legacy `portfolio(cash, qty)` DB:
+Required tests:
 
-  * `status == "FAIL"`
-  * `legacy_schema_detected == True`
-  * `expected_schema_version == OPERATIONAL_SCHEMA_VERSION`
-  * `observed_schema_version is None` unless schema_meta exists
-  * `recommended_action` should remain recovery-oriented
-* malformed portfolio DB:
+1. Live dry-run account evidence test:
 
-  * `status == "FAIL"`
-  * `malformed_portfolio_detected == True`
-  * observed version should not pretend the DB is current
-* valid current DB:
+   * Mode: `MODE=live`, `LIVE_DRY_RUN=true`, `LIVE_REAL_ORDER_ARMED=false`.
+   * Mock `/v1/accounts` with KRW balance `395113.99879` and no BTC row.
+   * Set or simulate `START_CASH_KRW=1000000`.
+   * Expected:
 
-  * `status == "PASS"`
-  * expected and observed schema version match
-  * expected and observed accounting projection model match
+     * broker cash truth is `395113.99879`
+     * broker BTC quantity is known-zero under `pass_no_position_allowed`
+     * no `BALANCE_SPLIT_MISMATCH` is produced when local cash equals `395113.99879`
+     * dry-run static balance is visible only as simulation balance, not broker truth.
 
-## Optional CLI exposure
+2. Recovery/resume blocker test:
 
-Inspect whether there is an existing DB doctor / validate-db / diagnostics CLI command.
+   * Same account evidence as above.
+   * Local DB cash equals accounts-v1 KRW.
+   * Expected:
 
-If a command already exists, update its output/tests to include expected vs observed fields.
+     * recovery/resume logic does not block on `PORTFOLIO_BROKER_CASH_MISMATCH`
+     * if local DB cash differs from accounts-v1 KRW, blocker should use actual accounts-v1 values, not `START_CASH_KRW`.
 
-If no command exists, do not add a large new CLI framework for this task. It is acceptable to keep the patch limited to the reusable diagnostics function, unless adding a small command is trivial and consistent with existing CLI structure.
+3. Order-rule canary baseline test:
 
-## Scope boundaries
+   * Insert or mock latest `order_rule_snapshots` row:
 
-Do not rewrite the DB layer.
+     * `source_mode=local_fallback`
+     * `fallback_used=1`
+     * `fallback_reason_code=AUTH_JWT_VERIFICATION`
+   * Also provide an older valid merged/exchange row.
+   * Expected:
 
-Do not introduce a full migration framework in this patch.
+     * canary baseline ignores the fallback row
+     * canary compares against the trusted row
+     * no false drift is reported when the current exchange snapshot matches the trusted row.
 
-Do not change trading logic, broker behavior, live config, `.env`, secrets, or external artifacts.
+4. Broker diagnose output test:
 
-Do not silently migrate `portfolio(cash, qty)` unless the repo already explicitly chose that policy. The current preferred policy appears to be explicit rejection with recovery guidance.
+   * In live dry-run, mocked accounts-v1 returns `395113.99879`.
+   * `START_CASH_KRW=1000000`.
+   * Expected output includes:
 
-Do not remove compatibility fields from diagnostics unless all callers/tests prove it is safe.
+     * `accounts_v1_cash=395113.99879` or equivalent structured field
+     * `dry_run_static_cash=1000000` or equivalent structured field
+     * `balance_authority=accounts_v1_rest_snapshot`
+   * Expected output must not present `cash_available=1000000` alone as broker balance truth.
 
-Do not weaken existing schema validation to make diagnostics easier.
+5. Env/provenance test:
 
-Do not make destructive DB changes.
+   * Verify live command contract emits safe env metadata and does not expose raw secrets.
+   * Verify missing/placeholder approved profile is surfaced as not configured, not silently accepted.
+   * Verify deprecated ignored env keys are reported clearly or linted.
 
-## Tests to add or update
+Recovery and migration constraints:
 
-Add targeted tests if missing.
+* Do not delete production DB rows as part of normal startup.
+* If you add cleanup logic, it must be explicit, operator-driven, backed up, and auditable.
+* Fallback/auth-failed snapshots should be quarantined or excluded from baseline selection, not blindly removed.
+* Preserve backward compatibility for existing DBs unless a migration is clearly justified.
+* Any schema migration must be idempotent and covered by tests.
+* Do not change live order submission behavior unless required by the authority separation; this task is primarily evidence, safety, diagnostics, and readiness correctness.
+* Keep `EXECUTION_ENGINE=lot_native` as live behavior; target-delta shadow behavior may remain telemetry unless tests prove otherwise.
 
-At minimum, ensure tests prove:
+Observability requirements:
 
-1. Current DB diagnostics:
+* Add structured log fields or report fields for:
 
-   * `status == "PASS"`
-   * `expected_schema_version == OPERATIONAL_SCHEMA_VERSION`
-   * `observed_schema_version == OPERATIONAL_SCHEMA_VERSION`
-   * `expected_accounting_projection_model == ACCOUNTING_PROJECTION_MODEL`
-   * `observed_accounting_projection_model == ACCOUNTING_PROJECTION_MODEL`
-   * legacy compatibility fields still exist if preserved
+  * `balance_authority`
+  * `broker_truth_source`
+  * `simulation_balance_source`
+  * `accounts_v1_preflight_outcome`
+  * `accounts_v1_row_count`
+  * `accounts_v1_currencies`
+  * `base_currency_missing_policy`
+  * `order_rule_snapshot_id`
+  * `order_rule_trust_level` or equivalent
+  * `order_rule_fallback_used`
+  * `order_rule_fallback_reason_code`
+  * `canary_baseline_snapshot_id`
+  * `canary_baseline_trusted`
+  * `env_contract_fingerprint`
+* Ensure `broker-diagnose`, `recovery-report`, and `reconcile` outputs are understandable to an operator without reading source code.
 
-2. Old `portfolio(cash, qty)` diagnostics:
+Out of scope unless necessary:
 
-   * `status == "FAIL"`
-   * `legacy_schema_detected is True`
-   * `expected_schema_version == OPERATIONAL_SCHEMA_VERSION`
-   * `observed_schema_version is None` unless test explicitly creates schema_meta
-   * recommended action points to restore backup or reviewed migration/repair before operating
+* Do not implement a full trading strategy rewrite.
+* Do not enable real orders.
+* Do not convert target-delta from shadow to live execution.
+* Do not create or assume an approved strategy profile unless tests require a placeholder fixture.
+* Do not patch by setting `START_CASH_KRW=395113.99879` in live env; that is a workaround and should not be the design.
 
-3. Malformed portfolio diagnostics:
+Expected final validation commands:
 
-   * `status == "FAIL"`
-   * `malformed_portfolio_detected is True`
-   * missing columns are reported
-   * observed schema version is not falsely presented as current unless metadata truly says so
-
-4. Schema metadata mismatch diagnostics:
-
-   * create a valid current DB
-   * mutate `schema_meta.schema_version` or `accounting_projection_model`
-   * call diagnostics without repairing metadata
-   * assert:
-
-     * `status == "FAIL"`
-     * expected value and observed value differ
-     * validation errors mention metadata mismatch
-
-5. Existing schema tests still pass:
-
-   * old `cash/qty` rejection
-   * aggregate legacy backfill
-   * current DB reopen
-   * deprecated `db_schema` shim
-
-Run relevant tests:
+Run the relevant test subset and report exact commands/results, for example:
 
 ```bash
-pytest tests/test_portfolio_schema.py
+uv run pytest -q tests/test_live_preflight.py tests/test_order_rules_sync.py tests/test_operator_commands.py
+uv run pytest -q tests/test_bithumb_private_api.py
+uv run pytest -q <new_or_modified_tests>
 ```
 
-Also run any diagnostics/CLI tests if present.
-
-Run full pytest if practical:
+If the full suite is feasible, also run:
 
 ```bash
-pytest
+uv run pytest -q
 ```
 
-## Expected outcome
-
-If the inspection confirms the original issue is already fixed and only the diagnostics ambiguity remains, implement only the small observability patch.
-
-If inspection finds a deeper remaining issue, prioritize safety in this order:
-
-1. prevent old schema creation
-2. fail fast on unsupported/malformed DBs
-3. prevent runtime validation bypass
-4. clarify diagnostics expected vs observed fields
-5. update tests and docs only as needed
-
-## Final report format
-
-Report in this exact structure:
+Final report format:
 
 1. Summary
 
-   * Whether additional large DB schema patch was needed
-   * What was changed
-   * Whether the original risk remains blocked
+   * What was changed.
+   * Which hypotheses were supported, rejected, or left unresolved.
 
-2. Hypothesis results
+2. Root-cause analysis
 
-   * H1 result: confirmed/refined/falsified
-   * Evidence
-   * Patch or no patch
-   * Remaining risk
+   * Do not state unverified assumptions as facts.
+   * Explain the authority-mixing issue and fallback-baseline issue separately.
 
-   Repeat for H2, H3, and H4.
+3. Design changes
 
-3. Design/observability changes
+   * Balance Authority Matrix changes.
+   * Snapshot Trust Policy changes.
+   * Diagnostics/reporting changes.
+   * Env/provenance changes.
 
-   * Expected vs observed schema version behavior
-   * Expected vs observed accounting projection model behavior
-   * Backward compatibility fields retained or removed
-   * Recovery/diagnostics behavior for legacy and malformed DBs
+4. Files changed
 
-4. Tests added or changed
+   * List every modified file and the purpose of the change.
 
-   * List each test
-   * State what failure mode it prevents
+5. Tests
 
-5. Commands run
-
-   * Exact commands
-   * Pass/fail result
+   * List added/modified tests.
+   * Include exact commands run and results.
 
 6. Operational impact
 
-   * What an operator now sees for a valid DB
-   * What an operator now sees for old `portfolio(cash, qty)`
-   * What an operator now sees for malformed or metadata-mismatched DBs
-   * How this improves recovery and prevents false confidence
+   * Explain what should change in EC2 output after this patch.
+   * Explicitly state that local DB cash should not be adjusted to `1,000,000`.
+   * Explain how an operator should distinguish real account evidence from simulation balance.
 
-7. Deferred work
+7. Remaining follow-ups
 
-   * Include only real deferred work
-   * Do not hide required safety fixes here
-
-The patch is successful only if it preserves the previous schema-safety guarantees and makes diagnostics unambiguous about the difference between code-expected schema metadata and DB-observed schema metadata.
+   * Approved profile generation.
+   * Live env lint hardening if not fully implemented.
+   * Experiment manifest implementation if only partially implemented.
+   * Any schema migration follow-up if trust metadata was implemented as selection filtering only.

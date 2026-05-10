@@ -6,6 +6,7 @@ from typing import Any
 
 from . import runtime_state
 from .config import settings
+from .balance_authority import resolve_balance_authority_matrix
 from .db_core import (
     ensure_db,
     get_fee_gap_accounting_repair_summary,
@@ -481,6 +482,12 @@ def build_broker_position_evidence(
     pair: str | None = None,
 ) -> dict[str, object]:
     metadata = dict(metadata or {})
+    authority = resolve_balance_authority_matrix(
+        mode=str(settings.MODE),
+        live_dry_run=bool(settings.LIVE_DRY_RUN),
+        live_real_order_armed=bool(settings.LIVE_REAL_ORDER_ARMED),
+        myasset_ws_enabled=bool(settings.BITHUMB_WS_MYASSET_ENABLED),
+    )
     base_currency_expected, quote_currency_expected = _split_pair_currencies(str(pair or settings.PAIR))
     source = str(metadata.get("balance_source") or metadata.get("broker_qty_evidence_source") or "-")
     observed_ts_ms = _metadata_int(metadata, "balance_observed_ts_ms")
@@ -554,6 +561,7 @@ def build_broker_position_evidence(
         formal_position_evidence_available and not position_rebuild_blockers
     )
     return {
+        **authority.as_dict(),
         "broker_qty_known": formal_position_evidence_available,
         "broker_qty": broker_qty,
         "broker_qty_value_source": broker_qty_value_source,
@@ -571,6 +579,8 @@ def build_broker_position_evidence(
         "asset_locked": asset_locked,
         "cash_available": cash_available,
         "cash_locked": cash_locked,
+        "broker_cash_known": bool("broker_cash_available" in metadata or "broker_cash_locked" in metadata),
+        "broker_cash_total": cash_available + cash_locked,
         "asset_ts_ms": asset_ts_ms,
     }
 

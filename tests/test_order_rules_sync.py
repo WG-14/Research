@@ -4,7 +4,12 @@ from bithumb_bot.broker import order_rules
 from bithumb_bot.broker.base import BrokerRejectError
 from bithumb_bot import config as config_module
 from bithumb_bot.config import settings
-from bithumb_bot.db_core import ensure_db, fetch_latest_order_rule_snapshot, record_order_rule_snapshot
+from bithumb_bot.db_core import (
+    ensure_db,
+    fetch_latest_order_rule_snapshot,
+    fetch_latest_trusted_order_rule_snapshot,
+    record_order_rule_snapshot,
+)
 
 
 import pytest
@@ -1173,3 +1178,82 @@ def test_get_effective_order_rules_detects_tracked_chance_contract_change_from_p
         assert fetch_latest_order_rule_snapshot(conn, market="KRW-BTC") is not None
     finally:
         conn.close()
+
+
+def test_chance_contract_canary_ignores_newer_auth_failed_fallback_baseline(monkeypatch, tmp_path) -> None:
+    object.__setattr__(settings, "DB_PATH", str(tmp_path / "order_rule_snapshots.sqlite"))
+    object.__setattr__(settings, "MODE", "live")
+    object.__setattr__(settings, "LIVE_DRY_RUN", True)
+    order_rules._cached_rules.clear()
+
+    trusted_rules = {
+        "market_id": "KRW-BTC",
+        "bid_min_total_krw": 5000.0,
+        "ask_min_total_krw": 5000.0,
+        "bid_price_unit": 1.0,
+        "ask_price_unit": 1.0,
+        "order_types": ("limit", "price"),
+        "bid_types": ("limit", "price"),
+        "ask_types": ("limit", "market"),
+        "order_sides": ("bid", "ask"),
+        "bid_fee": 0.0,
+        "ask_fee": 0.0,
+        "maker_bid_fee": 0.0,
+        "maker_ask_fee": 0.0,
+        "min_qty": 0.0001,
+        "qty_step": 0.0001,
+        "min_notional_krw": 5000.0,
+        "max_qty_decimals": 8,
+    }
+    fallback_rules = {**trusted_rules, "order_types": ("limit", "market"), "bid_types": ("market",)}
+    conn = ensure_db()
+    try:
+        record_order_rule_snapshot(
+            conn,
+            market="KRW-BTC",
+            fetched_ts=1710000000000,
+            source_mode="merged",
+            fallback_used=False,
+            fallback_reason_code="",
+            fallback_reason_summary="",
+            rules_payload=trusted_rules,
+            source_payload={"source_mode": "merged", "trust_level": "trusted_exchange_verified"},
+        )
+        record_order_rule_snapshot(
+            conn,
+            market="KRW-BTC",
+            fetched_ts=1710000010000,
+            source_mode="local_fallback",
+            fallback_used=True,
+            fallback_reason_code="AUTH_JWT_VERIFICATION",
+            fallback_reason_summary="JWT verification failed",
+            rules_payload=fallback_rules,
+            source_payload={"source_mode": "local_fallback", "trust_level": "untrusted_fallback"},
+        )
+        conn.commit()
+        latest = fetch_latest_order_rule_snapshot(conn, market="KRW-BTC")
+        trusted = fetch_latest_trusted_order_rule_snapshot(conn, market="KRW-BTC")
+    finally:
+        conn.close()
+
+    assert latest is not None and latest.fallback_used is True
+    assert trusted is not None and trusted.fetched_ts == 1710000000000
+
+    current_exchange = order_rules.ExchangeDerivedConstraints(
+        market_id="KRW-BTC",
+        order_types=("limit", "price"),
+        bid_types=("limit", "price"),
+        ask_types=("limit", "market"),
+        order_sides=("bid", "ask"),
+        bid_price_unit=1.0,
+        ask_price_unit=1.0,
+        bid_min_total_krw=5000.0,
+        ask_min_total_krw=5000.0,
+    )
+    monkeypatch.setattr(order_rules, "fetch_exchange_order_rules", lambda _pair: current_exchange)
+
+    resolved = order_rules.get_effective_order_rules("KRW-BTC")
+
+    assert resolved.chance_contract_change is not None
+    assert resolved.chance_contract_change.detected is False
+    assert resolved.chance_contract_change.previous_fetched_ts == 1710000000000

@@ -1246,6 +1246,72 @@ def runtime_code_provenance() -> dict[str, object]:
     }
 
 
+def _safe_secret_hash_prefix(value: object) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def _env_file_contract_metadata(env_summary: dict[str, object]) -> dict[str, object]:
+    enriched = dict(env_summary or {})
+    env_file = str(enriched.get("env_file") or "").strip()
+    if not env_file:
+        enriched.setdefault("mtime_ns", None)
+        enriched.setdefault("inode", None)
+        enriched.setdefault("size_bytes", None)
+        enriched.setdefault("content_hash_prefix", "")
+        return enriched
+    try:
+        path = Path(env_file).expanduser()
+        stat = path.stat()
+        enriched["mtime_ns"] = int(stat.st_mtime_ns)
+        enriched["inode"] = int(stat.st_ino)
+        enriched["size_bytes"] = int(stat.st_size)
+        enriched["content_hash_prefix"] = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+    except Exception:
+        enriched.setdefault("mtime_ns", None)
+        enriched.setdefault("inode", None)
+        enriched.setdefault("size_bytes", None)
+        enriched.setdefault("content_hash_prefix", "")
+    return enriched
+
+
+def live_env_contract_lints(cfg: Settings) -> tuple[str, ...]:
+    if str(cfg.MODE or "").strip().lower() != "live":
+        return ()
+    issues: list[str] = []
+    profile_path = str(cfg.APPROVED_STRATEGY_PROFILE_PATH or "").strip()
+    if profile_path.startswith("<") and profile_path.endswith(">"):
+        issues.append("approved_profile_placeholder")
+    deprecated_keys = [
+        key
+        for key in (
+            "BUY_PRICE_NONE_MARKET_TO_PRICE_ALIAS_ENABLED",
+            "LIVE_ALLOW_ORDER_RULE_FALLBACK",
+        )
+        if os.getenv(key) not in (None, "")
+    ]
+    for key in deprecated_keys:
+        issues.append(f"deprecated_ignored_env_key:{key}")
+    secret_keys = ("BITHUMB_API_KEY", "BITHUMB_API_SECRET")
+    for key in secret_keys:
+        raw = os.getenv(key)
+        if raw is not None and raw != raw.strip():
+            issues.append(f"secret_bearing_key_has_surrounding_whitespace:{key}")
+    paper_keys = [key for key in PAPER_ONLY_ENV_KEYS if os.getenv(key) not in (None, "")]
+    for key in paper_keys:
+        issues.append(f"paper_only_key_in_live_env:{key}")
+    try:
+        if int(cfg.MAX_DAILY_ORDER_COUNT) >= 500:
+            issues.append("risky_live_limit:MAX_DAILY_ORDER_COUNT>=500")
+    except (TypeError, ValueError):
+        pass
+    if not profile_path:
+        issues.append("approved_profile_not_configured")
+    return tuple(issues)
+
+
 def live_execution_contract_summary(
     cfg: Settings,
     *,
@@ -1260,6 +1326,7 @@ def live_execution_contract_summary(
         "RUN_LOCK_PATH": str(os.getenv("RUN_LOCK_PATH") or cfg.RUN_LOCK_PATH or ""),
     }
     explicit_env = dict(env_summary or {})
+    explicit_env_file = _env_file_contract_metadata(explicit_env)
     runtime_contract = runtime_contract_from_settings(cfg)
     expected_profile_modes, mode_reason = expected_profile_modes_for_runtime(runtime_contract)
     profile_result = verify_profile_against_runtime(
@@ -1282,11 +1349,15 @@ def live_execution_contract_summary(
         "api_base": str(cfg.BITHUMB_API_BASE),
         "api_key_present": bool(str(cfg.BITHUMB_API_KEY or "").strip()),
         "api_key_length": len(str(cfg.BITHUMB_API_KEY or "")),
+        "api_key_hash_prefix": _safe_secret_hash_prefix(cfg.BITHUMB_API_KEY),
         "api_secret_present": bool(str(cfg.BITHUMB_API_SECRET or "").strip()),
         "api_secret_length": len(str(cfg.BITHUMB_API_SECRET or "")),
+        "api_secret_hash_prefix": _safe_secret_hash_prefix(cfg.BITHUMB_API_SECRET),
         "code_provenance": runtime_code_provenance(),
         "approved_profile": profile_result.audit_fields(),
         "explicit_env": explicit_env,
+        "explicit_env_file": explicit_env_file,
+        "live_env_contract_lints": list(live_env_contract_lints(cfg)),
         "managed_roots": managed_roots,
         "runtime_paths": runtime_paths,
     }
@@ -1311,6 +1382,7 @@ def log_live_execution_contract(
     roots = summary.get("managed_roots") if isinstance(summary.get("managed_roots"), dict) else {}
     paths = summary.get("runtime_paths") if isinstance(summary.get("runtime_paths"), dict) else {}
     explicit_env = summary.get("explicit_env") if isinstance(summary.get("explicit_env"), dict) else {}
+    explicit_env_file = summary.get("explicit_env_file") if isinstance(summary.get("explicit_env_file"), dict) else {}
     code_provenance = summary.get("code_provenance") if isinstance(summary.get("code_provenance"), dict) else {}
     approved_profile = summary.get("approved_profile") if isinstance(summary.get("approved_profile"), dict) else {}
     logging.getLogger("bithumb_bot.run").info(
@@ -1327,8 +1399,10 @@ def log_live_execution_contract(
             api_base=summary.get("api_base"),
             api_key_present=1 if bool(summary.get("api_key_present")) else 0,
             api_key_length=summary.get("api_key_length"),
+            api_key_hash_prefix=summary.get("api_key_hash_prefix"),
             api_secret_present=1 if bool(summary.get("api_secret_present")) else 0,
             api_secret_length=summary.get("api_secret_length"),
+            api_secret_hash_prefix=summary.get("api_secret_hash_prefix"),
             code_commit_sha=code_provenance.get("commit_sha"),
             code_working_tree_dirty=code_provenance.get("working_tree_dirty"),
             code_provenance_source=code_provenance.get("source"),
@@ -1362,6 +1436,10 @@ def log_live_execution_contract(
             env_loaded=explicit_env.get("loaded"),
             env_exists=explicit_env.get("exists"),
             env_override=explicit_env.get("override"),
+            env_file_mtime_ns=explicit_env_file.get("mtime_ns"),
+            env_file_inode=explicit_env_file.get("inode"),
+            env_file_hash_prefix=explicit_env_file.get("content_hash_prefix"),
+            live_env_contract_lints=",".join(str(item) for item in summary.get("live_env_contract_lints") or []) or "none",
             env_root=roots.get("ENV_ROOT"),
             run_root=roots.get("RUN_ROOT"),
             data_root=roots.get("DATA_ROOT"),

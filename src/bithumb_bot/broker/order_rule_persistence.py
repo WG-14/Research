@@ -3,7 +3,13 @@ from __future__ import annotations
 import json
 
 from ..config import settings
-from ..db_core import ensure_db, fetch_latest_order_rule_snapshot, record_order_rule_snapshot
+from ..db_core import (
+    OrderRuleSnapshotRecord,
+    ensure_db,
+    fetch_latest_trusted_order_rule_snapshot,
+    order_rule_snapshot_trust_level,
+    record_order_rule_snapshot,
+)
 from ..markets import canonical_market_with_raw, parse_documented_market_code
 
 
@@ -57,7 +63,7 @@ def resolution_from_persisted_snapshot(
     conn = None
     try:
         conn = ensure_db()
-        record = fetch_latest_order_rule_snapshot(conn, market=pair)
+        record = fetch_latest_trusted_order_rule_snapshot(conn, market=pair)
         if record is None:
             return None
         rules_payload = json.loads(record.rules_json)
@@ -176,6 +182,18 @@ def persist_rule_snapshot_if_possible(
     }
     source_payload = dict(resolution.source)
     source_payload["source_mode"] = str(resolution.source_mode)
+    current_trust_probe = OrderRuleSnapshotRecord(
+        market=market,
+        fetched_ts=int(max(0.0, float(resolution.retrieved_at_sec)) * 1000),
+        source_mode=str(resolution.source_mode),
+        fallback_used=bool(resolution.fallback_used),
+        fallback_reason_code=str(resolution.fallback_reason_code or ""),
+        fallback_reason_summary=str(resolution.fallback_reason_summary or ""),
+        rule_signature="",
+        rules_json="{}",
+        source_json="{}",
+    )
+    source_payload["trust_level"] = order_rule_snapshot_trust_level(current_trust_probe)
     source_payload["exchange_source_json"] = json.dumps(
         resolution.exchange_source,
         ensure_ascii=False,
@@ -191,7 +209,7 @@ def persist_rule_snapshot_if_possible(
     conn = None
     try:
         conn = ensure_db()
-        previous_snapshot_record = fetch_latest_order_rule_snapshot(conn, market=market)
+        previous_snapshot_record = fetch_latest_trusted_order_rule_snapshot(conn, market=market)
         previous_rules_payload = None
         if previous_snapshot_record is not None:
             try:
