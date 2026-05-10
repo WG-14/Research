@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from bithumb_bot.broker import order_rules
 from bithumb_bot.broker.base import BrokerRejectError
 from bithumb_bot import config as config_module
@@ -20,6 +22,7 @@ def _reset_settings():
     old = {
         "DB_PATH": settings.DB_PATH,
         "MODE": settings.MODE,
+        "PAIR": settings.PAIR,
         "LIVE_DRY_RUN": settings.LIVE_DRY_RUN,
         "LIVE_REAL_ORDER_ARMED": settings.LIVE_REAL_ORDER_ARMED,
         "LIVE_ORDER_RULE_FALLBACK_PROFILE": settings.LIVE_ORDER_RULE_FALLBACK_PROFILE,
@@ -1257,3 +1260,38 @@ def test_chance_contract_canary_ignores_newer_auth_failed_fallback_baseline(monk
     assert resolved.chance_contract_change is not None
     assert resolved.chance_contract_change.detected is False
     assert resolved.chance_contract_change.previous_fetched_ts == 1710000000000
+
+
+def test_auth_failed_fallback_snapshot_source_json_is_quarantined(tmp_path) -> None:
+    object.__setattr__(settings, "DB_PATH", str(tmp_path / "order_rule_quarantine.sqlite"))
+    object.__setattr__(settings, "MODE", "live")
+    object.__setattr__(settings, "PAIR", "KRW-BTC")
+    order_rules._cached_rules.clear()
+
+    resolution = order_rules._build_fallback_only_rule_resolution(
+        pair="KRW-BTC",
+        now=1710000010.0,
+        fallback=order_rules._local_fallback_rules(),
+        reason_code="AUTH_JWT_VERIFICATION",
+        reason_summary="JWT verification failed",
+        reason_detail="redacted",
+        fallback_risk="private_api_auth_failed",
+    )
+
+    persisted = order_rules._persist_rule_snapshot_if_possible(resolution)
+
+    conn = ensure_db()
+    try:
+        latest = fetch_latest_order_rule_snapshot(conn, market="KRW-BTC")
+        trusted = fetch_latest_trusted_order_rule_snapshot(conn, market="KRW-BTC")
+    finally:
+        conn.close()
+
+    assert persisted.snapshot_persisted is True
+    assert latest is not None
+    source_json = json.loads(latest.source_json)
+    assert source_json["trust_level"] == "auth_failed_quarantine"
+    assert source_json["eligible_for_canary_baseline"] is False
+    assert source_json["eligible_for_live_order_authority"] is False
+    assert source_json["operator_action"] == "restore_private_api_or_review_fallback_before_live"
+    assert trusted is None

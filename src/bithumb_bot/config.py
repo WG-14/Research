@@ -1294,7 +1294,7 @@ def live_env_contract_lints(cfg: Settings) -> tuple[str, ...]:
     ]
     for key in deprecated_keys:
         issues.append(f"deprecated_ignored_env_key:{key}")
-    secret_keys = ("BITHUMB_API_KEY", "BITHUMB_API_SECRET")
+    secret_keys = ("BITHUMB_API_KEY", "BITHUMB_API_SECRET", "SLACK_WEBHOOK_URL")
     for key in secret_keys:
         raw = os.getenv(key)
         if raw is not None and raw != raw.strip():
@@ -1309,6 +1309,10 @@ def live_env_contract_lints(cfg: Settings) -> tuple[str, ...]:
         pass
     if not profile_path:
         issues.append("approved_profile_not_configured")
+    explicit_env_file = str(os.getenv("BITHUMB_ENV_FILE") or "").strip()
+    live_env_file = str(os.getenv("BITHUMB_ENV_FILE_LIVE") or "").strip()
+    if explicit_env_file and live_env_file and explicit_env_file != live_env_file:
+        issues.append("live_env_file_source_mismatch:BITHUMB_ENV_FILE!=BITHUMB_ENV_FILE_LIVE")
     return tuple(issues)
 
 

@@ -1810,6 +1810,55 @@ def test_live_dry_run_reconcile_uses_accounts_cash_not_start_cash_for_resume(mon
     assert report["runtime_readiness"]["broker_position_evidence"]["simulation_balance_source"] == "dry_run_static"
 
 
+def test_live_dry_run_reconcile_fails_closed_on_dry_run_static_broker_truth(tmp_path):
+    _set_tmp_db(tmp_path)
+    object.__setattr__(settings, "MODE", "live")
+    object.__setattr__(settings, "LIVE_DRY_RUN", True)
+    object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", False)
+    object.__setattr__(settings, "START_CASH_KRW", 1_000_000.0)
+
+    conn = ensure_db()
+    try:
+        init_portfolio(conn)
+        set_portfolio_breakdown(
+            conn,
+            cash_available=395113.99879,
+            cash_locked=0.0,
+            asset_available=0.0,
+            asset_locked=0.0,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    class _DryRunStaticBroker:
+        def get_balance_snapshot(self):
+            return BalanceSnapshot(
+                source_id="dry_run_static",
+                observed_ts_ms=0,
+                asset_ts_ms=0,
+                balance=BrokerBalance(
+                    cash_available=1_000_000.0,
+                    cash_locked=0.0,
+                    asset_available=0.0,
+                    asset_locked=0.0,
+                ),
+            )
+
+    with pytest.raises(RuntimeError, match="LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION"):
+        reconcile_with_broker(_DryRunStaticBroker())
+
+    readiness = compute_runtime_readiness_snapshot()
+    evidence = readiness.broker_position_evidence
+    assert evidence["balance_authority_violation"] == "LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION"
+    assert evidence["balance_authority_violation_expected"] == "accounts_v1_rest_snapshot"
+    assert evidence["balance_authority_violation_got"] == "dry_run_static"
+    assert evidence["simulation_balance_source"] == "dry_run_static"
+    assert readiness.resume_ready is False
+    assert "LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION" in readiness.resume_blockers
+    assert "broker=1000000" not in str(runtime_state.snapshot().last_reconcile_metadata)
+
+
 def test_recovery_report_classifies_external_cash_adjustment_missing_blocker(
     monkeypatch, tmp_path
 ):

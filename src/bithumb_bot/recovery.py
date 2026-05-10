@@ -18,7 +18,11 @@ from .broker.base import (
     BrokerTemporaryError,
 )
 from .broker.balance_source import fetch_balance_snapshot
-from .balance_authority import resolve_balance_authority_matrix
+from .balance_authority import (
+    LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION,
+    live_dry_run_broker_truth_source_violation,
+    resolve_balance_authority_matrix,
+)
 from .broker.order_rules import get_effective_order_rules
 from .config import settings
 from .db_core import (
@@ -2424,6 +2428,23 @@ def reconcile_with_broker(broker: Broker) -> None:
         metadata["balance_observed_ts_ms"] = int(balance_snapshot.observed_ts_ms)
         metadata["balance_asset_ts_ms"] = int(balance_snapshot.asset_ts_ms)
         metadata["balance_source_stale"] = False
+        violation = live_dry_run_broker_truth_source_violation(
+            mode=str(settings.MODE),
+            live_dry_run=bool(settings.LIVE_DRY_RUN),
+            live_real_order_armed=bool(settings.LIVE_REAL_ORDER_ARMED),
+            candidate_source_id=str(balance_snapshot.source_id or "-"),
+        )
+        if violation is not None:
+            metadata.update(violation)
+            metadata["dry_run_static_cash"] = float(settings.START_CASH_KRW)
+            metadata["resume_recovery_safety_gate"] = str(balance_authority.resume_recovery_safety_gate)
+            metadata["balance_split_mismatch_count"] = 0
+            metadata["balance_split_mismatch_summary"] = LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION
+            raise RuntimeError(
+                "LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION: "
+                "expected=accounts_v1_rest_snapshot got=dry_run_static "
+                "simulation_balance_source=dry_run_static"
+            )
         pair_text = str(settings.PAIR or "").strip().upper().replace("_", "-")
         if "-" in pair_text:
             quote_currency, base_currency = pair_text.split("-", 1)
@@ -2434,6 +2455,11 @@ def reconcile_with_broker(broker: Broker) -> None:
         metadata["broker_asset_available"] = float(bal.asset_available)
         metadata["broker_asset_locked"] = float(bal.asset_locked)
         metadata["broker_asset_qty"] = float(bal.asset_available) + float(bal.asset_locked)
+        if str(balance_snapshot.source_id or "") == "accounts_v1_rest_snapshot":
+            metadata["accounts_v1_cash"] = float(bal.cash_available) + float(bal.cash_locked)
+            metadata["accounts_v1_asset_qty"] = float(bal.asset_available) + float(bal.asset_locked)
+        if bool(settings.LIVE_DRY_RUN) and not bool(settings.LIVE_REAL_ORDER_ARMED):
+            metadata["dry_run_static_cash"] = float(settings.START_CASH_KRW)
         local_cash_available, local_cash_locked, local_asset_available, local_asset_locked = get_portfolio_breakdown(conn)
         has_open_orders = bool(local_open) or bool(remote_open)
 

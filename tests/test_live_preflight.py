@@ -493,6 +493,10 @@ def test_live_execution_contract_emits_safe_env_metadata_and_lints(monkeypatch, 
     object.__setattr__(settings, "MAX_DAILY_ORDER_COUNT", 500)
     monkeypatch.setenv("BUY_PRICE_NONE_MARKET_TO_PRICE_ALIAS_ENABLED", "true")
     monkeypatch.setenv("BITHUMB_API_SECRET", "raw-secret ")
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.example/test ")
+    monkeypatch.setenv("START_CASH_KRW", "1000000")
+    monkeypatch.setenv("BITHUMB_ENV_FILE", str(env_file))
+    monkeypatch.setenv("BITHUMB_ENV_FILE_LIVE", str(tmp_path / "service-live.env"))
 
     summary = config.live_execution_contract_summary(
         settings,
@@ -517,7 +521,10 @@ def test_live_execution_contract_emits_safe_env_metadata_and_lints(monkeypatch, 
     assert "approved_profile_placeholder" in summary["live_env_contract_lints"]
     assert "deprecated_ignored_env_key:BUY_PRICE_NONE_MARKET_TO_PRICE_ALIAS_ENABLED" in summary["live_env_contract_lints"]
     assert "secret_bearing_key_has_surrounding_whitespace:BITHUMB_API_SECRET" in summary["live_env_contract_lints"]
+    assert "secret_bearing_key_has_surrounding_whitespace:SLACK_WEBHOOK_URL" in summary["live_env_contract_lints"]
+    assert "paper_only_key_in_live_env:START_CASH_KRW" in summary["live_env_contract_lints"]
     assert "risky_live_limit:MAX_DAILY_ORDER_COUNT>=500" in summary["live_env_contract_lints"]
+    assert "live_env_file_source_mismatch:BITHUMB_ENV_FILE!=BITHUMB_ENV_FILE_LIVE" in summary["live_env_contract_lints"]
 
 
 def test_live_execution_contract_log_emits_redacted_fingerprint(

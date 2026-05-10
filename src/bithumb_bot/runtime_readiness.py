@@ -6,7 +6,11 @@ from typing import Any
 
 from . import runtime_state
 from .config import settings
-from .balance_authority import resolve_balance_authority_matrix
+from .balance_authority import (
+    LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION,
+    live_dry_run_broker_truth_source_violation,
+    resolve_balance_authority_matrix,
+)
 from .db_core import (
     ensure_db,
     get_fee_gap_accounting_repair_summary,
@@ -513,7 +517,17 @@ def build_broker_position_evidence(
         or ""
     ).strip().upper()
     stale = bool(metadata.get("balance_source_stale")) if "balance_source_stale" in metadata else False
+    violation = live_dry_run_broker_truth_source_violation(
+        mode=str(settings.MODE),
+        live_dry_run=bool(settings.LIVE_DRY_RUN),
+        live_real_order_armed=bool(settings.LIVE_REAL_ORDER_ARMED),
+        candidate_source_id=source,
+    )
     missing_evidence_fields: list[str] = []
+    if violation is not None:
+        metadata.update(violation)
+        missing_evidence_fields.append(LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION)
+        stale = True
     if observed_ts_ms <= 0:
         missing_evidence_fields.append("balance_observed_ts_ms")
     if not base_currency:
@@ -562,6 +576,7 @@ def build_broker_position_evidence(
     )
     return {
         **authority.as_dict(),
+        **(violation or {}),
         "broker_qty_known": formal_position_evidence_available,
         "broker_qty": broker_qty,
         "broker_qty_value_source": broker_qty_value_source,
@@ -579,8 +594,21 @@ def build_broker_position_evidence(
         "asset_locked": asset_locked,
         "cash_available": cash_available,
         "cash_locked": cash_locked,
-        "broker_cash_known": bool("broker_cash_available" in metadata or "broker_cash_locked" in metadata),
+        "broker_cash_known": bool(
+            violation is None and ("broker_cash_available" in metadata or "broker_cash_locked" in metadata)
+        ),
         "broker_cash_total": cash_available + cash_locked,
+        "broker_truth_source": str(authority.broker_cash_truth),
+        "accounts_v1_cash": _optional_float(metadata.get("accounts_v1_cash")),
+        "accounts_v1_asset_qty": _optional_float(metadata.get("accounts_v1_asset_qty")),
+        "dry_run_static_cash": _optional_float(metadata.get("dry_run_static_cash")),
+        "accounts_v1_preflight_outcome": str(
+            metadata.get("accounts_v1_preflight_outcome")
+            or metadata.get("balance_source_preflight_outcome")
+            or ""
+        ),
+        "accounts_v1_row_count": _metadata_int(metadata, "accounts_v1_row_count"),
+        "accounts_v1_currencies": list(metadata.get("accounts_v1_currencies") or []),
         "asset_ts_ms": asset_ts_ms,
     }
 
@@ -783,7 +811,31 @@ def compute_runtime_readiness_snapshot(conn=None) -> RuntimeReadinessSnapshot:
         operator_next_action = "resume_now"
         recommended_command = "uv run python bot.py resume"
 
-        if unapplied_principal_pending_count > 0:
+        if broker_position_evidence.get("balance_authority_violation") == LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION:
+            stage = "BROKER_TRUTH_SOURCE_VIOLATION"
+            blockers.append(LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION)
+            categories.append("broker_truth_authority")
+            operator_next_action = "restore_accounts_v1_balance_authority"
+            recommended_command = "uv run python bot.py broker-diagnose"
+            structured_blockers.append(
+                _make_structured_blocker(
+                    code=LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION,
+                    category="broker_truth_authority",
+                    stage=stage,
+                    detail=(
+                        "live dry-run recovery requires accounts_v1_rest_snapshot broker truth; "
+                        f"got={broker_position_evidence.get('balance_authority_violation_got') or '-'} "
+                        f"expected={broker_position_evidence.get('balance_authority_violation_expected') or '-'} "
+                        f"simulation_balance_source={broker_position_evidence.get('simulation_balance_source') or '-'}"
+                    ),
+                    operator_next_action=operator_next_action,
+                    recommended_command=recommended_command,
+                    projection_convergence=projection_convergence,
+                    authority_truth_model=authority_truth_model,
+                    authority_assessment=authority_assessment,
+                )
+            )
+        elif unapplied_principal_pending_count > 0:
             stage = "UNAPPLIED_PRINCIPAL_PENDING"
             blockers.append("UNAPPLIED_PRINCIPAL_PENDING")
             categories.append("accounting_latency")

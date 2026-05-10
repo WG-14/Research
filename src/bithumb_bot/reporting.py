@@ -4827,10 +4827,15 @@ def cmd_ops_report(*, limit: int = 20) -> None:
         f"accounts_flat_start_reason={balance_source_diag.get('flat_start_reason') or '-'}"
     )
     broker_position_evidence = dict(readiness_snapshot.broker_position_evidence)
+    live_broker_truth_field = (
+        f"broker_truth_source={broker_position_evidence.get('broker_cash_truth') or '-'} "
+        if str(settings.MODE).strip().lower() == "live"
+        else ""
+    )
     print(
         "  "
         f"balance_authority={broker_position_evidence.get('balance_authority') or '-'} "
-        f"broker_truth_source={broker_position_evidence.get('broker_cash_truth') or '-'} "
+        f"{live_broker_truth_field}"
         f"simulation_balance_source={broker_position_evidence.get('simulation_balance_source') or '-'} "
         f"broker_cash_total={float(broker_position_evidence.get('broker_cash_total') or 0.0):.5f} "
         f"base_currency_missing_policy={broker_position_evidence.get('base_currency_missing_policy') or '-'}"

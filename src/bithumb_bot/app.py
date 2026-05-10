@@ -2706,7 +2706,10 @@ def cmd_broker_diagnose() -> None:
 
     from .broker.bithumb import BithumbBroker, classify_private_api_error
     from .broker.balance_source import BalanceSnapshot
-    from .balance_authority import resolve_balance_authority_matrix
+    from .balance_authority import (
+        live_dry_run_broker_truth_source_violation,
+        resolve_balance_authority_matrix,
+    )
     from .config import live_execution_contract_fingerprint, live_execution_contract_summary
 
     broker = BithumbBroker()
@@ -2781,16 +2784,33 @@ def cmd_broker_diagnose() -> None:
         add_check("balance query", "FAIL", detail, critical=True)
 
     if balance is not None:
+        source_violation = live_dry_run_broker_truth_source_violation(
+            mode=str(settings.MODE),
+            live_dry_run=bool(settings.LIVE_DRY_RUN),
+            live_real_order_armed=bool(settings.LIVE_REAL_ORDER_ARMED),
+            candidate_source_id=balance_source_id,
+        )
+        balance_status = "WARN" if source_violation is not None else "PASS"
+        accounts_cash = f"{balance.cash_available:.5f}" if balance_source_id == "accounts_v1_rest_snapshot" else "-"
+        accounts_cash_locked = f"{balance.cash_locked:.5f}" if balance_source_id == "accounts_v1_rest_snapshot" else "-"
+        accounts_asset_qty = f"{balance.asset_available:.8f}" if balance_source_id == "accounts_v1_rest_snapshot" else "-"
+        accounts_asset_locked = f"{balance.asset_locked:.8f}" if balance_source_id == "accounts_v1_rest_snapshot" else "-"
         balance_summary = (
             f"balance_authority={authority_matrix.get('balance_authority') or balance_source_id} "
             f"broker_truth_source={authority_matrix.get('broker_cash_truth') or balance_source_id} "
             f"simulation_balance_source={authority_matrix.get('simulation_balance_source') or 'none'} "
-            f"accounts_v1_cash={balance.cash_available:.5f} accounts_v1_cash_locked={balance.cash_locked:.5f} "
-            f"accounts_v1_asset_qty={balance.asset_available:.8f} accounts_v1_asset_locked={balance.asset_locked:.8f} "
+            f"account_evidence_source={'accounts_v1_rest_snapshot' if balance_source_id == 'accounts_v1_rest_snapshot' else '-'} "
+            f"accounts_v1_cash={accounts_cash} accounts_v1_cash_locked={accounts_cash_locked} "
+            f"accounts_v1_asset_qty={accounts_asset_qty} accounts_v1_asset_locked={accounts_asset_locked} "
             f"source_id={balance_source_id} "
             f"dry_run_static_cash={float(settings.START_CASH_KRW):.5f}"
         )
-        add_check("balance query", "PASS", balance_summary, critical=True)
+        if source_violation is not None:
+            balance_summary += (
+                " violation=LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION "
+                f"expected={source_violation.get('expected')} got={source_violation.get('got')}"
+            )
+        add_check("balance query", balance_status, balance_summary, critical=True)
 
     try:
         conn = ensure_db()
@@ -2996,7 +3016,8 @@ def cmd_broker_diagnose() -> None:
                 f"git_sha={code_provenance.get('commit_sha') or '-'} "
                 f"git_dirty={code_provenance.get('working_tree_dirty')} "
                 f"approved_profile_loaded={approved_profile.get('approved_profile_loaded')} "
-                f"approved_profile_block_reason={approved_profile.get('approved_profile_block_reason') or '-'}"
+                f"approved_profile_block_reason={approved_profile.get('approved_profile_block_reason') or '-'} "
+                f"live_env_contract_lints={','.join(str(item) for item in contract_summary.get('live_env_contract_lints') or []) or 'none'}"
             ),
             critical=False,
         )

@@ -1,11 +1,15 @@
 You are Codex working directly in the GitHub repository `WG-14/bithumb-bot`.
 
-Do not treat the current diagnosis as proven fact. Start from the EC2 evidence below as the incident context, then verify or falsify each hypothesis by inspecting and testing the repository.
+The previous patch appears to have made real progress, but do not assume it fully closed the incident. Your task is to verify, harden, and patch the remaining safety gaps in the repo. Treat the current analysis as a set of hypotheses to validate or falsify by inspecting code, writing tests, and running pytest.
 
 Incident context:
 
-* EC2 live dry-run environment: `MODE=live`, `LIVE_DRY_RUN=true`, `LIVE_REAL_ORDER_ARMED=false`.
-* After cleaning `live.verify.env`, Bithumb private API authentication now succeeds:
+* EC2 live dry-run was running with:
+
+  * `MODE=live`
+  * `LIVE_DRY_RUN=true`
+  * `LIVE_REAL_ORDER_ARMED=false`
+* Bithumb private auth now succeeds:
 
   * `/v1/accounts` returns HTTP 200.
   * `/v1/orders/chance` returns HTTP 200.
@@ -16,258 +20,377 @@ Incident context:
   * `source_mode=local_fallback`
   * `fallback_used=1`
   * `fallback_reason_code=AUTH_JWT_VERIFICATION`
-  * Once deleted, `broker-diagnose` changed from `overall=FAIL` to `overall=WARN`, and `chance contract drift canary` passed with `change_detected=0`.
-* Remaining blocker:
+  * Once deleted, `broker-diagnose` changed from `overall=FAIL` to `overall=WARN`, and `chance contract drift canary` passed.
+* A previous patch added `BalanceAuthorityMatrix`, and `runtime_readiness.py` appears to merge balance authority metadata into `broker_position_evidence`.
+* However, the existence of a matrix is not enough. The remaining risk is that real recovery/reconcile/diagnose paths may still allow `dry_run_static` or `START_CASH_KRW=1000000` to enter broker truth calculations, diagnostics, or operator output.
 
-  * `BALANCE_SPLIT_MISMATCH`
-  * `local=395113.99879`
-  * `broker=1000000`
-  * `delta=604886.00121`
-* The `broker=1000000` value appears to come from `DryRunBalanceSource -> settings.START_CASH_KRW`, not from `/v1/accounts`.
-* Do not “fix” this by adjusting the DB cash to `1,000,000`. Local cash already matches the real account balance.
-* Current concern: the live dry-run system is mixing real exchange/account evidence, simulation balance, and local fallback snapshots into the same broker-truth layer.
+Primary objective:
 
-Your job is to turn this into a robust, reproducible, operator-safe live dry-run / live promotion system. Prioritize design changes over symptom patches.
+Make live dry-run evidence handling structurally safe. In live dry-run, actual broker/account truth must come from `accounts_v1_rest_snapshot` when `/v1/accounts` succeeds. `dry_run_static` / `START_CASH_KRW` may exist only as simulation balance. It must not be used for broker-local convergence, resume safety, recovery blockers, or misleading broker-diagnose balance output.
 
-Work in the repo. Inspect at least these areas before patching:
+Do not patch by setting `START_CASH_KRW=395113.99879` in live env. Do not modify production DB cash. Do not enable real orders. Do not weaken safety gates to make tests pass.
 
+Inspect at least these files before patching:
+
+* `src/bithumb_bot/balance_authority.py`
 * `src/bithumb_bot/broker/balance_source.py`
 * `src/bithumb_bot/broker/bithumb.py`
+* `src/bithumb_bot/recovery.py`
 * `src/bithumb_bot/runtime_readiness.py`
+* `src/bithumb_bot/app.py`
 * `src/bithumb_bot/reporting.py`
-* `src/bithumb_bot/config.py`
+* `src/bithumb_bot/broker/order_rules.py`
+* `src/bithumb_bot/broker/order_rule_persistence.py`
 * `src/bithumb_bot/db_core.py`
-* order-rule sync / snapshot logic
-* broker diagnose / recovery-report / reconcile command paths
+* `src/bithumb_bot/config.py`
 * relevant tests:
 
-  * `tests/test_live_preflight.py`
-  * `tests/test_order_rules_sync.py`
   * `tests/test_operator_commands.py`
+  * `tests/test_order_rules_sync.py`
+  * `tests/test_live_preflight.py`
   * `tests/test_bithumb_private_api.py`
   * any recovery/readiness tests
 
-Core hypotheses to validate or falsify:
+Hypotheses to verify or falsify:
 
-1. Live dry-run broker truth is currently mixed with simulation balance.
+1. `BalanceAuthorityMatrix` exists, but real recovery/reconcile paths may still allow `DryRunBalanceSource` to be used as broker truth.
 
-   * Validate whether `MODE=live + LIVE_DRY_RUN=true + /v1/accounts success` can still cause `DryRunBalanceSource` or `START_CASH_KRW` to enter recovery/resume/broker-local convergence as broker truth.
-   * If confirmed, redesign so real account evidence and simulation balance are separate authorities.
-   * In live dry-run:
+   * Verify whether `reconcile_with_broker()`, `compute_runtime_readiness_snapshot()`, `cmd_recovery_report()`, `cmd_broker_diagnose()`, or startup/resume logic can still compare local portfolio cash against `START_CASH_KRW`.
+   * If any live dry-run path can produce `broker=1000000` when `/v1/accounts` succeeded with `395113.99879`, patch it.
 
-     * `broker_cash_truth` must be `/v1/accounts` / `accounts_v1_rest_snapshot`.
-     * `broker_position_truth` must be `/v1/accounts` / `accounts_v1_rest_snapshot`.
-     * `dry_run_static` may be used only for execution simulation or no-submit simulation, never as broker truth for resume safety.
+2. `_balance_split_mismatch_summary()` currently compares whatever broker/local values it receives.
 
-2. Fallback order-rule snapshots can currently become durable canary baselines.
+   * Verify whether upstream guarantees authority-safe inputs.
+   * If not, add a guard before broker-local convergence is calculated.
+   * In live dry-run, the selected broker truth source must be `accounts_v1_rest_snapshot`, not `dry_run_static`.
 
-   * Validate whether `order_rule_snapshots` rows with `fallback_used=1`, `source_mode=local_fallback`, or auth-failure reasons can be selected as canary baselines.
-   * If confirmed, change baseline selection so `fallback_used=1` and auth-failed snapshots are excluded.
-   * Prefer a clear trust policy over ad hoc filtering:
+3. `broker-diagnose` may still render dry-run static cash as a passing “balance query”.
 
-     * trusted baseline: exchange-verified or merged exchange snapshot with `fallback_used=0`
-     * untrusted/quarantine: local fallback, auth-failed fallback, transport-failed fallback
-   * Fallback snapshots may remain useful as emergency runtime fallback evidence, but must not become drift baselines.
+   * Verify the output path.
+   * Patch it so operator-facing output clearly distinguishes:
 
-3. Env/runtime provenance is not strong enough for live operations.
+     * actual account evidence
+     * broker truth authority
+     * dry-run simulation balance
+   * `cash_available=1,000,000 PASS` must never appear alone as broker truth in live dry-run.
 
-   * Validate whether service, CLI, healthcheck, and backup/timer paths can load different env sources or hide meaningful config drift.
-   * Strengthen live command output with an env contract fingerprint:
+4. Order-rule trusted snapshot policy improved, but live authority paths may still use untrusted snapshots.
 
-     * env source key
-     * env file path
-     * env file exists/loaded
-     * env file mtime/inode if feasible
-     * API key length
-     * API secret length
-     * safe hash prefix of sensitive values, never raw secrets
-     * git SHA / dirty status
-   * Emit a clear event if sensitive credential length/fingerprint changes across live runs, without exposing secrets.
+   * Audit all uses of `fetch_latest_order_rule_snapshot()`.
+   * Any live preflight, canary baseline, fallback authority, or readiness path must use `fetch_latest_trusted_order_rule_snapshot()` or an equivalent trusted selector.
+   * Keep untrusted/raw selector only for audit/listing views, with explicit naming or comments.
 
-4. `broker-diagnose` currently allows misleading PASS output.
+5. Auth/transport-failed fallback snapshots may still be stored in a way that looks normal to operators.
 
-   * Validate whether `broker-diagnose` shows `balance query: cash_available=1,000,000 PASS` in live dry-run even when `/v1/accounts` returns `395113.99879`.
-   * Redesign output so operators can distinguish:
+   * If fallback snapshots are persisted, ensure their `source_json` clearly marks:
 
-     * `accounts_v1_cash`
-     * `accounts_v1_asset_qty`
-     * `dry_run_static_cash`
-     * `balance_authority`
-     * `simulation_balance_source`
-   * PASS/WARN/FAIL should be authority-aware, not just “a balance object exists”.
+     * `trust_level`
+     * `eligible_for_canary_baseline=false`
+     * `eligible_for_live_order_authority=false`
+     * `operator_action=restore_private_api_or_review_fallback_before_live`
+   * For auth failure, prefer `trust_level=auth_failed_quarantine` or an equivalent explicit untrusted label.
+   * Do not add a broad DB schema migration unless clearly necessary; source JSON metadata and trusted selection may be sufficient.
 
-5. Live experiment promotion is not fully reproducible yet.
+6. Env provenance/linting is still underdeveloped.
 
-   * Validate whether a live dry-run can be reconstructed from a single manifest.
-   * If not, introduce or propose an `ExperimentManifest` / live run manifest that records:
+   * The previous incident involved credential length changing from 79 to 84 before auth succeeded. Treat this as env contract drift, not merely “bad key”.
+   * Add or extend a live env lint/preflight path if feasible.
+   * It must flag:
 
-     * git SHA and dirty status
-     * env fingerprint
-     * approved profile path/hash/status
-     * order-rule snapshot id/signature/trust level
-     * account snapshot hash or sanitized evidence summary
-     * DB schema fingerprint
-     * strategy params
-     * execution engine / target-delta shadow flags
-     * decision telemetry range
-   * All recovery reports and decision telemetry should be able to reference this manifest id.
-
-Implementation priorities:
-
-1. Implement a Balance Authority Matrix.
-
-   * Add explicit code-level policy for which source is authoritative for each use case:
-
-     * broker account truth
-     * broker position truth
-     * resume/recovery safety gate
-     * order sizing
-     * simulation balance
-     * paper portfolio balance
-   * Live dry-run must use accounts-v1 evidence for broker truth when `/v1/accounts` succeeds.
-   * Missing BTC row in live dry-run with KRW present must be treated as known-zero BTC only when policy allows `pass_no_position_allowed`.
-   * Do not allow `START_CASH_KRW` to influence live recovery/resume safety.
-
-2. Implement or harden Snapshot Trust Policy for order rules.
-
-   * Ensure canary baseline selection excludes:
-
-     * `fallback_used=1`
-     * `source_mode=local_fallback`
-     * `fallback_reason_code` indicating auth/transport failure
-   * Keep fallback rows only as fallback evidence, not trusted exchange baselines.
-   * Add structured trust metadata where appropriate; if a schema migration is too broad for this patch, implement safe selection rules and document a follow-up migration.
-
-3. Redesign diagnostics and reports around evidence authority.
-
-   * `broker-diagnose` must show actual account evidence separately from dry-run simulation balance.
-   * `recovery-report` and readiness output must show:
-
-     * selected broker truth source
-     * selected simulation source
-     * whether base row was missing and why that is allowed
-     * whether the source is trusted, fallback, stale, or quarantined
-   * The output should make it impossible to mistake `START_CASH_KRW=1000000` for real broker cash.
-
-4. Add a live env lint / contract check if feasible in scope.
-
-   * At minimum, add code/tests for detecting:
-
-     * placeholder values such as `<verified-live_dry_run-profile>`
+     * placeholder values
      * trailing whitespace on secret-bearing keys
-     * deprecated ignored keys like `BUY_PRICE_NONE_MARKET_TO_PRICE_ALIAS_ENABLED`
+     * deprecated ignored keys
      * paper-only keys in live env
-     * risky live limits such as `MAX_DAILY_ORDER_COUNT=500`
-     * missing approved profile for real live promotion
-   * Do not print raw secrets.
+     * risky live limits, e.g. `MAX_DAILY_ORDER_COUNT=500`
+     * approved profile missing when live promotion is attempted
+     * credential length/fingerprint drift across live runs
+   * Never print raw secrets.
 
-Testing requirements:
+Required design changes:
 
-Add focused regression tests. Do not rely on real Bithumb network calls in tests.
+1. Live dry-run broker truth guard
+
+Implement a guard that applies before any balance split mismatch, broker-local convergence, recovery blocker, or resume safety decision.
+
+For `MODE=live`, `LIVE_DRY_RUN=true`, `LIVE_REAL_ORDER_ARMED=false`:
+
+* Expected broker truth source: `accounts_v1_rest_snapshot`.
+* Expected simulation balance source: `dry_run_static`.
+* If `/v1/accounts` succeeded, use accounts-v1 cash/asset evidence for broker truth.
+* If a candidate broker truth snapshot has `source_id=dry_run_static`, do not use it for broker-local convergence.
+* Emit structured evidence:
+
+  * `balance_authority=accounts_v1_rest_snapshot`
+  * `broker_truth_source=accounts_v1_rest_snapshot`
+  * `simulation_balance_source=dry_run_static`
+  * `accounts_v1_cash=<actual KRW>`
+  * `dry_run_static_cash=<START_CASH_KRW>`
+* If an unsafe source is about to be used, emit:
+
+  * `LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION`
+  * `expected=accounts_v1_rest_snapshot`
+  * `got=dry_run_static`
+  * `simulation_balance_source=dry_run_static`
+* Decide whether this should be a hard failure or a fail-closed warning depending on the command path:
+
+  * For resume/recovery safety: fail closed.
+  * For diagnose/reporting: warn loudly and render both sources.
+
+2. Recovery/reconcile integration correctness
+
+Patch the actual recovery/reconcile readiness path, not only helper functions. The EC2 failure mode must be impossible:
+
+```text
+local=395113.99879
+broker=1000000
+reason_code=PORTFOLIO_BROKER_CASH_MISMATCH
+```
+
+when accounts-v1 returned KRW `395113.99879`.
+
+3. Broker-diagnose output redesign
+
+Update `broker-diagnose` so live dry-run output cannot mislead an operator.
+
+In live dry-run, output should contain separate sections or explicit fields:
+
+```text
+account_evidence_source=accounts_v1_rest_snapshot
+accounts_v1_cash=395113.99879
+accounts_v1_asset_qty=0.00000000
+base_currency_missing_policy=allow_zero_position_start_in_dry_run
+accounts_v1_preflight_outcome=pass_no_position_allowed
+
+balance_authority=accounts_v1_rest_snapshot
+broker_truth_source=accounts_v1_rest_snapshot
+
+simulation_balance_source=dry_run_static
+dry_run_static_cash=1000000
+```
+
+Do not render `dry_run_static` as broker balance truth. If it is shown, label it as simulation only.
+
+4. Trusted order-rule snapshot audit
+
+Audit every call to `fetch_latest_order_rule_snapshot()`.
+
+* If the usage is for canary baseline, live fallback authority, live preflight, broker readiness, or runtime safety, replace it with `fetch_latest_trusted_order_rule_snapshot()`.
+* If the usage is only for audit/history display, keep it but name/comment it as audit-only.
+* Add regression coverage proving `fallback_used=1` / `AUTH_JWT_VERIFICATION` snapshots are ignored as authority/baseline.
+
+5. Fallback snapshot quarantine metadata
+
+When persisting fallback snapshots caused by auth/transport failure, ensure `source_json` contains clear untrusted metadata:
+
+```json
+{
+  "trust_level": "auth_failed_quarantine",
+  "eligible_for_canary_baseline": false,
+  "eligible_for_live_order_authority": false,
+  "operator_action": "restore_private_api_or_review_fallback_before_live"
+}
+```
+
+For non-auth local fallback, use an equally explicit untrusted level such as `local_fallback_untrusted`.
+
+6. Env contract/lint hardening
+
+Add a command or extend `broker-diagnose` to run an env contract lint. It must be safe for logs. It may output lengths and safe hash prefixes, never secret values.
+
+Flag at least:
+
+* placeholder values like `<verified-live_dry_run-profile>`
+* trailing whitespace on `BITHUMB_API_KEY`, `BITHUMB_API_SECRET`, `SLACK_WEBHOOK_URL`
+* deprecated ignored keys such as `BUY_PRICE_NONE_MARKET_TO_PRICE_ALIAS_ENABLED`
+* paper-only keys in live env, including `START_CASH_KRW` if present
+* risky live limits such as `MAX_DAILY_ORDER_COUNT=500`
+* approved profile not configured when attempting real live promotion
+* env file source mismatch between CLI/service-style paths where detectable
 
 Required tests:
 
-1. Live dry-run account evidence test:
+Add or update tests without real Bithumb network calls.
 
-   * Mode: `MODE=live`, `LIVE_DRY_RUN=true`, `LIVE_REAL_ORDER_ARMED=false`.
-   * Mock `/v1/accounts` with KRW balance `395113.99879` and no BTC row.
-   * Set or simulate `START_CASH_KRW=1000000`.
-   * Expected:
+1. Live dry-run recovery authority integration test
 
-     * broker cash truth is `395113.99879`
-     * broker BTC quantity is known-zero under `pass_no_position_allowed`
-     * no `BALANCE_SPLIT_MISMATCH` is produced when local cash equals `395113.99879`
-     * dry-run static balance is visible only as simulation balance, not broker truth.
+Setup:
 
-2. Recovery/resume blocker test:
+```text
+MODE=live
+LIVE_DRY_RUN=true
+LIVE_REAL_ORDER_ARMED=false
+START_CASH_KRW=1000000
+local portfolio cash=395113.99879
+mock accounts-v1 response: KRW balance=395113.99879, locked=0, no BTC row
+```
 
-   * Same account evidence as above.
-   * Local DB cash equals accounts-v1 KRW.
-   * Expected:
+Run the reconcile/recovery readiness path, not only a helper.
 
-     * recovery/resume logic does not block on `PORTFOLIO_BROKER_CASH_MISMATCH`
-     * if local DB cash differs from accounts-v1 KRW, blocker should use actual accounts-v1 values, not `START_CASH_KRW`.
+Expected:
 
-3. Order-rule canary baseline test:
+* no `PORTFOLIO_BROKER_CASH_MISMATCH`
+* no `BALANCE_SPLIT_MISMATCH`
+* broker cash truth is `395113.99879`
+* BTC row missing is treated as known-zero only under `pass_no_position_allowed`
+* `simulation_balance_source=dry_run_static`
+* `dry_run_static_cash=1000000`
+* `START_CASH_KRW` does not affect broker truth.
 
-   * Insert or mock latest `order_rule_snapshots` row:
+2. Source violation test
 
-     * `source_mode=local_fallback`
-     * `fallback_used=1`
-     * `fallback_reason_code=AUTH_JWT_VERIFICATION`
-   * Also provide an older valid merged/exchange row.
-   * Expected:
+Force a live dry-run recovery/readiness path to receive a candidate broker snapshot with `source_id=dry_run_static`.
 
-     * canary baseline ignores the fallback row
-     * canary compares against the trusted row
-     * no false drift is reported when the current exchange snapshot matches the trusted row.
+Expected:
 
-4. Broker diagnose output test:
+* it is not used as broker truth
+* guard emits `LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION` or equivalent structured field
+* resume/recovery safety fails closed or reports a clear diagnostic rather than comparing against 1,000,000.
 
-   * In live dry-run, mocked accounts-v1 returns `395113.99879`.
-   * `START_CASH_KRW=1000000`.
-   * Expected output includes:
+3. Broker diagnose output test
 
-     * `accounts_v1_cash=395113.99879` or equivalent structured field
-     * `dry_run_static_cash=1000000` or equivalent structured field
-     * `balance_authority=accounts_v1_rest_snapshot`
-   * Expected output must not present `cash_available=1000000` alone as broker balance truth.
+Mock accounts-v1 as above and set `START_CASH_KRW=1000000`.
 
-5. Env/provenance test:
+Expected output includes:
 
-   * Verify live command contract emits safe env metadata and does not expose raw secrets.
-   * Verify missing/placeholder approved profile is surfaced as not configured, not silently accepted.
-   * Verify deprecated ignored env keys are reported clearly or linted.
+```text
+accounts_v1_cash=395113.99879
+dry_run_static_cash=1000000
+balance_authority=accounts_v1_rest_snapshot
+simulation_balance_source=dry_run_static
+```
 
-Recovery and migration constraints:
+Expected output must not present `cash_available=1000000` alone as broker truth.
 
-* Do not delete production DB rows as part of normal startup.
-* If you add cleanup logic, it must be explicit, operator-driven, backed up, and auditable.
-* Fallback/auth-failed snapshots should be quarantined or excluded from baseline selection, not blindly removed.
-* Preserve backward compatibility for existing DBs unless a migration is clearly justified.
-* Any schema migration must be idempotent and covered by tests.
-* Do not change live order submission behavior unless required by the authority separation; this task is primarily evidence, safety, diagnostics, and readiness correctness.
-* Keep `EXECUTION_ENGINE=lot_native` as live behavior; target-delta shadow behavior may remain telemetry unless tests prove otherwise.
+4. Trusted order-rule baseline test
+
+Create snapshots:
+
+* latest row:
+
+  * `source_mode=local_fallback`
+  * `fallback_used=1`
+  * `fallback_reason_code=AUTH_JWT_VERIFICATION`
+* older trusted row:
+
+  * `source_mode=merged`
+  * `fallback_used=0`
+
+Expected:
+
+* canary baseline uses the older trusted row
+* live authority path ignores the auth-failed fallback row
+* false drift is not reported when current exchange snapshot matches the trusted row.
+
+5. Fallback quarantine metadata test
+
+Persist an auth-failed fallback snapshot.
+
+Expected `source_json` contains:
+
+* untrusted/quarantine trust level
+* `eligible_for_canary_baseline=false`
+* `eligible_for_live_order_authority=false`
+* actionable operator guidance.
+
+6. Env lint test
+
+Create fixture env files with:
+
+* trailing whitespace on secret-bearing keys
+* placeholder approved profile
+* deprecated ignored key
+* `MAX_DAILY_ORDER_COUNT=500`
+* paper-only key in live mode
+
+Expected:
+
+* linter/preflight flags each issue
+* raw secret values are never printed
+* safe length/hash metadata may be printed.
+
+Recovery and operational constraints:
+
+* Do not delete production DB rows automatically.
+* Do not add startup cleanup that silently removes fallback snapshots.
+* Any cleanup must remain explicit, operator-driven, backed up, and auditable.
+* Do not loosen live preflight or resume gates.
+* Do not enable real orders.
+* Do not change target-delta from shadow to live.
+* Do not modify DB cash to match `START_CASH_KRW`.
+* Do not use live network calls in tests.
+* Do not expose raw API keys, secrets, or webhook values in logs/tests.
 
 Observability requirements:
 
-* Add structured log fields or report fields for:
+Add structured fields wherever relevant:
 
-  * `balance_authority`
-  * `broker_truth_source`
-  * `simulation_balance_source`
-  * `accounts_v1_preflight_outcome`
-  * `accounts_v1_row_count`
-  * `accounts_v1_currencies`
-  * `base_currency_missing_policy`
-  * `order_rule_snapshot_id`
-  * `order_rule_trust_level` or equivalent
-  * `order_rule_fallback_used`
-  * `order_rule_fallback_reason_code`
-  * `canary_baseline_snapshot_id`
-  * `canary_baseline_trusted`
-  * `env_contract_fingerprint`
-* Ensure `broker-diagnose`, `recovery-report`, and `reconcile` outputs are understandable to an operator without reading source code.
+* `balance_authority`
+* `broker_truth_source`
+* `broker_cash_truth`
+* `broker_position_truth`
+* `resume_recovery_safety_gate`
+* `simulation_balance_source`
+* `accounts_v1_cash`
+* `accounts_v1_asset_qty`
+* `accounts_v1_preflight_outcome`
+* `accounts_v1_row_count`
+* `accounts_v1_currencies`
+* `base_currency_missing_policy`
+* `dry_run_static_cash`
+* `order_rule_snapshot_id`
+* `order_rule_trust_level`
+* `order_rule_fallback_used`
+* `order_rule_fallback_reason_code`
+* `eligible_for_canary_baseline`
+* `eligible_for_live_order_authority`
+* `canary_baseline_snapshot_id`
+* `canary_baseline_trusted`
+* `env_contract_fingerprint`
 
-Out of scope unless necessary:
+Expected EC2 behavior after patch:
 
-* Do not implement a full trading strategy rewrite.
-* Do not enable real orders.
-* Do not convert target-delta from shadow to live execution.
-* Do not create or assume an approved strategy profile unless tests require a placeholder fixture.
-* Do not patch by setting `START_CASH_KRW=395113.99879` in live env; that is a workaround and should not be the design.
-
-Expected final validation commands:
-
-Run the relevant test subset and report exact commands/results, for example:
+Running:
 
 ```bash
-uv run pytest -q tests/test_live_preflight.py tests/test_order_rules_sync.py tests/test_operator_commands.py
-uv run pytest -q tests/test_bithumb_private_api.py
-uv run pytest -q <new_or_modified_tests>
+export BITHUMB_ENV_FILE=/home/ec2-user/bithumb-runtime/env/live.verify.env
+
+MODE=live uv run bithumb-bot broker-diagnose
+MODE=live uv run bithumb-bot reconcile
+MODE=live uv run bithumb-bot recovery-report
 ```
 
-If the full suite is feasible, also run:
+should no longer show:
+
+```text
+BALANCE_SPLIT_MISMATCH
+broker=1000000
+PORTFOLIO_BROKER_CASH_MISMATCH
+```
+
+when accounts-v1 and local portfolio both show KRW `395113.99879`.
+
+It should show something equivalent to:
+
+```text
+balance_authority=accounts_v1_rest_snapshot
+broker_truth_source=accounts_v1_rest_snapshot
+accounts_v1_cash=395113.99879
+simulation_balance_source=dry_run_static
+dry_run_static_cash=1000000
+```
+
+Validation commands:
+
+Run targeted tests first:
+
+```bash
+uv run pytest -q tests/test_operator_commands.py tests/test_order_rules_sync.py tests/test_live_preflight.py
+uv run pytest -q tests/test_bithumb_private_api.py
+```
+
+Run any new or modified test files explicitly.
+
+If feasible, run:
 
 ```bash
 uv run pytest -q
@@ -278,38 +401,39 @@ Final report format:
 1. Summary
 
    * What was changed.
-   * Which hypotheses were supported, rejected, or left unresolved.
+   * Whether additional P0 risks remain.
 
-2. Root-cause analysis
+2. Hypotheses
 
+   * For each hypothesis, state supported / rejected / unresolved.
    * Do not state unverified assumptions as facts.
-   * Explain the authority-mixing issue and fallback-baseline issue separately.
 
 3. Design changes
 
-   * Balance Authority Matrix changes.
-   * Snapshot Trust Policy changes.
-   * Diagnostics/reporting changes.
-   * Env/provenance changes.
+   * Live dry-run broker truth guard.
+   * Broker-diagnose output changes.
+   * Order-rule trusted snapshot changes.
+   * Fallback snapshot quarantine metadata.
+   * Env lint/provenance changes.
 
 4. Files changed
 
-   * List every modified file and the purpose of the change.
+   * List every modified file and why.
 
 5. Tests
 
-   * List added/modified tests.
-   * Include exact commands run and results.
+   * List each added/modified test.
+   * Include exact pytest commands and results.
 
 6. Operational impact
 
-   * Explain what should change in EC2 output after this patch.
-   * Explicitly state that local DB cash should not be adjusted to `1,000,000`.
-   * Explain how an operator should distinguish real account evidence from simulation balance.
+   * Explain expected EC2 output changes.
+   * Explicitly state that local DB cash must not be adjusted to `1,000,000`.
+   * Explain how operators distinguish real account evidence from simulation balance.
 
 7. Remaining follow-ups
 
-   * Approved profile generation.
-   * Live env lint hardening if not fully implemented.
-   * Experiment manifest implementation if only partially implemented.
-   * Any schema migration follow-up if trust metadata was implemented as selection filtering only.
+   * Approved profile generation if still missing.
+   * Experiment manifest if not implemented.
+   * Any schema migration follow-up if trust metadata remains source-json-only.
+   * Any env lint coverage left partial.

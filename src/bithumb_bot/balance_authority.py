@@ -7,6 +7,7 @@ BROKER_TRUTH_ACCOUNTS_V1 = "accounts_v1_rest_snapshot"
 BROKER_TRUTH_MYASSET_WS = "myasset_ws_private_stream"
 SIMULATION_DRY_RUN_STATIC = "dry_run_static"
 PAPER_PORTFOLIO_BALANCE = "paper_portfolio"
+LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION = "LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION"
 
 
 @dataclass(frozen=True)
@@ -82,3 +83,36 @@ def resolve_balance_authority_matrix(
         notes=("live_real_order_path_uses_private_account_truth",),
     )
 
+
+def is_unarmed_live_dry_run(*, mode: str, live_dry_run: bool, live_real_order_armed: bool) -> bool:
+    return (
+        str(mode or "").strip().lower() == "live"
+        and bool(live_dry_run)
+        and not bool(live_real_order_armed)
+    )
+
+
+def live_dry_run_broker_truth_source_violation(
+    *,
+    mode: str,
+    live_dry_run: bool,
+    live_real_order_armed: bool,
+    candidate_source_id: str,
+) -> dict[str, object] | None:
+    if not is_unarmed_live_dry_run(
+        mode=mode,
+        live_dry_run=live_dry_run,
+        live_real_order_armed=live_real_order_armed,
+    ):
+        return None
+    got = str(candidate_source_id or "").strip() or "unknown"
+    if got != SIMULATION_DRY_RUN_STATIC:
+        return None
+    return {
+        "balance_authority_violation": LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION,
+        "balance_authority_violation_expected": BROKER_TRUTH_ACCOUNTS_V1,
+        "balance_authority_violation_got": got,
+        "expected": BROKER_TRUTH_ACCOUNTS_V1,
+        "got": got,
+        "simulation_balance_source": SIMULATION_DRY_RUN_STATIC,
+    }

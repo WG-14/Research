@@ -4729,8 +4729,10 @@ def order_rule_snapshot_trust_level(record: OrderRuleSnapshotRecord | None) -> s
         return "missing"
     source_mode = str(record.source_mode or "").strip().lower()
     reason = str(record.fallback_reason_code or "").strip().upper()
+    if bool(record.fallback_used) and any(reason.startswith(prefix) for prefix in _UNTRUSTED_ORDER_RULE_FALLBACK_REASON_PREFIXES):
+        return "auth_failed_quarantine"
     if bool(record.fallback_used):
-        return "untrusted_fallback"
+        return "local_fallback_untrusted"
     if source_mode not in _TRUSTED_ORDER_RULE_SOURCE_MODES:
         return "untrusted_source_mode"
     if reason and any(reason.startswith(prefix) for prefix in _UNTRUSTED_ORDER_RULE_FALLBACK_REASON_PREFIXES):

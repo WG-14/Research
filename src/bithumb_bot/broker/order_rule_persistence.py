@@ -194,6 +194,14 @@ def persist_rule_snapshot_if_possible(
         source_json="{}",
     )
     source_payload["trust_level"] = order_rule_snapshot_trust_level(current_trust_probe)
+    trusted = str(source_payload["trust_level"]) == "trusted_exchange_verified"
+    source_payload["eligible_for_canary_baseline"] = trusted
+    source_payload["eligible_for_live_order_authority"] = trusted
+    if not trusted:
+        source_payload.setdefault(
+            "operator_action",
+            "restore_private_api_or_review_fallback_before_live",
+        )
     source_payload["exchange_source_json"] = json.dumps(
         resolution.exchange_source,
         ensure_ascii=False,
