@@ -2428,6 +2428,15 @@ def reconcile_with_broker(broker: Broker) -> None:
         metadata["balance_observed_ts_ms"] = int(balance_snapshot.observed_ts_ms)
         metadata["balance_asset_ts_ms"] = int(balance_snapshot.asset_ts_ms)
         metadata["balance_source_stale"] = False
+        account_diag_getter = getattr(broker, "get_accounts_validation_diagnostics", None)
+        account_diag = account_diag_getter() if callable(account_diag_getter) else {}
+        if isinstance(account_diag, dict):
+            metadata["accounts_v1_preflight_outcome"] = str(
+                account_diag.get("preflight_outcome") or account_diag.get("reason") or "unknown"
+            )
+            metadata["base_currency_missing_policy"] = str(
+                account_diag.get("base_currency_missing_policy") or "unknown"
+            )
         violation = live_dry_run_broker_truth_source_violation(
             mode=str(settings.MODE),
             live_dry_run=bool(settings.LIVE_DRY_RUN),

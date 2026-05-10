@@ -6248,6 +6248,81 @@ def test_reconcile_live_command_reports_resume_gate_contract(tmp_path, monkeypat
     assert state.resume_gate_blocked is False
 
 
+def test_reconcile_live_dry_run_postcondition_reports_accounts_authority(tmp_path, capsys):
+    _set_tmp_db(tmp_path)
+    original_mode = settings.MODE
+    original_live_dry_run = settings.LIVE_DRY_RUN
+    original_live_real_order_armed = settings.LIVE_REAL_ORDER_ARMED
+    original_start_cash = settings.START_CASH_KRW
+    object.__setattr__(settings, "MODE", "live")
+    object.__setattr__(settings, "LIVE_DRY_RUN", True)
+    object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", False)
+    object.__setattr__(settings, "START_CASH_KRW", 1_000_000.0)
+
+    conn = ensure_db()
+    try:
+        init_portfolio(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    class _AccountsTruthBroker:
+        def get_open_orders(self, **_kwargs):
+            return []
+
+        def get_recent_orders(self, **_kwargs):
+            return []
+
+        def get_recent_fills(self, **_kwargs):
+            return []
+
+        def get_balance_snapshot(self):
+            return BalanceSnapshot(
+                source_id="accounts_v1_rest_snapshot",
+                observed_ts_ms=1710000000000,
+                asset_ts_ms=1710000000000,
+                balance=BrokerBalance(
+                    cash_available=395113.99879,
+                    cash_locked=0.0,
+                    asset_available=0.0,
+                    asset_locked=0.0,
+                ),
+            )
+
+        def get_accounts_validation_diagnostics(self):
+            return {
+                "preflight_outcome": "pass_no_position_allowed",
+                "base_currency_missing_policy": "allow_zero_position_start_in_dry_run",
+            }
+
+    try:
+        cmd_reconcile(
+            broker_factory=lambda: _AccountsTruthBroker(),
+            reconcile_fn=reconcile_with_broker,
+        )
+    finally:
+        object.__setattr__(settings, "MODE", original_mode)
+        object.__setattr__(settings, "LIVE_DRY_RUN", original_live_dry_run)
+        object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", original_live_real_order_armed)
+        object.__setattr__(settings, "START_CASH_KRW", original_start_cash)
+
+    out = capsys.readouterr().out
+    assert "balance_authority=accounts_v1_rest_snapshot" in out
+    assert "broker_truth_source=accounts_v1_rest_snapshot" in out
+    assert "simulation_balance_source=dry_run_static" in out
+    assert "broker_cash_total=395113.99879" in out
+    assert "accounts_v1_cash=395113.99879" in out
+    assert "dry_run_static_cash=1000000.00000" in out
+    assert "resume_allowed=1" in out
+    assert "resume_blockers=none" in out
+    assert "balance_authority=-" not in out
+    assert "broker_truth_source=-" not in out
+    assert "simulation_balance_source=-" not in out
+    assert "broker=1000000" not in out
+    assert "PORTFOLIO_BROKER_CASH_MISMATCH" not in out
+    assert "BALANCE_SPLIT_MISMATCH" not in out
+
+
 def test_recover_order_success_for_known_exchange_order_id(monkeypatch, tmp_path):
     _set_tmp_db(tmp_path)
     now_ms = int(time.time() * 1000)

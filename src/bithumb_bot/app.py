@@ -6286,6 +6286,58 @@ def _run_live_reconcile(*, broker_factory=None, reconcile_fn=None) -> None:
     resolved_reconcile_fn(resolved_broker_factory())
 
 
+def _format_reconcile_evidence_text(
+    *,
+    reconcile_metadata: dict[str, object],
+) -> str:
+    try:
+        readiness_evidence = dict(
+            compute_runtime_readiness_snapshot().broker_position_evidence
+        )
+    except Exception as exc:
+        readiness_evidence = {
+            "evidence_status": f"unavailable:{type(exc).__name__}",
+        }
+
+    def _text(*keys: str) -> str:
+        for key in keys:
+            value = readiness_evidence.get(key)
+            if value not in (None, ""):
+                return str(value)
+        return "unavailable:readiness_evidence_missing"
+
+    def _cash(key: str) -> str:
+        value = readiness_evidence.get(key)
+        if value is None:
+            return f"unavailable:{key}_missing"
+        try:
+            return f"{float(value):.5f}"
+        except (TypeError, ValueError):
+            return f"unavailable:{key}_invalid"
+
+    missing_fields = readiness_evidence.get("missing_evidence_fields") or []
+    if isinstance(missing_fields, (list, tuple)):
+        missing_summary = ",".join(str(item) for item in missing_fields) or "none"
+    else:
+        missing_summary = str(missing_fields) or "none"
+    evidence_status = (
+        str(readiness_evidence.get("evidence_status"))
+        if readiness_evidence.get("evidence_status")
+        else ("metadata_available" if reconcile_metadata else "metadata_unavailable")
+    )
+
+    return (
+        f"balance_authority={_text('balance_authority')}; "
+        f"broker_truth_source={_text('broker_cash_truth', 'broker_truth_source')}; "
+        f"simulation_balance_source={_text('simulation_balance_source')}; "
+        f"broker_cash_total={_cash('broker_cash_total')}; "
+        f"accounts_v1_cash={_cash('accounts_v1_cash')}; "
+        f"dry_run_static_cash={_cash('dry_run_static_cash')}; "
+        f"authority_evidence_status={evidence_status}; "
+        f"missing_evidence_fields={missing_summary}"
+    )
+
+
 def cmd_resume(
     force: bool = False,
     *,
@@ -6398,10 +6450,7 @@ def cmd_reconcile(*, broker_factory=None, reconcile_fn=None) -> None:
         postcondition=(
             f"last_reconcile_status={state.last_reconcile_status or 'none'}; "
             f"last_reconcile_reason_code={state.last_reconcile_reason_code or 'none'}; "
-            f"balance_authority={reconcile_metadata.get('balance_authority') or '-'}; "
-            f"broker_truth_source={reconcile_metadata.get('broker_cash_truth') or '-'}; "
-            f"simulation_balance_source={reconcile_metadata.get('simulation_balance_source') or '-'}; "
-            f"broker_cash_total={float(reconcile_metadata.get('broker_cash_available') or 0.0) + float(reconcile_metadata.get('broker_cash_locked') or 0.0):.5f}; "
+            f"{_format_reconcile_evidence_text(reconcile_metadata=reconcile_metadata)}; "
             f"resume_gate_blocked={1 if state.resume_gate_blocked else 0}; "
             f"resume_allowed={1 if resume_allowed else 0}; "
             f"resume_blockers={resume_blockers}; "

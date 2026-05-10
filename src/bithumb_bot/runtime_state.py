@@ -17,6 +17,18 @@ from .lifecycle import summarize_position_lots
 HALT_POLICY_STAGE = "SAFE_HALT_REVIEW_ONLY"
 _HEALTH_SUMMARY_MAX_LEN = 2400
 _RECONCILE_METADATA_PRESERVE_KEYS = (
+    "balance_authority",
+    "broker_cash_truth",
+    "broker_position_truth",
+    "resume_recovery_safety_gate",
+    "order_sizing",
+    "simulation_balance",
+    "simulation_balance_source",
+    "accounts_v1_cash",
+    "accounts_v1_asset_qty",
+    "accounts_v1_preflight_outcome",
+    "dry_run_static_cash",
+    "base_currency_missing_policy",
     "balance_source",
     "balance_observed_ts_ms",
     "balance_asset_ts_ms",
