@@ -30,6 +30,8 @@ Canonical commands:
 
 ```bash
 uv run bithumb-bot sync-orderbook-top
+uv run bithumb-bot research-readiness --manifest examples/research/sma_filter_manifest.example.json
+uv run bithumb-bot backfill-candles --market KRW-BTC --interval 1m --start 2023-01-01 --end 2026-05-01 --batch-size 200
 uv run bithumb-bot research-backtest --manifest examples/research/sma_filter_manifest.example.json
 uv run bithumb-bot research-walk-forward --manifest examples/research/sma_filter_manifest.example.json
 uv run bithumb-bot research-promote-candidate --experiment-id sma_filter_v1_2026_05 --candidate-id candidate_001
@@ -37,6 +39,102 @@ uv run bithumb-bot research-promote-candidate --experiment-id sma_filter_v1_2026
 
 Research commands follow the explicit env model. They do not implicitly load repo-root `.env`.
 Use `BITHUMB_ENV_FILE`, `BITHUMB_ENV_FILE_PAPER`, or process env to select DB and runtime roots.
+
+## Data Readiness And Historical Backfill
+
+Run `research-readiness` before `research-backtest` when using production or production-like manifests:
+
+```bash
+uv run bithumb-bot research-readiness --manifest "$MANIFEST"
+```
+
+The command is read-only. It prints the manifest path and hash, effective `MODE`, resolved `DB_PATH`, market, interval, split ranges, candle coverage by split, top-of-book readiness, execution calibration readiness, and walk-forward readiness. It exits non-zero when required data or evidence is missing, so operators can see why `research-backtest` will fail before generating research artifacts.
+
+Historical candle acquisition uses the configured runtime DB and explicit date range:
+
+```bash
+uv run bithumb-bot backfill-candles \
+  --market KRW-BTC \
+  --interval 1m \
+  --start 2023-01-01 \
+  --end 2026-05-01 \
+  --batch-size 200
+```
+
+`backfill-candles` fetches Bithumb public minute candles backward from `--end` to `--start`, uses `candle_date_time_utc` as the canonical `candles.ts` bucket start, and writes with `INSERT OR REPLACE`. It is idempotent and safe to rerun. Use `--dry-run` to fetch and print progress without writing. The command prints request count, fetched count, written count, duplicate/stall counters, batch oldest/newest timestamps, next cursor, and final candle coverage. It does not print a research `PASS`; pass/fail evidence comes from dataset quality and research gates.
+
+Backfill uses the repository env and path contract. Set `BITHUMB_ENV_FILE` or the appropriate explicit env selector, verify `MODE` and `DB_PATH`, and do not point runtime data at the repository. For large EC2 backfills, stop paper/live writers first if they share the same DB so ingestion and research do not compete with runtime writes.
+
+Example EC2 sequence:
+
+```bash
+export BITHUMB_ENV_FILE=/home/ec2-user/bithumb-runtime/env/paper.research.env
+
+uv run python - <<'PY'
+from bithumb_bot.config import settings
+print("MODE=", settings.MODE)
+print("PAIR=", settings.PAIR)
+print("INTERVAL=", settings.INTERVAL)
+print("DB_PATH=", settings.DB_PATH)
+PY
+```
+
+```bash
+MANIFEST=/home/ec2-user/bithumb-runtime/data/paper/reports/research/manifests/sma_filter_prod_krw_btc.json
+
+uv run bithumb-bot research-readiness --manifest "$MANIFEST"
+
+uv run bithumb-bot backfill-candles \
+  --market KRW-BTC \
+  --interval 1m \
+  --start 2023-01-01 \
+  --end 2026-05-01 \
+  --batch-size 200
+
+uv run bithumb-bot research-readiness --manifest "$MANIFEST"
+uv run bithumb-bot research-backtest --manifest "$MANIFEST"
+```
+
+Manual SQLite coverage inspection:
+
+```bash
+DB=/home/ec2-user/bithumb-runtime/data/paper/trades/paper.sqlite
+
+sqlite3 -header -column "$DB" "
+SELECT
+  pair,
+  interval,
+  COUNT(*) AS rows,
+  datetime(MIN(ts)/1000,'unixepoch') AS first_utc,
+  datetime(MAX(ts)/1000,'unixepoch') AS last_utc
+FROM candles
+WHERE pair='KRW-BTC'
+  AND interval='1m'
+GROUP BY pair, interval;
+"
+
+sqlite3 -header -column "$DB" "
+SELECT
+  COUNT(*) AS top_rows,
+  datetime(MIN(ts)/1000,'unixepoch') AS first_utc,
+  datetime(MAX(ts)/1000,'unixepoch') AS last_utc
+FROM orderbook_top_snapshots
+WHERE pair='KRW-BTC';
+"
+```
+
+Correct production sequence:
+
+1. Stop live or paper execution if it shares the research DB.
+2. Verify env loading and resolved DB path.
+3. Run `research-readiness`.
+4. Backfill candles.
+5. Rerun `research-readiness`.
+6. Collect or backfill real top-of-book data if available.
+7. Rerun `research-backtest`.
+8. Proceed to walk-forward, calibration, promotion, and profile gates only after required gates pass.
+
+Candle backfill only addresses historical candle coverage. It does not satisfy a production manifest that requires `dataset.top_of_book.required=true`, `missing_policy=fail`, and full top-of-book coverage. Do not reconstruct fake top-of-book from candles, do not disable required top-of-book gates for production evidence, and do not shorten manifest dates merely to match the current DB. A production top-of-book requirement needs real `orderbook_top_snapshots` coverage or a separately reviewed non-production candle-only manifest.
 
 ## Manifest Format
 

@@ -22,6 +22,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from .marketdata import cmd_sync, cmd_sync_orderbook_top, cmd_ticker, cmd_candles
+from .historical_backfill import backfill_candles
 from .db_core import (
     compute_accounting_replay,
     diagnose_db_path,
@@ -157,6 +158,7 @@ from .research.cli import (
     cmd_research_reproduce,
     cmd_research_walk_forward,
 )
+from .research.readiness import cmd_research_readiness
 from .profile_cli import (
     cmd_decision_equivalence,
     cmd_profile_diff,
@@ -7448,6 +7450,33 @@ def main(argv: list[str] | None = None) -> int:
     research_backtest.add_argument("--manifest", required=True)
     research_backtest.add_argument("--execution-calibration")
 
+    research_readiness = sub.add_parser(
+        "research-readiness",
+        help="check manifest data readiness before research execution",
+        description=(
+            "Read-only manifest readiness report for configured DB candle coverage, "
+            "top-of-book coverage, calibration, and walk-forward prerequisites."
+        ),
+    )
+    research_readiness.add_argument("--manifest", required=True)
+    research_readiness.add_argument("--execution-calibration")
+    research_readiness.add_argument("--json", action="store_true")
+
+    backfill_candles_parser = sub.add_parser(
+        "backfill-candles",
+        help="backfill historical minute candles into the configured SQLite DB",
+        description=(
+            "Fetch public Bithumb minute candles backward over an explicit date range "
+            "and upsert them into candles using candle_date_time_utc bucket keys."
+        ),
+    )
+    backfill_candles_parser.add_argument("--market", required=True)
+    backfill_candles_parser.add_argument("--interval", required=True)
+    backfill_candles_parser.add_argument("--start", required=True)
+    backfill_candles_parser.add_argument("--end", required=True)
+    backfill_candles_parser.add_argument("--batch-size", type=int, default=200)
+    backfill_candles_parser.add_argument("--dry-run", action="store_true")
+
     sync_orderbook_top = sub.add_parser(
         "sync-orderbook-top",
         help="collect one validated public top-of-book snapshot into the configured SQLite DB",
@@ -7846,6 +7875,54 @@ def main(argv: list[str] | None = None) -> int:
             manifest_path=str(args.manifest),
             execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None,
         )
+    elif args.cmd == "research-readiness":
+        return cmd_research_readiness(
+            manifest_path=str(args.manifest),
+            execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None,
+            as_json=bool(args.json),
+        )
+    elif args.cmd == "backfill-candles":
+        def _print_progress(progress):
+            oldest = kst_str(progress.oldest_ts) if progress.oldest_ts is not None else "none"
+            newest = kst_str(progress.newest_ts) if progress.newest_ts is not None else "none"
+            print(
+                "[BACKFILL-CANDLES] "
+                f"requests={progress.request_count} fetched={progress.fetched_count} "
+                f"written={progress.written_count} duplicate_pages={progress.duplicate_page_count} "
+                f"cursor_stalls={progress.cursor_stall_count} oldest={oldest} newest={newest} "
+                f"next_cursor={progress.next_cursor or 'none'}"
+            )
+
+        try:
+            result = backfill_candles(
+                market=str(args.market),
+                interval=str(args.interval),
+                start=str(args.start),
+                end=str(args.end),
+                batch_size=int(args.batch_size),
+                dry_run=bool(args.dry_run),
+                progress_callback=_print_progress,
+            )
+        except Exception as exc:
+            print(f"[BACKFILL-CANDLES] error={exc}")
+            return 1
+        coverage = result.coverage
+        print(
+            "[BACKFILL-CANDLES] final "
+            f"mode={result.mode} db_path={result.db_path} dry_run={1 if result.dry_run else 0} "
+            f"requests={result.progress.request_count} fetched={result.progress.fetched_count} "
+            f"written={result.progress.written_count}"
+        )
+        print(
+            "[BACKFILL-CANDLES] coverage "
+            f"expected_buckets={coverage['expected_buckets']} "
+            f"present_buckets={coverage['present_buckets']} "
+            f"missing_buckets={coverage['missing_buckets']} "
+            f"coverage_pct={coverage['coverage_pct']} first_ts={coverage['first_ts']} "
+            f"last_ts={coverage['last_ts']} quality_status={coverage['quality_gate_status']} "
+            f"reasons={','.join(str(item) for item in coverage['quality_gate_reasons']) if coverage['quality_gate_reasons'] else 'none'}"
+        )
+        return 0
     elif args.cmd == "research-walk-forward":
         return cmd_research_walk_forward(
             manifest_path=str(args.manifest),

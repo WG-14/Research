@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from .public_api import PublicApiSchemaError, get_public_json
+from .public_api import PublicApiSchemaError, get_public_json, get_public_json_with_retry
 
 
 _ALLOWED_MINUTE_UNITS = frozenset({1, 3, 5, 10, 15, 30, 60, 240})
@@ -121,6 +121,7 @@ def fetch_minute_candles(
     minute_unit: int,
     count: int,
     to: str | None = None,
+    max_retries: int | None = None,
 ) -> list[MinuteCandle]:
     if minute_unit not in _ALLOWED_MINUTE_UNITS:
         raise ValueError(f"unsupported minute unit: {minute_unit}")
@@ -133,5 +134,8 @@ def fetch_minute_candles(
     if to is not None:
         params["to"] = to
 
-    payload = get_public_json(client, endpoint, params=params)
+    if max_retries is None:
+        payload = get_public_json(client, endpoint, params=params)
+    else:
+        payload = get_public_json_with_retry(client, endpoint, params=params, max_retries=max_retries)
     return parse_minute_candles(payload)
