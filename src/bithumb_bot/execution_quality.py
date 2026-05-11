@@ -58,6 +58,7 @@ class ExecutionQualityRecord:
     exchange: str | None
     submit_contract_kind: str | None
     canonical_execution_kind: str
+    semantic_evidence_quality: str
     market_equivalent: bool
     legacy_unknown_order_type: bool
     unsupported_unknown_order_type: bool
@@ -674,6 +675,7 @@ def build_execution_quality_record(
         exchange=exchange,
         submit_contract_kind=submit_contract_kind,
         canonical_execution_kind=semantics.canonical_execution_kind,
+        semantic_evidence_quality=semantics.semantic_evidence_quality,
         market_equivalent=semantics.market_equivalent,
         legacy_unknown_order_type=semantics.legacy_unknown,
         unsupported_unknown_order_type=semantics.unsupported_unknown,
@@ -831,6 +833,12 @@ def summarize_execution_quality(
         1 for row in records if row.canonical_execution_kind == CANONICAL_MARKET_SELL_BASE_QTY
     )
     market_equivalent_order_count = sum(1 for row in records if row.market_equivalent)
+    verified_market_equivalent_order_count = sum(
+        1 for row in records if row.market_equivalent and row.semantic_evidence_quality == "current_verified"
+    )
+    unverified_market_equivalent_order_count = sum(
+        1 for row in records if row.market_equivalent and row.semantic_evidence_quality != "current_verified"
+    )
     limit_order_count = sum(1 for row in records if row.canonical_execution_kind == CANONICAL_LIMIT_QTY_PRICE)
     legacy_unknown_order_type_count = sum(1 for row in records if row.legacy_unknown_order_type)
     unsupported_unknown_order_type_count = sum(1 for row in records if row.unsupported_unknown_order_type)
@@ -889,6 +897,8 @@ def summarize_execution_quality(
         "sample_count": sample_count,
         "market_order_count": market_equivalent_order_count,
         "market_equivalent_order_count": market_equivalent_order_count,
+        "verified_market_equivalent_order_count": verified_market_equivalent_order_count,
+        "unverified_market_equivalent_order_count": unverified_market_equivalent_order_count,
         "market_buy_quote_order_count": market_buy_quote_order_count,
         "market_sell_base_order_count": market_sell_base_order_count,
         "limit_order_count": limit_order_count,
@@ -931,6 +941,8 @@ def format_execution_quality_text(summary: dict[str, object]) -> str:
         "sample_count",
         "market_order_count",
         "market_equivalent_order_count",
+        "verified_market_equivalent_order_count",
+        "unverified_market_equivalent_order_count",
         "market_buy_quote_order_count",
         "market_sell_base_order_count",
         "limit_order_count",

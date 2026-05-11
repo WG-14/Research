@@ -3784,8 +3784,11 @@ def test_diagnose_fill_trade_linkage_reports_matchable_and_unmatchable_rows(
 
     assert payload["fills_missing_trade_id"] == 3
     assert payload["missing_but_safely_matchable"] == 1
+    assert payload["proposed_count"] == 1
     assert payload["ambiguous"] == 1
     assert payload["unmatchable"] == 1
+    assert payload["skipped_ambiguous"] == 1
+    assert payload["skipped_unmatchable"] == 1
     assert payload["dry_run"] is True
 
     conn = ensure_db(str(recovery_db))
@@ -3801,6 +3804,7 @@ def test_diagnose_fill_trade_linkage_reports_matchable_and_unmatchable_rows(
 
     assert applied["apply_safe"] is True
     assert applied["repaired_count"] == 1
+    assert applied["applied_count"] == 1
     assert applied["fills_missing_trade_id_after"] == 2
 
     conn = ensure_db(str(recovery_db))
@@ -3820,7 +3824,16 @@ def test_diagnose_fill_trade_linkage_reports_matchable_and_unmatchable_rows(
     app_main(["diagnose-fill-trade-linkage", "--json", "--apply-safe"])
     second = json.loads(capsys.readouterr().out)
     assert second["repaired_count"] == 0
+    assert second["applied_count"] == 0
     assert second["fills_missing_trade_id_after"] == 2
+
+    app_main(["diagnose-fill-trade-linkage"])
+    text_out = capsys.readouterr().out
+    assert "[DIAGNOSE-FILL-TRADE-LINKAGE]" in text_out
+    assert "proposed_count=0" in text_out
+    assert "applied_count=0" in text_out
+    assert "skipped_ambiguous=1" in text_out
+    assert "skipped_unmatchable=1" in text_out
 
 
 def test_portfolio_anchor_projection_still_blocks_without_current_publication_attestation(recovery_db):

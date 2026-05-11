@@ -207,8 +207,26 @@ def test_canonical_order_semantics_side_aware() -> None:
         submit_contract_kind="market_buy_notional",
     )
     assert buy_price.canonical_execution_kind == "market_buy_quote_notional"
+    assert buy_price.semantic_evidence_quality == "current_verified"
     assert buy_price.market_equivalent is True
     assert buy_price.legacy_unknown is False
+
+    legacy_buy_price = classify_order_semantics(raw_order_type="price", side="BUY")
+    assert legacy_buy_price.canonical_execution_kind == "market_buy_quote_notional"
+    assert legacy_buy_price.semantic_evidence_quality == "legacy_unverified"
+    assert legacy_buy_price.market_equivalent is True
+    assert legacy_buy_price.unsupported_unknown is False
+
+    conflicting_buy_price = classify_order_semantics(
+        raw_order_type="price",
+        side="BUY",
+        exchange="bithumb",
+        submit_contract_kind="limit_qty_price",
+    )
+    assert conflicting_buy_price.canonical_execution_kind == "unsupported_unknown"
+    assert conflicting_buy_price.semantic_evidence_quality == "conflicting"
+    assert conflicting_buy_price.market_equivalent is False
+    assert conflicting_buy_price.unsupported_unknown is True
 
     sell_market = classify_order_semantics(raw_order_type="market", side="SELL")
     assert sell_market.canonical_execution_kind == "market_sell_base_qty"
@@ -224,6 +242,7 @@ def test_canonical_order_semantics_side_aware() -> None:
 
     invalid_buy_market = classify_order_semantics(raw_order_type="market", side="BUY", exchange="bithumb")
     assert invalid_buy_market.canonical_execution_kind == "unsupported_unknown"
+    assert invalid_buy_market.semantic_evidence_quality == "conflicting"
     assert invalid_buy_market.market_equivalent is False
 
     unsupported = classify_order_semantics(raw_order_type="post_only", side="BUY")
@@ -669,12 +688,44 @@ def test_summary_treats_buy_price_as_market_equivalent_not_unknown(tmp_path) -> 
 
     assert summary["market_equivalent_order_count"] == 133
     assert summary["market_order_count"] == 133
+    assert summary["verified_market_equivalent_order_count"] == 61
+    assert summary["unverified_market_equivalent_order_count"] == 72
     assert summary["market_buy_quote_order_count"] == 72
     assert summary["market_sell_base_order_count"] == 61
     assert summary["legacy_unknown_order_type_count"] == 49
     assert summary["unsupported_unknown_order_type_count"] == 0
     assert summary["unknown_order_type_count"] == 49
     assert summary["order_type_cost_delta"] == "one_order_type_only"
+
+
+def test_execution_quality_summary_separates_legacy_unverified_market_equivalent(tmp_path) -> None:
+    conn = ensure_db(str(tmp_path / "execution-quality-unverified-market.sqlite"))
+    try:
+        _seed_quality_order(
+            conn,
+            client_order_id="quality_legacy_buy_price",
+            side="BUY",
+            order_type="price",
+            submit_contract_kind=None,
+            fill_prices=(100.0,),
+            fill_qtys=(1.0,),
+        )
+        record = build_execution_quality_record(conn, client_order_id="quality_legacy_buy_price")
+    finally:
+        conn.close()
+
+    assert record is not None
+    assert record.canonical_execution_kind == "market_buy_quote_notional"
+    assert record.semantic_evidence_quality == "legacy_unverified"
+    assert record.market_equivalent is True
+    assert record.legacy_unknown_order_type is False
+    assert record.unsupported_unknown_order_type is False
+
+    summary = summarize_execution_quality([record], thresholds=ExecutionQualityThresholds(min_sample=1))
+    assert summary["market_equivalent_order_count"] == 1
+    assert summary["verified_market_equivalent_order_count"] == 0
+    assert summary["unverified_market_equivalent_order_count"] == 1
+    assert summary["unknown_order_type_count"] == 0
 
 
 def test_material_remainder_controls_quality_gate_and_preserves_raw_flags(tmp_path) -> None:
@@ -822,6 +873,7 @@ def test_execution_quality_old_schema_is_upgraded_and_report_runs(tmp_path, monk
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(execution_quality_events)").fetchall()}
         for column in (
             "canonical_execution_kind",
+            "semantic_evidence_quality",
             "market_equivalent",
             "legacy_unknown_order_type",
             "unsupported_unknown_order_type",

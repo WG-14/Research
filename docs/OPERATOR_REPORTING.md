@@ -149,10 +149,11 @@ include BUY `price` orders.
 
 `partial_fill_rate` and `unfilled_rate` are materiality-aware and are used for
 operator warnings. Raw diagnostic fields such as `raw_partial_fill_rate` and
-`raw_unfilled_rate` remain available to show dust-like exchange residue. A tiny
-remaining quantity is non-material when it is at or below `qty_step`, below
+`raw_unfilled_rate` remain available to show dust-like exchange residue. A
+remaining quantity is non-material only when it is below `qty_step`, below
 `effective_min_trade_qty`, or below `min_notional_krw` when a remaining notional
-can be computed.
+can be computed. Exactly one executable `qty_step` is material when it satisfies
+minimum quantity and minimum notional rules.
 
 `order_type_cost_delta` compares market-equivalent and limit p90 signal slippage
 and p95 submit-to-fill latency when both sides have evidence. `one_order_type_only`

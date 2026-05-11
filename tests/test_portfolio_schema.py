@@ -270,6 +270,74 @@ def test_validate_db_cli_plain_output_includes_expected_and_observed_metadata(tm
     assert f"observed_schema_version={OPERATIONAL_SCHEMA_VERSION}" in out
     assert f"expected_accounting_projection_model={ACCOUNTING_PROJECTION_MODEL}" in out
     assert f"observed_accounting_projection_model={ACCOUNTING_PROJECTION_MODEL}" in out
+    assert "diagnostic_schema_status=PASS" in out
+
+
+def test_execution_quality_diagnostic_table_missing_warns_without_blocking_startup(tmp_path):
+    db_path = tmp_path / "missing-diagnostic-table.sqlite"
+    conn = ensure_db(str(db_path))
+    try:
+        conn.execute("DROP TABLE execution_quality_events")
+        conn.commit()
+        assert_current_schema(conn)
+        diagnostics = build_runtime_schema_diagnostics(conn)
+    finally:
+        conn.close()
+
+    assert diagnostics["status"] == "PASS"
+    assert diagnostics["diagnostic_schema_status"] == "WARN"
+    assert diagnostics["diagnostic_missing_tables"] == ["execution_quality_events"]
+    assert diagnostics["diagnostic_recommended_command"] == "execution-quality-report"
+
+
+def test_execution_quality_old_diagnostic_schema_warns_with_refresh_command(tmp_path):
+    db_path = tmp_path / "old-diagnostic-schema.sqlite"
+    conn = ensure_db(str(db_path))
+    try:
+        conn.execute("DROP TABLE execution_quality_events")
+        conn.execute(
+            """
+            CREATE TABLE execution_quality_events (
+                client_order_id TEXT,
+                canonical_execution_kind TEXT,
+                market_equivalent INTEGER NOT NULL DEFAULT 0,
+                quality_status TEXT NOT NULL DEFAULT 'insufficient_evidence'
+            )
+            """
+        )
+        conn.commit()
+        assert_current_schema(conn)
+        diagnostics = build_runtime_schema_diagnostics(conn)
+    finally:
+        conn.close()
+
+    assert diagnostics["status"] == "PASS"
+    assert diagnostics["diagnostic_schema_status"] == "WARN"
+    assert diagnostics["diagnostic_recommended_command"] == "execution-quality-report"
+    missing = diagnostics["diagnostic_missing_columns"]["execution_quality_events"]
+    assert "semantic_evidence_quality" in missing
+    assert "remaining_qty_materiality_reason" in missing
+
+
+def test_validate_db_prints_execution_quality_diagnostic_schema_warning(tmp_path, monkeypatch, capsys):
+    db_path = str(tmp_path / "validate-db-diagnostic-warning.sqlite")
+    conn = ensure_db(db_path)
+    try:
+        conn.execute("DROP TABLE execution_quality_events")
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setenv("DB_PATH", db_path)
+    object.__setattr__(settings, "DB_PATH", db_path)
+
+    exit_code = cmd_validate_db(as_json=False)
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "db_schema_status=PASS" in out
+    assert "diagnostic_schema_status=WARN" in out
+    assert "diagnostic_recommended_command=execution-quality-report" in out
+    assert "diagnostic_schema_warning=missing table: execution_quality_events" in out
 
 
 def test_portfolio_total_mismatch_fails_schema_validation_before_runtime_use(tmp_path):

@@ -139,15 +139,19 @@ REQUIRED_RUNTIME_TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "qty",
         "accounting_status",
     ),
+    "schema_meta": ("key", "schema_version", "schema_fingerprint", "accounting_projection_model", "updated_ts"),
+}
+
+DIAGNOSTIC_RUNTIME_TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
     "execution_quality_events": (
         "client_order_id",
         "canonical_execution_kind",
+        "semantic_evidence_quality",
         "market_equivalent",
         "remaining_notional_krw",
         "material_partial_fill_flag",
         "remaining_qty_materiality_reason",
     ),
-    "schema_meta": ("key", "schema_version", "schema_fingerprint", "accounting_projection_model", "updated_ts"),
 }
 REQUIRED_RUNTIME_TRIGGERS = (
     "trg_open_position_lots_validate_insert",
@@ -638,6 +642,21 @@ def build_runtime_schema_diagnostics(conn: sqlite3.Connection) -> dict[str, obje
         if missing:
             missing_columns[table] = missing
 
+    diagnostic_missing_tables = sorted(set(DIAGNOSTIC_RUNTIME_TABLE_COLUMNS) - tables)
+    diagnostic_missing_columns: dict[str, list[str]] = {}
+    for table, required_columns in DIAGNOSTIC_RUNTIME_TABLE_COLUMNS.items():
+        if table not in tables:
+            continue
+        columns = set(_table_columns(conn, table))
+        missing = sorted(set(required_columns) - columns)
+        if missing:
+            diagnostic_missing_columns[table] = missing
+    diagnostic_status = "PASS"
+    diagnostic_recommended_command = "diagnostic_schema_current"
+    if diagnostic_missing_tables or diagnostic_missing_columns:
+        diagnostic_status = "WARN"
+        diagnostic_recommended_command = "execution-quality-report"
+
     portfolio_columns = set(_table_columns(conn, "portfolio"))
     legacy_schema_detected = bool(
         {"cash", "qty"}.issubset(portfolio_columns) and not {"cash_krw", "asset_qty"}.issubset(portfolio_columns)
@@ -693,6 +712,10 @@ def build_runtime_schema_diagnostics(conn: sqlite3.Connection) -> dict[str, obje
         "missing_triggers": missing_triggers,
         "validation_errors": errors,
         "recommended_action": recommendation,
+        "diagnostic_schema_status": diagnostic_status,
+        "diagnostic_missing_tables": diagnostic_missing_tables,
+        "diagnostic_missing_columns": diagnostic_missing_columns,
+        "diagnostic_recommended_command": diagnostic_recommended_command,
     }
 
 
@@ -2020,6 +2043,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             exchange TEXT,
             submit_contract_kind TEXT,
             canonical_execution_kind TEXT,
+            semantic_evidence_quality TEXT NOT NULL DEFAULT 'legacy_unverified',
             market_equivalent INTEGER NOT NULL DEFAULT 0,
             legacy_unknown_order_type INTEGER NOT NULL DEFAULT 0,
             unsupported_unknown_order_type INTEGER NOT NULL DEFAULT 0,
@@ -2089,6 +2113,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         ("exchange", "exchange TEXT"),
         ("submit_contract_kind", "submit_contract_kind TEXT"),
         ("canonical_execution_kind", "canonical_execution_kind TEXT"),
+        ("semantic_evidence_quality", "semantic_evidence_quality TEXT NOT NULL DEFAULT 'legacy_unverified'"),
         ("market_equivalent", "market_equivalent INTEGER NOT NULL DEFAULT 0"),
         ("legacy_unknown_order_type", "legacy_unknown_order_type INTEGER NOT NULL DEFAULT 0"),
         ("unsupported_unknown_order_type", "unsupported_unknown_order_type INTEGER NOT NULL DEFAULT 0"),

@@ -2333,8 +2333,14 @@ def cmd_validate_db(*, as_json: bool = False) -> int:
             f"observed_accounting_projection_model={diagnostics.get('observed_accounting_projection_model')} "
             f"legacy_schema_detected={int(bool(diagnostics.get('legacy_schema_detected')))} "
             f"malformed_portfolio_detected={int(bool(diagnostics.get('malformed_portfolio_detected')))} "
+            f"diagnostic_schema_status={diagnostics.get('diagnostic_schema_status')} "
+            f"diagnostic_recommended_command={diagnostics.get('diagnostic_recommended_command')} "
             f"recommended_action={diagnostics.get('recommended_action')}"
         )
+        for table in diagnostics.get("diagnostic_missing_tables") or []:
+            print(f"diagnostic_schema_warning=missing table: {table}")
+        for table, columns in (diagnostics.get("diagnostic_missing_columns") or {}).items():
+            print(f"diagnostic_schema_warning=table {table} missing column(s): {', '.join(columns)}")
         for error in diagnostics.get("validation_errors") or []:
             print(f"schema_error={error}")
     return 0 if diagnostics.get("status") == "PASS" else 1
@@ -5297,11 +5303,15 @@ def _build_fill_trade_linkage_diagnostic(*, apply_safe: bool = False) -> dict[st
         "fills_missing_trade_id": len(missing_rows),
         "fills_missing_trade_id_after": after_missing if apply_safe else len(missing_rows),
         "missing_but_safely_matchable": safe_matchable,
+        "proposed_count": safe_matchable,
         "ambiguous": ambiguous,
         "unmatchable": unmatchable,
+        "skipped_ambiguous": ambiguous,
+        "skipped_unmatchable": unmatchable,
         "dry_run": not apply_safe,
         "apply_safe": bool(apply_safe),
         "repaired_count": repaired_count,
+        "applied_count": repaired_count,
         "skipped_count": skipped_count,
         "rows": decision_rows,
         "repaired_rows": repaired_rows,
@@ -5322,11 +5332,15 @@ def cmd_diagnose_fill_trade_linkage(*, as_json: bool = False, apply_safe: bool =
         f"fills_missing_trade_id={int(payload.get('fills_missing_trade_id') or 0)} "
         f"fills_missing_trade_id_after={int(payload.get('fills_missing_trade_id_after') or 0)} "
         f"missing_but_safely_matchable={int(payload.get('missing_but_safely_matchable') or 0)} "
+        f"proposed_count={int(payload.get('proposed_count') or 0)} "
         f"ambiguous={int(payload.get('ambiguous') or 0)} "
         f"unmatchable={int(payload.get('unmatchable') or 0)} "
+        f"skipped_ambiguous={int(payload.get('skipped_ambiguous') or 0)} "
+        f"skipped_unmatchable={int(payload.get('skipped_unmatchable') or 0)} "
         f"dry_run={1 if bool(payload.get('dry_run')) else 0} "
         f"apply_safe={1 if bool(payload.get('apply_safe')) else 0} "
-        f"repaired_count={int(payload.get('repaired_count') or 0)}"
+        f"repaired_count={int(payload.get('repaired_count') or 0)} "
+        f"applied_count={int(payload.get('applied_count') or 0)}"
     )
     for sample in payload.get("rows") or []:
         print(
