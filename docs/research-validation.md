@@ -61,7 +61,9 @@ uv run bithumb-bot backfill-candles \
   --batch-size 200
 ```
 
-`backfill-candles` fetches Bithumb public minute candles backward from `--end` to `--start`, uses `candle_date_time_utc` as the canonical `candles.ts` bucket start, and writes with `INSERT OR REPLACE`. It is idempotent and safe to rerun. Use `--dry-run` to fetch and print progress without writing. The command prints request count, fetched count, written count, duplicate/stall counters, batch oldest/newest timestamps, next cursor, and final candle coverage. A non-dry-run backfill exits non-zero when the requested candle range remains incomplete, even if the API returned no older candles cleanly. Dry-run may exit zero for incomplete coverage because it is read/report mode, but it still prints `NOT_EVALUATED_BY_BACKFILL` and not-ready guidance. The command does not print a research `PASS`; pass/fail evidence comes from dataset quality and research gates.
+`backfill-candles` fetches Bithumb public minute candles backward from `--end` to `--start`, uses `candle_date_time_utc` as the canonical `candles.ts` bucket start, and writes with `INSERT OR REPLACE`. DB candle timestamps are UTC epoch milliseconds derived from `candle_date_time_utc`. The Bithumb minute candle API `to` cursor is a separate exchange API contract and is treated as KST-local naive ISO seconds, using the oldest returned candle's `candle_date_time_kst` as the next page boundary. Do not use UTC-naive DB timestamps as API cursors; that can create synthetic repeated 541-minute gaps. The command prints request count, fetched count, written count, duplicate/stall counters, batch oldest/newest timestamps, `next_api_cursor`, the `api_cursor_timezone=Asia/Seoul` / `db_timestamp_timezone=UTC` contract, page-boundary gap summary, and final candle coverage.
+
+Backfill writes are idempotent, so after deploying a cursor/data contract fix operators can rerun the same backfill range against an existing sparse DB. Do not delete the DB solely to repair sparse candle coverage. Use `--dry-run` to fetch and print progress without writing. A non-dry-run backfill exits non-zero when the requested candle range remains incomplete, even if the API returned no older candles cleanly. Dry-run may exit zero for incomplete coverage because it is read/report mode, but it still prints `NOT_EVALUATED_BY_BACKFILL` and not-ready guidance. The command does not print a research `PASS`; pass/fail evidence comes from dataset quality and research gates.
 
 Backfill uses the repository env and path contract. Set `BITHUMB_ENV_FILE` or the appropriate explicit env selector, verify `MODE` and `DB_PATH`, and do not point runtime data at the repository. For large EC2 backfills, stop paper/live writers first if they share the same DB so ingestion and research do not compete with runtime writes.
 
@@ -84,6 +86,20 @@ uv run bithumb-bot backfill-candles \
   --start 2023-01-01 \
   --end 2026-05-01 \
   --batch-size 200
+
+sqlite3 -header -column "$DB_PATH" "
+WITH ordered AS (
+  SELECT ts, LAG(ts) OVER (ORDER BY ts) AS prev_ts
+  FROM candles
+  WHERE pair='KRW-BTC' AND interval='1m'
+)
+SELECT (ts - prev_ts) / 60000 AS gap_minutes, COUNT(*) AS count
+FROM ordered
+WHERE prev_ts IS NOT NULL AND ts - prev_ts > 60000
+GROUP BY gap_minutes
+ORDER BY count DESC, gap_minutes DESC
+LIMIT 20;
+"
 
 uv run bithumb-bot research-readiness --manifest "$MANIFEST"
 uv run bithumb-bot research-backtest --manifest "$MANIFEST"
@@ -130,7 +146,7 @@ Correct production sequence:
 7. Rerun `research-backtest`.
 8. Proceed to walk-forward, calibration, promotion, and profile gates only after required gates pass.
 
-Candle backfill only addresses historical candle coverage. It does not satisfy a production manifest that requires `dataset.top_of_book.required=true`, `missing_policy=fail`, and full top-of-book coverage. Do not reconstruct fake top-of-book from candles, do not disable required top-of-book gates for production evidence, and do not shorten manifest dates merely to match the current DB. A production top-of-book requirement needs real `orderbook_top_snapshots` coverage or a separately reviewed non-production candle-only manifest.
+Candle coverage is necessary but not sufficient for production promotion. Candle backfill only addresses historical candle coverage. It does not satisfy a production manifest that requires `dataset.top_of_book.required=true`, `missing_policy=fail`, and full top-of-book coverage. Execution calibration remains a separate evidence gate. Do not reconstruct fake top-of-book from candles, do not disable required top-of-book gates for production evidence, and do not shorten manifest dates merely to match the current DB. A production top-of-book requirement needs real `orderbook_top_snapshots` coverage or a separately reviewed non-production candle-only manifest.
 
 ## Manifest Format
 

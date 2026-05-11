@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import sqlite3
 from typing import Callable, Iterable
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -20,6 +21,9 @@ from .research.experiment_manifest import DateRange
 
 
 MAX_API_BATCH_SIZE = 200
+KST = ZoneInfo("Asia/Seoul")
+SYNTHETIC_CURSOR_GAP_MINUTES = 541
+CURSOR_GAP_DETECTION_PAGE_LIMIT = 10
 
 
 @dataclass(frozen=True)
@@ -33,6 +37,7 @@ class BackfillProgress:
     oldest_ts: int | None
     newest_ts: int | None
     next_cursor: str | None
+    page_boundary_gap_minutes: int | None = None
     status: str = "RUNNING"
     reason: str | None = None
 
@@ -47,6 +52,7 @@ class BackfillResult:
     env_summary: dict[str, object]
     dataset_quality_status: str
     next_action: str
+    page_gap_summary: dict[str, object]
 
 
 def backfill_candles(
@@ -83,12 +89,14 @@ def backfill_candles(
     stop_reason = "range_covered"
     seen_pages: set[tuple[int, ...]] = set()
     previous_oldest_ts: int | None = None
-    cursor_dt = datetime.fromtimestamp((end_ts + 1) / 1000, tz=UTC)
+    cursor = _format_bithumb_api_cursor_kst_from_ts_ms(end_ts + 1)
     fallback_active = False
+    page_boundary_gap_counts: dict[int, int] = {}
+    first_page_boundary_gap_examples: dict[int, dict[str, int]] = {}
+    page_boundary_observations = 0
 
     with httpx.Client(base_url=BASE_URL, timeout=15.0) as client:
         while True:
-            cursor = _format_api_cursor(cursor_dt)
             try:
                 candles = fetch_minute_candles(
                     client,
@@ -116,6 +124,7 @@ def backfill_candles(
                     oldest_ts=None,
                     newest_ts=None,
                     next_cursor=None,
+                    page_boundary_gap_minutes=None,
                     status="COMPLETE",
                     reason="no_older_candles",
                 )
@@ -128,18 +137,64 @@ def backfill_candles(
             page_ts = tuple(sorted({_candle_key_ts_ms(candle) for candle in candles}))
             oldest_ts = page_ts[0]
             newest_ts = page_ts[-1]
+            oldest_candle = _oldest_candle(candles)
+            page_boundary_gap_minutes: int | None = None
+            if previous_oldest_ts is not None:
+                page_boundary_observations += 1
+                page_boundary_gap_minutes = int((previous_oldest_ts - newest_ts) // interval_ms)
+                page_boundary_gap_counts[page_boundary_gap_minutes] = (
+                    page_boundary_gap_counts.get(page_boundary_gap_minutes, 0) + 1
+                )
+                first_page_boundary_gap_examples.setdefault(
+                    page_boundary_gap_minutes,
+                    {
+                        "previous_oldest_ts": previous_oldest_ts,
+                        "current_newest_ts": newest_ts,
+                    },
+                )
+                if (
+                    page_boundary_observations <= CURSOR_GAP_DETECTION_PAGE_LIMIT
+                    and page_boundary_gap_minutes == SYNTHETIC_CURSOR_GAP_MINUTES
+                    and page_boundary_gap_counts[page_boundary_gap_minutes] >= 2
+                ):
+                    stop_status = "INCOMPLETE"
+                    stop_reason = "api_cursor_timezone_contract_violation"
+                    progress = BackfillProgress(
+                        request_count=request_count,
+                        fetched_count=fetched_count,
+                        written_count=written_count,
+                        duplicate_page_count=duplicate_page_count,
+                        cursor_stall_count=cursor_stall_count,
+                        cursor_fallback_count=cursor_fallback_count,
+                        oldest_ts=oldest_ts,
+                        newest_ts=newest_ts,
+                        next_cursor=_api_cursor_from_oldest_candle_kst(oldest_candle),
+                        page_boundary_gap_minutes=page_boundary_gap_minutes,
+                        status=stop_status,
+                        reason=stop_reason,
+                    )
+                    if progress_callback is not None:
+                        progress_callback(progress)
+                    break
             duplicate_page = page_ts in seen_pages
             cursor_stall = previous_oldest_ts is not None and oldest_ts >= previous_oldest_ts
             if duplicate_page or cursor_stall:
-                # Bithumb's `to` cursor is expected to page backward before the supplied timestamp.
-                # If the API behaves inclusively at a boundary, the first retry uses oldest_ts - interval_ms
-                # so long EC2 backfills do not silently stop at one repeated boundary page.
+                # Bithumb minute candle storage and cursor semantics are intentionally different:
+                # DB keys use `candle_date_time_utc`, while the public API `to` cursor is a
+                # KST-local naive timestamp. Mixing UTC-naive cursors with the API contract creates
+                # repeated 9-hour-plus-one-minute page skips.
+                #
+                # If the API behaves inclusively at a boundary, retry from one KST-local interval
+                # before the oldest returned candle so long EC2 backfills do not silently stop at
+                # one repeated boundary page.
                 if duplicate_page:
                     duplicate_page_count += 1
                 if cursor_stall:
                     cursor_stall_count += 1
-                fallback_cursor_dt = _ts_to_dt(oldest_ts - interval_ms)
-                fallback_cursor = _format_api_cursor(fallback_cursor_dt)
+                fallback_cursor = _fallback_api_cursor_before_oldest_candle_kst(
+                    oldest_candle,
+                    interval_ms=interval_ms,
+                )
                 if not fallback_active:
                     cursor_fallback_count += 1
                     progress = BackfillProgress(
@@ -152,12 +207,13 @@ def backfill_candles(
                         oldest_ts=oldest_ts,
                         newest_ts=newest_ts,
                         next_cursor=fallback_cursor,
+                        page_boundary_gap_minutes=page_boundary_gap_minutes,
                         status="RUNNING",
                         reason="cursor_boundary_fallback",
                     )
                     if progress_callback is not None:
                         progress_callback(progress)
-                    cursor_dt = fallback_cursor_dt
+                    cursor = fallback_cursor
                     fallback_active = True
                     continue
                 stop_status = "INCOMPLETE"
@@ -172,6 +228,7 @@ def backfill_candles(
                     oldest_ts=oldest_ts,
                     newest_ts=newest_ts,
                     next_cursor=fallback_cursor,
+                    page_boundary_gap_minutes=page_boundary_gap_minutes,
                     status=stop_status,
                     reason=stop_reason,
                 )
@@ -197,7 +254,7 @@ def backfill_candles(
                     canonical_market=canonical_market,
                 )
 
-            next_cursor_dt = _ts_to_dt(oldest_ts)
+            next_cursor = _api_cursor_from_oldest_candle_kst(oldest_candle)
             progress = BackfillProgress(
                 request_count=request_count,
                 fetched_count=fetched_count,
@@ -207,7 +264,8 @@ def backfill_candles(
                 cursor_fallback_count=cursor_fallback_count,
                 oldest_ts=oldest_ts,
                 newest_ts=newest_ts,
-                next_cursor=_format_api_cursor(next_cursor_dt),
+                next_cursor=next_cursor,
+                page_boundary_gap_minutes=page_boundary_gap_minutes,
                 status="RUNNING",
                 reason=None,
             )
@@ -218,7 +276,7 @@ def backfill_candles(
                 stop_status = "COMPLETE"
                 stop_reason = "range_covered"
                 break
-            cursor_dt = next_cursor_dt
+            cursor = next_cursor
 
     coverage = candle_coverage_summary(
         db_path=settings.DB_PATH,
@@ -247,6 +305,10 @@ def backfill_candles(
         env_summary=get_last_explicit_env_load_summary().as_dict(),
         dataset_quality_status="NOT_EVALUATED_BY_BACKFILL",
         next_action="run research-readiness --manifest <manifest> before research-backtest",
+        page_gap_summary=_page_gap_summary(
+            page_boundary_gap_counts,
+            first_page_boundary_gap_examples,
+        ),
     )
 
 
@@ -374,3 +436,55 @@ def _format_api_cursor(dt: datetime) -> str:
 
 def _ts_to_dt(ts_ms: int) -> datetime:
     return datetime.fromtimestamp(int(ts_ms) / 1000, tz=UTC)
+
+
+def _format_bithumb_api_cursor_kst(dt: datetime) -> str:
+    """Format the Bithumb minute candle `to` cursor as KST-local naive ISO seconds."""
+    if dt.tzinfo is None:
+        local_dt = dt
+    else:
+        local_dt = dt.astimezone(KST).replace(tzinfo=None)
+    return local_dt.isoformat(timespec="seconds")
+
+
+def _format_bithumb_api_cursor_kst_from_ts_ms(ts_ms: int) -> str:
+    return _format_bithumb_api_cursor_kst(_ts_to_dt(ts_ms))
+
+
+def _api_cursor_from_oldest_candle_kst(candle: MinuteCandle) -> str:
+    return _format_bithumb_api_cursor_kst(_parse_bithumb_kst_naive(candle.candle_date_time_kst))
+
+
+def _fallback_api_cursor_before_oldest_candle_kst(candle: MinuteCandle, *, interval_ms: int) -> str:
+    oldest_kst = _parse_bithumb_kst_naive(candle.candle_date_time_kst)
+    return _format_bithumb_api_cursor_kst(oldest_kst - timedelta(milliseconds=interval_ms))
+
+
+def _parse_bithumb_kst_naive(value: str) -> datetime:
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(KST).replace(tzinfo=None)
+    return dt
+
+
+def _oldest_candle(candles: Iterable[MinuteCandle]) -> MinuteCandle:
+    return min(candles, key=_candle_key_ts_ms)
+
+
+def _page_gap_summary(
+    gap_counts: dict[int, int],
+    examples: dict[int, dict[str, int]],
+) -> dict[str, object]:
+    top = [
+        {
+            "gap_minutes": gap,
+            "count": count,
+            "first_example": examples.get(gap, {}),
+        }
+        for gap, count in sorted(gap_counts.items(), key=lambda item: (-item[1], -item[0]))[:5]
+    ]
+    return {
+        "api_cursor_timezone": "Asia/Seoul",
+        "db_timestamp_timezone": "UTC",
+        "top_page_boundary_gaps": top,
+    }

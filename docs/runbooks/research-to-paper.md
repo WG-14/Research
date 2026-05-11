@@ -30,7 +30,36 @@ uv run bithumb-bot research-readiness --manifest "$MANIFEST"
 
 Confirm the active `DB_PATH` is a repository-external runtime path and that `research-readiness` agrees with the manifest market, interval, split ranges, dataset quality, top-of-book policy, execution calibration, and walk-forward prerequisites before running `research-backtest`.
 
-`health` and `candles --limit 5` are latest-sync smoke checks only. They do not prove historical manifest readiness. `backfill-candles` may repair candle coverage, but it does not satisfy production top-of-book gates. Required top-of-book coverage still needs real orderbook data collection/backfill or a separate reviewed non-production candle-only manifest. Weakening production gates is not acceptable evidence.
+`health` and `candles --limit 5` are latest-sync smoke checks only. They do not prove historical manifest readiness. `backfill-candles` may repair candle coverage, but it does not satisfy production top-of-book gates. Required top-of-book coverage still needs real orderbook data collection/backfill or a separate reviewed non-production candle-only manifest. Execution calibration remains a separate production evidence gate. Weakening production gates is not acceptable evidence.
+
+Historical candle backfill has two separate data-plane contracts:
+
+- DB storage: `candles.ts` is UTC epoch milliseconds from `candle_date_time_utc`.
+- Bithumb API paging: minute candle `to` is treated as KST-local naive ISO seconds from the oldest returned candle's `candle_date_time_kst`.
+
+Do not mix these contracts. A UTC-naive API cursor can create repeated synthetic 541-minute gaps. After deploying a cursor fix, do not delete the existing sparse DB; rerun the same range because candle writes are idempotent `INSERT OR REPLACE`.
+
+After rerun, inspect the gap histogram and then rerun `research-readiness`:
+
+```bash
+sqlite3 -header -column "$DB_PATH" "
+WITH ordered AS (
+  SELECT ts, LAG(ts) OVER (ORDER BY ts) AS prev_ts
+  FROM candles
+  WHERE pair='KRW-BTC' AND interval='1m'
+)
+SELECT (ts - prev_ts) / 60000 AS gap_minutes, COUNT(*) AS count
+FROM ordered
+WHERE prev_ts IS NOT NULL AND ts - prev_ts > 60000
+GROUP BY gap_minutes
+ORDER BY count DESC, gap_minutes DESC
+LIMIT 20;
+"
+
+uv run bithumb-bot research-readiness --manifest "$MANIFEST"
+```
+
+Remaining small gaps after the KST cursor fix may be genuine no-trade minutes or API limitations. Treat them as dataset policy work, not permission to synthesize candles or bypass gates.
 
 2. Create or review the manifest.
 

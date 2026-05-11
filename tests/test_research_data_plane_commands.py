@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,7 @@ def _settings_guard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def _candle(
     utc: str,
     *,
+    kst: str | None = None,
     close: float = 100.0,
     timestamp: int = 1_111_111_199_999,
     market: str = "KRW-BTC",
@@ -53,7 +55,7 @@ def _candle(
     return MinuteCandle(
         market=market,
         candle_date_time_utc=utc,
-        candle_date_time_kst=utc,
+        candle_date_time_kst=kst or _utc_to_kst_naive(utc),
         opening_price=close,
         high_price=close + 1.0,
         low_price=close - 1.0,
@@ -62,6 +64,16 @@ def _candle(
         candle_acc_trade_price=10_000.0,
         candle_acc_trade_volume=1.0,
     )
+
+
+def _utc_to_kst_naive(value: str) -> str:
+    return (
+        datetime.fromisoformat(value)
+        .replace(tzinfo=UTC)
+        .astimezone(UTC)
+        .replace(tzinfo=UTC)
+        + timedelta(hours=9)
+    ).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
 def test_backfill_uses_candle_bucket_timestamp_and_is_idempotent(monkeypatch, _settings_guard) -> None:
@@ -96,8 +108,113 @@ def test_backfill_backward_pagination_cursor_moves_to_older_candles(monkeypatch,
 
     backfill_candles(market="KRW-BTC", interval="1m", start="2023-01-01", end="2023-01-02", batch_size=200)
 
-    assert calls[0] == "2023-01-03T00:00:00"
-    assert calls[1] == "2023-01-02T00:00:00"
+    assert calls[0] == "2023-01-03T09:00:00"
+    assert calls[1] == "2023-01-02T09:00:00"
+
+
+def test_backfill_next_cursor_uses_oldest_candle_kst_not_utc(monkeypatch, _settings_guard) -> None:
+    calls: list[str | None] = []
+    pages = [
+        [
+            _candle(
+                "2023-01-01T23:29:00",
+                kst="2023-01-02T08:29:00",
+            ),
+            _candle(
+                "2023-01-01T23:28:00",
+                kst="2023-01-02T08:28:00",
+            ),
+        ],
+        [],
+    ]
+
+    def fake_fetch(client, *, market: str, minute_unit: int, count: int, to: str | None = None, max_retries=None):
+        calls.append(to)
+        return pages.pop(0)
+
+    monkeypatch.setattr("bithumb_bot.historical_backfill.httpx.Client", lambda *args, **kwargs: _DummyClient())
+    monkeypatch.setattr("bithumb_bot.historical_backfill.fetch_minute_candles", fake_fetch)
+
+    backfill_candles(market="KRW-BTC", interval="1m", start="2023-01-01", end="2023-01-02")
+
+    assert calls[1] == "2023-01-02T08:28:00"
+    assert calls[1] != "2023-01-01T23:28:00"
+
+
+def test_backfill_no_synthetic_541_minute_gap_between_pages(monkeypatch, _settings_guard) -> None:
+    calls: list[str | None] = []
+    pages = [
+        [
+            _candle("2023-01-01T23:29:00", kst="2023-01-02T08:29:00"),
+            _candle("2023-01-01T23:28:00", kst="2023-01-02T08:28:00"),
+        ],
+        [
+            _candle("2023-01-01T23:27:00", kst="2023-01-02T08:27:00"),
+            _candle("2023-01-01T23:26:00", kst="2023-01-02T08:26:00"),
+        ],
+        [],
+    ]
+
+    def fake_fetch(client, *, market: str, minute_unit: int, count: int, to: str | None = None, max_retries=None):
+        calls.append(to)
+        return pages.pop(0)
+
+    monkeypatch.setattr("bithumb_bot.historical_backfill.httpx.Client", lambda *args, **kwargs: _DummyClient())
+    monkeypatch.setattr("bithumb_bot.historical_backfill.fetch_minute_candles", fake_fetch)
+
+    result = backfill_candles(market="KRW-BTC", interval="1m", start="2023-01-01", end="2023-01-02")
+
+    assert calls[1] == "2023-01-02T08:28:00"
+    with sqlite3.connect(settings.DB_PATH) as conn:
+        rows = [row[0] for row in conn.execute("SELECT ts FROM candles ORDER BY ts").fetchall()]
+    assert rows == [1_672_615_560_000, 1_672_615_620_000, 1_672_615_680_000, 1_672_615_740_000]
+    assert all((right - left) == 60_000 for left, right in zip(rows, rows[1:]))
+    assert result.page_gap_summary["top_page_boundary_gaps"][0]["gap_minutes"] == 1
+
+
+def test_backfill_fallback_cursor_uses_kst_local_time(monkeypatch, _settings_guard) -> None:
+    calls: list[str | None] = []
+    first_page = [
+        _candle("2023-01-01T23:29:00", kst="2023-01-02T08:29:00"),
+        _candle("2023-01-01T23:28:00", kst="2023-01-02T08:28:00"),
+    ]
+    pages = [
+        first_page,
+        first_page,
+        [],
+    ]
+
+    def fake_fetch(client, *, market: str, minute_unit: int, count: int, to: str | None = None, max_retries=None):
+        calls.append(to)
+        return pages.pop(0)
+
+    monkeypatch.setattr("bithumb_bot.historical_backfill.httpx.Client", lambda *args, **kwargs: _DummyClient())
+    monkeypatch.setattr("bithumb_bot.historical_backfill.fetch_minute_candles", fake_fetch)
+
+    backfill_candles(market="KRW-BTC", interval="1m", start="2023-01-01", end="2023-01-02")
+
+    assert calls[2] == "2023-01-02T08:27:00"
+
+
+def test_backfill_still_stores_utc_bucket_timestamp(monkeypatch, _settings_guard) -> None:
+    monkeypatch.setattr("bithumb_bot.historical_backfill.httpx.Client", lambda *args, **kwargs: _DummyClient())
+    monkeypatch.setattr(
+        "bithumb_bot.historical_backfill.fetch_minute_candles",
+        lambda *args, **kwargs: [
+            _candle(
+                "2023-01-01T23:28:00",
+                kst="2023-01-02T08:28:00",
+                timestamp=9_999_999_999_999,
+            )
+        ],
+    )
+
+    backfill_candles(market="KRW-BTC", interval="1m", start="2023-01-01", end="2023-01-02")
+
+    with sqlite3.connect(settings.DB_PATH) as conn:
+        rows = conn.execute("SELECT ts FROM candles").fetchall()
+
+    assert rows == [(1_672_615_680_000,)]
 
 
 def test_backfill_inclusive_boundary_fallback_continues_and_avoids_duplicate_writes(monkeypatch, _settings_guard) -> None:
@@ -129,7 +246,7 @@ def test_backfill_inclusive_boundary_fallback_continues_and_avoids_duplicate_wri
     assert result.progress.status == "COMPLETE"
     assert result.progress.cursor_fallback_count == 1
     assert "cursor_boundary_fallback" in progress_reasons
-    assert calls[2] == "2022-12-31T23:59:00"
+    assert calls[2] == "2023-01-01T08:59:00"
     with sqlite3.connect(settings.DB_PATH) as conn:
         rows = conn.execute("SELECT ts, COUNT(*) FROM candles GROUP BY ts ORDER BY ts").fetchall()
     assert rows == [

@@ -75,6 +75,45 @@ def _strip_legacy_flags(argv: list[str]) -> list[str]:
     return out
 
 
+def _subcommand_index(argv: list[str]) -> int:
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            return i + 1 if i + 1 < len(argv) else len(argv)
+        if arg.startswith("-"):
+            flag = arg.split("=", 1)[0]
+            if flag in FLAGS_WITH_VALUE and "=" not in arg:
+                i += 2
+            else:
+                i += 1
+            continue
+        return i
+    return len(argv)
+
+
+def _pop_legacy_prefix_flag_value(prefix: list[str], flag: str) -> str | None:
+    value = _pop_flag_value(prefix, flag)
+    if value is not None:
+        return value
+
+    flag_eq = f"{flag}="
+    for index, arg in enumerate(prefix):
+        if arg.startswith(flag_eq):
+            value = arg[len(flag_eq) :]
+            del prefix[index]
+            return value
+    return None
+
+
+def _strip_legacy_prefix_flags(argv: list[str]) -> list[str]:
+    boundary = _subcommand_index(argv)
+    if boundary >= len(argv):
+        return _strip_legacy_flags(argv)
+    prefix = _strip_legacy_flags(argv[:boundary])
+    return prefix + argv[boundary:]
+
+
 def resolve_explicit_env_file(mode: str | None) -> str | None:
     return describe_explicit_env_file(mode).env_file
 
@@ -152,25 +191,29 @@ def get_last_explicit_env_load_summary() -> ExplicitEnvLoadSummary:
 
 
 def bootstrap_argv(argv: list[str]) -> list[str]:
-    mode = _pop_flag_value(argv, "--mode")
+    boundary = _subcommand_index(argv)
+    prefix = argv[:boundary]
+    suffix = argv[boundary:]
+
+    mode = _pop_legacy_prefix_flag_value(prefix, "--mode")
     if mode:
         os.environ["MODE"] = mode
 
     load_explicit_env_file(mode)
 
-    interval = _pop_flag_value(argv, "--interval")
+    interval = _pop_legacy_prefix_flag_value(prefix, "--interval")
     if interval:
         os.environ["INTERVAL"] = interval
 
-    entry = _pop_flag_value(argv, "--entry")
+    entry = _pop_legacy_prefix_flag_value(prefix, "--entry")
     if entry:
         os.environ["ENTRY_MODE"] = entry
 
-    every = _pop_flag_value(argv, "--every")
+    every = _pop_legacy_prefix_flag_value(prefix, "--every")
     if every:
         os.environ["EVERY"] = every
 
-    return _strip_legacy_flags(argv)
+    return _strip_legacy_prefix_flags(prefix + suffix)
 
 
 def run_cli() -> None:

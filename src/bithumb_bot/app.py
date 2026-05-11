@@ -7890,7 +7890,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"requests={progress.request_count} fetched={progress.fetched_count} "
                 f"written={progress.written_count} duplicate_pages={progress.duplicate_page_count} "
                 f"cursor_stalls={progress.cursor_stall_count} cursor_fallbacks={progress.cursor_fallback_count} "
-                f"oldest={oldest} newest={newest} next_cursor={progress.next_cursor or 'none'} "
+                f"oldest={oldest} newest={newest} next_api_cursor={progress.next_cursor or 'none'} "
+                f"page_boundary_gap_minutes={progress.page_boundary_gap_minutes if progress.page_boundary_gap_minutes is not None else 'none'} "
                 f"status={progress.status} reason={progress.reason or 'none'}"
             )
 
@@ -7917,6 +7918,22 @@ def main(argv: list[str] | None = None) -> int:
             f"requests={result.progress.request_count} fetched={result.progress.fetched_count} "
             f"written={result.progress.written_count} cursor_fallbacks={result.progress.cursor_fallback_count} "
             f"status={result.progress.status} reason={result.progress.reason or 'none'}"
+        )
+        page_gap_summary = result.page_gap_summary
+        top_gaps = page_gap_summary.get("top_page_boundary_gaps") or []
+        formatted_gaps = (
+            ";".join(
+                f"{item.get('gap_minutes')}m:{item.get('count')}"
+                for item in top_gaps
+            )
+            if top_gaps
+            else "none"
+        )
+        print(
+            "[BACKFILL-CANDLES] data_plane_contract "
+            f"api_cursor_timezone={page_gap_summary.get('api_cursor_timezone')} "
+            f"db_timestamp_timezone={page_gap_summary.get('db_timestamp_timezone')} "
+            f"page_boundary_gap_top={formatted_gaps}"
         )
         print(
             "[BACKFILL-CANDLES] coverage "
