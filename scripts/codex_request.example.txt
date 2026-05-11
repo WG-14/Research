@@ -1,0 +1,14 @@
+# Codex request template
+
+You are Codex working directly in the GitHub repository `WG-14/bithumb-bot`.
+
+Task:
+- ...
+
+Validation:
+- uv run pytest -q
+
+Final report:
+- Summary
+- Files changed
+- Tests run
