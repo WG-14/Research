@@ -8,14 +8,29 @@ Research artifacts are evidence, not authorization. Promotion does not edit env 
 
 ## Commands
 
-1. Verify candle sync and DB readiness.
+1. Verify CLI-loaded env and research data readiness.
 
 ```bash
-uv run bithumb-bot health
-uv run bithumb-bot candles --limit 5
+BITHUMB_ENV_FILE=/home/ec2-user/bithumb-runtime/env/paper.research.env \
+uv run bithumb-bot config-dump --masked
+
+MANIFEST=/home/ec2-user/bithumb-runtime/data/paper/reports/research/manifests/sma_filter_prod_krw_btc.json
+
+uv run bithumb-bot research-readiness --manifest "$MANIFEST"
+
+uv run bithumb-bot backfill-candles \
+  --market KRW-BTC \
+  --interval 1m \
+  --start 2023-01-01 \
+  --end 2026-05-01 \
+  --batch-size 200
+
+uv run bithumb-bot research-readiness --manifest "$MANIFEST"
 ```
 
-Confirm the active `DB_PATH` is a repository-external runtime path and contains the manifest market/interval candles.
+Confirm the active `DB_PATH` is a repository-external runtime path and that `research-readiness` agrees with the manifest market, interval, split ranges, dataset quality, top-of-book policy, execution calibration, and walk-forward prerequisites before running `research-backtest`.
+
+`health` and `candles --limit 5` are latest-sync smoke checks only. They do not prove historical manifest readiness. `backfill-candles` may repair candle coverage, but it does not satisfy production top-of-book gates. Required top-of-book coverage still needs real orderbook data collection/backfill or a separate reviewed non-production candle-only manifest. Weakening production gates is not acceptable evidence.
 
 2. Create or review the manifest.
 
@@ -32,7 +47,7 @@ For official research, the manifest should carry stable experiment-family metada
 3. Run the deterministic research backtest.
 
 ```bash
-uv run bithumb-bot research-backtest --manifest examples/research/sma_filter_manifest.example.json
+uv run bithumb-bot research-backtest --manifest "$MANIFEST"
 ```
 
 When execution-quality calibration evidence exists and the manifest requires or should compare it, pass it explicitly:

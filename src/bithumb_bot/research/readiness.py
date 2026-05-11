@@ -6,6 +6,7 @@ from typing import Any
 
 from bithumb_bot.bootstrap import get_last_explicit_env_load_summary
 from bithumb_bot.config import settings
+from bithumb_bot.execution_quality import ExecutionQualityThresholds
 
 from .dataset_snapshot import build_dataset_quality_report, load_dataset_split
 from .execution_calibration import compare_calibration_to_scenario, load_calibration_artifact
@@ -118,7 +119,7 @@ def _split_payload(report: dict[str, Any]) -> dict[str, Any]:
         "quality_status": report["quality_gate_status"],
         "quality_reasons": list(report.get("quality_gate_reasons") or []),
         "top_of_book_required": bool(report.get("top_of_book_required")),
-        "top_of_book_missing_policy": report.get("top_of_book_gate_status"),
+        "top_of_book_missing_policy": report.get("top_of_book_missing_policy"),
         "top_of_book_expected_signal_count": report.get("top_of_book_expected_signal_count"),
         "top_of_book_joined_count": report.get("top_of_book_joined_count"),
         "top_of_book_missing_count": report.get("top_of_book_missing_count"),
@@ -214,6 +215,7 @@ def _execution_calibration_payload(
             expected_interval=manifest.interval,
             expected_execution_timing_policy=manifest.execution_timing.as_dict(),
             require_content_hash=required,
+            min_sample_count=ExecutionQualityThresholds().min_sample,
             require_quality_gate_pass=required or manifest.execution_model.calibration_strictness == "fail",
         )
         for scenario in manifest.execution_model.scenarios
@@ -224,6 +226,8 @@ def _execution_calibration_payload(
         "required": required,
         "artifact_path": str(Path(execution_calibration_path).expanduser()),
         "artifact_hash": artifact.get("content_hash"),
+        "min_sample_count": ExecutionQualityThresholds().min_sample,
+        "scenario_gates": gates,
         "status": status,
         "reasons": reasons,
         "next_action": "none" if status == "PASS" else "regenerate or collect sufficient live execution calibration evidence",

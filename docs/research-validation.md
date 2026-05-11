@@ -70,19 +70,13 @@ Example EC2 sequence:
 ```bash
 export BITHUMB_ENV_FILE=/home/ec2-user/bithumb-runtime/env/paper.research.env
 
-uv run python - <<'PY'
-from bithumb_bot.config import settings
-print("MODE=", settings.MODE)
-print("PAIR=", settings.PAIR)
-print("INTERVAL=", settings.INTERVAL)
-print("DB_PATH=", settings.DB_PATH)
-PY
+uv run bithumb-bot config-dump --masked
 ```
 
 ```bash
 MANIFEST=/home/ec2-user/bithumb-runtime/data/paper/reports/research/manifests/sma_filter_prod_krw_btc.json
 
-uv run bithumb-bot research-readiness --manifest "$MANIFEST"
+uv run bithumb-bot research-readiness --manifest "$MANIFEST" --json
 
 uv run bithumb-bot backfill-candles \
   --market KRW-BTC \
@@ -94,6 +88,8 @@ uv run bithumb-bot backfill-candles \
 uv run bithumb-bot research-readiness --manifest "$MANIFEST"
 uv run bithumb-bot research-backtest --manifest "$MANIFEST"
 ```
+
+Use `config-dump --masked`, not direct Python imports of `bithumb_bot.config.settings`, for EC2 env verification. Direct imports do not exercise the CLI bootstrap path used by operator commands. `research-readiness --json` is the authoritative manifest/data readiness check before `research-backtest`.
 
 Manual SQLite coverage inspection:
 
@@ -126,7 +122,7 @@ WHERE pair='KRW-BTC';
 Correct production sequence:
 
 1. Stop live or paper execution if it shares the research DB.
-2. Verify env loading and resolved DB path.
+2. Verify env loading and resolved DB path with `bithumb-bot config-dump --masked`.
 3. Run `research-readiness`.
 4. Backfill candles.
 5. Rerun `research-readiness`.

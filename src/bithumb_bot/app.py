@@ -7889,8 +7889,9 @@ def main(argv: list[str] | None = None) -> int:
                 "[BACKFILL-CANDLES] "
                 f"requests={progress.request_count} fetched={progress.fetched_count} "
                 f"written={progress.written_count} duplicate_pages={progress.duplicate_page_count} "
-                f"cursor_stalls={progress.cursor_stall_count} oldest={oldest} newest={newest} "
-                f"next_cursor={progress.next_cursor or 'none'}"
+                f"cursor_stalls={progress.cursor_stall_count} cursor_fallbacks={progress.cursor_fallback_count} "
+                f"oldest={oldest} newest={newest} next_cursor={progress.next_cursor or 'none'} "
+                f"status={progress.status} reason={progress.reason or 'none'}"
             )
 
         try:
@@ -7907,11 +7908,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[BACKFILL-CANDLES] error={exc}")
             return 1
         coverage = result.coverage
+        env_summary = result.env_summary
         print(
             "[BACKFILL-CANDLES] final "
             f"mode={result.mode} db_path={result.db_path} dry_run={1 if result.dry_run else 0} "
+            f"env_file={env_summary.get('env_file')} env_loaded={1 if env_summary.get('loaded') else 0} "
+            f"env_exists={1 if env_summary.get('exists') else 0} "
             f"requests={result.progress.request_count} fetched={result.progress.fetched_count} "
-            f"written={result.progress.written_count}"
+            f"written={result.progress.written_count} cursor_fallbacks={result.progress.cursor_fallback_count} "
+            f"status={result.progress.status} reason={result.progress.reason or 'none'}"
         )
         print(
             "[BACKFILL-CANDLES] coverage "
@@ -7919,10 +7924,14 @@ def main(argv: list[str] | None = None) -> int:
             f"present_buckets={coverage['present_buckets']} "
             f"missing_buckets={coverage['missing_buckets']} "
             f"coverage_pct={coverage['coverage_pct']} first_ts={coverage['first_ts']} "
-            f"last_ts={coverage['last_ts']} quality_status={coverage['quality_gate_status']} "
-            f"reasons={','.join(str(item) for item in coverage['quality_gate_reasons']) if coverage['quality_gate_reasons'] else 'none'}"
+            f"last_ts={coverage['last_ts']} coverage_status={coverage['coverage_status']} "
+            f"coverage_reasons={','.join(str(item) for item in coverage['coverage_reasons']) if coverage['coverage_reasons'] else 'none'}"
         )
-        return 0
+        print(
+            "[BACKFILL-CANDLES] dataset_quality "
+            f"status={result.dataset_quality_status} next_action={result.next_action}"
+        )
+        return 0 if result.progress.status == "COMPLETE" else 1
     elif args.cmd == "research-walk-forward":
         return cmd_research_walk_forward(
             manifest_path=str(args.manifest),

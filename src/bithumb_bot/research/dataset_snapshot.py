@@ -639,6 +639,7 @@ def _add_top_of_book_quality_fields(*, payload: dict[str, Any], snapshot: Datase
         {
             "top_of_book_requested": True,
             "top_of_book_required": bool(snapshot.top_of_book_required),
+            "top_of_book_missing_policy": snapshot.top_of_book_missing_policy,
             "top_of_book_source": snapshot.top_of_book_source or "sqlite_orderbook_top_snapshots",
             "top_of_book_join_tolerance_ms": snapshot.top_of_book_join_tolerance_ms,
             "top_of_book_expected_signal_count": expected,
