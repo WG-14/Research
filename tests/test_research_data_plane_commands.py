@@ -741,6 +741,43 @@ def test_sql_readiness_missing_count_matches_small_fixture_quality_path(tmp_path
     assert sql_report["present_expected_bucket_count"] == fixture_report["present_expected_bucket_count"]
 
 
+def test_dataset_quality_sql_scan_includes_top_of_book_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw["dataset"]["top_of_book"] = {
+        "source": "sqlite_orderbook_top_snapshots",
+        "required": True,
+        "missing_policy": "fail",
+        "min_coverage_pct": 100,
+    }
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+    _insert_day_candles(settings.DB_PATH, 1_672_531_200_000)
+    manifest = load_manifest(manifest_path)
+
+    def fake_top_of_book(**kwargs):
+        return {
+            "top_of_book_requested": True,
+            "top_of_book_gate_status": "FAIL",
+            "top_of_book_gate_reasons": ["test_top_of_book_default_called"],
+        }
+
+    monkeypatch.setattr("bithumb_bot.research.data_plane._top_of_book_split_sql", fake_top_of_book)
+
+    report = build_dataset_quality_report_sql(
+        db_path=settings.DB_PATH,
+        manifest=manifest,
+        split_name="train",
+    ).payload
+
+    assert report["top_of_book_requested"] is True
+    assert "test_top_of_book_default_called" in report["quality_gate_reasons"]
+
+
 def test_required_top_of_book_zero_rows_fails_without_per_candle_quote_loader(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -772,6 +809,46 @@ def test_required_top_of_book_zero_rows_fails_without_per_candle_quote_loader(
     assert rc == 1
     assert payload["top_of_book"]["status"] == "FAIL"
     assert "top_of_book_rows_missing" in payload["top_of_book"]["reasons"]
+
+
+def test_missing_candle_artifact_does_not_call_top_of_book_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw["dataset"]["top_of_book"] = {
+        "source": "sqlite_orderbook_top_snapshots",
+        "required": True,
+        "missing_policy": "fail",
+        "min_coverage_pct": 100,
+    }
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+    _insert_day_candles(settings.DB_PATH, 1_672_617_600_000)
+    out = tmp_path / "missing_ranges.json"
+    monkeypatch.setattr(
+        "bithumb_bot.research.data_plane._top_of_book_split_sql",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("top-of-book scan must not run")),
+    )
+
+    payload = write_missing_candle_ranges_artifact(manifest_path=manifest_path, out_path=out)
+
+    train = payload["splits"]["train"]
+    first = train["ranges"][0]
+    assert payload["artifact_type"] == "missing_candle_ranges"
+    assert payload["manifest_hash"].startswith("sha256:")
+    assert payload["db_path"] == str(Path(settings.DB_PATH).resolve())
+    assert first["split"] == "train"
+    assert first["start_ts"] == 1_672_531_200_000
+    assert first["end_ts"] == 1_672_617_540_000
+    assert first["start_utc"].startswith("2023-01-01T00:00:00")
+    assert first["start_kst"].startswith("2023-01-01T09:00:00")
+    assert first["bucket_count"] == 1440
+    assert first["retry_utc_days"] == ["2023-01-01"]
+    assert first["classification"] == "untried_missing"
+    assert "top_of_book" not in json.dumps(payload)
 
 
 def test_missing_candle_artifact_contains_hash_paths_timezone_and_retry_plan(
@@ -962,6 +1039,37 @@ def test_research_only_candle_diagnostic_is_explicitly_not_production_readiness(
     assert payload["readiness_mode"]["production_bound"] is False
     assert payload["readiness_mode"]["candle_only_diagnostic"] is True
     assert payload["top_of_book"]["status"] == "NOT_REQUESTED"
+
+
+def test_diagnostic_only_policy_is_report_metadata_not_gate_relaxation(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw["deployment_tier"] = "paper_candidate"
+    raw["dataset_quality_policy"] = {
+        "dense_candles_required": False,
+        "missing_candle_policy": "diagnostic_only",
+        "allow_classified_no_trade_missing": False,
+        "require_retry_attempts_for_missing_ranges": True,
+        "max_unclassified_missing_buckets": 1440,
+    }
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    rc = main(["research-readiness", "--manifest", str(manifest_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 1
+    assert payload["readiness_mode"]["production_bound"] is True
+    assert payload["dataset_quality_policy"]["missing_candle_policy"] == "diagnostic_only"
+    assert payload["dataset_quality_policy"]["readiness_gate_effect"] == "metadata_only_no_gate_relaxation"
+    assert payload["dataset_quality_policy"]["synthetic_candle_authority"] == "not_allowed"
+    assert payload["splits"]["train"]["quality_status"] == "FAIL"
+    assert "missing_candles" in payload["splits"]["train"]["quality_reasons"]
+    assert payload["status"] == "FAIL"
 
 
 def test_console_entrypoint_propagates_cli_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:

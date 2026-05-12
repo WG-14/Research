@@ -70,6 +70,7 @@ def build_dataset_quality_report_sql(
     split_name: str,
     max_missing_ranges: int | None = 20,
     max_missing_sample: int = 20,
+    include_top_of_book: bool = True,
 ) -> DatasetQualityReport:
     date_range = _split_range(manifest, split_name)
     interval_ms = _interval_ms(manifest.interval)
@@ -86,12 +87,16 @@ def build_dataset_quality_report_sql(
         max_missing_ranges=max_missing_ranges,
         max_missing_sample=max_missing_sample,
     )
-    top_of_book = _top_of_book_split_sql(
-        db_path=db_path,
-        manifest=manifest,
-        start_ts=start_ts,
-        end_ts=end_ts,
-        expected_signal_count=int(stats["actual_candle_count"]),
+    top_of_book = (
+        _top_of_book_split_sql(
+            db_path=db_path,
+            manifest=manifest,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            expected_signal_count=int(stats["actual_candle_count"]),
+        )
+        if include_top_of_book
+        else {}
     )
 
     reasons: list[str] = []
@@ -185,6 +190,7 @@ def build_missing_candle_ranges_artifact(
             manifest=manifest,
             split_name=split_name,
             max_missing_ranges=None,
+            include_top_of_book=False,
         ).payload
         ranges = [
             _artifact_range(
@@ -347,6 +353,9 @@ def dataset_quality_policy_payload(manifest: ExperimentManifest) -> dict[str, An
             "allow_classified_no_trade_missing": False,
             "require_retry_attempts_for_missing_ranges": True,
             "max_unclassified_missing_buckets": 0,
+            "readiness_gate_effect": "strict_fail_closed",
+            "production_readiness_effect": "missing candles fail production readiness",
+            "synthetic_candle_authority": "not_allowed",
         }
     return {
         "source": "manifest",
@@ -355,6 +364,17 @@ def dataset_quality_policy_payload(manifest: ExperimentManifest) -> dict[str, An
         "allow_classified_no_trade_missing": bool(raw.get("allow_classified_no_trade_missing", False)),
         "require_retry_attempts_for_missing_ranges": bool(raw.get("require_retry_attempts_for_missing_ranges", True)),
         "max_unclassified_missing_buckets": int(raw.get("max_unclassified_missing_buckets", 0) or 0),
+        "readiness_gate_effect": (
+            "metadata_only_no_gate_relaxation"
+            if str(raw.get("missing_candle_policy") or "fail").strip().lower() == "diagnostic_only"
+            else "strict_fail_closed"
+        ),
+        "production_readiness_effect": (
+            "diagnostic_only does not satisfy or weaken production readiness"
+            if str(raw.get("missing_candle_policy") or "fail").strip().lower() == "diagnostic_only"
+            else "missing candles fail production readiness"
+        ),
+        "synthetic_candle_authority": "not_allowed",
     }
 
 

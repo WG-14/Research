@@ -73,7 +73,7 @@ uv run bithumb-bot research-missing-candles \
   --out "$DATA_ROOT/paper/reports/research/<experiment>/missing_ranges.json"
 ```
 
-The artifact records the manifest hash, DB path, market, interval, exact missing UTC epoch millisecond ranges, UTC display strings, KST display strings, bucket counts, and `retry_utc_days`. Use this artifact instead of manually translating KST-readable gaps into UTC retry dates.
+`research-missing-candles` is a candle-only diagnostic artifact command. It records the manifest hash, DB path, market, interval, exact missing UTC epoch millisecond ranges, UTC display strings, KST display strings, bucket counts, initial classification, and `retry_utc_days`. It intentionally does not evaluate `orderbook_top_snapshots` or any top-of-book production gate, so it remains cheap even when top-of-book tables are large. Use this artifact instead of manually translating KST-readable gaps into UTC retry dates.
 
 Run bounded targeted retries from the artifact:
 
@@ -86,7 +86,9 @@ uv run bithumb-bot retry-missing-candles \
   --out "$DATA_ROOT/paper/reports/research/<experiment>/retry_attempts.json"
 ```
 
-The retry artifact records every selected range, before/after coverage, retry UTC days, recovered bucket counts, and final classification such as `retried_recovered` or `retry_persistent_missing`. Persistent missing ranges are evidence for further investigation only. They do not authorize synthetic OHLCV candles and they do not weaken production gates unless a separate manifest policy is explicitly designed, reviewed, and tested.
+The retry artifact records every selected range, before/after coverage, retry UTC days, recovered bucket counts, and final classification such as `retried_recovered` or `retry_persistent_missing`. Persistent missing ranges are evidence for further investigation only. They do not authorize synthetic OHLCV candles and they do not weaken production gates.
+
+`dataset_quality_policy.missing_candle_policy=diagnostic_only` is currently report/canonical metadata only. It does not satisfy production readiness, does not convert missing candles into `PASS`, and does not permit `allow_classified_no_trade_missing` to synthesize OHLCV or bypass gates. Classifications such as `exchange_gap_candidate`, `api_unavailable_candidate`, `no_trade_missing_candidate`, and `unclassified_missing` require future operator evidence or raw API/maintenance binding before any reviewed policy can use them.
 
 Backfill uses the repository env and path contract. Set `BITHUMB_ENV_FILE` or the appropriate explicit env selector, verify `MODE` and `DB_PATH`, and do not point runtime data at the repository. For large EC2 backfills, stop paper/live writers first if they share the same DB so ingestion and research do not compete with runtime writes.
 
@@ -159,7 +161,7 @@ Correct production sequence:
 
 1. Stop live or paper execution if it shares the research DB.
 2. Verify env loading and resolved DB path with `bithumb-bot config-dump --masked`.
-3. Run `research-readiness`.
+3. Run `research-readiness`; this is the production gate evaluator for candle coverage, top-of-book requirements, execution calibration, and walk-forward prerequisites.
 4. Backfill candles.
 5. Generate `research-missing-candles` artifact and run bounded `retry-missing-candles` when gaps remain.
 6. Rerun `research-readiness`.
@@ -167,7 +169,7 @@ Correct production sequence:
 8. Rerun `research-backtest`.
 9. Proceed to walk-forward, calibration, promotion, and profile gates only after required gates pass.
 
-Candle coverage is necessary but not sufficient for production promotion. Candle backfill only addresses historical candle coverage. It does not satisfy a production manifest that requires `dataset.top_of_book.required=true`, `missing_policy=fail`, and full top-of-book coverage. Execution calibration remains a separate evidence gate. Do not reconstruct fake top-of-book from candles, do not synthesize missing OHLCV from classified gaps, do not disable required top-of-book gates for production evidence, and do not shorten manifest dates merely to match the current DB. A production top-of-book requirement needs real `orderbook_top_snapshots` coverage or a separately reviewed non-production candle-only manifest.
+Candle coverage is necessary but not sufficient for production promotion. Candle backfill and `research-missing-candles` only address historical candle coverage. They do not satisfy a production manifest that requires `dataset.top_of_book.required=true`, `missing_policy=fail`, and full top-of-book coverage. Execution calibration remains a separate evidence gate. Do not reconstruct fake top-of-book from candles, do not synthesize missing OHLCV from classified gaps, do not disable required top-of-book gates for production evidence, and do not shorten manifest dates merely to match the current DB. A production top-of-book requirement needs real `orderbook_top_snapshots` coverage or a separately reviewed non-production candle-only manifest.
 
 ## Manifest Format
 
