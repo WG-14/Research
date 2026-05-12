@@ -12,7 +12,13 @@ from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_db
 from bithumb_bot.historical_backfill import backfill_candles
 from bithumb_bot.public_api_minute_candles import MinuteCandle
+from bithumb_bot.research.data_plane import (
+    build_dataset_quality_report_sql,
+    retry_missing_candles_from_artifact,
+    write_missing_candle_ranges_artifact,
+)
 from bithumb_bot.research.execution_calibration import build_calibration_artifact
+from bithumb_bot.research.experiment_manifest import load_manifest
 
 
 class _DummyClient:
@@ -685,3 +691,289 @@ def test_research_readiness_calibration_min_sample_matches_research_validation_p
     assert calibration["min_sample_count"] == 30
     assert "execution_calibration_sample_count_below_required" in calibration["reasons"]
     assert calibration["scenario_gates"][0]["min_sample_count"] == 30
+
+
+def test_research_readiness_sql_scan_does_not_materialize_dataset_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    _insert_day_candles(settings.DB_PATH, 1_672_531_200_000)
+    _insert_day_candles(settings.DB_PATH, 1_672_617_600_000)
+    monkeypatch.setattr(
+        "bithumb_bot.research.dataset_snapshot.load_dataset_split",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("snapshot materialization is forbidden")),
+    )
+
+    rc = main(["research-readiness", "--manifest", str(manifest_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["splits"]["train"]["scan_method"] == "sqlite_streaming"
+    assert payload["splits"]["train"]["missing_count"] == 0
+
+
+def test_sql_readiness_missing_count_matches_small_fixture_quality_path(tmp_path: Path, _settings_guard) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    _insert_day_candles(settings.DB_PATH, 1_672_531_200_000)
+    with sqlite3.connect(settings.DB_PATH) as conn:
+        conn.execute(
+            "DELETE FROM candles WHERE pair='KRW-BTC' AND interval='1m' AND ts IN (?, ?)",
+            (1_672_531_200_000 + 10 * 60_000, 1_672_531_200_000 + 11 * 60_000),
+        )
+    manifest = load_manifest(manifest_path)
+
+    sql_report = build_dataset_quality_report_sql(
+        db_path=settings.DB_PATH,
+        manifest=manifest,
+        split_name="train",
+    ).payload
+
+    from bithumb_bot.research.dataset_snapshot import build_dataset_quality_report, load_dataset_split
+
+    snapshot = load_dataset_split(db_path=settings.DB_PATH, manifest=manifest, split_name="train")
+    fixture_report = build_dataset_quality_report(db_path=settings.DB_PATH, snapshot=snapshot).payload
+    assert sql_report["missing_bucket_count"] == fixture_report["missing_bucket_count"] == 2
+    assert sql_report["present_expected_bucket_count"] == fixture_report["present_expected_bucket_count"]
+
+
+def test_required_top_of_book_zero_rows_fails_without_per_candle_quote_loader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path, calibration_required=True)
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw["deployment_tier"] = "paper_candidate"
+    raw["dataset"]["top_of_book"] = {
+        "source": "sqlite_orderbook_top_snapshots",
+        "required": True,
+        "missing_policy": "fail",
+        "min_coverage_pct": 100,
+    }
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+    _insert_day_candles(settings.DB_PATH, 1_672_531_200_000)
+    _insert_day_candles(settings.DB_PATH, 1_672_617_600_000)
+    ensure_db(settings.DB_PATH).close()
+    monkeypatch.setattr(
+        "bithumb_bot.research.dataset_snapshot._load_top_of_book_quotes",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("per-candle top-of-book loop is forbidden")),
+    )
+
+    rc = main(["research-readiness", "--manifest", str(manifest_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 1
+    assert payload["top_of_book"]["status"] == "FAIL"
+    assert "top_of_book_rows_missing" in payload["top_of_book"]["reasons"]
+
+
+def test_missing_candle_artifact_contains_hash_paths_timezone_and_retry_plan(
+    tmp_path: Path,
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    _insert_day_candles(settings.DB_PATH, 1_672_617_600_000)
+    out = tmp_path / "missing_ranges.json"
+
+    payload = write_missing_candle_ranges_artifact(manifest_path=manifest_path, out_path=out)
+
+    train = payload["splits"]["train"]
+    first = train["ranges"][0]
+    assert out.exists()
+    assert payload["manifest_hash"].startswith("sha256:")
+    assert payload["db_path"] == str(Path(settings.DB_PATH).resolve())
+    assert first["split"] == "train"
+    assert first["start_ts"] == 1_672_531_200_000
+    assert first["end_ts"] == 1_672_617_540_000
+    assert first["start_utc"].startswith("2023-01-01T00:00:00")
+    assert first["start_kst"].startswith("2023-01-01T09:00:00")
+    assert first["bucket_count"] == 1440
+    assert first["retry_utc_days"] == ["2023-01-01"]
+    assert first["classification"] == "untried_missing"
+
+
+def test_retry_missing_marks_persistent_when_coverage_remains_incomplete(
+    tmp_path: Path,
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    out_missing = tmp_path / "missing.json"
+    write_missing_candle_ranges_artifact(manifest_path=manifest_path, out_path=out_missing)
+    out_retry = tmp_path / "retry.json"
+
+    payload = retry_missing_candles_from_artifact(
+        manifest_path=manifest_path,
+        missing_ranges_path=out_missing,
+        min_buckets=1000,
+        max_attempts=1,
+        limit=1,
+        out_path=out_retry,
+        backfill_func=lambda **kwargs: type(
+            "Result",
+            (),
+            {"progress": type("Progress", (), {"status": "COMPLETE", "reason": "range_covered"})(), "coverage": {}},
+        )(),
+    )
+
+    assert out_retry.exists()
+    assert payload["attempts"][0]["classification"] == "retry_persistent_missing"
+    assert payload["attempts"][0]["after"]["missing_buckets"] > 0
+
+
+def test_retry_missing_marks_recovered_when_backfill_restores_range(
+    tmp_path: Path,
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    _insert_day_candles(settings.DB_PATH, 1_672_531_200_000)
+    with sqlite3.connect(settings.DB_PATH) as conn:
+        conn.execute("DELETE FROM candles WHERE ts=?", (1_672_531_200_000 + 42 * 60_000,))
+        conn.commit()
+    out_missing = tmp_path / "missing.json"
+    write_missing_candle_ranges_artifact(manifest_path=manifest_path, out_path=out_missing)
+    out_retry = tmp_path / "retry.json"
+
+    def fake_backfill(**kwargs):
+        with sqlite3.connect(settings.DB_PATH) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO candles(ts, pair, interval, open, high, low, close, volume)
+                VALUES (?, 'KRW-BTC', '1m', 100.0, 101.0, 99.0, 100.0, 1.0)
+                """,
+                (1_672_531_200_000 + 42 * 60_000,),
+            )
+            conn.commit()
+        return type(
+            "Result",
+            (),
+            {"progress": type("Progress", (), {"status": "COMPLETE", "reason": "range_covered"})(), "coverage": {}},
+        )()
+
+    payload = retry_missing_candles_from_artifact(
+        manifest_path=manifest_path,
+        missing_ranges_path=out_missing,
+        min_buckets=1,
+        max_attempts=1,
+        split="train",
+        limit=1,
+        out_path=out_retry,
+        backfill_func=fake_backfill,
+    )
+
+    assert payload["attempts"][0]["classification"] == "retried_recovered"
+    assert payload["attempts"][0]["after"]["missing_buckets"] == 0
+
+
+def test_missing_range_kst_early_morning_maps_to_previous_utc_retry_day(
+    tmp_path: Path,
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw["dataset"]["train"] = {"start": "2026-04-26", "end": "2026-04-26"}
+    raw["dataset"]["validation"] = {"start": "2026-04-27", "end": "2026-04-27"}
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+    day_start = int(datetime(2026, 4, 26, tzinfo=UTC).timestamp() * 1000)
+    missing_start = int(datetime(2026, 4, 26, 16, 1, tzinfo=UTC).timestamp() * 1000)
+    missing_end = int(datetime(2026, 4, 26, 20, 29, tzinfo=UTC).timestamp() * 1000)
+    conn = ensure_db(settings.DB_PATH)
+    try:
+        for minute in range(1440):
+            ts = day_start + minute * 60_000
+            if missing_start <= ts <= missing_end:
+                continue
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO candles(ts, pair, interval, open, high, low, close, volume)
+                VALUES (?, 'KRW-BTC', '1m', 100.0, 101.0, 99.0, 100.0, 1.0)
+                """,
+                (ts,),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    payload = write_missing_candle_ranges_artifact(
+        manifest_path=manifest_path,
+        out_path=tmp_path / "missing_kst.json",
+    )
+    first = payload["splits"]["train"]["ranges"][0]
+
+    assert first["start_kst"].startswith("2026-04-27T01:01:00")
+    assert first["end_kst"].startswith("2026-04-27T05:29:00")
+    assert first["retry_utc_days"] == ["2026-04-26"]
+
+
+def test_research_readiness_fail_closed_reports_separate_production_gate_reasons(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path, calibration_required=True)
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw["deployment_tier"] = "paper_candidate"
+    raw["dataset"]["top_of_book"] = {
+        "source": "sqlite_orderbook_top_snapshots",
+        "required": True,
+        "missing_policy": "fail",
+        "min_coverage_pct": 100,
+    }
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    rc = main(["research-readiness", "--manifest", str(manifest_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 1
+    assert payload["readiness_mode"]["readiness_type"] == "production_readiness"
+    assert payload["splits"]["train"]["quality_status"] == "FAIL"
+    assert "missing_candles" in payload["splits"]["train"]["quality_reasons"]
+    assert payload["top_of_book"]["status"] == "FAIL"
+    assert payload["execution_calibration"]["status"] == "FAIL"
+    assert "execution_calibration_missing" in payload["execution_calibration"]["reasons"]
+
+
+def test_research_only_candle_diagnostic_is_explicitly_not_production_readiness(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    _insert_day_candles(settings.DB_PATH, 1_672_531_200_000)
+    _insert_day_candles(settings.DB_PATH, 1_672_617_600_000)
+
+    rc = main(["research-readiness", "--manifest", str(manifest_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["readiness_mode"]["readiness_type"] == "research_only_diagnostic"
+    assert payload["readiness_mode"]["production_bound"] is False
+    assert payload["readiness_mode"]["candle_only_diagnostic"] is True
+    assert payload["top_of_book"]["status"] == "NOT_REQUESTED"
+
+
+def test_console_entrypoint_propagates_cli_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+    from bithumb_bot.bootstrap import run_cli
+
+    monkeypatch.setattr(sys, "argv", ["bithumb-bot", "research-readiness", "--manifest", "missing.json"])
+    monkeypatch.setattr("bithumb_bot.bootstrap.bootstrap_argv", lambda argv: argv)
+    monkeypatch.setattr("bithumb_bot.observability.configure_runtime_logging", lambda: None)
+    monkeypatch.setattr("bithumb_bot.cli.main", lambda: 1)
+
+    with pytest.raises(SystemExit) as exc:
+        run_cli()
+
+    assert exc.value.code == 1

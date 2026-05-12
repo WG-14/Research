@@ -48,7 +48,7 @@ Run `research-readiness` before `research-backtest` when using production or pro
 uv run bithumb-bot research-readiness --manifest "$MANIFEST"
 ```
 
-The command is read-only. It prints the manifest path and hash, effective `MODE`, resolved `DB_PATH`, market, interval, split ranges, candle coverage by split, top-of-book readiness, execution calibration readiness, and walk-forward readiness. It exits non-zero when required data or evidence is missing, so operators can see why `research-backtest` will fail before generating research artifacts.
+The command is read-only and SQL/streaming-backed. It prints split-level scan progress, manifest path and hash, effective `MODE`, resolved `DB_PATH`, market, interval, split ranges, candle coverage by split, top-of-book readiness, execution calibration readiness, and walk-forward readiness. It exits non-zero when required data or evidence is missing, so operators can see why `research-backtest` will fail before generating research artifacts. The output labels production readiness separately from research-only candle diagnostics.
 
 Historical candle acquisition uses the configured runtime DB and explicit date range:
 
@@ -64,6 +64,29 @@ uv run bithumb-bot backfill-candles \
 `backfill-candles` fetches Bithumb public minute candles backward from `--end` to `--start`, uses `candle_date_time_utc` as the canonical `candles.ts` bucket start, and writes with `INSERT OR REPLACE`. DB candle timestamps are UTC epoch milliseconds derived from `candle_date_time_utc`. The Bithumb minute candle API `to` cursor is a separate exchange API contract and is treated as KST-local naive ISO seconds, using the oldest returned candle's `candle_date_time_kst` as the next page boundary. Do not use UTC-naive DB timestamps as API cursors; that can create synthetic repeated 541-minute gaps. The command prints request count, fetched count, written count, duplicate/stall counters, batch oldest/newest timestamps, `next_api_cursor`, the `api_cursor_timezone=Asia/Seoul` / `db_timestamp_timezone=UTC` contract, page-boundary gap summary, and final candle coverage.
 
 Backfill writes are idempotent, so after deploying a cursor/data contract fix operators can rerun the same backfill range against an existing sparse DB. Do not delete the DB solely to repair sparse candle coverage. Use `--dry-run` to fetch and print progress without writing. A non-dry-run backfill exits non-zero when the requested candle range remains incomplete, even if the API returned no older candles cleanly. Dry-run may exit zero for incomplete coverage because it is read/report mode, but it still prints `NOT_EVALUATED_BY_BACKFILL` and not-ready guidance. The command does not print a research `PASS`; pass/fail evidence comes from dataset quality and research gates.
+
+Generate a missing candle artifact before targeted retries:
+
+```bash
+uv run bithumb-bot research-missing-candles \
+  --manifest "$MANIFEST" \
+  --out "$DATA_ROOT/paper/reports/research/<experiment>/missing_ranges.json"
+```
+
+The artifact records the manifest hash, DB path, market, interval, exact missing UTC epoch millisecond ranges, UTC display strings, KST display strings, bucket counts, and `retry_utc_days`. Use this artifact instead of manually translating KST-readable gaps into UTC retry dates.
+
+Run bounded targeted retries from the artifact:
+
+```bash
+uv run bithumb-bot retry-missing-candles \
+  --manifest "$MANIFEST" \
+  --missing-ranges "$DATA_ROOT/paper/reports/research/<experiment>/missing_ranges.json" \
+  --min-buckets 20 \
+  --max-attempts 1 \
+  --out "$DATA_ROOT/paper/reports/research/<experiment>/retry_attempts.json"
+```
+
+The retry artifact records every selected range, before/after coverage, retry UTC days, recovered bucket counts, and final classification such as `retried_recovered` or `retry_persistent_missing`. Persistent missing ranges are evidence for further investigation only. They do not authorize synthetic OHLCV candles and they do not weaken production gates unless a separate manifest policy is explicitly designed, reviewed, and tested.
 
 Backfill uses the repository env and path contract. Set `BITHUMB_ENV_FILE` or the appropriate explicit env selector, verify `MODE` and `DB_PATH`, and do not point runtime data at the repository. For large EC2 backfills, stop paper/live writers first if they share the same DB so ingestion and research do not compete with runtime writes.
 
@@ -87,19 +110,16 @@ uv run bithumb-bot backfill-candles \
   --end 2026-05-01 \
   --batch-size 200
 
-sqlite3 -header -column "$DB_PATH" "
-WITH ordered AS (
-  SELECT ts, LAG(ts) OVER (ORDER BY ts) AS prev_ts
-  FROM candles
-  WHERE pair='KRW-BTC' AND interval='1m'
-)
-SELECT (ts - prev_ts) / 60000 AS gap_minutes, COUNT(*) AS count
-FROM ordered
-WHERE prev_ts IS NOT NULL AND ts - prev_ts > 60000
-GROUP BY gap_minutes
-ORDER BY count DESC, gap_minutes DESC
-LIMIT 20;
-"
+uv run bithumb-bot research-missing-candles \
+  --manifest "$MANIFEST" \
+  --out "$DATA_ROOT/paper/reports/research/sma_filter_prod_krw_btc/missing_ranges.json"
+
+uv run bithumb-bot retry-missing-candles \
+  --manifest "$MANIFEST" \
+  --missing-ranges "$DATA_ROOT/paper/reports/research/sma_filter_prod_krw_btc/missing_ranges.json" \
+  --min-buckets 20 \
+  --max-attempts 1 \
+  --out "$DATA_ROOT/paper/reports/research/sma_filter_prod_krw_btc/retry_attempts.json"
 
 uv run bithumb-bot research-readiness --manifest "$MANIFEST"
 uv run bithumb-bot research-backtest --manifest "$MANIFEST"
@@ -141,12 +161,13 @@ Correct production sequence:
 2. Verify env loading and resolved DB path with `bithumb-bot config-dump --masked`.
 3. Run `research-readiness`.
 4. Backfill candles.
-5. Rerun `research-readiness`.
-6. Collect or backfill real top-of-book data if available.
-7. Rerun `research-backtest`.
-8. Proceed to walk-forward, calibration, promotion, and profile gates only after required gates pass.
+5. Generate `research-missing-candles` artifact and run bounded `retry-missing-candles` when gaps remain.
+6. Rerun `research-readiness`.
+7. Collect or backfill real top-of-book data if available.
+8. Rerun `research-backtest`.
+9. Proceed to walk-forward, calibration, promotion, and profile gates only after required gates pass.
 
-Candle coverage is necessary but not sufficient for production promotion. Candle backfill only addresses historical candle coverage. It does not satisfy a production manifest that requires `dataset.top_of_book.required=true`, `missing_policy=fail`, and full top-of-book coverage. Execution calibration remains a separate evidence gate. Do not reconstruct fake top-of-book from candles, do not disable required top-of-book gates for production evidence, and do not shorten manifest dates merely to match the current DB. A production top-of-book requirement needs real `orderbook_top_snapshots` coverage or a separately reviewed non-production candle-only manifest.
+Candle coverage is necessary but not sufficient for production promotion. Candle backfill only addresses historical candle coverage. It does not satisfy a production manifest that requires `dataset.top_of_book.required=true`, `missing_policy=fail`, and full top-of-book coverage. Execution calibration remains a separate evidence gate. Do not reconstruct fake top-of-book from candles, do not synthesize missing OHLCV from classified gaps, do not disable required top-of-book gates for production evidence, and do not shorten manifest dates merely to match the current DB. A production top-of-book requirement needs real `orderbook_top_snapshots` coverage or a separately reviewed non-production candle-only manifest.
 
 ## Manifest Format
 

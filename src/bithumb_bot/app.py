@@ -159,6 +159,10 @@ from .research.cli import (
     cmd_research_walk_forward,
 )
 from .research.readiness import cmd_research_readiness
+from .research.data_plane import (
+    retry_missing_candles_from_artifact,
+    write_missing_candle_ranges_artifact,
+)
 from .profile_cli import (
     cmd_decision_equivalence,
     cmd_profile_diff,
@@ -7462,6 +7466,33 @@ def main(argv: list[str] | None = None) -> int:
     research_readiness.add_argument("--execution-calibration")
     research_readiness.add_argument("--json", action="store_true")
 
+    missing_candles = sub.add_parser(
+        "research-missing-candles",
+        help="write a missing candle range artifact for a research manifest",
+        description=(
+            "Read-only SQL scan that writes UTC/KST missing candle ranges and retry UTC-day plans "
+            "as a reports artifact."
+        ),
+    )
+    missing_candles.add_argument("--manifest", required=True)
+    missing_candles.add_argument("--out", required=True)
+
+    retry_missing = sub.add_parser(
+        "retry-missing-candles",
+        help="retry selected missing candle ranges from a missing range artifact",
+        description=(
+            "Execute bounded targeted candle retries and write before/after coverage "
+            "classification as an artifact."
+        ),
+    )
+    retry_missing.add_argument("--manifest", required=True)
+    retry_missing.add_argument("--missing-ranges", required=True)
+    retry_missing.add_argument("--min-buckets", type=int, default=1)
+    retry_missing.add_argument("--max-attempts", type=int, default=1)
+    retry_missing.add_argument("--split")
+    retry_missing.add_argument("--limit", type=int)
+    retry_missing.add_argument("--out", required=True)
+
     backfill_candles_parser = sub.add_parser(
         "backfill-candles",
         help="backfill historical minute candles into the configured SQLite DB",
@@ -7881,6 +7912,48 @@ def main(argv: list[str] | None = None) -> int:
             execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None,
             as_json=bool(args.json),
         )
+    elif args.cmd == "research-missing-candles":
+        try:
+            payload = write_missing_candle_ranges_artifact(
+                manifest_path=str(args.manifest),
+                out_path=str(args.out),
+            )
+        except Exception as exc:
+            print(f"[RESEARCH-MISSING-CANDLES] error={exc}")
+            return 1
+        total_missing = sum(
+            int(split.get("missing_buckets") or 0)
+            for split in (payload.get("splits") or {}).values()
+        )
+        print(
+            "[RESEARCH-MISSING-CANDLES] "
+            f"status=COMPLETE out={args.out} manifest_hash={payload['manifest_hash']} "
+            f"db_path={payload['db_path']} market={payload['market']} interval={payload['interval']} "
+            f"missing_buckets={total_missing}"
+        )
+        return 0
+    elif args.cmd == "retry-missing-candles":
+        try:
+            payload = retry_missing_candles_from_artifact(
+                manifest_path=str(args.manifest),
+                missing_ranges_path=str(args.missing_ranges),
+                min_buckets=int(args.min_buckets),
+                max_attempts=int(args.max_attempts),
+                split=str(args.split) if args.split else None,
+                limit=int(args.limit) if args.limit is not None else None,
+                out_path=str(args.out),
+            )
+        except Exception as exc:
+            print(f"[RETRY-MISSING-CANDLES] error={exc}")
+            return 1
+        summary = payload["summary"]
+        print(
+            "[RETRY-MISSING-CANDLES] "
+            f"status=COMPLETE out={args.out} attempts={payload['attempt_count']} "
+            f"retried_recovered={summary['retried_recovered']} "
+            f"retry_persistent_missing={summary['retry_persistent_missing']}"
+        )
+        return 0
     elif args.cmd == "backfill-candles":
         def _print_progress(progress):
             oldest = kst_str(progress.oldest_ts) if progress.oldest_ts is not None else "none"

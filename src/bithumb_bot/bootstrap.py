@@ -223,4 +223,7 @@ def run_cli() -> None:
     from .cli import main as cli_main
 
     configure_runtime_logging()
-    cli_main()
+    rc = cli_main()
+    if rc is None:
+        return
+    sys.exit(rc)
