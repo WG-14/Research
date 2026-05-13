@@ -187,12 +187,22 @@ def build_metrics_v2(
     closed_trades: tuple[ClosedTradeRecord, ...],
     execution_records: tuple[ExecutionRecord, ...],
     final_open_cost_basis: float = 0.0,
+    summary_period_start_ts: int | None = None,
+    summary_period_end_ts: int | None = None,
+    summary_elapsed_ms: int | None = None,
+    summary_max_drawdown_pct: float | None = None,
+    summary_active_bar_count: int | None = None,
+    summary_exposure_ms: int | None = None,
 ) -> MetricContractV2:
     limitations: list[str] = []
     points = tuple(sorted(equity_curve, key=lambda item: item.ts))
-    period_start = points[0].ts if points else None
-    period_end = points[-1].ts if points else None
-    elapsed_ms = (int(period_end) - int(period_start)) if period_start is not None and period_end is not None else None
+    period_start = points[0].ts if points else summary_period_start_ts
+    period_end = points[-1].ts if points else summary_period_end_ts
+    elapsed_ms = (
+        int(summary_elapsed_ms)
+        if summary_elapsed_ms is not None
+        else ((int(period_end) - int(period_start)) if period_start is not None and period_end is not None else None)
+    )
     if elapsed_ms is not None and elapsed_ms < 0:
         elapsed_ms = None
         limitations.append("elapsed_time_invalid")
@@ -201,7 +211,11 @@ def build_metrics_v2(
     cagr_pct = _cagr_pct(total_return_pct=total_return_pct, elapsed_ms=elapsed_ms)
     if cagr_pct is None:
         limitations.append("cagr_unavailable_without_positive_elapsed_time")
-    max_drawdown_pct = _max_drawdown_pct(points)
+    max_drawdown_pct = (
+        float(summary_max_drawdown_pct)
+        if summary_max_drawdown_pct is not None
+        else _max_drawdown_pct(points)
+    )
     net_values = [float(trade.net_pnl) for trade in closed_trades]
     realized_pnl = sum(net_values)
     realized_return_pct = (realized_pnl / float(starting_cash) * 100.0) if starting_cash > 0.0 else 0.0
@@ -231,7 +245,11 @@ def build_metrics_v2(
         for interval in position_intervals
         if interval.close_ts is not None and int(interval.close_ts) >= int(interval.open_ts)
     ]
-    exposure_ms = _exposure_ms(position_intervals=position_intervals, period_end=period_end)
+    exposure_ms = (
+        int(summary_exposure_ms)
+        if summary_exposure_ms is not None
+        else _exposure_ms(position_intervals=position_intervals, period_end=period_end)
+    )
     exposure_time_pct = (
         (exposure_ms / float(elapsed_ms) * 100.0)
         if elapsed_ms is not None and elapsed_ms > 0
@@ -239,7 +257,11 @@ def build_metrics_v2(
     )
     if exposure_time_pct is None:
         limitations.append("exposure_time_unavailable_without_positive_elapsed_time")
-    active_bar_count = sum(1 for point in points if point.asset_qty > 1e-12)
+    active_bar_count = (
+        int(summary_active_bar_count)
+        if summary_active_bar_count is not None
+        else sum(1 for point in points if point.asset_qty > 1e-12)
+    )
     fee_total = sum(float(record.fee) for record in execution_records)
     slippage_total = sum(float(record.slippage) for record in execution_records)
     traded_notional = sum(

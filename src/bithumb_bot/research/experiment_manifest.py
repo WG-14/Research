@@ -984,6 +984,10 @@ def _parse_research_artifact_policy(value: Any) -> ResearchArtifactPolicy:
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
         raise ManifestValidationError(f"research_run.artifact_policy unsupported fields: {','.join(unknown)}")
+    if bool(value.get("full_decisions_external_jsonl", False)):
+        raise ManifestValidationError(
+            "research_run.artifact_policy.full_decisions_external_jsonl is not implemented yet"
+        )
     return ResearchArtifactPolicy(
         candidate_journal=bool(value.get("candidate_journal", True)),
         failed_candidate_evidence=bool(value.get("failed_candidate_evidence", True)),

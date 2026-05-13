@@ -244,7 +244,7 @@ def run_research_backtest(
         payload=report,
     )
     report["content_hash"] = content_hash
-    report["artifact_paths"] = _path_payload(paths)
+    report["artifact_paths"] = _path_payload(paths, manager=manager, experiment_id=manifest.experiment_id)
     _emit_progress(
         progress_callback,
         stage="complete",
@@ -329,7 +329,7 @@ def run_research_walk_forward(
         payload=report,
     )
     report["content_hash"] = content_hash
-    report["artifact_paths"] = _path_payload(paths)
+    report["artifact_paths"] = _path_payload(paths, manager=manager, experiment_id=manifest.experiment_id)
     _emit_progress(
         progress_callback,
         stage="complete",
@@ -605,6 +605,7 @@ def _evaluate_candidates(
                 "scenario_acceptance_gate_result": gate_result,
                 "scenario_fail_reasons": fail_reasons,
                 "resource_guard": base.get("resource_guard"),
+                "failure_artifact_path": base.get("failure_artifact_path"),
                 "retained_detail_summary": base.get("retained_detail_summary"),
                 "train_resource_usage": base.get("train_resource_usage"),
                 "validation_resource_usage": base.get("validation_resource_usage"),
@@ -699,6 +700,7 @@ def _evaluate_candidates(
                 "validation_execution_event_summary": primary.get("validation_execution_event_summary"),
                 "final_holdout_execution_event_summary": primary.get("final_holdout_execution_event_summary"),
                 "resource_guard": primary.get("resource_guard"),
+                "failure_artifact_path": primary.get("failure_artifact_path"),
                 "retained_detail_summary": primary.get("retained_detail_summary"),
                 "train_resource_usage": primary.get("train_resource_usage"),
                 "validation_resource_usage": primary.get("validation_resource_usage"),
@@ -990,7 +992,9 @@ def _write_failed_candidate_evidence(
 ) -> None:
     if not manifest.research_run.artifact_policy.failed_candidate_evidence:
         return
-    write_json_atomic(_candidate_failure_path(manager, manifest.experiment_id, str(candidate["candidate_id"])), candidate)
+    path = _candidate_failure_path(manager, manifest.experiment_id, str(candidate["candidate_id"]))
+    candidate["failure_artifact_path"] = str(path)
+    write_json_atomic(path, candidate)
 
 
 def _apply_scenario_policy(*, manifest: ExperimentManifest, candidate: dict[str, Any]) -> None:
@@ -1575,6 +1579,7 @@ def _report_payload(
             "execution_reference_price": manifest.execution_timing.fill_reference_policy,
             "intra_candle_policy": _policy_intra_candle_limitation(manifest.execution_timing.fill_reference_policy),
             "portfolio_event_time_policy": "fills_apply_when_fill_reference_ts_reaches_mark_or_decision_boundary",
+            "subprocess_candidate_isolation": "subprocess_candidate_isolation_pending",
             "top_of_book_join_tolerance_ms": (
                 manifest.dataset.top_of_book.join_tolerance_ms if manifest.dataset.top_of_book else None
             ),
@@ -1925,10 +1930,14 @@ def _candidate_rank_key(candidate: dict[str, Any]) -> tuple[int, int, float, flo
     )
 
 
-def _path_payload(paths: ResearchReportPaths) -> dict[str, str]:
+def _path_payload(paths: ResearchReportPaths, *, manager: PathManager, experiment_id: str) -> dict[str, str]:
+    root = _research_artifact_root(manager, experiment_id)
     return {
         "derived_path": str(paths.derived_path),
         "report_path": str(paths.report_path),
+        "candidate_events_path": str(root / "candidate_events.jsonl"),
+        "candidate_results_dir": str(root / "candidate_results"),
+        "candidate_failures_dir": str(root / "candidate_failures"),
     }
 
 

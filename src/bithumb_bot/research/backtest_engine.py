@@ -86,6 +86,9 @@ class _BacktestAccumulator:
     retained_equity_point_count: int = 0
     trade_count: int = 0
     closed_trade_count: int = 0
+    period_start_ts: int | None = None
+    period_end_ts: int | None = None
+    active_bar_count: int = 0
     last_heartbeat_s: float = field(default_factory=time.perf_counter)
     last_heartbeat_bar: int = 0
     decision_hash_material: list[str] = field(default_factory=list)
@@ -122,7 +125,12 @@ class _BacktestAccumulator:
         if retained:
             self.retained_decision_count += 1
 
-    def update_equity(self, retained: bool) -> None:
+    def update_equity(self, *, retained: bool, ts: int, asset_qty: float) -> None:
+        if self.period_start_ts is None:
+            self.period_start_ts = int(ts)
+        self.period_end_ts = int(ts)
+        if float(asset_qty) > 1e-12:
+            self.active_bar_count += 1
         if retained:
             self.retained_equity_point_count += 1
 
@@ -175,10 +183,6 @@ class _BacktestAccumulator:
             reasons.append("max_runtime_exceeded")
         if limits.max_trades is not None and self.trade_count > int(limits.max_trades):
             reasons.append("max_trades_exceeded")
-        if limits.max_decisions_retained is not None and self.retained_decision_count > int(limits.max_decisions_retained):
-            reasons.append("max_retained_decisions_exceeded")
-        if limits.max_equity_points_retained is not None and self.retained_equity_point_count > int(limits.max_equity_points_retained):
-            reasons.append("max_retained_equity_points_exceeded")
         if limits.max_rss_mb is not None and rss is not None and rss > float(limits.max_rss_mb):
             reasons.append("max_rss_exceeded")
         if not reasons:
@@ -194,6 +198,78 @@ class _BacktestAccumulator:
         payload.pop("rss_mb", None)
         payload["decision_hash"] = canonical_payload_hash(self.decision_hash_material)
         return payload
+
+    def metrics_summary_inputs(self, *, max_drawdown_pct: float) -> dict[str, Any]:
+        elapsed_ms = (
+            int(self.period_end_ts) - int(self.period_start_ts)
+            if self.period_start_ts is not None and self.period_end_ts is not None
+            else None
+        )
+        return {
+            "summary_period_start_ts": self.period_start_ts,
+            "summary_period_end_ts": self.period_end_ts,
+            "summary_elapsed_ms": elapsed_ms,
+            "summary_max_drawdown_pct": float(max_drawdown_pct),
+            "summary_active_bar_count": int(self.active_bar_count),
+        }
+
+
+@dataclass
+class _RegimeCoverageAccumulator:
+    total: int = 0
+    counts: dict[str, dict[str, int]] = field(default_factory=dict)
+
+    def update(self, snapshot: dict[str, object]) -> None:
+        self.total += 1
+        for dimension in ("price_regime", "volatility_bucket", "volume_bucket", "composite_regime"):
+            bucket = str(snapshot.get(dimension) or "unknown")
+            dimension_counts = self.counts.setdefault(dimension, {})
+            dimension_counts[bucket] = dimension_counts.get(bucket, 0) + 1
+
+    def coverage(self, *, trades: list[dict[str, object]]) -> tuple[RegimeCoverageRow, ...]:
+        trade_counts: dict[tuple[str, str], int] = {}
+        for trade in trades:
+            if not _trade_is_effective(trade) or str(trade.get("side") or "").upper() != "BUY":
+                continue
+            snapshot = trade.get("entry_regime_snapshot")
+            for dimension in ("price_regime", "volatility_bucket", "volume_bucket", "composite_regime"):
+                regime = _regime_snapshot_value(snapshot, dimension)
+                key = (dimension, regime)
+                trade_counts[key] = trade_counts.get(key, 0) + 1
+        rows: list[RegimeCoverageRow] = []
+        for dimension in ("price_regime", "volatility_bucket", "volume_bucket", "composite_regime"):
+            candle_counts = self.counts.get(dimension, {})
+            regimes = sorted(set(candle_counts) | {regime for item_dimension, regime in trade_counts if item_dimension == dimension})
+            for regime in regimes:
+                candles = int(candle_counts.get(regime, 0))
+                rows.append(
+                    RegimeCoverageRow(
+                        dimension=dimension,
+                        regime=regime,
+                        candle_count=candles,
+                        candle_share=(candles / self.total) if self.total else 0.0,
+                        trade_count=int(trade_counts.get((dimension, regime), 0)),
+                    )
+                )
+        return tuple(rows)
+
+
+def _regime_snapshot_value(snapshot: Any, key: str) -> str:
+    if isinstance(snapshot, dict):
+        return str(snapshot.get(key) or "unknown")
+    return str(getattr(snapshot, key, "unknown") or "unknown")
+
+
+def _trade_is_effective(trade: dict[str, object]) -> bool:
+    if "is_portfolio_applied_trade" in trade:
+        return bool(trade.get("is_portfolio_applied_trade"))
+    if "is_effective_trade" in trade:
+        return bool(trade.get("is_effective_trade"))
+    execution = trade.get("execution")
+    if isinstance(execution, dict):
+        status = str(execution.get("fill_status") or "")
+        return float(execution.get("filled_qty") or 0.0) > 0.0 and status in {"filled", "partial"}
+    return float(trade.get("qty") or 0.0) > 0.0
 
 
 @dataclass(frozen=True)
@@ -267,7 +343,7 @@ def run_sma_backtest(
             regime_coverage=(),
             execution_event_summary=empty_execution_event_summary(),
             resource_usage=accumulator.resource_usage(candles_processed=len(candles)),
-            retained_detail_summary=_retained_detail_summary(accumulator),
+            retained_detail_summary=_retained_detail_summary(accumulator, retained_regime_snapshot_count=0),
         )
 
     closes = [candle.close for candle in candles]
@@ -275,6 +351,7 @@ def run_sma_backtest(
     lows = [candle.low for candle in candles]
     volumes = [candle.volume for candle in candles]
     regime_snapshots: list[dict[str, object]] = []
+    regime_coverage_accumulator = _RegimeCoverageAccumulator()
     thresholds = MarketRegimeThresholds(
         min_trend_strength_ratio=max(0.0, min_gap),
         low_volatility_ratio=max(0.0, min_range),
@@ -293,7 +370,8 @@ def run_sma_backtest(
     pending_fills: list[_PendingFill] = []
     decisions: list[dict[str, object]] = []
     equity_curve: list[EquityPoint] = []
-    if accumulator.retain_equity_point():
+    retain_initial_equity = accumulator.retain_equity_point()
+    if retain_initial_equity:
         equity_curve.append(
             EquityPoint(
                 ts=candle_close_ts(candles[0], interval=dataset.interval),
@@ -302,7 +380,11 @@ def run_sma_backtest(
                 asset_qty=0.0,
             )
         )
-        accumulator.update_equity(retained=True)
+    accumulator.update_equity(
+        retained=retain_initial_equity,
+        ts=candle_close_ts(candles[0], interval=dataset.interval),
+        asset_qty=0.0,
+    )
     closed_pnls: list[float] = []
     prev_above: bool | None = None
     model = execution_model or FixedBpsExecutionModel(fee_rate=fee_rate, slippage_bps=slippage_bps)
@@ -364,7 +446,9 @@ def run_sma_backtest(
             overextended_lookback=max(1, int(parameter_values.get("SMA_FILTER_OVEREXT_LOOKBACK", 3))),
             overextended_max_return_ratio=float(parameter_values.get("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO", 0.0)),
         ).as_dict()
-        regime_snapshots.append(regime_snapshot)
+        regime_coverage_accumulator.update(regime_snapshot)
+        if accumulator.retain_full_detail():
+            regime_snapshots.append(regime_snapshot)
 
         action = "HOLD"
         raw_signal = "HOLD"
@@ -455,6 +539,7 @@ def run_sma_backtest(
                 )
                 warnings.extend(_execution_reference_warnings(fill))
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
+                retain_equity = accumulator.retain_equity_point()
                 peak, max_drawdown = _record_equity_mark(
                     equity_curve=equity_curve,
                     ts=mark_boundary_ts,
@@ -463,9 +548,9 @@ def run_sma_backtest(
                     mark_price=candle.close,
                     peak=peak,
                     max_drawdown=max_drawdown,
-                    retain=accumulator.retain_equity_point(),
+                    retain=retain_equity,
                 )
-                accumulator.update_equity(retained=bool(equity_curve and equity_curve[-1].ts == mark_boundary_ts))
+                accumulator.update_equity(retained=retain_equity, ts=mark_boundary_ts, asset_qty=mark_qty)
                 prev_above = above
                 accumulator.maybe_emit_heartbeat(index - long_n + 1)
                 accumulator.check_limits(candles_processed=index - long_n + 1, trades=trades)
@@ -485,6 +570,7 @@ def run_sma_backtest(
             warnings.extend(_execution_reference_warnings(fill))
             if fill.fill_status == "failed" or fill.avg_fill_price is None or fill.filled_qty <= 0.0:
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
+                retain_equity = accumulator.retain_equity_point()
                 peak, max_drawdown = _record_equity_mark(
                     equity_curve=equity_curve,
                     ts=mark_boundary_ts,
@@ -493,9 +579,9 @@ def run_sma_backtest(
                     mark_price=candle.close,
                     peak=peak,
                     max_drawdown=max_drawdown,
-                    retain=accumulator.retain_equity_point(),
+                    retain=retain_equity,
                 )
-                accumulator.update_equity(retained=bool(equity_curve and equity_curve[-1].ts == mark_boundary_ts))
+                accumulator.update_equity(retained=retain_equity, ts=mark_boundary_ts, asset_qty=mark_qty)
                 prev_above = above
                 accumulator.maybe_emit_heartbeat(index - long_n + 1)
                 accumulator.check_limits(candles_processed=index - long_n + 1, trades=trades)
@@ -571,6 +657,7 @@ def run_sma_backtest(
                 )
                 warnings.extend(_execution_reference_warnings(fill))
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
+                retain_equity = accumulator.retain_equity_point()
                 peak, max_drawdown = _record_equity_mark(
                     equity_curve=equity_curve,
                     ts=mark_boundary_ts,
@@ -579,9 +666,9 @@ def run_sma_backtest(
                     mark_price=candle.close,
                     peak=peak,
                     max_drawdown=max_drawdown,
-                    retain=accumulator.retain_equity_point(),
+                    retain=retain_equity,
                 )
-                accumulator.update_equity(retained=bool(equity_curve and equity_curve[-1].ts == mark_boundary_ts))
+                accumulator.update_equity(retained=retain_equity, ts=mark_boundary_ts, asset_qty=mark_qty)
                 prev_above = above
                 accumulator.maybe_emit_heartbeat(index - long_n + 1)
                 accumulator.check_limits(candles_processed=index - long_n + 1, trades=trades)
@@ -600,6 +687,7 @@ def run_sma_backtest(
             warnings.extend(_execution_reference_warnings(fill))
             if fill.fill_status == "failed" or fill.avg_fill_price is None or fill.filled_qty <= 0.0:
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
+                retain_equity = accumulator.retain_equity_point()
                 peak, max_drawdown = _record_equity_mark(
                     equity_curve=equity_curve,
                     ts=mark_boundary_ts,
@@ -608,9 +696,9 @@ def run_sma_backtest(
                     mark_price=candle.close,
                     peak=peak,
                     max_drawdown=max_drawdown,
-                    retain=accumulator.retain_equity_point(),
+                    retain=retain_equity,
                 )
-                accumulator.update_equity(retained=bool(equity_curve and equity_curve[-1].ts == mark_boundary_ts))
+                accumulator.update_equity(retained=retain_equity, ts=mark_boundary_ts, asset_qty=mark_qty)
                 prev_above = above
                 accumulator.maybe_emit_heartbeat(index - long_n + 1)
                 accumulator.check_limits(candles_processed=index - long_n + 1, trades=trades)
@@ -654,6 +742,7 @@ def run_sma_backtest(
                 closed_pnls=closed_pnls,
             )
 
+        retain_equity = accumulator.retain_equity_point()
         peak, max_drawdown = _record_equity_mark(
             equity_curve=equity_curve,
             ts=mark_boundary_ts,
@@ -662,9 +751,9 @@ def run_sma_backtest(
             mark_price=candle.close,
             peak=peak,
             max_drawdown=max_drawdown,
-            retain=accumulator.retain_equity_point(),
+            retain=retain_equity,
         )
-        accumulator.update_equity(retained=bool(equity_curve and equity_curve[-1].ts == mark_boundary_ts))
+        accumulator.update_equity(retained=retain_equity, ts=mark_boundary_ts, asset_qty=mark_qty)
         prev_above = above
         accumulator.maybe_emit_heartbeat(index - long_n + 1)
         accumulator.check_limits(candles_processed=index - long_n + 1, trades=trades)
@@ -687,7 +776,8 @@ def run_sma_backtest(
     )
     _mark_pending_fills_at_end(pending_fills=pending_fills, trades=trades, final_mark_ts=last_mark_ts)
     final_equity = cash + qty * last.close
-    if accumulator.retain_equity_point():
+    retain_final_equity = accumulator.retain_equity_point()
+    if retain_final_equity:
         equity_curve.append(
             EquityPoint(
                 ts=last_mark_ts,
@@ -696,7 +786,7 @@ def run_sma_backtest(
                 asset_qty=qty,
             )
         )
-        accumulator.update_equity(retained=True)
+    accumulator.update_equity(retained=retain_final_equity, ts=last_mark_ts, asset_qty=qty)
     return_pct = ((final_equity / START_CASH_KRW) - 1.0) * 100.0
     metrics = _metrics(
         return_pct=return_pct,
@@ -709,7 +799,11 @@ def run_sma_backtest(
     position_intervals, closed_trade_records, execution_records, derived_open_cost_basis = _metrics_v2_ledgers_from_trades(
         trades=trades,
     )
-    coverage = aggregate_regime_coverage(snapshots=regime_snapshots, trades=trades)
+    coverage = (
+        aggregate_regime_coverage(snapshots=regime_snapshots, trades=trades)
+        if accumulator.retain_full_detail()
+        else regime_coverage_accumulator.coverage(trades=trades)
+    )
     performance = aggregate_regime_performance(trades=trades, coverage=coverage, start_cash=START_CASH_KRW)
     execution_summary = execution_event_summary(trades)
     metrics_v2 = build_metrics_v2(
@@ -722,11 +816,15 @@ def run_sma_backtest(
         position_intervals=position_intervals,
         closed_trades=closed_trade_records,
         execution_records=execution_records,
+        **(
+            {}
+            if accumulator.retain_full_detail()
+            else accumulator.metrics_summary_inputs(max_drawdown_pct=max_drawdown * 100.0)
+        ),
     )
     if not accumulator.retain_full_detail():
         metrics_v2 = replace(
             metrics_v2,
-            return_risk=replace(metrics_v2.return_risk, max_drawdown_pct=float(max_drawdown * 100.0)),
             limitation_reasons=tuple(
                 sorted(set(metrics_v2.limitation_reasons) | {"bounded_detail_equity_curve_not_retained"})
             ),
@@ -745,7 +843,10 @@ def run_sma_backtest(
         position_intervals=position_intervals,
         closed_trades=closed_trade_records,
         resource_usage=accumulator.resource_usage(candles_processed=max(0, len(candles) - long_n)),
-        retained_detail_summary=_retained_detail_summary(accumulator),
+        retained_detail_summary=_retained_detail_summary(
+            accumulator,
+            retained_regime_snapshot_count=len(regime_snapshots),
+        ),
     )
 
 
@@ -766,12 +867,17 @@ def _rss_mb() -> float | None:
     return round(rss / 1024.0, 3)
 
 
-def _retained_detail_summary(accumulator: _BacktestAccumulator) -> dict[str, object]:
+def _retained_detail_summary(
+    accumulator: _BacktestAccumulator,
+    *,
+    retained_regime_snapshot_count: int,
+) -> dict[str, object]:
     return {
         "report_detail": accumulator.report_detail,
         "decision_count": accumulator.decision_count,
         "retained_decision_count": accumulator.retained_decision_count,
         "retained_equity_point_count": accumulator.retained_equity_point_count,
+        "retained_regime_snapshot_count": int(retained_regime_snapshot_count),
         "decision_hash": canonical_payload_hash(accumulator.decision_hash_material),
     }
 

@@ -22,7 +22,7 @@ from bithumb_bot.research.backtest_engine import (
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot, TopOfBookQuote
 from bithumb_bot.research.execution_calibration import build_calibration_artifact
 from bithumb_bot.research.execution_model import ExecutionFill, ExecutionRequest, FixedBpsExecutionModel, StressExecutionModel
-from bithumb_bot.research.experiment_manifest import ExecutionTimingPolicy, parse_manifest
+from bithumb_bot.research.experiment_manifest import ExecutionTimingPolicy, ManifestValidationError, parse_manifest
 from bithumb_bot.research.parameter_space import candidate_id
 from bithumb_bot.research.promotion_gate import PromotionGateError, promote_candidate
 from bithumb_bot.research.validation_protocol import run_research_backtest
@@ -401,8 +401,106 @@ def test_summary_mode_does_not_retain_full_per_candle_decisions_and_is_determini
     assert first.decisions == ()
     assert first.equity_curve == ()
     assert first.retained_detail_summary["decision_count"] == len(snapshot.candles) - 4
+    assert first.retained_detail_summary["retained_regime_snapshot_count"] == 0
+    assert first.regime_coverage
+    assert first.regime_performance
     assert first.retained_detail_summary["decision_hash"] == second.retained_detail_summary["decision_hash"]
     assert first.metrics.as_dict() == second.metrics.as_dict()
+
+
+def test_summary_metrics_v2_match_full_when_equity_retention_is_zero() -> None:
+    snapshot = _snapshot_from_closes([100, 90, 100, 80, 100, 130, 50, 40, 30, 20, 30, 45])
+    kwargs = {
+        "dataset": snapshot,
+        "parameter_values": {"SMA_SHORT": 1, "SMA_LONG": 2},
+        "fee_rate": 0.0,
+        "slippage_bps": 0.0,
+    }
+    full = run_sma_backtest(
+        **kwargs,
+        context=BacktestRunContext(report_detail="full"),
+    )
+    summary = run_sma_backtest(
+        **kwargs,
+        context=BacktestRunContext(
+            report_detail="summary",
+            resource_limits=BacktestResourceLimits(max_decisions_retained=0, max_equity_points_retained=0),
+        ),
+    )
+
+    assert full.equity_curve
+    assert summary.equity_curve == ()
+    assert summary.retained_detail_summary["retained_regime_snapshot_count"] == 0
+    assert full.metrics_v2 is not None
+    assert summary.metrics_v2 is not None
+    assert summary.metrics_v2.return_risk.cagr_pct == pytest.approx(full.metrics_v2.return_risk.cagr_pct)
+    assert summary.metrics_v2.return_risk.max_drawdown_pct == pytest.approx(full.metrics_v2.return_risk.max_drawdown_pct)
+    assert summary.metrics_v2.time_exposure.exposure_time_pct == pytest.approx(full.metrics_v2.time_exposure.exposure_time_pct)
+    assert summary.metrics_v2.time_exposure.active_bar_count == full.metrics_v2.time_exposure.active_bar_count
+    assert summary.metrics_v2.time_exposure.period_start_ts == full.metrics_v2.time_exposure.period_start_ts
+    assert summary.metrics_v2.time_exposure.period_end_ts == full.metrics_v2.time_exposure.period_end_ts
+    assert summary.metrics_v2.time_exposure.elapsed_ms == full.metrics_v2.time_exposure.elapsed_ms
+    assert summary.metrics_v2.time_exposure.calendar_days == pytest.approx(full.metrics_v2.time_exposure.calendar_days)
+    assert summary.regime_coverage == full.regime_coverage
+    assert summary.regime_performance == full.regime_performance
+
+
+def test_summary_and_full_metrics_v2_gates_match_for_cagr_and_exposure(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    base_payload = _manifest()
+    base_payload["acceptance_gate"]["metrics_contract_required"] = True
+    base_payload["acceptance_gate"]["min_cagr_pct"] = 0.0
+    base_payload["acceptance_gate"]["max_exposure_time_pct"] = 100.0
+
+    full_payload = dict(base_payload)
+    full_payload["research_run"] = {
+        "report_detail": "full",
+        "resource_limits": {
+            "max_runtime_s_per_candidate_split": None,
+            "max_decisions_retained": None,
+            "max_trades": None,
+            "max_equity_points_retained": None,
+            "max_rss_mb": None,
+        },
+    }
+    summary_payload = dict(base_payload)
+    summary_payload["research_run"] = {
+        "report_detail": "summary",
+        "resource_limits": {
+            "max_runtime_s_per_candidate_split": None,
+            "max_decisions_retained": 0,
+            "max_trades": None,
+            "max_equity_points_retained": 0,
+            "max_rss_mb": None,
+        },
+    }
+
+    full = run_research_backtest(
+        manifest=parse_manifest(full_payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+    summary = run_research_backtest(
+        manifest=parse_manifest(summary_payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    assert summary["candidates"][0]["validation_metrics_v2"]["return_risk"]["cagr_pct"] == pytest.approx(
+        full["candidates"][0]["validation_metrics_v2"]["return_risk"]["cagr_pct"]
+    )
+    assert summary["candidates"][0]["validation_metrics_v2"]["time_exposure"]["exposure_time_pct"] == pytest.approx(
+        full["candidates"][0]["validation_metrics_v2"]["time_exposure"]["exposure_time_pct"]
+    )
+    assert summary["candidates"][0]["acceptance_gate_result"] == full["candidates"][0]["acceptance_gate_result"]
+    assert summary["candidates"][0]["gate_fail_reasons"] == full["candidates"][0]["gate_fail_reasons"]
 
 
 def test_heartbeat_and_max_trades_guard_trip() -> None:
@@ -471,10 +569,65 @@ def test_research_sweep_continues_after_guard_failure_and_writes_candidate_artif
     assert any("candidate_resource_limit_exceeded" in (candidate.get("gate_fail_reasons") or []) for candidate in report["candidates"])
     assert Path(report["artifact_paths"]["report_path"]).exists()
     assert Path(report["artifact_paths"]["derived_path"]).exists()
+    assert Path(report["artifact_paths"]["candidate_events_path"]).exists()
+    assert Path(report["artifact_paths"]["candidate_results_dir"]).is_dir()
+    assert Path(report["artifact_paths"]["candidate_failures_dir"]).is_dir()
     root = manager.data_dir() / "derived" / "research" / "bounded_sweep"
     assert (root / "candidate_events.jsonl").exists()
     assert list((root / "candidate_results").glob("candidate_*.json"))
-    assert list((root / "candidate_failures").glob("candidate_*.json"))
+    failures = list((root / "candidate_failures").glob("candidate_*.json"))
+    assert failures
+    failed = [candidate for candidate in report["candidates"] if candidate.get("failure_artifact_path")]
+    assert failed
+    assert Path(failed[0]["failure_artifact_path"]).exists()
+    assert failed[0]["resource_guard"]["status"] == "TRIPPED"
+
+
+def test_full_decisions_external_jsonl_policy_is_rejected_clearly() -> None:
+    payload = _manifest()
+    payload["research_run"] = {
+        "artifact_policy": {
+            "full_decisions_external_jsonl": True,
+        },
+    }
+
+    with pytest.raises(ManifestValidationError, match="full_decisions_external_jsonl is not implemented yet"):
+        parse_manifest(payload)
+
+
+def test_retention_caps_do_not_fail_candidate_but_max_trades_guard_does() -> None:
+    snapshot = _snapshot_from_closes(([100, 90, 110, 90, 110, 90, 110, 90] * 2))
+    capped = run_sma_backtest(
+        dataset=snapshot,
+        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        context=BacktestRunContext(
+            report_detail="summary",
+            resource_limits=BacktestResourceLimits(max_decisions_retained=0, max_equity_points_retained=0),
+        ),
+    )
+
+    assert capped.retained_detail_summary["retained_decision_count"] == 0
+    assert capped.retained_detail_summary["retained_equity_point_count"] == 0
+    assert capped.retained_detail_summary["decision_count"] > 0
+
+    with pytest.raises(BacktestResourceLimitExceeded) as raised:
+        run_sma_backtest(
+            dataset=snapshot,
+            parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+            fee_rate=0.0,
+            slippage_bps=0.0,
+            context=BacktestRunContext(
+                report_detail="summary",
+                resource_limits=BacktestResourceLimits(
+                    max_trades=1,
+                    max_decisions_retained=0,
+                    max_equity_points_retained=0,
+                ),
+            ),
+        )
+    assert raised.value.evidence["reasons"] == ["max_trades_exceeded"]
 
 
 def test_failed_sell_records_failure_candle_equity_and_mdd() -> None:
