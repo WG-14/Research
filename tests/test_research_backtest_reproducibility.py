@@ -11,6 +11,7 @@ import pytest
 from bithumb_bot.paths import PathManager
 from bithumb_bot.canonical_decision import export_research_decisions, export_runtime_replay_decisions
 from bithumb_bot.decision_equivalence import compare_decision_equivalence
+from bithumb_bot.research import backtest_engine
 from bithumb_bot.research.backtest_engine import run_sma_backtest
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot, TopOfBookQuote
 from bithumb_bot.research.execution_calibration import build_calibration_artifact
@@ -251,6 +252,99 @@ def test_sma_backtest_attaches_entry_and_exit_regime_snapshots() -> None:
     assert result.metrics_v2.time_exposure.exposure_time_pct is not None
     assert result.decisions
     assert {"raw_signal", "final_signal", "position_state_hash"} <= set(result.decisions[0])
+
+
+def test_sma_backtest_uses_bounded_regime_fast_path(monkeypatch) -> None:
+    snapshot = _snapshot_from_closes([100, 99, 98, 97, 99, 102, 105, 104, 103, 100, 98, 96])
+    calls: list[int] = []
+    original = backtest_engine.classify_market_regime_from_arrays
+
+    def counting_classifier(**kwargs):
+        calls.append(int(kwargs["index"]))
+        assert len(kwargs["closes"]) == len(snapshot.candles)
+        return original(**kwargs)
+
+    monkeypatch.setattr(backtest_engine, "classify_market_regime_from_arrays", counting_classifier)
+
+    result = run_sma_backtest(
+        dataset=snapshot,
+        parameter_values={"SMA_SHORT": 2, "SMA_LONG": 4},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+    )
+
+    assert result.decisions
+    assert calls == list(range(4, len(snapshot.candles)))
+
+
+def test_sma_backtest_caches_dataset_content_hash(monkeypatch) -> None:
+    snapshot = _snapshot_from_closes([100, 99, 98, 97, 99, 102, 105, 104, 103, 100, 98, 96])
+    calls = 0
+
+    def counted_content_hash(self: DatasetSnapshot) -> str:
+        nonlocal calls
+        assert self is snapshot
+        calls += 1
+        return "sha256:cached_dataset_hash"
+
+    monkeypatch.setattr(DatasetSnapshot, "content_hash", counted_content_hash)
+
+    result = run_sma_backtest(
+        dataset=snapshot,
+        parameter_values={"SMA_SHORT": 2, "SMA_LONG": 4},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+    )
+
+    assert calls == 1
+    assert result.decisions
+    fingerprints = [decision["replay_fingerprint_hash"] for decision in result.decisions]
+    assert all(str(item).startswith("sha256:") for item in fingerprints)
+    assert fingerprints == [
+        decision["replay_fingerprint_hash"]
+        for decision in run_sma_backtest(
+            dataset=snapshot,
+            parameter_values={"SMA_SHORT": 2, "SMA_LONG": 4},
+            fee_rate=0.0,
+            slippage_bps=0.0,
+        ).decisions
+    ]
+
+
+def test_tiny_three_day_sma_backtest_completes_structurally() -> None:
+    base_ts = 1_700_000_000_000
+    candles = tuple(
+        Candle(
+            ts=base_ts + index * 60_000,
+            open=float(100 + (index % 17) - 8),
+            high=float(101 + (index % 17) - 8),
+            low=float(99 + (index % 17) - 8),
+            close=float(100 + (index % 17) - 8),
+            volume=1.0 + float(index % 5),
+        )
+        for index in range(3 * 24 * 60)
+    )
+    manifest = parse_manifest(_manifest())
+    snapshot = DatasetSnapshot(
+        snapshot_id="tiny_three_day",
+        source="sqlite_candles",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="train",
+        date_range=manifest.dataset.split.train,
+        candles=candles,
+    )
+
+    result = run_sma_backtest(
+        dataset=snapshot,
+        parameter_values={"SMA_SHORT": 7, "SMA_LONG": 30},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+    )
+
+    assert result.candle_count == 4320
+    assert len(result.decisions) == 4320 - 30
+    assert result.metrics_v2 is not None
 
 
 def test_failed_sell_records_failure_candle_equity_and_mdd() -> None:

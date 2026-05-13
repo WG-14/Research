@@ -8,7 +8,7 @@ from bithumb_bot.market_regime import (
     RegimePerformanceRow,
     aggregate_regime_coverage,
     aggregate_regime_performance,
-    classify_market_regime,
+    classify_market_regime_from_arrays,
 )
 from bithumb_bot.market_regime.thresholds import MarketRegimeThresholds
 from bithumb_bot.canonical_decision import canonical_flat_position_state_hash, canonical_payload_hash
@@ -91,6 +91,7 @@ def run_sma_backtest(
         raise ValueError("SMA_SHORT must be smaller than SMA_LONG")
 
     candles = dataset.candles
+    dataset_content_hash = dataset.content_hash()
     warnings: list[str] = []
     if len(candles) < long_n + 2:
         return BacktestRun(
@@ -105,6 +106,9 @@ def run_sma_backtest(
         )
 
     closes = [candle.close for candle in candles]
+    highs = [candle.high for candle in candles]
+    lows = [candle.low for candle in candles]
+    volumes = [candle.volume for candle in candles]
     regime_snapshots: list[dict[str, object]] = []
     thresholds = MarketRegimeThresholds(
         min_trend_strength_ratio=max(0.0, min_gap),
@@ -177,11 +181,17 @@ def run_sma_backtest(
         above = curr_short > curr_long
         gap_ratio = abs(curr_short - curr_long) / curr_long if curr_long > 0.0 else 0.0
         range_ratio = (candle.high - candle.low) / candle.close if candle.close > 0.0 else 0.0
-        regime_snapshot = classify_market_regime(
-            candles=candles[: index + 1],
+        regime_snapshot = classify_market_regime_from_arrays(
+            closes=closes,
+            highs=highs,
+            lows=lows,
+            volumes=volumes,
+            index=index,
             short_sma=curr_short,
             long_sma=curr_long,
             volatility_window=max(1, int(parameter_values.get("SMA_FILTER_VOL_WINDOW", 10))),
+            volume_window=max(1, int(parameter_values.get("SMA_FILTER_VOLUME_WINDOW", 10))),
+            liquidity_window=max(1, int(parameter_values.get("SMA_FILTER_LIQUIDITY_WINDOW", 10))),
             thresholds=thresholds,
             overextended_lookback=max(1, int(parameter_values.get("SMA_FILTER_OVEREXT_LOOKBACK", 3))),
             overextended_max_return_ratio=float(parameter_values.get("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO", 0.0)),
@@ -217,6 +227,7 @@ def run_sma_backtest(
         decisions.append(
             _research_decision_payload(
                 dataset=dataset,
+                dataset_content_hash=dataset_content_hash,
                 parameter_values=parameter_values,
                 fee_rate=fee_rate,
                 slippage_bps=slippage_bps,
@@ -692,6 +703,7 @@ def _feature_snapshot(
 def _research_decision_payload(
     *,
     dataset: DatasetSnapshot,
+    dataset_content_hash: str,
     parameter_values: dict[str, Any],
     fee_rate: float,
     slippage_bps: float,
@@ -798,7 +810,7 @@ def _research_decision_payload(
         "execution_timing_policy_hash": canonical_payload_hash(timing_policy.as_dict()),
         "replay_fingerprint_hash": canonical_payload_hash(
             {
-                "dataset_content_hash": dataset.content_hash(),
+                "dataset_content_hash": dataset_content_hash,
                 "parameter_values": parameter_values,
                 "candle_ts": int(candle_ts),
             }

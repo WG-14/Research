@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import median
-from typing import Any
+from typing import Any, Callable
 
 from bithumb_bot.execution_quality import ExecutionQualityThresholds
 from bithumb_bot.paths import PathManager
@@ -44,6 +45,27 @@ TOP_OF_BOOK_OPERATOR_NEXT_ACTION = (
     "collect orderbook top snapshots with sync-orderbook-top, rerun research-backtest, "
     "and verify top_of_book_coverage_pct"
 )
+ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def _emit_progress(callback: ProgressCallback | None, **payload: Any) -> None:
+    if callback is None:
+        return
+    callback(payload)
+
+
+def _estimated_strategy_runs(
+    *,
+    candidate_count: int,
+    scenario_count: int,
+    split_count: int,
+    include_walk_forward: bool,
+    walk_forward_split_count: int,
+) -> int:
+    base_split_count = split_count
+    if include_walk_forward:
+        base_split_count = max(0, split_count - walk_forward_split_count)
+    return int(candidate_count) * int(scenario_count) * int(base_split_count + walk_forward_split_count)
 
 
 def run_research_backtest(
@@ -55,19 +77,44 @@ def run_research_backtest(
     execution_calibration: dict[str, Any] | None = None,
     manifest_path: str | None = None,
     command_args: dict[str, Any] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    started = time.perf_counter()
+    manifest_hash = manifest.manifest_hash()
+    _emit_progress(
+        progress_callback,
+        stage="start",
+        manifest_hash=manifest_hash,
+        db_path=str(db_path),
+        deployment_tier=manifest.deployment_tier,
+    )
     _validate_strategy_data_requirements(manifest)
-    snapshots = {
-        "train": load_dataset_split(db_path=db_path, manifest=manifest, split_name="train"),
-        "validation": load_dataset_split(db_path=db_path, manifest=manifest, split_name="validation"),
-    }
+    snapshots = {}
+    for split_name in ("train", "validation"):
+        snapshot = load_dataset_split(db_path=db_path, manifest=manifest, split_name=split_name)
+        snapshots[split_name] = snapshot
+        _emit_progress(progress_callback, stage="load_split", split=split_name, candles=len(snapshot.candles))
     if manifest.dataset.split.final_holdout is not None:
         snapshots["final_holdout"] = load_dataset_split(
             db_path=db_path,
             manifest=manifest,
             split_name="final_holdout",
         )
+        _emit_progress(
+            progress_callback,
+            stage="load_split",
+            split="final_holdout",
+            candles=len(snapshots["final_holdout"].candles),
+        )
     quality_reports = _quality_reports(db_path=db_path, snapshots=snapshots)
+    for split_name, report in sorted(quality_reports.items()):
+        _emit_progress(
+            progress_callback,
+            stage="quality_report",
+            split=split_name,
+            status=report.quality_gate_status,
+            reasons=",".join(report.quality_gate_reasons) if report.quality_gate_reasons else "none",
+        )
     _require_enough_candles(snapshots.values())
 
     candidates = _evaluate_candidates(
@@ -76,6 +123,7 @@ def run_research_backtest(
         quality_reports=quality_reports,
         include_walk_forward=False,
         execution_calibration=execution_calibration,
+        progress_callback=progress_callback,
     )
     report = _report_payload(
         manifest=manifest,
@@ -89,6 +137,12 @@ def run_research_backtest(
         command_args=command_args,
         execution_calibration=execution_calibration,
     )
+    _emit_progress(
+        progress_callback,
+        stage="report_write",
+        experiment_id=manifest.experiment_id,
+        candidate_count=len(candidates),
+    )
     paths, content_hash = write_research_report(
         manager=manager,
         experiment_id=manifest.experiment_id,
@@ -97,6 +151,13 @@ def run_research_backtest(
     )
     report["content_hash"] = content_hash
     report["artifact_paths"] = _path_payload(paths)
+    _emit_progress(
+        progress_callback,
+        stage="complete",
+        experiment_id=manifest.experiment_id,
+        candidate_count=len(candidates),
+        elapsed_s=round(time.perf_counter() - started, 3),
+    )
     return report
 
 
@@ -109,7 +170,16 @@ def run_research_walk_forward(
     execution_calibration: dict[str, Any] | None = None,
     manifest_path: str | None = None,
     command_args: dict[str, Any] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    started = time.perf_counter()
+    _emit_progress(
+        progress_callback,
+        stage="start",
+        manifest_hash=manifest.manifest_hash(),
+        db_path=str(db_path),
+        deployment_tier=manifest.deployment_tier,
+    )
     if manifest.walk_forward is None:
         raise ResearchValidationError("walk_forward_missing")
     _validate_strategy_data_requirements(manifest)
@@ -119,7 +189,17 @@ def run_research_walk_forward(
             f"walk_forward_insufficient_windows: available={len(windows)} min_windows={manifest.walk_forward.min_windows}"
         )
     snapshots = _load_walk_forward_snapshots(db_path=db_path, manifest=manifest, windows=windows)
+    for split_name, snapshot in sorted(snapshots.items()):
+        _emit_progress(progress_callback, stage="load_split", split=split_name, candles=len(snapshot.candles))
     quality_reports = _quality_reports(db_path=db_path, snapshots=snapshots)
+    for split_name, report in sorted(quality_reports.items()):
+        _emit_progress(
+            progress_callback,
+            stage="quality_report",
+            split=split_name,
+            status=report.quality_gate_status,
+            reasons=",".join(report.quality_gate_reasons) if report.quality_gate_reasons else "none",
+        )
     _require_enough_candles(snapshots.values())
     candidates = _evaluate_candidates(
         manifest=manifest,
@@ -127,6 +207,7 @@ def run_research_walk_forward(
         quality_reports=quality_reports,
         include_walk_forward=True,
         execution_calibration=execution_calibration,
+        progress_callback=progress_callback,
     )
     report = _report_payload(
         manifest=manifest,
@@ -140,6 +221,12 @@ def run_research_walk_forward(
         command_args=command_args,
         execution_calibration=execution_calibration,
     )
+    _emit_progress(
+        progress_callback,
+        stage="report_write",
+        experiment_id=manifest.experiment_id,
+        candidate_count=len(candidates),
+    )
     paths, content_hash = write_research_report(
         manager=manager,
         experiment_id=manifest.experiment_id,
@@ -148,6 +235,13 @@ def run_research_walk_forward(
     )
     report["content_hash"] = content_hash
     report["artifact_paths"] = _path_payload(paths)
+    _emit_progress(
+        progress_callback,
+        stage="complete",
+        experiment_id=manifest.experiment_id,
+        candidate_count=len(candidates),
+        elapsed_s=round(time.perf_counter() - started, 3),
+    )
     return report
 
 
@@ -158,6 +252,7 @@ def _evaluate_candidates(
     quality_reports: dict[str, DatasetQualityReport],
     include_walk_forward: bool,
     execution_calibration: dict[str, Any] | None,
+    progress_callback: ProgressCallback | None = None,
 ) -> list[dict[str, Any]]:
     raw_candidates = iter_parameter_candidates(manifest.parameter_space)
     aggregates: dict[str, dict[str, Any]] = {}
@@ -170,6 +265,26 @@ def _evaluate_candidates(
     runner = resolve_research_strategy(manifest.strategy_name)
     metrics_gate_policy = metrics_gate_policy_from_acceptance_gate(manifest.acceptance_gate)
     metrics_gate_policy_digest = metrics_gate_policy_hash(metrics_gate_policy)
+    _emit_progress(
+        progress_callback,
+        stage="workload",
+        candidate_count=len(raw_candidates),
+        scenario_count=len(manifest.execution_model.scenarios),
+        split_candle_counts=",".join(
+            f"{split_name}:{len(snapshot.candles)}" for split_name, snapshot in sorted(snapshots.items())
+        ),
+        estimated_strategy_runs=_estimated_strategy_runs(
+            candidate_count=len(raw_candidates),
+            scenario_count=len(manifest.execution_model.scenarios),
+            split_count=len(snapshots),
+            include_walk_forward=include_walk_forward,
+            walk_forward_split_count=sum(1 for key in snapshots if key.startswith("window_")),
+        ),
+        deployment_tier=manifest.deployment_tier,
+        top_of_book_requested=manifest.dataset.top_of_book is not None,
+        top_of_book_required=bool(manifest.dataset.top_of_book.required) if manifest.dataset.top_of_book else False,
+        calibration_required=manifest.execution_model.calibration_required,
+    )
 
     for scenario_index, scenario in enumerate(manifest.execution_model.scenarios):
         scenario_id = _scenario_id(scenario, scenario_index)
@@ -192,6 +307,15 @@ def _evaluate_candidates(
         base_results: list[dict[str, Any]] = []
         for index, params in enumerate(raw_candidates):
             param_candidate_id = candidate_id(params, index)
+            _emit_progress(
+                progress_callback,
+                stage="evaluate",
+                scenario=f"{scenario_index + 1}/{len(manifest.execution_model.scenarios)}",
+                candidate=f"{index + 1}/{len(raw_candidates)}",
+                split="train",
+                candles=len(snapshots["train"].candles),
+                candidate_id=param_candidate_id,
+            )
             train = runner(
                 dataset=snapshots["train"],
                 parameter_values=params,
@@ -209,6 +333,15 @@ def _evaluate_candidates(
                     ),
                 ),
                 execution_timing_policy=manifest.execution_timing,
+            )
+            _emit_progress(
+                progress_callback,
+                stage="evaluate",
+                scenario=f"{scenario_index + 1}/{len(manifest.execution_model.scenarios)}",
+                candidate=f"{index + 1}/{len(raw_candidates)}",
+                split="validation",
+                candles=len(snapshots["validation"].candles),
+                candidate_id=param_candidate_id,
             )
             validation = runner(
                 dataset=snapshots["validation"],
@@ -228,14 +361,24 @@ def _evaluate_candidates(
                 ),
                 execution_timing_policy=manifest.execution_timing,
             )
-            final_holdout = (
-                runner(
+            final_holdout = None
+            if "final_holdout" in snapshots:
+                _emit_progress(
+                    progress_callback,
+                    stage="evaluate",
+                    scenario=f"{scenario_index + 1}/{len(manifest.execution_model.scenarios)}",
+                    candidate=f"{index + 1}/{len(raw_candidates)}",
+                    split="final_holdout",
+                    candles=len(snapshots["final_holdout"].candles),
+                    candidate_id=param_candidate_id,
+                )
+                final_holdout = runner(
                     dataset=snapshots["final_holdout"],
                     parameter_values=params,
                     fee_rate=scenario.fee_rate,
                     slippage_bps=float(scenario.slippage_bps),
                     parameter_stability_score=None,
-                        execution_model=_execution_model_from_scenario(
+                    execution_model=_execution_model_from_scenario(
                         scenario,
                         seed_context=_seed_context(
                             manifest_hash=manifest_hash,
@@ -244,12 +387,9 @@ def _evaluate_candidates(
                             parameter_candidate_id=param_candidate_id,
                             split_name="final_holdout",
                         ),
-                        ),
-                        execution_timing_policy=manifest.execution_timing,
-                    )
-                if "final_holdout" in snapshots
-                else None
-            )
+                    ),
+                    execution_timing_policy=manifest.execution_timing,
+                )
             walk_forward = (
                 _walk_forward_metrics(
                     manifest=manifest,

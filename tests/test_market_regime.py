@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import pytest
+
 from bithumb_bot.market_regime import (
     MARKET_REGIME_VERSION,
     RegimeAcceptanceGate,
     aggregate_regime_coverage,
     aggregate_regime_performance,
     classify_market_regime,
+    classify_market_regime_from_arrays,
     evaluate_live_regime_policy,
     evaluate_regime_acceptance_gate,
 )
@@ -57,6 +60,54 @@ def test_classifier_handles_missing_or_zero_volume() -> None:
 
     assert snapshot.volume_bucket == "unknown"
     assert snapshot.liquidity_bucket == "unknown"
+
+
+def test_array_classifier_matches_legacy_labels_for_representative_regimes() -> None:
+    cases = [
+        (_candles([100, 101, 102, 103, 104, 105], [100, 100, 120, 140, 160, 180]), 104.0, 102.0, 0.0),
+        (_candles([105, 104, 103, 102, 101, 100], [200, 180, 160, 120, 90, 70]), 100.0, 102.0, 0.0),
+        ([{"close": 100.0, "high": 100.01, "low": 99.99, "volume": 100.0} for _ in range(6)], 100.001, 100.0, 0.0),
+        (_candles([100, 101, 102, 103, 120, 140], [100, 100, 100, 100, 100, 100]), 130.0, 110.0, 0.1),
+        (_candles([100, 101], [0, 0]), 101.0, 100.0, 0.0),
+    ]
+    stable_fields = (
+        "price_regime",
+        "trend_strength_bucket",
+        "volatility_bucket",
+        "volume_bucket",
+        "liquidity_bucket",
+        "composite_regime",
+        "legacy_regime",
+        "block_reason",
+        "allows_sma_entry",
+    )
+
+    for candles, short_sma, long_sma, overextended_ratio in cases:
+        legacy = classify_market_regime(
+            candles=candles,
+            short_sma=short_sma,
+            long_sma=long_sma,
+            overextended_lookback=1,
+            overextended_max_return_ratio=overextended_ratio,
+        )
+        fast = classify_market_regime_from_arrays(
+            closes=[float(candle["close"]) for candle in candles],
+            highs=[float(candle["high"]) for candle in candles],
+            lows=[float(candle["low"]) for candle in candles],
+            volumes=[float(candle["volume"]) for candle in candles],
+            index=len(candles) - 1,
+            short_sma=short_sma,
+            long_sma=long_sma,
+            overextended_lookback=1,
+            overextended_max_return_ratio=overextended_ratio,
+        )
+
+        legacy_payload = legacy.as_dict()
+        fast_payload = fast.as_dict()
+        for field in stable_fields:
+            assert fast_payload[field] == legacy_payload[field]
+        assert fast.trend_strength == pytest.approx(legacy.trend_strength)
+        assert fast.volatility_ratio == pytest.approx(legacy.volatility_ratio)
 
 
 def test_regime_aggregation_handles_zero_loss_and_zero_trade_rows() -> None:

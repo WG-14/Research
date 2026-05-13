@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from bithumb_bot.research.cli import _print_report_summary
+from bithumb_bot.research.cli import _print_report_summary, _print_research_backtest_progress
 from bithumb_bot.research.run_summary import build_research_run_summary
 
 
@@ -302,3 +302,32 @@ def test_print_report_summary_renders_top_of_book_warning_context(capsys) -> Non
         "top_of_book_next_action=collect orderbook top snapshots with sync-orderbook-top, "
         "rerun research-backtest, and verify top_of_book_coverage_pct"
     ) in output
+
+
+def test_research_backtest_progress_lines_are_operator_visible(capsys) -> None:
+    _print_research_backtest_progress(
+        {
+            "stage": "start",
+            "manifest_hash": "sha256:manifest",
+            "db_path": "/runtime/data/paper/trades/paper.sqlite",
+        }
+    )
+    _print_research_backtest_progress({"stage": "load_split", "split": "train", "candles": 4320})
+    _print_research_backtest_progress(
+        {
+            "stage": "evaluate",
+            "scenario": "1/1",
+            "candidate": "1/1",
+            "split": "validation",
+            "candles": 4297,
+        }
+    )
+    _print_research_backtest_progress({"stage": "report_write", "experiment_id": "summary_exp"})
+    _print_research_backtest_progress({"stage": "complete", "experiment_id": "summary_exp"})
+
+    output = capsys.readouterr().out
+    assert "[RESEARCH-BACKTEST] stage=start" in output
+    assert "stage=load_split" in output
+    assert "stage=evaluate" in output
+    assert "stage=report_write" in output
+    assert "stage=complete" in output

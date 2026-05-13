@@ -43,6 +43,32 @@ uv run bithumb-bot research-promote-candidate --experiment-id sma_filter_v1_2026
 Research commands follow the explicit env model. They do not implicitly load repo-root `.env`.
 Use `BITHUMB_ENV_FILE`, `BITHUMB_ENV_FILE_PAPER`, or process env to select DB and runtime roots.
 
+## Backtest Progress And Failure Signals
+
+`research-backtest` emits operator-visible stage lines before and during candidate evaluation. The progress stream is diagnostic stdout and does not change report payload hashes or promotion evidence. Typical stages include `start`, `load_split`, `quality_report`, `workload`, `evaluate`, `report_write`, and `complete`. The workload line includes candidate count, scenario count, split candle counts, estimated strategy runs, deployment tier, top-of-book requested/required status, and execution calibration requirement status.
+
+If `timeout` or the operating system stops the process, a final summary and report artifact may not exist. Interpret common return codes as:
+
+- `rc=124`: the `timeout` command killed the process.
+- `rc=130`: interrupted with Ctrl+C / SIGINT.
+- `rc=137`: usually SIGKILL, commonly from external kill or possible OOM.
+
+Empty stdout plus no report usually means the process was killed or hung before it could print the final summary or caught error. With current progress output, the last `[RESEARCH-BACKTEST] stage=...` line identifies the last entered stage before the stop.
+
+Recommended timeout capture:
+
+```bash
+set -o pipefail
+
+timeout 300 uv run bithumb-bot research-backtest \
+  --manifest "$TINY_MANIFEST" \
+  2>&1 | tee "$OUTDIR/research_backtest_tiny_stdout.txt"
+
+echo "backtest_rc=${PIPESTATUS[0]}"
+```
+
+`deployment_tier=research_only` backtests are diagnostic research outputs, not production promotion evidence. The research SMA performance fixes do not relax dataset quality gates, missing-candle policy, top-of-book requirements, execution calibration requirements, promotion gates, or production evidence requirements.
+
 ## Data Readiness And Historical Backfill
 
 Run `research-readiness` before `research-backtest` when using production or production-like manifests:

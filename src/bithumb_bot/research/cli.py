@@ -27,6 +27,7 @@ def cmd_research_backtest(*, manifest_path: str, execution_calibration_path: str
                 "manifest": manifest_path,
                 "execution_calibration": execution_calibration_path,
             },
+            progress_callback=_print_research_backtest_progress,
         )
     except (ManifestValidationError, ExecutionCalibrationError, ResearchValidationError, OSError, ValueError) as exc:
         print(f"[RESEARCH-BACKTEST] error={exc}")
@@ -49,6 +50,7 @@ def cmd_research_walk_forward(*, manifest_path: str, execution_calibration_path:
                 "manifest": manifest_path,
                 "execution_calibration": execution_calibration_path,
             },
+            progress_callback=_print_research_walk_forward_progress,
         )
     except (ManifestValidationError, ExecutionCalibrationError, ResearchValidationError, OSError, ValueError) as exc:
         print(f"[RESEARCH-WALK-FORWARD] error={exc}")
@@ -180,6 +182,26 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     warnings = report.get("warnings") or []
     print(f"  warnings={','.join(str(item) for item in warnings) if warnings else 'none'}")
     _print_top_of_book_summary(report)
+
+
+def _print_research_backtest_progress(event: dict[str, object]) -> None:
+    _print_progress_event("RESEARCH-BACKTEST", event)
+
+
+def _print_research_walk_forward_progress(event: dict[str, object]) -> None:
+    _print_progress_event("RESEARCH-WALK-FORWARD", event)
+
+
+def _print_progress_event(label: str, event: dict[str, object]) -> None:
+    parts = [f"stage={event.get('stage', 'unknown')}"]
+    for key in sorted(key for key in event if key != "stage"):
+        value = event[key]
+        if isinstance(value, bool):
+            rendered = "1" if value else "0"
+        else:
+            rendered = str(value)
+        parts.append(f"{key}={rendered}")
+    print(f"[{label}] " + " ".join(parts), flush=True)
 
 
 def _print_metrics_v2_summary(report: dict[str, object]) -> None:
