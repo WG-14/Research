@@ -597,6 +597,26 @@ def _write_manifest(path: Path, *, calibration_required: bool = False, calibrati
                     "parameter_stability_required": False,
                     "final_holdout_required_for_promotion": False,
                 },
+                "statistical_validation": {
+                    "required_for_promotion": True,
+                    "benchmark": "cash",
+                    "primary_metric": "net_excess_return",
+                    "selection_universe": "all_parameter_candidates_all_required_scenarios",
+                    "multiple_testing_scope": "experiment_family",
+                    "bootstrap": {
+                        "method": "metric_centered_max_bootstrap",
+                        "n_bootstrap": 100,
+                        "block_length_policy": "not_applicable_summary_metric",
+                        "seed_policy": "derived_from_selection_universe_hash",
+                    },
+                    "gates": {
+                        "max_reality_check_p_value": 0.05,
+                        "max_spa_p_value": None,
+                        "min_deflated_sharpe_probability": None,
+                        "max_holdout_reuse_count": 0,
+                        "max_attempt_index_without_new_hypothesis": 1,
+                    },
+                },
             }
         ),
         encoding="utf-8",

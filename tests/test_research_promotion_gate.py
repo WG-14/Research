@@ -9,7 +9,7 @@ from bithumb_bot.paths import PathManager
 from bithumb_bot import app as app_module
 from bithumb_bot.execution_reality_contract import build_execution_reality_contract
 from bithumb_bot.research import cli as research_cli
-from bithumb_bot.research.hashing import content_hash_payload, sha256_prefixed
+from bithumb_bot.research.hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
 from bithumb_bot.research.lineage import build_research_lineage, compute_lineage_hash, reproduce_promotion
 from bithumb_bot.research.metrics_gate_policy import metrics_gate_policy_hash
 from bithumb_bot.research.promotion_gate import PromotionGateError, build_candidate_profile, promote_candidate
@@ -421,7 +421,7 @@ def _write_report_without_lineage(manager: PathManager, candidate: dict[str, obj
         "repository_version": "test",
         "candidates": [candidate],
     }
-    payload["content_hash"] = sha256_prefixed(content_hash_payload(payload))
+    payload["content_hash"] = sha256_prefixed(report_content_hash_payload(payload))
     write_json_atomic(path, payload)
 
 
@@ -430,6 +430,9 @@ def _write_report_with_lineage(
     candidate: dict[str, object],
     *,
     lineage_calibration_hash: str | None | object = ...,
+    report_overrides: dict[str, object] | None = None,
+    include_statistical_evidence: bool = True,
+    statistical_evidence_overrides: dict[str, object] | None = None,
 ) -> None:
     path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
     if lineage_calibration_hash is ...:
@@ -481,8 +484,110 @@ def _write_report_with_lineage(
         "lineage_hash": lineage["lineage_hash"],
         "candidates": [candidate],
     }
-    payload["content_hash"] = sha256_prefixed(content_hash_payload(payload))
+    if report_overrides:
+        payload.update(report_overrides)
+    if include_statistical_evidence and str(candidate.get("deployment_tier") or "") in {
+        "paper_candidate",
+        "live_dry_run_candidate",
+        "small_live_candidate",
+    }:
+        _attach_statistical_evidence(manager, payload, candidate, statistical_evidence_overrides or {})
+    payload["content_hash"] = sha256_prefixed(report_content_hash_payload(payload))
     write_json_atomic(path, payload)
+
+
+def _statistical_contract(**gate_overrides: object) -> dict[str, object]:
+    gates = {
+        "max_reality_check_p_value": 0.05,
+        "max_spa_p_value": None,
+        "min_deflated_sharpe_probability": None,
+        "max_holdout_reuse_count": 10,
+        "max_attempt_index_without_new_hypothesis": 20,
+    }
+    gates.update(gate_overrides)
+    return {
+        "required_for_promotion": True,
+        "benchmark": "cash",
+        "primary_metric": "net_excess_return",
+        "selection_universe": "all_parameter_candidates_all_required_scenarios",
+        "multiple_testing_scope": "experiment_family",
+        "bootstrap": {
+            "method": "metric_centered_max_bootstrap",
+            "n_bootstrap": 100,
+            "block_length_policy": "not_applicable_summary_metric",
+            "seed_policy": "derived_from_selection_universe_hash",
+        },
+        "gates": gates,
+    }
+
+
+def _attach_statistical_evidence(
+    manager: PathManager,
+    report: dict[str, object],
+    candidate: dict[str, object],
+    overrides: dict[str, object],
+) -> None:
+    contract = overrides.pop("statistical_validation_contract", None) or _statistical_contract()
+    selection_hash = str(overrides.pop("selection_universe_hash", None) or "sha256:selection")
+    evidence = {
+        "artifact_type": "statistical_selection_evidence",
+        "schema_version": 1,
+        "experiment_id": report["experiment_id"],
+        "experiment_family_id": report.get("experiment_family_id"),
+        "hypothesis_id": report.get("hypothesis_id"),
+        "manifest_hash": report["manifest_hash"],
+        "dataset_content_hash": report["dataset_content_hash"],
+        "dataset_quality_hash": report.get("dataset_quality_hash"),
+        "selection_universe_hash": selection_hash,
+        "candidate_count": 1,
+        "search_budget": report.get("search_budget"),
+        "parameter_grid_size": report.get("parameter_grid_size"),
+        "attempt_index": report.get("attempt_index"),
+        "holdout_reuse_count": report.get("holdout_reuse_count"),
+        "dataset_reuse_policy": report.get("dataset_reuse_policy"),
+        "benchmark": "cash",
+        "primary_metric": "net_excess_return",
+        "primary_metric_source": "validation_metrics",
+        "bootstrap_method": "metric_centered_max_bootstrap",
+        "n_bootstrap": 100,
+        "block_length": None,
+        "block_length_policy": "not_applicable_summary_metric",
+        "seed": 1,
+        "effective_trial_count": 1,
+        "white_reality_check_p_value": 0.01,
+        "statistical_gate_result": "PASS",
+        "gate_fail_reasons": [],
+        "limitations": [
+            "metric_summary_bootstrap_not_trade_or_bar_return_bootstrap",
+            "spa_not_implemented",
+            "deflated_sharpe_not_implemented",
+        ],
+        "statistical_validation_contract": contract,
+    }
+    evidence.update(overrides)
+    evidence["content_hash"] = sha256_prefixed(content_hash_payload(evidence))
+    evidence_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "statistical_selection_evidence.json"
+    write_json_atomic(evidence_path, evidence)
+    report["statistical_validation_required"] = True
+    report["statistical_validation_contract"] = contract
+    report["selection_universe_hash"] = selection_hash
+    report["statistical_evidence_hash"] = evidence["content_hash"]
+    report["statistical_evidence_path"] = str(evidence_path)
+    report["statistical_gate_result"] = evidence.get("statistical_gate_result")
+    report["statistical_gate_fail_reasons"] = evidence.get("gate_fail_reasons")
+    report["white_reality_check_p_value"] = evidence.get("white_reality_check_p_value")
+    report["effective_trial_count"] = evidence.get("effective_trial_count")
+    candidate["statistical_validation_required"] = True
+    candidate["statistical_validation_contract"] = contract
+    candidate["selection_universe_hash"] = selection_hash
+    candidate["statistical_evidence_hash"] = evidence["content_hash"]
+    candidate["statistical_evidence_path"] = str(evidence_path)
+    candidate["statistical_gate_result"] = evidence.get("statistical_gate_result")
+    candidate["statistical_gate_fail_reasons"] = evidence.get("gate_fail_reasons")
+    candidate["white_reality_check_p_value"] = evidence.get("white_reality_check_p_value")
+    candidate["effective_trial_count"] = evidence.get("effective_trial_count")
+    candidate.pop("candidate_profile_hash", None)
+    candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
 
 
 def _walk_forward_candidate(backtest_candidate: dict[str, object], **overrides) -> dict[str, object]:
@@ -515,12 +620,12 @@ def _write_walk_forward_report(manager: PathManager, candidate: dict[str, object
         "manifest_hash": "sha256:manifest",
         "candidates": [candidate],
     }
-    payload["content_hash"] = sha256_prefixed(content_hash_payload(payload))
+    payload["content_hash"] = sha256_prefixed(report_content_hash_payload(payload))
     write_json_atomic(path, payload)
 
 
 def _canonical_report_hash(payload: dict[str, object]) -> str:
-    return sha256_prefixed(content_hash_payload({key: value for key, value in payload.items() if key != "content_hash"}))
+    return sha256_prefixed(report_content_hash_payload(payload))
 
 
 def test_promotion_refuses_candidate_without_validation_evidence(tmp_path, monkeypatch) -> None:
@@ -906,6 +1011,109 @@ def test_lineage_backed_promotion_records_reproducibility_fields(tmp_path, monke
     assert summary["candidate_profile_hash"] == result.artifact["candidate_profile_hash"]
 
 
+def test_production_promotion_refuses_deterministic_pass_without_statistical_evidence(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate(
+        parameter_candidate_id="candidate_lucky_winner",
+        parameter_values={"SMA_SHORT": 2, "SMA_LONG": 4, "SMA_FILTER_GAP_MIN_RATIO": 0.01},
+    )
+    candidate.pop("candidate_profile_hash", None)
+    candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+    _write_report_with_lineage(
+        manager,
+        candidate,
+        report_overrides={
+            "search_budget": 5000,
+            "parameter_grid_size": 5000,
+            "attempt_index": 17,
+            "holdout_reuse_count": 9,
+        },
+        include_statistical_evidence=False,
+    )
+
+    with pytest.raises(PromotionGateError, match="statistical_contract_missing|statistical_evidence_missing"):
+        promote_candidate(
+            experiment_id="promo_exp",
+            candidate_id="candidate_lucky_winner",
+            manager=manager,
+        )
+
+def test_production_promotion_refuses_excessive_holdout_reuse_and_attempt_budget(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report_with_lineage(
+        manager,
+        candidate,
+        report_overrides={
+            "attempt_index": 17,
+            "holdout_reuse_count": 9,
+        },
+        statistical_evidence_overrides={
+            "attempt_index": 17,
+            "holdout_reuse_count": 9,
+            "statistical_gate_result": "FAIL",
+            "gate_fail_reasons": ["attempt_budget_exceeded", "holdout_reuse_budget_exceeded"],
+        },
+    )
+
+    with pytest.raises(PromotionGateError, match="attempt_budget_exceeded"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_production_promotion_refuses_statistical_evidence_hash_mismatch(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report_with_lineage(manager, candidate)
+    report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["statistical_evidence_hash"] = "sha256:tampered"
+    report["candidates"][0]["statistical_evidence_hash"] = "sha256:tampered"
+    report["candidates"][0].pop("candidate_profile_hash", None)
+    report["candidates"][0]["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(report["candidates"][0]))
+    report.pop("content_hash", None)
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+    write_json_atomic(report_path, report)
+
+    with pytest.raises(PromotionGateError, match="statistical_evidence_hash_mismatch"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_production_promotion_refuses_selection_universe_mismatch(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report_with_lineage(
+        manager,
+        candidate,
+        statistical_evidence_overrides={"selection_universe_hash": "sha256:evidence-selection"},
+    )
+    report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["selection_universe_hash"] = "sha256:report-selection"
+    report["candidates"][0]["selection_universe_hash"] = "sha256:report-selection"
+    report["candidates"][0].pop("candidate_profile_hash", None)
+    report["candidates"][0]["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(report["candidates"][0]))
+    report.pop("content_hash", None)
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+    write_json_atomic(report_path, report)
+
+    with pytest.raises(PromotionGateError, match="selection_universe_hash_mismatch"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_research_only_promotion_keeps_explicit_statistical_compatibility(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate(walk_forward_required=False)
+    _write_report_with_lineage(manager, candidate)
+
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+    assert result.artifact["gate_result"] == "PASS"
+    assert result.artifact["statistical_validation_required"] is False
+
+
 def test_promotion_refuses_missing_lineage_by_default(tmp_path, monkeypatch) -> None:
     manager = _manager(tmp_path, monkeypatch)
     _write_report_without_lineage(manager, _candidate())
@@ -922,7 +1130,7 @@ def test_promotion_refuses_invalid_lineage_hash(tmp_path, monkeypatch) -> None:
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     payload["lineage"]["lineage_hash"] = "sha256:tampered"
     payload.pop("content_hash", None)
-    payload["content_hash"] = sha256_prefixed(content_hash_payload(payload))
+    payload["content_hash"] = sha256_prefixed(report_content_hash_payload(payload))
     write_json_atomic(report_path, payload)
 
     with pytest.raises(PromotionGateError, match="promotion refused: lineage_hash_mismatch"):
@@ -959,7 +1167,7 @@ def test_legacy_lineage_promotion_records_dataset_quality_bypass_when_quality_ev
     for key in ("dataset_quality_hash", "dataset_quality_gate_status", "dataset_quality_gate_reasons", "dataset_quality_reports"):
         payload.pop(key, None)
     payload.pop("content_hash", None)
-    payload["content_hash"] = sha256_prefixed(content_hash_payload(payload))
+    payload["content_hash"] = sha256_prefixed(report_content_hash_payload(payload))
     write_json_atomic(report_path, payload)
 
     result = promote_candidate(
@@ -985,7 +1193,7 @@ def test_legacy_lineage_promotion_does_not_bypass_failed_dataset_quality(tmp_pat
     payload["dataset_quality_gate_status"] = "FAIL"
     payload["dataset_quality_gate_reasons"] = ["dataset_quality_train_missing_candles"]
     payload.pop("content_hash", None)
-    payload["content_hash"] = sha256_prefixed(content_hash_payload(payload))
+    payload["content_hash"] = sha256_prefixed(report_content_hash_payload(payload))
     write_json_atomic(report_path, payload)
 
     with pytest.raises(PromotionGateError, match="dataset_quality_train_missing_candles"):
@@ -1028,6 +1236,38 @@ def test_reproduce_reports_backtest_hash_mismatch(tmp_path, monkeypatch) -> None
     assert summary["ok"] is False
     assert summary["reason"] == "backtest_report_hash_mismatch"
     assert summary["mismatches"][0]["field"] == "backtest_report_hash"
+
+
+def test_reproduce_fails_when_statistical_evidence_missing(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report_with_lineage(manager, candidate)
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    Path(result.artifact["statistical_evidence_path"]).unlink()
+
+    summary = reproduce_promotion(result.artifact_path).summary
+
+    assert summary["ok"] is False
+    assert summary["reason"] == "statistical_evidence_missing"
+
+
+def test_reproduce_fails_when_statistical_evidence_hash_mismatches(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report_with_lineage(manager, candidate)
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    evidence_path = Path(result.artifact["statistical_evidence_path"])
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence["white_reality_check_p_value"] = 0.99
+    evidence["content_hash"] = sha256_prefixed(
+        content_hash_payload({key: value for key, value in evidence.items() if key != "content_hash"})
+    )
+    write_json_atomic(evidence_path, evidence)
+
+    summary = reproduce_promotion(result.artifact_path).summary
+
+    assert summary["ok"] is False
+    assert summary["reason"] == "statistical_evidence_hash_mismatch"
 
 
 def test_reproduce_recomputes_backtest_hash_when_body_tampered_but_embedded_hash_unchanged(

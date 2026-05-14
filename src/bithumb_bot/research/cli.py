@@ -87,6 +87,15 @@ def cmd_research_promote_candidate(
     print(f"  gate_result={result.artifact['gate_result']}")
     print(f"  artifact_path={result.artifact_path}")
     print(f"  content_hash={result.content_hash}")
+    print(f"  statistical_validation_required={1 if result.artifact.get('statistical_validation_required') else 0}")
+    print(f"  selection_universe_hash={result.artifact.get('selection_universe_hash') or 'none'}")
+    print(f"  statistical_evidence_hash={result.artifact.get('statistical_evidence_hash') or 'none'}")
+    print(f"  white_reality_check_p_value={result.artifact.get('white_reality_check_p_value')}")
+    print(f"  statistical_gate_result={result.artifact.get('statistical_gate_result') or 'none'}")
+    print(
+        "  statistical_gate_fail_reasons="
+        f"{_format_items(tuple(str(item) for item in result.artifact.get('statistical_gate_fail_reasons') or []))}"
+    )
     _print_execution_event_summary(result.artifact.get("execution_event_summary"))
     print(
         "  has_execution_calibration_warning="
@@ -123,6 +132,20 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     print(f"  candidate_gate_counts={_format_counts(summary.candidate_gate_counts)}")
     print(f"  top_fail_reasons={_format_counts(summary.top_fail_reasons)}")
     print(f"  promotion_allowed={1 if summary.promotion_allowed else 0}")
+    print(f"  statistical_validation_required={1 if report.get('statistical_validation_required') else 0}")
+    print(f"  statistical_candidate_count={report.get('candidate_count')}")
+    print(f"  statistical_parameter_grid_size={report.get('parameter_grid_size')}")
+    print(f"  statistical_search_budget={report.get('search_budget')}")
+    print(f"  statistical_attempt_index={report.get('attempt_index')}")
+    print(f"  statistical_holdout_reuse_count={report.get('holdout_reuse_count')}")
+    print(f"  selection_universe_hash={report.get('selection_universe_hash') or 'none'}")
+    print(f"  statistical_evidence_hash={report.get('statistical_evidence_hash') or 'none'}")
+    print(f"  white_reality_check_p_value={report.get('white_reality_check_p_value')}")
+    print(f"  statistical_gate_result={report.get('statistical_gate_result') or 'none'}")
+    print(
+        "  statistical_gate_fail_reasons="
+        f"{_format_items(tuple(str(item) for item in report.get('statistical_gate_fail_reasons') or []))}"
+    )
     print(f"  nearest_failed_candidate_id={summary.nearest_failed_candidate_id or 'none'}")
     print(
         "  nearest_failed_candidate_fail_reasons="

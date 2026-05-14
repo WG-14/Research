@@ -90,6 +90,29 @@ def _manifest_payload() -> dict[str, object]:
     }
 
 
+def _statistical_validation() -> dict[str, object]:
+    return {
+        "required_for_promotion": True,
+        "benchmark": "cash",
+        "primary_metric": "net_excess_return",
+        "selection_universe": "all_parameter_candidates_all_required_scenarios",
+        "multiple_testing_scope": "experiment_family",
+        "bootstrap": {
+            "method": "metric_centered_max_bootstrap",
+            "n_bootstrap": 100,
+            "block_length_policy": "not_applicable_summary_metric",
+            "seed_policy": "derived_from_selection_universe_hash",
+        },
+        "gates": {
+            "max_reality_check_p_value": 0.05,
+            "max_spa_p_value": None,
+            "min_deflated_sharpe_probability": None,
+            "max_holdout_reuse_count": 0,
+            "max_attempt_index_without_new_hypothesis": 1,
+        },
+    }
+
+
 def test_research_only_sma_candle_only_manifest_remains_allowed_but_limited() -> None:
     manifest = parse_manifest(_manifest_payload())
 
@@ -101,6 +124,7 @@ def test_research_only_sma_candle_only_manifest_remains_allowed_but_limited() ->
 def test_production_bound_candle_close_manifest_fails_closed() -> None:
     payload = _manifest_payload()
     payload["deployment_tier"] = "paper_candidate"
+    payload["statistical_validation"] = _statistical_validation()
     payload["execution_timing"] = {
         "fill_reference_policy": "candle_close_legacy",
         "allow_same_candle_close_fill": True,
@@ -116,6 +140,7 @@ def test_production_bound_candle_close_manifest_fails_closed() -> None:
 def test_production_bound_top_of_book_policy_requires_top_of_book_dataset() -> None:
     payload = _manifest_payload()
     payload["deployment_tier"] = "paper_candidate"
+    payload["statistical_validation"] = _statistical_validation()
     payload["execution_timing"] = {
         "fill_reference_policy": "latency_adjusted_orderbook",
         "missing_quote_policy": "fail",

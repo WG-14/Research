@@ -226,6 +226,42 @@ def test_print_report_summary_renders_operator_diagnostics(capsys) -> None:
     assert "next_action=do_not_promote_review_walk_forward_windows" in output
 
 
+def test_print_report_summary_renders_statistical_selection_diagnostics(capsys) -> None:
+    report = _report(
+        candidates=[_candidate("candidate_001", gate="PASS")],
+        best_candidate_id="candidate_001",
+        gate_result="PASS",
+    )
+    report.update(
+        {
+            "statistical_validation_required": True,
+            "parameter_grid_size": 5000,
+            "search_budget": 5000,
+            "attempt_index": 3,
+            "holdout_reuse_count": 2,
+            "selection_universe_hash": "sha256:selection",
+            "statistical_evidence_hash": "sha256:evidence",
+            "white_reality_check_p_value": 0.2,
+            "statistical_gate_result": "FAIL",
+            "statistical_gate_fail_reasons": ["reality_check_p_value_failed"],
+        }
+    )
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+
+    output = capsys.readouterr().out
+    assert "statistical_validation_required=1" in output
+    assert "statistical_parameter_grid_size=5000" in output
+    assert "statistical_search_budget=5000" in output
+    assert "statistical_attempt_index=3" in output
+    assert "statistical_holdout_reuse_count=2" in output
+    assert "selection_universe_hash=sha256:selection" in output
+    assert "statistical_evidence_hash=sha256:evidence" in output
+    assert "white_reality_check_p_value=0.2" in output
+    assert "statistical_gate_result=FAIL" in output
+    assert "statistical_gate_fail_reasons=reality_check_p_value_failed" in output
+
+
 def test_print_report_summary_renders_metrics_v2_for_passing_candidate(capsys) -> None:
     report = _report(
         candidates=[

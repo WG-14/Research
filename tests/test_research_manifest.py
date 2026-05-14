@@ -35,6 +35,54 @@ def _manifest() -> dict[str, object]:
     }
 
 
+def _statistical_validation() -> dict[str, object]:
+    return {
+        "required_for_promotion": True,
+        "benchmark": "cash",
+        "primary_metric": "net_excess_return",
+        "selection_universe": "all_parameter_candidates_all_required_scenarios",
+        "multiple_testing_scope": "experiment_family",
+        "bootstrap": {
+            "method": "metric_centered_max_bootstrap",
+            "n_bootstrap": 100,
+            "block_length_policy": "not_applicable_summary_metric",
+            "seed_policy": "derived_from_selection_universe_hash",
+        },
+        "gates": {
+            "max_reality_check_p_value": 0.05,
+            "max_spa_p_value": None,
+            "min_deflated_sharpe_probability": None,
+            "max_holdout_reuse_count": 0,
+            "max_attempt_index_without_new_hypothesis": 1,
+        },
+    }
+
+
+def _production_manifest() -> dict[str, object]:
+    payload = _manifest()
+    payload["deployment_tier"] = "paper_candidate"
+    payload["execution_model"] = {
+        "scenario_policy": "single_scenario",
+        "scenarios": [
+            {
+                "scenario_role": "base",
+                "label": "realistic_bithumb_app_fee_0004",
+                "fee_rate": 0.0004,
+                "fee_source": "operator_declared_bithumb_app_fee",
+                "fee_authority_policy": "runtime_fee_authority_must_match_or_fail",
+                "slippage_bps": 10,
+                "slippage_source": "execution_calibration",
+                "promotable_as_base": True,
+                "type": "fixed_bps",
+            }
+        ],
+        "calibration_required": True,
+        "calibration_strictness": "fail",
+    }
+    payload["statistical_validation"] = _statistical_validation()
+    return payload
+
+
 def test_manifest_parses_required_contract() -> None:
     manifest = parse_manifest(_manifest())
 
@@ -44,6 +92,47 @@ def test_manifest_parses_required_contract() -> None:
     assert manifest.execution_model.source == "legacy_cost_model"
     assert manifest.execution_model.scenarios[0].type == "fixed_bps"
     assert manifest.execution_model.scenarios[0].slippage_bps == 0.0
+
+
+def test_manifest_parses_statistical_validation_and_binds_hash() -> None:
+    payload = _manifest()
+    payload["statistical_validation"] = _statistical_validation()
+
+    manifest = parse_manifest(payload)
+    baseline_hash = manifest.manifest_hash()
+
+    assert manifest.statistical_validation is not None
+    assert manifest.statistical_validation.required_for_promotion is True
+    assert manifest.canonical_payload()["statistical_validation"]["primary_metric"] == "net_excess_return"
+
+    changed = _manifest()
+    changed["statistical_validation"] = _statistical_validation()
+    changed["statistical_validation"]["gates"]["max_holdout_reuse_count"] = 2
+    assert parse_manifest(changed).manifest_hash() != baseline_hash
+
+
+def test_production_bound_manifest_requires_statistical_validation() -> None:
+    payload = _production_manifest()
+    payload.pop("statistical_validation")
+
+    with pytest.raises(ManifestValidationError, match="statistical_validation required"):
+        parse_manifest(payload)
+
+
+def test_production_bound_manifest_rejects_malformed_statistical_validation() -> None:
+    payload = _production_manifest()
+    payload["statistical_validation"]["unexpected"] = True
+
+    with pytest.raises(ManifestValidationError, match="statistical_validation unsupported fields"):
+        parse_manifest(payload)
+
+
+def test_production_bound_manifest_rejects_disabled_statistical_promotion_gate() -> None:
+    payload = _production_manifest()
+    payload["statistical_validation"]["required_for_promotion"] = False
+
+    with pytest.raises(ManifestValidationError, match="required_for_promotion must be true"):
+        parse_manifest(payload)
 
 
 def test_manifest_parses_optional_metrics_v2_gate_fields() -> None:

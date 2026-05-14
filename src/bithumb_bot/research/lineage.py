@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .hashing import content_hash_payload, sha256_prefixed
+from .hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
 
 
 LINEAGE_SCHEMA_VERSION = 1
@@ -145,6 +145,9 @@ def build_promotion_lineage(
     decision_equivalence_report_path: str | None = None,
     decision_equivalence_report_hash: str | None = None,
     execution_calibration_artifact_hash: str | None = None,
+    statistical_evidence_path: str | None = None,
+    statistical_evidence_hash: str | None = None,
+    selection_universe_hash: str | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
     lineage = validate_lineage_artifact(base_lineage)
@@ -175,6 +178,9 @@ def build_promotion_lineage(
             "decision_equivalence_report_path": decision_equivalence_report_path,
             "decision_equivalence_report_hash": decision_equivalence_report_hash,
             "execution_calibration_artifact_hash": candidate_calibration_hash or base_calibration_hash,
+            "statistical_evidence_path": statistical_evidence_path,
+            "statistical_evidence_hash": statistical_evidence_hash,
+            "selection_universe_hash": selection_universe_hash,
             "created_at": created_at or datetime.now(timezone.utc).isoformat(),
         }
     )
@@ -205,6 +211,8 @@ def reproduce_promotion(promotion_path: str | Path) -> ReproducibilityResult:
         "walk_forward_report_hash": None,
         "candidate_profile_hash": None,
         "execution_calibration_artifact_hash": None,
+        "statistical_evidence_hash": None,
+        "selection_universe_hash": None,
         "mismatches": [],
         "missing_artifacts": [],
         "legacy_compatibility_used": False,
@@ -246,6 +254,8 @@ def reproduce_promotion(promotion_path: str | Path) -> ReproducibilityResult:
     summary["walk_forward_report_hash"] = lineage.get("walk_forward_report_hash")
     summary["candidate_profile_hash"] = lineage.get("candidate_profile_hash")
     summary["execution_calibration_artifact_hash"] = lineage.get("execution_calibration_artifact_hash")
+    summary["statistical_evidence_hash"] = lineage.get("statistical_evidence_hash")
+    summary["selection_universe_hash"] = lineage.get("selection_universe_hash")
 
     _compare(summary, "manifest_hash", promotion.get("manifest_hash"), lineage.get("manifest_hash"), "manifest_hash_mismatch")
     _compare(
@@ -272,6 +282,29 @@ def reproduce_promotion(promotion_path: str | Path) -> ReproducibilityResult:
     )
 
     _verify_artifact_hash(summary, lineage, "backtest_report", required=True)
+    statistical_required = bool(promotion.get("statistical_validation_required"))
+    if statistical_required:
+        _compare(
+            summary,
+            "statistical_evidence_hash",
+            promotion.get("statistical_evidence_hash"),
+            lineage.get("statistical_evidence_hash"),
+            "statistical_evidence_hash_mismatch",
+        )
+        _compare(
+            summary,
+            "selection_universe_hash",
+            promotion.get("selection_universe_hash"),
+            lineage.get("selection_universe_hash"),
+            "selection_universe_hash_mismatch",
+        )
+    _verify_artifact_hash(
+        summary,
+        lineage,
+        "statistical_evidence",
+        required=statistical_required,
+        missing_reason="statistical_evidence_missing",
+    )
     walk_required = bool(promotion.get("walk_forward_required"))
     _verify_artifact_hash(
         summary,
@@ -353,7 +386,10 @@ def _verify_artifact_hash(
     except ValueError as exc:
         summary["mismatches"].append({"field": stem, "reason": str(exc), "path": str(path)})
         return
-    actual = sha256_prefixed(content_hash_payload({k: v for k, v in payload.items() if k != "content_hash"}))
+    if stem in {"backtest_report", "walk_forward_report"}:
+        actual = sha256_prefixed(report_content_hash_payload(payload))
+    else:
+        actual = sha256_prefixed(content_hash_payload({k: v for k, v in payload.items() if k != "content_hash"}))
     embedded = str(payload.get("content_hash") or "").strip()
     if actual != expected:
         reason = f"{stem}_hash_mismatch"

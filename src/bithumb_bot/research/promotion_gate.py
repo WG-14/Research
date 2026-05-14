@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ from .lineage import build_promotion_lineage, validate_lineage_artifact, Lineage
 from .deployment_policy import validate_production_calibration_policy
 from .metrics_contract import METRICS_SCHEMA_VERSION
 from .metrics_gate_policy import metrics_gate_policy_hash
+from .statistical_selection import validate_statistical_evidence_for_candidate
 
 
 class PromotionGateError(ValueError):
@@ -83,6 +85,14 @@ def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
         "validation_metrics_v2": candidate.get("validation_metrics_v2"),
         "final_holdout_metrics_v2": candidate.get("final_holdout_metrics_v2"),
         "walk_forward_metrics": candidate.get("walk_forward_metrics"),
+        "statistical_validation_required": bool(candidate.get("statistical_validation_required")),
+        "statistical_validation_contract": candidate.get("statistical_validation_contract"),
+        "selection_universe_hash": candidate.get("selection_universe_hash"),
+        "statistical_evidence_hash": candidate.get("statistical_evidence_hash"),
+        "statistical_gate_result": candidate.get("statistical_gate_result"),
+        "statistical_gate_fail_reasons": candidate.get("statistical_gate_fail_reasons"),
+        "white_reality_check_p_value": candidate.get("white_reality_check_p_value"),
+        "effective_trial_count": candidate.get("effective_trial_count"),
     }
     if candidate.get("execution_model") is not None:
         profile["execution_model"] = candidate.get("execution_model")
@@ -433,6 +443,20 @@ def _verify_report_content_hash(report: dict[str, Any], *, label: str) -> str:
     return actual
 
 
+def _load_statistical_evidence(*, report: dict[str, Any], report_dir: Path) -> dict[str, Any] | None:
+    path_value = str(report.get("statistical_evidence_path") or "").strip()
+    path = Path(path_value).expanduser() if path_value else report_dir / "statistical_selection_evidence.json"
+    if not path.exists():
+        return None
+    import json
+
+    with path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise PromotionGateError("promotion refused: statistical_evidence_missing")
+    return payload
+
+
 def promote_candidate(
     *,
     experiment_id: str,
@@ -445,7 +469,6 @@ def promote_candidate(
     candidate_report_path = research_report_dir / "backtest_report.json"
     if not candidate_report_path.exists():
         raise PromotionGateError(f"candidate report not found: {candidate_report_path}")
-    import json
 
     with candidate_report_path.open("r", encoding="utf-8") as handle:
         report = json.load(handle)
@@ -464,6 +487,14 @@ def promote_candidate(
         None,
     )
     backtest = _validated_backtest_candidate(candidate)
+    statistical_evidence = _load_statistical_evidence(report=report, report_dir=research_report_dir)
+    statistical_reasons = validate_statistical_evidence_for_candidate(
+        candidate=backtest.candidate,
+        report=report,
+        evidence=statistical_evidence,
+    )
+    if statistical_reasons:
+        raise PromotionGateError(f"promotion refused: {','.join(statistical_reasons)}")
     walk_forward: ValidatedCandidate | None = None
     if backtest.candidate.get("walk_forward_required"):
         walk_forward = validate_walk_forward_candidate_for_promotion(
@@ -569,6 +600,15 @@ def promote_candidate(
         "metrics_gate_policy": candidate.get("metrics_gate_policy"),
         "metrics_gate_policy_hash": candidate.get("metrics_gate_policy_hash"),
         "metrics_contract_required": bool(candidate.get("metrics_contract_required")),
+        "statistical_validation_required": bool(candidate.get("statistical_validation_required")),
+        "statistical_validation_contract": candidate.get("statistical_validation_contract"),
+        "selection_universe_hash": candidate.get("selection_universe_hash"),
+        "statistical_evidence_path": candidate.get("statistical_evidence_path") or report.get("statistical_evidence_path"),
+        "statistical_evidence_hash": candidate.get("statistical_evidence_hash") or report.get("statistical_evidence_hash"),
+        "statistical_gate_result": candidate.get("statistical_gate_result"),
+        "statistical_gate_fail_reasons": candidate.get("statistical_gate_fail_reasons") or [],
+        "white_reality_check_p_value": candidate.get("white_reality_check_p_value"),
+        "effective_trial_count": candidate.get("effective_trial_count"),
         "metrics_v2_summary": _promotion_metrics_v2_summary(candidate),
         "scenario_policy": candidate.get("scenario_policy"),
         "execution_timing_policy": candidate.get("execution_timing_policy"),
@@ -616,6 +656,9 @@ def promote_candidate(
                 candidate_profile_hash=verified_profile_hash,
                 promotion_artifact_path=str(path.resolve()),
                 execution_calibration_artifact_hash=candidate_calibration_hash,
+                statistical_evidence_path=artifact.get("statistical_evidence_path"),
+                statistical_evidence_hash=artifact.get("statistical_evidence_hash"),
+                selection_universe_hash=artifact.get("selection_universe_hash"),
                 created_at=artifact["generated_at"],
             )
         except LineageValidationError as exc:

@@ -42,6 +42,12 @@ from .parameter_space import candidate_id, iter_parameter_candidates
 from .promotion_gate import build_candidate_profile
 from .report_writer import research_artifact_paths, research_artifact_refs, write_research_report
 from bithumb_bot.storage_io import append_jsonl, write_json_atomic
+from .statistical_selection import (
+    build_statistical_selection_evidence,
+    selection_universe_hash,
+    statistical_validation_required,
+    write_statistical_selection_evidence,
+)
 from .strategy_registry import research_strategy_data_requirements, resolve_research_strategy
 
 
@@ -235,6 +241,7 @@ def run_research_backtest(
         command_name="research-backtest",
         command_args=command_args,
         execution_calibration=execution_calibration,
+        manager=manager,
     )
     _emit_progress(
         progress_callback,
@@ -321,6 +328,7 @@ def run_research_walk_forward(
         command_name="research-walk-forward",
         command_args=command_args,
         execution_calibration=execution_calibration,
+        manager=manager,
     )
     _emit_progress(
         progress_callback,
@@ -1570,9 +1578,8 @@ def _report_payload(
     command_name: str | None = None,
     command_args: dict[str, Any] | None = None,
     execution_calibration: dict[str, Any] | None = None,
+    manager: PathManager | None = None,
 ) -> dict[str, Any]:
-    best = next((candidate for candidate in candidates if candidate["acceptance_gate_result"] == "PASS"), None)
-    warnings = sorted({warning for candidate in candidates for warning in candidate.get("warnings", [])})
     dataset_hash = combined_dataset_fingerprint(snapshots)
     dataset_quality_hash = combined_dataset_quality_hash(quality_reports)
     dataset_quality_status, dataset_quality_reasons = _combined_dataset_quality_gate(
@@ -1602,11 +1609,17 @@ def _report_payload(
     for values in manifest.parameter_space.values():
         parameter_grid_size *= len(values)
     failed_count = sum(1 for candidate in candidates if candidate.get("acceptance_gate_result") != "PASS")
+    attempt_index = int(manifest.raw.get("attempt_index") or 1)
+    holdout_reuse_count = int(manifest.raw.get("holdout_reuse_count") or 0)
+    dataset_reuse_policy = str(manifest.raw.get("dataset_reuse_policy") or "single_final_holdout_for_experiment_family")
+    experiment_family_id = str(manifest.raw.get("experiment_family_id") or manifest.experiment_id)
+    hypothesis_id = manifest.raw.get("hypothesis_id")
+    hypothesis_status = manifest.raw.get("hypothesis_status") or "pre_registered"
     lineage = build_research_lineage(
         experiment_id=manifest.experiment_id,
-        experiment_family_id=str(manifest.raw.get("experiment_family_id") or manifest.experiment_id),
-        hypothesis_id=manifest.raw.get("hypothesis_id"),
-        hypothesis_status=manifest.raw.get("hypothesis_status") or "pre_registered",
+        experiment_family_id=experiment_family_id,
+        hypothesis_id=hypothesis_id,
+        hypothesis_status=hypothesis_status,
         pre_registered_at=manifest.raw.get("pre_registered_at"),
         manifest_path=manifest_path,
         manifest_hash=manifest.manifest_hash(),
@@ -1631,12 +1644,73 @@ def _report_payload(
         execution_calibration_artifact_hash=calibration_hash,
         search_budget=parameter_grid_size,
         parameter_grid_size=parameter_grid_size,
-        attempt_index=int(manifest.raw.get("attempt_index") or 1),
+        attempt_index=attempt_index,
         failed_candidate_count=failed_count,
-        holdout_reuse_count=int(manifest.raw.get("holdout_reuse_count") or 0),
-        dataset_reuse_policy=str(manifest.raw.get("dataset_reuse_policy") or "single_final_holdout_for_experiment_family"),
+        holdout_reuse_count=holdout_reuse_count,
+        dataset_reuse_policy=dataset_reuse_policy,
         created_at=generated_at,
     )
+    statistical_contract = (
+        manifest.statistical_validation.as_dict()
+        if manifest.statistical_validation is not None
+        else None
+    )
+    required_scenario_ids = sorted(
+        {
+            str(scenario_id)
+            for candidate in candidates
+            for scenario_id in candidate.get("required_scenario_ids", [])
+        }
+    )
+    statistical_evidence: dict[str, Any] | None = None
+    statistical_evidence_path: Path | None = None
+    universe_hash: str | None = None
+    if statistical_contract is not None:
+        universe_hash = selection_universe_hash(
+            manifest_hash=manifest.manifest_hash(),
+            dataset_content_hash=dataset_hash,
+            dataset_quality_hash=dataset_quality_hash,
+            experiment_family_id=experiment_family_id,
+            hypothesis_id=hypothesis_id,
+            hypothesis_status=hypothesis_status,
+            candidates=candidates,
+            required_scenario_ids=required_scenario_ids,
+            primary_metric_source="validation_metrics",
+            benchmark=str(statistical_contract["benchmark"]),
+            statistical_validation_contract=statistical_contract,
+        )
+        statistical_evidence = build_statistical_selection_evidence(
+            manifest=manifest,
+            candidates=candidates,
+            manifest_hash=manifest.manifest_hash(),
+            dataset_content_hash=dataset_hash,
+            dataset_quality_hash=dataset_quality_hash,
+            experiment_family_id=experiment_family_id,
+            hypothesis_id=hypothesis_id,
+            hypothesis_status=hypothesis_status,
+            selection_hash=universe_hash,
+            search_budget=parameter_grid_size,
+            parameter_grid_size=parameter_grid_size,
+            attempt_index=attempt_index,
+            holdout_reuse_count=holdout_reuse_count,
+            dataset_reuse_policy=dataset_reuse_policy,
+        )
+        if statistical_evidence is not None and manager is not None:
+            statistical_evidence_path = write_statistical_selection_evidence(
+                manager=manager,
+                experiment_id=manifest.experiment_id,
+                evidence=statistical_evidence,
+            )
+        _attach_statistical_selection_to_candidates(
+            candidates=candidates,
+            required=statistical_validation_required(manifest),
+            contract=statistical_contract,
+            selection_hash=universe_hash,
+            evidence=statistical_evidence,
+            evidence_path=statistical_evidence_path,
+        )
+    best = next((candidate for candidate in candidates if candidate["acceptance_gate_result"] == "PASS"), None)
+    warnings = sorted({warning for candidate in candidates for warning in candidate.get("warnings", [])})
     return {
         "report_kind": report_kind,
         "experiment_id": manifest.experiment_id,
@@ -1703,6 +1777,17 @@ def _report_payload(
             metrics_gate_policy_from_acceptance_gate(manifest.acceptance_gate)
         ),
         "metrics_contract_required": bool(manifest.acceptance_gate.metrics_contract_required),
+        "statistical_validation_required": statistical_validation_required(manifest),
+        "statistical_validation_contract": statistical_contract,
+        "selection_universe_hash": universe_hash,
+        "statistical_evidence_hash": statistical_evidence.get("content_hash") if statistical_evidence else None,
+        "statistical_evidence_path": str(statistical_evidence_path.resolve()) if statistical_evidence_path else None,
+        "statistical_gate_result": statistical_evidence.get("statistical_gate_result") if statistical_evidence else None,
+        "statistical_gate_fail_reasons": statistical_evidence.get("gate_fail_reasons") if statistical_evidence else [],
+        "white_reality_check_p_value": (
+            statistical_evidence.get("white_reality_check_p_value") if statistical_evidence else None
+        ),
+        "effective_trial_count": statistical_evidence.get("effective_trial_count") if statistical_evidence else None,
         "deployment_tier": manifest.deployment_tier,
         "execution_calibration_required": manifest.execution_model.calibration_required,
         "market_regime_bucket_performance": (
@@ -1750,6 +1835,34 @@ def _primary_base_cost_assumption(candidate: dict[str, Any]) -> dict[str, Any] |
         assumption = result.get("cost_assumption")
         return dict(assumption) if isinstance(assumption, dict) else None
     return None
+
+
+def _attach_statistical_selection_to_candidates(
+    *,
+    candidates: list[dict[str, Any]],
+    required: bool,
+    contract: dict[str, Any],
+    selection_hash: str,
+    evidence: dict[str, Any] | None,
+    evidence_path: Path | None,
+) -> None:
+    evidence_hash = evidence.get("content_hash") if isinstance(evidence, dict) else None
+    gate_result = evidence.get("statistical_gate_result") if isinstance(evidence, dict) else None
+    gate_reasons = evidence.get("gate_fail_reasons") if isinstance(evidence, dict) else []
+    p_value = evidence.get("white_reality_check_p_value") if isinstance(evidence, dict) else None
+    effective_trial_count = evidence.get("effective_trial_count") if isinstance(evidence, dict) else None
+    for candidate in candidates:
+        candidate["statistical_validation_required"] = required
+        candidate["statistical_validation_contract"] = contract
+        candidate["selection_universe_hash"] = selection_hash
+        candidate["statistical_evidence_hash"] = evidence_hash
+        candidate["statistical_evidence_path"] = str(evidence_path.resolve()) if evidence_path is not None else None
+        candidate["statistical_gate_result"] = gate_result
+        candidate["statistical_gate_fail_reasons"] = list(gate_reasons) if isinstance(gate_reasons, list) else []
+        candidate["white_reality_check_p_value"] = p_value
+        candidate["effective_trial_count"] = effective_trial_count
+        candidate.pop("candidate_profile_hash", None)
+        candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
 
 
 def _report_base_cost_assumption(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:

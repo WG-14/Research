@@ -353,6 +353,62 @@ class ResearchRunPolicy:
 
 
 @dataclass(frozen=True)
+class StatisticalBootstrapConfig:
+    method: str
+    n_bootstrap: int
+    block_length_policy: str
+    seed_policy: str
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "method": self.method,
+            "n_bootstrap": self.n_bootstrap,
+            "block_length_policy": self.block_length_policy,
+            "seed_policy": self.seed_policy,
+        }
+
+
+@dataclass(frozen=True)
+class StatisticalValidationGates:
+    max_reality_check_p_value: float
+    max_spa_p_value: float | None = None
+    min_deflated_sharpe_probability: float | None = None
+    max_holdout_reuse_count: int = 0
+    max_attempt_index_without_new_hypothesis: int = 1
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "max_reality_check_p_value": self.max_reality_check_p_value,
+            "max_spa_p_value": self.max_spa_p_value,
+            "min_deflated_sharpe_probability": self.min_deflated_sharpe_probability,
+            "max_holdout_reuse_count": self.max_holdout_reuse_count,
+            "max_attempt_index_without_new_hypothesis": self.max_attempt_index_without_new_hypothesis,
+        }
+
+
+@dataclass(frozen=True)
+class StatisticalSelectionContract:
+    required_for_promotion: bool
+    benchmark: str
+    primary_metric: str
+    selection_universe: str
+    multiple_testing_scope: str
+    bootstrap: StatisticalBootstrapConfig
+    gates: StatisticalValidationGates
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "required_for_promotion": self.required_for_promotion,
+            "benchmark": self.benchmark,
+            "primary_metric": self.primary_metric,
+            "selection_universe": self.selection_universe,
+            "multiple_testing_scope": self.multiple_testing_scope,
+            "bootstrap": self.bootstrap.as_dict(),
+            "gates": self.gates.as_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class ExperimentManifest:
     experiment_id: str
     hypothesis: str
@@ -366,6 +422,7 @@ class ExperimentManifest:
     execution_timing: ExecutionTimingPolicy
     deployment_tier: str
     acceptance_gate: AcceptanceGate
+    statistical_validation: StatisticalSelectionContract | None
     walk_forward: WalkForwardConfig | None
     research_run: ResearchRunPolicy
     raw: dict[str, Any]
@@ -385,6 +442,11 @@ class ExperimentManifest:
             "deployment_tier": self.deployment_tier,
             "dataset_quality_policy": _canonical_dataset_quality_policy(self.raw.get("dataset_quality_policy")),
             "acceptance_gate": self.acceptance_gate.as_dict(),
+            "statistical_validation": (
+                self.statistical_validation.as_dict()
+                if self.statistical_validation is not None
+                else None
+            ),
             "walk_forward": self.walk_forward.as_dict() if self.walk_forward is not None else None,
             "research_run": self.research_run.as_dict(),
         }
@@ -422,6 +484,10 @@ def parse_manifest(payload: dict[str, Any]) -> ExperimentManifest:
     acceptance_gate = _parse_acceptance_gate(_required_dict(payload, "acceptance_gate"))
     if is_production_bound_target(deployment_tier) and acceptance_gate.max_single_trade_dependency_score is None:
         acceptance_gate = replace(acceptance_gate, max_single_trade_dependency_score=0.8)
+    statistical_validation = _parse_statistical_validation(
+        payload.get("statistical_validation"),
+        deployment_tier=deployment_tier,
+    )
     walk_forward = _parse_walk_forward(payload.get("walk_forward"))
     research_run = _parse_research_run(payload.get("research_run"))
     if acceptance_gate.walk_forward_required and walk_forward is None:
@@ -453,6 +519,7 @@ def parse_manifest(payload: dict[str, Any]) -> ExperimentManifest:
         execution_timing=execution_timing,
         deployment_tier=deployment_tier,
         acceptance_gate=acceptance_gate,
+        statistical_validation=statistical_validation,
         walk_forward=walk_forward,
         research_run=research_run,
         raw=dict(payload),
@@ -1204,6 +1271,131 @@ def _parse_acceptance_gate(payload: dict[str, Any]) -> AcceptanceGate:
     )
 
 
+def _parse_statistical_validation(
+    value: Any,
+    *,
+    deployment_tier: str,
+) -> StatisticalSelectionContract | None:
+    production_bound = is_production_bound_target(deployment_tier)
+    if value is None:
+        if production_bound:
+            raise ManifestValidationError("statistical_validation required for production-bound manifests")
+        return None
+    if not isinstance(value, dict):
+        raise ManifestValidationError("statistical_validation must be an object")
+    allowed_fields = {
+        "required_for_promotion",
+        "benchmark",
+        "primary_metric",
+        "selection_universe",
+        "multiple_testing_scope",
+        "bootstrap",
+        "gates",
+    }
+    unknown = sorted(set(value) - allowed_fields)
+    if unknown:
+        raise ManifestValidationError(f"statistical_validation unsupported fields: {','.join(unknown)}")
+    required = bool(value.get("required_for_promotion", production_bound))
+    if production_bound and not required:
+        raise ManifestValidationError("statistical_validation.required_for_promotion must be true for production-bound manifests")
+    benchmark = str(value.get("benchmark") or "").strip()
+    if benchmark not in {"cash", "buy_and_hold", "configured"}:
+        raise ManifestValidationError("statistical_validation.benchmark must be cash, buy_and_hold, or configured")
+    primary_metric = str(value.get("primary_metric") or "").strip()
+    if primary_metric not in {"net_excess_return", "return_pct", "sharpe_like"}:
+        raise ManifestValidationError(
+            "statistical_validation.primary_metric must be net_excess_return, return_pct, or sharpe_like"
+        )
+    selection_universe = str(value.get("selection_universe") or "").strip()
+    if selection_universe != "all_parameter_candidates_all_required_scenarios":
+        raise ManifestValidationError(
+            "statistical_validation.selection_universe must be all_parameter_candidates_all_required_scenarios"
+        )
+    multiple_testing_scope = str(value.get("multiple_testing_scope") or "").strip()
+    if multiple_testing_scope not in {"experiment", "experiment_family"}:
+        raise ManifestValidationError("statistical_validation.multiple_testing_scope must be experiment or experiment_family")
+    bootstrap = _parse_statistical_bootstrap(value.get("bootstrap"))
+    gates = _parse_statistical_gates(value.get("gates"))
+    return StatisticalSelectionContract(
+        required_for_promotion=required,
+        benchmark=benchmark,
+        primary_metric=primary_metric,
+        selection_universe=selection_universe,
+        multiple_testing_scope=multiple_testing_scope,
+        bootstrap=bootstrap,
+        gates=gates,
+    )
+
+
+def _parse_statistical_bootstrap(value: Any) -> StatisticalBootstrapConfig:
+    if not isinstance(value, dict):
+        raise ManifestValidationError("statistical_validation.bootstrap must be an object")
+    allowed_fields = {"method", "n_bootstrap", "block_length_policy", "seed_policy"}
+    unknown = sorted(set(value) - allowed_fields)
+    if unknown:
+        raise ManifestValidationError(f"statistical_validation.bootstrap unsupported fields: {','.join(unknown)}")
+    method = str(value.get("method") or "").strip()
+    if method != "metric_centered_max_bootstrap":
+        raise ManifestValidationError("statistical_validation.bootstrap.method must be metric_centered_max_bootstrap")
+    n_bootstrap = _positive_int(value.get("n_bootstrap"), "statistical_validation.bootstrap.n_bootstrap")
+    block_length_policy = str(value.get("block_length_policy") or "").strip()
+    if block_length_policy not in {"not_applicable_summary_metric", "fixed"}:
+        raise ManifestValidationError(
+            "statistical_validation.bootstrap.block_length_policy must be not_applicable_summary_metric or fixed"
+        )
+    seed_policy = str(value.get("seed_policy") or "").strip()
+    if seed_policy != "derived_from_selection_universe_hash":
+        raise ManifestValidationError(
+            "statistical_validation.bootstrap.seed_policy must be derived_from_selection_universe_hash"
+        )
+    return StatisticalBootstrapConfig(
+        method=method,
+        n_bootstrap=n_bootstrap,
+        block_length_policy=block_length_policy,
+        seed_policy=seed_policy,
+    )
+
+
+def _parse_statistical_gates(value: Any) -> StatisticalValidationGates:
+    if not isinstance(value, dict):
+        raise ManifestValidationError("statistical_validation.gates must be an object")
+    allowed_fields = {
+        "max_reality_check_p_value",
+        "max_spa_p_value",
+        "min_deflated_sharpe_probability",
+        "max_holdout_reuse_count",
+        "max_attempt_index_without_new_hypothesis",
+    }
+    unknown = sorted(set(value) - allowed_fields)
+    if unknown:
+        raise ManifestValidationError(f"statistical_validation.gates unsupported fields: {','.join(unknown)}")
+    max_reality_check = _probability(
+        value.get("max_reality_check_p_value"),
+        "statistical_validation.gates.max_reality_check_p_value",
+    )
+    max_spa = _optional_probability(
+        value.get("max_spa_p_value"),
+        "statistical_validation.gates.max_spa_p_value",
+    )
+    min_deflated = _optional_probability(
+        value.get("min_deflated_sharpe_probability"),
+        "statistical_validation.gates.min_deflated_sharpe_probability",
+    )
+    return StatisticalValidationGates(
+        max_reality_check_p_value=max_reality_check,
+        max_spa_p_value=max_spa,
+        min_deflated_sharpe_probability=min_deflated,
+        max_holdout_reuse_count=_positive_or_zero_int(
+            value.get("max_holdout_reuse_count", 0),
+            "statistical_validation.gates.max_holdout_reuse_count",
+        ),
+        max_attempt_index_without_new_hypothesis=_positive_int(
+            value.get("max_attempt_index_without_new_hypothesis", 1),
+            "statistical_validation.gates.max_attempt_index_without_new_hypothesis",
+        ),
+    )
+
+
 def _parse_regime_acceptance_gate(value: Any) -> RegimeAcceptanceGate:
     if value is None:
         return RegimeAcceptanceGate(required=False)
@@ -1433,6 +1625,20 @@ def _optional_pct(value: Any, field: str) -> float | None:
     parsed = _optional_finite_non_negative_float(value, field)
     if parsed is not None and parsed > 100.0:
         raise ManifestValidationError(f"{field} must be <= 100")
+    return parsed
+
+
+def _probability(value: Any, field: str) -> float:
+    parsed = _finite_non_negative_float(value, field)
+    if parsed > 1.0:
+        raise ManifestValidationError(f"{field} must be <= 1")
+    return parsed
+
+
+def _optional_probability(value: Any, field: str) -> float | None:
+    parsed = _optional_finite_non_negative_float(value, field)
+    if parsed is not None and parsed > 1.0:
+        raise ManifestValidationError(f"{field} must be <= 1")
     return parsed
 
 
