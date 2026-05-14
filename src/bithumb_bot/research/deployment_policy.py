@@ -183,7 +183,10 @@ def _production_cost_assumption_reasons(source: dict[str, Any]) -> list[str]:
     execution_model = source.get("execution_model")
     if execution_model_source == "legacy_cost_model" or not isinstance(execution_model, dict):
         return ["production_legacy_cost_model_not_promotable"]
-    scenarios = execution_model.get("scenarios")
+    contract = source.get("cost_assumption_contract")
+    if not isinstance(contract, dict):
+        contract = execution_model
+    scenarios = contract.get("scenarios")
     if not isinstance(scenarios, list) or not scenarios:
         return ["production_base_cost_assumption_required"]
     if all(str(item.get("scenario_role") or "").strip() == "stress" for item in scenarios if isinstance(item, dict)):

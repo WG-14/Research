@@ -580,6 +580,22 @@ def test_promotion_refuses_walk_forward_candidate_profile_hash_mismatch(tmp_path
         promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
 
 
+def test_promotion_refuses_walk_forward_cost_contract_drift(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    backtest_candidate = _production_candidate(walk_forward_required=True)
+    walk_forward_candidate = _walk_forward_candidate(backtest_candidate)
+    drifted_base = dict(walk_forward_candidate["base_cost_assumption"])
+    drifted_base["fee_rate"] = 0.0005
+    walk_forward_candidate["base_cost_assumption"] = drifted_base
+    walk_forward_candidate.pop("candidate_profile_hash", None)
+    walk_forward_candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(walk_forward_candidate))
+    _write_report(manager, backtest_candidate)
+    _write_walk_forward_report(manager, walk_forward_candidate)
+
+    with pytest.raises(PromotionGateError, match="walk_forward_candidate_mismatch"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
 def test_promotion_artifact_uses_verified_candidate_profile_hash(tmp_path, monkeypatch) -> None:
     manager = _manager(tmp_path, monkeypatch)
     candidate = _candidate()

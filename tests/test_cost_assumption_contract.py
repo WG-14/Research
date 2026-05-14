@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from bithumb_bot.research.deployment_policy import validate_production_calibration_policy
 from bithumb_bot.research.experiment_manifest import ManifestValidationError, parse_manifest
 
 
@@ -128,3 +129,83 @@ def test_legacy_cost_model_research_only_is_marked_legacy_non_promotable() -> No
     assert scenario.cost_assumption is not None
     assert scenario.cost_assumption.fee_source == "legacy_cost_model"
     assert scenario.cost_assumption.promotable_as_base is False
+
+
+def _production_calibration_gate() -> dict[str, object]:
+    return {
+        "status": "PASS",
+        "reasons": [],
+        "artifact_hash": "sha256:calibration",
+        "artifact_hashes": ["sha256:calibration"],
+        "scenario_gates": [
+            {
+                "status": "PASS",
+                "reasons": [],
+                "artifact_hash": "sha256:calibration",
+                "content_hash_present": True,
+                "market": "KRW-BTC",
+                "interval": "1m",
+                "expected_market": "KRW-BTC",
+                "expected_interval": "1m",
+                "expected_fill_reference_policy": "next_candle_open",
+                "artifact_fill_reference_policy": "next_candle_open",
+                "sample_count": 30,
+                "min_sample_count": 30,
+                "quality_gate_status": "PASS",
+            }
+        ],
+    }
+
+
+def _generated_candidate_shape(*, include_contract: bool = True) -> dict[str, object]:
+    candidate: dict[str, object] = {
+        "deployment_tier": "paper_candidate",
+        "execution_model_source": "execution_model",
+        "execution_model": {
+            "type": "stress",
+            "fee_rate": 0.0004,
+            "slippage_bps": 10,
+            "model_params_hash": "sha256:model",
+        },
+        "execution_calibration_required": True,
+        "execution_calibration_strictness": "fail",
+        "execution_calibration_gate": _production_calibration_gate(),
+    }
+    if include_contract:
+        candidate["cost_assumption_contract"] = {
+            "source": "execution_model",
+            "scenario_policy": "must_pass_base_and_survive_stress",
+            "calibration_required": True,
+            "calibration_strictness": "fail",
+            "scenarios": [
+                {
+                    "scenario_role": "base",
+                    "cost_assumption": {
+                        "label": "realistic_bithumb_app_fee_0004",
+                        "role": "base",
+                        "fee_rate": 0.0004,
+                        "fee_source": "operator_declared_bithumb_app_fee",
+                        "fee_authority_policy": "runtime_fee_authority_must_match_or_fail",
+                        "slippage_bps": 10,
+                        "slippage_source": "execution_calibration",
+                        "promotable_as_base": True,
+                    },
+                }
+            ],
+        }
+    return candidate
+
+
+def test_production_policy_accepts_generated_candidate_cost_contract_shape() -> None:
+    result = validate_production_calibration_policy(_generated_candidate_shape())
+
+    assert "production_base_cost_assumption_required" not in result.reasons
+    assert "production_stress_only_cost_model_not_promotable" not in result.reasons
+    assert result.status == "PASS"
+
+
+def test_production_policy_rejects_primary_scenario_without_full_cost_contract() -> None:
+    result = validate_production_calibration_policy(_generated_candidate_shape(include_contract=False))
+
+    assert result.status == "FAIL"
+    assert "production_base_cost_assumption_required" in result.reasons

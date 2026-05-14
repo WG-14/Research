@@ -648,6 +648,8 @@ def validate_walk_forward_candidate_for_promotion(
         "parameter_candidate_id",
         "parameter_values",
         "cost_model",
+        "base_cost_assumption",
+        "cost_assumption_contract",
         "execution_model",
         "execution_calibration_required",
         "execution_calibration_strictness",
