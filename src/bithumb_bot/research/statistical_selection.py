@@ -120,6 +120,35 @@ def candidate_metric_values_hash(
     )
 
 
+def recompute_candidate_metric_values_hash_from_report(
+    *,
+    report: dict[str, Any],
+    evidence: dict[str, Any],
+) -> str | None:
+    candidates = report.get("candidates")
+    required_scenario_ids = evidence.get("required_scenario_ids")
+    primary_metric = evidence.get("primary_metric")
+    primary_metric_source = evidence.get("primary_metric_source")
+    benchmark = evidence.get("benchmark")
+    if not isinstance(candidates, list) or not all(isinstance(item, dict) for item in candidates):
+        return None
+    if not isinstance(required_scenario_ids, list):
+        return None
+    if not isinstance(primary_metric, str) or not primary_metric:
+        return None
+    if not isinstance(primary_metric_source, str) or not primary_metric_source:
+        return None
+    if not isinstance(benchmark, str) or not benchmark:
+        return None
+    return candidate_metric_values_hash(
+        candidates=candidates,
+        required_scenario_ids=[str(item) for item in required_scenario_ids],
+        primary_metric=primary_metric,
+        primary_metric_source=primary_metric_source,
+        benchmark=benchmark,
+    )
+
+
 def build_statistical_selection_evidence(
     *,
     manifest: ExperimentManifest,
@@ -186,6 +215,7 @@ def build_statistical_selection_evidence(
         "dataset_quality_hash": dataset_quality_hash,
         "selection_universe_hash": selection_hash,
         "candidate_metric_values_hash": sha256_prefixed(metric_payload),
+        "required_scenario_ids": sorted(str(item) for item in required_scenario_ids),
         "candidate_metric_values_summary": {
             "candidate_count": len(candidates),
             "metric_value_count": metric_value_count,
@@ -272,6 +302,12 @@ def validate_statistical_evidence_for_candidate(
         reasons.append("candidate_metric_values_hash_missing")
     elif actual_metric_hash != expected_metric_hash:
         reasons.append("candidate_metric_values_hash_mismatch")
+    _extend_candidate_metric_recompute_reasons(
+        candidate=candidate,
+        report=report,
+        evidence=evidence,
+        reasons=reasons,
+    )
 
     expected_universe = str(candidate.get("selection_universe_hash") or report.get("selection_universe_hash") or "")
     if not expected_universe.startswith("sha256:"):
@@ -326,6 +362,60 @@ def validate_statistical_evidence_for_candidate(
             if gates.get("min_deflated_sharpe_probability") is not None and evidence.get("deflated_sharpe_probability") is None:
                 reasons.append("deflated_sharpe_missing")
     return sorted(set(reasons))
+
+
+def _extend_candidate_metric_recompute_reasons(
+    *,
+    candidate: dict[str, Any],
+    report: dict[str, Any],
+    evidence: dict[str, Any],
+    reasons: list[str],
+) -> None:
+    candidates = report.get("candidates")
+    if not isinstance(candidates, list) or not all(isinstance(item, dict) for item in candidates):
+        reasons.append("candidate_metric_values_hash_missing")
+        reasons.append("statistical_metadata_mismatch")
+        return
+    actual_candidate_count = len(candidates)
+    for field_value in (
+        report.get("candidate_count") if "candidate_count" in report else actual_candidate_count,
+        evidence.get("candidate_count"),
+    ):
+        if _as_int(field_value) != actual_candidate_count:
+            reasons.append("statistical_candidate_count_mismatch")
+            reasons.append("statistical_metadata_mismatch")
+    summary = evidence.get("candidate_metric_values_summary")
+    if not isinstance(summary, dict):
+        reasons.append("statistical_metadata_mismatch")
+        return
+    if _as_int(summary.get("candidate_count")) != actual_candidate_count:
+        reasons.append("statistical_candidate_count_mismatch")
+        reasons.append("statistical_metadata_mismatch")
+    if _as_int(summary.get("metric_value_count")) != _as_int(evidence.get("metric_value_count")):
+        reasons.append("statistical_metric_value_count_mismatch")
+        reasons.append("statistical_metadata_mismatch")
+    if _as_int(summary.get("missing_metric_count")) != _as_int(evidence.get("missing_metric_count")):
+        reasons.append("statistical_metric_value_count_mismatch")
+        reasons.append("statistical_metadata_mismatch")
+
+    recomputed = recompute_candidate_metric_values_hash_from_report(report=report, evidence=evidence)
+    if recomputed is None:
+        reasons.append("candidate_metric_values_hash_missing")
+        reasons.append("statistical_metadata_mismatch")
+        return
+    observed_hashes = {
+        "evidence": evidence.get("candidate_metric_values_hash"),
+        "report": report.get("candidate_metric_values_hash"),
+        "candidate": candidate.get("candidate_metric_values_hash"),
+    }
+    for value in observed_hashes.values():
+        if not isinstance(value, str) or not value.startswith("sha256:"):
+            reasons.append("candidate_metric_values_hash_missing")
+            return
+    if len({str(value) for value in observed_hashes.values()}) > 1:
+        reasons.append("candidate_metric_values_hash_mismatch")
+    if any(str(value) != recomputed for value in observed_hashes.values()):
+        reasons.append("candidate_metric_values_hash_recompute_mismatch")
 
 
 def _extend_statistical_metadata_reasons(

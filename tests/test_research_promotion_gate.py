@@ -11,6 +11,7 @@ from bithumb_bot.execution_reality_contract import build_execution_reality_contr
 from bithumb_bot.research import cli as research_cli
 from bithumb_bot.research.hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
 from bithumb_bot.research.lineage import build_research_lineage, compute_lineage_hash, reproduce_promotion
+from bithumb_bot.research.statistical_selection import candidate_metric_values_hash
 from bithumb_bot.research.metrics_gate_policy import metrics_gate_policy_hash
 from bithumb_bot.research.promotion_gate import PromotionGateError, build_candidate_profile, promote_candidate
 from bithumb_bot.storage_io import write_json_atomic
@@ -530,7 +531,17 @@ def _attach_statistical_evidence(
 ) -> None:
     contract = overrides.pop("statistical_validation_contract", None) or _statistical_contract()
     selection_hash = str(overrides.pop("selection_universe_hash", None) or "sha256:selection")
-    metric_hash = str(overrides.pop("candidate_metric_values_hash", None) or "sha256:metric-values")
+    required_scenario_ids = list(overrides.pop("required_scenario_ids", None) or ["scenario_001_fixed_bps_unit"])
+    metric_hash = str(
+        overrides.pop("candidate_metric_values_hash", None)
+        or candidate_metric_values_hash(
+            candidates=report.get("candidates") or [candidate],
+            required_scenario_ids=[str(item) for item in required_scenario_ids],
+            primary_metric="net_excess_return",
+            primary_metric_source="validation_metrics",
+            benchmark="cash",
+        )
+    )
     candidate_count = int(report.get("candidate_count") or 1)
     search_budget = int(report.get("search_budget") or candidate_count)
     parameter_grid_size = int(report.get("parameter_grid_size") or candidate_count)
@@ -547,6 +558,7 @@ def _attach_statistical_evidence(
         "dataset_quality_hash": report.get("dataset_quality_hash"),
         "selection_universe_hash": selection_hash,
         "candidate_metric_values_hash": metric_hash,
+        "required_scenario_ids": required_scenario_ids,
         "candidate_metric_values_summary": {
             "candidate_count": candidate_count,
             "metric_value_count": candidate_count,
@@ -676,6 +688,39 @@ def _write_walk_forward_report(manager: PathManager, candidate: dict[str, object
 
 def _canonical_report_hash(payload: dict[str, object]) -> str:
     return sha256_prefixed(report_content_hash_payload(payload))
+
+
+def _rewrite_report(path: Path, payload: dict[str, object]) -> None:
+    payload.pop("content_hash", None)
+    payload["content_hash"] = sha256_prefixed(report_content_hash_payload(payload))
+    write_json_atomic(path, payload)
+
+
+def _refresh_candidate_profile_hash(candidate: dict[str, object]) -> None:
+    candidate.pop("candidate_profile_hash", None)
+    candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+
+
+def _statistical_metric_hash_for_report(report: dict[str, object]) -> str:
+    return candidate_metric_values_hash(
+        candidates=report["candidates"],
+        required_scenario_ids=["scenario_001_fixed_bps_unit"],
+        primary_metric="net_excess_return",
+        primary_metric_source="validation_metrics",
+        benchmark="cash",
+    )
+
+
+def _rewrite_promotion_with_backtest_hash(promotion_path: Path, backtest_hash: str) -> None:
+    promotion = json.loads(promotion_path.read_text(encoding="utf-8"))
+    promotion["backtest_report_hash"] = backtest_hash
+    promotion["lineage"]["backtest_report_hash"] = backtest_hash
+    promotion["lineage"].pop("lineage_hash", None)
+    promotion["lineage"]["lineage_hash"] = compute_lineage_hash(promotion["lineage"])
+    promotion["lineage_hash"] = promotion["lineage"]["lineage_hash"]
+    promotion.pop("content_hash", None)
+    promotion["content_hash"] = sha256_prefixed(content_hash_payload(promotion))
+    write_json_atomic(promotion_path, promotion)
 
 
 def test_promotion_refuses_candidate_without_validation_evidence(tmp_path, monkeypatch) -> None:
@@ -1226,6 +1271,89 @@ def test_production_promotion_refuses_stale_candidate_metric_values_hash(tmp_pat
         promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
 
 
+def test_promotion_refuses_stale_candidate_metric_values_hash_after_report_metric_change(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report_with_lineage(manager, candidate)
+    report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["candidates"][0]["validation_metrics"]["return_pct"] = 2.0
+    _refresh_candidate_profile_hash(report["candidates"][0])
+    _rewrite_report(report_path, report)
+
+    with pytest.raises(PromotionGateError, match="candidate_metric_values_hash_recompute_mismatch"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_promotion_refuses_candidate_count_field_that_disagrees_with_report_candidates_length(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report_with_lineage(manager, candidate)
+    report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    second = _production_candidate(
+        parameter_candidate_id="candidate_002",
+        parameter_values={"SMA_SHORT": 3, "SMA_LONG": 4},
+    )
+    report["candidates"].append(second)
+    report["candidate_count"] = 1
+    _rewrite_report(report_path, report)
+
+    with pytest.raises(PromotionGateError, match="statistical_candidate_count_mismatch"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_promotion_refuses_evidence_candidate_count_that_disagrees_with_report_candidates_length(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report_with_lineage(manager, candidate)
+    report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    second = _production_candidate(
+        parameter_candidate_id="candidate_002",
+        parameter_values={"SMA_SHORT": 3, "SMA_LONG": 4},
+        validation_metrics={
+            "trade_count": 4,
+            "max_drawdown_pct": 1.0,
+            "profit_factor": 2.0,
+            "return_pct": 0.5,
+        },
+    )
+    report["candidates"].append(second)
+    report["candidate_count"] = 2
+    metric_hash = _statistical_metric_hash_for_report(report)
+    report["candidate_metric_values_hash"] = metric_hash
+    report["candidate_metric_values_summary"] = {
+        "candidate_count": 2,
+        "metric_value_count": 2,
+        "missing_metric_count": 0,
+        "primary_metric": "net_excess_return",
+        "primary_metric_source": "validation_metrics",
+        "benchmark": "cash",
+    }
+    report["metric_value_count"] = 2
+    report["missing_metric_count"] = 0
+    report["candidates"][0]["candidate_metric_values_hash"] = metric_hash
+    report["candidates"][0]["candidate_metric_values_summary"] = report["candidate_metric_values_summary"]
+    report["candidates"][0]["candidate_count"] = 2
+    report["candidates"][0]["metric_value_count"] = 2
+    report["candidates"][0]["missing_metric_count"] = 0
+    _refresh_candidate_profile_hash(report["candidates"][0])
+    _rewrite_report(report_path, report)
+
+    with pytest.raises(PromotionGateError, match="statistical_candidate_count_mismatch"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
 def test_production_promotion_refuses_incomplete_metric_universe_even_when_p_value_passes(
     tmp_path,
     monkeypatch,
@@ -1482,6 +1610,49 @@ def test_reproduce_fails_when_candidate_metric_values_hash_mismatches(tmp_path, 
 
     assert summary["ok"] is False
     assert summary["reason"] == "candidate_metric_values_hash_mismatch"
+
+
+def test_reproduce_refuses_stale_candidate_metric_values_hash_after_backtest_report_metric_change(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report_with_lineage(manager, candidate)
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["candidates"][0]["validation_metrics"]["return_pct"] = 2.0
+    _refresh_candidate_profile_hash(report["candidates"][0])
+    _rewrite_report(report_path, report)
+    _rewrite_promotion_with_backtest_hash(result.artifact_path, report["content_hash"])
+
+    summary = reproduce_promotion(result.artifact_path).summary
+
+    assert summary["ok"] is False
+    assert summary["reason"] == "candidate_metric_values_hash_recompute_mismatch"
+
+
+def test_reproduce_refuses_backtest_report_candidate_count_mismatch(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report_with_lineage(manager, candidate)
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    second = _production_candidate(
+        parameter_candidate_id="candidate_002",
+        parameter_values={"SMA_SHORT": 3, "SMA_LONG": 4},
+    )
+    report["candidates"].append(second)
+    report["candidate_count"] = 1
+    _rewrite_report(report_path, report)
+    _rewrite_promotion_with_backtest_hash(result.artifact_path, report["content_hash"])
+
+    summary = reproduce_promotion(result.artifact_path).summary
+
+    assert summary["ok"] is False
+    assert summary["reason"] == "statistical_candidate_count_mismatch"
 
 
 def test_reproduce_recomputes_backtest_hash_when_body_tampered_but_embedded_hash_unchanged(

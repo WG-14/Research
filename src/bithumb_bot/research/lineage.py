@@ -8,6 +8,7 @@ from typing import Any
 
 from .deployment_policy import is_production_bound_target
 from .hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
+from .statistical_selection import recompute_candidate_metric_values_hash_from_report
 
 
 LINEAGE_SCHEMA_VERSION = 1
@@ -436,6 +437,7 @@ def _verify_statistical_evidence_bindings(
         payload = _load_object(path)
     except ValueError:
         return
+    report = _load_optional_artifact(lineage.get("backtest_report_path"))
     _compare(
         summary,
         "statistical_evidence.selection_universe_hash",
@@ -459,6 +461,96 @@ def _verify_statistical_evidence_bindings(
                 "candidate_metric_values_hash_mismatch",
             )
         )
+    if isinstance(report, dict):
+        _verify_statistical_report_bindings(summary, promotion, lineage, payload, report)
+
+
+def _verify_statistical_report_bindings(
+    summary: dict[str, Any],
+    promotion: dict[str, Any],
+    lineage: dict[str, Any],
+    evidence: dict[str, Any],
+    report: dict[str, Any],
+) -> None:
+    candidates = report.get("candidates")
+    if not isinstance(candidates, list) or not all(isinstance(item, dict) for item in candidates):
+        summary["mismatches"].append(
+            _mismatch(
+                "backtest_report.candidates",
+                "list",
+                type(candidates).__name__,
+                "candidate_metric_values_hash_recompute_mismatch",
+            )
+        )
+        return
+    candidate_count = len(candidates)
+    for field, value in (
+        ("backtest_report.candidate_count", report.get("candidate_count")),
+        ("statistical_evidence.candidate_count", evidence.get("candidate_count")),
+    ):
+        if _as_int(value) != candidate_count:
+            summary["mismatches"].append(
+                _mismatch(field, candidate_count, value, "statistical_candidate_count_mismatch")
+            )
+    evidence_summary = evidence.get("candidate_metric_values_summary")
+    if not isinstance(evidence_summary, dict):
+        summary["mismatches"].append(
+            _mismatch(
+                "statistical_evidence.candidate_metric_values_summary",
+                "object",
+                type(evidence_summary).__name__,
+                "statistical_metadata_mismatch",
+            )
+        )
+    else:
+        for field, expected in (
+            ("candidate_count", candidate_count),
+            ("metric_value_count", evidence.get("metric_value_count")),
+            ("missing_metric_count", evidence.get("missing_metric_count")),
+        ):
+            if _as_int(evidence_summary.get(field)) != _as_int(expected):
+                summary["mismatches"].append(
+                    _mismatch(
+                        f"statistical_evidence.candidate_metric_values_summary.{field}",
+                        expected,
+                        evidence_summary.get(field),
+                        "statistical_metadata_mismatch",
+                    )
+                )
+    recomputed = recompute_candidate_metric_values_hash_from_report(report=report, evidence=evidence)
+    if recomputed is None:
+        summary["mismatches"].append(
+            _mismatch(
+                "candidate_metric_values_hash",
+                "sha256:<recomputed>",
+                None,
+                "candidate_metric_values_hash_recompute_mismatch",
+            )
+        )
+        return
+    for field, value in (
+        ("statistical_evidence.candidate_metric_values_hash", evidence.get("candidate_metric_values_hash")),
+        ("promotion.candidate_metric_values_hash", promotion.get("candidate_metric_values_hash")),
+        ("lineage.candidate_metric_values_hash", lineage.get("candidate_metric_values_hash")),
+        ("backtest_report.candidate_metric_values_hash", report.get("candidate_metric_values_hash")),
+    ):
+        if str(value or "").strip() != recomputed:
+            summary["mismatches"].append(
+                _mismatch(field, recomputed, value, "candidate_metric_values_hash_recompute_mismatch")
+            )
+
+
+def _load_optional_artifact(path_value: object) -> dict[str, Any] | None:
+    text = str(path_value or "").strip()
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    if not path.exists():
+        return None
+    try:
+        return _load_object(path)
+    except ValueError:
+        return None
 
 
 def _compare(summary: dict[str, Any], field: str, expected: object, actual: object, reason: str) -> None:
@@ -468,6 +560,15 @@ def _compare(summary: dict[str, Any], field: str, expected: object, actual: obje
 
 def _mismatch(field: str, expected: object, actual: object, reason: str) -> dict[str, object]:
     return {"field": field, "expected": expected, "actual": actual, "reason": reason}
+
+
+def _as_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return int(value)
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 def _load_object(path: Path) -> dict[str, Any]:

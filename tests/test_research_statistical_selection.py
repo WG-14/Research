@@ -4,6 +4,7 @@ from bithumb_bot.research.experiment_manifest import parse_manifest
 from bithumb_bot.research.statistical_selection import (
     build_statistical_selection_evidence,
     candidate_metric_values_hash,
+    recompute_candidate_metric_values_hash_from_report,
     selection_universe_hash,
     validate_statistical_evidence_for_candidate,
 )
@@ -196,6 +197,87 @@ def test_candidate_metric_values_hash_is_deterministic_and_binds_metric_values()
     assert changed_hash != first
 
 
+def test_candidate_metric_values_hash_recompute_detects_changed_metric_value() -> None:
+    manifest = _manifest()
+    candidates = _candidates()
+    evidence = build_statistical_selection_evidence(
+        manifest=manifest,
+        candidates=candidates,
+        manifest_hash=manifest.manifest_hash(),
+        dataset_content_hash="sha256:dataset",
+        dataset_quality_hash="sha256:quality",
+        experiment_family_id="family",
+        hypothesis_id="hypothesis",
+        hypothesis_status="pre_registered",
+        selection_hash="sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        required_scenario_ids=["scenario_001"],
+        search_budget=2,
+        parameter_grid_size=2,
+        attempt_index=1,
+        holdout_reuse_count=0,
+        dataset_reuse_policy="single_final_holdout_for_experiment_family",
+    )
+    report = {"candidates": _candidates()}
+    assert recompute_candidate_metric_values_hash_from_report(report=report, evidence=evidence) == evidence[
+        "candidate_metric_values_hash"
+    ]
+
+    report["candidates"][0]["validation_metrics"] = {"return_pct": 2.0}
+
+    assert recompute_candidate_metric_values_hash_from_report(report=report, evidence=evidence) != evidence[
+        "candidate_metric_values_hash"
+    ]
+
+
+def test_candidate_metric_values_hash_recompute_requires_required_scenario_ids() -> None:
+    manifest = _manifest()
+    evidence = build_statistical_selection_evidence(
+        manifest=manifest,
+        candidates=_candidates(),
+        manifest_hash=manifest.manifest_hash(),
+        dataset_content_hash="sha256:dataset",
+        dataset_quality_hash="sha256:quality",
+        experiment_family_id="family",
+        hypothesis_id="hypothesis",
+        hypothesis_status="pre_registered",
+        selection_hash="sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        required_scenario_ids=["scenario_001"],
+        search_budget=2,
+        parameter_grid_size=2,
+        attempt_index=1,
+        holdout_reuse_count=0,
+        dataset_reuse_policy="single_final_holdout_for_experiment_family",
+    )
+    stale = dict(evidence)
+    stale.pop("required_scenario_ids")
+
+    assert recompute_candidate_metric_values_hash_from_report(report={"candidates": _candidates()}, evidence=stale) is None
+
+
+def test_candidate_metric_values_hash_recompute_requires_full_candidates_list() -> None:
+    manifest = _manifest()
+    evidence = build_statistical_selection_evidence(
+        manifest=manifest,
+        candidates=_candidates(),
+        manifest_hash=manifest.manifest_hash(),
+        dataset_content_hash="sha256:dataset",
+        dataset_quality_hash="sha256:quality",
+        experiment_family_id="family",
+        hypothesis_id="hypothesis",
+        hypothesis_status="pre_registered",
+        selection_hash="sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        required_scenario_ids=["scenario_001"],
+        search_budget=2,
+        parameter_grid_size=2,
+        attempt_index=1,
+        holdout_reuse_count=0,
+        dataset_reuse_policy="single_final_holdout_for_experiment_family",
+    )
+
+    assert recompute_candidate_metric_values_hash_from_report(report={}, evidence=evidence) is None
+    assert recompute_candidate_metric_values_hash_from_report(report={"candidates": {"bad": "shape"}}, evidence=evidence) is None
+
+
 def test_statistical_evidence_fails_closed_when_metric_universe_is_incomplete() -> None:
     manifest = _manifest()
     candidates = _candidates()
@@ -266,6 +348,7 @@ def test_statistical_validation_detects_metadata_mismatch_and_underreported_tria
         "candidate_metric_values_hash": evidence["candidate_metric_values_hash"],
         "metric_value_count": 2,
         "statistical_evidence_hash": evidence["content_hash"],
+        "candidates": candidates,
     }
     candidate = {
         **candidates[0],
@@ -325,6 +408,7 @@ def test_statistical_validation_refuses_missing_metric_value_hash() -> None:
         "selection_universe_hash": evidence["selection_universe_hash"],
         "metric_value_count": 2,
         "statistical_evidence_hash": evidence["content_hash"],
+        "candidates": candidates,
     }
 
     reasons = validate_statistical_evidence_for_candidate(
