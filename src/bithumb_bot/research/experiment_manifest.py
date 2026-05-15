@@ -457,12 +457,38 @@ class StressRiskAdjustedScoreContract:
 
 
 @dataclass(frozen=True)
+class StressPeriodAblationContract:
+    calendar_years: tuple[int, ...] | str
+    min_pass_ratio: float = 0.8
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "calendar_years": self.calendar_years if self.calendar_years == "auto" else list(self.calendar_years),
+            "min_pass_ratio": self.min_pass_ratio,
+        }
+
+
+@dataclass(frozen=True)
+class StressParameterPerturbationContract:
+    relative_pct: tuple[float, ...]
+    numeric_params_only: bool = True
+    min_pass_ratio: float = 0.8
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "relative_pct": list(self.relative_pct),
+            "numeric_params_only": self.numeric_params_only,
+            "min_pass_ratio": self.min_pass_ratio,
+        }
+
+
+@dataclass(frozen=True)
 class StressSuiteContract:
     required_for_promotion: bool
     trade_removal: StressTradeRemovalContract | None = None
     trade_order_monte_carlo: StressTradeOrderMonteCarloContract | None = None
-    period_ablation_declared: bool = False
-    parameter_perturbation_declared: bool = False
+    period_ablation: StressPeriodAblationContract | None = None
+    parameter_perturbation: StressParameterPerturbationContract | None = None
     risk_adjusted_score: StressRiskAdjustedScoreContract | None = None
 
     def as_dict(self) -> dict[str, object]:
@@ -473,10 +499,10 @@ class StressSuiteContract:
             payload["trade_removal"] = self.trade_removal.as_dict()
         if self.trade_order_monte_carlo is not None:
             payload["trade_order_monte_carlo"] = self.trade_order_monte_carlo.as_dict()
-        if self.period_ablation_declared:
-            payload["period_ablation"] = {"status": "not_implemented"}
-        if self.parameter_perturbation_declared:
-            payload["parameter_perturbation"] = {"status": "not_implemented"}
+        if self.period_ablation is not None:
+            payload["period_ablation"] = self.period_ablation.as_dict()
+        if self.parameter_perturbation is not None:
+            payload["parameter_perturbation"] = self.parameter_perturbation.as_dict()
         if self.risk_adjusted_score is not None:
             payload["risk_adjusted_score"] = self.risk_adjusted_score.as_dict()
         return payload
@@ -1486,8 +1512,8 @@ def _parse_stress_suite(value: Any, *, deployment_tier: str) -> StressSuiteContr
         required_for_promotion=required,
         trade_removal=_parse_stress_trade_removal(value.get("trade_removal")),
         trade_order_monte_carlo=_parse_stress_trade_order_monte_carlo(value.get("trade_order_monte_carlo")),
-        period_ablation_declared=_parse_stress_period_ablation_declared(value.get("period_ablation")),
-        parameter_perturbation_declared=_parse_stress_parameter_perturbation_declared(value.get("parameter_perturbation")),
+        period_ablation=_parse_stress_period_ablation(value.get("period_ablation")),
+        parameter_perturbation=_parse_stress_parameter_perturbation(value.get("parameter_perturbation")),
         risk_adjusted_score=_parse_stress_risk_adjusted_score(value.get("risk_adjusted_score")),
     )
 
@@ -1589,9 +1615,9 @@ def _parse_stress_risk_adjusted_score(value: Any) -> StressRiskAdjustedScoreCont
     return StressRiskAdjustedScoreContract(required_metrics=tuple(required), ranking=tuple(ranking))
 
 
-def _parse_stress_period_ablation_declared(value: Any) -> bool:
+def _parse_stress_period_ablation(value: Any) -> StressPeriodAblationContract | None:
     if value is None:
-        return False
+        return None
     if not isinstance(value, dict):
         raise ManifestValidationError("stress_suite.period_ablation must be an object")
     allowed_fields = {"calendar_years", "min_pass_ratio"}
@@ -1601,30 +1627,60 @@ def _parse_stress_period_ablation_declared(value: Any) -> bool:
     years = value.get("calendar_years")
     if years != "auto" and not isinstance(years, list):
         raise ManifestValidationError("stress_suite.period_ablation.calendar_years must be auto or an array")
+    parsed_years: tuple[int, ...] | str
+    if years == "auto":
+        parsed_years = "auto"
+    else:
+        if not years:
+            raise ManifestValidationError("stress_suite.period_ablation.calendar_years must be auto or a non-empty array")
+        parsed = tuple(_calendar_year(item, "stress_suite.period_ablation.calendar_years") for item in years)
+        if len(set(parsed)) != len(parsed):
+            raise ManifestValidationError("stress_suite.period_ablation.calendar_years must not contain duplicates")
+        parsed_years = tuple(sorted(parsed))
+    min_pass_ratio = 0.8
     if "min_pass_ratio" in value:
-        _probability(value.get("min_pass_ratio"), "stress_suite.period_ablation.min_pass_ratio")
-    return True
+        min_pass_ratio = _probability(value.get("min_pass_ratio"), "stress_suite.period_ablation.min_pass_ratio")
+    return StressPeriodAblationContract(calendar_years=parsed_years, min_pass_ratio=min_pass_ratio)
 
 
-def _parse_stress_parameter_perturbation_declared(value: Any) -> bool:
+def _parse_stress_parameter_perturbation(value: Any) -> StressParameterPerturbationContract | None:
     if value is None:
-        return False
+        return None
     if not isinstance(value, dict):
         raise ManifestValidationError("stress_suite.parameter_perturbation must be an object")
-    allowed_fields = {"relative_pct", "numeric_params_only"}
+    allowed_fields = {"relative_pct", "numeric_params_only", "min_pass_ratio"}
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
         raise ManifestValidationError(f"stress_suite.parameter_perturbation unsupported fields: {','.join(unknown)}")
     relative = value.get("relative_pct")
     if not isinstance(relative, list) or not relative:
         raise ManifestValidationError("stress_suite.parameter_perturbation.relative_pct must be a non-empty array")
+    parsed_relative: list[float] = []
     for item in relative:
         parsed = _optional_finite_float(item, "stress_suite.parameter_perturbation.relative_pct")
         if parsed == 0.0:
             raise ManifestValidationError("stress_suite.parameter_perturbation.relative_pct values must be non-zero")
+        parsed_relative.append(float(parsed))
+    if len(set(parsed_relative)) != len(parsed_relative):
+        raise ManifestValidationError("stress_suite.parameter_perturbation.relative_pct must not contain duplicates")
     if "numeric_params_only" in value and not isinstance(value.get("numeric_params_only"), bool):
         raise ManifestValidationError("stress_suite.parameter_perturbation.numeric_params_only must be boolean")
-    return True
+    min_pass_ratio = 0.8
+    if "min_pass_ratio" in value:
+        min_pass_ratio = _probability(value.get("min_pass_ratio"), "stress_suite.parameter_perturbation.min_pass_ratio")
+    return StressParameterPerturbationContract(
+        relative_pct=tuple(sorted(parsed_relative)),
+        numeric_params_only=bool(value.get("numeric_params_only", True)),
+        min_pass_ratio=min_pass_ratio,
+    )
+
+
+def _calendar_year(value: Any, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ManifestValidationError(f"{field} values must be integer years")
+    if value < 1970 or value > 9999:
+        raise ManifestValidationError(f"{field} values must be valid calendar years")
+    return int(value)
 
 
 def _named_string_list(value: Any, field: str) -> list[str]:

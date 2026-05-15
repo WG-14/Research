@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 from bithumb_bot.research.experiment_manifest import parse_manifest
 from bithumb_bot.research.metrics_contract import ClosedTradeRecord
@@ -80,6 +81,11 @@ def _trades(values: list[float]) -> tuple[ClosedTradeRecord, ...]:
         ClosedTradeRecord(exit_ts=1_700_000_000_000 + index, net_pnl=value, entry_notional=100_000.0)
         for index, value in enumerate(values)
     )
+
+
+def _trade(exit_year: int, net_pnl: float, index: int = 0) -> ClosedTradeRecord:
+    ts = int(datetime(exit_year, 6, 1, tzinfo=timezone.utc).timestamp() * 1000) + index
+    return ClosedTradeRecord(exit_ts=ts, net_pnl=net_pnl, entry_notional=100_000.0)
 
 
 def test_top_n_trade_removal_fails_single_huge_winner_dependency() -> None:
@@ -170,10 +176,11 @@ def test_trade_order_monte_carlo_strict_drawdown_threshold_fails() -> None:
     assert "stress_monte_carlo_survival_probability_failed" in result["fail_reasons"]
 
 
-def test_declared_unimplemented_sections_fail_closed() -> None:
+def test_period_ablation_passes_leave_one_calendar_year_out() -> None:
     payload = _contract_payload()
     payload["stress_suite"]["period_ablation"] = {"calendar_years": "auto", "min_pass_ratio": 0.8}
-    payload["stress_suite"]["parameter_perturbation"] = {"relative_pct": [-0.1, 0.1], "numeric_params_only": True}
+    payload["stress_suite"].pop("trade_removal")
+    payload["stress_suite"].pop("trade_order_monte_carlo")
     manifest = parse_manifest(payload)
 
     result = analyze_stress_suite(
@@ -181,12 +188,204 @@ def test_declared_unimplemented_sections_fail_closed() -> None:
         context=_context(),
         original_metrics={"return_pct": 10.0},
         metrics_v2=_metrics_v2(),
-        closed_trades=_trades([10_000.0, 9_000.0, 8_000.0, -2_000.0, 7_000.0, -1_000.0]),
+        closed_trades=(
+            _trade(2023, 20_000.0, 1),
+            _trade(2023, -5_000.0, 2),
+            _trade(2024, 10_000.0, 3),
+            _trade(2024, -5_000.0, 4),
+        ),
         starting_cash=1_000_000.0,
     )
 
-    assert "stress_period_ablation_not_implemented" in result["fail_reasons"]
-    assert "stress_parameter_perturbation_not_implemented" in result["fail_reasons"]
+    assert result["period_ablation"]["status"] == "PASS"
+    assert result["period_ablation"]["method"] == "leave_one_calendar_year_out_closed_trade_exit_year"
+    assert result["period_ablation"]["calendar_years"] == [2023, 2024]
+    assert result["period_ablation"]["pass_ratio"] == 1.0
+    assert result["period_ablation"]["limitations"] == [
+        "period_ablation_uses_closed_trade_exit_year_not_full_signal_rerun"
+    ]
+    json.dumps(result, allow_nan=False)
+
+
+def test_period_ablation_fails_when_year_removal_destroys_return_retention() -> None:
+    payload = _contract_payload()
+    payload["stress_suite"]["period_ablation"] = {"calendar_years": [2023, 2024], "min_pass_ratio": 1.0}
+    payload["stress_suite"].pop("trade_removal")
+    payload["stress_suite"].pop("trade_order_monte_carlo")
+    manifest = parse_manifest(payload)
+
+    result = analyze_stress_suite(
+        contract=manifest.stress_suite,
+        context=_context(),
+        original_metrics={"return_pct": 10.0},
+        metrics_v2=_metrics_v2(),
+        closed_trades=(
+            _trade(2023, 30_000.0, 1),
+            _trade(2024, -2_000.0, 2),
+            _trade(2024, -2_000.0, 3),
+        ),
+        starting_cash=1_000_000.0,
+    )
+
+    assert result["period_ablation"]["status"] == "FAIL"
+    assert "stress_period_ablation_pass_ratio_failed" in result["fail_reasons"]
+
+
+def test_period_ablation_fails_closed_without_usable_exit_timestamps() -> None:
+    payload = _contract_payload()
+    payload["stress_suite"]["period_ablation"] = {"calendar_years": "auto", "min_pass_ratio": 0.8}
+    payload["stress_suite"].pop("trade_removal")
+    payload["stress_suite"].pop("trade_order_monte_carlo")
+    manifest = parse_manifest(payload)
+
+    result = analyze_stress_suite(
+        contract=manifest.stress_suite,
+        context=_context(),
+        original_metrics={"return_pct": 10.0},
+        metrics_v2=_metrics_v2(),
+        closed_trades=(ClosedTradeRecord(exit_ts=0, net_pnl=10_000.0, entry_notional=100_000.0),),
+        starting_cash=1_000_000.0,
+    )
+
+    assert result["period_ablation"]["status"] == "FAIL"
+    assert "stress_period_ablation_exit_timestamp_missing" in result["fail_reasons"]
+
+
+def test_parameter_perturbation_passes_with_existing_grid_matches() -> None:
+    payload = _contract_payload()
+    payload["stress_suite"]["parameter_perturbation"] = {"relative_pct": [-0.1, 0.1], "numeric_params_only": True}
+    payload["stress_suite"].pop("trade_removal")
+    payload["stress_suite"].pop("trade_order_monte_carlo")
+    manifest = parse_manifest(payload)
+
+    result = analyze_stress_suite(
+        contract=manifest.stress_suite,
+        context=StressSuiteContext(
+            manifest_hash="sha256:manifest",
+            experiment_id="stress_unit",
+            candidate_id="candidate_base",
+            scenario_id="scenario_001",
+            split_name="validation",
+            parameter_values={"SMA_SHORT": 10},
+        ),
+        original_metrics={"return_pct": 10.0},
+        metrics_v2=_metrics_v2(),
+        closed_trades=_trades([10_000.0, 9_000.0, -1_000.0]),
+        starting_cash=1_000_000.0,
+        parameter_perturbation_candidates=(
+            {
+                "candidate_id": "candidate_low",
+                "parameter_values": {"SMA_SHORT": 9},
+                "validation_metrics": {"return_pct": 2.0, "max_drawdown_pct": 3.0},
+                "final_holdout_metrics": {"return_pct": 1.0},
+                "scenario_acceptance_gate_result": "PASS",
+                "scenario_fail_reasons": [],
+            },
+            {
+                "candidate_id": "candidate_high",
+                "parameter_values": {"SMA_SHORT": 11},
+                "validation_metrics": {"return_pct": 2.5, "max_drawdown_pct": 3.5},
+                "final_holdout_metrics": {"return_pct": 1.5},
+                "scenario_acceptance_gate_result": "PASS",
+                "scenario_fail_reasons": [],
+            },
+        ),
+    )
+
+    assert result["parameter_perturbation"]["status"] == "PASS"
+    assert result["parameter_perturbation"]["pass_ratio"] == 1.0
+    assert result["parameter_perturbation"]["limitations"] == [
+        "parameter_perturbation_uses_existing_grid_candidates_not_synthetic_reruns"
+    ]
+
+
+def test_parameter_perturbation_fails_when_grid_match_missing() -> None:
+    payload = _contract_payload()
+    payload["stress_suite"]["parameter_perturbation"] = {
+        "relative_pct": [-0.1, 0.1],
+        "numeric_params_only": True,
+        "min_pass_ratio": 1.0,
+    }
+    payload["stress_suite"].pop("trade_removal")
+    payload["stress_suite"].pop("trade_order_monte_carlo")
+    manifest = parse_manifest(payload)
+
+    result = analyze_stress_suite(
+        contract=manifest.stress_suite,
+        context=StressSuiteContext(
+            manifest_hash="sha256:manifest",
+            experiment_id="stress_unit",
+            candidate_id="candidate_base",
+            scenario_id="scenario_001",
+            split_name="validation",
+            parameter_values={"SMA_SHORT": 10},
+        ),
+        original_metrics={"return_pct": 10.0},
+        metrics_v2=_metrics_v2(),
+        closed_trades=_trades([10_000.0, 9_000.0, -1_000.0]),
+        starting_cash=1_000_000.0,
+        parameter_perturbation_candidates=(
+            {
+                "candidate_id": "candidate_low",
+                "parameter_values": {"SMA_SHORT": 9},
+                "validation_metrics": {"return_pct": 2.0, "max_drawdown_pct": 3.0},
+                "scenario_acceptance_gate_result": "PASS",
+                "scenario_fail_reasons": [],
+            },
+        ),
+    )
+
+    assert result["parameter_perturbation"]["status"] == "FAIL"
+    assert "stress_parameter_perturbation_candidate_missing" in result["fail_reasons"]
+    assert "stress_parameter_perturbation_pass_ratio_failed" in result["fail_reasons"]
+
+
+def test_parameter_perturbation_fails_when_pass_ratio_below_threshold() -> None:
+    payload = _contract_payload()
+    payload["stress_suite"]["parameter_perturbation"] = {
+        "relative_pct": [-0.1, 0.1],
+        "numeric_params_only": True,
+        "min_pass_ratio": 1.0,
+    }
+    payload["stress_suite"].pop("trade_removal")
+    payload["stress_suite"].pop("trade_order_monte_carlo")
+    manifest = parse_manifest(payload)
+
+    result = analyze_stress_suite(
+        contract=manifest.stress_suite,
+        context=StressSuiteContext(
+            manifest_hash="sha256:manifest",
+            experiment_id="stress_unit",
+            candidate_id="candidate_base",
+            scenario_id="scenario_001",
+            split_name="validation",
+            parameter_values={"SMA_SHORT": 10},
+        ),
+        original_metrics={"return_pct": 10.0},
+        metrics_v2=_metrics_v2(),
+        closed_trades=_trades([10_000.0, 9_000.0, -1_000.0]),
+        starting_cash=1_000_000.0,
+        parameter_perturbation_candidates=(
+            {
+                "candidate_id": "candidate_low",
+                "parameter_values": {"SMA_SHORT": 9},
+                "validation_metrics": {"return_pct": 2.0, "max_drawdown_pct": 3.0},
+                "scenario_acceptance_gate_result": "PASS",
+                "scenario_fail_reasons": [],
+            },
+            {
+                "candidate_id": "candidate_high",
+                "parameter_values": {"SMA_SHORT": 11},
+                "validation_metrics": {"return_pct": -2.0, "max_drawdown_pct": 20.0},
+                "scenario_acceptance_gate_result": "FAIL",
+                "scenario_fail_reasons": ["validation_return_not_positive"],
+            },
+        ),
+    )
+
+    assert result["parameter_perturbation"]["status"] == "FAIL"
+    assert "stress_parameter_perturbation_constraint_invalid" in result["fail_reasons"]
+    assert "stress_parameter_perturbation_pass_ratio_failed" in result["fail_reasons"]
 
 
 def test_required_stress_evidence_validation_refuses_missing_and_hash_mismatch() -> None:

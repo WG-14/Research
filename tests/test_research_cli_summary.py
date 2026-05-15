@@ -297,6 +297,8 @@ def test_print_report_summary_renders_stress_suite_diagnostics(capsys) -> None:
             "stress_suite_fail_reasons": ["stress_trade_removal_return_retention_failed"],
             "best_validation_stress_suite": {
                 "trade_removal": {"status": "FAIL"},
+                "period_ablation": {"status": "PASS", "pass_ratio": 1.0},
+                "parameter_perturbation": {"status": "FAIL", "pass_ratio": 0.5},
                 "trade_order_monte_carlo": {
                     "survival_probability": 0.972,
                     "max_drawdown_pct_p95": 31.2,
@@ -312,6 +314,10 @@ def test_print_report_summary_renders_stress_suite_diagnostics(capsys) -> None:
     assert "stress_suite_gate_result=FAIL" in output
     assert "stress_suite_fail_reasons=stress_trade_removal_return_retention_failed" in output
     assert "stress_trade_removal_status=FAIL" in output
+    assert "stress_period_ablation_status=PASS" in output
+    assert "stress_period_ablation_pass_ratio=1.0" in output
+    assert "stress_parameter_perturbation_status=FAIL" in output
+    assert "stress_parameter_perturbation_pass_ratio=0.5" in output
     assert "stress_monte_carlo_survival_probability=0.972" in output
     assert "stress_monte_carlo_max_drawdown_pct_p95=31.2" in output
 

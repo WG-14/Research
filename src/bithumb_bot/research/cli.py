@@ -292,6 +292,16 @@ def _print_stress_suite_summary(payload: dict[str, object]) -> None:
         if isinstance(evidence, dict) and isinstance(evidence.get("trade_order_monte_carlo"), dict)
         else {}
     )
+    period_ablation = (
+        evidence.get("period_ablation")
+        if isinstance(evidence, dict) and isinstance(evidence.get("period_ablation"), dict)
+        else {}
+    )
+    parameter_perturbation = (
+        evidence.get("parameter_perturbation")
+        if isinstance(evidence, dict) and isinstance(evidence.get("parameter_perturbation"), dict)
+        else {}
+    )
     print(f"  stress_suite_required={1 if required else 0}")
     print(f"  stress_suite_gate_result={payload.get('stress_suite_gate_result') or 'none'}")
     print(
@@ -299,6 +309,10 @@ def _print_stress_suite_summary(payload: dict[str, object]) -> None:
         f"{_format_items(tuple(str(item) for item in payload.get('stress_suite_fail_reasons') or []))}"
     )
     print(f"  stress_trade_removal_status={trade_removal.get('status') or 'none'}")
+    print(f"  stress_period_ablation_status={period_ablation.get('status') or 'none'}")
+    print(f"  stress_period_ablation_pass_ratio={period_ablation.get('pass_ratio')}")
+    print(f"  stress_parameter_perturbation_status={parameter_perturbation.get('status') or 'none'}")
+    print(f"  stress_parameter_perturbation_pass_ratio={parameter_perturbation.get('pass_ratio')}")
     print(f"  stress_monte_carlo_survival_probability={monte_carlo.get('survival_probability')}")
     print(f"  stress_monte_carlo_max_drawdown_pct_p95={monte_carlo.get('max_drawdown_pct_p95')}")
 

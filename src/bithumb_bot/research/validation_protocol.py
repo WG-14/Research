@@ -524,6 +524,19 @@ def _evaluate_candidates(
             candidates=raw_candidates,
             evaluated_candidates=base_results,
         )
+        pre_stress_gate_by_index = _pre_stress_gate_summaries(
+            manifest=manifest,
+            base_results=base_results,
+            stability=stability,
+            include_walk_forward=include_walk_forward,
+            calibration_gate=calibration_gate,
+            dataset_quality_status=dataset_quality_status,
+            dataset_quality_reasons=dataset_quality_reasons,
+        )
+        perturbation_candidates = _parameter_perturbation_candidates(
+            base_results=base_results,
+            pre_stress_gate_by_index=pre_stress_gate_by_index,
+        )
         for base in base_results:
             index = int(base["index"])
             params = dict(base["parameter_values"])
@@ -583,6 +596,7 @@ def _evaluate_candidates(
                     metrics_v2=validation_metrics_v2,
                     closed_trades=tuple(base.get("validation_closed_trades") or ()),
                     starting_cash=START_CASH_KRW,
+                    parameter_perturbation_candidates=perturbation_candidates,
                 )
                 stress_fail_reasons.extend(str(reason) for reason in validation_stress_suite.get("fail_reasons") or [])
                 if final_holdout_metrics is not None:
@@ -600,6 +614,7 @@ def _evaluate_candidates(
                         metrics_v2=final_holdout_metrics_v2,
                         closed_trades=tuple(base.get("final_holdout_closed_trades") or ()),
                         starting_cash=START_CASH_KRW,
+                        parameter_perturbation_candidates=perturbation_candidates,
                     )
                     stress_fail_reasons.extend(
                         f"final_holdout_{reason}" for reason in final_holdout_stress_suite.get("fail_reasons") or []
@@ -1043,6 +1058,81 @@ def _failed_candidate_base_result(
         "scenario_type": scenario.type,
         "research_run_policy": manifest.research_run.as_dict(),
     }
+
+
+def _pre_stress_gate_summaries(
+    *,
+    manifest: ExperimentManifest,
+    base_results: list[dict[str, Any]],
+    stability: dict[int, dict[str, Any]],
+    include_walk_forward: bool,
+    calibration_gate: dict[str, Any],
+    dataset_quality_status: str,
+    dataset_quality_reasons: list[str],
+) -> dict[int, dict[str, Any]]:
+    summaries: dict[int, dict[str, Any]] = {}
+    for base in base_results:
+        index = int(base["index"])
+        validation_metrics = dict(base["validation_metrics"])
+        final_holdout_metrics = (
+            dict(base["final_holdout_metrics"]) if isinstance(base.get("final_holdout_metrics"), dict) else None
+        )
+        regime_gate = evaluate_regime_acceptance_gate(
+            gate=manifest.acceptance_gate.regime_acceptance_gate,
+            performance_rows=tuple(base.get("validation_regime_performance") or ()),
+        )
+        gate_result, fail_reasons = _gate_result(
+            manifest=manifest,
+            validation_metrics=validation_metrics,
+            validation_metrics_v2=dict(base["validation_metrics_v2"]),
+            final_holdout_metrics=final_holdout_metrics,
+            final_holdout_metrics_v2=(
+                dict(base["final_holdout_metrics_v2"]) if isinstance(base.get("final_holdout_metrics_v2"), dict) else None
+            ),
+            walk_forward_metrics=base["walk_forward_metrics"],
+            stability_score=stability[index]["score"],
+            include_walk_forward=include_walk_forward,
+            regime_gate_result=regime_gate.as_dict(),
+            execution_calibration_gate=calibration_gate,
+            dataset_quality_status=dataset_quality_status,
+            dataset_quality_reasons=dataset_quality_reasons,
+        )
+        if base.get("candidate_failed"):
+            gate_result = "FAIL"
+            fail_reasons = sorted(
+                set(fail_reasons)
+                | {
+                    "candidate_resource_limit_exceeded"
+                    if base.get("failure_reason") == "candidate_resource_limit_exceeded"
+                    else str(base.get("failure_reason") or "candidate_failed")
+                }
+                | set(str(item) for item in (base.get("resource_guard") or {}).get("reasons", []))
+            )
+        summaries[index] = {"gate_result": gate_result, "fail_reasons": sorted(set(fail_reasons))}
+    return summaries
+
+
+def _parameter_perturbation_candidates(
+    *,
+    base_results: list[dict[str, Any]],
+    pre_stress_gate_by_index: dict[int, dict[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    rows: list[dict[str, Any]] = []
+    for base in base_results:
+        summary = pre_stress_gate_by_index.get(int(base["index"]), {})
+        rows.append(
+            {
+                "candidate_id": base.get("candidate_id"),
+                "parameter_values": dict(base.get("parameter_values") or {}),
+                "validation_metrics": dict(base.get("validation_metrics") or {}),
+                "final_holdout_metrics": (
+                    dict(base.get("final_holdout_metrics")) if isinstance(base.get("final_holdout_metrics"), dict) else None
+                ),
+                "scenario_acceptance_gate_result": summary.get("gate_result"),
+                "scenario_fail_reasons": list(summary.get("fail_reasons") or []),
+            }
+        )
+    return tuple(rows)
 
 
 def _probe_grade_gate_warnings(manifest: ExperimentManifest) -> list[str]:

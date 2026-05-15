@@ -135,6 +135,12 @@ def test_manifest_parses_statistical_validation_and_binds_hash() -> None:
 def test_manifest_parses_stress_suite_and_binds_hash() -> None:
     payload = _manifest()
     payload["stress_suite"] = _stress_suite()
+    payload["stress_suite"]["period_ablation"] = {"calendar_years": "auto", "min_pass_ratio": 0.8}
+    payload["stress_suite"]["parameter_perturbation"] = {
+        "relative_pct": [-0.2, -0.1, 0.1, 0.2],
+        "numeric_params_only": True,
+        "min_pass_ratio": 0.75,
+    }
 
     manifest = parse_manifest(payload)
     baseline_hash = manifest.manifest_hash()
@@ -142,6 +148,8 @@ def test_manifest_parses_stress_suite_and_binds_hash() -> None:
     assert manifest.stress_suite is not None
     assert manifest.stress_suite.required_for_promotion is True
     assert manifest.canonical_payload()["stress_suite"]["trade_removal"]["top_n_by_net_pnl"] == [1, 3]
+    assert manifest.canonical_payload()["stress_suite"]["period_ablation"]["calendar_years"] == "auto"
+    assert manifest.canonical_payload()["stress_suite"]["parameter_perturbation"]["min_pass_ratio"] == 0.75
 
     changed = _manifest()
     changed["stress_suite"] = _stress_suite()
@@ -173,6 +181,33 @@ def test_manifest_rejects_invalid_stress_probability_threshold() -> None:
     payload["stress_suite"]["trade_order_monte_carlo"]["min_survival_probability"] = 1.5
 
     with pytest.raises(ManifestValidationError, match="min_survival_probability"):
+        parse_manifest(payload)
+
+
+def test_manifest_rejects_invalid_period_ablation_year_config() -> None:
+    payload = _manifest()
+    payload["stress_suite"] = _stress_suite()
+    payload["stress_suite"]["period_ablation"] = {"calendar_years": [2024, 2024], "min_pass_ratio": 0.8}
+
+    with pytest.raises(ManifestValidationError, match="calendar_years must not contain duplicates"):
+        parse_manifest(payload)
+
+
+def test_manifest_rejects_invalid_parameter_perturbation_relative_pct() -> None:
+    payload = _manifest()
+    payload["stress_suite"] = _stress_suite()
+    payload["stress_suite"]["parameter_perturbation"] = {"relative_pct": [0.0], "numeric_params_only": True}
+
+    with pytest.raises(ManifestValidationError, match="relative_pct values must be non-zero"):
+        parse_manifest(payload)
+
+
+def test_manifest_rejects_unknown_parameter_perturbation_field() -> None:
+    payload = _manifest()
+    payload["stress_suite"] = _stress_suite()
+    payload["stress_suite"]["parameter_perturbation"] = {"relative_pct": [0.1], "unexpected": True}
+
+    with pytest.raises(ManifestValidationError, match="parameter_perturbation unsupported fields"):
         parse_manifest(payload)
 
 

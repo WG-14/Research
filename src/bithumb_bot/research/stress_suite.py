@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from .deployment_policy import is_production_bound_target
@@ -15,6 +16,12 @@ STRESS_SUITE_SCHEMA_VERSION = 1
 MONTE_CARLO_LIMITATIONS = (
     "monte_carlo_does_not_reconstruct_intratrade_equity_path",
     "monte_carlo_uses_closed_trade_pnl_not_bar_return_series",
+)
+PERIOD_ABLATION_LIMITATIONS = (
+    "period_ablation_uses_closed_trade_exit_year_not_full_signal_rerun",
+)
+PARAMETER_PERTURBATION_LIMITATIONS = (
+    "parameter_perturbation_uses_existing_grid_candidates_not_synthetic_reruns",
 )
 
 
@@ -56,6 +63,7 @@ def analyze_stress_suite(
     metrics_v2: dict[str, Any] | None,
     closed_trades: tuple[ClosedTradeRecord, ...],
     starting_cash: float,
+    parameter_perturbation_candidates: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, Any]:
     contract_payload = contract.as_dict()
     contract_hash = sha256_prefixed(contract_payload)
@@ -81,18 +89,24 @@ def analyze_stress_suite(
             "split_name": context.split_name,
         },
     }
-    if contract.period_ablation_declared:
-        payload["period_ablation"] = {
-            "status": "FAIL",
-            "fail_reasons": ["stress_period_ablation_not_implemented"],
-        }
-        fail_reasons.append("stress_period_ablation_not_implemented")
-    if contract.parameter_perturbation_declared:
-        payload["parameter_perturbation"] = {
-            "status": "FAIL",
-            "fail_reasons": ["stress_parameter_perturbation_not_implemented"],
-        }
-        fail_reasons.append("stress_parameter_perturbation_not_implemented")
+    if contract.period_ablation is not None:
+        section = analyze_period_ablation(
+            contract=contract.period_ablation.as_dict(),
+            closed_trades=closed_trades,
+            starting_cash=starting_cash,
+        )
+        payload["period_ablation"] = section
+        fail_reasons.extend(str(reason) for reason in section.get("fail_reasons") or [])
+        limitations.extend(str(item) for item in section.get("limitations") or [])
+    if contract.parameter_perturbation is not None:
+        section = analyze_parameter_perturbation(
+            contract=contract.parameter_perturbation.as_dict(),
+            base_parameter_values=context.parameter_values,
+            candidates=parameter_perturbation_candidates,
+        )
+        payload["parameter_perturbation"] = section
+        fail_reasons.extend(str(reason) for reason in section.get("fail_reasons") or [])
+        limitations.extend(str(item) for item in section.get("limitations") or [])
     if contract.trade_removal is not None:
         section = analyze_trade_removal(
             contract=contract.trade_removal.as_dict(),
@@ -260,6 +274,215 @@ def analyze_trade_order_monte_carlo(
     )
 
 
+def analyze_period_ablation(
+    *,
+    contract: dict[str, Any],
+    closed_trades: tuple[ClosedTradeRecord, ...],
+    starting_cash: float,
+) -> dict[str, Any]:
+    if not closed_trades:
+        return {
+            "method": "leave_one_calendar_year_out_closed_trade_exit_year",
+            "status": "FAIL",
+            "calendar_years": [],
+            "min_pass_ratio": float(contract.get("min_pass_ratio") or 0.8),
+            "pass_ratio": 0.0,
+            "cases": [],
+            "limitations": list(PERIOD_ABLATION_LIMITATIONS),
+            "fail_reasons": ["stress_period_ablation_no_closed_trades"],
+        }
+    trade_years: list[int] = []
+    for trade in closed_trades:
+        year = _trade_exit_year(trade)
+        if year is None:
+            return {
+                "method": "leave_one_calendar_year_out_closed_trade_exit_year",
+                "status": "FAIL",
+                "calendar_years": [],
+                "min_pass_ratio": float(contract.get("min_pass_ratio") or 0.8),
+                "pass_ratio": 0.0,
+                "cases": [],
+                "limitations": list(PERIOD_ABLATION_LIMITATIONS),
+                "fail_reasons": ["stress_period_ablation_exit_timestamp_missing"],
+            }
+        trade_years.append(year)
+    requested = contract.get("calendar_years")
+    calendar_years = sorted(set(trade_years)) if requested == "auto" else [int(item) for item in requested or []]
+    matching_years = [year for year in calendar_years if year in set(trade_years)]
+    if not matching_years:
+        return {
+            "method": "leave_one_calendar_year_out_closed_trade_exit_year",
+            "status": "FAIL",
+            "calendar_years": calendar_years,
+            "min_pass_ratio": float(contract.get("min_pass_ratio") or 0.8),
+            "pass_ratio": 0.0,
+            "cases": [],
+            "limitations": list(PERIOD_ABLATION_LIMITATIONS),
+            "fail_reasons": ["stress_period_ablation_no_matching_years"],
+        }
+    original = _trade_summary(closed_trades, starting_cash=starting_cash)
+    cases: list[dict[str, Any]] = []
+    passing = 0
+    required_data_missing = False
+    for year in matching_years:
+        kept = tuple(trade for trade in closed_trades if _trade_exit_year(trade) != year)
+        removed_count = len(closed_trades) - len(kept)
+        stressed = _trade_summary(kept, starting_cash=starting_cash)
+        retention = (
+            (stressed["realized_return_pct"] / original["realized_return_pct"] * 100.0)
+            if original["realized_return_pct"] > 0.0
+            else None
+        )
+        case_reasons: list[str] = []
+        if not kept:
+            case_reasons.append("stress_period_ablation_required_data_missing")
+            required_data_missing = True
+        elif retention is None:
+            case_reasons.append("stress_period_ablation_required_data_missing")
+            required_data_missing = True
+        elif retention < 0.0:
+            case_reasons.append("stress_period_ablation_pass_ratio_failed")
+        if not case_reasons:
+            passing += 1
+        cases.append(
+            {
+                "year": year,
+                "removed_trade_count": removed_count,
+                "remaining_trade_count": len(kept),
+                "original_realized_return_pct": original["realized_return_pct"],
+                "stressed_realized_return_pct": stressed["realized_return_pct"],
+                "return_retention_pct": retention,
+                "stressed_profit_factor": stressed["profit_factor"],
+                "stressed_expectancy_per_trade_krw": stressed["expectancy_per_trade_krw"],
+                "stressed_win_rate": stressed["win_rate"],
+                "gate_result": "PASS" if not case_reasons else "FAIL",
+                "fail_reasons": sorted(set(case_reasons)),
+            }
+        )
+    pass_ratio = passing / len(cases) if cases else 0.0
+    fail_reasons: list[str] = []
+    if pass_ratio < float(contract.get("min_pass_ratio") or 0.8):
+        fail_reasons.append("stress_period_ablation_pass_ratio_failed")
+    if required_data_missing:
+        fail_reasons.append("stress_period_ablation_required_data_missing")
+    return _json_safe(
+        {
+            "method": "leave_one_calendar_year_out_closed_trade_exit_year",
+            "status": "PASS" if not fail_reasons else "FAIL",
+            "calendar_years": calendar_years,
+            "min_pass_ratio": float(contract.get("min_pass_ratio") or 0.8),
+            "pass_ratio": pass_ratio,
+            "cases": cases,
+            "limitations": list(PERIOD_ABLATION_LIMITATIONS),
+            "fail_reasons": sorted(set(fail_reasons)),
+        }
+    )
+
+
+def analyze_parameter_perturbation(
+    *,
+    contract: dict[str, Any],
+    base_parameter_values: dict[str, Any],
+    candidates: tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    relative_values = [float(item) for item in contract.get("relative_pct") or []]
+    min_pass_ratio = float(contract.get("min_pass_ratio") or 0.8)
+    numeric_items = [(key, value) for key, value in sorted(base_parameter_values.items()) if _is_numeric_param_value(value)]
+    if not numeric_items:
+        return {
+            "method": "existing_grid_relative_parameter_perturbation",
+            "status": "FAIL",
+            "relative_pct": relative_values,
+            "min_pass_ratio": min_pass_ratio,
+            "pass_ratio": 0.0,
+            "cases": [],
+            "limitations": list(PARAMETER_PERTURBATION_LIMITATIONS),
+            "fail_reasons": ["stress_parameter_perturbation_no_numeric_parameters"],
+        }
+    if not candidates:
+        return {
+            "method": "existing_grid_relative_parameter_perturbation",
+            "status": "FAIL",
+            "relative_pct": relative_values,
+            "min_pass_ratio": min_pass_ratio,
+            "pass_ratio": 0.0,
+            "cases": [],
+            "limitations": list(PARAMETER_PERTURBATION_LIMITATIONS),
+            "fail_reasons": ["stress_parameter_perturbation_required_data_missing"],
+        }
+    candidate_by_params = {
+        _parameter_signature(dict(item.get("parameter_values") or {})): item
+        for item in candidates
+        if isinstance(item.get("parameter_values"), dict)
+    }
+    cases: list[dict[str, Any]] = []
+    passing = 0
+    for parameter, base_value in numeric_items:
+        for relative_pct in relative_values:
+            target_value = _perturbed_value(base_value, relative_pct)
+            target_params = dict(base_parameter_values)
+            target_params[parameter] = target_value
+            matched = candidate_by_params.get(_parameter_signature(target_params))
+            case_reasons: list[str] = []
+            if matched is None:
+                case_reasons.append("stress_parameter_perturbation_candidate_missing")
+                matched_fail_reasons: list[str] = []
+                matched_candidate_id = None
+                validation_return = None
+                validation_mdd = None
+                final_holdout_return = None
+                matched_gate = None
+            else:
+                matched_candidate_id = matched.get("candidate_id")
+                validation_metrics = matched.get("validation_metrics") if isinstance(matched.get("validation_metrics"), dict) else {}
+                final_holdout_metrics = (
+                    matched.get("final_holdout_metrics") if isinstance(matched.get("final_holdout_metrics"), dict) else None
+                )
+                validation_return = _finite_or_none(validation_metrics.get("return_pct"))
+                validation_mdd = _finite_or_none(validation_metrics.get("max_drawdown_pct"))
+                final_holdout_return = (
+                    _finite_or_none(final_holdout_metrics.get("return_pct")) if isinstance(final_holdout_metrics, dict) else None
+                )
+                matched_gate = str(matched.get("scenario_acceptance_gate_result") or "")
+                matched_fail_reasons = [str(reason) for reason in matched.get("scenario_fail_reasons") or []]
+                if matched_gate != "PASS":
+                    case_reasons.append("stress_parameter_perturbation_constraint_invalid")
+            if not case_reasons:
+                passing += 1
+            cases.append(
+                {
+                    "parameter": parameter,
+                    "base_value": base_value,
+                    "relative_pct": relative_pct,
+                    "target_value": target_value,
+                    "matched_candidate_id": matched_candidate_id,
+                    "validation_return_pct": validation_return,
+                    "validation_max_drawdown_pct": validation_mdd,
+                    "final_holdout_return_pct": final_holdout_return,
+                    "matched_candidate_gate_result": matched_gate,
+                    "matched_candidate_fail_reasons": matched_fail_reasons,
+                    "gate_result": "PASS" if not case_reasons else "FAIL",
+                    "fail_reasons": sorted(set(case_reasons)),
+                }
+            )
+    pass_ratio = passing / len(cases) if cases else 0.0
+    fail_reasons = sorted({reason for case in cases for reason in case.get("fail_reasons") or []})
+    if pass_ratio < min_pass_ratio:
+        fail_reasons.append("stress_parameter_perturbation_pass_ratio_failed")
+    return _json_safe(
+        {
+            "method": "existing_grid_relative_parameter_perturbation",
+            "status": "PASS" if not fail_reasons else "FAIL",
+            "relative_pct": relative_values,
+            "min_pass_ratio": min_pass_ratio,
+            "pass_ratio": pass_ratio,
+            "cases": cases,
+            "limitations": list(PARAMETER_PERTURBATION_LIMITATIONS),
+            "fail_reasons": sorted(set(fail_reasons)),
+        }
+    )
+
+
 def analyze_risk_adjusted_score(*, contract: dict[str, Any], metrics_v2: dict[str, Any] | None) -> dict[str, Any]:
     return_risk = metrics_v2.get("return_risk") if isinstance(metrics_v2, dict) and isinstance(metrics_v2.get("return_risk"), dict) else {}
     cagr = _finite_or_none(return_risk.get("cagr_pct"))
@@ -358,6 +581,34 @@ def _validate_stress_evidence(
         reasons.append("stress_suite_contract_mismatch")
     if evidence.get("gate_result") != "PASS":
         reasons.append(gate_failed_code)
+
+
+def _trade_exit_year(trade: ClosedTradeRecord) -> int | None:
+    try:
+        exit_ts = int(trade.exit_ts)
+    except (TypeError, ValueError):
+        return None
+    if exit_ts <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(exit_ts / 1000.0, tz=timezone.utc).year
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _is_numeric_param_value(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+
+
+def _perturbed_value(base_value: Any, relative_pct: float) -> Any:
+    target = float(base_value) * (1.0 + float(relative_pct))
+    if isinstance(base_value, int) and not isinstance(base_value, bool):
+        return int(round(target))
+    return round(target, 12)
+
+
+def _parameter_signature(parameter_values: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    return tuple((str(key), repr(value)) for key, value in sorted(parameter_values.items()))
 
 
 def _trade_summary(trades: tuple[ClosedTradeRecord, ...], *, starting_cash: float) -> dict[str, Any]:
