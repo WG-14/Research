@@ -231,6 +231,24 @@ def test_production_bound_candidate_requires_stress_suite_even_when_flag_missing
     assert "stress_suite_required_but_missing" in validate_stress_suite_evidence_for_candidate(disabled, {})
 
 
+def test_report_level_production_tier_requires_stress_suite_when_candidate_tier_missing() -> None:
+    candidate = {
+        "parameter_candidate_id": "candidate_legacy",
+        "final_holdout_present": False,
+        "final_holdout_required_for_promotion": False,
+    }
+    report = {"deployment_tier": "paper_candidate"}
+
+    reasons = validate_stress_suite_evidence_for_candidate(candidate, report)
+
+    assert stress_suite_required_for_candidate(candidate, report) is True
+    assert reasons
+    assert "stress_suite_contract_mismatch" in reasons
+    assert "stress_suite_gate_not_passed" in reasons
+    assert "stress_suite_hash_missing" in reasons
+    assert "stress_suite_required_but_missing" in reasons
+
+
 def test_research_only_candidate_does_not_require_stress_suite_without_flag() -> None:
     candidate = {
         "deployment_tier": "research_only",

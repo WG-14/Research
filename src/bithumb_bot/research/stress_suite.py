@@ -44,7 +44,7 @@ def stress_suite_required_for_candidate(
     return (
         bool(candidate.get("stress_suite_required"))
         or bool(report_payload.get("stress_suite_required"))
-        or is_production_bound_target(candidate.get("deployment_tier"))
+        or is_production_bound_target(candidate.get("deployment_tier") or report_payload.get("deployment_tier"))
     )
 
 
