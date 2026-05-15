@@ -280,12 +280,15 @@ def analyze_period_ablation(
     closed_trades: tuple[ClosedTradeRecord, ...],
     starting_cash: float,
 ) -> dict[str, Any]:
+    min_pass_ratio = _period_ablation_min_pass_ratio(contract)
+    min_return_retention_pct = _period_ablation_min_return_retention_pct(contract)
     if not closed_trades:
         return {
             "method": "leave_one_calendar_year_out_closed_trade_exit_year",
             "status": "FAIL",
             "calendar_years": [],
-            "min_pass_ratio": float(contract.get("min_pass_ratio") or 0.8),
+            "min_pass_ratio": min_pass_ratio,
+            "min_return_retention_pct": min_return_retention_pct,
             "pass_ratio": 0.0,
             "cases": [],
             "limitations": list(PERIOD_ABLATION_LIMITATIONS),
@@ -299,7 +302,8 @@ def analyze_period_ablation(
                 "method": "leave_one_calendar_year_out_closed_trade_exit_year",
                 "status": "FAIL",
                 "calendar_years": [],
-                "min_pass_ratio": float(contract.get("min_pass_ratio") or 0.8),
+                "min_pass_ratio": min_pass_ratio,
+                "min_return_retention_pct": min_return_retention_pct,
                 "pass_ratio": 0.0,
                 "cases": [],
                 "limitations": list(PERIOD_ABLATION_LIMITATIONS),
@@ -314,7 +318,8 @@ def analyze_period_ablation(
             "method": "leave_one_calendar_year_out_closed_trade_exit_year",
             "status": "FAIL",
             "calendar_years": calendar_years,
-            "min_pass_ratio": float(contract.get("min_pass_ratio") or 0.8),
+            "min_pass_ratio": min_pass_ratio,
+            "min_return_retention_pct": min_return_retention_pct,
             "pass_ratio": 0.0,
             "cases": [],
             "limitations": list(PERIOD_ABLATION_LIMITATIONS),
@@ -324,6 +329,7 @@ def analyze_period_ablation(
     cases: list[dict[str, Any]] = []
     passing = 0
     required_data_missing = False
+    case_fail_reasons: list[str] = []
     for year in matching_years:
         kept = tuple(trade for trade in closed_trades if _trade_exit_year(trade) != year)
         removed_count = len(closed_trades) - len(kept)
@@ -340,10 +346,11 @@ def analyze_period_ablation(
         elif retention is None:
             case_reasons.append("stress_period_ablation_required_data_missing")
             required_data_missing = True
-        elif retention < 0.0:
-            case_reasons.append("stress_period_ablation_pass_ratio_failed")
+        elif retention < min_return_retention_pct:
+            case_reasons.append("stress_period_ablation_return_retention_failed")
         if not case_reasons:
             passing += 1
+        case_fail_reasons.extend(case_reasons)
         cases.append(
             {
                 "year": year,
@@ -361,8 +368,11 @@ def analyze_period_ablation(
         )
     pass_ratio = passing / len(cases) if cases else 0.0
     fail_reasons: list[str] = []
-    if pass_ratio < float(contract.get("min_pass_ratio") or 0.8):
+    if pass_ratio < min_pass_ratio:
         fail_reasons.append("stress_period_ablation_pass_ratio_failed")
+        fail_reasons.extend(
+            reason for reason in case_fail_reasons if reason != "stress_period_ablation_required_data_missing"
+        )
     if required_data_missing:
         fail_reasons.append("stress_period_ablation_required_data_missing")
     return _json_safe(
@@ -370,13 +380,24 @@ def analyze_period_ablation(
             "method": "leave_one_calendar_year_out_closed_trade_exit_year",
             "status": "PASS" if not fail_reasons else "FAIL",
             "calendar_years": calendar_years,
-            "min_pass_ratio": float(contract.get("min_pass_ratio") or 0.8),
+            "min_pass_ratio": min_pass_ratio,
+            "min_return_retention_pct": min_return_retention_pct,
             "pass_ratio": pass_ratio,
             "cases": cases,
             "limitations": list(PERIOD_ABLATION_LIMITATIONS),
             "fail_reasons": sorted(set(fail_reasons)),
         }
     )
+
+
+def _period_ablation_min_pass_ratio(contract: dict[str, Any]) -> float:
+    value = contract.get("min_pass_ratio")
+    return 0.8 if value is None else float(value)
+
+
+def _period_ablation_min_return_retention_pct(contract: dict[str, Any]) -> float:
+    value = contract.get("min_return_retention_pct")
+    return 50.0 if value is None else float(value)
 
 
 def analyze_parameter_perturbation(

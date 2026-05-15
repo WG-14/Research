@@ -460,11 +460,13 @@ class StressRiskAdjustedScoreContract:
 class StressPeriodAblationContract:
     calendar_years: tuple[int, ...] | str
     min_pass_ratio: float = 0.8
+    min_return_retention_pct: float = 50.0
 
     def as_dict(self) -> dict[str, object]:
         return {
             "calendar_years": self.calendar_years if self.calendar_years == "auto" else list(self.calendar_years),
             "min_pass_ratio": self.min_pass_ratio,
+            "min_return_retention_pct": self.min_return_retention_pct,
         }
 
 
@@ -1620,7 +1622,7 @@ def _parse_stress_period_ablation(value: Any) -> StressPeriodAblationContract | 
         return None
     if not isinstance(value, dict):
         raise ManifestValidationError("stress_suite.period_ablation must be an object")
-    allowed_fields = {"calendar_years", "min_pass_ratio"}
+    allowed_fields = {"calendar_years", "min_pass_ratio", "min_return_retention_pct"}
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
         raise ManifestValidationError(f"stress_suite.period_ablation unsupported fields: {','.join(unknown)}")
@@ -1640,7 +1642,20 @@ def _parse_stress_period_ablation(value: Any) -> StressPeriodAblationContract | 
     min_pass_ratio = 0.8
     if "min_pass_ratio" in value:
         min_pass_ratio = _probability(value.get("min_pass_ratio"), "stress_suite.period_ablation.min_pass_ratio")
-    return StressPeriodAblationContract(calendar_years=parsed_years, min_pass_ratio=min_pass_ratio)
+    min_return_retention_pct = 50.0
+    if "min_return_retention_pct" in value:
+        parsed_retention = _optional_pct(
+            value.get("min_return_retention_pct"),
+            "stress_suite.period_ablation.min_return_retention_pct",
+        )
+        if parsed_retention is None:
+            raise ManifestValidationError("stress_suite.period_ablation.min_return_retention_pct must be a number")
+        min_return_retention_pct = parsed_retention
+    return StressPeriodAblationContract(
+        calendar_years=parsed_years,
+        min_pass_ratio=min_pass_ratio,
+        min_return_retention_pct=min_return_retention_pct,
+    )
 
 
 def _parse_stress_parameter_perturbation(value: Any) -> StressParameterPerturbationContract | None:

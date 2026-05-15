@@ -160,7 +160,8 @@
     },
     "period_ablation": {
       "calendar_years": "auto",
-      "min_pass_ratio": 0.8
+      "min_pass_ratio": 0.8,
+      "min_return_retention_pct": 50.0
     },
     "parameter_perturbation": {
       "relative_pct": [-0.1, 0.1],

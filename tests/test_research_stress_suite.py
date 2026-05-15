@@ -178,7 +178,11 @@ def test_trade_order_monte_carlo_strict_drawdown_threshold_fails() -> None:
 
 def test_period_ablation_passes_leave_one_calendar_year_out() -> None:
     payload = _contract_payload()
-    payload["stress_suite"]["period_ablation"] = {"calendar_years": "auto", "min_pass_ratio": 0.8}
+    payload["stress_suite"]["period_ablation"] = {
+        "calendar_years": "auto",
+        "min_pass_ratio": 0.8,
+        "min_return_retention_pct": 20.0,
+    }
     payload["stress_suite"].pop("trade_removal")
     payload["stress_suite"].pop("trade_order_monte_carlo")
     manifest = parse_manifest(payload)
@@ -200,6 +204,7 @@ def test_period_ablation_passes_leave_one_calendar_year_out() -> None:
     assert result["period_ablation"]["status"] == "PASS"
     assert result["period_ablation"]["method"] == "leave_one_calendar_year_out_closed_trade_exit_year"
     assert result["period_ablation"]["calendar_years"] == [2023, 2024]
+    assert result["period_ablation"]["min_return_retention_pct"] == 20.0
     assert result["period_ablation"]["pass_ratio"] == 1.0
     assert result["period_ablation"]["limitations"] == [
         "period_ablation_uses_closed_trade_exit_year_not_full_signal_rerun"
@@ -209,7 +214,82 @@ def test_period_ablation_passes_leave_one_calendar_year_out() -> None:
 
 def test_period_ablation_fails_when_year_removal_destroys_return_retention() -> None:
     payload = _contract_payload()
-    payload["stress_suite"]["period_ablation"] = {"calendar_years": [2023, 2024], "min_pass_ratio": 1.0}
+    payload["stress_suite"]["period_ablation"] = {
+        "calendar_years": [2023, 2024],
+        "min_pass_ratio": 1.0,
+        "min_return_retention_pct": 50.0,
+    }
+    payload["stress_suite"].pop("trade_removal")
+    payload["stress_suite"].pop("trade_order_monte_carlo")
+    manifest = parse_manifest(payload)
+
+    result = analyze_stress_suite(
+        contract=manifest.stress_suite,
+        context=_context(),
+        original_metrics={"return_pct": 10.0},
+        metrics_v2=_metrics_v2(),
+        closed_trades=(
+            _trade(2023, 99_000.0, 1),
+            _trade(2024, 1_000.0, 2),
+        ),
+        starting_cash=1_000_000.0,
+    )
+
+    assert result["period_ablation"]["status"] == "FAIL"
+    assert result["period_ablation"]["pass_ratio"] == 0.5
+    assert result["period_ablation"]["cases"][0]["return_retention_pct"] == 1.0
+    assert result["period_ablation"]["cases"][0]["fail_reasons"] == [
+        "stress_period_ablation_return_retention_failed"
+    ]
+    assert "stress_period_ablation_pass_ratio_failed" in result["fail_reasons"]
+    assert "stress_period_ablation_return_retention_failed" in result["fail_reasons"]
+    json.dumps(result, allow_nan=False)
+
+
+def test_required_stress_suite_rejects_period_ablation_retention_failure() -> None:
+    payload = _contract_payload()
+    payload["stress_suite"]["period_ablation"] = {
+        "calendar_years": [2023, 2024],
+        "min_pass_ratio": 1.0,
+        "min_return_retention_pct": 50.0,
+    }
+    payload["stress_suite"].pop("trade_removal")
+    payload["stress_suite"].pop("trade_order_monte_carlo")
+    manifest = parse_manifest(payload)
+
+    result = analyze_stress_suite(
+        contract=manifest.stress_suite,
+        context=_context(),
+        original_metrics={"return_pct": 10.0},
+        metrics_v2=_metrics_v2(),
+        closed_trades=(
+            _trade(2023, 99_000.0, 1),
+            _trade(2024, 1_000.0, 2),
+        ),
+        starting_cash=1_000_000.0,
+    )
+    candidate = {
+        "stress_suite_required": True,
+        "stress_suite_contract": manifest.stress_suite.as_dict(),
+        "stress_suite_contract_hash": result["contract_hash"],
+        "stress_suite_gate_result": result["gate_result"],
+        "validation_stress_suite": dict(result),
+        "final_holdout_present": False,
+        "final_holdout_required_for_promotion": False,
+    }
+
+    assert result["gate_result"] == "FAIL"
+    assert "stress_period_ablation_return_retention_failed" in result["fail_reasons"]
+    assert "stress_suite_gate_not_passed" in validate_stress_suite_evidence_for_candidate(candidate, {})
+
+
+def test_period_ablation_passes_when_return_retention_meets_threshold() -> None:
+    payload = _contract_payload()
+    payload["stress_suite"]["period_ablation"] = {
+        "calendar_years": [2023, 2024],
+        "min_pass_ratio": 1.0,
+        "min_return_retention_pct": 40.0,
+    }
     payload["stress_suite"].pop("trade_removal")
     payload["stress_suite"].pop("trade_order_monte_carlo")
     manifest = parse_manifest(payload)
@@ -221,14 +301,17 @@ def test_period_ablation_fails_when_year_removal_destroys_return_retention() -> 
         metrics_v2=_metrics_v2(),
         closed_trades=(
             _trade(2023, 30_000.0, 1),
-            _trade(2024, -2_000.0, 2),
-            _trade(2024, -2_000.0, 3),
+            _trade(2024, 20_000.0, 2),
         ),
         starting_cash=1_000_000.0,
     )
 
-    assert result["period_ablation"]["status"] == "FAIL"
-    assert "stress_period_ablation_pass_ratio_failed" in result["fail_reasons"]
+    assert result["period_ablation"]["status"] == "PASS"
+    assert result["period_ablation"]["pass_ratio"] == 1.0
+    assert result["period_ablation"]["min_pass_ratio"] == 1.0
+    assert result["period_ablation"]["min_return_retention_pct"] == 40.0
+    assert result["period_ablation"]["fail_reasons"] == []
+    json.dumps(result, allow_nan=False)
 
 
 def test_period_ablation_fails_closed_without_usable_exit_timestamps() -> None:
@@ -248,6 +331,7 @@ def test_period_ablation_fails_closed_without_usable_exit_timestamps() -> None:
     )
 
     assert result["period_ablation"]["status"] == "FAIL"
+    assert result["period_ablation"]["min_return_retention_pct"] == 50.0
     assert "stress_period_ablation_exit_timestamp_missing" in result["fail_reasons"]
 
 
