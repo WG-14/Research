@@ -16,6 +16,7 @@ from .execution_reality_contract import (
     execution_capability_contract_mismatch_reasons,
     execution_contract_mismatch_reasons,
     unsupported_capability_reasons,
+    validate_execution_capability_contract,
 )
 from .evidence_chain import validate_profile_transition_evidence
 from .decision_equivalence import compute_decision_equivalence_hash
@@ -538,6 +539,9 @@ def validate_approved_profile(profile: dict[str, Any]) -> dict[str, Any]:
     capability_hash = profile.get("execution_capability_contract_hash") or capability.get("execution_capability_contract_hash")
     if not capability_contract_hash_matches(capability, capability_hash):
         raise ApprovedProfileError("execution_capability_contract_hash_mismatch")
+    capability_reasons = validate_execution_capability_contract(capability)
+    if capability_reasons:
+        raise ApprovedProfileError("execution_capability_contract_unsupported:" + ",".join(capability_reasons))
     if capability.get("unavailable_required_capabilities"):
         raise ApprovedProfileError("execution_capability_required_unavailable")
     regime_policy = profile.get("regime_policy")
@@ -966,6 +970,10 @@ def _execution_contract_from_env_values(env: dict[str, str]) -> dict[str, Any] |
     fill_reference_policy = _value("EXECUTION_FILL_REFERENCE_POLICY")
     if not fill_reference_policy:
         return None
+    top_of_book_required = _bool_value(_value("EXECUTION_TOP_OF_BOOK_REQUIRED", "false")) or fill_reference_policy in {
+        "first_orderbook_after_decision",
+        "latency_adjusted_orderbook",
+    }
     return build_execution_reality_contract(
         fill_reference_policy=fill_reference_policy,
         decision_guard_ms=_int_env(_value("EXECUTION_DECISION_GUARD_MS", "0")),
@@ -975,7 +983,8 @@ def _execution_contract_from_env_values(env: dict[str, str]) -> dict[str, Any] |
         allow_same_candle_close_fill=_bool_value(_value("EXECUTION_ALLOW_SAME_CANDLE_CLOSE_FILL", "false")),
         quote_source=_value("EXECUTION_QUOTE_SOURCE"),
         quote_age_limit_ms=_optional_int_env(_value("EXECUTION_QUOTE_AGE_LIMIT_MS")),
-        top_of_book_required=_bool_value(_value("EXECUTION_TOP_OF_BOOK_REQUIRED", "false")),
+        top_of_book_required=top_of_book_required,
+        top_of_book_available=top_of_book_required,
         top_of_book_is_full_depth=_bool_value(_value("EXECUTION_TOP_OF_BOOK_IS_FULL_DEPTH", "false")),
         depth_required=_bool_value(_value("EXECUTION_DEPTH_REQUIRED", "false")),
         trade_tick_required=_bool_value(_value("EXECUTION_TRADE_TICK_REQUIRED", "false")),
@@ -1006,6 +1015,10 @@ def _execution_contract_from_settings(cfg: object) -> dict[str, Any] | None:
     fill_reference_policy = str(getattr(cfg, "EXECUTION_FILL_REFERENCE_POLICY", "") or "").strip()
     if not fill_reference_policy:
         return None
+    top_of_book_required = bool(getattr(cfg, "EXECUTION_TOP_OF_BOOK_REQUIRED", False)) or fill_reference_policy in {
+        "first_orderbook_after_decision",
+        "latency_adjusted_orderbook",
+    }
     return build_execution_reality_contract(
         fill_reference_policy=fill_reference_policy,
         decision_guard_ms=int(getattr(cfg, "EXECUTION_DECISION_GUARD_MS", 0)),
@@ -1017,7 +1030,8 @@ def _execution_contract_from_settings(cfg: object) -> dict[str, Any] | None:
         allow_same_candle_close_fill=bool(getattr(cfg, "EXECUTION_ALLOW_SAME_CANDLE_CLOSE_FILL", False)),
         quote_source=_optional_settings_str(cfg, "EXECUTION_QUOTE_SOURCE"),
         quote_age_limit_ms=getattr(cfg, "EXECUTION_QUOTE_AGE_LIMIT_MS", None),
-        top_of_book_required=bool(getattr(cfg, "EXECUTION_TOP_OF_BOOK_REQUIRED", False)),
+        top_of_book_required=top_of_book_required,
+        top_of_book_available=top_of_book_required,
         top_of_book_is_full_depth=bool(getattr(cfg, "EXECUTION_TOP_OF_BOOK_IS_FULL_DEPTH", False)),
         depth_required=bool(getattr(cfg, "EXECUTION_DEPTH_REQUIRED", False)),
         trade_tick_required=bool(getattr(cfg, "EXECUTION_TRADE_TICK_REQUIRED", False)),

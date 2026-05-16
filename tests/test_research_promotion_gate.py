@@ -8,6 +8,7 @@ import pytest
 from bithumb_bot.paths import PathManager
 from bithumb_bot import app as app_module
 from bithumb_bot.execution_reality_contract import build_execution_reality_contract
+from bithumb_bot.execution_reality_contract import execution_capability_contract_hash, execution_contract_hash
 from bithumb_bot.research import cli as research_cli
 from bithumb_bot.research.hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
 from bithumb_bot.research.lineage import build_research_lineage, compute_lineage_hash, reproduce_promotion
@@ -192,6 +193,24 @@ def _candidate(**overrides):
     payload.pop("candidate_profile_hash", None)
     payload["candidate_profile_hash"] = explicit_hash or sha256_prefixed(build_candidate_profile(payload))
     return payload
+
+
+def _candidate_with_evidence_tier(tier: str) -> dict[str, object]:
+    candidate = _candidate()
+    contract = dict(candidate["execution_reality_contract"])
+    capability = dict(contract["execution_capability_contract"])
+    capability["evidence_tier"] = tier
+    capability["execution_capability_contract_hash"] = execution_capability_contract_hash(capability)
+    contract["execution_reality_level"] = tier
+    contract["execution_capability_contract"] = capability
+    contract["execution_capability_contract_hash"] = capability["execution_capability_contract_hash"]
+    contract["execution_contract_hash"] = execution_contract_hash(contract)
+    candidate["execution_reality_contract"] = contract
+    candidate["execution_contract_hash"] = contract["execution_contract_hash"]
+    candidate["execution_capability_contract"] = capability
+    candidate["execution_capability_contract_hash"] = capability["execution_capability_contract_hash"]
+    candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+    return candidate
 
 
 def _metrics_v2_payload(*, schema_version: int = 2) -> dict[str, object]:
@@ -1020,6 +1039,24 @@ def test_promotion_refuses_candidate_profile_hash_mismatch(tmp_path, monkeypatch
         promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
 
     assert not (manager.data_dir() / "reports" / "research" / "promo_exp" / "promotion_candidate_001.json").exists()
+
+
+def test_reserved_future_evidence_tier_fails_promotion(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate_with_evidence_tier("impact_model_calibrated")
+    _write_report(manager, candidate)
+
+    with pytest.raises(PromotionGateError, match="execution_evidence_tier_reserved_not_implemented"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_unknown_evidence_tier_fails_promotion(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _candidate_with_evidence_tier("unknown_future_scalar_proxy")
+    _write_report(manager, candidate)
+
+    with pytest.raises(PromotionGateError, match="execution_evidence_tier_unsupported"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
 
 
 def test_promotion_refuses_backtest_candidate_hash_mismatch_even_when_walk_forward_exists(

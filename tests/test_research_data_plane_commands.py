@@ -772,7 +772,13 @@ def test_research_readiness_json_reports_operator_fields_and_top_of_book_policy(
     assert payload["db_path"] == str(Path(settings.DB_PATH).resolve())
     assert {"train", "validation"} <= set(payload["splits"])
     assert payload["top_of_book"]["status"] == "NOT_REQUESTED"
+    assert payload["top_of_book"]["signal_execution_quote_coverage_pct"] is None
+    assert (
+        payload["top_of_book"]["signal_execution_quote_coverage_status"]
+        == "not_evaluated_by_readiness_or_dataset_quality"
+    )
     assert payload["splits"]["train"]["top_of_book_missing_policy"] is None
+    assert payload["splits"]["train"]["signal_execution_quote_coverage_pct"] is None
     assert payload["execution_calibration"]["status"] == "WARN"
     assert payload["walk_forward"]["status"] == "NOT_REQUIRED"
     assert payload["next_actions"] == ["none"]

@@ -10,6 +10,7 @@ from bithumb_bot.execution_reality_contract import (
     execution_condition_contract_hash,
     execution_contract_hash,
     unsupported_capability_reasons,
+    validate_execution_capability_contract,
 )
 from bithumb_bot.research.experiment_manifest import ManifestValidationError, parse_manifest
 
@@ -92,6 +93,48 @@ def test_execution_capability_contract_hash_changes_for_semantic_fields(override
     )
 
     assert changed["execution_capability_contract_hash"] != base["execution_capability_contract_hash"]
+
+
+def test_reserved_future_evidence_tier_is_blocking_reason() -> None:
+    capability = build_execution_capability_contract(
+        fill_reference_policy="next_candle_open",
+        evidence_tier="impact_model_calibrated",
+    )
+    contract = _contract(execution_capability_contract=capability)
+
+    assert validate_execution_capability_contract(capability) == [
+        "execution_evidence_tier_reserved_not_implemented"
+    ]
+    assert "execution_evidence_tier_reserved_not_implemented" in unsupported_capability_reasons(contract)
+
+
+def test_unknown_evidence_tier_is_blocking_reason() -> None:
+    capability = build_execution_capability_contract(
+        fill_reference_policy="next_candle_open",
+        evidence_tier="made_up_scalar_stress_tier",
+    )
+    contract = _contract(execution_capability_contract=capability)
+
+    assert validate_execution_capability_contract(capability) == [
+        "execution_evidence_tier_unsupported"
+    ]
+    assert "execution_evidence_tier_unsupported" in unsupported_capability_reasons(contract)
+
+
+def test_capability_validation_recomputes_required_availability_consistency() -> None:
+    capability = build_execution_capability_contract(
+        fill_reference_policy="first_orderbook_after_decision",
+        top_of_book_required=True,
+        top_of_book_available=False,
+        evidence_tier="top_of_book_after_decision",
+    )
+    tampered = dict(capability)
+    tampered["unavailable_required_capabilities"] = []
+
+    reasons = validate_execution_capability_contract(tampered)
+
+    assert "execution_capability_required_unavailable" in reasons
+    assert "execution_capability_unavailable_required_capabilities_mismatch" in reasons
 
 
 def test_execution_condition_hash_excludes_calibration_artifact_lineage() -> None:

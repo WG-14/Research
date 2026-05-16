@@ -119,6 +119,7 @@ def cmd_research_promote_candidate(
         "  statistical_gate_fail_reasons="
         f"{_format_items(tuple(str(item) for item in result.artifact.get('statistical_gate_fail_reasons') or []))}"
     )
+    _print_execution_capability_summary(result.artifact)
     _print_stress_suite_summary(result.artifact)
     _print_execution_event_summary(result.artifact.get("execution_event_summary"))
     print(
@@ -207,6 +208,7 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     print(f"  top_window_fail_reasons={_format_counts(summary.top_window_fail_reasons)}")
     print(f"  execution_reference_policy={_nested(report, 'execution_timing_policy', 'fill_reference_policy') or 'unknown'}")
     print(f"  execution_reality_level={report.get('execution_reality_level') or 'unknown'}")
+    _print_execution_capability_summary(report)
     print(f"  execution_reality_gate_status={report.get('execution_reality_gate_status') or 'unknown'}")
     print(
         "  execution_reality_gate_reasons="
@@ -412,6 +414,27 @@ def _print_top_of_book_summary(report: dict[str, object]) -> None:
     )
     if summary.get("next_action"):
         print(f"  top_of_book_next_action={summary.get('next_action')}")
+
+
+def _print_execution_capability_summary(report: dict[str, object]) -> None:
+    capability = report.get("execution_capability_contract")
+    unavailable: object = report.get("unavailable_required_capabilities")
+    market_impact_available: object = report.get("market_impact_model_available")
+    top_of_book_is_full_depth: object = report.get("top_of_book_is_full_depth")
+    if isinstance(capability, dict):
+        available = capability.get("available_capabilities") if isinstance(capability.get("available_capabilities"), dict) else {}
+        unavailable = capability.get("unavailable_required_capabilities", unavailable)
+        market_impact_available = available.get("market_impact_model", market_impact_available)
+        top_of_book_is_full_depth = available.get("top_of_book_is_full_depth", top_of_book_is_full_depth)
+    unavailable_items = tuple(str(item) for item in (unavailable or [])) if isinstance(unavailable, list) else ()
+    print(f"  execution_capability_contract_hash={report.get('execution_capability_contract_hash') or 'none'}")
+    print(f"  evidence_tier={report.get('evidence_tier') or (capability.get('evidence_tier') if isinstance(capability, dict) else 'unknown')}")
+    print(f"  unavailable_required_capabilities={_format_items(unavailable_items)}")
+    print(f"  market_impact_required={report.get('market_impact_required')}")
+    print(f"  market_impact_model_available={market_impact_available}")
+    print(f"  top_of_book_is_full_depth={top_of_book_is_full_depth}")
+    if unavailable_items:
+        print("  execution_capability_next_action=remove unsupported requirements or add implemented evidence/model support")
 
 
 def _nested(payload: dict[str, object], *keys: str) -> object | None:

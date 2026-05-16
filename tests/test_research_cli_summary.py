@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+
+from bithumb_bot.research import cli as research_cli
 from bithumb_bot.research.cli import _print_report_summary, _print_research_backtest_progress
 from bithumb_bot.research.run_summary import build_research_run_summary
 
@@ -282,6 +286,71 @@ def test_print_report_summary_renders_statistical_selection_diagnostics(capsys) 
     assert "statistical_gate_fail_reasons=reality_check_p_value_failed" in output
     assert "promotion_allowed=0" in output
     assert "next_action=do_not_promote_review_statistical_selection" in output
+
+
+def test_print_report_summary_renders_execution_capability_diagnostics(capsys) -> None:
+    report = _report(
+        candidates=[_candidate("candidate_001", gate="PASS")],
+        best_candidate_id="candidate_001",
+        gate_result="PASS",
+    )
+    report.update(
+        {
+            "execution_capability_contract_hash": "sha256:capability",
+            "evidence_tier": "top_of_book_after_decision",
+            "unavailable_required_capabilities": ["market_impact_model"],
+            "market_impact_required": True,
+            "market_impact_model_available": False,
+            "top_of_book_is_full_depth": False,
+        }
+    )
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+
+    output = capsys.readouterr().out
+    assert "execution_capability_contract_hash=sha256:capability" in output
+    assert "evidence_tier=top_of_book_after_decision" in output
+    assert "unavailable_required_capabilities=market_impact_model" in output
+    assert "market_impact_required=True" in output
+    assert "market_impact_model_available=False" in output
+    assert "top_of_book_is_full_depth=False" in output
+    assert "execution_capability_next_action=remove unsupported requirements or add implemented evidence/model support" in output
+
+
+def test_promote_candidate_summary_renders_execution_capability_diagnostics(capsys, monkeypatch) -> None:
+    artifact = {
+        "gate_result": "PASS",
+        "statistical_validation_required": False,
+        "promotion_grade_limitations": [],
+        "promotion_blocking_reasons": [],
+        "execution_capability_contract_hash": "sha256:capability",
+        "evidence_tier": "candle_next_open",
+        "unavailable_required_capabilities": [],
+        "market_impact_required": False,
+        "market_impact_model_available": False,
+        "top_of_book_is_full_depth": False,
+        "operator_next_step": "review",
+    }
+    monkeypatch.setattr(
+        research_cli,
+        "promote_candidate",
+        lambda **_: SimpleNamespace(
+            artifact=artifact,
+            artifact_path=Path("/tmp/promotion.json"),
+            content_hash="sha256:promotion",
+        ),
+    )
+
+    rc = research_cli.cmd_research_promote_candidate(experiment_id="exp", candidate_id="candidate")
+
+    output = capsys.readouterr().out
+    assert rc == 0
+    assert "execution_capability_contract_hash=sha256:capability" in output
+    assert "evidence_tier=candle_next_open" in output
+    assert "unavailable_required_capabilities=none" in output
+    assert "market_impact_required=False" in output
+    assert "market_impact_model_available=False" in output
+    assert "top_of_book_is_full_depth=False" in output
 
 
 def test_print_report_summary_renders_stress_suite_diagnostics(capsys) -> None:

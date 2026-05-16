@@ -10,6 +10,17 @@ EXECUTION_CAPABILITY_CONTRACT_SCHEMA_VERSION = 1
 CONTRACT_HASH_FIELD = "execution_contract_hash"
 CAPABILITY_CONTRACT_HASH_FIELD = "execution_capability_contract_hash"
 EXECUTION_CONDITION_LINEAGE_FIELDS = frozenset({"calibration_artifact_hash"})
+EXECUTION_OBSERVED_EVIDENCE_FIELDS = frozenset(
+    {
+        "quote_evidence_available",
+        "depth_available",
+        "trade_ticks_available",
+        "queue_position_available",
+        "market_impact_model_available",
+        "intra_candle_path_available",
+    }
+)
+CAPABILITY_OBSERVED_AVAILABILITY_FIELDS = frozenset({"top_of_book"})
 
 _TIMESTAMP_FIELDS = frozenset(
     {
@@ -153,13 +164,7 @@ def execution_condition_contract_hash(contract: dict[str, Any]) -> str:
 
 
 def execution_capability_contract_hash(contract: dict[str, Any]) -> str:
-    payload = _strip_runtime_only(
-        {
-            k: v
-            for k, v in contract.items()
-            if k != CAPABILITY_CONTRACT_HASH_FIELD
-        }
-    )
+    payload = _canonical_capability_contract_payload(contract)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
@@ -197,6 +202,7 @@ def build_execution_reality_contract(
     quote_source: str | None = None,
     quote_age_limit_ms: int | None = None,
     top_of_book_required: bool = False,
+    top_of_book_available: bool | None = None,
     top_of_book_is_full_depth: bool = False,
     depth_required: bool = False,
     trade_tick_required: bool = False,
@@ -244,10 +250,15 @@ def build_execution_reality_contract(
     }
     if extra:
         payload.update(dict(extra))
+    capability_top_of_book_available = (
+        bool(top_of_book_available)
+        if top_of_book_available is not None
+        else bool(payload.get("quote_evidence_available", False))
+    )
     capability_contract = build_execution_capability_contract(
         fill_reference_policy=str(fill_reference_policy),
         top_of_book_required=bool(top_of_book_required),
-        top_of_book_available=bool(payload.get("quote_evidence_available", False)),
+        top_of_book_available=capability_top_of_book_available,
         top_of_book_is_full_depth=bool(top_of_book_is_full_depth),
         full_orderbook_depth_required=bool(depth_required),
         trade_ticks_required=bool(trade_tick_required),
@@ -375,6 +386,7 @@ def unsupported_capability_reasons(contract: dict[str, Any]) -> list[str]:
         reasons.append("execution_intra_candle_path_required_but_unavailable")
     capability = contract.get("execution_capability_contract")
     if isinstance(capability, dict):
+        reasons.extend(validate_execution_capability_contract(capability))
         for name in capability.get("unavailable_required_capabilities") or []:
             if name == "top_of_book":
                 reasons.append("execution_top_of_book_required_but_unavailable")
@@ -390,6 +402,31 @@ def unsupported_capability_reasons(contract: dict[str, Any]) -> list[str]:
                 reasons.append("execution_intra_candle_path_required_but_unavailable")
         if capability.get("unavailable_required_capabilities"):
             reasons.append("execution_capability_required_unavailable")
+    return sorted(set(reasons))
+
+
+def validate_execution_capability_contract(contract: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    tier = str(contract.get("evidence_tier") or "").strip()
+    if tier in RESERVED_FUTURE_EVIDENCE_TIERS:
+        reasons.append("execution_evidence_tier_reserved_not_implemented")
+    elif tier and tier not in SUPPORTED_EVIDENCE_TIERS:
+        reasons.append("execution_evidence_tier_unsupported")
+    elif not tier:
+        reasons.append("execution_evidence_tier_unsupported")
+    required = contract.get("strategy_required_capabilities")
+    available = contract.get("available_capabilities")
+    if isinstance(required, dict) and isinstance(available, dict):
+        recomputed_unavailable = sorted(
+            str(name)
+            for name, is_required in required.items()
+            if bool(is_required) and not bool(available.get(name, False))
+        )
+        declared_unavailable = sorted(str(item) for item in contract.get("unavailable_required_capabilities") or [])
+        if recomputed_unavailable:
+            reasons.append("execution_capability_required_unavailable")
+        if recomputed_unavailable != declared_unavailable:
+            reasons.append("execution_capability_unavailable_required_capabilities_mismatch")
     return sorted(set(reasons))
 
 
@@ -416,6 +453,13 @@ def execution_capability_contract_mismatch_reasons(
         )
     for field in sorted(set(expected) | set(observed)):
         if field in _TIMESTAMP_FIELDS or field == CAPABILITY_CONTRACT_HASH_FIELD:
+            continue
+        if field == "available_capabilities":
+            availability_mismatches = _availability_capability_mismatches(
+                expected.get(field),
+                observed.get(field),
+            )
+            mismatches.extend(availability_mismatches)
             continue
         if expected.get(field) != observed.get(field):
             mismatches.append(
@@ -474,9 +518,58 @@ def _canonical_contract_payload(contract: dict[str, Any]) -> dict[str, Any]:
         {
             k: v
             for k, v in contract.items()
-            if k != CONTRACT_HASH_FIELD and k not in EXECUTION_CONDITION_LINEAGE_FIELDS
+            if k != CONTRACT_HASH_FIELD
+            and k not in EXECUTION_CONDITION_LINEAGE_FIELDS
+            and k not in EXECUTION_OBSERVED_EVIDENCE_FIELDS
         }
     )
+
+
+def _canonical_capability_contract_payload(contract: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        k: v
+        for k, v in contract.items()
+        if k != CAPABILITY_CONTRACT_HASH_FIELD
+    }
+    available = payload.get("available_capabilities")
+    if isinstance(available, dict):
+        payload["available_capabilities"] = {
+            key: value
+            for key, value in available.items()
+            if key not in CAPABILITY_OBSERVED_AVAILABILITY_FIELDS
+        }
+    return _strip_runtime_only(payload)
+
+
+def _availability_capability_mismatches(
+    expected: object,
+    observed: object,
+) -> list[dict[str, object]]:
+    if not isinstance(expected, dict) or not isinstance(observed, dict):
+        if expected == observed:
+            return []
+        return [
+            {
+                "field": "execution_capability_contract.available_capabilities",
+                "expected": expected,
+                "actual": observed,
+                "reason": "execution_capability_contract_field_mismatch",
+            }
+        ]
+    mismatches: list[dict[str, object]] = []
+    for key in sorted(set(expected) | set(observed)):
+        if key in CAPABILITY_OBSERVED_AVAILABILITY_FIELDS:
+            continue
+        if expected.get(key) != observed.get(key):
+            mismatches.append(
+                {
+                    "field": f"execution_capability_contract.available_capabilities.{key}",
+                    "expected": expected.get(key),
+                    "actual": observed.get(key),
+                    "reason": "execution_capability_contract_field_mismatch",
+                }
+            )
+    return mismatches
 
 
 def _strip_runtime_only(value: Any) -> Any:
