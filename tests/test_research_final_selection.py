@@ -211,13 +211,49 @@ def test_final_selection_contract_parse_strict_unknown_fields() -> None:
         parse_manifest(payload)
 
 
+def test_final_selection_must_pass_rejects_unknown_key() -> None:
+    payload = _manifest_payload()
+    final_selection = copy.deepcopy(_final_selection())
+    final_selection["must_pass"]["dataset_quality_gate_statsu"] = "PASS"
+    payload["final_selection"] = final_selection
+    with pytest.raises(ManifestValidationError, match="final_selection.must_pass unsupported fields"):
+        parse_manifest(payload)
+
+
+def test_final_selection_exposure_policy_rejects_unknown_key() -> None:
+    payload = _manifest_payload()
+    final_selection = copy.deepcopy(_final_selection())
+    final_selection["selection_exposure_policy"]["count_as_holdout_reuse"] = True
+    payload["final_selection"] = final_selection
+    with pytest.raises(ManifestValidationError, match="final_selection.selection_exposure_policy unsupported fields"):
+        parse_manifest(payload)
+
+
+def test_final_selection_exposure_policy_requires_holdout_reuse_when_holdout_ranked() -> None:
+    payload = _manifest_payload()
+    final_selection = copy.deepcopy(_final_selection())
+    final_selection["selection_exposure_policy"]["counts_as_holdout_reuse"] = False
+    payload["final_selection"] = final_selection
+    with pytest.raises(ManifestValidationError, match="counts_as_holdout_reuse must be true"):
+        parse_manifest(payload)
+
+
+def test_final_selection_unsupported_metric_policy_rejects_unknown_value() -> None:
+    payload = _manifest_payload()
+    final_selection = copy.deepcopy(_final_selection())
+    final_selection["unsupported_metric_policy"]["sharpe_ratio"] = "ignore"
+    payload["final_selection"] = final_selection
+    with pytest.raises(ManifestValidationError, match="unsupported_metric_policy.sharpe_ratio must be fail_if_required"):
+        parse_manifest(payload)
+
+
 def test_final_selection_contract_in_manifest_hash() -> None:
     payload = _manifest_payload()
     first = parse_manifest(payload).manifest_hash()
     changed = copy.deepcopy(payload)
     changed["final_selection"] = _final_selection(
         [
-            {"metric": "validation.stress.risk_adjusted_score.calmar_ratio", "order": "desc", "required": True},
+            {"metric": "final_holdout.metrics_v2.return_risk.max_drawdown_pct", "order": "asc", "required": True},
             {"metric": "parameter_candidate_id", "order": "asc", "required": True},
         ]
     )
@@ -261,6 +297,26 @@ def test_final_selection_tie_breaks_by_parameter_candidate_id() -> None:
         production_bound=True,
     )
     assert result["selected_candidate_id"] == "candidate_001"
+
+
+def test_final_selection_scores_hash_independent_of_input_candidate_order() -> None:
+    first = apply_final_selection_contract(
+        contract=_final_selection(),
+        candidates=[_candidate("candidate_001", final_expectancy=10), _candidate("candidate_002", final_expectancy=20)],
+        report_context=_context(),
+        production_bound=True,
+    )
+    second = apply_final_selection_contract(
+        contract=_final_selection(),
+        candidates=[_candidate("candidate_002", final_expectancy=20), _candidate("candidate_001", final_expectancy=10)],
+        report_context=_context(),
+        production_bound=True,
+    )
+
+    assert first["selected_candidate_id"] == second["selected_candidate_id"] == "candidate_002"
+    assert first["selected_candidate_score_hash"] == second["selected_candidate_score_hash"]
+    assert first["candidate_final_scores_hash"] == second["candidate_final_scores_hash"]
+    assert first["candidate_final_scores"] == second["candidate_final_scores"]
 
 
 def test_final_selection_hash_changes_when_ranking_changes() -> None:

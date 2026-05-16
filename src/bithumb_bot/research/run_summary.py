@@ -47,11 +47,17 @@ def build_research_run_summary(report: dict[str, object]) -> ResearchRunSummary:
         report.get("statistical_validation_required") is True
         and report.get("statistical_gate_result") != "PASS"
     )
+    final_selection_gate_value = report.get("final_selection_gate_result")
+    final_selection_gate_failed = (
+        (report.get("final_selection_required") is True or final_selection_gate_value is not None)
+        and final_selection_gate_value != "PASS"
+    )
     promotion_eligibility_failed = report.get("promotion_eligibility_gate_result") == "FAIL"
     promotion_allowed = (
         bool(report.get("best_candidate_id"))
         and report.get("promotion_eligibility_gate_result", report.get("gate_result")) == "PASS"
         and not statistical_gate_failed
+        and not final_selection_gate_failed
     )
     has_pass_candidate = any(candidate.get("acceptance_gate_result") == "PASS" for candidate in candidates)
     nearest_candidate = candidates[0] if candidates and not has_pass_candidate else None
@@ -80,6 +86,7 @@ def build_research_run_summary(report: dict[str, object]) -> ResearchRunSummary:
             top_fail_reasons=fail_reasons,
             gate_result=report.get("gate_result"),
             statistical_gate_failed=statistical_gate_failed,
+            final_selection_gate_failed=final_selection_gate_failed,
             promotion_eligibility_failed=promotion_eligibility_failed,
         ),
     )
@@ -142,10 +149,13 @@ def _next_action(
     top_fail_reasons: Counter[str],
     gate_result: object,
     statistical_gate_failed: bool = False,
+    final_selection_gate_failed: bool = False,
     promotion_eligibility_failed: bool = False,
 ) -> str:
     if promotion_allowed:
         return "review_promotion_candidate"
+    if final_selection_gate_failed:
+        return "do_not_promote_review_final_selection_contract"
     if statistical_gate_failed:
         return "do_not_promote_review_statistical_selection"
     if promotion_eligibility_failed:

@@ -238,6 +238,34 @@ def test_statistical_gate_failure_forces_promotion_disallowed() -> None:
     assert summary.next_action == "do_not_promote_review_statistical_selection"
 
 
+def test_research_run_summary_final_selection_warn_not_promotion_allowed(capsys) -> None:
+    report = _report(
+        candidates=[_candidate("candidate_001", gate="PASS")],
+        best_candidate_id="candidate_001",
+        gate_result="PASS",
+    )
+    report.update(
+        {
+            "final_selection_required": False,
+            "final_selection_gate_result": "WARN",
+            "final_selection_fail_reasons": ["legacy_implicit_final_rank_policy_v1"],
+            "promotion_eligibility_gate_result": "PASS",
+        }
+    )
+
+    summary = build_research_run_summary(report)
+
+    assert summary.promotion_allowed is False
+    assert summary.next_action == "do_not_promote_review_final_selection_contract"
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+    output = capsys.readouterr().out
+    assert "promotion_allowed=0" in output
+    assert "final_selection_gate_result=WARN" in output
+    assert "candidate_final_scores_hash=none" in output
+    assert "next_action=do_not_promote_review_final_selection_contract" in output
+
+
 def test_fail_report_summary_sets_promotion_disallowed() -> None:
     summary = build_research_run_summary(
         _report(candidates=[_candidate("candidate_001", fail_reasons=["profit_factor_failed"])])

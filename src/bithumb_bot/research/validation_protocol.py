@@ -3067,13 +3067,16 @@ def _execution_calibration_warning_reasons(candidate: dict[str, Any]) -> list[st
     return [str(reason) for reason in gate.get("reasons") or ["execution_calibration_failed"]]
 
 
-def _benchmark_metrics_for_splits(snapshots: dict[str, DatasetSnapshot]) -> dict[str, dict[str, float | None]]:
+def _benchmark_metrics_for_splits(
+    snapshots: dict[str, DatasetSnapshot] | tuple[DatasetSnapshot, ...],
+) -> dict[str, dict[str, float | None]]:
+    items = snapshots.items() if isinstance(snapshots, dict) else ((snapshot.split_name, snapshot) for snapshot in snapshots)
     return {
         split_name: {
             "cash_return_pct": 0.0,
             "buy_and_hold_return_pct": _buy_and_hold_return_pct(snapshot),
         }
-        for split_name, snapshot in sorted(snapshots.items())
+        for split_name, snapshot in sorted(items)
     }
 
 

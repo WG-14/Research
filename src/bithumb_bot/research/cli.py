@@ -388,6 +388,7 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     print(f"  selected_candidate_id={report.get('selected_candidate_id') or 'none'}")
     print(f"  selected_candidate_score_hash={report.get('selected_candidate_score_hash') or 'none'}")
     print(f"  final_selection_contract_hash={report.get('final_selection_contract_hash') or 'none'}")
+    print(f"  candidate_final_scores_hash={report.get('candidate_final_scores_hash') or 'none'}")
     _print_final_selection_components(report)
     print(f"  gate_result={report.get('gate_result')}")
     print(f"  promotion_eligibility_gate_result={report.get('promotion_eligibility_gate_result') or report.get('gate_result')}")

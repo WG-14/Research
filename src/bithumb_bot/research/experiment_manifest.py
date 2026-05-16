@@ -1628,15 +1628,6 @@ def _parse_final_selection(value: Any, *, deployment_tier: str) -> FinalSelectio
         raise ManifestValidationError(
             "final_selection.null_metric_policy must be fail_if_required_else_worst_rank"
         )
-    must_pass = value.get("must_pass")
-    if not isinstance(must_pass, dict):
-        raise ManifestValidationError("final_selection.must_pass must be an object")
-    exposure = value.get("selection_exposure_policy")
-    if not isinstance(exposure, dict):
-        raise ManifestValidationError("final_selection.selection_exposure_policy must be an object")
-    unsupported = value.get("unsupported_metric_policy")
-    if not isinstance(unsupported, dict):
-        raise ManifestValidationError("final_selection.unsupported_metric_policy must be an object")
     ranking_value = value.get("ranking")
     if not isinstance(ranking_value, list) or not ranking_value:
         raise ManifestValidationError("final_selection.ranking must be a non-empty array")
@@ -1648,17 +1639,95 @@ def _parse_final_selection(value: Any, *, deployment_tier: str) -> FinalSelectio
         raise ManifestValidationError(
             "final_selection.ranking must end with parameter_candidate_id asc deterministic tie-breaker"
         )
+    must_pass = _parse_final_selection_must_pass(value.get("must_pass"))
+    exposure = _parse_final_selection_exposure_policy(value.get("selection_exposure_policy"), rules=rules)
+    unsupported = _parse_final_selection_unsupported_metric_policy(value.get("unsupported_metric_policy"))
     return FinalSelectionContract(
         schema_version=schema_version,
         required_for_promotion=required,
         candidate_universe=candidate_universe,
-        must_pass=dict(must_pass),
-        selection_exposure_policy=dict(exposure),
+        must_pass=must_pass,
+        selection_exposure_policy=exposure,
         method=method,
         null_metric_policy=null_metric_policy,
         ranking=rules,
-        unsupported_metric_policy={str(key): str(item) for key, item in unsupported.items()},
+        unsupported_metric_policy=unsupported,
     )
+
+
+def _parse_final_selection_must_pass(value: Any) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ManifestValidationError("final_selection.must_pass must be an object")
+    allowed_fields = {
+        "dataset_quality_gate_status",
+        "statistical_gate_result",
+        "stress_suite_gate_result",
+        "production_calibration_policy_result",
+        "metrics_schema_version",
+        "final_holdout_present",
+    }
+    unknown = sorted(set(value) - allowed_fields)
+    if unknown:
+        raise ManifestValidationError(f"final_selection.must_pass unsupported fields: {','.join(unknown)}")
+    return dict(value)
+
+
+def _parse_final_selection_exposure_policy(
+    value: Any,
+    *,
+    rules: tuple[FinalSelectionMetricRule, ...],
+) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ManifestValidationError("final_selection.selection_exposure_policy must be an object")
+    allowed_fields = {"final_holdout_usage", "counts_as_holdout_reuse"}
+    unknown = sorted(set(value) - allowed_fields)
+    if unknown:
+        raise ManifestValidationError(
+            f"final_selection.selection_exposure_policy unsupported fields: {','.join(unknown)}"
+        )
+    final_holdout_usage = str(value.get("final_holdout_usage") or "").strip()
+    if final_holdout_usage != "confirmatory_metric_in_rank":
+        raise ManifestValidationError(
+            "final_selection.selection_exposure_policy.final_holdout_usage must be confirmatory_metric_in_rank"
+        )
+    counts_as_holdout_reuse = value.get("counts_as_holdout_reuse")
+    if not isinstance(counts_as_holdout_reuse, bool):
+        raise ManifestValidationError(
+            "final_selection.selection_exposure_policy.counts_as_holdout_reuse must be boolean"
+        )
+    has_final_holdout_rank_metric = any(rule.metric.startswith("final_holdout.") for rule in rules)
+    if has_final_holdout_rank_metric and counts_as_holdout_reuse is not True:
+        raise ManifestValidationError(
+            "final_selection.selection_exposure_policy.counts_as_holdout_reuse must be true when final_holdout metrics are ranked"
+        )
+    if not has_final_holdout_rank_metric:
+        raise ManifestValidationError(
+            "final_selection.selection_exposure_policy.final_holdout_usage confirmatory_metric_in_rank requires a final_holdout ranking metric"
+        )
+    return {
+        "final_holdout_usage": final_holdout_usage,
+        "counts_as_holdout_reuse": counts_as_holdout_reuse,
+    }
+
+
+def _parse_final_selection_unsupported_metric_policy(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ManifestValidationError("final_selection.unsupported_metric_policy must be an object")
+    allowed_fields = {"sharpe_ratio", "sortino_ratio"}
+    unknown = sorted(set(value) - allowed_fields)
+    if unknown:
+        raise ManifestValidationError(
+            f"final_selection.unsupported_metric_policy unsupported fields: {','.join(unknown)}"
+        )
+    parsed: dict[str, str] = {}
+    for key, item in value.items():
+        policy = str(item or "").strip()
+        if policy != "fail_if_required":
+            raise ManifestValidationError(
+                f"final_selection.unsupported_metric_policy.{key} must be fail_if_required"
+            )
+        parsed[str(key)] = policy
+    return parsed
 
 
 def _parse_final_selection_metric_rule(value: Any, *, index: int) -> FinalSelectionMetricRule:

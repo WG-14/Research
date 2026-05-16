@@ -3434,6 +3434,28 @@ def test_production_bound_promotion_binds_calibration_hash_into_lineage_and_repr
     assert summary["execution_calibration_artifact_hash"] == "sha256:calibration"
 
 
+def test_reproduce_rejects_final_selection_lineage_hash_drift(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report_with_lineage(manager, candidate)
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    path = result.artifact_path
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["lineage"]["candidate_final_scores_hash"] == payload["candidate_final_scores_hash"]
+
+    payload["lineage"]["candidate_final_scores_hash"] = "sha256:" + "0" * 64
+    payload["lineage"].pop("lineage_hash", None)
+    payload["lineage"]["lineage_hash"] = compute_lineage_hash(payload["lineage"])
+    payload["lineage_hash"] = payload["lineage"]["lineage_hash"]
+    payload["content_hash"] = sha256_prefixed(content_hash_payload({k: v for k, v in payload.items() if k != "content_hash"}))
+    write_json_atomic(path, payload)
+
+    summary = reproduce_promotion(path).summary
+
+    assert summary["ok"] is False
+    assert summary["reason"] == "final_selection_score_hash_mismatch"
+
+
 def test_production_bound_promotion_binds_calibration_hash_when_base_lineage_lacks_it(tmp_path, monkeypatch) -> None:
     manager = _manager(tmp_path, monkeypatch)
     candidate = _production_candidate()

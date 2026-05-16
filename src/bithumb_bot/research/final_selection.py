@@ -35,6 +35,21 @@ def apply_final_selection_contract(
         }
 
     contract_hash = sha256_prefixed(contract_payload)
+    candidate_ids = [str(candidate.get("parameter_candidate_id") or "") for candidate in candidates]
+    duplicate_ids = sorted({candidate_id for candidate_id in candidate_ids if candidate_ids.count(candidate_id) > 1})
+    if duplicate_ids:
+        return {
+            "final_selection_schema_version": FINAL_SELECTION_SCHEMA_VERSION,
+            "final_selection_contract": contract_payload,
+            "final_selection_contract_hash": contract_hash,
+            "candidate_universe": contract_payload.get("candidate_universe"),
+            "selected_candidate_id": None,
+            "selected_candidate_score_hash": None,
+            "candidate_final_scores_hash": None,
+            "candidate_final_scores": [],
+            "gate_result": "FAIL",
+            "fail_reasons": ["final_selection_duplicate_candidate_id"],
+        }
     ranking = list(contract_payload.get("ranking") or [])
     scored = [
         _score_candidate(
@@ -49,6 +64,17 @@ def apply_final_selection_contract(
     selected: dict[str, Any] | None = None
     if eligible:
         selected = min(eligible, key=lambda item: tuple(item["_sort_key"]))
+    # The score list is evidence, not presentation. Canonicalize it by the
+    # final-selection rank tuple and candidate id so its hash cannot inherit
+    # input order or the legacy _candidate_rank_key ordering used elsewhere.
+    scored = sorted(
+        scored,
+        key=lambda item: (
+            0 if item["eligible"] else 1,
+            tuple(item["_sort_key"]),
+            str(item["candidate_id"]),
+        ),
+    )
     public_scores = [{key: value for key, value in item.items() if key != "_sort_key"} for item in scored]
     for item in public_scores:
         item["score_hash"] = sha256_prefixed(

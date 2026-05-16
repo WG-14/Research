@@ -6,6 +6,7 @@ from pathlib import Path
 from bithumb_bot.research.experiment_manifest import parse_manifest
 from bithumb_bot.research.statistical_selection import (
     build_statistical_selection_evidence,
+    candidate_metric_universe_payload,
     candidate_metric_values_hash,
     recompute_candidate_metric_values_hash_from_report,
     selection_universe_hash,
@@ -128,6 +129,46 @@ def test_selection_universe_hash_is_deterministic_and_binds_candidates() -> None
 
     assert first == reordered
     assert changed_hash != first
+
+
+def test_statistical_buy_and_hold_benchmark_missing_marks_metric_missing() -> None:
+    payload = candidate_metric_universe_payload(
+        candidates=[
+            {
+                "parameter_candidate_id": "candidate_001",
+                "parameter_values": {},
+                "validation_metrics": {"return_pct": 12.0},
+                "acceptance_gate_result": "PASS",
+            }
+        ],
+        required_scenario_ids=["scenario_001"],
+        primary_metric="net_excess_return",
+        primary_metric_source="validation_metrics",
+        benchmark="buy_and_hold",
+    )
+
+    assert payload["candidates"][0]["validation_metric_value"] is None
+    assert payload["candidates"][0]["validation_metric_missing"] is True
+
+
+def test_statistical_configured_benchmark_missing_marks_metric_missing() -> None:
+    payload = candidate_metric_universe_payload(
+        candidates=[
+            {
+                "parameter_candidate_id": "candidate_001",
+                "parameter_values": {},
+                "validation_metrics": {"return_pct": 12.0},
+                "acceptance_gate_result": "PASS",
+            }
+        ],
+        required_scenario_ids=["scenario_001"],
+        primary_metric="net_excess_return",
+        primary_metric_source="validation_metrics",
+        benchmark="configured",
+    )
+
+    assert payload["candidates"][0]["validation_metric_value"] is None
+    assert payload["candidates"][0]["validation_metric_missing"] is True
 
 
 def test_statistical_evidence_content_hash_is_stable_and_fails_no_edge_large_universe() -> None:

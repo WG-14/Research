@@ -197,6 +197,10 @@ def build_promotion_lineage(
     return_panel_hash: str | None = None,
     selection_universe_hash: str | None = None,
     candidate_metric_values_hash: str | None = None,
+    final_selection_contract_hash: str | None = None,
+    selected_candidate_id: str | None = None,
+    selected_candidate_score_hash: str | None = None,
+    candidate_final_scores_hash: str | None = None,
     experiment_registry_path: str | None = None,
     experiment_registry_prior_hash: str | None = None,
     experiment_registry_row_hash: str | None = None,
@@ -247,6 +251,10 @@ def build_promotion_lineage(
             "return_panel_hash": return_panel_hash,
             "selection_universe_hash": selection_universe_hash,
             "candidate_metric_values_hash": candidate_metric_values_hash,
+            "final_selection_contract_hash": final_selection_contract_hash,
+            "selected_candidate_id": selected_candidate_id,
+            "selected_candidate_score_hash": selected_candidate_score_hash,
+            "candidate_final_scores_hash": candidate_final_scores_hash,
             "experiment_registry_path": experiment_registry_path or lineage.get("experiment_registry_path"),
             "experiment_registry_prior_hash": experiment_registry_prior_hash or lineage.get("experiment_registry_prior_hash"),
             "experiment_registry_row_hash": experiment_registry_row_hash or lineage.get("experiment_registry_row_hash"),
@@ -418,10 +426,10 @@ def reproduce_promotion(promotion_path: str | Path) -> ReproducibilityResult:
     summary["final_holdout_stress_suite_hash"] = final_stress.get("stress_suite_hash")
     summary["selection_universe_hash"] = lineage.get("selection_universe_hash")
     summary["candidate_metric_values_hash"] = lineage.get("candidate_metric_values_hash")
-    summary["final_selection_contract_hash"] = promotion.get("final_selection_contract_hash")
-    summary["selected_candidate_id"] = promotion.get("selected_candidate_id")
-    summary["selected_candidate_score_hash"] = promotion.get("selected_candidate_score_hash")
-    summary["candidate_final_scores_hash"] = promotion.get("candidate_final_scores_hash")
+    summary["final_selection_contract_hash"] = lineage.get("final_selection_contract_hash") or promotion.get("final_selection_contract_hash")
+    summary["selected_candidate_id"] = lineage.get("selected_candidate_id") or promotion.get("selected_candidate_id")
+    summary["selected_candidate_score_hash"] = lineage.get("selected_candidate_score_hash") or promotion.get("selected_candidate_score_hash")
+    summary["candidate_final_scores_hash"] = lineage.get("candidate_final_scores_hash") or promotion.get("candidate_final_scores_hash")
 
     _compare(summary, "manifest_hash", promotion.get("manifest_hash"), lineage.get("manifest_hash"), "manifest_hash_mismatch")
     _compare(
@@ -466,6 +474,19 @@ def reproduce_promotion(promotion_path: str | Path) -> ReproducibilityResult:
         if promotion.get("candidate_id") != promotion.get("selected_candidate_id"):
             summary["mismatches"].append(
                 _mismatch("promotion.selected_candidate_id", promotion.get("candidate_id"), promotion.get("selected_candidate_id"), "candidate_not_selected_by_final_selection_contract")
+            )
+        for field, reason in (
+            ("final_selection_contract_hash", "final_selection_contract_hash_mismatch"),
+            ("selected_candidate_score_hash", "final_selection_score_hash_mismatch"),
+            ("candidate_final_scores_hash", "final_selection_score_hash_mismatch"),
+            ("selected_candidate_id", "final_selection_selected_candidate_mismatch"),
+        ):
+            _compare(
+                summary,
+                f"lineage.{field}",
+                promotion.get(field),
+                lineage.get(field),
+                reason,
             )
     statistical_required = bool(promotion.get("statistical_validation_required")) or is_production_bound_target(
         promotion.get("deployment_tier")
@@ -850,6 +871,10 @@ def _verify_final_selection_bindings(
         ("candidate_final_scores_hash", "final_selection_score_hash_mismatch"),
         ("selected_candidate_id", "final_selection_selected_candidate_mismatch"),
     ):
+        if lineage.get(field) != report.get(field):
+            summary["mismatches"].append(
+                _mismatch(f"lineage.{field}", lineage.get(field), report.get(field), reason)
+            )
         if promotion.get(field) != report.get(field):
             summary["mismatches"].append(
                 _mismatch(f"backtest_report.{field}", promotion.get(field), report.get(field), reason)
