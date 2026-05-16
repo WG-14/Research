@@ -541,7 +541,70 @@ def test_registry_validate_registry_only_reports_lifecycle_summary_without_artif
     assert [row["row_hash"] for row in payload["registry_lifecycle_summary"]] == [first["row_hash"], second["row_hash"]]
     assert all(row["artifact_bound"] is False for row in payload["registry_lifecycle_summary"])
     assert payload["registry_lifecycle_summary"][0]["incomplete"] is True
+    assert payload["registry_lifecycle_summary"][0]["ok"] is False
+    assert payload["registry_lifecycle_summary"][0]["row_valid_only"] is True
+    assert payload["registry_lifecycle_summary"][0]["lifecycle_complete"] is False
     assert payload["registry_lifecycle_summary"][1]["promotion_permitted"] is True
+    assert payload["registry_lifecycle_summary"][1]["lifecycle_complete"] is True
+    assert payload["registry_lifecycle_summary"][1]["ok"] is True
+
+
+def test_registry_lifecycle_summary_incomplete_row_ok_false(tmp_path, monkeypatch, capsys) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
+    reserve_research_attempt(manager=manager, base_payload=_registry_payload())
+
+    research_cli.cmd_research_registry_validate(experiment_id="summary_exp")
+
+    payload = json.loads(capsys.readouterr().out)
+    row = payload["registry_lifecycle_summary"][0]
+    assert row["registry_row_valid"] is True
+    assert row["completion_row_valid"] is True
+    assert row["lifecycle_complete"] is False
+    assert row["promotion_permitted"] is False
+    assert row["ok"] is False
+    assert "experiment_registry_incomplete_attempt" in row["reasons"]
+
+
+def test_registry_lifecycle_summary_incomplete_row_row_valid_only_true(tmp_path, monkeypatch, capsys) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
+    reserve_research_attempt(manager=manager, base_payload=_registry_payload())
+
+    research_cli.cmd_research_registry_validate(experiment_id="summary_exp")
+
+    payload = json.loads(capsys.readouterr().out)
+    row = payload["registry_lifecycle_summary"][0]
+    assert row["row_valid_only"] is True
+    assert row["registry_row_valid"] is True
+    assert row["lifecycle_complete"] is False
+
+
+def test_registry_lifecycle_summary_completed_row_lifecycle_complete_true(tmp_path, monkeypatch, capsys) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
+    reservation = reserve_research_attempt(manager=manager, base_payload=_registry_payload())
+    append_attempt_completion(
+        manager=manager,
+        reservation=reservation,
+        updates={
+            "candidate_count": 1,
+            "return_panel_hash": "sha256:return",
+            "statistical_evidence_hash": "sha256:pre-completion",
+            "statistical_evidence_hash_phase": EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+        },
+    )
+
+    research_cli.cmd_research_registry_validate(experiment_id="summary_exp")
+
+    payload = json.loads(capsys.readouterr().out)
+    row = payload["registry_lifecycle_summary"][0]
+    assert row["registry_row_valid"] is True
+    assert row["completion_row_valid"] is True
+    assert row["lifecycle_complete"] is True
+    assert row["promotion_permitted"] is True
+    assert row["row_valid_only"] is False
+    assert row["ok"] is True
 
 
 def test_research_registry_validate_full_scope_detects_evidence_binding_mismatch(tmp_path, monkeypatch, capsys) -> None:
@@ -677,7 +740,84 @@ def test_registry_validate_full_scope_reports_extra_incomplete_reservations_sepa
     assert payload["ok"] is True
     assert payload["registry_lifecycle_summary"][0]["incomplete"] is True
     assert payload["registry_lifecycle_summary"][0]["promotion_permitted"] is False
+    assert payload["registry_lifecycle_summary"][0]["ok"] is False
+    assert payload["registry_lifecycle_summary"][0]["row_valid_only"] is True
     assert payload["registry_lifecycle_summary"][1]["promotion_permitted"] is True
+    assert payload["registry_lifecycle_summary"][1]["ok"] is True
+
+
+def test_registry_validate_extra_incomplete_non_bound_row_does_not_fail_artifact_bound_validation(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
+    old = reserve_research_attempt(manager=manager, base_payload=_registry_payload_with(run_id="summary_exp_old"))
+    current = reserve_research_attempt(manager=manager, base_payload=_registry_payload_with(run_id="summary_exp_current"))
+    completion = append_attempt_completion(
+        manager=manager,
+        reservation=current,
+        updates={
+            "candidate_count": 1,
+            "return_panel_hash": "sha256:return",
+            "statistical_evidence_hash": "sha256:pre-completion",
+            "statistical_evidence_hash_phase": EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+        },
+    )
+    _write_registry_validate_artifacts(
+        manager,
+        current,
+        completion,
+        write_evidence=False,
+        write_panel=False,
+        statistical_required=False,
+    )
+
+    status = research_cli.cmd_research_registry_validate(experiment_id="summary_exp")
+
+    payload = json.loads(capsys.readouterr().out)
+    rows = payload["registry_lifecycle_summary"]
+    assert status == 0
+    assert payload["ok"] is True
+    assert payload["artifact_binding_valid"] is True
+    assert rows[0]["row_hash"] == old["row_hash"]
+    assert rows[0]["artifact_bound"] is False
+    assert rows[0]["ok"] is False
+    assert rows[0]["row_valid_only"] is True
+    assert rows[1]["artifact_bound"] is True
+    assert rows[1]["ok"] is True
+    assert rows[1]["artifact_binding_valid"] is True
+
+
+def test_registry_validate_artifact_bound_incomplete_row_fails(tmp_path, monkeypatch, capsys) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
+    reservation = reserve_research_attempt(manager=manager, base_payload=_registry_payload())
+    _write_registry_validate_artifacts(
+        manager,
+        reservation,
+        {"row_hash": None},
+        write_evidence=False,
+        write_panel=False,
+        statistical_required=False,
+    )
+
+    status = research_cli.cmd_research_registry_validate(experiment_id="summary_exp")
+
+    payload = json.loads(capsys.readouterr().out)
+    row = payload["registry_lifecycle_summary"][0]
+    assert status == 1
+    assert payload["ok"] is False
+    assert payload["artifact_binding_valid"] is False
+    assert row["artifact_bound"] is True
+    assert row["registry_row_valid"] is True
+    assert row["completion_row_valid"] is True
+    assert row["lifecycle_complete"] is False
+    assert row["promotion_permitted"] is False
+    assert row["ok"] is False
+    assert row["row_valid_only"] is True
+    assert "experiment_registry_incomplete_attempt" in row["reasons"]
 
 
 def test_registry_validate_full_scope_does_not_mark_old_rows_ok_using_current_evidence(tmp_path, monkeypatch, capsys) -> None:

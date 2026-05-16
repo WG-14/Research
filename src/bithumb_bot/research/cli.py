@@ -231,14 +231,16 @@ def _registry_lifecycle_row(
     if not registry_row_valid:
         reasons.append("experiment_registry_row_hash_mismatch")
     completion_status = str(completion.get("result_status") or "") if isinstance(completion, dict) else str(row.get("result_status") or "")
-    incomplete = not isinstance(completion, dict) or completion_status not in PROMOTION_PERMITTED_STATUSES
-    if incomplete:
+    lifecycle_complete = completion_status in PROMOTION_PERMITTED_STATUSES
+    incomplete = not lifecycle_complete
+    if not lifecycle_complete:
         reasons.append("experiment_registry_incomplete_attempt")
     completion_row_valid = True
     if isinstance(completion, dict):
         completion_row_valid = compute_row_hash(completion) == completion.get("row_hash")
         if not completion_row_valid:
             reasons.append("experiment_registry_row_hash_mismatch")
+    row_valid_only = registry_row_valid and not lifecycle_complete
     return {
         "row_hash": row.get("row_hash"),
         "artifact_bound": artifact_bound,
@@ -249,12 +251,14 @@ def _registry_lifecycle_row(
         "completion_row_hash": completion.get("row_hash") if isinstance(completion, dict) else None,
         "completion_status": completion_status,
         "incomplete": incomplete,
-        "promotion_permitted": completion_status in PROMOTION_PERMITTED_STATUSES,
+        "lifecycle_complete": lifecycle_complete,
+        "promotion_permitted": lifecycle_complete,
+        "row_valid_only": row_valid_only,
         "artifact_binding_valid": "unknown",
         "report_loaded": False,
         "evidence_loaded": False,
         "return_panel_loaded": False,
-        "ok": registry_row_valid,
+        "ok": registry_row_valid and completion_row_valid and lifecycle_complete,
         "reasons": sorted(set(reasons)),
     }
 

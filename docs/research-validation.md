@@ -102,9 +102,10 @@ completion/artifact content before promotion.
 
 The registry separates final-holdout meaning from artifact integrity:
 
-- `final_holdout_identity_hash` / `final_holdout_reuse_key_hash` hash the
-  semantic exposure identity: dataset source, market, interval, final-holdout
-  start, and final-holdout end.
+- `final_holdout_identity_hash` is the semantic reuse-counting key based on
+  dataset source, market, interval, final-holdout start, and final-holdout end.
+- `final_holdout_reuse_key_hash` is the key used to compute
+  `computed_holdout_reuse_count` and should equal the semantic identity hash.
 - `final_holdout_content_hash` hashes reproducibility/integrity material such as
   dataset snapshot id, final-holdout split hash, and dataset quality hash.
 - `final_holdout_fingerprint` is retained as a compatibility alias for the
@@ -207,6 +208,32 @@ row is absent from the registry, validation fails closed with
 `experiment_registry_artifact_bound_row_missing`. Operators must not treat
 registry-only validation as proof that the final report/evidence/promotion
 artifact chain is current.
+
+Each `registry_lifecycle_summary` row separates row validity from promotion
+permission:
+
+- `registry_row_valid=true` means the reservation row hash recomputes.
+- `completion_row_valid=true` means the completion or abort row hash recomputes
+  when such a row exists; it is also true when no completion row exists.
+- `lifecycle_complete=true` means the lifecycle status is promotion-permitted,
+  currently only `COMPLETED`.
+- `promotion_permitted=true` mirrors lifecycle completion at the registry layer.
+- `ok=true` means the registry row is valid, the completion/abort row is valid,
+  and the lifecycle is promotion-permitted.
+- `row_valid_only=true` means the reservation row is hash-valid but the
+  lifecycle is not promotion-permitted. This commonly appears for old
+  `IN_PROGRESS` or `ABORTED` rows that remain useful exposure evidence but are
+  not valid promotion evidence.
+
+An incomplete non-bound row can therefore appear with `registry_row_valid=true`,
+`lifecycle_complete=false`, `promotion_permitted=false`, `row_valid_only=true`,
+and `ok=false` without failing the current artifact-bound validation. An
+artifact-bound row with the same incomplete lifecycle fails closed because the
+report/evidence are pointing at a non-promotion-permitted attempt. For a
+completed artifact-bound row, operators should expect `artifact_bound=true`,
+`registry_row_valid=true`, `completion_row_valid=true`,
+`lifecycle_complete=true`, `promotion_permitted=true`,
+`artifact_binding_valid=true`, and `ok=true`.
 
 Current stable registry refusal and validation reasons include:
 `experiment_registry_bound_evidence_hash_missing`,
