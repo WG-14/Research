@@ -83,6 +83,71 @@ statistical aggregation is still not implemented, so production-bound promotion
 claims under `experiment_family` fail closed until the registry contributes to the
 actual statistical universe.
 
+Production-bound final-holdout exposure is also bound to the experiment attempt
+registry at `DATA_ROOT/<mode>/reports/research/_registry/experiment_registry.jsonl`.
+This registry is promotion-grade audit evidence, not a metadata ledger. It
+records reserved, completed, rejected, promoted, and aborted attempt events as
+append-only JSONL rows with row hashes and prior-registry hashes. Manual JSONL or
+hash editing is not valid recovery.
+
+The registry separates final-holdout meaning from artifact integrity:
+
+- `final_holdout_identity_hash` / `final_holdout_reuse_key_hash` hash the
+  semantic exposure identity: dataset source, market, interval, final-holdout
+  start, and final-holdout end.
+- `final_holdout_content_hash` hashes reproducibility/integrity material such as
+  dataset snapshot id, final-holdout split hash, and dataset quality hash.
+- `final_holdout_fingerprint` is retained as a compatibility alias for the
+  semantic identity hash.
+
+Reuse counting uses the semantic identity hash, not byte-identical split content.
+Changing `dataset_snapshot_id`, refilling candles, or changing split content
+does not reset `computed_holdout_reuse_count` for the same market/interval/date
+range. Content hash mismatches are still fail-closed integrity failures and are
+reported separately from identity/reuse-key mismatches.
+
+Experiment-registry completion uses explicit two-phase evidence binding to avoid
+a recursive hash cycle:
+
+1. Statistical evidence is built without
+   `experiment_registry_completion_row_hash`.
+2. The pre-completion evidence `content_hash` is recorded in the
+   `research_attempt_completed` row as `statistical_evidence_hash` with
+   `statistical_evidence_hash_phase=pre_completion_evidence_hash`.
+3. The final statistical evidence then records
+   `experiment_registry_completion_row_hash`,
+   `experiment_registry_bound_evidence_hash`, and
+   `experiment_registry_evidence_hash_phase=pre_completion_evidence_hash`, and
+   its final `content_hash` is recomputed.
+
+Promotion and reproduction for `paper_candidate`, `live_dry_run_candidate`, and
+`small_live_candidate` fail closed when the registry path is missing, row hashes
+or prior hashes do not recompute, a completed/aborted/final evidence binding is
+missing or stale, evidence phase is missing or wrong, identity/content/reuse-key
+hashes mismatch, computed counters mismatch, budgets are exceeded, or completion
+status is not promotion-permitted. `research_only` outputs may retain diagnostic
+warnings, but those warnings cannot bypass production-bound promotion.
+
+Production-bound manifests that declare `attempt_index` or
+`holdout_reuse_count` are checked before a counted reservation is appended. A
+declared/computed mismatch appends an uncounted `research_attempt_rejected`
+event for audit visibility and fails closed with
+`declared_attempt_index_mismatch` and/or
+`declared_holdout_reuse_count_mismatch`. Rejected events do not increment future
+attempt or holdout reuse counters.
+
+If a run is interrupted after a counted reservation, use the append-only
+operator commands:
+
+```bash
+uv run bithumb-bot research-registry-inspect --row-hash <reservation_row_hash>
+uv run bithumb-bot research-registry-validate --experiment-id <experiment_id>
+uv run bithumb-bot research-mark-attempt-aborted --row-hash <reservation_row_hash> --reason "<operator reason>"
+```
+
+Aborted attempts remain counted exposure, are not promotion-permitted, and must
+not be repaired by editing existing JSONL rows.
+
 The research engine is a pure replay/simulation path. It does not call the live broker, order lifecycle, run loop, recovery commands, or lot-native SELL authority code.
 
 ## Commands

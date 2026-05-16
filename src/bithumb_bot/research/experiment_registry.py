@@ -16,6 +16,7 @@ from .hashing import content_hash_payload, sha256_prefixed
 EXPERIMENT_REGISTRY_SCHEMA_VERSION = 1
 EMPTY_EXPERIMENT_REGISTRY_HASH = sha256_prefixed([])
 PROMOTION_PERMITTED_STATUSES = {"COMPLETED", "PASS", "FAIL"}
+EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE = "pre_completion_evidence_hash"
 
 
 def experiment_registry_path(*, manager: PathManager) -> Path:
@@ -50,6 +51,9 @@ def research_freedom_hash(payload: dict[str, Any]) -> str:
             "validation_split_hash": payload.get("validation_split_hash"),
             "final_holdout_split_hash": payload.get("final_holdout_split_hash"),
             "final_holdout_fingerprint": payload.get("final_holdout_fingerprint"),
+            "final_holdout_identity_hash": payload.get("final_holdout_identity_hash"),
+            "final_holdout_content_hash": payload.get("final_holdout_content_hash"),
+            "final_holdout_reuse_key_hash": payload.get("final_holdout_reuse_key_hash"),
             "parameter_space_hash": payload.get("parameter_space_hash"),
             "computed_attempt_index": payload.get("computed_attempt_index"),
             "computed_holdout_reuse_count": payload.get("computed_holdout_reuse_count"),
@@ -59,6 +63,92 @@ def research_freedom_hash(payload: dict[str, Any]) -> str:
             "experiment_registry_row_hash": payload.get("experiment_registry_row_hash") or payload.get("row_hash"),
         }
     )
+
+
+def research_identity_from_manifest(manifest: Any) -> dict[str, Any]:
+    raw = getattr(manifest, "raw", {}) if isinstance(getattr(manifest, "raw", {}), dict) else {}
+    experiment_id = str(getattr(manifest, "experiment_id", "") or raw.get("experiment_id") or "")
+    explicit_family = raw.get("experiment_family_id")
+    explicit_hypothesis = raw.get("hypothesis_id")
+    manifest_hypothesis = getattr(manifest, "hypothesis", None)
+    family_id = str(explicit_family or experiment_id)
+    hypothesis_id = str(explicit_hypothesis or manifest_hypothesis or experiment_id)
+    return {
+        "experiment_family_id": family_id,
+        "hypothesis_id": hypothesis_id,
+        "hypothesis_status": str(raw.get("hypothesis_status") or "pre_registered"),
+        "hypothesis_identity_source": (
+            "manifest.hypothesis_id"
+            if explicit_hypothesis
+            else "manifest.hypothesis"
+            if manifest_hypothesis
+            else "experiment_id"
+        ),
+        "experiment_family_identity_source": "manifest.experiment_family_id" if explicit_family else "experiment_id",
+        "experiment_id": experiment_id,
+    }
+
+
+def final_holdout_identity_hash_from_parts(
+    *,
+    dataset_source: str | None,
+    market: str | None,
+    interval: str | None,
+    final_holdout: dict[str, Any] | None,
+) -> str:
+    return sha256_prefixed(
+        {
+            "dataset_source": dataset_source,
+            "market": market,
+            "interval": interval,
+            "final_holdout_start": (final_holdout or {}).get("start"),
+            "final_holdout_end": (final_holdout or {}).get("end"),
+        }
+    )
+
+
+def final_holdout_content_hash_from_parts(
+    *,
+    dataset_snapshot_id: str | None,
+    final_holdout_split_hash: str | None,
+    dataset_quality_hash: str | None,
+) -> str:
+    return sha256_prefixed(
+        {
+            "dataset_snapshot_id": dataset_snapshot_id,
+            "final_holdout_split_hash": final_holdout_split_hash,
+            "dataset_quality_hash": dataset_quality_hash,
+        }
+    )
+
+
+def final_holdout_hashes_from_manifest(
+    *,
+    manifest: Any,
+    final_holdout_split_hash: str | None,
+    dataset_quality_hash: str | None,
+) -> dict[str, str | None]:
+    dataset = getattr(manifest, "dataset", None)
+    split = getattr(dataset, "split", None)
+    final_holdout = getattr(split, "final_holdout", None)
+    holdout_payload = final_holdout.as_dict() if final_holdout is not None else None
+    identity_hash = final_holdout_identity_hash_from_parts(
+        dataset_source=getattr(dataset, "source", None),
+        market=getattr(manifest, "market", None),
+        interval=getattr(manifest, "interval", None),
+        final_holdout=holdout_payload,
+    )
+    content_hash = final_holdout_content_hash_from_parts(
+        dataset_snapshot_id=getattr(dataset, "snapshot_id", None),
+        final_holdout_split_hash=final_holdout_split_hash,
+        dataset_quality_hash=dataset_quality_hash,
+    )
+    return {
+        "final_holdout_identity_hash": identity_hash,
+        "final_holdout_content_hash": content_hash,
+        "final_holdout_reuse_key_hash": identity_hash,
+        "final_holdout_fingerprint": identity_hash,
+    }
 
 
 def load_experiment_registry_rows(path: Path) -> list[dict[str, Any]]:
@@ -76,6 +166,76 @@ def load_experiment_registry_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def compute_research_attempt_counters(
+    *,
+    manager: PathManager,
+    base_payload: dict[str, Any],
+) -> dict[str, int]:
+    path = experiment_registry_path(manager=manager)
+    rows = load_experiment_registry_rows(path)
+    family_id = str(base_payload.get("experiment_family_id") or "")
+    hypothesis_id = str(base_payload.get("hypothesis_id") or "")
+    reuse_key = str(
+        base_payload.get("final_holdout_reuse_key_hash")
+        or base_payload.get("final_holdout_identity_hash")
+        or base_payload.get("final_holdout_fingerprint")
+        or ""
+    )
+    return {
+        "computed_attempt_index": 1
+        + sum(
+            1
+            for row in rows
+            if row.get("event_type") == "research_attempt_reserved"
+            and str(row.get("experiment_family_id") or "") == family_id
+            and str(row.get("hypothesis_id") or "") == hypothesis_id
+        ),
+        "computed_holdout_reuse_count": sum(
+            1
+            for row in rows
+            if row.get("event_type") == "research_attempt_reserved"
+            and reuse_key
+            and str(
+                row.get("final_holdout_reuse_key_hash")
+                or row.get("final_holdout_identity_hash")
+                or row.get("final_holdout_fingerprint")
+                or ""
+            )
+            == reuse_key
+        ),
+    }
+
+
+def append_research_attempt_rejected(
+    *,
+    manager: PathManager,
+    base_payload: dict[str, Any],
+    reasons: list[str],
+    computed_attempt_index: int,
+    computed_holdout_reuse_count: int,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    path = experiment_registry_path(manager=manager)
+    with _locked_registry(path):
+        rows = load_experiment_registry_rows(path)
+        prior_hash = sha256_prefixed(rows) if rows else EMPTY_EXPERIMENT_REGISTRY_HASH
+        row = {
+            "schema_version": EXPERIMENT_REGISTRY_SCHEMA_VERSION,
+            "event_type": "research_attempt_rejected",
+            **base_payload,
+            "computed_attempt_index": computed_attempt_index,
+            "computed_holdout_reuse_count": computed_holdout_reuse_count,
+            "result_status": "REJECTED",
+            "rejection_reasons": list(reasons),
+            "counted_attempt": False,
+            "prior_registry_hash": prior_hash,
+            "created_at": created_at or datetime.now(timezone.utc).isoformat(),
+        }
+        row["row_hash"] = compute_row_hash(row)
+        append_jsonl(path, row)
+    return {"path": str(path.resolve()), "prior_hash": prior_hash, "row_hash": str(row["row_hash"]), "row": dict(row)}
+
+
 def reserve_research_attempt(
     *,
     manager: PathManager,
@@ -86,23 +246,9 @@ def reserve_research_attempt(
     with _locked_registry(path):
         rows = load_experiment_registry_rows(path)
         prior_hash = sha256_prefixed(rows) if rows else EMPTY_EXPERIMENT_REGISTRY_HASH
-        family_id = str(base_payload.get("experiment_family_id") or "")
-        hypothesis_id = str(base_payload.get("hypothesis_id") or "")
-        final_holdout_fingerprint = str(base_payload.get("final_holdout_fingerprint") or "")
-        computed_attempt_index = 1 + sum(
-            1
-            for row in rows
-            if row.get("event_type") == "research_attempt_reserved"
-            and str(row.get("experiment_family_id") or "") == family_id
-            and str(row.get("hypothesis_id") or "") == hypothesis_id
-        )
-        computed_holdout_reuse_count = sum(
-            1
-            for row in rows
-            if row.get("event_type") == "research_attempt_reserved"
-            and final_holdout_fingerprint
-            and str(row.get("final_holdout_fingerprint") or "") == final_holdout_fingerprint
-        )
+        counters = _compute_research_attempt_counters_from_rows(rows=rows, base_payload=base_payload)
+        computed_attempt_index = counters["computed_attempt_index"]
+        computed_holdout_reuse_count = counters["computed_holdout_reuse_count"]
         row = {
             "schema_version": EXPERIMENT_REGISTRY_SCHEMA_VERSION,
             "event_type": "research_attempt_reserved",
@@ -132,6 +278,39 @@ def reserve_research_attempt(
         }
     )
     return result
+
+
+def append_attempt_aborted(
+    *,
+    manager: PathManager,
+    reservation_row_hash: str,
+    reason: str,
+    created_at: str | None = None,
+) -> dict[str, Any] | None:
+    path = experiment_registry_path(manager=manager)
+    with _locked_registry(path):
+        rows = load_experiment_registry_rows(path)
+        reservation = next((row for row in rows if row.get("row_hash") == reservation_row_hash), None)
+        if not isinstance(reservation, dict):
+            return None
+        prior_hash = sha256_prefixed(rows) if rows else EMPTY_EXPERIMENT_REGISTRY_HASH
+        row = {
+            "schema_version": EXPERIMENT_REGISTRY_SCHEMA_VERSION,
+            "event_type": "research_attempt_aborted",
+            **{
+                key: value
+                for key, value in reservation.items()
+                if key not in {"event_type", "result_status", "prior_registry_hash", "row_hash", "created_at"}
+            },
+            "reservation_row_hash": reservation_row_hash,
+            "result_status": "ABORTED",
+            "abort_reason": reason,
+            "prior_registry_hash": prior_hash,
+            "created_at": created_at or datetime.now(timezone.utc).isoformat(),
+        }
+        row["row_hash"] = compute_row_hash(row)
+        append_jsonl(path, row)
+    return {"path": str(path.resolve()), "prior_hash": prior_hash, "row_hash": str(row["row_hash"]), "row": dict(row)}
 
 
 def append_attempt_completion(
@@ -296,6 +475,9 @@ def _extend_registry_field_mismatch_reasons(
         "train_split_hash",
         "validation_split_hash",
         "final_holdout_split_hash",
+        "final_holdout_identity_hash",
+        "final_holdout_content_hash",
+        "final_holdout_reuse_key_hash",
         "parameter_space_hash",
     ):
         expected = evidence.get(field)
@@ -309,6 +491,15 @@ def _extend_registry_field_mismatch_reasons(
     fingerprint = evidence.get("final_holdout_fingerprint") or report.get("final_holdout_fingerprint") or promotion.get("final_holdout_fingerprint")
     if fingerprint is not None and str(row.get("final_holdout_fingerprint") or "") != str(fingerprint or ""):
         reasons.append("experiment_registry_final_holdout_fingerprint_mismatch")
+    identity = evidence.get("final_holdout_identity_hash") or report.get("final_holdout_identity_hash") or promotion.get("final_holdout_identity_hash")
+    if identity is not None and str(row.get("final_holdout_identity_hash") or "") != str(identity or ""):
+        reasons.append("experiment_registry_final_holdout_identity_mismatch")
+    content = evidence.get("final_holdout_content_hash") or report.get("final_holdout_content_hash") or promotion.get("final_holdout_content_hash")
+    if content is not None and str(row.get("final_holdout_content_hash") or "") != str(content or ""):
+        reasons.append("experiment_registry_final_holdout_content_mismatch")
+    reuse_key = evidence.get("final_holdout_reuse_key_hash") or report.get("final_holdout_reuse_key_hash") or promotion.get("final_holdout_reuse_key_hash")
+    if reuse_key is not None and str(row.get("final_holdout_reuse_key_hash") or row.get("final_holdout_identity_hash") or "") != str(reuse_key or ""):
+        reasons.append("experiment_registry_final_holdout_reuse_key_mismatch")
     for field, code in (
         ("computed_attempt_index", "experiment_registry_attempt_index_mismatch"),
         ("computed_holdout_reuse_count", "experiment_registry_holdout_reuse_count_mismatch"),
@@ -366,6 +557,21 @@ def _extend_completion_mismatch_reasons(
         actual = completion.get(field)
         if expected is not None and actual is not None and str(actual or "") != str(expected or ""):
             reasons.append("experiment_registry_stale")
+    phase = str(completion.get("statistical_evidence_hash_phase") or "").strip()
+    if phase != EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE:
+        reasons.append("experiment_registry_evidence_hash_phase_mismatch")
+    if evidence:
+        bound = str(evidence.get("experiment_registry_bound_evidence_hash") or "").strip()
+        if not bound.startswith("sha256:"):
+            reasons.append("experiment_registry_bound_evidence_hash_missing")
+        elif str(completion.get("statistical_evidence_hash") or "") != bound:
+            reasons.append("experiment_registry_statistical_evidence_hash_mismatch")
+        evidence_phase = str(evidence.get("experiment_registry_evidence_hash_phase") or "").strip()
+        if evidence_phase != EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE:
+            reasons.append("experiment_registry_evidence_hash_phase_mismatch")
+    promotion_bound = str(promotion.get("experiment_registry_bound_evidence_hash") or "").strip()
+    if promotion_bound and str(completion.get("statistical_evidence_hash") or "") != promotion_bound:
+        reasons.append("experiment_registry_statistical_evidence_hash_mismatch")
 
 
 def _extend_budget_reasons(
@@ -408,6 +614,44 @@ def _completion_for_reservation(
             continue
         return row
     return None
+
+
+def _compute_research_attempt_counters_from_rows(
+    *,
+    rows: list[dict[str, Any]],
+    base_payload: dict[str, Any],
+) -> dict[str, int]:
+    family_id = str(base_payload.get("experiment_family_id") or "")
+    hypothesis_id = str(base_payload.get("hypothesis_id") or "")
+    reuse_key = str(
+        base_payload.get("final_holdout_reuse_key_hash")
+        or base_payload.get("final_holdout_identity_hash")
+        or base_payload.get("final_holdout_fingerprint")
+        or ""
+    )
+    return {
+        "computed_attempt_index": 1
+        + sum(
+            1
+            for row in rows
+            if row.get("event_type") == "research_attempt_reserved"
+            and str(row.get("experiment_family_id") or "") == family_id
+            and str(row.get("hypothesis_id") or "") == hypothesis_id
+        ),
+        "computed_holdout_reuse_count": sum(
+            1
+            for row in rows
+            if row.get("event_type") == "research_attempt_reserved"
+            and reuse_key
+            and str(
+                row.get("final_holdout_reuse_key_hash")
+                or row.get("final_holdout_identity_hash")
+                or row.get("final_holdout_fingerprint")
+                or ""
+            )
+            == reuse_key
+        ),
+    }
 
 
 def _as_int(value: object) -> int | None:

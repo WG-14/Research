@@ -12,7 +12,11 @@ from bithumb_bot.execution_reality_contract import execution_capability_contract
 from bithumb_bot.research import cli as research_cli
 from bithumb_bot.research.hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
 from bithumb_bot.research.lineage import build_research_lineage, compute_lineage_hash, reproduce_promotion
-from bithumb_bot.research.experiment_registry import append_attempt_completion, reserve_research_attempt
+from bithumb_bot.research.experiment_registry import (
+    EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+    append_attempt_completion,
+    reserve_research_attempt,
+)
 from bithumb_bot.research.statistical_selection import (
     candidate_metric_values_hash,
     recompute_white_reality_check_block_bootstrap,
@@ -802,7 +806,10 @@ def _attach_statistical_evidence(
         "train_split_hash": "sha256:train",
         "validation_split_hash": "sha256:validation",
         "final_holdout_split_hash": "sha256:final-holdout",
-        "final_holdout_fingerprint": "sha256:final-holdout-fingerprint",
+        "final_holdout_fingerprint": "sha256:final-holdout-identity",
+        "final_holdout_identity_hash": "sha256:final-holdout-identity",
+        "final_holdout_content_hash": "sha256:final-holdout-content",
+        "final_holdout_reuse_key_hash": "sha256:final-holdout-identity",
         "parameter_space_hash": report.get("parameter_space_hash") or "sha256:parameter-space",
         "parameter_grid_size": parameter_grid_size,
         "candidate_count": None,
@@ -831,13 +838,15 @@ def _attach_statistical_evidence(
             },
         )
     reservation = reserve_research_attempt(manager=manager, base_payload=registry_base)
+    pre_completion_evidence_hash = str(evidence.get("content_hash") or "")
     completion = append_attempt_completion(
         manager=manager,
         reservation=reservation,
         updates={
             "candidate_count": candidate_count,
             "return_panel_hash": panel["content_hash"],
-            "statistical_evidence_hash": None,
+            "statistical_evidence_hash": pre_completion_evidence_hash,
+            "statistical_evidence_hash_phase": EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
             "statistical_gate_result": "PASS",
         },
         result_status="COMPLETED",
@@ -849,7 +858,12 @@ def _attach_statistical_evidence(
         "experiment_registry_row_hash": reservation["row_hash"],
         "experiment_registry_completion_row_hash": completion["row_hash"],
         "final_holdout_fingerprint": registry_base["final_holdout_fingerprint"],
+        "final_holdout_identity_hash": registry_base["final_holdout_identity_hash"],
+        "final_holdout_content_hash": registry_base["final_holdout_content_hash"],
+        "final_holdout_reuse_key_hash": registry_base["final_holdout_reuse_key_hash"],
         "final_holdout_split_hash": registry_base["final_holdout_split_hash"],
+        "experiment_registry_bound_evidence_hash": pre_completion_evidence_hash,
+        "experiment_registry_evidence_hash_phase": EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
         "computed_attempt_index": reservation["computed_attempt_index"],
         "computed_holdout_reuse_count": reservation["computed_holdout_reuse_count"],
         "declared_attempt_index": attempt_index,
@@ -867,6 +881,9 @@ def _attach_statistical_evidence(
             "validation_split_hash": registry_base["validation_split_hash"],
             "final_holdout_split_hash": registry_base["final_holdout_split_hash"],
             "final_holdout_fingerprint": registry_base["final_holdout_fingerprint"],
+            "final_holdout_identity_hash": registry_base["final_holdout_identity_hash"],
+            "final_holdout_content_hash": registry_base["final_holdout_content_hash"],
+            "final_holdout_reuse_key_hash": registry_base["final_holdout_reuse_key_hash"],
             "parameter_space_hash": registry_base["parameter_space_hash"],
             "computed_attempt_index": reservation["computed_attempt_index"],
             "computed_holdout_reuse_count": reservation["computed_holdout_reuse_count"],
@@ -880,7 +897,8 @@ def _attach_statistical_evidence(
     evidence["content_hash"] = sha256_prefixed(content_hash_payload({k: v for k, v in evidence.items() if k != "content_hash"}))
     completion_row = completion["row"]
     assert isinstance(completion_row, dict)
-    completion_row["statistical_evidence_hash"] = evidence["content_hash"]
+    completion_row["statistical_evidence_hash"] = pre_completion_evidence_hash
+    completion_row["statistical_evidence_hash_phase"] = EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE
     completion_row["row_hash"] = sha256_prefixed(content_hash_payload({k: v for k, v in completion_row.items() if k != "row_hash"}))
     rows = []
     exp_registry_path = Path(str(reservation["path"]))

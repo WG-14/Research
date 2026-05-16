@@ -6,6 +6,12 @@ from pathlib import Path
 from bithumb_bot.config import PATH_MANAGER, settings
 
 from .experiment_manifest import ManifestValidationError, load_manifest
+from .experiment_registry import (
+    append_attempt_aborted,
+    experiment_registry_path,
+    load_experiment_registry_rows,
+    validate_experiment_registry_binding,
+)
 from .execution_calibration import ExecutionCalibrationError, load_calibration_artifact
 from .promotion_gate import PromotionGateError, promote_candidate
 from .lineage import reproduce_promotion
@@ -63,6 +69,70 @@ def cmd_research_reproduce(*, promotion_path: str) -> int:
     result = reproduce_promotion(promotion_path)
     print(json.dumps(result.summary, ensure_ascii=False, sort_keys=True, indent=2))
     return 0 if result.ok else 1
+
+
+def cmd_research_registry_inspect(*, row_hash: str) -> int:
+    path = experiment_registry_path(manager=PATH_MANAGER)
+    rows = load_experiment_registry_rows(path)
+    row = next((item for item in rows if item.get("row_hash") == row_hash), None)
+    if not isinstance(row, dict):
+        print(json.dumps({"ok": False, "reason": "experiment_registry_row_hash_mismatch", "row_hash": row_hash}, sort_keys=True, indent=2))
+        return 1
+    completion = next(
+        (
+            item
+            for item in reversed(rows)
+            if item.get("event_type") in {"research_attempt_completed", "research_attempt_aborted"}
+            and item.get("reservation_row_hash") == row_hash
+        ),
+        None,
+    )
+    summary = {
+        "ok": True,
+        "registry_path": str(path.resolve()),
+        "row": row,
+        "completion_or_abort": completion,
+        "attempt_status": completion.get("result_status") if isinstance(completion, dict) else row.get("result_status"),
+        "incomplete": completion is None and row.get("event_type") == "research_attempt_reserved",
+    }
+    print(json.dumps(summary, sort_keys=True, indent=2))
+    return 0
+
+
+def cmd_research_registry_validate(*, experiment_id: str) -> int:
+    path = experiment_registry_path(manager=PATH_MANAGER)
+    rows = load_experiment_registry_rows(path)
+    reservations = [
+        item
+        for item in rows
+        if item.get("event_type") == "research_attempt_reserved" and item.get("experiment_id") == experiment_id
+    ]
+    if not reservations:
+        print(json.dumps({"ok": False, "reason": "experiment_registry_row_hash_mismatch", "experiment_id": experiment_id}, sort_keys=True, indent=2))
+        return 1
+    results = []
+    ok = True
+    for row in reservations:
+        report = {
+            **row,
+            "experiment_registry_path": str(path.resolve()),
+            "experiment_registry_prior_hash": row.get("prior_registry_hash"),
+            "experiment_registry_row_hash": row.get("row_hash"),
+        }
+        reasons = validate_experiment_registry_binding(report=report, require_complete=True)
+        ok = ok and not reasons
+        results.append({"row_hash": row.get("row_hash"), "reasons": reasons, "ok": not reasons})
+    print(json.dumps({"ok": ok, "experiment_id": experiment_id, "registry_path": str(path.resolve()), "results": results}, sort_keys=True, indent=2))
+    return 0 if ok else 1
+
+
+def cmd_research_mark_attempt_aborted(*, row_hash: str, reason: str) -> int:
+    result = append_attempt_aborted(manager=PATH_MANAGER, reservation_row_hash=row_hash, reason=reason)
+    if result is None:
+        print(json.dumps({"ok": False, "reason": "experiment_registry_row_hash_mismatch", "row_hash": row_hash}, sort_keys=True, indent=2))
+        return 1
+    print(json.dumps({"ok": True, **result}, sort_keys=True, indent=2))
+    return 0
 
 
 def cmd_research_promote_candidate(
@@ -371,7 +441,12 @@ def _print_experiment_registry_summary(payload: dict[str, object]) -> None:
     print(f"  experiment_registry_prior_hash={payload.get('experiment_registry_prior_hash') or 'none'}")
     print(f"  experiment_registry_row_hash={payload.get('experiment_registry_row_hash') or 'none'}")
     print(f"  experiment_registry_completion_row_hash={payload.get('experiment_registry_completion_row_hash') or 'none'}")
+    print(f"  experiment_registry_bound_evidence_hash={payload.get('experiment_registry_bound_evidence_hash') or 'none'}")
+    print(f"  experiment_registry_evidence_hash_phase={payload.get('experiment_registry_evidence_hash_phase') or 'none'}")
     print(f"  final_holdout_fingerprint={payload.get('final_holdout_fingerprint') or 'none'}")
+    print(f"  final_holdout_identity_hash={payload.get('final_holdout_identity_hash') or 'none'}")
+    print(f"  final_holdout_content_hash={payload.get('final_holdout_content_hash') or 'none'}")
+    print(f"  final_holdout_reuse_key_hash={payload.get('final_holdout_reuse_key_hash') or 'none'}")
     print(f"  final_holdout_split_hash={payload.get('final_holdout_split_hash') or 'none'}")
     print(f"  computed_attempt_index={payload.get('computed_attempt_index')}")
     print(f"  computed_holdout_reuse_count={payload.get('computed_holdout_reuse_count')}")

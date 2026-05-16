@@ -94,7 +94,12 @@ def build_research_lineage(
     experiment_registry_row_hash: str | None = None,
     experiment_registry_completion_row_hash: str | None = None,
     final_holdout_fingerprint: str | None = None,
+    final_holdout_identity_hash: str | None = None,
+    final_holdout_content_hash: str | None = None,
+    final_holdout_reuse_key_hash: str | None = None,
     final_holdout_split_hash: str | None = None,
+    experiment_registry_bound_evidence_hash: str | None = None,
+    experiment_registry_evidence_hash_phase: str | None = None,
     computed_attempt_index: int | None = None,
     computed_holdout_reuse_count: int | None = None,
     declared_attempt_index: int | None = None,
@@ -141,7 +146,12 @@ def build_research_lineage(
         "experiment_registry_row_hash": experiment_registry_row_hash,
         "experiment_registry_completion_row_hash": experiment_registry_completion_row_hash,
         "final_holdout_fingerprint": final_holdout_fingerprint,
+        "final_holdout_identity_hash": final_holdout_identity_hash,
+        "final_holdout_content_hash": final_holdout_content_hash,
+        "final_holdout_reuse_key_hash": final_holdout_reuse_key_hash,
         "final_holdout_split_hash": final_holdout_split_hash,
+        "experiment_registry_bound_evidence_hash": experiment_registry_bound_evidence_hash,
+        "experiment_registry_evidence_hash_phase": experiment_registry_evidence_hash_phase,
         "computed_attempt_index": computed_attempt_index,
         "computed_holdout_reuse_count": computed_holdout_reuse_count,
         "declared_attempt_index": declared_attempt_index,
@@ -187,7 +197,12 @@ def build_promotion_lineage(
     experiment_registry_row_hash: str | None = None,
     experiment_registry_completion_row_hash: str | None = None,
     final_holdout_fingerprint: str | None = None,
+    final_holdout_identity_hash: str | None = None,
+    final_holdout_content_hash: str | None = None,
+    final_holdout_reuse_key_hash: str | None = None,
     final_holdout_split_hash: str | None = None,
+    experiment_registry_bound_evidence_hash: str | None = None,
+    experiment_registry_evidence_hash_phase: str | None = None,
     research_freedom_hash: str | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
@@ -231,7 +246,14 @@ def build_promotion_lineage(
             "experiment_registry_completion_row_hash": experiment_registry_completion_row_hash
             or lineage.get("experiment_registry_completion_row_hash"),
             "final_holdout_fingerprint": final_holdout_fingerprint or lineage.get("final_holdout_fingerprint"),
+            "final_holdout_identity_hash": final_holdout_identity_hash or lineage.get("final_holdout_identity_hash"),
+            "final_holdout_content_hash": final_holdout_content_hash or lineage.get("final_holdout_content_hash"),
+            "final_holdout_reuse_key_hash": final_holdout_reuse_key_hash or lineage.get("final_holdout_reuse_key_hash"),
             "final_holdout_split_hash": final_holdout_split_hash or lineage.get("final_holdout_split_hash"),
+            "experiment_registry_bound_evidence_hash": experiment_registry_bound_evidence_hash
+            or lineage.get("experiment_registry_bound_evidence_hash"),
+            "experiment_registry_evidence_hash_phase": experiment_registry_evidence_hash_phase
+            or lineage.get("experiment_registry_evidence_hash_phase"),
             "research_freedom_hash": research_freedom_hash or lineage.get("research_freedom_hash"),
             "created_at": created_at or datetime.now(timezone.utc).isoformat(),
         }
@@ -279,6 +301,11 @@ def reproduce_promotion(promotion_path: str | Path) -> ReproducibilityResult:
         "experiment_registry_row_hash": None,
         "experiment_registry_completion_row_hash": None,
         "final_holdout_fingerprint": None,
+        "final_holdout_identity_hash": None,
+        "final_holdout_content_hash": None,
+        "final_holdout_reuse_key_hash": None,
+        "experiment_registry_bound_evidence_hash": None,
+        "experiment_registry_evidence_hash_phase": None,
         "computed_attempt_index": None,
         "computed_holdout_reuse_count": None,
         "declared_attempt_index": None,
@@ -356,6 +383,11 @@ def reproduce_promotion(promotion_path: str | Path) -> ReproducibilityResult:
     summary["experiment_registry_row_hash"] = promotion.get("experiment_registry_row_hash")
     summary["experiment_registry_completion_row_hash"] = promotion.get("experiment_registry_completion_row_hash")
     summary["final_holdout_fingerprint"] = promotion.get("final_holdout_fingerprint")
+    summary["final_holdout_identity_hash"] = promotion.get("final_holdout_identity_hash")
+    summary["final_holdout_content_hash"] = promotion.get("final_holdout_content_hash")
+    summary["final_holdout_reuse_key_hash"] = promotion.get("final_holdout_reuse_key_hash")
+    summary["experiment_registry_bound_evidence_hash"] = promotion.get("experiment_registry_bound_evidence_hash")
+    summary["experiment_registry_evidence_hash_phase"] = promotion.get("experiment_registry_evidence_hash_phase")
     summary["computed_attempt_index"] = promotion.get("computed_attempt_index")
     summary["computed_holdout_reuse_count"] = promotion.get("computed_holdout_reuse_count")
     summary["declared_attempt_index"] = promotion.get("declared_attempt_index")

@@ -45,9 +45,14 @@ from .family_registry import (
     registry_content_hash,
 )
 from .experiment_registry import (
+    EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+    append_research_attempt_rejected,
     append_attempt_completion,
+    compute_research_attempt_counters,
+    final_holdout_hashes_from_manifest,
     reserve_research_attempt,
     research_freedom_hash,
+    research_identity_from_manifest,
     validate_experiment_registry_binding,
 )
 from .lineage import build_research_lineage, compute_lineage_hash
@@ -161,16 +166,24 @@ def _reserve_experiment_attempt(
     parameter_grid_size = _parameter_grid_size(manifest)
     declared_attempt = _optional_int(manifest.raw.get("attempt_index"))
     declared_reuse = _optional_int(manifest.raw.get("holdout_reuse_count"))
-    experiment_family_id = str(manifest.raw.get("experiment_family_id") or manifest.experiment_id)
-    hypothesis_id = str(manifest.raw.get("hypothesis_id") or manifest.hypothesis or manifest.experiment_id)
-    hypothesis_status = str(manifest.raw.get("hypothesis_status") or "pre_registered")
+    identity = research_identity_from_manifest(manifest)
+    experiment_family_id = str(identity["experiment_family_id"])
+    hypothesis_id = str(identity["hypothesis_id"])
+    hypothesis_status = str(identity["hypothesis_status"])
     split_hashes = {name: snapshot.content_hash() for name, snapshot in snapshots.items()}
     dataset_quality_hash = combined_dataset_quality_hash(tuple(quality_reports.values()))
+    holdout_hashes = final_holdout_hashes_from_manifest(
+        manifest=manifest,
+        final_holdout_split_hash=split_hashes.get("final_holdout"),
+        dataset_quality_hash=dataset_quality_hash,
+    )
     base_payload = {
         "run_id": manifest.experiment_id,
         "experiment_family_id": experiment_family_id,
         "hypothesis_id": hypothesis_id,
         "hypothesis_status": hypothesis_status,
+        "hypothesis_identity_source": identity["hypothesis_identity_source"],
+        "experiment_family_identity_source": identity["experiment_family_identity_source"],
         "experiment_id": manifest.experiment_id,
         "manifest_hash": manifest.manifest_hash(),
         "manifest_metadata_hash": sha256_prefixed(
@@ -189,17 +202,7 @@ def _reserve_experiment_attempt(
         "train_split_hash": split_hashes.get("train"),
         "validation_split_hash": split_hashes.get("validation"),
         "final_holdout_split_hash": split_hashes.get("final_holdout"),
-        "final_holdout_fingerprint": sha256_prefixed(
-            {
-                "dataset_snapshot_id": manifest.dataset.snapshot_id,
-                "market": manifest.market,
-                "interval": manifest.interval,
-                "final_holdout": manifest.dataset.split.final_holdout.as_dict()
-                if manifest.dataset.split.final_holdout is not None
-                else None,
-                "final_holdout_split_hash": split_hashes.get("final_holdout"),
-            }
-        ),
+        **holdout_hashes,
         "parameter_space_hash": sha256_prefixed(manifest.parameter_space),
         "parameter_grid_size": parameter_grid_size,
         "candidate_count": None,
@@ -214,6 +217,22 @@ def _reserve_experiment_attempt(
         "command_name": command_name,
         "command_args_hash": sha256_prefixed(command_args or {}),
     }
+    counters = compute_research_attempt_counters(manager=manager, base_payload=base_payload)
+    mismatch_reasons: list[str] = []
+    if declared_attempt is not None and declared_attempt != counters["computed_attempt_index"]:
+        mismatch_reasons.append("declared_attempt_index_mismatch")
+    if declared_reuse is not None and declared_reuse != counters["computed_holdout_reuse_count"]:
+        mismatch_reasons.append("declared_holdout_reuse_count_mismatch")
+    if mismatch_reasons:
+        append_research_attempt_rejected(
+            manager=manager,
+            base_payload=base_payload,
+            reasons=mismatch_reasons,
+            computed_attempt_index=counters["computed_attempt_index"],
+            computed_holdout_reuse_count=counters["computed_holdout_reuse_count"],
+            created_at=created_at,
+        )
+        raise ResearchValidationError("experiment_registry_preflight_failed: " + ",".join(sorted(mismatch_reasons)))
     reservation = reserve_research_attempt(manager=manager, base_payload=base_payload, created_at=created_at)
     gate_probe = {
         **base_payload,
@@ -1947,9 +1966,10 @@ def _report_payload(
         or 0
     )
     dataset_reuse_policy = str(manifest.raw.get("dataset_reuse_policy") or "single_final_holdout_for_experiment_family")
-    experiment_family_id = str(manifest.raw.get("experiment_family_id") or manifest.experiment_id)
-    hypothesis_id = manifest.raw.get("hypothesis_id")
-    hypothesis_status = manifest.raw.get("hypothesis_status") or "pre_registered"
+    identity = research_identity_from_manifest(manifest)
+    experiment_family_id = str(identity["experiment_family_id"])
+    hypothesis_id = str(identity["hypothesis_id"])
+    hypothesis_status = str(identity["hypothesis_status"])
     registry_row = (
         experiment_registry_reservation.get("row")
         if isinstance(experiment_registry_reservation, dict) and isinstance(experiment_registry_reservation.get("row"), dict)
@@ -1963,9 +1983,14 @@ def _report_payload(
             "experiment_registry_row_hash": experiment_registry_reservation.get("row_hash"),
             "experiment_registry_completion_row_hash": None,
             "final_holdout_fingerprint": registry_row.get("final_holdout_fingerprint"),
+            "final_holdout_identity_hash": registry_row.get("final_holdout_identity_hash"),
+            "final_holdout_content_hash": registry_row.get("final_holdout_content_hash"),
+            "final_holdout_reuse_key_hash": registry_row.get("final_holdout_reuse_key_hash"),
             "train_split_hash": registry_row.get("train_split_hash"),
             "validation_split_hash": registry_row.get("validation_split_hash"),
             "final_holdout_split_hash": registry_row.get("final_holdout_split_hash"),
+            "hypothesis_identity_source": identity["hypothesis_identity_source"],
+            "experiment_family_identity_source": identity["experiment_family_identity_source"],
             "computed_attempt_index": attempt_index,
             "computed_holdout_reuse_count": holdout_reuse_count,
             "declared_attempt_index": declared_attempt_index,
@@ -2029,6 +2054,11 @@ def _report_payload(
         registry_gate_result=experiment_registry_fields.get("registry_gate_result"),
         registry_gate_fail_reasons=experiment_registry_fields.get("registry_gate_fail_reasons"),
         dataset_reuse_policy=dataset_reuse_policy,
+        final_holdout_identity_hash=experiment_registry_fields.get("final_holdout_identity_hash"),
+        final_holdout_content_hash=experiment_registry_fields.get("final_holdout_content_hash"),
+        final_holdout_reuse_key_hash=experiment_registry_fields.get("final_holdout_reuse_key_hash"),
+        experiment_registry_bound_evidence_hash=experiment_registry_fields.get("experiment_registry_bound_evidence_hash"),
+        experiment_registry_evidence_hash_phase=experiment_registry_fields.get("experiment_registry_evidence_hash_phase"),
         created_at=generated_at,
     )
     statistical_contract = (
@@ -2149,19 +2179,23 @@ def _report_payload(
             and manager is not None
             and experiment_registry_reservation is not None
         ):
+            pre_completion_evidence_hash = str(statistical_evidence.get("content_hash") or "")
             completion_result = append_attempt_completion(
                 manager=manager,
                 reservation=experiment_registry_reservation,
                 updates={
                     "candidate_count": len(candidates),
                     "return_panel_hash": str(return_panel.get("content_hash")) if isinstance(return_panel, dict) else None,
-                    "statistical_evidence_hash": str(statistical_evidence.get("content_hash") or ""),
+                    "statistical_evidence_hash": pre_completion_evidence_hash,
+                    "statistical_evidence_hash_phase": EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
                     "statistical_gate_result": statistical_evidence.get("statistical_gate_result"),
                 },
                 result_status="COMPLETED",
                 created_at=generated_at,
             )
             experiment_registry_fields["experiment_registry_completion_row_hash"] = completion_result.get("row_hash")
+            experiment_registry_fields["experiment_registry_bound_evidence_hash"] = pre_completion_evidence_hash
+            experiment_registry_fields["experiment_registry_evidence_hash_phase"] = EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE
             experiment_registry_fields["research_freedom_hash"] = research_freedom_hash(
                 {
                     **registry_row,
@@ -2178,6 +2212,12 @@ def _report_payload(
                         "experiment_registry_completion_row_hash"
                     ),
                     "research_freedom_hash": experiment_registry_fields.get("research_freedom_hash"),
+                    "experiment_registry_bound_evidence_hash": experiment_registry_fields.get(
+                        "experiment_registry_bound_evidence_hash"
+                    ),
+                    "experiment_registry_evidence_hash_phase": experiment_registry_fields.get(
+                        "experiment_registry_evidence_hash_phase"
+                    ),
                 }
             )
             lineage.pop("lineage_hash", None)
@@ -2355,6 +2395,8 @@ def _report_payload(
         "experiment_family_id": lineage.get("experiment_family_id"),
         "hypothesis_id": lineage.get("hypothesis_id"),
         "hypothesis_status": lineage.get("hypothesis_status"),
+        "hypothesis_identity_source": identity["hypothesis_identity_source"],
+        "experiment_family_identity_source": identity["experiment_family_identity_source"],
         "pre_registered_gate": bool(lineage.get("pre_registered_at") or lineage.get("hypothesis_status")),
         "search_budget": lineage.get("search_budget"),
         "parameter_space_hash": sha256_prefixed(manifest.parameter_space),
@@ -2483,7 +2525,12 @@ def _attach_statistical_selection_to_candidates(
             "experiment_registry_prior_hash",
             "experiment_registry_row_hash",
             "experiment_registry_completion_row_hash",
+            "experiment_registry_bound_evidence_hash",
+            "experiment_registry_evidence_hash_phase",
             "final_holdout_fingerprint",
+            "final_holdout_identity_hash",
+            "final_holdout_content_hash",
+            "final_holdout_reuse_key_hash",
             "final_holdout_split_hash",
             "computed_attempt_index",
             "computed_holdout_reuse_count",

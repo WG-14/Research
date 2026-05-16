@@ -265,6 +265,11 @@ def test_print_report_summary_renders_statistical_selection_diagnostics(capsys) 
             "holdout_reuse_count": 2,
             "selection_universe_hash": "sha256:selection",
             "statistical_evidence_hash": "sha256:evidence",
+            "experiment_registry_bound_evidence_hash": "sha256:pre-completion",
+            "experiment_registry_evidence_hash_phase": "pre_completion_evidence_hash",
+            "final_holdout_identity_hash": "sha256:identity",
+            "final_holdout_content_hash": "sha256:content",
+            "final_holdout_reuse_key_hash": "sha256:identity",
             "white_reality_check_p_value": 0.2,
             "statistical_gate_result": "FAIL",
             "statistical_gate_fail_reasons": ["reality_check_p_value_failed"],
@@ -281,6 +286,11 @@ def test_print_report_summary_renders_statistical_selection_diagnostics(capsys) 
     assert "statistical_holdout_reuse_count=2" in output
     assert "selection_universe_hash=sha256:selection" in output
     assert "statistical_evidence_hash=sha256:evidence" in output
+    assert "experiment_registry_bound_evidence_hash=sha256:pre-completion" in output
+    assert "experiment_registry_evidence_hash_phase=pre_completion_evidence_hash" in output
+    assert "final_holdout_identity_hash=sha256:identity" in output
+    assert "final_holdout_content_hash=sha256:content" in output
+    assert "final_holdout_reuse_key_hash=sha256:identity" in output
     assert "white_reality_check_p_value=0.2" in output
     assert "statistical_gate_result=FAIL" in output
     assert "statistical_gate_fail_reasons=reality_check_p_value_failed" in output
