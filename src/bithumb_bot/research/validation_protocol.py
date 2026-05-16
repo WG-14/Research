@@ -46,11 +46,9 @@ from .family_registry import (
 )
 from .experiment_registry import (
     EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
-    append_research_attempt_rejected,
     append_attempt_completion,
-    compute_research_attempt_counters,
     final_holdout_hashes_from_manifest,
-    reserve_research_attempt,
+    reserve_research_attempt_checked,
     research_freedom_hash,
     research_identity_from_manifest,
     validate_experiment_registry_binding,
@@ -217,23 +215,17 @@ def _reserve_experiment_attempt(
         "command_name": command_name,
         "command_args_hash": sha256_prefixed(command_args or {}),
     }
-    counters = compute_research_attempt_counters(manager=manager, base_payload=base_payload)
-    mismatch_reasons: list[str] = []
-    if declared_attempt is not None and declared_attempt != counters["computed_attempt_index"]:
-        mismatch_reasons.append("declared_attempt_index_mismatch")
-    if declared_reuse is not None and declared_reuse != counters["computed_holdout_reuse_count"]:
-        mismatch_reasons.append("declared_holdout_reuse_count_mismatch")
-    if mismatch_reasons:
-        append_research_attempt_rejected(
-            manager=manager,
-            base_payload=base_payload,
-            reasons=mismatch_reasons,
-            computed_attempt_index=counters["computed_attempt_index"],
-            computed_holdout_reuse_count=counters["computed_holdout_reuse_count"],
-            created_at=created_at,
-        )
-        raise ResearchValidationError("experiment_registry_preflight_failed: " + ",".join(sorted(mismatch_reasons)))
-    reservation = reserve_research_attempt(manager=manager, base_payload=base_payload, created_at=created_at)
+    reservation = reserve_research_attempt_checked(
+        manager=manager,
+        base_payload=base_payload,
+        statistical_validation_contract=(
+            manifest.statistical_validation.as_dict() if manifest.statistical_validation is not None else None
+        ),
+        created_at=created_at,
+    )
+    if not reservation.get("accepted", True):
+        reasons = [str(item) for item in reservation.get("reasons") or []]
+        raise ResearchValidationError("experiment_registry_preflight_failed: " + ",".join(sorted(reasons)))
     gate_probe = {
         **base_payload,
         "experiment_registry_path": reservation["path"],
@@ -2013,6 +2005,8 @@ def _report_payload(
         experiment_family_id=experiment_family_id,
         hypothesis_id=hypothesis_id,
         hypothesis_status=hypothesis_status,
+        hypothesis_identity_source=identity["hypothesis_identity_source"],
+        experiment_family_identity_source=identity["experiment_family_identity_source"],
         pre_registered_at=manifest.raw.get("pre_registered_at"),
         manifest_path=manifest_path,
         manifest_hash=manifest.manifest_hash(),
@@ -2127,6 +2121,8 @@ def _report_payload(
             experiment_family_id=experiment_family_id,
             hypothesis_id=hypothesis_id,
             hypothesis_status=hypothesis_status,
+            hypothesis_identity_source=identity["hypothesis_identity_source"],
+            experiment_family_identity_source=identity["experiment_family_identity_source"],
             selection_hash=universe_hash,
             required_scenario_ids=required_scenario_ids,
             search_budget=parameter_grid_size,
@@ -2536,6 +2532,8 @@ def _attach_statistical_selection_to_candidates(
             "computed_holdout_reuse_count",
             "declared_attempt_index",
             "declared_holdout_reuse_count",
+            "hypothesis_identity_source",
+            "experiment_family_identity_source",
             "research_freedom_hash",
             "registry_gate_result",
             "registry_gate_fail_reasons",

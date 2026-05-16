@@ -1,11 +1,26 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from bithumb_bot.paths import PathManager
 from bithumb_bot.research import cli as research_cli
 from bithumb_bot.research.cli import _print_report_summary, _print_research_backtest_progress
+from bithumb_bot.research.experiment_registry import (
+    EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+    append_attempt_completion,
+    reserve_research_attempt,
+)
+from bithumb_bot.research.hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
 from bithumb_bot.research.run_summary import build_research_run_summary
+
+
+def _manager(tmp_path: Path, monkeypatch) -> PathManager:
+    monkeypatch.setenv("MODE", "paper")
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    return PathManager.from_env(Path.cwd())
 
 
 def _candidate(
@@ -42,6 +57,109 @@ def _report(*, candidates: object, best_candidate_id: str | None = None, gate_re
         "warnings": [],
         "candidates": candidates,
     }
+
+
+def _registry_payload() -> dict[str, object]:
+    return {
+        "run_id": "summary_exp",
+        "experiment_family_id": "family_a",
+        "hypothesis_id": "hypothesis_a",
+        "hypothesis_status": "pre_registered",
+        "hypothesis_identity_source": "manifest.hypothesis_id",
+        "experiment_family_identity_source": "manifest.experiment_family_id",
+        "experiment_id": "summary_exp",
+        "manifest_hash": "sha256:manifest",
+        "manifest_metadata_hash": "sha256:metadata",
+        "dataset_snapshot_id": "snap_001",
+        "dataset_content_hash": "sha256:dataset",
+        "dataset_quality_hash": "sha256:quality",
+        "train_split_hash": "sha256:train",
+        "validation_split_hash": "sha256:validation",
+        "final_holdout_split_hash": "sha256:holdout",
+        "final_holdout_fingerprint": "sha256:holdout-identity",
+        "final_holdout_identity_hash": "sha256:holdout-identity",
+        "final_holdout_content_hash": "sha256:holdout-content",
+        "final_holdout_reuse_key_hash": "sha256:holdout-identity",
+        "parameter_space_hash": "sha256:space",
+        "parameter_grid_size": 1,
+        "candidate_count": None,
+        "declared_attempt_index": None,
+        "declared_holdout_reuse_count": None,
+        "statistical_evidence_hash": None,
+        "return_panel_hash": None,
+        "promotion_artifact_hash": None,
+        "promoted_candidate_id": None,
+        "repository_version": "test",
+        "command_args_hash": "sha256:args",
+    }
+
+
+def _write_registry_validate_artifacts(
+    manager: PathManager,
+    reservation: dict[str, object],
+    completion: dict[str, object],
+    *,
+    evidence_bound_hash: str = "sha256:pre-completion",
+    write_evidence: bool,
+    write_panel: bool,
+) -> None:
+    report_dir = manager.data_dir() / "reports" / "research" / "summary_exp"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report = {
+        **_registry_payload(),
+        "experiment_registry_path": reservation["path"],
+        "experiment_registry_prior_hash": reservation["prior_hash"],
+        "experiment_registry_row_hash": reservation["row_hash"],
+        "experiment_registry_completion_row_hash": completion["row_hash"],
+        "experiment_registry_bound_evidence_hash": "sha256:pre-completion",
+        "experiment_registry_evidence_hash_phase": EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+        "computed_attempt_index": reservation["computed_attempt_index"],
+        "computed_holdout_reuse_count": reservation["computed_holdout_reuse_count"],
+        "statistical_validation_required": True,
+        "statistical_evidence_hash": "sha256:final-evidence",
+        "return_panel_hash": "sha256:return",
+        "candidates": [],
+    }
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+    (report_dir / "backtest_report.json").write_text(json.dumps(report, sort_keys=True), encoding="utf-8")
+    if write_evidence:
+        evidence = {
+            **report,
+            "artifact_type": "statistical_selection_evidence",
+            "experiment_registry_bound_evidence_hash": evidence_bound_hash,
+            "content_hash": "sha256:placeholder",
+        }
+        evidence["content_hash"] = sha256_prefixed(
+            content_hash_payload({key: value for key, value in evidence.items() if key != "content_hash"})
+        )
+        (report_dir / "statistical_selection_evidence.json").write_text(
+            json.dumps(evidence, sort_keys=True),
+            encoding="utf-8",
+        )
+    if write_panel:
+        panel = {
+            "artifact_type": "candidate_return_panel",
+            "schema_version": 1,
+            "experiment_id": "summary_exp",
+            "manifest_hash": "sha256:manifest",
+            "dataset_content_hash": "sha256:dataset",
+            "dataset_quality_hash": "sha256:quality",
+            "split": "validation",
+            "return_unit": "trade_return",
+            "benchmark": "cash",
+            "ordered_time_index": [],
+            "ordered_time_index_hash": sha256_prefixed([]),
+            "candidate_count": 0,
+            "candidate_ids": [],
+            "candidate_return_series": [],
+            "observation_count": 0,
+            "missing_observation_policy": "skip_missing_candidate_trade_returns",
+            "limitations": [],
+        }
+        panel["panel_content_hash"] = sha256_prefixed(content_hash_payload(panel))
+        panel["content_hash"] = sha256_prefixed(content_hash_payload(panel))
+        report["return_panel_hash"] = panel["content_hash"]
+        (report_dir / "candidate_return_panel.json").write_text(json.dumps(panel, sort_keys=True), encoding="utf-8")
 
 
 def test_fail_report_summary_includes_top_fail_reasons() -> None:
@@ -296,6 +414,160 @@ def test_print_report_summary_renders_statistical_selection_diagnostics(capsys) 
     assert "statistical_gate_fail_reasons=reality_check_p_value_failed" in output
     assert "promotion_allowed=0" in output
     assert "next_action=do_not_promote_review_statistical_selection" in output
+
+
+def test_cli_summary_prints_identity_and_content_holdout_hashes(capsys) -> None:
+    report = _report(candidates=[_candidate("candidate_001", gate="PASS")], best_candidate_id="candidate_001")
+    report.update(
+        {
+            "final_holdout_identity_hash": "sha256:identity",
+            "final_holdout_content_hash": "sha256:content",
+            "final_holdout_reuse_key_hash": "sha256:identity",
+        }
+    )
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+
+    output = capsys.readouterr().out
+    assert "final_holdout_identity_hash=sha256:identity" in output
+    assert "final_holdout_content_hash=sha256:content" in output
+    assert "final_holdout_reuse_key_hash=sha256:identity" in output
+
+
+def test_cli_summary_prints_evidence_binding_phase_and_bound_hash(capsys) -> None:
+    report = _report(candidates=[_candidate("candidate_001", gate="PASS")], best_candidate_id="candidate_001")
+    report.update(
+        {
+            "experiment_registry_bound_evidence_hash": "sha256:pre-completion",
+            "experiment_registry_evidence_hash_phase": EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+        }
+    )
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+
+    output = capsys.readouterr().out
+    assert "experiment_registry_bound_evidence_hash=sha256:pre-completion" in output
+    assert "experiment_registry_evidence_hash_phase=pre_completion_evidence_hash" in output
+
+
+def test_research_registry_validate_reports_validation_scope(tmp_path, monkeypatch, capsys) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
+    reservation = reserve_research_attempt(manager=manager, base_payload=_registry_payload())
+    append_attempt_completion(
+        manager=manager,
+        reservation=reservation,
+        updates={
+            "candidate_count": 1,
+            "return_panel_hash": "sha256:return",
+            "statistical_evidence_hash": "sha256:evidence",
+            "statistical_evidence_hash_phase": EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+        },
+    )
+
+    status = research_cli.cmd_research_registry_validate(experiment_id="summary_exp")
+
+    payload = json.loads(capsys.readouterr().out)
+    assert status == 0
+    assert payload["validation_scope"] == "registry_only"
+    assert payload["artifact_binding_valid"] == "unknown"
+    assert payload["warning"] == "artifact_binding_not_checked"
+    assert payload["results"][0]["report_loaded"] is False
+
+
+def test_research_registry_validate_registry_only_does_not_claim_artifact_binding(tmp_path, monkeypatch, capsys) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
+    reserve_research_attempt(manager=manager, base_payload=_registry_payload())
+
+    research_cli.cmd_research_registry_validate(experiment_id="summary_exp")
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["validation_scope"] == "registry_only"
+    assert payload["artifact_binding_valid"] == "unknown"
+    assert payload["results"][0]["artifact_binding_valid"] == "unknown"
+
+
+def test_research_registry_validate_full_scope_detects_evidence_binding_mismatch(tmp_path, monkeypatch, capsys) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
+    reservation = reserve_research_attempt(manager=manager, base_payload=_registry_payload())
+    completion = append_attempt_completion(
+        manager=manager,
+        reservation=reservation,
+        updates={
+            "candidate_count": 1,
+            "return_panel_hash": "sha256:return",
+            "statistical_evidence_hash": "sha256:pre-completion",
+            "statistical_evidence_hash_phase": EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+        },
+    )
+    _write_registry_validate_artifacts(
+        manager,
+        reservation,
+        completion,
+        evidence_bound_hash="sha256:other",
+        write_evidence=True,
+        write_panel=False,
+    )
+
+    status = research_cli.cmd_research_registry_validate(experiment_id="summary_exp")
+
+    payload = json.loads(capsys.readouterr().out)
+    assert status == 1
+    assert payload["validation_scope"] == "registry_and_artifacts"
+    assert payload["artifact_binding_valid"] is False
+    assert "experiment_registry_statistical_evidence_hash_mismatch" in payload["results"][0]["reasons"]
+
+
+def test_research_registry_validate_full_scope_detects_missing_evidence(tmp_path, monkeypatch, capsys) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
+    reservation = reserve_research_attempt(manager=manager, base_payload=_registry_payload())
+    completion = append_attempt_completion(
+        manager=manager,
+        reservation=reservation,
+        updates={
+            "candidate_count": 1,
+            "return_panel_hash": "sha256:return",
+            "statistical_evidence_hash": "sha256:pre-completion",
+            "statistical_evidence_hash_phase": EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+        },
+    )
+    _write_registry_validate_artifacts(manager, reservation, completion, write_evidence=False, write_panel=False)
+
+    status = research_cli.cmd_research_registry_validate(experiment_id="summary_exp")
+
+    payload = json.loads(capsys.readouterr().out)
+    assert status == 1
+    assert payload["report_loaded"] is True
+    assert payload["evidence_loaded"] is False
+    assert "statistical_evidence_missing" in payload["results"][0]["reasons"]
+
+
+def test_research_registry_validate_full_scope_reports_loaded_artifacts(tmp_path, monkeypatch, capsys) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
+    reservation = reserve_research_attempt(manager=manager, base_payload=_registry_payload())
+    completion = append_attempt_completion(
+        manager=manager,
+        reservation=reservation,
+        updates={
+            "candidate_count": 1,
+            "return_panel_hash": "sha256:return",
+            "statistical_evidence_hash": "sha256:pre-completion",
+            "statistical_evidence_hash_phase": EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+        },
+    )
+    _write_registry_validate_artifacts(manager, reservation, completion, write_evidence=True, write_panel=True)
+
+    research_cli.cmd_research_registry_validate(experiment_id="summary_exp")
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["validation_scope"] == "registry_and_artifacts"
+    assert payload["report_loaded"] is True
+    assert payload["evidence_loaded"] is True
+    assert payload["return_panel_loaded"] is True
 
 
 def test_print_report_summary_renders_execution_capability_diagnostics(capsys) -> None:

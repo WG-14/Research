@@ -110,7 +110,9 @@ def build_research_lineage(
     dataset_reuse_policy: str | None = None,
     hypothesis_id: str | None = None,
     hypothesis_status: str | None = None,
+    hypothesis_identity_source: str | None = None,
     experiment_family_id: str | None = None,
+    experiment_family_identity_source: str | None = None,
     pre_registered_at: str | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
@@ -120,6 +122,8 @@ def build_research_lineage(
         "experiment_family_id": experiment_family_id,
         "hypothesis_id": hypothesis_id,
         "hypothesis_status": hypothesis_status,
+        "hypothesis_identity_source": hypothesis_identity_source,
+        "experiment_family_identity_source": experiment_family_identity_source,
         "pre_registered_at": pre_registered_at,
         "manifest_path": manifest_path,
         "manifest_hash": manifest_hash,
@@ -204,6 +208,8 @@ def build_promotion_lineage(
     experiment_registry_bound_evidence_hash: str | None = None,
     experiment_registry_evidence_hash_phase: str | None = None,
     research_freedom_hash: str | None = None,
+    hypothesis_identity_source: str | None = None,
+    experiment_family_identity_source: str | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
     lineage = validate_lineage_artifact(base_lineage)
@@ -255,6 +261,9 @@ def build_promotion_lineage(
             "experiment_registry_evidence_hash_phase": experiment_registry_evidence_hash_phase
             or lineage.get("experiment_registry_evidence_hash_phase"),
             "research_freedom_hash": research_freedom_hash or lineage.get("research_freedom_hash"),
+            "hypothesis_identity_source": hypothesis_identity_source or lineage.get("hypothesis_identity_source"),
+            "experiment_family_identity_source": experiment_family_identity_source
+            or lineage.get("experiment_family_identity_source"),
             "created_at": created_at or datetime.now(timezone.utc).isoformat(),
         }
     )

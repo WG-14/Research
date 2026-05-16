@@ -106,6 +106,15 @@ does not reset `computed_holdout_reuse_count` for the same market/interval/date
 range. Content hash mismatches are still fail-closed integrity failures and are
 reported separately from identity/reuse-key mismatches.
 
+Identity-source provenance is part of the audit chain. Registry rows, reports,
+lineage, statistical evidence, candidate profiles, promotion artifacts,
+promotion lineage, and approved profiles carry `hypothesis_identity_source` and
+`experiment_family_identity_source`. These fields explain whether identity came
+from explicit manifest ids, `manifest.hypothesis`, or the experiment id fallback.
+If a registry row has fallback-derived identity and a later artifact omits or
+changes that source, validation treats it as stale or incomplete provenance
+rather than silently accepting a missing comparison.
+
 Experiment-registry completion uses explicit two-phase evidence binding to avoid
 a recursive hash cycle:
 
@@ -129,12 +138,31 @@ status is not promotion-permitted. `research_only` outputs may retain diagnostic
 warnings, but those warnings cannot bypass production-bound promotion.
 
 Production-bound manifests that declare `attempt_index` or
-`holdout_reuse_count` are checked before a counted reservation is appended. A
-declared/computed mismatch appends an uncounted `research_attempt_rejected`
-event for audit visibility and fails closed with
+`holdout_reuse_count` are checked under the same registry lock that appends the
+reservation. The locked operation computes `computed_attempt_index` and
+`computed_holdout_reuse_count`, checks declared counters and configured
+statistical budgets, then appends exactly one event. A declared/computed
+mismatch or budget excess appends an uncounted `research_attempt_rejected` event
+for audit visibility and fails closed with
 `declared_attempt_index_mismatch` and/or
-`declared_holdout_reuse_count_mismatch`. Rejected events do not increment future
-attempt or holdout reuse counters.
+`declared_holdout_reuse_count_mismatch`, and when applicable
+`experiment_registry_budget_exceeded`, `attempt_budget_exceeded`, or
+`holdout_reuse_budget_exceeded`. Rejected events do not increment future attempt
+or holdout reuse counters and must not leave a stale counted reservation.
+
+Registry lifecycle status is separate from statistical gate result:
+
+- `result_status=IN_PROGRESS` for a counted reservation.
+- `result_status=COMPLETED` for a completed lifecycle event.
+- `result_status=ABORTED` for an interrupted counted attempt.
+- `result_status=REJECTED` for an uncounted preflight rejection.
+
+Only `COMPLETED` is promotion-permitted at the lifecycle layer.
+`statistical_gate_result=PASS|FAIL|UNKNOWN` remains separate evidence about the
+candidate/statistical gate. A completed attempt with
+`statistical_gate_result=FAIL` is valid completed audit evidence, but promotion
+still fails unless the candidate, statistical, stress, execution, evidence-grade,
+and artifact-binding gates all pass.
 
 If a run is interrupted after a counted reservation, use the append-only
 operator commands:
@@ -147,6 +175,18 @@ uv run bithumb-bot research-mark-attempt-aborted --row-hash <reservation_row_has
 
 Aborted attempts remain counted exposure, are not promotion-permitted, and must
 not be repaired by editing existing JSONL rows.
+
+`research-registry-validate --experiment-id <id>` reports its validation scope.
+When `backtest_report.json` is unavailable, output is `validation_scope=registry_only`,
+`artifact_binding_valid=unknown`, `evidence_loaded=false`, and
+`warning=artifact_binding_not_checked`; this means the command validated registry
+row shape and lifecycle only, not promotion-grade artifact binding. When the
+report is present under `DATA_ROOT/<mode>/reports/research/<id>/`, output is
+`validation_scope=registry_and_artifacts` and includes `report_loaded`,
+`evidence_loaded`, `return_panel_loaded`, `artifact_binding_valid`, and specific
+reasons for content-hash, registry-binding, evidence-binding, or return-panel
+mismatches. Operators must not treat registry-only validation as proof that the
+final report/evidence/promotion artifact chain is current.
 
 The research engine is a pure replay/simulation path. It does not call the live broker, order lifecycle, run loop, recovery commands, or lot-native SELL authority code.
 

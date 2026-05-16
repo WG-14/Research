@@ -3072,6 +3072,35 @@ def test_promotion_cli_refuses_missing_lineage_without_flag(tmp_path, monkeypatc
     assert "promotion refused: lineage_missing" in output
 
 
+def test_hypothesis_identity_source_is_in_lineage_promotion_profile_and_candidate_profile() -> None:
+    lineage = build_research_lineage(
+        experiment_id="promo_exp",
+        manifest_hash="sha256:manifest",
+        experiment_family_id="family",
+        hypothesis_id="hypothesis",
+        hypothesis_status="pre_registered",
+        hypothesis_identity_source="manifest.hypothesis",
+        experiment_family_identity_source="experiment_id",
+    )
+    candidate = {
+        "strategy_name": "sma_with_filter",
+        "parameter_candidate_id": "candidate_001",
+        "experiment_id": "promo_exp",
+        "manifest_hash": "sha256:manifest",
+        "experiment_family_id": "family",
+        "hypothesis_id": "hypothesis",
+        "hypothesis_status": "pre_registered",
+        "hypothesis_identity_source": "manifest.hypothesis",
+        "experiment_family_identity_source": "experiment_id",
+    }
+
+    profile = build_candidate_profile(candidate)
+
+    assert lineage["hypothesis_identity_source"] == "manifest.hypothesis"
+    assert profile["hypothesis_identity_source"] == "manifest.hypothesis"
+    assert profile["experiment_family_identity_source"] == "experiment_id"
+
+
 def test_promotion_cli_allows_legacy_lineage_with_explicit_flag(tmp_path, monkeypatch, capsys) -> None:
     manager = _manager(tmp_path, monkeypatch)
     monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)

@@ -185,6 +185,8 @@ def build_statistical_selection_evidence(
     family_trial_registry_path: Path | None = None,
     family_trial_registry_row_hash: str | None = None,
     experiment_registry: dict[str, Any] | None = None,
+    hypothesis_identity_source: str | None = None,
+    experiment_family_identity_source: str | None = None,
 ) -> dict[str, Any] | None:
     contract = manifest.statistical_validation
     if contract is None:
@@ -236,6 +238,10 @@ def build_statistical_selection_evidence(
         "experiment_id": manifest.experiment_id,
         "experiment_family_id": experiment_family_id,
         "hypothesis_id": hypothesis_id,
+        "hypothesis_identity_source": hypothesis_identity_source
+        or (experiment_registry or {}).get("hypothesis_identity_source"),
+        "experiment_family_identity_source": experiment_family_identity_source
+        or (experiment_registry or {}).get("experiment_family_identity_source"),
         "manifest_hash": manifest_hash,
         "dataset_content_hash": dataset_content_hash,
         "dataset_quality_hash": dataset_quality_hash,

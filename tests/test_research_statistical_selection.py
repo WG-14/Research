@@ -174,6 +174,32 @@ def test_statistical_evidence_content_hash_is_stable_and_fails_no_edge_large_uni
     assert "holdout_reuse_budget_exceeded" in evidence["gate_fail_reasons"]
 
 
+def test_fallback_hypothesis_identity_source_is_auditable_in_statistical_evidence() -> None:
+    manifest = _manifest()
+
+    evidence = build_statistical_selection_evidence(
+        manifest=manifest,
+        candidates=_candidates(),
+        manifest_hash=manifest.manifest_hash(),
+        dataset_content_hash="sha256:dataset",
+        dataset_quality_hash="sha256:quality",
+        experiment_family_id="family",
+        hypothesis_id="hypothesis",
+        hypothesis_status="pre_registered",
+        hypothesis_identity_source="manifest.hypothesis",
+        experiment_family_identity_source="experiment_id",
+        selection_hash="sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        search_budget=2,
+        parameter_grid_size=2,
+        attempt_index=1,
+        holdout_reuse_count=0,
+        dataset_reuse_policy="single_final_holdout_for_experiment_family",
+    )
+
+    assert evidence["hypothesis_identity_source"] == "manifest.hypothesis"
+    assert evidence["experiment_family_identity_source"] == "experiment_id"
+
+
 def test_candidate_metric_values_hash_is_deterministic_and_binds_metric_values() -> None:
     candidates = _candidates()
 

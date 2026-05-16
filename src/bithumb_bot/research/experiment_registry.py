@@ -15,7 +15,7 @@ from .hashing import content_hash_payload, sha256_prefixed
 
 EXPERIMENT_REGISTRY_SCHEMA_VERSION = 1
 EMPTY_EXPERIMENT_REGISTRY_HASH = sha256_prefixed([])
-PROMOTION_PERMITTED_STATUSES = {"COMPLETED", "PASS", "FAIL"}
+PROMOTION_PERMITTED_STATUSES = {"COMPLETED"}
 EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE = "pre_completion_evidence_hash"
 
 
@@ -280,6 +280,83 @@ def reserve_research_attempt(
     return result
 
 
+def reserve_research_attempt_checked(
+    *,
+    manager: PathManager,
+    base_payload: dict[str, Any],
+    statistical_validation_contract: dict[str, Any] | None = None,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    path = experiment_registry_path(manager=manager)
+    with _locked_registry(path):
+        rows = load_experiment_registry_rows(path)
+        prior_hash = sha256_prefixed(rows) if rows else EMPTY_EXPERIMENT_REGISTRY_HASH
+        counters = _compute_research_attempt_counters_from_rows(rows=rows, base_payload=base_payload)
+        computed_attempt_index = counters["computed_attempt_index"]
+        computed_holdout_reuse_count = counters["computed_holdout_reuse_count"]
+        reasons = _checked_reservation_reasons(
+            base_payload=base_payload,
+            computed_attempt_index=computed_attempt_index,
+            computed_holdout_reuse_count=computed_holdout_reuse_count,
+            statistical_validation_contract=statistical_validation_contract,
+        )
+        if reasons:
+            row = {
+                "schema_version": EXPERIMENT_REGISTRY_SCHEMA_VERSION,
+                "event_type": "research_attempt_rejected",
+                **base_payload,
+                "computed_attempt_index": computed_attempt_index,
+                "computed_holdout_reuse_count": computed_holdout_reuse_count,
+                "result_status": "REJECTED",
+                "rejection_reasons": sorted(set(reasons)),
+                "counted_attempt": False,
+                "prior_registry_hash": prior_hash,
+                "created_at": created_at or datetime.now(timezone.utc).isoformat(),
+            }
+            row["row_hash"] = compute_row_hash(row)
+            append_jsonl(path, row)
+            return {
+                "accepted": False,
+                "path": str(path.resolve()),
+                "prior_hash": prior_hash,
+                "row_hash": str(row["row_hash"]),
+                "row": dict(row),
+                "computed_attempt_index": computed_attempt_index,
+                "computed_holdout_reuse_count": computed_holdout_reuse_count,
+                "reasons": list(row["rejection_reasons"]),
+            }
+        row = {
+            "schema_version": EXPERIMENT_REGISTRY_SCHEMA_VERSION,
+            "event_type": "research_attempt_reserved",
+            **base_payload,
+            "computed_attempt_index": computed_attempt_index,
+            "computed_holdout_reuse_count": computed_holdout_reuse_count,
+            "result_status": "IN_PROGRESS",
+            "prior_registry_hash": prior_hash,
+            "created_at": created_at or datetime.now(timezone.utc).isoformat(),
+        }
+        row["row_hash"] = compute_row_hash(row)
+        append_jsonl(path, row)
+    result = {
+        "accepted": True,
+        "path": str(path.resolve()),
+        "prior_hash": prior_hash,
+        "row_hash": str(row["row_hash"]),
+        "row": dict(row),
+        "computed_attempt_index": computed_attempt_index,
+        "computed_holdout_reuse_count": computed_holdout_reuse_count,
+    }
+    result["research_freedom_hash"] = research_freedom_hash(
+        {
+            **row,
+            "experiment_registry_path": result["path"],
+            "experiment_registry_prior_hash": prior_hash,
+            "experiment_registry_row_hash": row["row_hash"],
+        }
+    )
+    return result
+
+
 def append_attempt_aborted(
     *,
     manager: PathManager,
@@ -468,6 +545,8 @@ def _extend_registry_field_mismatch_reasons(
         "experiment_family_id",
         "hypothesis_id",
         "hypothesis_status",
+        "hypothesis_identity_source",
+        "experiment_family_identity_source",
         "manifest_hash",
         "dataset_snapshot_id",
         "dataset_content_hash",
@@ -487,6 +566,9 @@ def _extend_registry_field_mismatch_reasons(
             expected = promotion.get(field)
         if expected is not None and str(row.get(field) or "") != str(expected or ""):
             reasons.append("experiment_registry_stale")
+            break
+        if expected is None and row.get(field) is not None and field.endswith("_identity_source"):
+            reasons.append("experiment_registry_identity_source_missing")
             break
     fingerprint = evidence.get("final_holdout_fingerprint") or report.get("final_holdout_fingerprint") or promotion.get("final_holdout_fingerprint")
     if fingerprint is not None and str(row.get("final_holdout_fingerprint") or "") != str(fingerprint or ""):
@@ -596,8 +678,10 @@ def _extend_budget_reasons(
     max_reuse = _as_int(gates.get("max_holdout_reuse_count"))
     if attempt is not None and max_attempt is not None and attempt > max_attempt:
         reasons.append("experiment_registry_budget_exceeded")
+        reasons.append("attempt_budget_exceeded")
     if reuse is not None and max_reuse is not None and reuse > max_reuse:
         reasons.append("experiment_registry_budget_exceeded")
+        reasons.append("holdout_reuse_budget_exceeded")
 
 
 def _completion_for_reservation(
@@ -652,6 +736,31 @@ def _compute_research_attempt_counters_from_rows(
             == reuse_key
         ),
     }
+
+
+def _checked_reservation_reasons(
+    *,
+    base_payload: dict[str, Any],
+    computed_attempt_index: int,
+    computed_holdout_reuse_count: int,
+    statistical_validation_contract: dict[str, Any] | None,
+) -> list[str]:
+    reasons: list[str] = []
+    declared_attempt = _as_int(base_payload.get("declared_attempt_index"))
+    declared_reuse = _as_int(base_payload.get("declared_holdout_reuse_count"))
+    if declared_attempt is not None and declared_attempt != computed_attempt_index:
+        reasons.append("declared_attempt_index_mismatch")
+    if declared_reuse is not None and declared_reuse != computed_holdout_reuse_count:
+        reasons.append("declared_holdout_reuse_count_mismatch")
+    gates = statistical_validation_contract.get("gates") if isinstance(statistical_validation_contract, dict) else None
+    if isinstance(gates, dict):
+        max_attempt = _as_int(gates.get("max_attempt_index_without_new_hypothesis"))
+        max_reuse = _as_int(gates.get("max_holdout_reuse_count"))
+        if max_attempt is not None and computed_attempt_index > max_attempt:
+            reasons.extend(["experiment_registry_budget_exceeded", "attempt_budget_exceeded"])
+        if max_reuse is not None and computed_holdout_reuse_count > max_reuse:
+            reasons.extend(["experiment_registry_budget_exceeded", "holdout_reuse_budget_exceeded"])
+    return sorted(set(reasons))
 
 
 def _as_int(value: object) -> int | None:

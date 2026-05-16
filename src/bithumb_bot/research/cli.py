@@ -12,6 +12,8 @@ from .experiment_registry import (
     load_experiment_registry_rows,
     validate_experiment_registry_binding,
 )
+from .hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
+from .return_panel import validate_return_panel_binding
 from .execution_calibration import ExecutionCalibrationError, load_calibration_artifact
 from .promotion_gate import PromotionGateError, promote_candidate
 from .lineage import reproduce_promotion
@@ -108,22 +110,119 @@ def cmd_research_registry_validate(*, experiment_id: str) -> int:
         if item.get("event_type") == "research_attempt_reserved" and item.get("experiment_id") == experiment_id
     ]
     if not reservations:
-        print(json.dumps({"ok": False, "reason": "experiment_registry_row_hash_mismatch", "experiment_id": experiment_id}, sort_keys=True, indent=2))
+        print(json.dumps({
+            "ok": False,
+            "validation_scope": "registry_only",
+            "reason": "experiment_registry_row_hash_mismatch",
+            "experiment_id": experiment_id,
+            "artifact_binding_valid": "unknown",
+            "report_loaded": False,
+            "evidence_loaded": False,
+            "return_panel_loaded": False,
+            "warning": "artifact_binding_not_checked",
+        }, sort_keys=True, indent=2))
         return 1
     results = []
     ok = True
+    report_path = PATH_MANAGER.data_dir() / "reports" / "research" / experiment_id / "backtest_report.json"
+    evidence_path = PATH_MANAGER.data_dir() / "reports" / "research" / experiment_id / "statistical_selection_evidence.json"
+    panel_path = PATH_MANAGER.data_dir() / "reports" / "research" / experiment_id / "candidate_return_panel.json"
+    report = _load_json_if_exists(report_path)
+    evidence = _load_json_if_exists(evidence_path)
+    panel = _load_json_if_exists(panel_path)
+    artifact_reasons: list[str] = []
+    validation_scope = "registry_and_artifacts" if isinstance(report, dict) else "registry_only"
+    report_loaded = isinstance(report, dict)
+    evidence_loaded = isinstance(evidence, dict)
+    return_panel_loaded = isinstance(panel, dict)
+    if report_loaded:
+        artifact_reasons.extend(_content_hash_reasons(report, report_hash=True, label="backtest_report"))
+        evidence_required = bool(report.get("statistical_validation_required")) or bool(report.get("statistical_evidence_hash"))
+        if evidence_required and not evidence_loaded:
+            artifact_reasons.append("statistical_evidence_missing")
+        if evidence_loaded:
+            artifact_reasons.extend(_content_hash_reasons(evidence, report_hash=False, label="statistical_evidence"))
+            artifact_reasons.extend(validate_return_panel_binding(report=report, evidence=evidence, panel=panel))
+    else:
+        artifact_reasons.append("artifact_binding_not_checked")
     for row in reservations:
-        report = {
+        synthetic_report = {
             **row,
             "experiment_registry_path": str(path.resolve()),
             "experiment_registry_prior_hash": row.get("prior_registry_hash"),
             "experiment_registry_row_hash": row.get("row_hash"),
         }
-        reasons = validate_experiment_registry_binding(report=report, require_complete=True)
-        ok = ok and not reasons
-        results.append({"row_hash": row.get("row_hash"), "reasons": reasons, "ok": not reasons})
-    print(json.dumps({"ok": ok, "experiment_id": experiment_id, "registry_path": str(path.resolve()), "results": results}, sort_keys=True, indent=2))
+        completion = next(
+            (
+                item
+                for item in reversed(rows)
+                if item.get("event_type") in {"research_attempt_completed", "research_attempt_aborted"}
+                and item.get("reservation_row_hash") == row.get("row_hash")
+            ),
+            None,
+        )
+        artifact_report = report if isinstance(report, dict) else synthetic_report
+        if isinstance(completion, dict) and artifact_report.get("experiment_registry_completion_row_hash") is None:
+            artifact_report = {**artifact_report, "experiment_registry_completion_row_hash": completion.get("row_hash")}
+        reasons = validate_experiment_registry_binding(
+            report=artifact_report,
+            evidence=evidence if isinstance(evidence, dict) else None,
+            require_complete=True,
+        )
+        row_ok = not reasons
+        binding_reasons = sorted(set(reasons + artifact_reasons))
+        artifact_binding_valid: bool | str = "unknown" if validation_scope == "registry_only" else not artifact_reasons and not reasons
+        ok = ok and row_ok and (artifact_binding_valid is True or artifact_binding_valid == "unknown")
+        results.append(
+            {
+                "row_hash": row.get("row_hash"),
+                "registry_row_valid": not any(str(reason).startswith("experiment_registry_row_hash") for reason in reasons),
+                "completion_row_valid": "experiment_registry_incomplete_attempt" not in reasons,
+                "artifact_binding_valid": artifact_binding_valid,
+                "report_loaded": report_loaded,
+                "evidence_loaded": evidence_loaded,
+                "return_panel_loaded": return_panel_loaded,
+                "reasons": binding_reasons,
+                "ok": row_ok and (artifact_binding_valid is True or artifact_binding_valid == "unknown"),
+            }
+        )
+    payload = {
+        "ok": ok,
+        "validation_scope": validation_scope,
+        "experiment_id": experiment_id,
+        "registry_path": str(path.resolve()),
+        "report_path": str(report_path.resolve()),
+        "evidence_path": str(evidence_path.resolve()),
+        "return_panel_path": str(panel_path.resolve()),
+        "report_loaded": report_loaded,
+        "evidence_loaded": evidence_loaded,
+        "return_panel_loaded": return_panel_loaded,
+        "artifact_binding_valid": (
+            "unknown" if validation_scope == "registry_only" else not artifact_reasons and all(item["artifact_binding_valid"] is True for item in results)
+        ),
+        "warning": "artifact_binding_not_checked" if validation_scope == "registry_only" else None,
+        "results": results,
+    }
+    print(json.dumps(payload, sort_keys=True, indent=2))
     return 0 if ok else 1
+
+
+def _load_json_if_exists(path: Path) -> dict[str, object] | None:
+    if not path.exists():
+        return None
+    with path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    return payload if isinstance(payload, dict) else None
+
+
+def _content_hash_reasons(payload: dict[str, object], *, report_hash: bool, label: str) -> list[str]:
+    expected = str(payload.get("content_hash") or "").strip()
+    if not expected.startswith("sha256:"):
+        return [f"{label}_content_hash_missing"]
+    actual = sha256_prefixed(
+        report_content_hash_payload(payload) if report_hash else content_hash_payload({k: v for k, v in payload.items() if k != "content_hash"})
+    )
+    return [] if actual == expected else [f"{label}_content_hash_mismatch"]
 
 
 def cmd_research_mark_attempt_aborted(*, row_hash: str, reason: str) -> int:

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from bithumb_bot.paths import PathManager
 from bithumb_bot.research.experiment_registry import (
     EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+    PROMOTION_PERMITTED_STATUSES,
     append_attempt_aborted,
     append_attempt_completion,
     append_research_attempt_rejected,
@@ -16,6 +17,7 @@ from bithumb_bot.research.experiment_registry import (
     experiment_registry_path,
     load_experiment_registry_rows,
     reserve_research_attempt,
+    reserve_research_attempt_checked,
     research_identity_from_manifest,
     validate_experiment_registry_binding,
 )
@@ -35,6 +37,8 @@ def _payload(**overrides) -> dict[str, object]:
         "experiment_family_id": "family_a",
         "hypothesis_id": "hypothesis_a",
         "hypothesis_status": "pre_registered",
+        "hypothesis_identity_source": "manifest.hypothesis_id",
+        "experiment_family_identity_source": "manifest.experiment_family_id",
         "experiment_id": "exp_001",
         "manifest_hash": "sha256:manifest",
         "manifest_metadata_hash": "sha256:metadata",
@@ -160,8 +164,118 @@ def test_budget_and_declared_counter_mismatches_are_stable_reasons(tmp_path, mon
     reasons = validate_experiment_registry_binding(report=report)
 
     assert "experiment_registry_budget_exceeded" in reasons
+    assert "attempt_budget_exceeded" in reasons
+    assert "holdout_reuse_budget_exceeded" in reasons
     assert "declared_attempt_index_mismatch" in reasons
     assert "declared_holdout_reuse_count_mismatch" in reasons
+
+
+def test_checked_reservation_declared_mismatch_is_atomic_under_lock(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    reserve_research_attempt_checked(manager=manager, base_payload=_payload())
+
+    rejected = reserve_research_attempt_checked(
+        manager=manager,
+        base_payload=_payload(
+            experiment_id="exp_002",
+            run_id="exp_002",
+            declared_attempt_index=1,
+            declared_holdout_reuse_count=0,
+        ),
+    )
+    rows = load_experiment_registry_rows(experiment_registry_path(manager=manager))
+
+    assert rejected["accepted"] is False
+    assert rejected["row"]["event_type"] == "research_attempt_rejected"
+    assert rejected["row"]["counted_attempt"] is False
+    assert "declared_attempt_index_mismatch" in rejected["reasons"]
+    assert "declared_holdout_reuse_count_mismatch" in rejected["reasons"]
+    assert [row["event_type"] for row in rows] == ["research_attempt_reserved", "research_attempt_rejected"]
+
+
+def test_concurrent_declared_counter_preflight_does_not_create_counted_stale_reservation(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    results: list[dict[str, object]] = []
+    lock = threading.Lock()
+
+    def reserve(index: int) -> None:
+        result = reserve_research_attempt_checked(
+            manager=manager,
+            base_payload=_payload(
+                experiment_id=f"exp_{index}",
+                run_id=f"exp_{index}",
+                declared_attempt_index=1,
+                declared_holdout_reuse_count=0,
+            ),
+        )
+        with lock:
+            results.append(result)
+
+    threads = [threading.Thread(target=reserve, args=(index,)) for index in (1, 2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    rows = load_experiment_registry_rows(experiment_registry_path(manager=manager))
+    assert sum(1 for row in rows if row["event_type"] == "research_attempt_reserved") == 1
+    assert sum(1 for row in rows if row["event_type"] == "research_attempt_rejected") == 1
+    assert sorted(bool(result["accepted"]) for result in results) == [False, True]
+
+
+def test_rejected_event_does_not_increment_computed_attempt_index(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    reserve_research_attempt_checked(manager=manager, base_payload=_payload())
+    reserve_research_attempt_checked(
+        manager=manager,
+        base_payload=_payload(experiment_id="exp_002", run_id="exp_002", declared_attempt_index=1),
+    )
+
+    counters = compute_research_attempt_counters(
+        manager=manager,
+        base_payload=_payload(experiment_id="exp_003", run_id="exp_003"),
+    )
+
+    assert counters["computed_attempt_index"] == 2
+
+
+def test_rejected_event_does_not_increment_computed_holdout_reuse_count(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    reserve_research_attempt_checked(manager=manager, base_payload=_payload())
+    reserve_research_attempt_checked(
+        manager=manager,
+        base_payload=_payload(experiment_id="exp_002", run_id="exp_002", declared_holdout_reuse_count=0),
+    )
+
+    counters = compute_research_attempt_counters(
+        manager=manager,
+        base_payload=_payload(experiment_id="exp_003", run_id="exp_003"),
+    )
+
+    assert counters["computed_holdout_reuse_count"] == 1
+
+
+def test_budget_exceeded_preflight_rejects_without_counted_reservation(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    reserve_research_attempt_checked(manager=manager, base_payload=_payload())
+
+    rejected = reserve_research_attempt_checked(
+        manager=manager,
+        base_payload=_payload(experiment_id="exp_002", run_id="exp_002"),
+        statistical_validation_contract={
+            "gates": {
+                "max_attempt_index_without_new_hypothesis": 1,
+                "max_holdout_reuse_count": 0,
+            }
+        },
+    )
+    rows = load_experiment_registry_rows(experiment_registry_path(manager=manager))
+
+    assert rejected["accepted"] is False
+    assert "experiment_registry_budget_exceeded" in rejected["reasons"]
+    assert "attempt_budget_exceeded" in rejected["reasons"]
+    assert "holdout_reuse_budget_exceeded" in rejected["reasons"]
+    assert sum(1 for row in rows if row["event_type"] == "research_attempt_reserved") == 1
 
 
 def test_registry_row_hash_tampering_is_detected(tmp_path, monkeypatch) -> None:
@@ -256,6 +370,66 @@ def test_completion_row_satisfies_complete_required_validation(tmp_path, monkeyp
     ) == []
 
 
+def test_promotion_permitted_statuses_only_include_completed() -> None:
+    assert PROMOTION_PERMITTED_STATUSES == {"COMPLETED"}
+
+
+def test_experiment_registry_completion_result_status_fail_is_not_promotion_permitted(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    reservation = reserve_research_attempt(manager=manager, base_payload=_payload())
+    complete = append_attempt_completion(
+        manager=manager,
+        reservation=reservation,
+        updates={
+            "candidate_count": 3,
+            "return_panel_hash": "sha256:return",
+            "statistical_evidence_hash": "sha256:evidence",
+            "statistical_evidence_hash_phase": EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+        },
+        result_status="FAIL",
+    )
+
+    reasons = validate_experiment_registry_binding(
+        report=_report_from_reservation(reservation, complete=complete),
+        require_complete=True,
+    )
+
+    assert "experiment_registry_incomplete_attempt" in reasons
+
+
+def test_statistical_gate_fail_is_recorded_separately_from_completion_status(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    reservation = reserve_research_attempt(manager=manager, base_payload=_payload())
+    complete = append_attempt_completion(
+        manager=manager,
+        reservation=reservation,
+        updates={
+            "candidate_count": 3,
+            "return_panel_hash": "sha256:return",
+            "statistical_evidence_hash": "sha256:evidence",
+            "statistical_evidence_hash_phase": EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+            "statistical_gate_result": "FAIL",
+        },
+        result_status="COMPLETED",
+    )
+    evidence = {
+        **_report_from_reservation(reservation, complete=complete),
+        "experiment_registry_bound_evidence_hash": "sha256:evidence",
+        "experiment_registry_evidence_hash_phase": EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+    }
+
+    reasons = validate_experiment_registry_binding(
+        report=_report_from_reservation(reservation, complete=complete),
+        evidence=evidence,
+        require_complete=True,
+    )
+    rows = load_experiment_registry_rows(experiment_registry_path(manager=manager))
+
+    assert reasons == []
+    assert rows[-1]["result_status"] == "COMPLETED"
+    assert rows[-1]["statistical_gate_result"] == "FAIL"
+
+
 def test_completion_row_statistical_evidence_hash_mismatch_is_detected(tmp_path, monkeypatch) -> None:
     manager = _manager(tmp_path, monkeypatch)
     reservation = reserve_research_attempt(manager=manager, base_payload=_payload())
@@ -342,6 +516,43 @@ def test_aborted_attempt_is_not_promotion_permitted(tmp_path, monkeypatch) -> No
     assert "experiment_registry_incomplete_attempt" in reasons
 
 
+def test_aborted_attempt_is_counted_but_not_promotion_permitted(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    reservation = reserve_research_attempt_checked(manager=manager, base_payload=_payload())
+    append_attempt_aborted(manager=manager, reservation_row_hash=str(reservation["row_hash"]), reason="operator_interrupt")
+
+    counters = compute_research_attempt_counters(
+        manager=manager,
+        base_payload=_payload(experiment_id="exp_002", run_id="exp_002"),
+    )
+    reasons = validate_experiment_registry_binding(
+        report=_report_from_reservation(reservation),
+        require_complete=True,
+    )
+
+    assert counters["computed_attempt_index"] == 2
+    assert "experiment_registry_incomplete_attempt" in reasons
+
+
+def test_rejected_attempt_is_uncounted_and_not_promotion_permitted(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    rejected = reserve_research_attempt_checked(
+        manager=manager,
+        base_payload=_payload(declared_attempt_index=2),
+    )
+
+    counters = compute_research_attempt_counters(
+        manager=manager,
+        base_payload=_payload(experiment_id="exp_002", run_id="exp_002"),
+    )
+    rows = load_experiment_registry_rows(experiment_registry_path(manager=manager))
+
+    assert rejected["accepted"] is False
+    assert counters["computed_attempt_index"] == 1
+    assert rows[-1]["result_status"] == "REJECTED"
+    assert rows[-1]["counted_attempt"] is False
+
+
 def test_declared_counter_mismatch_does_not_create_counted_reservation(tmp_path, monkeypatch) -> None:
     manager = _manager(tmp_path, monkeypatch)
     reserve_research_attempt(manager=manager, base_payload=_payload())
@@ -376,6 +587,18 @@ def test_research_identity_from_manifest_records_fallback_source() -> None:
     assert identity["hypothesis_id"] == "sma_filter_hypothesis"
     assert identity["hypothesis_identity_source"] == "manifest.hypothesis"
     assert identity["experiment_family_identity_source"] == "experiment_id"
+
+
+def test_validator_does_not_skip_hypothesis_identity_when_report_value_missing(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    reservation = reserve_research_attempt(manager=manager, base_payload=_payload())
+    report = _report_from_reservation(reservation)
+    report.pop("hypothesis_identity_source", None)
+    report.pop("experiment_family_identity_source", None)
+
+    reasons = validate_experiment_registry_binding(report=report)
+
+    assert "experiment_registry_identity_source_missing" in reasons
 
 
 def test_concurrent_reservations_do_not_duplicate_attempt_index(tmp_path, monkeypatch) -> None:

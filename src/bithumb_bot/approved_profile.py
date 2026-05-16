@@ -442,6 +442,8 @@ def build_approved_profile(
         "experiment_family_id": verified_promotion.get("experiment_family_id"),
         "hypothesis_id": verified_promotion.get("hypothesis_id"),
         "hypothesis_status": verified_promotion.get("hypothesis_status"),
+        "hypothesis_identity_source": verified_promotion.get("hypothesis_identity_source"),
+        "experiment_family_identity_source": verified_promotion.get("experiment_family_identity_source"),
         "search_budget": verified_promotion.get("search_budget"),
         "parameter_space_hash": verified_promotion.get("parameter_space_hash"),
         "parameter_grid_size": verified_promotion.get("parameter_grid_size"),
