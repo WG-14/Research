@@ -72,6 +72,7 @@ def settings_guard():
         "EXECUTION_DEPTH_REQUIRED",
         "EXECUTION_TRADE_TICK_REQUIRED",
         "EXECUTION_QUEUE_POSITION_REQUIRED",
+        "EXECUTION_MARKET_IMPACT_REQUIRED",
         "EXECUTION_INTRA_CANDLE_PATH_AVAILABLE",
         "EXECUTION_LATENCY_MODEL_TYPE",
         "EXECUTION_LATENCY_MS",
@@ -101,6 +102,7 @@ def _set_matching_runtime_execution_contract_settings() -> None:
     object.__setattr__(settings, "EXECUTION_DEPTH_REQUIRED", False)
     object.__setattr__(settings, "EXECUTION_TRADE_TICK_REQUIRED", False)
     object.__setattr__(settings, "EXECUTION_QUEUE_POSITION_REQUIRED", False)
+    object.__setattr__(settings, "EXECUTION_MARKET_IMPACT_REQUIRED", False)
     object.__setattr__(settings, "EXECUTION_INTRA_CANDLE_PATH_AVAILABLE", False)
     object.__setattr__(settings, "EXECUTION_LATENCY_MODEL_TYPE", "fixed_bps")
     object.__setattr__(settings, "EXECUTION_LATENCY_MS", 0)

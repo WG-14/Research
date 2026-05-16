@@ -6,7 +6,9 @@ from typing import Any
 
 
 EXECUTION_REALITY_CONTRACT_SCHEMA_VERSION = 1
+EXECUTION_CAPABILITY_CONTRACT_SCHEMA_VERSION = 1
 CONTRACT_HASH_FIELD = "execution_contract_hash"
+CAPABILITY_CONTRACT_HASH_FIELD = "execution_capability_contract_hash"
 EXECUTION_CONDITION_LINEAGE_FIELDS = frozenset({"calibration_artifact_hash"})
 
 _TIMESTAMP_FIELDS = frozenset(
@@ -28,6 +30,25 @@ REALITY_ORDER = {
     "paper_immediate_top_of_book": 3,
     "paper_stress_top_of_book": 3,
 }
+
+SUPPORTED_EVIDENCE_TIERS = frozenset(
+    {
+        "candle_close_optimistic",
+        "candle_next_open",
+        "top_of_book_after_decision",
+        "latency_adjusted_top_of_book",
+    }
+)
+
+RESERVED_FUTURE_EVIDENCE_TIERS = frozenset(
+    {
+        "depth_replay_l2",
+        "tick_replay_l2",
+        "queue_position_simulated",
+        "queue_position_calibrated",
+        "impact_model_calibrated",
+    }
+)
 
 
 PRODUCTION_EXECUTION_TIMING_REQUIRED_FIELDS = (
@@ -131,6 +152,29 @@ def execution_condition_contract_hash(contract: dict[str, Any]) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
+def execution_capability_contract_hash(contract: dict[str, Any]) -> str:
+    payload = _strip_runtime_only(
+        {
+            k: v
+            for k, v in contract.items()
+            if k != CAPABILITY_CONTRACT_HASH_FIELD
+        }
+    )
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def attach_execution_capability_contract_hash(contract: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(contract)
+    payload[CAPABILITY_CONTRACT_HASH_FIELD] = execution_capability_contract_hash(payload)
+    return payload
+
+
+def capability_contract_hash_matches(contract: dict[str, Any], expected_hash: object | None = None) -> bool:
+    observed = str(expected_hash or contract.get(CAPABILITY_CONTRACT_HASH_FIELD) or "").strip()
+    return bool(observed) and execution_capability_contract_hash(contract) == observed
+
+
 def attach_execution_contract_hash(contract: dict[str, Any]) -> dict[str, Any]:
     payload = dict(contract)
     payload[CONTRACT_HASH_FIELD] = execution_contract_hash(payload)
@@ -157,6 +201,7 @@ def build_execution_reality_contract(
     depth_required: bool = False,
     trade_tick_required: bool = False,
     queue_position_required: bool = False,
+    market_impact_required: bool = False,
     intra_candle_path_available: bool = False,
     latency_model: dict[str, Any] | str | None = None,
     partial_fill_model: dict[str, Any] | str | None = None,
@@ -185,6 +230,7 @@ def build_execution_reality_contract(
         "depth_required": bool(depth_required),
         "trade_tick_required": bool(trade_tick_required),
         "queue_position_required": bool(queue_position_required),
+        "market_impact_required": bool(market_impact_required),
         "intra_candle_path_available": bool(intra_candle_path_available),
         "latency_model": latency_model or "none",
         "partial_fill_model": partial_fill_model or "none",
@@ -198,7 +244,108 @@ def build_execution_reality_contract(
     }
     if extra:
         payload.update(dict(extra))
+    capability_contract = build_execution_capability_contract(
+        fill_reference_policy=str(fill_reference_policy),
+        top_of_book_required=bool(top_of_book_required),
+        top_of_book_available=bool(payload.get("quote_evidence_available", False)),
+        top_of_book_is_full_depth=bool(top_of_book_is_full_depth),
+        full_orderbook_depth_required=bool(depth_required),
+        trade_ticks_required=bool(trade_tick_required),
+        queue_position_required=bool(queue_position_required),
+        market_impact_model_required=bool(market_impact_required),
+        intra_candle_path_required=bool(payload.get("intra_candle_path_required", False)),
+        full_orderbook_depth_available=bool(payload.get("depth_available", False)),
+        trade_ticks_available=bool(payload.get("trade_ticks_available", False)),
+        queue_position_available=bool(payload.get("queue_position_available", False)),
+        market_impact_model_available=bool(payload.get("market_impact_model_available", False)),
+        intra_candle_path_available=bool(payload.get("intra_candle_path_available", False)),
+        evidence_tier=str(payload.get("execution_reality_level") or level),
+        limitations=list(payload.get("limitations") or []),
+    )
+    payload["execution_capability_contract"] = capability_contract
+    payload[CAPABILITY_CONTRACT_HASH_FIELD] = capability_contract[CAPABILITY_CONTRACT_HASH_FIELD]
     return attach_execution_contract_hash(payload)
+
+
+def build_execution_capability_contract(
+    *,
+    fill_reference_policy: str,
+    top_of_book_required: bool = False,
+    top_of_book_available: bool = False,
+    top_of_book_is_full_depth: bool = False,
+    full_orderbook_depth_required: bool = False,
+    trade_ticks_required: bool = False,
+    queue_position_required: bool = False,
+    market_impact_model_required: bool = False,
+    intra_candle_path_required: bool = False,
+    full_orderbook_depth_available: bool = False,
+    trade_ticks_available: bool = False,
+    queue_position_available: bool = False,
+    market_impact_model_available: bool = False,
+    intra_candle_path_available: bool = False,
+    evidence_tier: str | None = None,
+    limitations: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    tier = str(evidence_tier or _level_for_fill_reference_policy(fill_reference_policy))
+    top_required = bool(top_of_book_required) or str(fill_reference_policy) in {
+        "first_orderbook_after_decision",
+        "latency_adjusted_orderbook",
+        "paper_top_of_book",
+    }
+    required = {
+        "candle_ohlcv": True,
+        "top_of_book": top_required,
+        "full_orderbook_depth": bool(full_orderbook_depth_required),
+        "trade_ticks": bool(trade_ticks_required),
+        "queue_position": bool(queue_position_required),
+        "market_impact_model": bool(market_impact_model_required),
+        "intra_candle_path_reconstruction": bool(intra_candle_path_required),
+    }
+    available = {
+        "candle_ohlcv": True,
+        "top_of_book": bool(top_of_book_available),
+        "top_of_book_is_full_depth": bool(top_of_book_is_full_depth),
+        "full_orderbook_depth": bool(full_orderbook_depth_available),
+        "trade_ticks": bool(trade_ticks_available),
+        "queue_position": bool(queue_position_available),
+        "market_impact_model": bool(market_impact_model_available),
+        "intra_candle_path_reconstruction": bool(intra_candle_path_available),
+    }
+    unavailable = [
+        name
+        for name, is_required in required.items()
+        if is_required and not bool(available.get(name, False))
+    ]
+    capability_limitations = sorted(
+        {
+            str(item)
+            for item in (
+                limitations
+                or (
+                    "top_of_book_is_quote_evidence_not_liquidity_depth",
+                    "full_orderbook_depth_unavailable",
+                    "queue_position_unavailable",
+                    "trade_ticks_unavailable",
+                    "market_impact_model_unavailable",
+                    "intra_candle_path_reconstruction_unavailable",
+                )
+            )
+        }
+    )
+    if tier in RESERVED_FUTURE_EVIDENCE_TIERS:
+        capability_limitations.append(f"evidence_tier_reserved_not_implemented:{tier}")
+    payload = {
+        "schema_version": EXECUTION_CAPABILITY_CONTRACT_SCHEMA_VERSION,
+        "strategy_required_capabilities": required,
+        "available_capabilities": available,
+        "evidence_tier": tier,
+        "supported_evidence_tiers": sorted(SUPPORTED_EVIDENCE_TIERS),
+        "reserved_future_evidence_tiers": sorted(RESERVED_FUTURE_EVIDENCE_TIERS),
+        "promotion_rule": "fail_closed_if_required_capability_unavailable",
+        "unavailable_required_capabilities": sorted(unavailable),
+        "limitations": sorted(set(capability_limitations)),
+    }
+    return attach_execution_capability_contract_hash(payload)
 
 
 def default_execution_limitations() -> tuple[str, ...]:
@@ -222,9 +369,64 @@ def unsupported_capability_reasons(contract: dict[str, Any]) -> list[str]:
         reasons.append("execution_trade_ticks_required_but_unavailable")
     if contract.get("queue_position_required") and not contract.get("queue_position_available", False):
         reasons.append("execution_queue_position_required_but_unavailable")
+    if contract.get("market_impact_required") and not contract.get("market_impact_model_available", False):
+        reasons.append("execution_market_impact_required_but_unavailable")
     if contract.get("intra_candle_path_required") and not contract.get("intra_candle_path_available", False):
         reasons.append("execution_intra_candle_path_required_but_unavailable")
-    return reasons
+    capability = contract.get("execution_capability_contract")
+    if isinstance(capability, dict):
+        for name in capability.get("unavailable_required_capabilities") or []:
+            if name == "top_of_book":
+                reasons.append("execution_top_of_book_required_but_unavailable")
+            elif name == "full_orderbook_depth":
+                reasons.append("execution_depth_required_but_unavailable")
+            elif name == "trade_ticks":
+                reasons.append("execution_trade_ticks_required_but_unavailable")
+            elif name == "queue_position":
+                reasons.append("execution_queue_position_required_but_unavailable")
+            elif name == "market_impact_model":
+                reasons.append("execution_market_impact_required_but_unavailable")
+            elif name == "intra_candle_path_reconstruction":
+                reasons.append("execution_intra_candle_path_required_but_unavailable")
+        if capability.get("unavailable_required_capabilities"):
+            reasons.append("execution_capability_required_unavailable")
+    return sorted(set(reasons))
+
+
+def execution_capability_contract_mismatch_reasons(
+    *,
+    expected: dict[str, Any] | None,
+    observed: dict[str, Any] | None,
+) -> list[dict[str, object]]:
+    if not isinstance(expected, dict):
+        return [{"field": "execution_capability_contract", "reason": "expected_execution_capability_contract_missing"}]
+    if not isinstance(observed, dict):
+        return [{"field": "execution_capability_contract", "reason": "observed_execution_capability_contract_missing"}]
+    mismatches: list[dict[str, object]] = []
+    expected_hash = str(expected.get(CAPABILITY_CONTRACT_HASH_FIELD) or execution_capability_contract_hash(expected))
+    observed_hash = str(observed.get(CAPABILITY_CONTRACT_HASH_FIELD) or execution_capability_contract_hash(observed))
+    if expected_hash != observed_hash:
+        mismatches.append(
+            {
+                "field": CAPABILITY_CONTRACT_HASH_FIELD,
+                "expected": expected_hash,
+                "actual": observed_hash,
+                "reason": "execution_capability_contract_hash_mismatch",
+            }
+        )
+    for field in sorted(set(expected) | set(observed)):
+        if field in _TIMESTAMP_FIELDS or field == CAPABILITY_CONTRACT_HASH_FIELD:
+            continue
+        if expected.get(field) != observed.get(field):
+            mismatches.append(
+                {
+                    "field": f"execution_capability_contract.{field}",
+                    "expected": expected.get(field),
+                    "actual": observed.get(field),
+                    "reason": "execution_capability_contract_field_mismatch",
+                }
+            )
+    return mismatches
 
 
 def execution_contract_mismatch_reasons(

@@ -8,7 +8,10 @@ from typing import Any
 
 from bithumb_bot.paths import PathManager, PathPolicyError
 from bithumb_bot.storage_io import write_json_atomic
-from bithumb_bot.execution_reality_contract import evaluate_execution_reality_policy
+from bithumb_bot.execution_reality_contract import (
+    evaluate_execution_reality_policy,
+    capability_contract_hash_matches,
+)
 
 from .hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
 from .lineage import build_promotion_lineage, validate_lineage_artifact, LineageValidationError
@@ -59,6 +62,13 @@ def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
         "execution_timing_policy": candidate.get("execution_timing_policy"),
         "execution_reality_contract": candidate.get("execution_reality_contract"),
         "execution_contract_hash": candidate.get("execution_contract_hash"),
+        "execution_capability_contract": _candidate_capability_contract(candidate),
+        "execution_capability_contract_hash": _candidate_capability_hash(candidate),
+        "evidence_tier": (_candidate_capability_contract(candidate) or {}).get("evidence_tier") or candidate.get("evidence_tier"),
+        "unavailable_required_capabilities": (
+            (_candidate_capability_contract(candidate) or {}).get("unavailable_required_capabilities")
+            or candidate.get("unavailable_required_capabilities")
+        ),
         "execution_reality_summary": candidate.get("execution_reality_summary"),
         "execution_event_summary": candidate.get("execution_event_summary"),
         "train_execution_event_summary": candidate.get("train_execution_event_summary"),
@@ -418,6 +428,33 @@ def _extend_execution_contract_reasons(
     capability_reasons = unsupported_capability_reasons(contract)
     reasons.extend([f"{prefix}{reason}" for reason in capability_reasons])
     reasons.extend(capability_reasons)
+    capability = _candidate_capability_contract(candidate)
+    capability_hash = _candidate_capability_hash(candidate)
+    if not isinstance(capability, dict):
+        reasons.extend([f"{prefix}execution_capability_contract_missing", "execution_capability_contract_missing"])
+    elif not capability_contract_hash_matches(capability, capability_hash):
+        reasons.extend([f"{prefix}execution_capability_contract_hash_mismatch", "execution_capability_contract_hash_mismatch"])
+    else:
+        unavailable = [str(item) for item in capability.get("unavailable_required_capabilities") or []]
+        if unavailable:
+            reasons.extend([f"{prefix}execution_capability_required_unavailable", "execution_capability_required_unavailable"])
+
+
+def _candidate_capability_contract(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    capability = candidate.get("execution_capability_contract")
+    if isinstance(capability, dict):
+        return capability
+    contract = candidate.get("execution_reality_contract")
+    if isinstance(contract, dict) and isinstance(contract.get("execution_capability_contract"), dict):
+        return dict(contract["execution_capability_contract"])
+    return None
+
+
+def _candidate_capability_hash(candidate: dict[str, Any]) -> str | None:
+    capability = _candidate_capability_contract(candidate)
+    if not isinstance(capability, dict):
+        return None
+    return str(candidate.get("execution_capability_contract_hash") or capability.get("execution_capability_contract_hash") or "")
 
 
 def _extend_execution_event_reasons(
@@ -732,6 +769,13 @@ def promote_candidate(
         "execution_timing_policy": candidate.get("execution_timing_policy"),
         "execution_reality_contract": candidate.get("execution_reality_contract"),
         "execution_contract_hash": candidate.get("execution_contract_hash"),
+        "execution_capability_contract": _candidate_capability_contract(candidate),
+        "execution_capability_contract_hash": _candidate_capability_hash(candidate),
+        "evidence_tier": (_candidate_capability_contract(candidate) or {}).get("evidence_tier") or candidate.get("evidence_tier"),
+        "unavailable_required_capabilities": (
+            (_candidate_capability_contract(candidate) or {}).get("unavailable_required_capabilities")
+            or candidate.get("unavailable_required_capabilities")
+        ),
         "execution_reality_summary": candidate.get("execution_reality_summary"),
         "execution_event_summary": _candidate_execution_event_summary(candidate),
         "train_execution_event_summary": candidate.get("train_execution_event_summary"),

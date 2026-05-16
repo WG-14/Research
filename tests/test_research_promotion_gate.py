@@ -16,7 +16,12 @@ from bithumb_bot.research.statistical_selection import (
     recompute_white_reality_check_block_bootstrap,
 )
 from bithumb_bot.research.metrics_gate_policy import metrics_gate_policy_hash
-from bithumb_bot.research.promotion_gate import PromotionGateError, build_candidate_profile, promote_candidate
+from bithumb_bot.research.promotion_gate import (
+    PromotionGateError,
+    build_candidate_profile,
+    promote_candidate,
+    validate_backtest_candidate_for_promotion,
+)
 from bithumb_bot.storage_io import write_json_atomic
 
 
@@ -1230,6 +1235,34 @@ def test_research_only_promotion_can_omit_stress_suite(tmp_path, monkeypatch) ->
 
     assert result.artifact["deployment_tier"] == "research_only"
     assert result.artifact["stress_suite_required"] is False
+
+
+def test_promotion_refuses_unavailable_execution_capability_requirement() -> None:
+    contract = build_execution_reality_contract(
+        fill_reference_policy="next_candle_open",
+        missing_quote_policy="warn",
+        min_execution_reality_level_for_promotion="candle_next_open",
+        allow_same_candle_close_fill=False,
+        top_of_book_required=False,
+        market_impact_required=True,
+        latency_model={"type": "fixed_bps", "latency_ms": 0},
+        partial_fill_model={"type": "fixed_bps", "partial_fill_rate": 0.0},
+        order_failure_model={"type": "fixed_bps", "order_failure_rate": 0.0},
+        fee_source="test",
+        slippage_source="test",
+    )
+    candidate = _candidate(
+        execution_reality_contract=contract,
+        execution_contract_hash=contract["execution_contract_hash"],
+        execution_capability_contract=contract["execution_capability_contract"],
+        execution_capability_contract_hash=contract["execution_capability_contract_hash"],
+    )
+
+    allowed, reasons = validate_backtest_candidate_for_promotion(candidate)
+
+    assert allowed is False
+    assert "execution_capability_required_unavailable" in reasons
+    assert "execution_market_impact_required_but_unavailable" in reasons
 
 
 def test_promotion_refuses_missing_final_holdout_stress_when_final_holdout_present(tmp_path, monkeypatch) -> None:

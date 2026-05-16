@@ -11,7 +11,9 @@ from typing import Any
 from .paths import PathManager, PathPolicyError
 from .execution_reality_contract import (
     build_execution_reality_contract,
+    capability_contract_hash_matches,
     contract_hash_matches,
+    execution_capability_contract_mismatch_reasons,
     execution_contract_mismatch_reasons,
     unsupported_capability_reasons,
 )
@@ -72,6 +74,7 @@ EXECUTION_CONTRACT_ENV_KEYS = (
     "EXECUTION_DEPTH_REQUIRED",
     "EXECUTION_TRADE_TICK_REQUIRED",
     "EXECUTION_QUEUE_POSITION_REQUIRED",
+    "EXECUTION_MARKET_IMPACT_REQUIRED",
     "EXECUTION_INTRA_CANDLE_PATH_AVAILABLE",
     "EXECUTION_REALITY_LEVEL",
     "EXECUTION_LATENCY_MODEL_TYPE",
@@ -321,6 +324,8 @@ def _candidate_like_from_promotion(payload: dict[str, Any]) -> dict[str, Any]:
         "production_calibration_policy_reasons": profile.get("production_calibration_policy_reasons"),
         "execution_reality_contract": profile.get("execution_reality_contract"),
         "execution_contract_hash": profile.get("execution_contract_hash"),
+        "execution_capability_contract": profile.get("execution_capability_contract"),
+        "execution_capability_contract_hash": profile.get("execution_capability_contract_hash"),
         "deployment_tier": profile.get("deployment_tier") or payload.get("deployment_tier"),
         "experiment_id": payload.get("strategy_profile_source_experiment") or profile.get("source_experiment"),
         "manifest_hash": payload.get("manifest_hash") or profile.get("manifest_hash"),
@@ -373,6 +378,10 @@ def build_approved_profile(
         else {}
     )
     promotion_source = {**promotion_profile, **verified_promotion}
+    promotion_execution_contract = promotion_source.get("execution_reality_contract")
+    promotion_capability_contract = promotion_source.get("execution_capability_contract")
+    if not isinstance(promotion_capability_contract, dict) and isinstance(promotion_execution_contract, dict):
+        promotion_capability_contract = promotion_execution_contract.get("execution_capability_contract")
     production_policy = validate_production_calibration_policy(
         promotion_source,
         target=deployment_tier_for_profile_mode(normalized_mode),
@@ -405,8 +414,17 @@ def build_approved_profile(
         "execution_calibration_policy_source": production_policy.policy_source,
         "execution_model": promotion_source.get("execution_model"),
         "execution_model_source": promotion_source.get("execution_model_source"),
-        "execution_reality_contract": promotion_source.get("execution_reality_contract"),
+        "execution_reality_contract": promotion_execution_contract,
         "execution_contract_hash": promotion_source.get("execution_contract_hash"),
+        "execution_capability_contract": promotion_capability_contract,
+        "execution_capability_contract_hash": (
+            promotion_source.get("execution_capability_contract_hash")
+            or (
+                promotion_capability_contract.get("execution_capability_contract_hash")
+                if isinstance(promotion_capability_contract, dict)
+                else None
+            )
+        ),
         "execution_calibration_required": promotion_source.get("execution_calibration_required"),
         "execution_calibration_strictness": promotion_source.get("execution_calibration_strictness"),
         "execution_calibration_gate": promotion_source.get("execution_calibration_gate"),
@@ -514,6 +532,14 @@ def validate_approved_profile(profile: dict[str, Any]) -> dict[str, Any]:
     unsupported = unsupported_capability_reasons(contract)
     if unsupported:
         raise ApprovedProfileError("execution_contract_unsupported_capability:" + ",".join(unsupported))
+    capability = profile.get("execution_capability_contract") or contract.get("execution_capability_contract")
+    if not isinstance(capability, dict):
+        raise ApprovedProfileError("execution_capability_contract_missing")
+    capability_hash = profile.get("execution_capability_contract_hash") or capability.get("execution_capability_contract_hash")
+    if not capability_contract_hash_matches(capability, capability_hash):
+        raise ApprovedProfileError("execution_capability_contract_hash_mismatch")
+    if capability.get("unavailable_required_capabilities"):
+        raise ApprovedProfileError("execution_capability_required_unavailable")
     regime_policy = profile.get("regime_policy")
     if not isinstance(regime_policy, dict):
         raise ApprovedProfileError("regime_policy_missing")
@@ -568,6 +594,18 @@ def verify_profile_source_artifact(profile: dict[str, Any]) -> dict[str, Any]:
     )
     if contract_mismatches:
         raise ApprovedProfileError("source_promotion_execution_contract_mismatch")
+    profile_capability = validated.get("execution_capability_contract")
+    if not isinstance(profile_capability, dict) and isinstance(profile_contract, dict):
+        profile_capability = profile_contract.get("execution_capability_contract")
+    promotion_capability = promotion.get("execution_capability_contract") or promotion_profile.get("execution_capability_contract")
+    if not isinstance(promotion_capability, dict) and isinstance(promotion_contract, dict):
+        promotion_capability = promotion_contract.get("execution_capability_contract")
+    capability_mismatches = execution_capability_contract_mismatch_reasons(
+        expected=promotion_capability if isinstance(promotion_capability, dict) else None,
+        observed=profile_capability if isinstance(profile_capability, dict) else None,
+    )
+    if capability_mismatches:
+        raise ApprovedProfileError("source_promotion_execution_capability_contract_mismatch")
     if promotion.get("lineage_required"):
         if not str(validated.get("lineage_hash") or "").strip():
             raise ApprovedProfileError("lineage_hash_missing")
@@ -866,6 +904,8 @@ def runtime_contract_from_env_values(env: dict[str, str]) -> dict[str, Any]:
     if execution_contract is not None:
         runtime["execution_reality_contract"] = execution_contract
         runtime["execution_contract_hash"] = execution_contract["execution_contract_hash"]
+        runtime["execution_capability_contract"] = execution_contract.get("execution_capability_contract")
+        runtime["execution_capability_contract_hash"] = execution_contract.get("execution_capability_contract_hash")
     return runtime
 
 
@@ -910,6 +950,8 @@ def runtime_contract_from_settings(cfg: object) -> dict[str, Any]:
     if execution_contract is not None:
         runtime["execution_reality_contract"] = execution_contract
         runtime["execution_contract_hash"] = execution_contract["execution_contract_hash"]
+        runtime["execution_capability_contract"] = execution_contract.get("execution_capability_contract")
+        runtime["execution_capability_contract_hash"] = execution_contract.get("execution_capability_contract_hash")
     return runtime
 
 
@@ -938,6 +980,7 @@ def _execution_contract_from_env_values(env: dict[str, str]) -> dict[str, Any] |
         depth_required=_bool_value(_value("EXECUTION_DEPTH_REQUIRED", "false")),
         trade_tick_required=_bool_value(_value("EXECUTION_TRADE_TICK_REQUIRED", "false")),
         queue_position_required=_bool_value(_value("EXECUTION_QUEUE_POSITION_REQUIRED", "false")),
+        market_impact_required=_bool_value(_value("EXECUTION_MARKET_IMPACT_REQUIRED", "false")),
         intra_candle_path_available=_bool_value(_value("EXECUTION_INTRA_CANDLE_PATH_AVAILABLE", "false")),
         latency_model={
             "type": _value("EXECUTION_LATENCY_MODEL_TYPE", "fixed_bps"),
@@ -979,6 +1022,7 @@ def _execution_contract_from_settings(cfg: object) -> dict[str, Any] | None:
         depth_required=bool(getattr(cfg, "EXECUTION_DEPTH_REQUIRED", False)),
         trade_tick_required=bool(getattr(cfg, "EXECUTION_TRADE_TICK_REQUIRED", False)),
         queue_position_required=bool(getattr(cfg, "EXECUTION_QUEUE_POSITION_REQUIRED", False)),
+        market_impact_required=bool(getattr(cfg, "EXECUTION_MARKET_IMPACT_REQUIRED", False)),
         intra_candle_path_available=bool(getattr(cfg, "EXECUTION_INTRA_CANDLE_PATH_AVAILABLE", False)),
         latency_model={
             "type": str(getattr(cfg, "EXECUTION_LATENCY_MODEL_TYPE", "fixed_bps")),
@@ -1074,6 +1118,28 @@ def diff_profile_to_runtime(
                 "expected": profile.get("execution_contract_hash"),
                 "actual": None,
                 "reason": "runtime_execution_contract_missing",
+            }
+        )
+    runtime_capability = runtime.get("execution_capability_contract")
+    if not isinstance(runtime_capability, dict) and isinstance(runtime_contract, dict):
+        runtime_capability = runtime_contract.get("execution_capability_contract")
+    expected_capability = profile.get("execution_capability_contract")
+    profile_contract = profile.get("execution_reality_contract")
+    if not isinstance(expected_capability, dict) and isinstance(profile_contract, dict):
+        expected_capability = profile_contract.get("execution_capability_contract")
+    if isinstance(runtime_capability, dict):
+        for mismatch in execution_capability_contract_mismatch_reasons(
+            expected=expected_capability if isinstance(expected_capability, dict) else None,
+            observed=runtime_capability,
+        ):
+            mismatches.append(mismatch)
+    elif str(profile.get("profile_mode") or "").strip().lower() in APPROVED_PROFILE_MODES:
+        mismatches.append(
+            {
+                "field": "execution_capability_contract",
+                "expected": profile.get("execution_capability_contract_hash"),
+                "actual": None,
+                "reason": "runtime_execution_capability_contract_missing",
             }
         )
     return tuple(mismatches)

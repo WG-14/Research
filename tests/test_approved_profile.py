@@ -277,6 +277,7 @@ def _write_env(path: Path, *, sma_short: int = 2, profile_path: str = "") -> Non
                 "EXECUTION_DEPTH_REQUIRED=false",
                 "EXECUTION_TRADE_TICK_REQUIRED=false",
                 "EXECUTION_QUEUE_POSITION_REQUIRED=false",
+                "EXECUTION_MARKET_IMPACT_REQUIRED=false",
                 "EXECUTION_INTRA_CANDLE_PATH_AVAILABLE=false",
                 "EXECUTION_LATENCY_MODEL_TYPE=fixed_bps",
                 "EXECUTION_LATENCY_MS=0",

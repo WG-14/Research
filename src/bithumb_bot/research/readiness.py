@@ -7,6 +7,7 @@ from typing import Any
 from bithumb_bot.bootstrap import get_last_explicit_env_load_summary
 from bithumb_bot.config import settings
 from bithumb_bot.execution_quality import ExecutionQualityThresholds
+from bithumb_bot.execution_reality_contract import build_execution_capability_contract
 
 from .data_plane import (
     PERSISTENT_MISSING_CLASSIFICATIONS,
@@ -50,6 +51,8 @@ def build_research_readiness_report(
 
     top_of_book = _top_of_book_payload(manifest=manifest, split_reports=split_reports)
     failed = failed or top_of_book["status"] == "FAIL"
+    execution_capability = _execution_capability_payload(manifest=manifest, top_of_book=top_of_book)
+    failed = failed or bool(execution_capability.get("unavailable_required_capabilities"))
 
     execution_calibration = _execution_calibration_payload(
         manifest=manifest,
@@ -69,6 +72,7 @@ def build_research_readiness_report(
     next_actions = _next_actions(
         split_reports=split_reports,
         top_of_book=top_of_book,
+        execution_capability=execution_capability,
         execution_calibration=execution_calibration,
         walk_forward=walk_forward,
         persistent_missing_classification=persistent_missing_classification,
@@ -93,6 +97,11 @@ def build_research_readiness_report(
         },
         "splits": split_reports,
         "top_of_book": top_of_book,
+        "execution_capability": execution_capability,
+        "execution_capability_contract": execution_capability["contract"],
+        "execution_capability_contract_hash": execution_capability["contract_hash"],
+        "evidence_tier": execution_capability["evidence_tier"],
+        "unavailable_required_capabilities": execution_capability["unavailable_required_capabilities"],
         "execution_calibration": execution_calibration,
         "walk_forward": walk_forward,
         "persistent_missing_classification": persistent_missing_classification,
@@ -153,9 +162,11 @@ def _split_payload(report: dict[str, Any]) -> dict[str, Any]:
         "top_of_book_required": bool(report.get("top_of_book_required")),
         "top_of_book_missing_policy": report.get("top_of_book_missing_policy"),
         "top_of_book_expected_signal_count": report.get("top_of_book_expected_signal_count"),
+        "top_of_book_candle_quote_expected_count": report.get("top_of_book_expected_signal_count"),
         "top_of_book_joined_count": report.get("top_of_book_joined_count"),
         "top_of_book_missing_count": report.get("top_of_book_missing_count"),
         "top_of_book_coverage_pct": report.get("top_of_book_coverage_pct"),
+        "top_of_book_candle_quote_coverage": report.get("top_of_book_coverage_pct"),
         "top_of_book_gate_status": report.get("top_of_book_gate_status"),
         "top_of_book_gate_reasons": list(report.get("top_of_book_gate_reasons") or []),
     }
@@ -200,11 +211,55 @@ def _top_of_book_payload(*, manifest: ExperimentManifest, split_reports: dict[st
         "missing_policy": spec.missing_policy,
         "min_coverage_pct": spec.min_coverage_pct,
         "observed_coverage_pct": coverage,
+        "top_of_book_candle_quote_coverage": coverage,
+        "signal_execution_quote_coverage": coverage,
         "expected_signal_count": expected,
         "joined_count": joined,
         "missing_count": expected - joined,
         "status": status,
         "reasons": reasons,
+        "next_action": next_action,
+    }
+
+
+def _execution_capability_payload(*, manifest: ExperimentManifest, top_of_book: dict[str, Any]) -> dict[str, Any]:
+    policy = manifest.execution_timing
+    evidence_tier = {
+        "candle_close_legacy": "candle_close_optimistic",
+        "next_candle_open": "candle_next_open",
+        "first_orderbook_after_decision": "top_of_book_after_decision",
+        "latency_adjusted_orderbook": "latency_adjusted_top_of_book",
+    }.get(policy.fill_reference_policy, "unknown")
+    contract = build_execution_capability_contract(
+        fill_reference_policy=policy.fill_reference_policy,
+        top_of_book_required=bool(manifest.dataset.top_of_book.required) if manifest.dataset.top_of_book else False,
+        top_of_book_available=top_of_book.get("status") == "PASS" and int(top_of_book.get("joined_count") or 0) > 0,
+        top_of_book_is_full_depth=False,
+        full_orderbook_depth_required=policy.depth_required,
+        trade_ticks_required=policy.trade_tick_required,
+        queue_position_required=policy.queue_position_required,
+        market_impact_model_required=policy.market_impact_required,
+        intra_candle_path_required=policy.intra_candle_path_required,
+        full_orderbook_depth_available=False,
+        trade_ticks_available=False,
+        queue_position_available=False,
+        market_impact_model_available=False,
+        intra_candle_path_available=False,
+        evidence_tier=evidence_tier,
+    )
+    unavailable = list(contract.get("unavailable_required_capabilities") or [])
+    next_action = "none"
+    if unavailable:
+        next_action = "remove unsupported execution capability requirements or add matching depth/tick/queue/impact evidence and models"
+    return {
+        "contract": contract,
+        "contract_hash": contract["execution_capability_contract_hash"],
+        "evidence_tier": contract["evidence_tier"],
+        "unavailable_required_capabilities": unavailable,
+        "market_impact_required": policy.market_impact_required,
+        "market_impact_model_available": contract["available_capabilities"]["market_impact_model"],
+        "top_of_book_is_full_depth": contract["available_capabilities"]["top_of_book_is_full_depth"],
+        "status": "PASS" if not unavailable else "FAIL",
         "next_action": next_action,
     }
 
@@ -401,6 +456,7 @@ def _next_actions(
     *,
     split_reports: dict[str, dict[str, Any]],
     top_of_book: dict[str, Any],
+    execution_capability: dict[str, Any],
     execution_calibration: dict[str, Any],
     walk_forward: dict[str, Any],
     persistent_missing_classification: dict[str, Any],
@@ -414,6 +470,8 @@ def _next_actions(
             actions.append(action)
     if top_of_book["status"] == "FAIL":
         actions.append(str(top_of_book["next_action"]))
+    if execution_capability["status"] == "FAIL":
+        actions.append(str(execution_capability["next_action"]))
     if execution_calibration["status"] == "FAIL":
         actions.append(str(execution_calibration["next_action"]))
     if walk_forward["status"] == "FAIL":
@@ -452,6 +510,17 @@ def _print_readiness(report: dict[str, Any]) -> None:
         f"status={tob['status']} reasons={','.join(tob['reasons']) if tob['reasons'] else 'none'}"
     )
     print(f"  top_of_book_next_action={tob['next_action']}")
+    cap = report["execution_capability"]
+    print(
+        "  execution_capability="
+        f"hash={cap['contract_hash']} evidence_tier={cap['evidence_tier']} "
+        f"unavailable_required={','.join(cap['unavailable_required_capabilities']) if cap['unavailable_required_capabilities'] else 'none'} "
+        f"market_impact_required={1 if cap['market_impact_required'] else 0} "
+        f"market_impact_model_available={1 if cap['market_impact_model_available'] else 0} "
+        f"top_of_book_is_full_depth={1 if cap['top_of_book_is_full_depth'] else 0} "
+        f"status={cap['status']}"
+    )
+    print(f"  execution_capability_next_action={cap['next_action']}")
     cal = report["execution_calibration"]
     print(
         "  execution_calibration="

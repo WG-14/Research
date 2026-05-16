@@ -4,7 +4,9 @@ import pytest
 
 from bithumb_bot.approved_profile import diff_profile_to_runtime
 from bithumb_bot.execution_reality_contract import (
+    build_execution_capability_contract,
     build_execution_reality_contract,
+    execution_capability_contract_hash,
     execution_condition_contract_hash,
     execution_contract_hash,
     unsupported_capability_reasons,
@@ -55,6 +57,41 @@ def test_execution_contract_hash_changes_for_semantic_execution_fields(field: st
     changed = _contract(**{field: value})
 
     assert changed["execution_contract_hash"] != base["execution_contract_hash"]
+
+
+def test_execution_capability_contract_hash_is_stable_and_ignores_generated_timestamps() -> None:
+    first = build_execution_capability_contract(
+        fill_reference_policy="next_candle_open",
+        evidence_tier="candle_next_open",
+    )
+    second = dict(first)
+    second["generated_at"] = "2026-05-16T00:00:00+00:00"
+
+    assert execution_capability_contract_hash(first) == execution_capability_contract_hash(second)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"full_orderbook_depth_required": True},
+        {"trade_ticks_required": True},
+        {"queue_position_required": True},
+        {"market_impact_model_required": True},
+        {"evidence_tier": "latency_adjusted_top_of_book"},
+    ],
+)
+def test_execution_capability_contract_hash_changes_for_semantic_fields(overrides: dict[str, object]) -> None:
+    base = build_execution_capability_contract(
+        fill_reference_policy="next_candle_open",
+        evidence_tier="candle_next_open",
+    )
+    payload = {"fill_reference_policy": "next_candle_open", "evidence_tier": "candle_next_open"}
+    payload.update(overrides)
+    changed = build_execution_capability_contract(
+        **payload,
+    )
+
+    assert changed["execution_capability_contract_hash"] != base["execution_capability_contract_hash"]
 
 
 def test_execution_condition_hash_excludes_calibration_artifact_lineage() -> None:
@@ -180,6 +217,45 @@ def test_research_only_sma_candle_only_manifest_remains_allowed_but_limited() ->
     assert manifest.deployment_tier == "research_only"
     assert manifest.dataset.top_of_book is None
     assert manifest.execution_timing.fill_reference_policy == "candle_close_legacy"
+
+
+def test_market_impact_required_fails_until_implemented() -> None:
+    payload = _manifest_payload()
+    payload["execution_timing"] = {"market_impact_required": True}
+
+    with pytest.raises(ManifestValidationError, match="execution_market_impact_required_but_unavailable"):
+        parse_manifest(payload)
+
+
+def test_market_order_extra_cost_bps_does_not_satisfy_market_impact_required() -> None:
+    payload = _manifest_payload()
+    payload["execution_model"] = {
+        "type": "stress",
+        "fee_rate": 0.0004,
+        "slippage_bps": 5.0,
+        "market_order_extra_cost_bps": 25.0,
+    }
+    payload["execution_timing"] = {"market_impact_required": True}
+
+    with pytest.raises(ManifestValidationError, match="execution_market_impact_required_but_unavailable"):
+        parse_manifest(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "reason"),
+    [
+        ("depth_required", "execution_depth_required_but_unavailable"),
+        ("trade_tick_required", "execution_trade_ticks_required_but_unavailable"),
+        ("queue_position_required", "execution_queue_position_required_but_unavailable"),
+        ("intra_candle_path_required", "execution_intra_candle_path_required_but_unavailable"),
+    ],
+)
+def test_unsupported_execution_capability_gates_still_fail_closed(field: str, reason: str) -> None:
+    payload = _manifest_payload()
+    payload["execution_timing"] = {field: True}
+
+    with pytest.raises(ManifestValidationError, match=reason):
+        parse_manifest(payload)
 
 
 def test_production_bound_manifest_without_execution_timing_fails_closed() -> None:

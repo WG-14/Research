@@ -159,6 +159,9 @@ class ExecutionScenario:
             "partial_fill_rate": self.partial_fill_rate,
             "order_failure_rate": self.order_failure_rate,
             "market_order_extra_cost_bps": self.market_order_extra_cost_bps,
+            "stress_extra_cost_bps": self.market_order_extra_cost_bps,
+            "market_order_extra_cost_semantics": "scalar_stress_extra_cost_not_depth_aware_market_impact",
+            "market_impact_model_available": False,
             "seed": self.seed,
             "source": self.source,
             "scenario_policy": self.scenario_policy,
@@ -207,6 +210,7 @@ class ExecutionTimingPolicy:
     depth_required: bool = False
     trade_tick_required: bool = False
     queue_position_required: bool = False
+    market_impact_required: bool = False
     intra_candle_path_required: bool = False
     source: str = "legacy_default"
 
@@ -227,6 +231,7 @@ class ExecutionTimingPolicy:
         payload["depth_required"] = self.depth_required
         payload["trade_tick_required"] = self.trade_tick_required
         payload["queue_position_required"] = self.queue_position_required
+        payload["market_impact_required"] = self.market_impact_required
         payload["intra_candle_path_required"] = self.intra_candle_path_required
         return payload
 
@@ -1141,6 +1146,7 @@ def _parse_execution_timing(value: Any) -> ExecutionTimingPolicy:
         "depth_required",
         "trade_tick_required",
         "queue_position_required",
+        "market_impact_required",
         "intra_candle_path_required",
     }
     unknown = sorted(set(value) - allowed_fields)
@@ -1184,16 +1190,19 @@ def _parse_execution_timing(value: Any) -> ExecutionTimingPolicy:
     depth_required = bool(value.get("depth_required", False))
     trade_tick_required = bool(value.get("trade_tick_required", False))
     queue_position_required = bool(value.get("queue_position_required", False))
+    market_impact_required = bool(value.get("market_impact_required", False))
     intra_candle_path_required = bool(value.get("intra_candle_path_required", False))
     unsupported = unsupported_capability_reasons(
         {
             "depth_required": depth_required,
             "trade_tick_required": trade_tick_required,
             "queue_position_required": queue_position_required,
+            "market_impact_required": market_impact_required,
             "intra_candle_path_required": intra_candle_path_required,
             "depth_available": False,
             "trade_ticks_available": False,
             "queue_position_available": False,
+            "market_impact_model_available": False,
             "intra_candle_path_available": False,
         }
     )
@@ -1212,6 +1221,7 @@ def _parse_execution_timing(value: Any) -> ExecutionTimingPolicy:
         depth_required=depth_required,
         trade_tick_required=trade_tick_required,
         queue_position_required=queue_position_required,
+        market_impact_required=market_impact_required,
         intra_candle_path_required=intra_candle_path_required,
         source="manifest",
     )

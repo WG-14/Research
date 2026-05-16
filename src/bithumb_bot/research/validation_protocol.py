@@ -7,7 +7,10 @@ from pathlib import Path
 from statistics import median
 from typing import Any, Callable
 
-from bithumb_bot.execution_reality_contract import build_execution_reality_contract
+from bithumb_bot.execution_reality_contract import (
+    build_execution_reality_contract,
+    build_execution_capability_contract,
+)
 from bithumb_bot.execution_quality import ExecutionQualityThresholds
 from bithumb_bot.paths import PathManager
 from bithumb_bot.market_regime import MARKET_REGIME_VERSION, evaluate_regime_acceptance_gate
@@ -684,6 +687,7 @@ def _evaluate_candidates(
                 calibration_hash=calibration_gate.get("artifact_hash") if isinstance(calibration_gate, dict) else None,
                 top_of_book_available=int(top_of_book_quality_summary.get("joined_quote_count") or 0) > 0,
             )
+            capability_contract = _execution_capability_contract_from_reality(execution_contract)
             scenario_result = {
                 "scenario_id": scenario_id,
                 "scenario_index": scenario_index,
@@ -699,6 +703,10 @@ def _evaluate_candidates(
                 "execution_timing_policy": manifest.execution_timing.as_dict(),
                 "execution_reality_contract": execution_contract,
                 "execution_contract_hash": execution_contract["execution_contract_hash"],
+                "execution_capability_contract": capability_contract,
+                "execution_capability_contract_hash": capability_contract["execution_capability_contract_hash"],
+                "evidence_tier": capability_contract["evidence_tier"],
+                "unavailable_required_capabilities": capability_contract["unavailable_required_capabilities"],
                 "execution_reality_summary": execution_reality_summary,
                 "train_execution_event_summary": base.get("train_execution_event_summary") or {},
                 "validation_execution_event_summary": base.get("validation_execution_event_summary") or {},
@@ -851,6 +859,10 @@ def _evaluate_candidates(
                 "execution_timing_policy": manifest.execution_timing.as_dict(),
                 "execution_reality_contract": primary.get("execution_reality_contract"),
                 "execution_contract_hash": primary.get("execution_contract_hash"),
+                "execution_capability_contract": primary.get("execution_capability_contract"),
+                "execution_capability_contract_hash": primary.get("execution_capability_contract_hash"),
+                "evidence_tier": primary.get("evidence_tier"),
+                "unavailable_required_capabilities": primary.get("unavailable_required_capabilities"),
                 "execution_reality_summary": primary.get("execution_reality_summary"),
                 "execution_event_summary": primary.get("execution_event_summary"),
                 "train_execution_event_summary": primary.get("train_execution_event_summary"),
@@ -1774,6 +1786,7 @@ def _report_payload(
         calibration_hash=calibration_hash,
         top_of_book_available=top_of_book_joined_count > 0,
     )
+    report_capability_contract = _execution_capability_contract_from_reality(report_execution_contract)
     parameter_grid_size = 1
     for values in manifest.parameter_space.values():
         parameter_grid_size *= len(values)
@@ -1997,6 +2010,14 @@ def _report_payload(
         "execution_timing_policy": manifest.execution_timing.as_dict(),
         "execution_reality_contract": report_execution_contract,
         "execution_contract_hash": report_execution_contract["execution_contract_hash"],
+        "execution_capability_contract": report_capability_contract,
+        "execution_capability_contract_hash": report_capability_contract["execution_capability_contract_hash"],
+        "evidence_tier": report_capability_contract["evidence_tier"],
+        "unavailable_required_capabilities": report_capability_contract["unavailable_required_capabilities"],
+        "execution_limitations": report_capability_contract["limitations"],
+        "market_impact_required": manifest.execution_timing.market_impact_required,
+        "market_impact_model_available": report_capability_contract["available_capabilities"]["market_impact_model"],
+        "top_of_book_is_full_depth": report_capability_contract["available_capabilities"]["top_of_book_is_full_depth"],
         "execution_reality_level": _report_execution_reality_level(candidates),
         "execution_reality_gate_status": _report_execution_reality_gate_status(candidates),
         "execution_reality_gate_reasons": _report_execution_reality_gate_reasons(candidates),
@@ -2554,6 +2575,7 @@ def _execution_reality_contract(
         depth_required=manifest.execution_timing.depth_required,
         trade_tick_required=manifest.execution_timing.trade_tick_required,
         queue_position_required=manifest.execution_timing.queue_position_required,
+        market_impact_required=manifest.execution_timing.market_impact_required,
         intra_candle_path_available=False,
         latency_model=latency_model,
         partial_fill_model=partial_fill_model,
@@ -2576,6 +2598,30 @@ def _execution_reality_contract(
             "scenario_role": scenario.scenario_role,
             "scenario_type": scenario.type,
         },
+    )
+
+
+def _execution_capability_contract_from_reality(contract: dict[str, Any]) -> dict[str, Any]:
+    capability = contract.get("execution_capability_contract")
+    if isinstance(capability, dict):
+        return dict(capability)
+    return build_execution_capability_contract(
+        fill_reference_policy=str(contract.get("fill_reference_policy") or "candle_close_legacy"),
+        top_of_book_required=bool(contract.get("top_of_book_required")),
+        top_of_book_available=bool(contract.get("quote_evidence_available")),
+        top_of_book_is_full_depth=bool(contract.get("top_of_book_is_full_depth")),
+        full_orderbook_depth_required=bool(contract.get("depth_required")),
+        trade_ticks_required=bool(contract.get("trade_tick_required")),
+        queue_position_required=bool(contract.get("queue_position_required")),
+        market_impact_model_required=bool(contract.get("market_impact_required")),
+        intra_candle_path_required=bool(contract.get("intra_candle_path_required")),
+        full_orderbook_depth_available=bool(contract.get("depth_available")),
+        trade_ticks_available=bool(contract.get("trade_ticks_available")),
+        queue_position_available=bool(contract.get("queue_position_available")),
+        market_impact_model_available=bool(contract.get("market_impact_model_available")),
+        intra_candle_path_available=bool(contract.get("intra_candle_path_available")),
+        evidence_tier=str(contract.get("execution_reality_level") or "unknown"),
+        limitations=list(contract.get("limitations") or []),
     )
 
 
@@ -2688,6 +2734,8 @@ def _top_of_book_quality_summary(reports: dict[str, DatasetQualityReport]) -> di
             "missing_quote_count": 0,
             "expected_signal_count": 0,
             "coverage_pct": None,
+            "top_of_book_candle_quote_coverage": None,
+            "signal_execution_quote_coverage": None,
             "affected_splits": [],
             "next_action": None,
             "limitations": [
@@ -2747,6 +2795,8 @@ def _top_of_book_quality_summary(reports: dict[str, DatasetQualityReport]) -> di
         "missing_quote_count": missing,
         "expected_signal_count": expected,
         "coverage_pct": coverage_pct,
+        "top_of_book_candle_quote_coverage": coverage_pct,
+        "signal_execution_quote_coverage": coverage_pct,
         "join_tolerance_ms": join_tolerances[0] if len(join_tolerances) == 1 else join_tolerances,
         "sources": sources,
         "affected_splits": affected_splits,

@@ -240,6 +240,13 @@ def test_research_backtest_metadata_includes_joined_top_of_book(tmp_path: Path, 
     assert report["data_limitations"]["top_of_book_available"] is True
     assert report["data_limitations"]["orderbook_depth_available"] is False
     assert report["data_limitations"]["execution_reference_price"] == "candle_close_legacy"
+    assert report["execution_capability_contract_hash"].startswith("sha256:")
+    assert report["execution_capability_contract"]["evidence_tier"] == "candle_close_optimistic"
+    assert report["execution_capability_contract"]["available_capabilities"]["top_of_book_is_full_depth"] is False
+    assert "market_impact_model_unavailable" in report["execution_capability_contract"]["limitations"]
+    scenario = report["candidates"][0]["scenario_results"][0]
+    assert scenario["execution_capability_contract_hash"].startswith("sha256:")
+    assert scenario["evidence_tier"] == scenario["execution_capability_contract"]["evidence_tier"]
 
 
 def test_strategy_requiring_top_of_book_fails_closed_when_manifest_lacks_it(tmp_path: Path, monkeypatch) -> None:
@@ -965,11 +972,14 @@ def test_missing_quote_policy_warn_records_warning_without_promotion_grade_pass(
     candidate = report["candidates"][0]
     execution = candidate["scenario_results"][0]["validation_execution_metadata"][0]
     summary = report["signal_quote_coverage_summary"]
+    top_summary = report["top_of_book_quality_summary"]
     assert execution["fill_status"] == "skipped_with_warning"
     assert execution["execution_reference_failure_reason"] == "missing_quote_warning"
     assert "missing_quote_warning" in report["warnings"]
     assert summary["signal_event_count"] > 0
     assert summary["skipped_execution_signal_count"] == summary["signal_event_count"]
+    assert "top_of_book_candle_quote_coverage" in top_summary
+    assert "signal_execution_quote_coverage" in top_summary
     assert report["gate_result"] == "FAIL"
     assert "quote_after_decision_signal_coverage_below_threshold" in candidate["gate_fail_reasons"]
 
