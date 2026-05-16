@@ -495,6 +495,40 @@ def test_summary_bootstrap_is_screening_grade_and_does_not_populate_wrc_field() 
     assert evidence["white_reality_check_method"] is None
 
 
+def test_metric_centered_manifest_still_generates_screening_summary_bootstrap() -> None:
+    manifest = _manifest()
+    assert manifest.statistical_validation is not None
+    assert manifest.statistical_validation.bootstrap.method == "metric_centered_max_bootstrap"
+
+    evidence = build_statistical_selection_evidence(
+        manifest=manifest,
+        candidates=_candidates(),
+        manifest_hash=manifest.manifest_hash(),
+        dataset_content_hash="sha256:dataset",
+        dataset_quality_hash="sha256:quality",
+        experiment_family_id="family",
+        hypothesis_id="hypothesis",
+        hypothesis_status="pre_registered",
+        selection_hash="sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        required_scenario_ids=["scenario_001"],
+        search_budget=2,
+        parameter_grid_size=2,
+        attempt_index=1,
+        holdout_reuse_count=0,
+        dataset_reuse_policy="single_final_holdout_for_experiment_family",
+    )
+
+    assert evidence["bootstrap_method"] == "metric_centered_max_bootstrap"
+    assert evidence["evidence_grade"] == "SCREENING_SUMMARY_BOOTSTRAP"
+    assert evidence["statistical_method"] == "summary_metric_centered_max_bootstrap"
+    assert evidence["official_promotion_grade_wrc_generation_available"] is False
+    assert "promotion_grade_statistical_generation_unavailable" in evidence["warnings"]
+    assert evidence["summary_metric_max_bootstrap_p_value"] is not None
+    assert evidence["selection_adjusted_summary_p_value"] == evidence["summary_metric_max_bootstrap_p_value"]
+    assert evidence["white_reality_check_p_value"] is None
+    assert evidence["white_reality_check_method"] is None
+
+
 def test_screening_grade_evidence_cannot_satisfy_production_bound_promotion() -> None:
     manifest = _manifest()
     candidates = _candidates()

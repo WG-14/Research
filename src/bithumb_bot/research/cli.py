@@ -92,6 +92,18 @@ def cmd_research_promote_candidate(
     print(f"  statistical_evidence_hash={result.artifact.get('statistical_evidence_hash') or 'none'}")
     print(f"  evidence_grade={result.artifact.get('evidence_grade') or 'none'}")
     print(f"  statistical_method={result.artifact.get('statistical_method') or 'none'}")
+    print(
+        "  official_promotion_grade_wrc_generation_available="
+        f"{1 if result.artifact.get('official_promotion_grade_wrc_generation_available') else 0}"
+    )
+    print(
+        "  promotion_grade_limitations="
+        f"{_format_items(tuple(str(item) for item in result.artifact.get('promotion_grade_limitations') or []))}"
+    )
+    print(
+        "  promotion_blocking_reasons="
+        f"{_format_items(tuple(str(item) for item in result.artifact.get('promotion_blocking_reasons') or []))}"
+    )
     print(f"  return_panel_hash={result.artifact.get('return_panel_hash') or 'none'}")
     print(f"  return_unit={result.artifact.get('return_unit') or 'none'}")
     print(f"  return_panel_observation_count={result.artifact.get('return_panel_observation_count')}")
@@ -99,6 +111,7 @@ def cmd_research_promote_candidate(
     print(f"  family_trial_registry_prior_hash={result.artifact.get('family_trial_registry_prior_hash') or 'none'}")
     print(f"  family_trial_registry_row_hash={result.artifact.get('family_trial_registry_row_hash') or 'none'}")
     print(f"  white_reality_check_p_value={result.artifact.get('white_reality_check_p_value')}")
+    print(f"  white_reality_check_method={result.artifact.get('white_reality_check_method') or 'none'}")
     print(f"  summary_metric_max_bootstrap_p_value={result.artifact.get('summary_metric_max_bootstrap_p_value')}")
     print(f"  bootstrap_sampling_contract_hash={result.artifact.get('bootstrap_sampling_contract_hash') or 'none'}")
     print(f"  statistical_gate_result={result.artifact.get('statistical_gate_result') or 'none'}")

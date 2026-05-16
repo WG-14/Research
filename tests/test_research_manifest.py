@@ -132,6 +132,26 @@ def test_manifest_parses_statistical_validation_and_binds_hash() -> None:
     assert parse_manifest(changed).manifest_hash() != baseline_hash
 
 
+def test_manifest_rejects_wrc_bootstrap_until_official_generation_exists() -> None:
+    payload = _manifest()
+    payload["statistical_validation"] = _statistical_validation()
+    payload["statistical_validation"]["bootstrap"] = {
+        "method": "white_reality_check_block_bootstrap",
+        "n_bootstrap": 100,
+        "block_length_policy": "fixed",
+        "seed_policy": "derived_from_selection_universe_hash",
+    }
+
+    with pytest.raises(
+        ManifestValidationError,
+        match=(
+            "statistical_validation.bootstrap.method white_reality_check_block_bootstrap "
+            "is not available in official research-backtest generation"
+        ),
+    ):
+        parse_manifest(payload)
+
+
 def test_manifest_parses_stress_suite_and_binds_hash() -> None:
     payload = _manifest()
     payload["stress_suite"] = _stress_suite()
