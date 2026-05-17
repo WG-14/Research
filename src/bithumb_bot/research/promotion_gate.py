@@ -620,6 +620,7 @@ def promote_candidate(
     generated_at: str | None = None,
     allow_legacy_lineage: bool = False,
     validation_run_path: str | Path | None = None,
+    validation_run_binding_hash: str | None = None,
     allow_pending_validation_run: bool = False,
 ) -> PromotionResult:
     research_report_dir = manager.data_dir() / "reports" / "research" / experiment_id
@@ -715,12 +716,14 @@ def promote_candidate(
         )
     validation_run_payload: dict[str, Any] | None = None
     validation_run_hash: str | None = None
+    verified_validation_run_binding_hash: str | None = None
     validation_run_resolved_path: Path | None = None
     validation_run_binding_status = "not_required"
     validation_run_reasons: list[str] = []
     from .validation_pipeline import (
         default_validation_run_path,
         validate_promotion_validation_run,
+        verify_validation_run_binding,
         validation_run_required_for_promotion,
     )
 
@@ -728,7 +731,16 @@ def promote_candidate(
         deployment_tier=candidate.get("deployment_tier") or report.get("deployment_tier")
     )
     if validation_required:
-        if allow_pending_validation_run:
+        supplied_binding_hash = str(validation_run_binding_hash or "").strip()
+        if allow_pending_validation_run and supplied_binding_hash.startswith("sha256:"):
+            validation_run_resolved_path = (
+                Path(validation_run_path).expanduser()
+                if validation_run_path is not None
+                else default_validation_run_path(manager=manager, experiment_id=experiment_id)
+            )
+            verified_validation_run_binding_hash = supplied_binding_hash
+            validation_run_binding_status = "verified_pre_promotion_binding"
+        elif allow_pending_validation_run:
             validation_run_binding_status = "pending_validation_pipeline"
             promotion_warnings = sorted(set(promotion_warnings) | {"validation_run_pending_pipeline_completion"})
         elif allow_legacy_lineage and validation_run_path is None:
@@ -754,6 +766,13 @@ def promote_candidate(
             if validation_run_reasons:
                 raise PromotionGateError(f"promotion refused: {','.join(validation_run_reasons)}")
             validation_run_hash = str(validation_run_payload.get("content_hash") or "")
+            binding_reasons = verify_validation_run_binding(
+                validation_run_payload,
+                expected_binding_hash=validation_run_payload.get("validation_run_binding_hash"),
+            )
+            if binding_reasons:
+                raise PromotionGateError(f"promotion refused: {','.join(binding_reasons)}")
+            verified_validation_run_binding_hash = str(validation_run_payload.get("validation_run_binding_hash") or "")
             validation_run_binding_status = "verified"
     artifact = {
         "promotion_schema_version": 1,
@@ -779,6 +798,7 @@ def promote_candidate(
         "validation_run_binding_status": validation_run_binding_status,
         "validation_run_path": str(validation_run_resolved_path.resolve()) if validation_run_resolved_path else None,
         "validation_run_hash": validation_run_hash,
+        "validation_run_binding_hash": verified_validation_run_binding_hash,
         "validation_run_reasons": validation_run_reasons,
         "backtest_report_path": str(candidate_report_path.resolve()),
         "backtest_report_hash": backtest_report_hash,

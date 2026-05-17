@@ -404,6 +404,7 @@ def cmd_research_promote_candidate(
     print(f"  validation_run_required={1 if result.artifact.get('validation_run_required') else 0}")
     print(f"  validation_run_binding_status={result.artifact.get('validation_run_binding_status') or 'none'}")
     print(f"  validation_run_hash={result.artifact.get('validation_run_hash') or 'none'}")
+    print(f"  validation_run_binding_hash={result.artifact.get('validation_run_binding_hash') or 'none'}")
     print(
         "  dataset_quality_legacy_bypass_used="
         f"{1 if result.artifact.get('dataset_quality_legacy_bypass_used') else 0}"
@@ -416,6 +417,7 @@ def _print_validation_run_summary(payload: dict[str, object]) -> None:
     print("[RESEARCH-VALIDATE]")
     print(f"  validation_run_path={payload.get('validation_run_path')}")
     print(f"  validation_run_hash={payload.get('content_hash')}")
+    print(f"  validation_run_binding_hash={payload.get('validation_run_binding_hash')}")
     print(f"  end_to_end_validation_result={payload.get('end_to_end_validation_result')}")
     print(f"  selected_candidate_id={payload.get('selected_candidate_id') or 'none'}")
     print(f"  backtest_report_hash={payload.get('backtest_report_hash') or 'none'}")

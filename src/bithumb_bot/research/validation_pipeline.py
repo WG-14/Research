@@ -18,6 +18,7 @@ from .validation_protocol import run_research_backtest, run_research_walk_forwar
 
 VALIDATION_RUN_SCHEMA_VERSION = 1
 VALIDATION_RUN_HASH_FIELD = "content_hash"
+VALIDATION_RUN_BINDING_HASH_FIELD = "validation_run_binding_hash"
 PASS = "PASS"
 FAIL_CLOSED = "FAIL_CLOSED"
 SKIPPED_NOT_REQUIRED = "SKIPPED_NOT_REQUIRED"
@@ -83,6 +84,7 @@ class ValidationRun:
     walk_forward_report_hash: str | None = None
     promotion_artifact_path: str | None = None
     promotion_artifact_hash: str | None = None
+    validation_run_binding_hash: str | None = None
     reproduce_ok: bool | None = None
     promotion_allowed: bool = False
     end_to_end_validation_result: str = NOT_RUN
@@ -110,6 +112,7 @@ class ValidationRun:
             "walk_forward_report_hash": self.walk_forward_report_hash,
             "promotion_artifact_path": self.promotion_artifact_path,
             "promotion_artifact_hash": self.promotion_artifact_hash,
+            VALIDATION_RUN_BINDING_HASH_FIELD: self.validation_run_binding_hash,
             "reproduce_ok": self.reproduce_ok,
             "promotion_allowed": self.promotion_allowed,
             "end_to_end_validation_result": self.end_to_end_validation_result,
@@ -117,6 +120,9 @@ class ValidationRun:
             "validation_run_path": self.validation_run_path,
             "generated_at": self.generated_at,
         }
+        if not payload[VALIDATION_RUN_BINDING_HASH_FIELD]:
+            payload[VALIDATION_RUN_BINDING_HASH_FIELD] = validation_run_binding_hash(payload)
+            self.validation_run_binding_hash = str(payload[VALIDATION_RUN_BINDING_HASH_FIELD])
         payload[VALIDATION_RUN_HASH_FIELD] = validation_run_content_hash(payload)
         return payload
 
@@ -127,6 +133,70 @@ def validation_run_hash_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def validation_run_content_hash(payload: dict[str, Any]) -> str:
     return sha256_prefixed(validation_run_hash_payload(payload))
+
+
+def validation_run_binding_hash_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    stage_rows = payload.get("stages") if isinstance(payload.get("stages"), list) else []
+    pre_promotion_stages: list[dict[str, Any]] = []
+    for row in stage_rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "")
+        if name in {"promotion", "reproduce"}:
+            continue
+        pre_promotion_stages.append(
+            {
+                "name": name,
+                "required": bool(row.get("required")),
+                "status": row.get("status"),
+                "input_hashes": row.get("input_hashes") or {},
+                "output_hashes": row.get("output_hashes") or {},
+                "artifact_hashes": row.get("artifact_hashes") or {},
+                "reasons": sorted(str(item) for item in row.get("reasons") or []),
+            }
+        )
+    return {
+        "validation_run_schema_version": payload.get("validation_run_schema_version"),
+        "validation_run_id": payload.get("validation_run_id"),
+        "experiment_id": payload.get("experiment_id"),
+        "manifest_hash": payload.get("manifest_hash"),
+        "repository_version": payload.get("repository_version"),
+        "deployment_tier": payload.get("deployment_tier"),
+        "mode": payload.get("mode"),
+        "command_args_hash": payload.get("command_args_hash"),
+        "required_stage_names": [
+            str(item)
+            for item in payload.get("required_stage_names") or []
+            if str(item) not in {"promotion", "reproduce"}
+        ],
+        "pre_promotion_stages": pre_promotion_stages,
+        "selected_candidate_id": payload.get("selected_candidate_id"),
+        "backtest_report_hash": payload.get("backtest_report_hash"),
+        "walk_forward_report_hash": payload.get("walk_forward_report_hash"),
+    }
+
+
+def validation_run_binding_hash(payload: dict[str, Any]) -> str:
+    return sha256_prefixed(validation_run_binding_hash_payload(payload))
+
+
+def verify_validation_run_binding(
+    payload: dict[str, Any],
+    *,
+    expected_binding_hash: str | None,
+) -> list[str]:
+    reasons: list[str] = []
+    expected = str(expected_binding_hash or payload.get(VALIDATION_RUN_BINDING_HASH_FIELD) or "")
+    if not expected.startswith("sha256:"):
+        reasons.append("validation_run_binding_hash_missing")
+        return reasons
+    actual = validation_run_binding_hash(payload)
+    if actual != expected:
+        reasons.append("validation_run_binding_hash_mismatch")
+    embedded = str(payload.get(VALIDATION_RUN_BINDING_HASH_FIELD) or "")
+    if embedded and embedded != expected:
+        reasons.append("validation_run_embedded_binding_hash_mismatch")
+    return reasons
 
 
 def default_validation_run_path(*, manager: PathManager, experiment_id: str) -> Path:
@@ -160,6 +230,7 @@ def verify_validation_run_payload(
     reasons: list[str] = []
     if int(payload.get("validation_run_schema_version") or 0) != VALIDATION_RUN_SCHEMA_VERSION:
         reasons.append("validation_run_schema_version_mismatch")
+    reasons.extend(verify_validation_run_binding(payload, expected_binding_hash=None))
     expected = str(payload.get(VALIDATION_RUN_HASH_FIELD) or "")
     if not expected.startswith("sha256:"):
         reasons.append("validation_run_content_hash_missing")
@@ -335,12 +406,21 @@ def run_research_validation(
                 stage.reasons.extend(mismatch_reasons)
                 return _finalize_validation_run(run, manager=manager, out_path=out_path)
 
+        validation_run_path = _resolved_validation_run_path(
+            manager=manager,
+            experiment_id=manifest.experiment_id,
+            out_path=out_path,
+        )
+        run.validation_run_path = str(validation_run_path.resolve())
+        run.validation_run_binding_hash = validation_run_binding_hash(run.as_dict())
+
         promotion = _run_stage(run, "promotion", lambda stage: _stage_promotion(
             stage=stage,
             experiment_id=manifest.experiment_id,
             candidate_id=str(run.selected_candidate_id),
             manager=manager,
-            validation_run_path=None,
+            validation_run_path=str(validation_run_path.resolve()),
+            validation_run_binding_hash=run.validation_run_binding_hash,
         ))
         run.promotion_artifact_path = str(promotion.artifact_path.resolve())
         run.promotion_artifact_hash = promotion.content_hash
@@ -469,6 +549,7 @@ def _stage_promotion(
     candidate_id: str,
     manager: PathManager,
     validation_run_path: str | None,
+    validation_run_binding_hash: str | None,
 ) -> Any:
     from .promotion_gate import PromotionGateError, promote_candidate
 
@@ -478,6 +559,7 @@ def _stage_promotion(
             candidate_id=candidate_id,
             manager=manager,
             validation_run_path=validation_run_path,
+            validation_run_binding_hash=validation_run_binding_hash,
             allow_pending_validation_run=True,
         )
     except PromotionGateError as exc:
@@ -596,6 +678,15 @@ def _finalize_validation_run(run: ValidationRun, *, manager: PathManager, out_pa
     payload["validation_run_path"] = str(path.resolve())
     payload[VALIDATION_RUN_HASH_FIELD] = content_hash
     return payload
+
+
+def _resolved_validation_run_path(*, manager: PathManager, experiment_id: str, out_path: str | Path | None) -> Path:
+    path = Path(out_path).expanduser() if out_path else default_validation_run_path(
+        manager=manager,
+        experiment_id=experiment_id,
+    )
+    _ensure_research_output_path_allowed(manager, path)
+    return path
 
 
 def _has_failures(run: ValidationRun) -> bool:

@@ -301,7 +301,68 @@ def verify_promotion_artifact(payload: dict[str, Any]) -> dict[str, Any]:
     live_regime_policy = payload.get("live_regime_policy")
     if not isinstance(live_regime_policy, dict):
         raise ApprovedProfileError("promotion_regime_policy_missing")
+    _verify_validation_run_binding_for_promotion(payload)
     return payload
+
+
+def _verify_validation_run_binding_for_promotion(payload: dict[str, Any]) -> None:
+    if not payload.get("validation_run_required"):
+        return
+    status = str(payload.get("validation_run_binding_status") or "").strip()
+    if status not in {"verified", "verified_pre_promotion_binding"}:
+        raise ApprovedProfileError("validation_run_not_verified")
+    binding_hash = str(payload.get("validation_run_binding_hash") or "").strip()
+    validation_hash = str(payload.get("validation_run_hash") or "").strip()
+    if not binding_hash.startswith("sha256:") and not validation_hash.startswith("sha256:"):
+        raise ApprovedProfileError("validation_run_hash_missing")
+    path = str(payload.get("validation_run_path") or "").strip()
+    if not path:
+        raise ApprovedProfileError("validation_run_path_missing")
+    validation_path = Path(path).expanduser()
+    if not validation_path.is_absolute():
+        raise ApprovedProfileError("validation_run_path_must_be_absolute")
+    validation_run = _load_json(validation_path)
+    from .research.validation_pipeline import (
+        validate_promotion_validation_run,
+        validation_run_content_hash,
+        verify_validation_run_binding,
+    )
+
+    expected_content_hash = str(validation_run.get("content_hash") or "")
+    if not expected_content_hash.startswith("sha256:"):
+        raise ApprovedProfileError("validation_run_content_hash_missing")
+    if validation_run_content_hash(validation_run) != expected_content_hash:
+        raise ApprovedProfileError("validation_run_content_hash_mismatch")
+    if validation_hash.startswith("sha256:") and validation_hash != expected_content_hash:
+        raise ApprovedProfileError("validation_run_hash_mismatch")
+    binding_reasons = verify_validation_run_binding(
+        validation_run,
+        expected_binding_hash=binding_hash or validation_run.get("validation_run_binding_hash"),
+    )
+    if binding_reasons:
+        raise ApprovedProfileError(",".join(binding_reasons))
+    _, reasons = validate_promotion_validation_run(
+        validation_run_path=validation_path,
+        experiment_id=str(payload.get("strategy_profile_source_experiment") or ""),
+        manifest_hash=str(payload.get("manifest_hash") or ""),
+        candidate_id=str(payload.get("candidate_id") or ""),
+        backtest_report_hash=str(payload.get("backtest_report_hash") or ""),
+        walk_forward_report_hash=(
+            str(payload.get("walk_forward_report_hash") or "")
+            if payload.get("walk_forward_required")
+            else None
+        ),
+    )
+    if reasons:
+        raise ApprovedProfileError(",".join(reasons))
+    promotion_hash = str(payload.get("content_hash") or "")
+    validation_promotion_hash = str(validation_run.get("promotion_artifact_hash") or "")
+    if (
+        validation_promotion_hash.startswith("sha256:")
+        and promotion_hash.startswith("sha256:")
+        and validation_promotion_hash != promotion_hash
+    ):
+        raise ApprovedProfileError("validation_run_promotion_artifact_hash_mismatch")
 
 
 def _candidate_like_from_promotion(payload: dict[str, Any]) -> dict[str, Any]:
@@ -473,6 +534,7 @@ def build_approved_profile(
         "validation_run_binding_status": verified_promotion.get("validation_run_binding_status"),
         "validation_run_path": verified_promotion.get("validation_run_path"),
         "validation_run_hash": verified_promotion.get("validation_run_hash"),
+        "validation_run_binding_hash": verified_promotion.get("validation_run_binding_hash"),
         "repository_version": repository_version or verified_promotion.get("repository_version") or "unknown",
         "strategy_name": verified_promotion.get("strategy_name"),
         "market": str(market),
@@ -547,6 +609,15 @@ def validate_approved_profile(profile: dict[str, Any]) -> dict[str, Any]:
             raise ApprovedProfileError(
                 "production_calibration_policy_failed:" + ",".join(policy.reasons)
             )
+    if profile.get("validation_run_required"):
+        status = str(profile.get("validation_run_binding_status") or "").strip()
+        if status not in {"verified", "verified_pre_promotion_binding"}:
+            raise ApprovedProfileError("validation_run_not_verified")
+        if not any(
+            str(profile.get(key) or "").startswith("sha256:")
+            for key in ("validation_run_hash", "validation_run_binding_hash")
+        ):
+            raise ApprovedProfileError("validation_run_hash_missing")
     contract = profile.get("execution_reality_contract")
     if not isinstance(contract, dict):
         raise ApprovedProfileError("execution_reality_contract_missing")
@@ -641,6 +712,10 @@ def verify_profile_source_artifact(profile: dict[str, Any]) -> dict[str, Any]:
         promotion_calibration_hash = str(promotion.get("execution_calibration_artifact_hash") or "").strip()
         if profile_calibration_hash and profile_calibration_hash != promotion_calibration_hash:
             raise ApprovedProfileError("source_promotion_execution_calibration_artifact_hash_mismatch")
+    if promotion.get("validation_run_required"):
+        for key in ("validation_run_binding_status", "validation_run_path", "validation_run_hash", "validation_run_binding_hash"):
+            if not _values_equal(validated.get(key), promotion.get(key)):
+                raise ApprovedProfileError(f"source_promotion_{key}_mismatch")
     return promotion
 
 

@@ -21,6 +21,7 @@ from bithumb_bot.approved_profile import (
     runtime_contract_from_settings,
     sha256_prefixed,
     validate_approved_profile,
+    verify_promotion_artifact,
     write_approved_profile_atomic,
 )
 from bithumb_bot.evidence_chain import (
@@ -34,6 +35,7 @@ from bithumb_bot.paths import PathConfig, PathManager, PathPolicyError
 from bithumb_bot.execution_reality_contract import build_execution_reality_contract
 from bithumb_bot.execution_reality_contract import execution_capability_contract_hash, execution_contract_hash
 from bithumb_bot.research.promotion_gate import build_candidate_profile
+from bithumb_bot.research.validation_pipeline import validation_run_binding_hash, validation_run_content_hash
 from bithumb_bot.storage_io import write_json_atomic
 
 
@@ -233,6 +235,50 @@ def _promotion(**overrides) -> dict[str, object]:
     return promotion
 
 
+def _validation_run_for_promotion(
+    path: Path,
+    promotion: dict[str, object],
+    *,
+    binding_hash: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "validation_run_schema_version": 1,
+        "validation_run_id": "sha256:test-validation-run",
+        "experiment_id": promotion["strategy_profile_source_experiment"],
+        "manifest_path": "/tmp/manifest.json",
+        "manifest_hash": promotion["manifest_hash"],
+        "repository_version": "test",
+        "deployment_tier": promotion.get("deployment_tier") or "paper_candidate",
+        "mode": "strict",
+        "command_args_hash": "sha256:args",
+        "required_stage_names": ["readiness", "backtest", "promotion", "reproduce"],
+        "stages": [
+            {"name": "readiness", "required": True, "status": "PASS", "started_at": None, "completed_at": None, "input_hashes": {}, "output_hashes": {}, "artifact_paths": {}, "artifact_hashes": {}, "reasons": []},
+            {"name": "backtest", "required": True, "status": "PASS", "started_at": None, "completed_at": None, "input_hashes": {}, "output_hashes": {}, "artifact_paths": {}, "artifact_hashes": {"backtest_report_hash": promotion.get("backtest_report_hash")}, "reasons": []},
+            {"name": "walk_forward", "required": False, "status": "SKIPPED_NOT_REQUIRED", "started_at": None, "completed_at": None, "input_hashes": {}, "output_hashes": {}, "artifact_paths": {}, "artifact_hashes": {}, "reasons": []},
+            {"name": "promotion", "required": True, "status": "PASS", "started_at": None, "completed_at": None, "input_hashes": {}, "output_hashes": {}, "artifact_paths": {"promotion_artifact_path": promotion.get("artifact_path")}, "artifact_hashes": {"promotion_artifact_hash": promotion.get("content_hash")}, "reasons": []},
+            {"name": "reproduce", "required": True, "status": "PASS", "started_at": None, "completed_at": None, "input_hashes": {}, "output_hashes": {}, "artifact_paths": {}, "artifact_hashes": {}, "reasons": []},
+        ],
+        "selected_candidate_id": promotion["candidate_id"],
+        "backtest_report_path": promotion.get("backtest_report_path"),
+        "backtest_report_hash": promotion.get("backtest_report_hash"),
+        "walk_forward_report_path": None,
+        "walk_forward_report_hash": None,
+        "promotion_artifact_path": promotion.get("artifact_path"),
+        "promotion_artifact_hash": promotion.get("content_hash"),
+        "reproduce_ok": True,
+        "promotion_allowed": True,
+        "end_to_end_validation_result": "PASS",
+        "fail_closed_reasons": [],
+        "validation_run_path": str(path.resolve()),
+        "generated_at": "2026-05-04T00:00:00+00:00",
+    }
+    payload["validation_run_binding_hash"] = binding_hash or validation_run_binding_hash(payload)
+    payload["content_hash"] = validation_run_content_hash(payload)
+    write_json_atomic(path, payload)
+    return payload
+
+
 def _profile(source_promotion_path: str) -> dict[str, object]:
     return build_approved_profile(
         promotion=_promotion(),
@@ -242,6 +288,71 @@ def _profile(source_promotion_path: str) -> dict[str, object]:
         interval="1m",
         generated_at="2026-05-04T00:00:00+00:00",
     )
+
+
+def test_promotion_or_profile_refuses_pending_validation_run_promotion(tmp_path: Path) -> None:
+    promotion = _promotion(
+        validation_run_required=True,
+        validation_run_binding_status="pending_validation_pipeline",
+        validation_run_hash=None,
+        validation_run_binding_hash=None,
+        validation_run_path=str((tmp_path / "validation_run.json").resolve()),
+    )
+
+    with pytest.raises(ApprovedProfileError, match="validation_run_not_verified"):
+        verify_promotion_artifact(promotion)
+
+
+def test_profile_generate_refuses_validation_run_required_without_hash(tmp_path: Path) -> None:
+    promotion = _promotion(
+        validation_run_required=True,
+        validation_run_binding_status="verified_pre_promotion_binding",
+        validation_run_hash=None,
+        validation_run_binding_hash=None,
+        validation_run_path=str((tmp_path / "validation_run.json").resolve()),
+    )
+    promotion_path = tmp_path / "promotion.json"
+    write_json_atomic(promotion_path, promotion)
+
+    with pytest.raises(ApprovedProfileError, match="validation_run_hash_missing"):
+        build_approved_profile(
+            promotion=promotion,
+            mode="paper",
+            source_promotion_path=str(promotion_path),
+            market="KRW-BTC",
+            interval="1m",
+            generated_at="2026-05-04T00:00:00+00:00",
+        )
+
+
+def test_profile_or_promotion_refuses_validation_run_binding_hash_mismatch(tmp_path: Path) -> None:
+    validation_run_path = tmp_path / "validation_run.json"
+    promotion = _promotion(
+        validation_run_required=True,
+        validation_run_binding_status="verified_pre_promotion_binding",
+        validation_run_path=str(validation_run_path.resolve()),
+        validation_run_hash=None,
+        validation_run_binding_hash="sha256:" + "0" * 64,
+        backtest_report_hash="sha256:backtest",
+        walk_forward_required=False,
+    )
+    promotion_path = tmp_path / "promotion.json"
+    promotion["artifact_path"] = str(promotion_path.resolve())
+    _validation_run_for_promotion(validation_run_path, promotion)
+    promotion.pop("artifact_path", None)
+    promotion.pop("content_hash", None)
+    promotion["content_hash"] = sha256_prefixed(content_hash_payload(promotion))
+    write_json_atomic(promotion_path, promotion)
+
+    with pytest.raises(ApprovedProfileError, match="validation_run_binding_hash_mismatch"):
+        build_approved_profile(
+            promotion=promotion,
+            mode="paper",
+            source_promotion_path=str(promotion_path),
+            market="KRW-BTC",
+            interval="1m",
+            generated_at="2026-05-04T00:00:00+00:00",
+        )
 
 
 def _profile_with_mutated_evidence_tier(source_promotion_path: str, tier: str) -> dict[str, object]:

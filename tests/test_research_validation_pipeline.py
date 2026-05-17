@@ -7,6 +7,7 @@ from bithumb_bot import app as app_module
 from bithumb_bot.paths import PathManager
 from bithumb_bot.research.hashing import sha256_prefixed
 from bithumb_bot.research import validation_pipeline as pipeline
+from bithumb_bot.storage_io import write_json_atomic
 
 
 def _manager(tmp_path: Path, monkeypatch) -> PathManager:
@@ -155,6 +156,7 @@ def test_validation_run_content_hash_recomputes_deterministically(tmp_path, monk
         "validation_run_path": str((manager.data_dir() / "reports" / "research" / "validation_exp" / "validation_run.json").resolve()),
         "generated_at": None,
     }
+    payload["validation_run_binding_hash"] = pipeline.validation_run_binding_hash(payload)
     payload["content_hash"] = pipeline.validation_run_content_hash(payload)
 
     assert pipeline.verify_validation_run_payload(
@@ -169,3 +171,60 @@ def test_validation_run_content_hash_recomputes_deterministically(tmp_path, monk
     reasons = pipeline.verify_validation_run_payload(tampered, selected_candidate_id="candidate_001")
     assert "validation_run_content_hash_mismatch" in reasons
     assert "validation_run_selected_candidate_mismatch" in reasons
+
+
+def test_research_validate_success_binds_promotion_to_validation_run(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch)
+    manifest = _manifest(walk_forward_required=True)
+
+    monkeypatch.setattr(
+        pipeline,
+        "build_research_readiness_report",
+        lambda **kwargs: {"status": "PASS", "next_actions": []},
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "run_research_backtest",
+        lambda **kwargs: _report(manager, kind="backtest"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "run_research_walk_forward",
+        lambda **kwargs: _report(manager, kind="walk_forward"),
+    )
+
+    def fake_promotion(*, stage, experiment_id, candidate_id, manager, validation_run_path, validation_run_binding_hash):
+        path = manager.data_dir() / "reports" / "research" / experiment_id / f"promotion_{candidate_id}.json"
+        artifact = {
+            "validation_run_required": True,
+            "validation_run_binding_status": "verified_pre_promotion_binding",
+            "validation_run_path": validation_run_path,
+            "validation_run_hash": None,
+            "validation_run_binding_hash": validation_run_binding_hash,
+            "gate_result": "PASS",
+        }
+        artifact["content_hash"] = sha256_prefixed(artifact)
+        write_json_atomic(path, artifact)
+        stage.artifact_paths["promotion_artifact_path"] = str(path.resolve())
+        stage.artifact_hashes["promotion_artifact_hash"] = artifact["content_hash"]
+        return SimpleNamespace(artifact=artifact, artifact_path=path, content_hash=artifact["content_hash"])
+
+    monkeypatch.setattr(pipeline, "_stage_promotion", fake_promotion)
+    monkeypatch.setattr(pipeline, "_stage_reproduce", lambda *, stage, promotion_path: {"ok": True})
+
+    payload = pipeline.run_research_validation(
+        manifest=manifest,
+        db_path=tmp_path / "paper.sqlite",
+        manager=manager,
+        manifest_path=str(tmp_path / "manifest.json"),
+    )
+
+    assert payload["end_to_end_validation_result"] == "PASS"
+    assert str(payload["validation_run_binding_hash"]).startswith("sha256:")
+    assert payload["promotion_artifact_hash"].startswith("sha256:")
+    assert payload["reproduce_ok"] is True
+    promotion = pipeline.json.loads(Path(payload["promotion_artifact_path"]).read_text(encoding="utf-8"))
+    assert promotion["validation_run_required"] is True
+    assert promotion["validation_run_binding_status"] == "verified_pre_promotion_binding"
+    assert promotion["validation_run_binding_status"] != "pending_validation_pipeline"
+    assert promotion["validation_run_binding_hash"] == payload["validation_run_binding_hash"]

@@ -29,7 +29,7 @@ from bithumb_bot.research.promotion_gate import (
     promote_candidate,
     validate_backtest_candidate_for_promotion,
 )
-from bithumb_bot.research.validation_pipeline import validation_run_content_hash
+from bithumb_bot.research.validation_pipeline import validation_run_binding_hash, validation_run_content_hash
 from bithumb_bot.storage_io import write_json_atomic
 
 
@@ -1197,6 +1197,7 @@ def _write_validation_run_if_ready(manager: PathManager, candidate: dict[str, ob
         "validation_run_path": str((report_dir / "validation_run.json").resolve()),
         "generated_at": None,
     }
+    payload["validation_run_binding_hash"] = validation_run_binding_hash(payload)
     payload["content_hash"] = validation_run_content_hash(payload)
     write_json_atomic(report_dir / "validation_run.json", payload)
 
