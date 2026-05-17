@@ -45,7 +45,7 @@ def test_runtime_open_exposure_with_complete_lot_native_fields_is_supported() ->
     assert snapshot.unsupported_reason == ""
 
 
-def test_runtime_reserved_exit_pending_with_complete_lot_native_fields_is_supported() -> None:
+def test_runtime_reserved_exit_pending_with_complete_lot_native_fields_remains_scaffolded_fail_closed() -> None:
     snapshot = _snapshot(
         _position_gate(
             reserved_exit_lot_count=2,
@@ -58,7 +58,8 @@ def test_runtime_reserved_exit_pending_with_complete_lot_native_fields_is_suppor
     )
 
     assert snapshot.state_class == "reserved_exit_pending"
-    assert snapshot.unsupported_reason == ""
+    assert snapshot.unsupported_reason == "research_model_lacks_lot_native_authority"
+    assert snapshot.research_position_model == ""
 
 
 def test_runtime_positive_class_with_missing_lot_native_field_fails_closed() -> None:

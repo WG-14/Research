@@ -54,7 +54,8 @@ def test_sell_submit_reserves_sellable_lots_as_reserved_exit_pending() -> None:
     snapshot = _snapshot(model)
 
     assert snapshot.state_class == "reserved_exit_pending"
-    assert snapshot.unsupported_reason == ""
+    assert snapshot.unsupported_reason == "research_model_lacks_lot_native_authority"
+    assert snapshot.research_position_model == "lot_native_simulation_v1_partial"
     assert snapshot.open_lot_count == 2
     assert snapshot.reserved_exit_lot_count == 2
     assert snapshot.sellable_executable_lot_count == 0
@@ -73,6 +74,8 @@ def test_partial_sell_fill_reduces_reserved_and_open_exposure_consistently() -> 
     snapshot = _snapshot(model)
 
     assert snapshot.state_class == "reserved_exit_pending"
+    assert snapshot.unsupported_reason == "research_model_lacks_lot_native_authority"
+    assert snapshot.research_position_model == "lot_native_simulation_v1_partial"
     assert snapshot.open_lot_count == 2
     assert snapshot.reserved_exit_lot_count == 2
     assert snapshot.sellable_executable_lot_count == 0

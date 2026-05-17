@@ -7,7 +7,6 @@ POSITIVE_EQUIVALENCE_STATE_CLASSES = frozenset(
     {
         "flat_no_dust_no_position",
         "open_exposure",
-        "reserved_exit_pending",
     }
 )
 LOT_NATIVE_RESEARCH_POSITION_MODEL = "lot_native_simulation_v1"

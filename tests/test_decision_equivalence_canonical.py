@@ -327,8 +327,8 @@ def _lot_native_decision_for_state(state: str) -> dict[str, object]:
     )
 
 
-@pytest.mark.parametrize("state_class", ["open_exposure", "reserved_exit_pending"])
-def test_modeled_lot_native_non_flat_states_can_pass_positive_equivalence(state_class: str) -> None:
+def test_modeled_lot_native_open_exposure_can_pass_positive_equivalence() -> None:
+    state_class = "open_exposure"
     decision = _lot_native_decision_for_state(state_class)
 
     result = _compare(decision, decision)
@@ -339,6 +339,24 @@ def test_modeled_lot_native_non_flat_states_can_pass_positive_equivalence(state_
     assert result.report["state_coverage_matrix"][state_class]["positive_equivalence_supported"] is True
     assert result.report["state_coverage_matrix"][state_class]["fail_closed_expected"] is False
     assert result.report["claims_scope"]["full_lifecycle_equivalence_supported"] is False
+
+
+def test_reserved_exit_pending_scaffolded_state_fails_closed_without_repo_owned_replay_evidence() -> None:
+    state_class = "reserved_exit_pending"
+    decision = _lot_native_decision_for_state(state_class)
+
+    result = _compare(decision, decision)
+
+    assert result.ok is False
+    assert result.report["outcome"] == "FAIL_CLOSED_UNMODELED_STATE"
+    assert state_class not in result.report["claims_scope"]["positive_equivalence_state_classes"]
+    assert state_class in result.report["claims_scope"]["unsupported_state_classes"]
+    assert result.report["state_coverage_matrix"][state_class]["positive_equivalence_supported"] is False
+    assert result.report["state_coverage_matrix"][state_class]["fail_closed_expected"] is True
+    assert result.report["claims_scope"]["fail_closed_unmodeled_state_count"] == 2
+    assert result.report["recommended_next_action"] == (
+        "extend_research_lot_native_position_model_before_claiming_lifecycle_equivalence"
+    )
 
 
 def test_modeled_lot_native_position_authority_mismatch_fails_actual_drift() -> None:
