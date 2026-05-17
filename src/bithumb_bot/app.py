@@ -168,6 +168,7 @@ from .research.cli import (
     cmd_research_registry_inspect,
     cmd_research_registry_validate,
     cmd_research_reproduce,
+    cmd_research_validate,
     cmd_research_walk_forward,
 )
 from .research.readiness import cmd_research_readiness
@@ -7554,6 +7555,20 @@ def main(argv: list[str] | None = None) -> int:
     research_backtest.add_argument("--manifest", required=True)
     research_backtest.add_argument("--execution-calibration")
 
+    research_validate = sub.add_parser(
+        "research-validate",
+        help="run the fail-closed end-to-end research validation pipeline",
+        description=(
+            "Run readiness, backtest, required walk-forward, promotion generation, and reproduce "
+            "from one fixed manifest and write a hash-bound ValidationRun artifact."
+        ),
+    )
+    research_validate.add_argument("--manifest", required=True)
+    research_validate.add_argument("--execution-calibration")
+    research_validate.add_argument("--candidate-id")
+    research_validate.add_argument("--out")
+    research_validate.add_argument("--mode", default="strict", choices=["strict"])
+
     research_readiness = sub.add_parser(
         "research-readiness",
         help="check manifest data readiness before research execution",
@@ -7644,6 +7659,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     research_promote.add_argument("--experiment-id", required=True)
     research_promote.add_argument("--candidate-id", required=True)
+    research_promote.add_argument("--validation-run")
     research_promote.add_argument(
         "--allow-legacy-lineage",
         action="store_true",
@@ -8039,6 +8055,14 @@ def main(argv: list[str] | None = None) -> int:
             manifest_path=str(args.manifest),
             execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None,
         )
+    elif args.cmd == "research-validate":
+        return cmd_research_validate(
+            manifest_path=str(args.manifest),
+            execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None,
+            candidate_id=str(args.candidate_id) if args.candidate_id else None,
+            out_path=str(args.out) if args.out else None,
+            mode=str(args.mode),
+        )
     elif args.cmd == "research-readiness":
         return cmd_research_readiness(
             manifest_path=str(args.manifest),
@@ -8213,6 +8237,7 @@ def main(argv: list[str] | None = None) -> int:
             experiment_id=str(args.experiment_id),
             candidate_id=str(args.candidate_id),
             allow_legacy_lineage=bool(args.allow_legacy_lineage),
+            validation_run_path=str(args.validation_run) if args.validation_run else None,
         )
     elif args.cmd == "research-reproduce":
         return cmd_research_reproduce(promotion_path=str(args.promotion))

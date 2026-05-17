@@ -619,6 +619,8 @@ def promote_candidate(
     manager: PathManager,
     generated_at: str | None = None,
     allow_legacy_lineage: bool = False,
+    validation_run_path: str | Path | None = None,
+    allow_pending_validation_run: bool = False,
 ) -> PromotionResult:
     research_report_dir = manager.data_dir() / "reports" / "research" / experiment_id
     candidate_report_path = research_report_dir / "backtest_report.json"
@@ -711,6 +713,48 @@ def promote_candidate(
             | {"legacy_lineage_compatibility_used"}
             | ({"legacy_dataset_quality_bypass_used"} if dataset_quality_legacy_bypass_used else set())
         )
+    validation_run_payload: dict[str, Any] | None = None
+    validation_run_hash: str | None = None
+    validation_run_resolved_path: Path | None = None
+    validation_run_binding_status = "not_required"
+    validation_run_reasons: list[str] = []
+    from .validation_pipeline import (
+        default_validation_run_path,
+        validate_promotion_validation_run,
+        validation_run_required_for_promotion,
+    )
+
+    validation_required = validation_run_required_for_promotion(
+        deployment_tier=candidate.get("deployment_tier") or report.get("deployment_tier")
+    )
+    if validation_required:
+        if allow_pending_validation_run:
+            validation_run_binding_status = "pending_validation_pipeline"
+            promotion_warnings = sorted(set(promotion_warnings) | {"validation_run_pending_pipeline_completion"})
+        elif allow_legacy_lineage and validation_run_path is None:
+            validation_run_binding_status = "legacy_compatibility_used"
+            promotion_warnings = sorted(set(promotion_warnings) | {"legacy_validation_run_compatibility_used"})
+        else:
+            validation_run_resolved_path = (
+                Path(validation_run_path).expanduser()
+                if validation_run_path is not None
+                else default_validation_run_path(manager=manager, experiment_id=experiment_id)
+            )
+            try:
+                validation_run_payload, validation_run_reasons = validate_promotion_validation_run(
+                    validation_run_path=validation_run_resolved_path,
+                    experiment_id=experiment_id,
+                    manifest_hash=str(candidate.get("manifest_hash") or ""),
+                    candidate_id=candidate_id,
+                    backtest_report_hash=backtest_report_hash,
+                    walk_forward_report_hash=walk_forward.source_report_hash if walk_forward_required and walk_forward else None,
+                )
+            except OSError as exc:
+                raise PromotionGateError(f"promotion refused: validation_run_missing:{exc}") from exc
+            if validation_run_reasons:
+                raise PromotionGateError(f"promotion refused: {','.join(validation_run_reasons)}")
+            validation_run_hash = str(validation_run_payload.get("content_hash") or "")
+            validation_run_binding_status = "verified"
     artifact = {
         "promotion_schema_version": 1,
         "strategy_name": candidate["strategy_name"],
@@ -731,6 +775,11 @@ def promote_candidate(
         "legacy_compatibility_used": base_lineage is None,
         "dataset_quality_legacy_bypass_used": dataset_quality_legacy_bypass_used,
         "lineage_hash": None,
+        "validation_run_required": validation_required,
+        "validation_run_binding_status": validation_run_binding_status,
+        "validation_run_path": str(validation_run_resolved_path.resolve()) if validation_run_resolved_path else None,
+        "validation_run_hash": validation_run_hash,
+        "validation_run_reasons": validation_run_reasons,
         "backtest_report_path": str(candidate_report_path.resolve()),
         "backtest_report_hash": backtest_report_hash,
         "walk_forward_report_path": str((research_report_dir / "walk_forward_report.json").resolve()) if walk_forward_required else None,

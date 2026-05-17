@@ -29,6 +29,7 @@ from bithumb_bot.research.promotion_gate import (
     promote_candidate,
     validate_backtest_candidate_for_promotion,
 )
+from bithumb_bot.research.validation_pipeline import validation_run_content_hash
 from bithumb_bot.storage_io import write_json_atomic
 
 
@@ -559,6 +560,7 @@ def _write_report_with_lineage(
             _attach_final_selection(payload, candidate)
     payload["content_hash"] = sha256_prefixed(report_content_hash_payload(payload))
     write_json_atomic(path, payload)
+    _write_validation_run_if_ready(manager, candidate)
 
 
 def _final_selection_contract() -> dict[str, object]:
@@ -1135,6 +1137,68 @@ def _write_walk_forward_report(manager: PathManager, candidate: dict[str, object
     }
     payload["content_hash"] = sha256_prefixed(report_content_hash_payload(payload))
     write_json_atomic(path, payload)
+    _write_validation_run_if_ready(manager, candidate)
+
+
+def _write_validation_run_if_ready(manager: PathManager, candidate: dict[str, object]) -> None:
+    if str(candidate.get("deployment_tier") or "") not in {
+        "paper_candidate",
+        "live_dry_run_candidate",
+        "small_live_candidate",
+    }:
+        return
+    report_dir = manager.data_dir() / "reports" / "research" / "promo_exp"
+    backtest_path = report_dir / "backtest_report.json"
+    if not backtest_path.exists():
+        return
+    backtest = json.loads(backtest_path.read_text(encoding="utf-8"))
+    if not isinstance(backtest, dict) or not str(backtest.get("content_hash") or "").startswith("sha256:"):
+        return
+    walk_required = bool(candidate.get("walk_forward_required"))
+    walk_path = report_dir / "walk_forward_report.json"
+    walk_hash = None
+    if walk_required:
+        if not walk_path.exists():
+            return
+        walk = json.loads(walk_path.read_text(encoding="utf-8"))
+        walk_hash = str(walk.get("content_hash") or "")
+        if not walk_hash.startswith("sha256:"):
+            return
+    stages = [
+        {"name": "readiness", "required": True, "status": "PASS", "started_at": None, "completed_at": None, "input_hashes": {}, "output_hashes": {}, "artifact_paths": {}, "artifact_hashes": {}, "reasons": []},
+        {"name": "backtest", "required": True, "status": "PASS", "started_at": None, "completed_at": None, "input_hashes": {}, "output_hashes": {}, "artifact_paths": {"backtest_report_path": str(backtest_path.resolve())}, "artifact_hashes": {"backtest_report_hash": backtest["content_hash"]}, "reasons": []},
+        {"name": "walk_forward", "required": walk_required, "status": "PASS" if walk_required else "SKIPPED_NOT_REQUIRED", "started_at": None, "completed_at": None, "input_hashes": {}, "output_hashes": {}, "artifact_paths": {"walk_forward_report_path": str(walk_path.resolve())} if walk_required else {}, "artifact_hashes": {"walk_forward_report_hash": walk_hash} if walk_required else {}, "reasons": []},
+        {"name": "promotion", "required": True, "status": "PASS", "started_at": None, "completed_at": None, "input_hashes": {}, "output_hashes": {}, "artifact_paths": {}, "artifact_hashes": {}, "reasons": []},
+        {"name": "reproduce", "required": True, "status": "PASS", "started_at": None, "completed_at": None, "input_hashes": {}, "output_hashes": {}, "artifact_paths": {}, "artifact_hashes": {}, "reasons": []},
+    ]
+    payload = {
+        "validation_run_schema_version": 1,
+        "validation_run_id": "sha256:test-validation-run",
+        "experiment_id": "promo_exp",
+        "manifest_path": "/tmp/manifest.json",
+        "manifest_hash": candidate.get("manifest_hash"),
+        "repository_version": "test",
+        "deployment_tier": candidate.get("deployment_tier"),
+        "mode": "strict",
+        "command_args_hash": "sha256:args",
+        "required_stage_names": ["readiness", "backtest", *(["walk_forward"] if walk_required else []), "promotion", "reproduce"],
+        "stages": stages,
+        "selected_candidate_id": candidate.get("parameter_candidate_id"),
+        "backtest_report_path": str(backtest_path.resolve()),
+        "backtest_report_hash": backtest["content_hash"],
+        "walk_forward_report_path": str(walk_path.resolve()) if walk_required else None,
+        "walk_forward_report_hash": walk_hash,
+        "promotion_artifact_path": None,
+        "promotion_artifact_hash": None,
+        "reproduce_ok": True,
+        "promotion_allowed": True,
+        "end_to_end_validation_result": "PASS",
+        "fail_closed_reasons": [],
+        "validation_run_path": str((report_dir / "validation_run.json").resolve()),
+        "generated_at": None,
+    }
+    payload["content_hash"] = validation_run_content_hash(payload)
+    write_json_atomic(report_dir / "validation_run.json", payload)
 
 
 def _canonical_report_hash(payload: dict[str, object]) -> str:
@@ -1760,6 +1824,45 @@ def test_promotion_artifact_uses_verified_report_hashes_in_artifact_and_lineage(
     assert result.artifact["walk_forward_report_hash"] == expected_walk_hash
     assert result.artifact["lineage"]["backtest_report_hash"] == expected_backtest_hash
     assert result.artifact["lineage"]["walk_forward_report_hash"] == expected_walk_hash
+
+
+def test_production_promotion_refuses_missing_validation_run_evidence(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report(manager, candidate)
+    (manager.data_dir() / "reports" / "research" / "promo_exp" / "validation_run.json").unlink()
+
+    with pytest.raises(PromotionGateError, match="validation_run_missing"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_production_promotion_refuses_validation_run_candidate_mismatch(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report(manager, candidate)
+    path = manager.data_dir() / "reports" / "research" / "promo_exp" / "validation_run.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["selected_candidate_id"] = "candidate_002"
+    payload["content_hash"] = validation_run_content_hash(payload)
+    write_json_atomic(path, payload)
+
+    with pytest.raises(PromotionGateError, match="validation_run_selected_candidate_mismatch"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
+def test_production_promotion_refuses_validation_run_walk_forward_hash_mismatch(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    backtest_candidate = _production_candidate(walk_forward_required=True, walk_forward_gate_result="PASS")
+    _write_report(manager, backtest_candidate)
+    _write_walk_forward_report(manager, _walk_forward_candidate(backtest_candidate))
+    path = manager.data_dir() / "reports" / "research" / "promo_exp" / "validation_run.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["walk_forward_report_hash"] = "sha256:mismatch"
+    payload["content_hash"] = validation_run_content_hash(payload)
+    write_json_atomic(path, payload)
+
+    with pytest.raises(PromotionGateError, match="validation_run_walk_forward_report_hash_mismatch"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
 
 
 def test_promotion_refuses_backtest_body_tamper_with_stale_embedded_hash(tmp_path, monkeypatch) -> None:

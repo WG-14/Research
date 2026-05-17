@@ -158,6 +158,35 @@ def _production_bound_statistical_manifest() -> dict[str, object]:
         },
     }
     payload["stress_suite"] = _stress_suite_contract()
+    payload["final_selection"] = {
+        "schema_version": 1,
+        "required_for_promotion": True,
+        "candidate_universe": "acceptance_gate_passed_required_scenarios",
+        "must_pass": {
+            "dataset_quality_gate_status": "PASS",
+            "statistical_gate_result": "PASS",
+            "production_calibration_policy_result": "PASS",
+            "final_holdout_present": True,
+        },
+        "selection_exposure_policy": {
+            "final_holdout_usage": "confirmatory_metric_in_rank",
+            "counts_as_holdout_reuse": True,
+        },
+        "method": "lexicographic",
+        "null_metric_policy": "fail_if_required_else_worst_rank",
+        "ranking": [
+            {
+                "metric": "final_holdout.metrics_v2.trade_quality.expectancy_per_trade_krw",
+                "order": "desc",
+                "required": True,
+            },
+            {"metric": "parameter_candidate_id", "order": "asc", "required": True},
+        ],
+        "unsupported_metric_policy": {
+            "sharpe_ratio": "fail_if_required",
+            "sortino_ratio": "fail_if_required",
+        },
+    }
     return payload
 
 

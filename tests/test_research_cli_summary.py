@@ -274,6 +274,33 @@ def test_fail_report_summary_sets_promotion_disallowed() -> None:
     assert summary.promotion_allowed is False
 
 
+def test_standalone_backtest_summary_discloses_not_full_validation(capsys) -> None:
+    report = _report(
+        candidates=[_candidate("candidate_001", gate="PASS")],
+        best_candidate_id="candidate_001",
+        gate_result="FAIL",
+    )
+    report.update(
+        {
+            "promotion_eligibility_gate_result": "FAIL",
+            "promotion_blocking_reasons": ["walk_forward_required_but_not_executed_in_this_run"],
+            "validation_run_complete": False,
+            "diagnostic_only": True,
+            "standalone_backtest_not_full_validation": True,
+            "next_required_stage": "research-walk-forward",
+        }
+    )
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+    output = capsys.readouterr().out
+
+    assert "validation_run_complete=0" in output
+    assert "diagnostic_only=1" in output
+    assert "next_required_stage=research-walk-forward" in output
+    assert "reason=standalone_backtest_not_full_validation" in output
+    assert "promotion_allowed=0" in output
+
+
 def test_candidate_gate_counts_are_computed_with_unknown_labels() -> None:
     summary = build_research_run_summary(
         _report(

@@ -81,7 +81,25 @@ The default example manifest is explicitly `research_only` and may use legacy di
 
 For official research, the manifest should carry stable experiment-family metadata when available: `experiment_family_id`, `hypothesis_id`, `hypothesis_status`, `pre_registered_at`, `attempt_index`, `holdout_reuse_count`, and `dataset_reuse_policy`. These are lineage and observability fields. They do not solve overfitting by themselves. Production-bound manifests must also define `statistical_validation`, bind a canonical `candidate_return_panel` artifact, and when `multiple_testing_scope=experiment_family` bind the family registry at `DATA_ROOT/<mode>/reports/research/families/<experiment_family_id>/trial_registry.jsonl`. Missing registry evidence fails closed; it does not fall back to the current report's candidates.
 
-3. Run the deterministic research backtest.
+3. Run the fail-closed validation pipeline.
+
+The preferred production-bound path is the single validation command. It fixes the manifest hash once, runs readiness, backtest, required walk-forward, promotion generation, and reproduce, then writes a hash-bound `ValidationRun` artifact under the managed runtime `reports` bucket unless `--out` is supplied.
+
+```bash
+uv run bithumb-bot research-validate --manifest "$MANIFEST"
+```
+
+When execution-quality calibration evidence exists and the manifest requires or should compare it, pass it explicitly:
+
+```bash
+uv run bithumb-bot research-validate \
+  --manifest "$MANIFEST" \
+  --execution-calibration "$DATA_ROOT/paper/reports/execution_quality/<calibration>.json"
+```
+
+Review `validation_run_path`, `validation_run_hash`, `end_to_end_validation_result`, `selected_candidate_id`, `backtest_report_hash`, `walk_forward_report_hash`, `promotion_artifact_hash`, `reproduce_ok`, `fail_closed_reasons`, and `next_required_action`. Production-bound or paper-candidate promotion requires passing validation-run evidence for new artifacts. Direct `research-backtest` and `research-walk-forward` remain diagnostic/development commands; they are not sufficient production-bound promotion evidence by themselves.
+
+4. Run a diagnostic deterministic research backtest when investigating failures.
 
 ```bash
 uv run bithumb-bot research-backtest --manifest "$MANIFEST"
@@ -96,9 +114,9 @@ uv run bithumb-bot research-backtest --manifest examples/research/sma_filter_man
 Review the printed `manifest_hash`, `dataset_content_hash`, `content_hash`, report path, derived path, candidate count, `gate_result`, `promotion_eligibility_gate_result`, `promotion_blocking_reasons`, `candidate_gate_counts`, `top_fail_reasons`, `promotion_allowed`, `nearest_failed_candidate_id`, and `next_action`.
 Also review `statistical_validation_required`, `statistical_parameter_grid_size`, `statistical_search_budget`, `statistical_attempt_index`, `statistical_holdout_reuse_count`, `selection_universe_hash`, `candidate_metric_values_hash`, `statistical_metric_value_count`, `statistical_missing_metric_count`, `statistical_evidence_hash`, `evidence_grade`, `statistical_method`, `official_promotion_grade_wrc_generation_available`, manifest `statistical_validation.bootstrap.method`, `bootstrap_sampling_contract_hash`, `return_panel_hash`, `return_unit`, `return_panel_observation_count`, `family_trial_registry_path`, `family_trial_registry_prior_hash`, `family_trial_registry_row_hash`, `experiment_registry_path`, `experiment_registry_row_hash`, `experiment_registry_completion_row_hash`, `experiment_registry_bound_evidence_hash`, `experiment_registry_evidence_hash_phase`, `final_holdout_identity_hash`, `final_holdout_content_hash`, `final_holdout_reuse_key_hash`, `hypothesis_identity_source`, `experiment_family_identity_source`, `summary_metric_max_bootstrap_p_value`, `white_reality_check_p_value`, `white_reality_check_method`, `promotion_grade_limitations`, `warnings`, `statistical_gate_result`, and `statistical_gate_fail_reasons`. These fields are not cosmetic; production-bound promotion refuses missing, mismatched, incomplete, underreported, stale, screening-grade, unavailable-method, unrecomputable, method-inconsistent, or failed statistical evidence. Current official `research-backtest` manifests may declare only `metric_centered_max_bootstrap`; declaring `white_reality_check_block_bootstrap` is rejected until official aligned-return-panel WRC generation exists. Current official reports produce `SCREENING_SUMMARY_BOOTSTRAP` only and set `official_promotion_grade_wrc_generation_available=false` with `promotion_grade_statistical_generation_unavailable`; do not attempt production promotion from that evidence. `summary_metric_max_bootstrap_p_value` and `selection_adjusted_summary_p_value` are screening-only and must never be read as White's Reality Check, SPA, Deflated Sharpe, or promotion-grade block-bootstrap evidence. `white_reality_check_p_value` must be present only for real WRC evidence. Evidence cannot claim WRC when the manifest only declares summary bootstrap, and `bootstrap_sampling_contract.method` is the canonical sampling method field. Full promotion-grade WRC requires aligned `bar_excess_return` or `portfolio_bar_return` evidence; trade-return panels are diagnostic/reproducibility artifacts and are not full WRC evidence. SPA and Deflated Sharpe remain unavailable unless real implementations exist. Family registry binding is necessary for family-scope validation, but it is not by itself full family-wide statistical correction. The experiment registry uses semantic final-holdout identity for reuse counting and a separate content hash for reproducibility/integrity. `final_holdout_fingerprint` is a compatibility alias for the semantic identity hash when retained. The completion row records the pre-completion statistical evidence hash with `pre_completion_evidence_hash`; final evidence records that value as `experiment_registry_bound_evidence_hash` after adding the completion row hash and recomputing final `content_hash`, so the bound evidence hash and final evidence `content_hash` can intentionally differ. Report `promotion_eligibility_gate_result` and `promotion_blocking_reasons` are computed with the same statistical validation used by promotion, so a report must not claim promotion eligibility when `research-promote-candidate` would fail for statistical evidence. Promotion and `research-reproduce` recompute `candidate_metric_values_hash` from the current report candidate list and validate the return-panel, family-registry, experiment-registry, and statistical evidence chain, so matching copied hash fields alone do not prove the evidence is current. If a family-registry or experiment-registry row hash mismatch appears, regenerate or rebind the evidence rather than editing hashes manually. If `promotion_eligibility_gate_result=FAIL`, `promotion_allowed` must be `0` and `next_action` must be `do_not_promote_review_statistical_selection`.
 Then inspect `dataset_quality_gate_status`, `dataset_quality_hash`, and `dataset_quality_gate_reasons` in the report. Dataset quality failures are structural evidence failures, not tuning hints. Missing candle buckets, OHLC invariant violations, non-positive prices, negative volume, duplicate keys, non-monotonic timestamps, interval mismatches, or unsupported interval formats must be resolved by fixing the source dataset or manifest before promotion.
-If `promotion_allowed=0`, do not run `research-promote-candidate`. `nearest_failed_candidate_id` is diagnostic only and must not be promoted.
+Standalone `research-backtest` reports include `validation_run_complete=false`, `diagnostic_only=true`, and `standalone_backtest_not_full_validation=true`. If `walk_forward_required=true`, standalone summaries must show `promotion_allowed=0` with `walk_forward_required_but_not_executed_in_this_run`. If `promotion_allowed=0`, do not run `research-promote-candidate`. `nearest_failed_candidate_id` is diagnostic only and must not be promoted.
 
-4. Inspect the report artifact and hashes.
+5. Inspect the report artifact and hashes.
 
 ```bash
 jq '.manifest_hash, .dataset_content_hash, .dataset_quality_hash, .dataset_quality_gate_status, .dataset_quality_gate_reasons, .content_hash, .best_candidate_id' "$DATA_ROOT/paper/reports/research/sma_filter_v1_2026_05/backtest_report.json"
@@ -110,16 +128,16 @@ jq '.candidates[] | {candidate_id: .parameter_candidate_id, scenarios: [.scenari
 
 Confirm the report path is under `DATA_ROOT/<mode>/reports/research/...`, not the repository. For stress scenarios, inspect `base_seed`, `derived_seed_hash`, and `seed_derivation_inputs` in scenario execution metadata; they must be tied to candidate id, scenario id, split name, and seed, not to candidate enumeration order.
 
-5. Run rolling walk-forward validation.
+6. Run rolling walk-forward validation as a diagnostic command.
 
 ```bash
 uv run bithumb-bot research-walk-forward --manifest examples/research/sma_filter_manifest.example.json
 ```
 
-This command must produce real rolling train/test window evidence when `walk_forward_required=true`.
+This command must produce real rolling train/test window evidence when `walk_forward_required=true`. In the preferred path, `research-validate` runs this stage automatically when required; direct execution is for diagnosis and development.
 Review the printed `walk_forward_window_summary` and `top_window_fail_reasons` before inspecting the full artifact.
 
-6. Inspect rolling walk-forward evidence.
+7. Inspect rolling walk-forward evidence.
 
 ```bash
 jq '.candidates[] | {candidate_id: .parameter_candidate_id, gate: .walk_forward_gate_result, wf: .walk_forward_metrics}' "$DATA_ROOT/paper/reports/research/sma_filter_v1_2026_05/walk_forward_report.json"
@@ -127,18 +145,21 @@ jq '.candidates[] | {candidate_id: .parameter_candidate_id, gate: .walk_forward_
 
 Review every window date range, test return, fail reason, `window_count`, `pass_window_count`, `fail_window_count`, `mean_test_return_pct`, `median_test_return_pct`, `worst_test_return_pct`, and `return_consistency_pass`.
 
-7. Promote only an operator-reviewed passing candidate.
+8. Promote only an operator-reviewed passing candidate.
 
 ```bash
-uv run bithumb-bot research-promote-candidate --experiment-id sma_filter_v1_2026_05 --candidate-id <candidate_id>
+uv run bithumb-bot research-promote-candidate \
+  --experiment-id sma_filter_v1_2026_05 \
+  --candidate-id <candidate_id> \
+  --validation-run "$DATA_ROOT/paper/reports/research/sma_filter_v1_2026_05/validation_run.json"
 ```
 
 Promotion requires valid lineage, passing dataset quality evidence, backtest/OOS evidence, same-candidate scenario-policy evidence, statistical selection evidence when required, and final-holdout evidence by default. If walk-forward is required, promotion also requires walk-forward evidence for the same experiment, strategy, parameters, cost model, execution model, calibration gate, and manifest.
 Promotion refuses candidates with missing lineage, missing or failed dataset quality evidence, missing validation evidence, failed scenario policy, missing final holdout, failed backtest gates, missing/hashless/mismatched/failed statistical selection evidence, screening-grade evidence for production-bound targets, missing or mismatched return-panel evidence, stale statistical metadata, missing experiment-family registry evidence, missing/stale/tampered/incomplete experiment registry evidence, declared counter mismatches, incomplete candidate metric universes, underreported effective trial counts, excessive registry-computed attempt index, excessive registry-computed holdout reuse, missing or failed walk-forward evidence, mismatched walk-forward candidates, missing/hashless/mismatched/breached required execution-calibration evidence, or tampered candidate profile hashes. `candidate.acceptance_gate_result=PASS` is not enough for production-bound promotion.
-Historical no-lineage reports may be promoted only with explicit `--allow-legacy-lineage` after operator review. That path records `legacy_compatibility_used=true`, `lineage_required=false`, `lineage_hash=null`, and `legacy_lineage_compatibility_used`; do not use it for new research.
+Historical no-lineage or no-validation-run reports may be promoted only with explicit `--allow-legacy-lineage` after operator review. That path records legacy compatibility fields such as `legacy_compatibility_used=true`, `lineage_required=false`, `lineage_hash=null`, `legacy_lineage_compatibility_used`, and when applicable `legacy_validation_run_compatibility_used`; do not use it for new research.
 Both evidence sources are hash-verified and bound into the promotion artifact. `research-promote-candidate` recomputes canonical backtest/walk-forward report hashes before binding them into the promotion artifact. It does not trust embedded report `content_hash` fields, and it fails closed with source-specific missing or mismatch reasons when source evidence has drifted. Current-generation promotion artifacts also carry `lineage_hash`, backtest/walk-forward report hashes, manifest and dataset hashes, command-args hash, repository version, candidate profile hash, calibration hash when present, and experiment-family observability fields. On success, read the printed `has_execution_calibration_warning`, `execution_calibration_warning_reasons`, and `promotion_warnings` lines before moving to artifact review; optional warn-mode calibration breaches can still promote only as research-only diagnostics. They are operator-visible warnings, not approval signals, and cannot satisfy `profile-generate`, `profile-promote`, `live_dry_run`, or `small_live` transition evidence.
 
-8. Reproduce and review the promotion artifact.
+9. Reproduce and review the promotion artifact.
 
 ```bash
 uv run bithumb-bot research-reproduce \
@@ -166,7 +187,7 @@ uv run bithumb-bot research-mark-attempt-aborted --row-hash <reservation_row_has
 
 A clean `uv run pytest -q` pass is not approval to allocate capital. It only validates code behavior. Promotion readiness still requires complete fail-closed research evidence, operator review, approved-profile verification, paper validation, and live readiness checks.
 
-9. Generate and verify the approved paper profile.
+10. Generate and verify the approved paper profile.
 
 ```bash
 uv run bithumb-bot profile-generate \

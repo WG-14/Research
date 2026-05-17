@@ -2544,6 +2544,20 @@ def _report_payload(
     promotion_pass = best is not None and not promotion_blocking_reasons
     payload["promotion_eligibility_gate_result"] = "PASS" if promotion_pass else "FAIL"
     payload["gate_result"] = "PASS" if promotion_pass else "FAIL"
+    if report_kind == "backtest":
+        payload["validation_run_complete"] = False
+        payload["diagnostic_only"] = True
+        payload["standalone_backtest_not_full_validation"] = True
+        payload["next_required_stage"] = (
+            "research-walk-forward"
+            if manifest.acceptance_gate.walk_forward_required
+            else "research-validate"
+        )
+        if manifest.acceptance_gate.walk_forward_required:
+            reason = "walk_forward_required_but_not_executed_in_this_run"
+            payload["promotion_blocking_reasons"] = sorted(set(payload["promotion_blocking_reasons"] + [reason]))
+            payload["promotion_eligibility_gate_result"] = "FAIL"
+            payload["gate_result"] = "FAIL"
     return payload
 
 

@@ -20,6 +20,7 @@ from .execution_calibration import ExecutionCalibrationError, load_calibration_a
 from .promotion_gate import PromotionGateError, promote_candidate
 from .lineage import reproduce_promotion
 from .run_summary import ResearchRunSummary, build_research_run_summary
+from .validation_pipeline import ValidationRunError, run_research_validation
 from .validation_protocol import ResearchValidationError, run_research_backtest, run_research_walk_forward
 
 
@@ -67,6 +68,43 @@ def cmd_research_walk_forward(*, manifest_path: str, execution_calibration_path:
         return 1
     _print_report_summary("RESEARCH-WALK-FORWARD", report)
     return 0
+
+
+def cmd_research_validate(
+    *,
+    manifest_path: str,
+    execution_calibration_path: str | None = None,
+    candidate_id: str | None = None,
+    out_path: str | None = None,
+    mode: str = "strict",
+) -> int:
+    try:
+        manifest = load_manifest(manifest_path)
+        calibration = load_calibration_artifact(execution_calibration_path) if execution_calibration_path else None
+        validation_run = run_research_validation(
+            manifest=manifest,
+            db_path=settings.DB_PATH,
+            manager=PATH_MANAGER,
+            manifest_path=manifest_path,
+            mode=mode,
+            execution_calibration=calibration,
+            execution_calibration_path=execution_calibration_path,
+            candidate_id=candidate_id,
+            out_path=out_path,
+            progress_callback=_print_research_backtest_progress,
+        )
+    except (
+        ManifestValidationError,
+        ExecutionCalibrationError,
+        ResearchValidationError,
+        ValidationRunError,
+        OSError,
+        ValueError,
+    ) as exc:
+        print(f"[RESEARCH-VALIDATE] error={exc}")
+        return 1
+    _print_validation_run_summary(validation_run)
+    return 0 if validation_run.get("end_to_end_validation_result") == "PASS" else 1
 
 
 def cmd_research_reproduce(*, promotion_path: str) -> int:
@@ -295,6 +333,7 @@ def cmd_research_promote_candidate(
     experiment_id: str,
     candidate_id: str,
     allow_legacy_lineage: bool = False,
+    validation_run_path: str | None = None,
 ) -> int:
     try:
         result = promote_candidate(
@@ -302,6 +341,7 @@ def cmd_research_promote_candidate(
             candidate_id=candidate_id,
             manager=PATH_MANAGER,
             allow_legacy_lineage=allow_legacy_lineage,
+            validation_run_path=validation_run_path,
         )
     except PromotionGateError as exc:
         print(f"[RESEARCH-PROMOTE-CANDIDATE] error={exc}")
@@ -361,12 +401,43 @@ def cmd_research_promote_candidate(
         f"{_format_items(tuple(str(item) for item in result.artifact.get('promotion_warnings') or []))}"
     )
     print(f"  legacy_compatibility_used={1 if result.artifact.get('legacy_compatibility_used') else 0}")
+    print(f"  validation_run_required={1 if result.artifact.get('validation_run_required') else 0}")
+    print(f"  validation_run_binding_status={result.artifact.get('validation_run_binding_status') or 'none'}")
+    print(f"  validation_run_hash={result.artifact.get('validation_run_hash') or 'none'}")
     print(
         "  dataset_quality_legacy_bypass_used="
         f"{1 if result.artifact.get('dataset_quality_legacy_bypass_used') else 0}"
     )
     print(f"  operator_next_step={result.artifact['operator_next_step']}")
     return 0
+
+
+def _print_validation_run_summary(payload: dict[str, object]) -> None:
+    print("[RESEARCH-VALIDATE]")
+    print(f"  validation_run_path={payload.get('validation_run_path')}")
+    print(f"  validation_run_hash={payload.get('content_hash')}")
+    print(f"  end_to_end_validation_result={payload.get('end_to_end_validation_result')}")
+    print(f"  selected_candidate_id={payload.get('selected_candidate_id') or 'none'}")
+    print(f"  backtest_report_hash={payload.get('backtest_report_hash') or 'none'}")
+    print(f"  walk_forward_report_hash={payload.get('walk_forward_report_hash') or 'none'}")
+    print(f"  promotion_artifact_hash={payload.get('promotion_artifact_hash') or 'none'}")
+    print(f"  reproduce_ok={1 if payload.get('reproduce_ok') else 0}")
+    reasons = payload.get("fail_closed_reasons") or []
+    print(f"  fail_closed_reasons={_format_items(tuple(str(item) for item in reasons))}")
+    print(f"  next_required_action={_validation_next_action(payload)}")
+
+
+def _validation_next_action(payload: dict[str, object]) -> str:
+    if payload.get("end_to_end_validation_result") == "PASS":
+        return "review_validation_run_and_promotion_artifact"
+    reasons = [str(item) for item in payload.get("fail_closed_reasons") or []]
+    if any("readiness" in reason for reason in reasons):
+        return "fix_data_readiness_then_rerun_research-validate"
+    if any("walk_forward" in reason for reason in reasons):
+        return "fix_walk_forward_evidence_then_rerun_research-validate"
+    if any("reproduce" in reason for reason in reasons):
+        return "inspect_promotion_reproducibility_then_rerun_research-validate"
+    return "inspect_validation_run_failure_reasons"
 
 
 def _print_report_summary(label: str, report: dict[str, object]) -> None:
@@ -399,6 +470,11 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     print(f"  candidate_gate_counts={_format_counts(summary.candidate_gate_counts)}")
     print(f"  top_fail_reasons={_format_counts(summary.top_fail_reasons)}")
     print(f"  promotion_allowed={1 if summary.promotion_allowed else 0}")
+    print(f"  validation_run_complete={1 if report.get('validation_run_complete') else 0}")
+    print(f"  diagnostic_only={1 if report.get('diagnostic_only') else 0}")
+    print(f"  next_required_stage={report.get('next_required_stage') or 'none'}")
+    if report.get("standalone_backtest_not_full_validation"):
+        print("  reason=standalone_backtest_not_full_validation")
     print(f"  statistical_validation_required={1 if report.get('statistical_validation_required') else 0}")
     print(f"  statistical_candidate_count={report.get('candidate_count')}")
     print(f"  statistical_parameter_grid_size={report.get('parameter_grid_size')}")
