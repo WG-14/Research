@@ -383,6 +383,38 @@ def test_matching_unsupported_non_flat_states_do_not_pass() -> None:
     assert result.report["mismatch_count"] == 0
     assert result.report["outcome"] == "FAIL_CLOSED_UNMODELED_STATE"
     assert result.report["claims_scope"]["fail_closed_unmodeled_state_count"] == 2
+    assert result.report["recommended_next_action"] == (
+        "extend_research_lot_native_position_model_before_claiming_lifecycle_equivalence"
+    )
+
+
+def test_fail_closed_unmodeled_state_never_recommends_none() -> None:
+    unsupported = _decision(
+        final_signal="HOLD",
+        side="HOLD",
+        position_state_hash="sha256:cash_qty_simulation",
+        entry_allowed=False,
+        exit_allowed=True,
+        dust_state="research_not_modeled",
+        effective_flat=False,
+        normalized_exposure_active=True,
+        position_authority={
+            "state_class": "research_model_lacks_lot_native_authority",
+            "unsupported_reason": "research_model_lacks_lot_native_authority",
+            "research_position_model": "cash_qty_simulation_v1",
+        },
+    )
+
+    result = _compare(unsupported, unsupported)
+
+    assert result.ok is False
+    assert result.report["mismatch_count"] == 0
+    assert result.report["reason_codes"] == []
+    assert result.report["outcome"] == "FAIL_CLOSED_UNMODELED_STATE"
+    assert result.report["recommended_next_action"] != "none"
+    assert result.report["recommended_next_action"] == (
+        "extend_research_lot_native_position_model_before_claiming_lifecycle_equivalence"
+    )
 
 
 @pytest.mark.parametrize(

@@ -259,6 +259,7 @@ def compare_decision_equivalence(
         "claims_scope": _claims_scope(state_coverage_matrix=state_coverage_matrix),
         "state_coverage_matrix": state_coverage_matrix,
         "recommended_next_action": _recommended_next_action(
+            outcome=outcome,
             reason_codes=reason_code_set,
             canonical_comparison=canonical_comparison,
             state_coverage_matrix=state_coverage_matrix,
@@ -320,6 +321,7 @@ def compare_decision_export_artifacts(
         report["ok"] = False
         report["outcome"] = "FAIL_EXPORT_BINDING"
         report["recommended_next_action"] = _recommended_next_action(
+            outcome=report["outcome"],
             reason_codes=reason_codes,
             canonical_comparison=bool(report.get("canonical_schema")),
             state_coverage_matrix=report.get("state_coverage_matrix") if isinstance(report.get("state_coverage_matrix"), dict) else None,
@@ -338,6 +340,7 @@ def compare_decision_export_artifacts(
         )
         report["ok"] = report["outcome"] == "PASS_POSITIVE_EQUIVALENCE" and not reason_codes
         report["recommended_next_action"] = _recommended_next_action(
+            outcome=report["outcome"],
             reason_codes=reason_codes,
             canonical_comparison=bool(report.get("canonical_schema")),
             state_coverage_matrix=matrix,
@@ -959,10 +962,13 @@ def _equivalence_outcome(
 
 def _recommended_next_action(
     *,
+    outcome: str | None = None,
     reason_codes: list[str],
     canonical_comparison: bool,
     state_coverage_matrix: dict[str, dict[str, object]] | None = None,
 ) -> str:
+    if outcome == "FAIL_CLOSED_UNMODELED_STATE":
+        return "extend_research_lot_native_position_model_before_claiming_lifecycle_equivalence"
     if not canonical_comparison:
         return "regenerate_decisions_with_repo_owned_export_commands"
     if "decision_export_artifact_unverified" in reason_codes:
