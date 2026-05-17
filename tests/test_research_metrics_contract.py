@@ -48,6 +48,24 @@ def test_same_total_return_over_different_periods_has_different_cagr() -> None:
     assert month.return_risk.cagr_pct > year.return_risk.cagr_pct
 
 
+def test_metrics_v2_marks_sharpe_sortino_unavailable_without_period_return_contract() -> None:
+    metrics = build_metrics_v2(
+        starting_cash=1000.0,
+        final_cash=1010.0,
+        final_asset_qty=0.0,
+        final_mark_price=0.0,
+        equity_curve=(_point(0, 1000.0), _point(1000, 1010.0)),
+        position_intervals=(),
+        closed_trades=(ClosedTradeRecord(exit_ts=1000, net_pnl=10.0, return_pct=1.0),),
+        execution_records=(),
+    )
+
+    assert "sharpe_unavailable_without_period_return_series" in metrics.limitation_reasons
+    assert "sortino_unavailable_without_period_return_series" in metrics.limitation_reasons
+    assert "sharpe_ratio" not in metrics.as_dict()["return_risk"]
+    assert "sortino_ratio" not in metrics.as_dict()["return_risk"]
+
+
 def test_same_return_with_different_exposure_reports_different_time_in_market() -> None:
     full = build_metrics_v2(
         starting_cash=1000.0,

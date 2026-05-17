@@ -68,6 +68,19 @@ bar-level portfolio return panels are not yet available.
 Promotion-grade methods that require unavailable return units must fail closed
 rather than infer precision.
 
+The current research report path does not retain an aligned candidate
+bar/portfolio return panel for official evidence generation. The backtest engine
+can produce an in-memory equity curve when detail retention permits it, but the
+official report/panel artifact path still emits only closed-trade-derived
+`trade_return` rows by default. That artifact is machine-marked with
+`promotion_grade_available=false`,
+`trade_return_panel_cannot_satisfy_promotion_grade_wrc`, and
+`official_wrc_generation_requires_aligned_bar_return_panel`. It must not be
+treated as WRC input. The operator next step is to add and validate a retained,
+aligned candidate bar return artifact before enabling official WRC generation.
+`sharpe_like` is not accepted for production-bound statistical selection because
+it is not period-return Sharpe evidence and must not fall back to `return_pct`.
+
 For `multiple_testing_scope=experiment_family`, the run must bind a durable
 family trial registry at
 `DATA_ROOT/<mode>/reports/research/families/<experiment_family_id>/trial_registry.jsonl`.

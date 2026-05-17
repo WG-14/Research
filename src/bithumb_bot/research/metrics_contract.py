@@ -194,7 +194,10 @@ def build_metrics_v2(
     summary_active_bar_count: int | None = None,
     summary_exposure_ms: int | None = None,
 ) -> MetricContractV2:
-    limitations: list[str] = []
+    limitations: list[str] = [
+        "sharpe_unavailable_without_period_return_series",
+        "sortino_unavailable_without_period_return_series",
+    ]
     points = tuple(sorted(equity_curve, key=lambda item: item.ts))
     period_start = points[0].ts if points else summary_period_start_ts
     period_end = points[-1].ts if points else summary_period_end_ts

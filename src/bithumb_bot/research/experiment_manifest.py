@@ -1458,6 +1458,11 @@ def _parse_statistical_validation(
         raise ManifestValidationError(
             "statistical_validation.primary_metric must be net_excess_return, return_pct, or sharpe_like"
         )
+    if production_bound and primary_metric == "sharpe_like":
+        raise ManifestValidationError(
+            "statistical_validation.primary_metric sharpe_like is not allowed for production-bound manifests "
+            "without period-return Sharpe evidence"
+        )
     selection_universe = str(value.get("selection_universe") or "").strip()
     if selection_universe != "all_parameter_candidates_all_required_scenarios":
         raise ManifestValidationError(

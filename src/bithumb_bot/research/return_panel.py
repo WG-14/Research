@@ -81,8 +81,20 @@ def build_candidate_return_panel(
         "limitations": [
             "trade_return_panel_from_closed_trade_records",
             "bar_level_portfolio_return_panel_not_available",
+            "aligned_bar_portfolio_return_panel_not_generated",
+            "trade_return_panel_cannot_satisfy_promotion_grade_wrc",
+            "official_wrc_generation_requires_aligned_bar_return_panel",
             "cash_benchmark_zero_return_series",
         ],
+        "promotion_grade_available": False,
+        "promotion_grade_fail_reasons": [
+            "promotion_grade_requires_aligned_return_panel",
+            "trade_return_panel_cannot_satisfy_promotion_grade_wrc",
+        ],
+        "operator_next_step": (
+            "retain and emit aligned candidate bar-level portfolio return series, then rerun "
+            "with an official promotion-grade WRC implementation bound to that panel"
+        ),
     }
     payload["panel_content_hash"] = sha256_prefixed(content_hash_payload(payload))
     payload["content_hash"] = sha256_prefixed(content_hash_payload(payload))
@@ -129,6 +141,8 @@ def validate_return_panel_binding(
         reasons.append("return_panel_panel_content_hash_mismatch")
     if panel.get("schema_version") != CANDIDATE_RETURN_PANEL_SCHEMA_VERSION:
         reasons.append("return_panel_schema_version_mismatch")
+    if panel.get("return_unit") == DEFAULT_RETURN_UNIT and panel.get("promotion_grade_available") is True:
+        reasons.append("return_panel_promotion_grade_misclassified")
     for field in ("manifest_hash", "dataset_content_hash", "dataset_quality_hash"):
         expected = report.get(field)
         actual = panel.get(field)

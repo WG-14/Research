@@ -157,6 +157,70 @@ def test_no_closed_trades_fails_with_stable_reason() -> None:
     assert "stress_monte_carlo_no_closed_trades" in result["fail_reasons"]
 
 
+def test_risk_adjusted_score_required_calmar_missing_fails() -> None:
+    payload = _contract_payload()
+    payload["stress_suite"]["trade_removal"]["min_return_retention_pct"] = 0.0
+    payload["stress_suite"]["trade_order_monte_carlo"]["ruin_max_drawdown_pct"] = 80.0
+    manifest = parse_manifest(payload)
+
+    result = analyze_stress_suite(
+        contract=manifest.stress_suite,
+        context=_context(),
+        original_metrics={"return_pct": 1.0},
+        metrics_v2={"metrics_schema_version": 2, "return_risk": {"cagr_pct": None, "max_drawdown_pct": 0.0}},
+        closed_trades=_trades([10_000.0, -1_000.0, 9_000.0]),
+        starting_cash=1_000_000.0,
+    )
+
+    assert result["risk_adjusted_score"]["status"] == "FAIL"
+    assert "stress_risk_adjusted_calmar_missing" in result["fail_reasons"]
+
+
+def test_required_sharpe_and_sortino_missing_fail_explicitly() -> None:
+    payload = _contract_payload()
+    payload["stress_suite"]["trade_removal"]["min_return_retention_pct"] = 0.0
+    payload["stress_suite"]["trade_order_monte_carlo"]["ruin_max_drawdown_pct"] = 80.0
+    payload["stress_suite"]["risk_adjusted_score"]["required_metrics"] = ["sharpe", "sortino"]
+    manifest = parse_manifest(payload)
+
+    result = analyze_stress_suite(
+        contract=manifest.stress_suite,
+        context=_context(),
+        original_metrics={"return_pct": 1.0},
+        metrics_v2=_metrics_v2(),
+        closed_trades=_trades([10_000.0, -1_000.0, 9_000.0]),
+        starting_cash=1_000_000.0,
+    )
+
+    assert result["risk_adjusted_score"]["sharpe_ratio"] is None
+    assert result["risk_adjusted_score"]["sortino_ratio"] is None
+    assert "stress_risk_adjusted_sharpe_missing" in result["fail_reasons"]
+    assert "stress_risk_adjusted_sortino_missing" in result["fail_reasons"]
+
+
+def test_optional_sharpe_sortino_limitations_do_not_fail_when_unrequired() -> None:
+    payload = _contract_payload()
+    payload["stress_suite"]["trade_removal"]["min_return_retention_pct"] = 0.0
+    payload["stress_suite"]["trade_order_monte_carlo"]["ruin_max_drawdown_pct"] = 80.0
+    payload["stress_suite"]["risk_adjusted_score"]["required_metrics"] = ["calmar"]
+    manifest = parse_manifest(payload)
+
+    result = analyze_stress_suite(
+        contract=manifest.stress_suite,
+        context=_context(),
+        original_metrics={"return_pct": 1.0},
+        metrics_v2=_metrics_v2(),
+        closed_trades=_trades([10_000.0, -1_000.0, 9_000.0]),
+        starting_cash=1_000_000.0,
+    )
+
+    assert result["risk_adjusted_score"]["status"] == "PASS"
+    assert "stress_risk_adjusted_sharpe_missing" not in result["fail_reasons"]
+    assert "stress_risk_adjusted_sortino_missing" not in result["fail_reasons"]
+    assert "sharpe_unavailable_without_period_return_series" in result["risk_adjusted_score"]["limitations"]
+    assert "sortino_unavailable_without_period_return_series" in result["risk_adjusted_score"]["limitations"]
+
+
 def test_trade_order_monte_carlo_strict_drawdown_threshold_fails() -> None:
     payload = _contract_payload()
     payload["stress_suite"]["trade_removal"]["min_return_retention_pct"] = 0.0

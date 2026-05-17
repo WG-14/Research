@@ -594,6 +594,21 @@ def test_metric_centered_manifest_still_generates_screening_summary_bootstrap() 
     assert evidence["selection_adjusted_summary_p_value"] == evidence["summary_metric_max_bootstrap_p_value"]
     assert evidence["white_reality_check_p_value"] is None
     assert evidence["white_reality_check_method"] is None
+    assert "aligned_bar_portfolio_return_panel_not_generated" in evidence["promotion_grade_limitations"]
+    assert "official_wrc_generation_requires_aligned_bar_return_panel" in evidence["promotion_grade_limitations"]
+
+
+def test_sharpe_like_does_not_fall_back_to_return_pct() -> None:
+    payload = candidate_metric_universe_payload(
+        candidates=_candidates(),
+        required_scenario_ids=["scenario_001"],
+        primary_metric="sharpe_like",
+        primary_metric_source="validation_metrics",
+        benchmark="cash",
+    )
+
+    assert [row["validation_metric_missing"] for row in payload["candidates"]] == [True, True]
+    assert [row["validation_metric_value"] for row in payload["candidates"]] == [None, None]
 
 
 def test_screening_grade_evidence_cannot_satisfy_production_bound_promotion() -> None:
@@ -750,6 +765,101 @@ def test_candidate_return_panel_hash_binds_metadata_and_validation_recomputes_se
         },
         evidence={"return_panel_hash": panel["content_hash"]},
         panel=tampered,
+    )
+
+
+def test_trade_return_panel_machine_marks_promotion_grade_unavailable() -> None:
+    panel = build_candidate_return_panel(
+        experiment_id="stat_exp",
+        manifest_hash="sha256:manifest",
+        dataset_content_hash="sha256:dataset",
+        dataset_quality_hash="sha256:quality",
+        split="validation",
+        benchmark="cash",
+        candidates=_candidates(),
+    )
+
+    assert panel["return_unit"] == "trade_return"
+    assert panel["promotion_grade_available"] is False
+    assert "trade_return_panel_cannot_satisfy_promotion_grade_wrc" in panel["limitations"]
+    assert "promotion_grade_requires_aligned_return_panel" in panel["promotion_grade_fail_reasons"]
+
+
+def test_research_validation_docs_match_machine_readable_wrc_limitations() -> None:
+    panel = build_candidate_return_panel(
+        experiment_id="stat_exp",
+        manifest_hash="sha256:manifest",
+        dataset_content_hash="sha256:dataset",
+        dataset_quality_hash="sha256:quality",
+        split="validation",
+        benchmark="cash",
+        candidates=_candidates(),
+    )
+    docs = Path("docs/research-validation.md").read_text(encoding="utf-8")
+
+    for reason in (
+        "trade_return_panel_cannot_satisfy_promotion_grade_wrc",
+        "official_wrc_generation_requires_aligned_bar_return_panel",
+    ):
+        assert reason in panel["limitations"]
+        assert reason in docs
+
+
+def test_return_panel_binding_detects_tampered_return_values_time_index_candidate_ids_and_metadata() -> None:
+    candidates = _candidates()
+    candidates[0]["validation_closed_trades"] = [{"exit_ts": 2, "return_pct": 1.0}]
+    panel = build_candidate_return_panel(
+        experiment_id="stat_exp",
+        manifest_hash="sha256:manifest",
+        dataset_content_hash="sha256:dataset",
+        dataset_quality_hash="sha256:quality",
+        split="validation",
+        benchmark="cash",
+        candidates=candidates,
+    )
+    report = {
+        "manifest_hash": "sha256:manifest",
+        "dataset_content_hash": "sha256:dataset",
+        "dataset_quality_hash": "sha256:quality",
+        "candidates": candidates,
+    }
+
+    value_tampered = {**panel, "candidate_return_series": [dict(row) for row in panel["candidate_return_series"]]}
+    value_tampered["candidate_return_series"][0]["candidate_return_series_values"] = [
+        {"ts": 2, "sequence": 0, "return_pct": 9.0}
+    ]
+    assert "return_panel_series_malformed" in validate_return_panel_binding(
+        report=report,
+        evidence={"return_panel_hash": panel["content_hash"]},
+        panel=value_tampered,
+    )
+
+    index_tampered = {**panel, "ordered_time_index": [999]}
+    assert "return_panel_time_index_mismatch" in validate_return_panel_binding(
+        report=report,
+        evidence={"return_panel_hash": panel["content_hash"]},
+        panel=index_tampered,
+    )
+
+    candidate_tampered = {**panel, "candidate_ids": ["candidate_999"]}
+    assert "return_panel_candidate_mismatch" in validate_return_panel_binding(
+        report=report,
+        evidence={"return_panel_hash": panel["content_hash"]},
+        panel=candidate_tampered,
+    )
+
+    metadata_tampered = {**panel, "manifest_hash": "sha256:other"}
+    assert "return_panel_metadata_mismatch" in validate_return_panel_binding(
+        report=report,
+        evidence={"return_panel_hash": panel["content_hash"]},
+        panel=metadata_tampered,
+    )
+
+    misclassified = {**panel, "promotion_grade_available": True}
+    assert "return_panel_promotion_grade_misclassified" in validate_return_panel_binding(
+        report=report,
+        evidence={"return_panel_hash": panel["content_hash"]},
+        panel=misclassified,
     )
 
 

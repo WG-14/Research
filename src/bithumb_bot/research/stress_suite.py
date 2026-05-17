@@ -517,6 +517,10 @@ def analyze_risk_adjusted_score(*, contract: dict[str, Any], metrics_v2: dict[st
     required = {str(item) for item in contract.get("required_metrics") or []}
     if "calmar" in required and calmar is None:
         fail_reasons.append("stress_risk_adjusted_calmar_missing")
+    if "sharpe" in required:
+        fail_reasons.append("stress_risk_adjusted_sharpe_missing")
+    if "sortino" in required:
+        fail_reasons.append("stress_risk_adjusted_sortino_missing")
     return _json_safe(
         {
             "calmar_ratio": calmar,

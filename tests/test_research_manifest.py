@@ -193,6 +193,17 @@ def test_manifest_rejects_wrc_bootstrap_until_official_generation_exists() -> No
         parse_manifest(payload)
 
 
+def test_production_bound_manifest_rejects_sharpe_like_primary_metric() -> None:
+    payload = _production_manifest()
+    payload["statistical_validation"]["primary_metric"] = "sharpe_like"
+
+    with pytest.raises(
+        ManifestValidationError,
+        match="statistical_validation.primary_metric sharpe_like is not allowed for production-bound manifests",
+    ):
+        parse_manifest(payload)
+
+
 def test_manifest_parses_stress_suite_and_binds_hash() -> None:
     payload = _manifest()
     payload["stress_suite"] = _stress_suite()

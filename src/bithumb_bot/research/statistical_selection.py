@@ -661,8 +661,6 @@ def _metric_value(metrics: dict[str, Any], primary_metric: str, benchmark: str) 
         raw = _as_float(metrics.get("return_pct"))
     elif primary_metric == "sharpe_like":
         raw = _as_float(metrics.get("sharpe_like"))
-        if raw is None:
-            raw = _as_float(metrics.get("return_pct"))
     else:
         raw = None
     if raw is None:
@@ -739,6 +737,8 @@ def _limitations(contract: StatisticalSelectionContract) -> list[str]:
         "metric_summary_bootstrap_not_trade_or_bar_return_bootstrap",
         "summary_metric_centered_max_bootstrap_screening_only",
         "not_white_reality_check",
+        "aligned_bar_portfolio_return_panel_not_generated",
+        "official_wrc_generation_requires_aligned_bar_return_panel",
         PROMOTION_GRADE_GENERATION_UNAVAILABLE_WARNING,
         "spa_not_implemented",
         "deflated_sharpe_not_implemented",
@@ -751,6 +751,9 @@ def _promotion_grade_limitations(contract: StatisticalSelectionContract) -> list
         "not_full_white_reality_check",
         "not_bar_return_bootstrap",
         "not_trade_return_bootstrap",
+        "aligned_bar_portfolio_return_panel_not_generated",
+        "trade_return_panel_cannot_satisfy_promotion_grade_wrc",
+        "official_wrc_generation_requires_aligned_bar_return_panel",
         PROMOTION_GRADE_GENERATION_UNAVAILABLE_WARNING,
         "spa_not_implemented",
         "deflated_sharpe_not_implemented",
