@@ -265,6 +265,79 @@ def _write_golden_db(path: Path) -> None:
         conn.close()
 
 
+def _write_open_exposure_replay_db(path: Path) -> None:
+    conn = ensure_db(str(path))
+    try:
+        closes = [
+            100_000_000.0,
+            99_000_000.0,
+            98_000_000.0,
+            97_000_000.0,
+            96_000_000.0,
+            98_000_000.0,
+            99_000_000.0,
+            100_000_000.0,
+            101_000_000.0,
+            102_000_000.0,
+        ]
+        for day in ("2023-01-01", "2023-01-02", "2023-01-03"):
+            for index, close in enumerate(closes):
+                conn.execute(
+                    """
+                    INSERT INTO candles(ts, pair, interval, open, high, low, close, volume)
+                    VALUES (?, 'KRW-BTC', '1m', ?, ?, ?, ?, 1.0)
+                    """,
+                    (_ts(day, index), close, close, close, close),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _insert_runtime_open_exposure_lot(path: Path) -> None:
+    conn = ensure_db(str(path))
+    try:
+        conn.execute(
+            """
+            INSERT INTO open_position_lots(
+                pair, entry_trade_id, entry_client_order_id, entry_fill_id, entry_ts,
+                entry_price, qty_open, executable_lot_count, dust_tracking_lot_count,
+                lot_semantic_version, internal_lot_size, lot_min_qty, lot_qty_step,
+                lot_min_notional_krw, lot_max_qty_decimals, lot_rule_source_mode,
+                position_semantic_basis, position_state, entry_fee_total, strategy_name,
+                entry_decision_id, entry_decision_linkage
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "KRW-BTC",
+                1,
+                "entry_open_exposure",
+                "fill_open_exposure",
+                _ts("2023-01-02", 6),
+                100_000_000.0,
+                0.01,
+                100,
+                0,
+                1,
+                0.0001,
+                0.0001,
+                0.0001,
+                5000.0,
+                8,
+                "exchange",
+                "lot-native",
+                "open_exposure",
+                0.0,
+                "sma_with_filter",
+                None,
+                "direct",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _write_golden_profile(tmp_path: Path, manifest_payload: dict[str, object], db_path: Path) -> tuple[Path, str, str]:
     manifest = parse_manifest(manifest_payload)
     snapshot = load_dataset_split(db_path=db_path, manifest=manifest, split_name="validation")
@@ -326,7 +399,11 @@ def _write_golden_profile(tmp_path: Path, manifest_payload: dict[str, object], d
         "execution_reality_contract": execution_contract,
         "execution_contract_hash": execution_contract["execution_contract_hash"],
         "regime_classifier_version": "market_regime_v2",
-        "allowed_live_regimes": ["downtrend_normal_vol_unknown", "downtrend_low_vol_unknown"],
+        "allowed_live_regimes": [
+            "downtrend_normal_vol_unknown",
+            "downtrend_low_vol_unknown",
+            "uptrend_normal_vol_unknown",
+        ],
         "blocked_live_regimes": [],
     }
     candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
@@ -539,3 +616,112 @@ def test_repo_owned_export_replay_artifacts_can_pass_positive_equivalence(
     assert result.report["missing_runtime_decisions"] == []
     assert result.report["research_export_content_hash"].startswith("sha256:")
     assert result.report["runtime_export_content_hash"].startswith("sha256:")
+
+
+def test_repo_owned_export_replay_open_exposure_positive_equivalence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "open_exposure.sqlite"
+    _write_open_exposure_replay_db(db_path)
+    manifest_payload = _golden_manifest()
+    manifest_payload["parameter_space"]["SMA_FILTER_OVEREXT_LOOKBACK"] = [7]  # type: ignore[index]
+    manifest_payload["parameter_space"]["STRATEGY_EXIT_RULES"] = [""]  # type: ignore[index]
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest_payload, sort_keys=True), encoding="utf-8")
+    profile_path, selected_candidate_id, data_fingerprint = _write_golden_profile(
+        tmp_path,
+        manifest_payload,
+        db_path,
+    )
+    research_path = tmp_path / "research_open_exposure.json"
+    runtime_path = tmp_path / "runtime_open_exposure.json"
+    through_ts_path = tmp_path / "through_ts_open_exposure.json"
+    through_ts_path.write_text(
+        json.dumps({"through_ts_list": [_ts("2023-01-02", minute) for minute in range(7, 10)]}),
+        encoding="utf-8",
+    )
+    source = {
+        key: "chance_doc"
+        for key in (
+            "market_id",
+            "bid_min_total_krw",
+            "ask_min_total_krw",
+            "bid_price_unit",
+            "ask_price_unit",
+            "order_types",
+            "bid_types",
+            "ask_types",
+            "order_sides",
+            "bid_fee",
+            "ask_fee",
+            "maker_bid_fee",
+            "maker_ask_fee",
+        )
+    }
+    rules = RuleResolution(
+        rules=DerivedOrderConstraints(
+            market_id="KRW-BTC",
+            order_types=("limit", "price", "market"),
+            bid_types=("price",),
+            ask_types=("limit", "market"),
+            order_sides=("bid", "ask"),
+            bid_fee=0.0,
+            ask_fee=0.0,
+            maker_bid_fee=0.0,
+            maker_ask_fee=0.0,
+            min_qty=0.0001,
+            qty_step=0.0001,
+            min_notional_krw=5000.0,
+            max_qty_decimals=8,
+        ),
+        source=source,
+        fallback_used=False,
+        source_mode="exchange",
+    )
+    monkeypatch.setattr(profile_cli, "get_effective_order_rules", lambda _market: rules)
+    monkeypatch.setattr("bithumb_bot.strategy.sma.get_effective_order_rules", lambda _market: rules)
+    old_db_path = profile_cli.settings.DB_PATH
+    object.__setattr__(profile_cli.settings, "DB_PATH", str(db_path))
+    try:
+        assert app.cmd_research_export_decisions(
+            manifest_path=str(manifest_path),
+            candidate_id_value=selected_candidate_id,
+            split="validation",
+            out_path=str(research_path),
+            profile_path=str(profile_path),
+        ) == 0
+        _insert_runtime_open_exposure_lot(db_path)
+        assert app.cmd_runtime_replay_decisions(
+            profile_path=str(profile_path),
+            db_path=str(db_path),
+            through_ts_list_path=str(through_ts_path),
+            out_path=str(runtime_path),
+        ) == 0
+    finally:
+        object.__setattr__(profile_cli.settings, "DB_PATH", old_db_path)
+
+    research_artifact = load_decision_export_artifact(research_path, expected_source="research")
+    runtime_artifact = load_decision_export_artifact(runtime_path, expected_source="runtime_replay")
+    profile_hash = research_artifact.profile_content_hash
+    result = compare_decision_export_artifacts(
+        research_artifact=research_artifact,
+        runtime_artifact=runtime_artifact,
+        profile_hash=profile_hash,
+        market="KRW-BTC",
+        interval="1m",
+        data_fingerprint=data_fingerprint,
+    )
+
+    assert {decision["position_authority"]["state_class"] for decision in research_artifact.decisions} == {  # type: ignore[index]
+        "open_exposure"
+    }
+    assert {decision["position_authority"]["state_class"] for decision in runtime_artifact.decisions} == {  # type: ignore[index]
+        "open_exposure"
+    }
+    assert result.ok is True, result.report
+    assert result.report["outcome"] == "PASS_POSITIVE_EQUIVALENCE"
+    assert "open_exposure" in result.report["claims_scope"]["positive_equivalence_state_classes"]
+    assert result.report["state_coverage_matrix"]["open_exposure"]["positive_equivalence_supported"] is True
+    assert result.report["state_coverage_matrix"]["open_exposure"]["fail_closed_expected"] is False
+    assert result.report["claims_scope"]["fail_closed_unmodeled_state_count"] == 0

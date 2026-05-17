@@ -51,7 +51,8 @@ def runtime_position_authority_snapshot(
     state_class = classify_runtime_position_state(position_gate)
     unsupported_reason = (
         ""
-        if state_class == "flat_no_dust_no_position"
+        if state_class in POSITIVE_EQUIVALENCE_STATE_CLASSES
+        and _runtime_state_has_required_lot_native_fields(position_gate, state_class)
         else _runtime_unsupported_reason(position_gate)
     )
     return PositionAuthoritySnapshot(
@@ -77,6 +78,11 @@ def runtime_position_authority_snapshot(
         position_state_hash=position_state_hash,
         state_class=state_class,
         unsupported_reason=unsupported_reason,
+        research_position_model=(
+            LOT_NATIVE_RESEARCH_POSITION_MODEL
+            if not unsupported_reason and state_class in POSITIVE_EQUIVALENCE_STATE_CLASSES - {"flat_no_dust_no_position"}
+            else ""
+        ),
     )
 
 
@@ -198,6 +204,16 @@ def classify_runtime_position_state(position_gate: dict[str, Any]) -> str:
     return "runtime_position_state_not_research_comparable"
 
 
+def runtime_state_has_required_lot_native_fields(
+    position_gate: dict[str, Any],
+    state_class: str | None = None,
+) -> bool:
+    return _runtime_state_has_required_lot_native_fields(
+        position_gate,
+        state_class or classify_runtime_position_state(position_gate),
+    )
+
+
 def classify_decision_position_state(decision: dict[str, Any], *, source: str) -> tuple[str, str]:
     snapshot = decision.get("position_authority")
     if isinstance(snapshot, dict):
@@ -233,6 +249,77 @@ def _runtime_unsupported_reason(position_gate: dict[str, Any]) -> str:
     if state_class in {"open_exposure", "reserved_exit_pending", "non_executable_position", "recovery_blocked"}:
         return "research_model_lacks_lot_native_authority"
     return "research_runtime_state_not_comparable"
+
+
+def _runtime_state_has_required_lot_native_fields(position_gate: dict[str, Any], state_class: str) -> bool:
+    if state_class == "flat_no_dust_no_position":
+        return _is_runtime_flat_no_dust(position_gate)
+    if state_class not in POSITIVE_EQUIVALENCE_STATE_CLASSES:
+        return False
+    required_fields = (
+        "raw_total_asset_qty",
+        "open_lot_count",
+        "dust_tracking_lot_count",
+        "reserved_exit_lot_count",
+        "sellable_executable_lot_count",
+        "open_exposure_qty",
+        "dust_tracking_qty",
+        "reserved_exit_qty",
+        "sellable_executable_qty",
+        "entry_allowed",
+        "exit_allowed",
+        "effective_flat",
+        "normalized_exposure_active",
+    )
+    if any(field not in position_gate for field in required_fields):
+        return False
+    terminal_state = str(position_gate.get("terminal_state") or state_class).strip()
+    if terminal_state not in {state_class, "flat" if state_class == "flat_no_dust_no_position" else state_class}:
+        return False
+    open_lots = _int(position_gate.get("open_lot_count"))
+    dust_lots = _int(position_gate.get("dust_tracking_lot_count"))
+    reserved_lots = _int(position_gate.get("reserved_exit_lot_count"))
+    sellable_lots = _int(position_gate.get("sellable_executable_lot_count"))
+    open_qty = _float(position_gate.get("open_exposure_qty"))
+    dust_qty = _float(position_gate.get("dust_tracking_qty"))
+    reserved_qty = _float(position_gate.get("reserved_exit_qty"))
+    sellable_qty = _float(position_gate.get("sellable_executable_qty"))
+    raw_qty = _float(position_gate.get("raw_total_asset_qty"))
+    if min(open_lots, dust_lots, reserved_lots, sellable_lots) < 0:
+        return False
+    if min(open_qty, dust_qty, reserved_qty, sellable_qty, raw_qty) < 0.0:
+        return False
+    if dust_lots != 0 or dust_qty > 1e-12:
+        return False
+    if bool(position_gate.get("entry_allowed")) is not False:
+        return False
+    if bool(position_gate.get("effective_flat")) is not False:
+        return False
+    if bool(position_gate.get("normalized_exposure_active")) is not True:
+        return False
+    if state_class == "open_exposure":
+        return (
+            open_lots > 0
+            and reserved_lots == 0
+            and sellable_lots == open_lots
+            and open_qty > 1e-12
+            and reserved_qty <= 1e-12
+            and sellable_qty > 1e-12
+            and raw_qty + 1e-12 >= open_qty
+            and bool(position_gate.get("exit_allowed")) is True
+        )
+    if state_class == "reserved_exit_pending":
+        return (
+            open_lots > 0
+            and reserved_lots == open_lots
+            and sellable_lots == 0
+            and open_qty > 1e-12
+            and reserved_qty > 1e-12
+            and sellable_qty <= 1e-12
+            and raw_qty + 1e-12 >= open_qty
+            and bool(position_gate.get("exit_allowed")) is False
+        )
+    return False
 
 
 def _is_runtime_flat_no_dust(position_gate: dict[str, Any]) -> bool:

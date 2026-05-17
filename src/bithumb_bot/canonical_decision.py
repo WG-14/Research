@@ -10,6 +10,7 @@ from .position_authority import (
     POSITIVE_EQUIVALENCE_STATE_CLASSES,
     classify_runtime_position_state,
     lot_native_comparison_position_state,
+    runtime_state_has_required_lot_native_fields,
     runtime_position_authority_snapshot,
 )
 
@@ -372,7 +373,10 @@ def _runtime_comparison_position_state(
     if _is_flat_no_dust_position_gate(position_gate):
         return dict(CANONICAL_FLAT_POSITION_STATE)
     state_class = classify_runtime_position_state(position_gate)
-    if state_class in POSITIVE_EQUIVALENCE_STATE_CLASSES - {"flat_no_dust_no_position"}:
+    if (
+        state_class in POSITIVE_EQUIVALENCE_STATE_CLASSES - {"flat_no_dust_no_position"}
+        and runtime_state_has_required_lot_native_fields(position_gate, state_class)
+    ):
         return lot_native_comparison_position_state(
             {
                 **position_gate,

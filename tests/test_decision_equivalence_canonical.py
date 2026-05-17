@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from bithumb_bot.canonical_decision import EMPTY_ORDER_RULES_HASH, validate_canonical_decision_payload
+from bithumb_bot.canonical_decision import EMPTY_ORDER_RULES_HASH, runtime_decision_to_canonical_event, validate_canonical_decision_payload
 from bithumb_bot.decision_equivalence import (
     compare_decision_export_artifacts,
     compare_decision_equivalence,
@@ -12,6 +12,7 @@ from bithumb_bot.decision_equivalence import (
     load_decision_export_artifact,
 )
 from bithumb_bot.research.lot_native_simulation import LotNativeResearchPositionModel
+from bithumb_bot.strategy.base import StrategyDecision
 
 
 def _decision(**overrides: object) -> dict[str, object]:
@@ -352,6 +353,66 @@ def test_modeled_lot_native_position_authority_mismatch_fails_actual_drift() -> 
     assert result.ok is False
     assert result.report["outcome"] == "FAIL_ACTUAL_DRIFT"
     assert "decision_position_authority_mismatch" in result.report["reason_codes"]
+
+
+def test_incomplete_runtime_positive_state_missing_lot_fields_fails_closed() -> None:
+    event = runtime_decision_to_canonical_event(
+        StrategyDecision(
+            signal="HOLD",
+            reason="position held: no exit rule triggered",
+            context={
+                "strategy": "sma_with_filter",
+                "ts": 1_714_521_660_000,
+                "raw_signal": "HOLD",
+                "final_signal": "HOLD",
+                "prev_s": 100.0,
+                "prev_l": 101.0,
+                "curr_s": 102.0,
+                "curr_l": 101.0,
+                "gap_ratio": 0.01,
+                "fee_authority": {
+                    "bid_fee": 0.0,
+                    "ask_fee": 0.0,
+                    "fee_source": "test",
+                    "degraded": False,
+                    "degraded_reason": "",
+                },
+                "order_rules": {"source": "test", "min_qty": 0.0001},
+                "position_gate": {
+                    "raw_total_asset_qty": 0.0002,
+                    "open_lot_count": 2,
+                    "dust_tracking_lot_count": 0,
+                    "reserved_exit_lot_count": 0,
+                    "sellable_executable_lot_count": 2,
+                    "open_exposure_qty": 0.0002,
+                    "dust_tracking_qty": 0.0,
+                    "reserved_exit_qty": 0.0,
+                    "terminal_state": "open_exposure",
+                    "entry_allowed": False,
+                    "exit_allowed": True,
+                    "effective_flat": False,
+                    "normalized_exposure_active": True,
+                    "dust_state": "no_dust",
+                    "has_any_position_residue": True,
+                },
+            },
+        ),
+        market="KRW-BTC",
+        interval="1m",
+        profile_content_hash="sha256:profile",
+        dataset_content_hash="sha256:data",
+        db_data_fingerprint="sha256:data",
+        through_ts_ms=1_714_521_660_000,
+        execution_timing_policy_hash="sha256:timing",
+    ).as_dict()
+
+    result = _compare(event, event)
+
+    assert result.ok is False
+    assert result.report["outcome"] == "FAIL_CLOSED_UNMODELED_STATE"
+    assert event["position_authority"]["state_class"] == "open_exposure"  # type: ignore[index]
+    assert event["position_authority"]["unsupported_reason"] == "research_model_lacks_lot_native_authority"  # type: ignore[index]
+    assert result.report["state_coverage_matrix"]["open_exposure"]["fail_closed_expected"] is True
 
 
 def test_unmodeled_lifecycle_plus_actual_signal_drift_returns_actual_drift() -> None:
