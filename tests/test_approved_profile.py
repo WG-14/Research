@@ -2165,6 +2165,45 @@ def test_profile_promote_fails_when_decision_equivalence_semantics_invalid(
         )
 
 
+def test_profile_transition_accepts_modeled_open_exposure_positive_scope(tmp_path: Path) -> None:
+    profile_path = _write_profile_with_source(tmp_path)
+    profile = load_approved_profile(profile_path)
+    payload = _evidence_payload(profile)
+    payload["evidence_path"] = str((tmp_path / "decision_open_positive.json").resolve())
+    report_path = _attach_decision_equivalence_report(tmp_path, payload, profile)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["claims_scope"]["positive_equivalence_state_classes"] = [  # type: ignore[index]
+        "flat_no_dust_no_position",
+        "open_exposure",
+    ]
+    report["state_coverage_matrix"]["open_exposure"] = {  # type: ignore[index]
+        "research_decision_count": 1,
+        "runtime_decision_count": 1,
+        "positive_equivalence_supported": True,
+        "fail_closed_expected": False,
+        "supported_decision_count": 2,
+        "unsupported_decision_count": 0,
+        "mismatch_count": 0,
+        "representative_reason_codes": [],
+    }
+    report["content_hash"] = compute_decision_equivalence_hash(report)
+    report_path.write_text(json.dumps(report, sort_keys=True) + "\n", encoding="utf-8")
+    payload["decision_equivalence_content_hash"] = report["content_hash"]
+    payload["content_hash"] = compute_evidence_content_hash(payload)
+    evidence_path = tmp_path / "decision_open_positive.json"
+    evidence_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+
+    child = promote_profile_mode(
+        parent_profile=profile,
+        target_mode="live_dry_run",
+        paper_validation_evidence=str(evidence_path),
+    )
+
+    assert "open_exposure" in child["decision_equivalence_positive_state_classes"]
+    assert child["decision_equivalence_unsupported_state_classes"] == []
+    assert child["decision_equivalence_fail_closed_unmodeled_state_count"] == 0
+
+
 def test_profile_promote_fails_when_decision_equivalence_outcome_missing(tmp_path: Path) -> None:
     profile_path = _write_profile_with_source(tmp_path)
     profile = load_approved_profile(profile_path)

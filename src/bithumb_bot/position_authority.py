@@ -3,6 +3,16 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+POSITIVE_EQUIVALENCE_STATE_CLASSES = frozenset(
+    {
+        "flat_no_dust_no_position",
+        "open_exposure",
+        "reserved_exit_pending",
+    }
+)
+LOT_NATIVE_RESEARCH_POSITION_MODEL = "lot_native_simulation_v1"
+LEGACY_RESEARCH_POSITION_MODEL = "cash_qty_simulation_v1"
+
 
 @dataclass(frozen=True)
 class PositionAuthoritySnapshot:
@@ -107,8 +117,58 @@ def research_position_authority_snapshot(
         position_state_hash=position_state_hash,
         state_class=state_class,
         unsupported_reason=unsupported_reason,
-        research_position_model="cash_qty_simulation_v1",
+        research_position_model=LEGACY_RESEARCH_POSITION_MODEL,
     )
+
+
+def lot_native_comparison_position_state(fields: dict[str, Any]) -> dict[str, object]:
+    state_class = str(fields.get("state_class") or fields.get("terminal_state") or "").strip()
+    if state_class == "flat":
+        state_class = "flat_no_dust_no_position"
+    if state_class == "flat_no_dust_no_position":
+        return {
+            "comparison_state": "flat_no_dust_no_position",
+            "entry_allowed": True,
+            "exit_allowed": False,
+            "dust_state": "flat",
+            "effective_flat": True,
+            "normalized_exposure_active": False,
+        }
+    return {
+        "comparison_state": state_class,
+        "entry_allowed": bool(fields.get("entry_allowed")),
+        "exit_allowed": bool(fields.get("exit_allowed")),
+        "dust_state": str(fields.get("dust_state") or ""),
+        "effective_flat": bool(fields.get("effective_flat")),
+        "normalized_exposure_active": bool(fields.get("normalized_exposure_active")),
+        "raw_total_asset_qty": _float(fields.get("raw_total_asset_qty")),
+        "open_lot_count": _int(fields.get("open_lot_count")),
+        "dust_tracking_lot_count": _int(fields.get("dust_tracking_lot_count")),
+        "reserved_exit_lot_count": _int(fields.get("reserved_exit_lot_count")),
+        "sellable_executable_lot_count": _int(fields.get("sellable_executable_lot_count")),
+        "open_exposure_qty": _float(fields.get("open_exposure_qty")),
+        "dust_tracking_qty": _float(fields.get("dust_tracking_qty")),
+        "reserved_exit_qty": _float(fields.get("reserved_exit_qty")),
+        "sellable_executable_qty": _float(fields.get("sellable_executable_qty")),
+        "terminal_state": str(fields.get("terminal_state") or state_class),
+        "recovery_blocked": bool(fields.get("recovery_blocked")),
+        "recovery_block_reason": str(fields.get("recovery_block_reason") or "none"),
+    }
+
+
+def position_authority_supports_positive_equivalence(decision: dict[str, Any]) -> bool:
+    authority = decision.get("position_authority")
+    if not isinstance(authority, dict):
+        return False
+    state_class = str(authority.get("state_class") or "").strip()
+    if state_class not in POSITIVE_EQUIVALENCE_STATE_CLASSES:
+        return False
+    if str(authority.get("unsupported_reason") or "").strip():
+        return False
+    if state_class == "flat_no_dust_no_position":
+        return True
+    model = str(authority.get("research_position_model") or "").strip()
+    return model in {"", LOT_NATIVE_RESEARCH_POSITION_MODEL}
 
 
 def classify_runtime_position_state(position_gate: dict[str, Any]) -> str:

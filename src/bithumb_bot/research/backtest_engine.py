@@ -12,7 +12,7 @@ from bithumb_bot.market_regime import (
     classify_market_regime_from_arrays,
 )
 from bithumb_bot.market_regime.thresholds import MarketRegimeThresholds
-from bithumb_bot.canonical_decision import canonical_flat_position_state_hash, canonical_payload_hash
+from bithumb_bot.canonical_decision import canonical_payload_hash
 from bithumb_bot.position_authority import research_position_authority_snapshot
 
 from .dataset_snapshot import DatasetSnapshot
@@ -1059,24 +1059,8 @@ def _research_decision_payload(
     qty: float,
     sellable_qty: float,
 ) -> dict[str, object]:
-    flat_no_position = float(qty) <= 0.0 and float(sellable_qty) <= 0.0
-    position_state = (
-        {
-            "comparison_state": "flat_no_dust_no_position",
-            "entry_allowed": True,
-            "exit_allowed": False,
-            "dust_state": "flat",
-            "effective_flat": True,
-            "normalized_exposure_active": False,
-        }
-        if flat_no_position
-        else {
-            "research_position_model": "cash_qty_simulation_v1",
-            "unsupported_reason": "research_model_lacks_lot_native_authority",
-            "qty": float(qty),
-            "sellable_qty": float(sellable_qty),
-        }
-    )
+    from bithumb_bot.research.lot_native_simulation import lot_native_model_from_quantities
+
     order_rules = {
         "source": "research_execution_model",
         "fee_rate": float(fee_rate),
@@ -1084,12 +1068,34 @@ def _research_decision_payload(
         "sizing": "cash_fraction_0.99_or_full_sellable_qty",
     }
     fee_authority_hash = canonical_payload_hash({"source": "research_manifest", "fee_rate": float(fee_rate)})
-    position_state_hash = (
-        canonical_flat_position_state_hash()
-        if flat_no_position
-        else canonical_payload_hash(position_state)
-    )
     order_rules_hash = canonical_payload_hash(order_rules)
+    lot_native_authority = lot_native_model_from_quantities(
+        qty=float(qty),
+        sellable_qty=float(sellable_qty),
+    ).authority_snapshot(
+        order_rules_hash=order_rules_hash,
+        fee_authority_hash=fee_authority_hash,
+    )
+    flat_no_position = lot_native_authority.state_class == "flat_no_dust_no_position"
+    position_state_hash = lot_native_authority.position_state_hash
+    if lot_native_authority.unsupported_reason:
+        legacy_authority = research_position_authority_snapshot(
+            qty=float(qty),
+            sellable_qty=float(sellable_qty),
+            order_rules_hash=order_rules_hash,
+            fee_authority_hash=fee_authority_hash,
+            position_state_hash=canonical_payload_hash(
+                {
+                    "research_position_model": "cash_qty_simulation_v1",
+                    "unsupported_reason": "research_model_lacks_lot_native_authority",
+                    "qty": float(qty),
+                    "sellable_qty": float(sellable_qty),
+                }
+            ),
+        )
+        position_state_hash = legacy_authority.position_state_hash
+    else:
+        legacy_authority = None
     payload = {
         "strategy_name": "sma_with_filter",
         "market": dataset.market,
@@ -1136,11 +1142,13 @@ def _research_decision_payload(
         "regime_decision": "allowed",
         "regime_block_reason": "",
         "position_state_hash": position_state_hash,
-        "entry_allowed": bool(qty <= 0.0),
-        "exit_allowed": bool(sellable_qty > 0.0),
-        "dust_state": "flat" if flat_no_position else "research_not_modeled",
-        "effective_flat": bool(qty <= 0.0),
-        "normalized_exposure_active": bool(qty > 0.0),
+        "entry_allowed": bool(lot_native_authority.entry_allowed),
+        "exit_allowed": bool(lot_native_authority.exit_allowed),
+        "dust_state": "flat" if flat_no_position else (
+            "research_not_modeled" if lot_native_authority.unsupported_reason else "no_dust"
+        ),
+        "effective_flat": bool(lot_native_authority.entry_allowed),
+        "normalized_exposure_active": bool(lot_native_authority.open_lot_count > 0),
         "exit_rule": "opposite_cross" if final_signal == "SELL" and raw_signal == "SELL" else "",
         "exit_reason": "exit by opposite cross" if final_signal == "SELL" and raw_signal == "SELL" else "",
         "exit_evaluations_hash": canonical_payload_hash(
@@ -1155,13 +1163,9 @@ def _research_decision_payload(
             }
         ),
     }
-    payload["position_authority"] = research_position_authority_snapshot(
-        qty=float(qty),
-        sellable_qty=float(sellable_qty),
-        order_rules_hash=order_rules_hash,
-        fee_authority_hash=fee_authority_hash,
-        position_state_hash=position_state_hash,
-    ).as_dict()
+    payload["position_authority"] = (
+        legacy_authority.as_dict() if legacy_authority is not None else lot_native_authority.as_dict()
+    )
     return payload
 
 

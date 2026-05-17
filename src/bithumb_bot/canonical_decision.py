@@ -6,7 +6,12 @@ from dataclasses import asdict
 from dataclasses import dataclass
 from typing import Any
 
-from .position_authority import runtime_position_authority_snapshot
+from .position_authority import (
+    POSITIVE_EQUIVALENCE_STATE_CLASSES,
+    classify_runtime_position_state,
+    lot_native_comparison_position_state,
+    runtime_position_authority_snapshot,
+)
 
 
 def sha256_prefixed(payload: object) -> str:
@@ -366,6 +371,16 @@ def _runtime_comparison_position_state(
 ) -> dict[str, Any]:
     if _is_flat_no_dust_position_gate(position_gate):
         return dict(CANONICAL_FLAT_POSITION_STATE)
+    state_class = classify_runtime_position_state(position_gate)
+    if state_class in POSITIVE_EQUIVALENCE_STATE_CLASSES - {"flat_no_dust_no_position"}:
+        return lot_native_comparison_position_state(
+            {
+                **position_gate,
+                "state_class": state_class,
+                "recovery_blocked": bool(position_gate.get("recovery_blocked")),
+                "recovery_block_reason": str(position_gate.get("recovery_block_reason") or "none"),
+            }
+        )
     return {
         "comparison_state": "runtime_position_state_not_research_comparable",
         "unsupported_reason": _unsupported_position_reason(position_gate),

@@ -11,7 +11,7 @@ from .canonical_decision import (
     normalize_canonical_decision,
     validate_canonical_decision_payload,
 )
-from .position_authority import classify_decision_position_state
+from .position_authority import classify_decision_position_state, position_authority_supports_positive_equivalence
 from .research.hashing import content_hash_payload, sha256_prefixed
 
 
@@ -148,6 +148,24 @@ def compare_decision_equivalence(
                         "reason_code": _reason_for_field(field),
                         "research": left.get(field),
                         "runtime": right.get(field),
+                    }
+                )
+        if (
+            canonical_comparison
+            and position_authority_supports_positive_equivalence(left)
+            and position_authority_supports_positive_equivalence(right)
+            and (
+                classify_decision_position_state(left, source="research")[0] != "flat_no_dust_no_position"
+                or classify_decision_position_state(right, source="runtime")[0] != "flat_no_dust_no_position"
+            )
+        ):
+            if _stable_json(left.get("position_authority")) != _stable_json(right.get("position_authority")):
+                field_mismatches.append(
+                    {
+                        "field": "position_authority",
+                        "reason_code": "decision_position_authority_mismatch",
+                        "research": left.get("position_authority"),
+                        "runtime": right.get("position_authority"),
                     }
                 )
         if field_mismatches:
@@ -466,7 +484,10 @@ def _decision_key(item: dict[str, Any]) -> str:
 
 def _normalize_for_comparison(item: dict[str, Any], *, canonical: bool) -> dict[str, Any]:
     if canonical:
-        return normalize_canonical_decision(item)
+        normalized = normalize_canonical_decision(item)
+        if isinstance(item.get("position_authority"), dict):
+            normalized["position_authority"] = dict(item["position_authority"])
+        return normalized
     return dict(item)
 
 
@@ -721,7 +742,13 @@ def _normalized(value: object) -> str:
     return str(value or "").strip()
 
 
+def _stable_json(value: object) -> str:
+    return json.dumps(value or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def _reason_for_field(field: str) -> str:
+    if field == "position_authority":
+        return "decision_position_authority_mismatch"
     if field in {"signal_timestamp", "candle_ts", "through_ts_ms", "candle_basis", "decision_ts"}:
         return "decision_timestamp_candle_basis_mismatch"
     if field == "raw_signal":
@@ -775,6 +802,8 @@ def _state_coverage_matrix(
             "runtime_decision_count": 0,
             "positive_equivalence_supported": state == "flat_no_dust_no_position",
             "fail_closed_expected": state != "flat_no_dust_no_position",
+            "supported_decision_count": 0,
+            "unsupported_decision_count": 0,
             "mismatch_count": 0,
             "representative_reason_codes": [],
         }
@@ -799,10 +828,13 @@ def _state_coverage_matrix(
             )
             key_classes.setdefault(key, set()).add(state_class)
             if unsupported_reason:
+                entry["unsupported_decision_count"] = int(entry["unsupported_decision_count"]) + 1
                 reasons = list(entry["representative_reason_codes"])
                 if unsupported_reason not in reasons:
                     reasons.append(unsupported_reason)
                 entry["representative_reason_codes"] = sorted(reasons)
+            elif position_authority_supports_positive_equivalence(decision):
+                entry["supported_decision_count"] = int(entry["supported_decision_count"]) + 1
             dust_detail = _dust_detail_class(decision)
             if dust_detail and state_class == "dust_only":
                 dust_details = list(entry.setdefault("dust_detail_classes", []))
@@ -834,9 +866,11 @@ def _state_coverage_matrix(
                 reasons.append(reason)
             matrix[state_class]["representative_reason_codes"] = sorted(reasons)
     for state_class, entry in matrix.items():
-        if state_class != "flat_no_dust_no_position" and (
-            int(entry["research_decision_count"]) > 0 or int(entry["runtime_decision_count"]) > 0
-        ):
+        has_decisions = int(entry["research_decision_count"]) > 0 or int(entry["runtime_decision_count"]) > 0
+        if int(entry["supported_decision_count"]) > 0 and int(entry["unsupported_decision_count"]) == 0:
+            entry["positive_equivalence_supported"] = True
+            entry["fail_closed_expected"] = False
+        if state_class != "flat_no_dust_no_position" and has_decisions and bool(entry["fail_closed_expected"]):
             reasons = list(entry["representative_reason_codes"])
             if "fail_closed_unmodeled_state" not in reasons:
                 reasons.append("fail_closed_unmodeled_state")
@@ -885,7 +919,7 @@ def _claims_scope(*, state_coverage_matrix: dict[str, dict[str, object]]) -> dic
     fail_closed_count = sum(
         int(entry.get("research_decision_count") or 0) + int(entry.get("runtime_decision_count") or 0)
         for state, entry in state_coverage_matrix.items()
-        if state != "flat_no_dust_no_position" and bool(entry.get("fail_closed_expected"))
+        if bool(entry.get("fail_closed_expected"))
     )
     return {
         "positive_equivalence_state_classes": positive_classes,
@@ -951,7 +985,7 @@ def _equivalence_outcome(
     unsupported_count = sum(
         int(entry.get("research_decision_count") or 0) + int(entry.get("runtime_decision_count") or 0)
         for state, entry in state_coverage_matrix.items()
-        if state != "flat_no_dust_no_position" and bool(entry.get("fail_closed_expected"))
+        if bool(entry.get("fail_closed_expected"))
     )
     if unsupported_count > 0:
         return "FAIL_CLOSED_UNMODELED_STATE"

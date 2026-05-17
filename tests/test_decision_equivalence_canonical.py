@@ -11,6 +11,7 @@ from bithumb_bot.decision_equivalence import (
     compute_decision_export_hash,
     load_decision_export_artifact,
 )
+from bithumb_bot.research.lot_native_simulation import LotNativeResearchPositionModel
 
 
 def _decision(**overrides: object) -> dict[str, object]:
@@ -304,6 +305,53 @@ def test_non_flat_runtime_state_is_fail_closed_not_positive_equivalence() -> Non
     assert result.report["recommended_next_action"] == (
         "extend_research_lot_native_position_model_before_claiming_lifecycle_equivalence"
     )
+
+
+def _lot_native_decision_for_state(state: str) -> dict[str, object]:
+    model = LotNativeResearchPositionModel.flat().apply_buy_fill(qty=0.0002)
+    if state == "reserved_exit_pending":
+        model = model.submit_sell()
+    snapshot = model.authority_snapshot(
+        order_rules_hash="sha256:order_rules",
+        fee_authority_hash="sha256:fee_authority",
+    )
+    return _decision(
+        position_state_hash=snapshot.position_state_hash,
+        entry_allowed=snapshot.entry_allowed,
+        exit_allowed=snapshot.exit_allowed,
+        dust_state="no_dust",
+        effective_flat=snapshot.entry_allowed,
+        normalized_exposure_active=snapshot.open_lot_count > 0,
+        position_authority=snapshot.as_dict(),
+    )
+
+
+@pytest.mark.parametrize("state_class", ["open_exposure", "reserved_exit_pending"])
+def test_modeled_lot_native_non_flat_states_can_pass_positive_equivalence(state_class: str) -> None:
+    decision = _lot_native_decision_for_state(state_class)
+
+    result = _compare(decision, decision)
+
+    assert result.ok is True
+    assert result.report["outcome"] == "PASS_POSITIVE_EQUIVALENCE"
+    assert state_class in result.report["claims_scope"]["positive_equivalence_state_classes"]
+    assert result.report["state_coverage_matrix"][state_class]["positive_equivalence_supported"] is True
+    assert result.report["state_coverage_matrix"][state_class]["fail_closed_expected"] is False
+    assert result.report["claims_scope"]["full_lifecycle_equivalence_supported"] is False
+
+
+def test_modeled_lot_native_position_authority_mismatch_fails_actual_drift() -> None:
+    research = _lot_native_decision_for_state("open_exposure")
+    runtime = _lot_native_decision_for_state("open_exposure")
+    authority = dict(runtime["position_authority"])  # type: ignore[arg-type]
+    authority["open_lot_count"] = 1
+    runtime["position_authority"] = authority
+
+    result = _compare(research, runtime)
+
+    assert result.ok is False
+    assert result.report["outcome"] == "FAIL_ACTUAL_DRIFT"
+    assert "decision_position_authority_mismatch" in result.report["reason_codes"]
 
 
 def test_unmodeled_lifecycle_plus_actual_signal_drift_returns_actual_drift() -> None:
