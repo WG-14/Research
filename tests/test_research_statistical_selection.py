@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from bithumb_bot.research.statistical_selection import (
     candidate_metric_universe_payload,
     candidate_metric_values_hash,
     recompute_candidate_metric_values_hash_from_report,
+    recompute_white_reality_check_block_bootstrap,
     selection_universe_hash,
     validate_statistical_evidence_for_candidate,
 )
@@ -1196,6 +1198,177 @@ def test_trade_return_panel_cannot_satisfy_promotion_grade_wrc() -> None:
     )
 
     assert "promotion_grade_requires_aligned_return_panel" in reasons
+
+
+def test_spoofed_evidence_cannot_claim_bar_return_unit_for_trade_return_panel(tmp_path: Path) -> None:
+    contract = _manifest().statistical_validation.as_dict()
+    contract["bootstrap"] = {
+        "method": "white_reality_check_block_bootstrap",
+        "n_bootstrap": 100,
+        "block_length_policy": "fixed",
+        "seed_policy": "derived_from_selection_universe_hash",
+    }
+    candidates = _candidates()
+    candidates[0]["scenario_results"] = [
+        {
+            "scenario_id": "scenario_001",
+            "validation_closed_trades": [
+                {"exit_ts": 1, "return_pct": 0.5},
+                {"exit_ts": 2, "return_pct": -0.1},
+            ],
+        }
+    ]
+    panel = build_candidate_return_panel(
+        experiment_id="stat_exp",
+        manifest_hash="sha256:manifest",
+        dataset_content_hash="sha256:dataset",
+        dataset_quality_hash="sha256:quality",
+        split="validation",
+        benchmark="cash",
+        candidates=candidates,
+    )
+    panel_path = tmp_path / "candidate_return_panel.json"
+    panel_path.write_text(json.dumps(panel, sort_keys=True), encoding="utf-8")
+    metric_hash = candidate_metric_values_hash(
+        candidates=candidates,
+        required_scenario_ids=["scenario_001"],
+        primary_metric="net_excess_return",
+        primary_metric_source="validation_metrics",
+        benchmark="cash",
+    )
+    sampling = {
+        "method": "white_reality_check_block_bootstrap",
+        "method_name": "white_reality_check_block_bootstrap",
+        "n_bootstrap": 100,
+        "seed_policy": "derived_from_selection_universe_hash",
+        "derived_seed": 1,
+        "block_length": 2,
+        "block_length_policy": "fixed",
+        "stationary_bootstrap_probability": None,
+        "observation_count": panel["observation_count"],
+        "return_unit": "bar_excess_return",
+        "benchmark": "cash",
+        "missing_observation_policy": "skip_missing_candidate_trade_returns",
+    }
+    sampling["content_hash"] = sha256_prefixed(content_hash_payload(sampling))
+    evidence = {
+        "artifact_type": "statistical_selection_evidence",
+        "schema_version": 1,
+        "experiment_id": "stat_exp",
+        "manifest_hash": "sha256:manifest",
+        "dataset_content_hash": "sha256:dataset",
+        "dataset_quality_hash": "sha256:quality",
+        "selection_universe_hash": "sha256:selection",
+        "candidate_metric_values_hash": metric_hash,
+        "required_scenario_ids": ["scenario_001"],
+        "candidate_metric_values_summary": {
+            "candidate_count": 2,
+            "metric_value_count": 2,
+            "missing_metric_count": 0,
+            "primary_metric": "net_excess_return",
+            "primary_metric_source": "validation_metrics",
+            "benchmark": "cash",
+        },
+        "candidate_count": 2,
+        "metric_value_count": 2,
+        "missing_metric_count": 0,
+        "search_budget": 2,
+        "parameter_grid_size": 2,
+        "attempt_index": 1,
+        "holdout_reuse_count": 0,
+        "dataset_reuse_policy": "single_final_holdout_for_experiment_family",
+        "benchmark": "cash",
+        "primary_metric": "net_excess_return",
+        "primary_metric_source": "validation_metrics",
+        "evidence_grade": "PROMOTION_GRADE_WRC",
+        "bootstrap_method": "white_reality_check_block_bootstrap",
+        "statistical_method": "white_reality_check_block_bootstrap",
+        "white_reality_check_method": "white_reality_check_block_bootstrap",
+        "white_reality_check_p_value": 0.01,
+        "white_reality_check_available": True,
+        "return_unit": "bar_excess_return",
+        "return_panel_hash": panel["content_hash"],
+        "return_panel_path": str(panel_path),
+        "return_panel_observation_count": panel["observation_count"],
+        "bootstrap_sampling_contract": sampling,
+        "bootstrap_sampling_contract_hash": sampling["content_hash"],
+        "statistical_validation_contract": contract,
+        "method_provenance": {"implementation": "test", "version": 1},
+        "effective_trial_count": 2,
+        "statistical_gate_result": "PASS",
+        "gate_fail_reasons": [],
+    }
+    evidence["content_hash"] = sha256_prefixed(content_hash_payload({k: v for k, v in evidence.items() if k != "content_hash"}))
+    report = {
+        "deployment_tier": "paper_candidate",
+        "manifest_hash": "sha256:manifest",
+        "dataset_content_hash": "sha256:dataset",
+        "dataset_quality_hash": "sha256:quality",
+        "candidate_count": 2,
+        "search_budget": 2,
+        "parameter_grid_size": 2,
+        "attempt_index": 1,
+        "holdout_reuse_count": 0,
+        "dataset_reuse_policy": "single_final_holdout_for_experiment_family",
+        "statistical_validation_required": True,
+        "statistical_validation_contract": contract,
+        "selection_universe_hash": "sha256:selection",
+        "candidate_metric_values_hash": metric_hash,
+        "metric_value_count": 2,
+        "missing_metric_count": 0,
+        "statistical_evidence_hash": evidence["content_hash"],
+        "return_panel_hash": panel["content_hash"],
+        "return_panel_path": str(panel_path),
+        "candidates": candidates,
+    }
+    candidate = {
+        **candidates[0],
+        "deployment_tier": "paper_candidate",
+        "statistical_validation_required": True,
+        "statistical_validation_contract": contract,
+        "selection_universe_hash": "sha256:selection",
+        "candidate_metric_values_hash": metric_hash,
+        "metric_value_count": 2,
+        "missing_metric_count": 0,
+        "statistical_evidence_hash": evidence["content_hash"],
+    }
+
+    reasons = validate_statistical_evidence_for_candidate(candidate=candidate, report=report, evidence=evidence)
+
+    assert "return_panel_return_unit_mismatch" in reasons
+    assert "return_panel_promotion_grade_unavailable" in reasons
+    assert "promotion_grade_requires_aligned_return_panel" in reasons
+    assert "return_panel_method_support_insufficient" in reasons
+
+
+def test_recompute_white_reality_check_refuses_trade_return_panel_with_excess_values() -> None:
+    candidates = _candidates()
+    candidates[0]["validation_closed_trades"] = [
+        {"exit_ts": 1, "return_pct": 0.5},
+        {"exit_ts": 2, "return_pct": -0.1},
+    ]
+    panel = build_candidate_return_panel(
+        experiment_id="stat_exp",
+        manifest_hash="sha256:manifest",
+        dataset_content_hash="sha256:dataset",
+        dataset_quality_hash="sha256:quality",
+        split="validation",
+        benchmark="cash",
+        candidates=candidates,
+    )
+    assert panel["return_unit"] == "trade_return"
+    assert panel["promotion_grade_available"] is False
+    assert panel["candidate_return_series"][0]["excess_return_series_values"]
+
+    assert recompute_white_reality_check_block_bootstrap(
+        panel=panel,
+        sampling_contract={
+            "method": "white_reality_check_block_bootstrap",
+            "n_bootstrap": 100,
+            "derived_seed": 1,
+            "block_length": 2,
+        },
+    ) is None
 
 
 def test_family_registry_binding_detects_hash_tampering(tmp_path) -> None:

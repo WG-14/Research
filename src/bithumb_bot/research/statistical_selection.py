@@ -502,10 +502,20 @@ def _extend_promotion_grade_method_reasons(
     observation_count = _as_int(evidence.get("return_panel_observation_count") or report.get("return_panel_observation_count"))
     if observation_count is None or observation_count <= 0:
         reasons.append("return_panel_observation_count_insufficient")
-    if evidence.get("return_unit") not in PROMOTION_GRADE_RETURN_UNITS:
+    evidence_return_unit = evidence.get("return_unit")
+    if evidence_return_unit not in PROMOTION_GRADE_RETURN_UNITS:
         reasons.append("promotion_grade_requires_aligned_return_panel")
         reasons.append("return_panel_method_support_insufficient")
     panel = _load_return_panel(evidence, report)
+    if isinstance(panel, dict):
+        panel_return_unit = panel.get("return_unit")
+        if panel_return_unit != evidence_return_unit:
+            reasons.append("return_panel_return_unit_mismatch")
+        if panel_return_unit not in PROMOTION_GRADE_RETURN_UNITS:
+            reasons.append("promotion_grade_requires_aligned_return_panel")
+            reasons.append("return_panel_method_support_insufficient")
+        if panel.get("promotion_grade_available") is False:
+            reasons.append("return_panel_promotion_grade_unavailable")
     if not isinstance(panel, dict) or not isinstance(sampling, dict):
         return
     recomputed = recompute_white_reality_check_block_bootstrap(panel=panel, sampling_contract=sampling)
@@ -792,6 +802,10 @@ def recompute_white_reality_check_block_bootstrap(
     panel: dict[str, Any],
     sampling_contract: dict[str, Any],
 ) -> float | None:
+    if panel.get("return_unit") not in PROMOTION_GRADE_RETURN_UNITS:
+        return None
+    if panel.get("promotion_grade_available") is False:
+        return None
     if sampling_contract.get("method") != "white_reality_check_block_bootstrap":
         return None
     n_bootstrap = _as_int(sampling_contract.get("n_bootstrap"))
