@@ -15,6 +15,7 @@ from .experiment_registry import (
     validate_experiment_registry_binding,
 )
 from .hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
+from .audit_trail import verify_audit_trail
 from .return_panel import validate_return_panel_binding
 from .execution_calibration import ExecutionCalibrationError, load_calibration_artifact
 from .promotion_gate import PromotionGateError, promote_candidate
@@ -244,6 +245,12 @@ def cmd_research_registry_validate(*, experiment_id: str) -> int:
     }
     print(json.dumps(payload, sort_keys=True, indent=2))
     return 0 if ok else 1
+
+
+def cmd_research_verify_audit(*, experiment_id: str) -> int:
+    result = verify_audit_trail(manager=PATH_MANAGER, experiment_id=experiment_id)
+    print(json.dumps(result, sort_keys=True, indent=2))
+    return 0 if result.get("ok") is True else 1
 
 
 def _completion_for_row(rows: list[dict[str, object]], row_hash: str) -> dict[str, object] | None:
@@ -505,6 +512,14 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     print(f"  return_panel_hash={report.get('return_panel_hash') or 'none'}")
     print(f"  return_unit={report.get('return_unit') or 'none'}")
     print(f"  return_panel_observation_count={report.get('return_panel_observation_count')}")
+    print(f"  audit_mode={_nested(report, 'audit_trail_policy', 'mode') or 'none'}")
+    print(f"  audit_status={report.get('audit_trail_status') or 'none'}")
+    print(f"  audit_trace_manifest_ref={report.get('audit_trail_trace_manifest_ref') or 'none'}")
+    print(f"  audit_trace_manifest_hash={report.get('audit_trail_trace_manifest_hash') or 'none'}")
+    print(
+        "  audit_fail_reasons="
+        f"{_format_items(tuple(str(item) for item in report.get('audit_trail_fail_reasons') or []))}"
+    )
     print(f"  family_trial_registry_path={report.get('family_trial_registry_path') or 'none'}")
     print(f"  family_trial_registry_prior_hash={report.get('family_trial_registry_prior_hash') or 'none'}")
     print(f"  family_trial_registry_row_hash={report.get('family_trial_registry_row_hash') or 'none'}")

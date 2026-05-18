@@ -33,6 +33,12 @@ from .backtest_engine import (
     START_CASH_KRW,
     execution_event_summary,
 )
+from .audit_trail import (
+    AuditTraceScope,
+    verify_audit_trail,
+    write_trace_manifest,
+    trace_manifest_path,
+)
 from .deployment_policy import validate_production_calibration_policy
 from .execution_calibration import compare_calibration_to_scenario
 from .execution_model import FixedBpsExecutionModel, StressExecutionModel, model_params_hash
@@ -293,10 +299,25 @@ def _backtest_context(
     scenario_id: str,
     scenario_index: int,
     split_name: str,
+    dataset_content_hash: str,
+    parameter_values: dict[str, Any],
     progress_callback: ProgressCallback | None,
 ) -> BacktestRunContext:
     limits = manifest.research_run.resource_limits
     heartbeat = manifest.research_run.heartbeat
+    audit_trace = None
+    if manifest.research_run.audit_trail.complete_external:
+        audit_trace = AuditTraceScope(
+            manager=manager,
+            experiment_id=manifest.experiment_id,
+            manifest_hash=manifest.manifest_hash(),
+            dataset_content_hash=dataset_content_hash,
+            candidate_id=candidate_id,
+            scenario_id=scenario_id,
+            scenario_index=scenario_index,
+            split=split_name,
+            parameter_values=parameter_values,
+        )
     return BacktestRunContext(
         experiment_id=manifest.experiment_id,
         candidate_id=candidate_id,
@@ -321,6 +342,7 @@ def _backtest_context(
             manifest=manifest,
             event=event,
         ),
+        audit_trace=audit_trace,
     )
 
 
@@ -960,6 +982,9 @@ def _evaluate_candidates(
                 "train_resource_usage": base.get("train_resource_usage"),
                 "validation_resource_usage": base.get("validation_resource_usage"),
                 "final_holdout_resource_usage": base.get("final_holdout_resource_usage"),
+                "train_audit_trace_index": base.get("train_audit_trace_index"),
+                "validation_audit_trace_index": base.get("validation_audit_trace_index"),
+                "final_holdout_audit_trace_index": base.get("final_holdout_audit_trace_index"),
                 "train_execution_metadata": base.get("train_execution_metadata") or [],
                 "validation_execution_metadata": base.get("validation_execution_metadata") or [],
                 "final_holdout_execution_metadata": base.get("final_holdout_execution_metadata"),
@@ -1090,6 +1115,9 @@ def _evaluate_candidates(
                 "train_resource_usage": primary.get("train_resource_usage"),
                 "validation_resource_usage": primary.get("validation_resource_usage"),
                 "final_holdout_resource_usage": primary.get("final_holdout_resource_usage"),
+                "train_audit_trace_index": primary.get("train_audit_trace_index"),
+                "validation_audit_trace_index": primary.get("validation_audit_trace_index"),
+                "final_holdout_audit_trace_index": primary.get("final_holdout_audit_trace_index"),
                 "validation_equity_curve": primary.get("validation_equity_curve") or [],
                 "final_holdout_equity_curve": primary.get("final_holdout_equity_curve") or [],
             }
@@ -1165,33 +1193,41 @@ def _evaluate_candidate_base_result(
             candidate_id=param_candidate_id,
             report_detail=manifest.research_run.report_detail,
         )
-        return runner(
-            dataset=snapshots[split_name],
+        context = _backtest_context(
+            manifest=manifest,
+            manager=manager,
+            candidate_id=param_candidate_id,
+            scenario_id=scenario_id,
+            scenario_index=scenario_index,
+            split_name=split_name,
+            dataset_content_hash=snapshots[split_name].content_hash(),
             parameter_values=params,
-            fee_rate=scenario.fee_rate,
-            slippage_bps=float(scenario.slippage_bps),
-            parameter_stability_score=None,
-            execution_model=_execution_model_from_scenario(
-                scenario,
-                seed_context=_seed_context(
-                    manifest_hash=manifest_hash,
-                    scenario=scenario,
-                    scenario_id=scenario_id,
-                    parameter_candidate_id=param_candidate_id,
-                    split_name=split_name,
-                ),
-            ),
-            execution_timing_policy=manifest.execution_timing,
-            context=_backtest_context(
-                manifest=manifest,
-                manager=manager,
-                candidate_id=param_candidate_id,
-                scenario_id=scenario_id,
-                scenario_index=scenario_index,
-                split_name=split_name,
-                progress_callback=progress_callback,
-            ),
+            progress_callback=progress_callback,
         )
+        try:
+            return runner(
+                dataset=snapshots[split_name],
+                parameter_values=params,
+                fee_rate=scenario.fee_rate,
+                slippage_bps=float(scenario.slippage_bps),
+                parameter_stability_score=None,
+                execution_model=_execution_model_from_scenario(
+                    scenario,
+                    seed_context=_seed_context(
+                        manifest_hash=manifest_hash,
+                        scenario=scenario,
+                        scenario_id=scenario_id,
+                        parameter_candidate_id=param_candidate_id,
+                        split_name=split_name,
+                    ),
+                ),
+                execution_timing_policy=manifest.execution_timing,
+                context=context,
+            )
+        except Exception:
+            if context.audit_trace is not None:
+                context.audit_trace.complete(status="failed")
+            raise
 
     train = _run("train")
     validation = _run("validation")
@@ -1250,6 +1286,9 @@ def _evaluate_candidate_base_result(
         "train_resource_usage": train.resource_usage,
         "validation_resource_usage": validation.resource_usage,
         "final_holdout_resource_usage": final_holdout.resource_usage if final_holdout else None,
+        "train_audit_trace_index": train.audit_trace_index,
+        "validation_audit_trace_index": validation.audit_trace_index,
+        "final_holdout_audit_trace_index": final_holdout.audit_trace_index if final_holdout else None,
         "retained_detail_summary": validation.retained_detail_summary,
     }
 
@@ -1269,6 +1308,7 @@ def _failed_candidate_base_result(
     metrics = _failed_metrics_payload()
     metrics_v2 = _failed_metrics_v2_payload()
     split = str(resource_guard.get("split") or "unknown") if isinstance(resource_guard, dict) else "unknown"
+    audit_index = resource_guard.get("audit_trace_index") if isinstance(resource_guard.get("audit_trace_index"), dict) else None
     return {
         "index": candidate_index,
         "candidate_id": candidate_id,
@@ -1301,7 +1341,26 @@ def _failed_candidate_base_result(
         "scenario_index": scenario_index,
         "scenario_type": scenario.type,
         "research_run_policy": manifest.research_run.as_dict(),
+        "train_audit_trace_index": audit_index if split == "train" else None,
+        "validation_audit_trace_index": audit_index if split == "validation" else None,
+        "final_holdout_audit_trace_index": audit_index if split == "final_holdout" else None,
     }
+
+
+def _collect_audit_trace_indexes(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    indexes: list[dict[str, Any]] = []
+    for candidate in candidates:
+        scenario_results = candidate.get("scenario_results")
+        if not isinstance(scenario_results, list):
+            continue
+        for scenario in scenario_results:
+            if not isinstance(scenario, dict):
+                continue
+            for key in ("train_audit_trace_index", "validation_audit_trace_index", "final_holdout_audit_trace_index"):
+                value = scenario.get(key)
+                if isinstance(value, dict):
+                    indexes.append(value)
+    return indexes
 
 
 def _pre_stress_gate_summaries(
@@ -2143,6 +2202,32 @@ def _report_payload(
         experiment_registry_evidence_hash_phase=experiment_registry_fields.get("experiment_registry_evidence_hash_phase"),
         created_at=generated_at,
     )
+    audit_trace_indexes = _collect_audit_trace_indexes(candidates)
+    audit_trace_manifest: dict[str, Any] | None = None
+    audit_trace_manifest_path: Path | None = None
+    audit_verification: dict[str, Any] | None = None
+    audit_reasons: list[str] = []
+    if manifest.research_run.audit_trail.complete_external:
+        if manager is not None:
+            audit_trace_manifest = write_trace_manifest(
+                manager=manager,
+                experiment_id=manifest.experiment_id,
+                manifest_hash=manifest.manifest_hash(),
+                dataset_content_hash=dataset_hash,
+                trace_indexes=audit_trace_indexes,
+                policy=manifest.research_run.audit_trail,
+            )
+            audit_trace_manifest_path = trace_manifest_path(manager=manager, experiment_id=manifest.experiment_id)
+            audit_verification = verify_audit_trail(
+                manager=manager,
+                experiment_id=manifest.experiment_id,
+                expected_manifest_hash=manifest.manifest_hash(),
+            )
+            audit_reasons = [str(item) for item in audit_verification.get("reasons") or []]
+        else:
+            audit_reasons = ["audit_trail_trace_manifest_missing"]
+    elif manifest.research_run.audit_trail.required_for_promotion and statistical_validation_required(manifest):
+        audit_reasons = ["audit_trail_required_for_promotion"]
     statistical_contract = (
         manifest.statistical_validation.as_dict()
         if manifest.statistical_validation is not None
@@ -2176,6 +2261,7 @@ def _report_payload(
             split="validation",
             benchmark=str(statistical_contract["benchmark"]),
             candidates=candidates,
+            manager=manager,
         )
         if manager is not None:
             return_panel_path = write_candidate_return_panel(
@@ -2227,6 +2313,18 @@ def _report_payload(
             family_trial_registry_row_hash=family_registry_row_hash,
             experiment_registry=experiment_registry_fields or None,
         )
+        if statistical_evidence is not None and audit_reasons and manifest.research_run.audit_trail.required_for_promotion:
+            statistical_evidence["statistical_gate_result"] = "FAIL"
+            statistical_evidence["gate_fail_reasons"] = sorted(
+                set(str(item) for item in statistical_evidence.get("gate_fail_reasons") or [])
+                | set(audit_reasons)
+                | {"audit_trail_required_for_promotion"}
+            )
+            statistical_evidence["audit_trail_status"] = "FAIL"
+            statistical_evidence["audit_trail_fail_reasons"] = sorted(set(audit_reasons))
+            statistical_evidence["content_hash"] = sha256_prefixed(
+                content_hash_payload({k: v for k, v in statistical_evidence.items() if k != "content_hash"})
+            )
         if statistical_evidence is not None and manager is not None:
             statistical_evidence_path = write_statistical_selection_evidence(
                 manager=manager,
@@ -2453,6 +2551,22 @@ def _report_payload(
         "cost_assumption_contract": manifest.execution_model.as_dict(),
         "base_cost_assumption": _report_base_cost_assumption(candidates),
         "research_run": manifest.research_run.as_dict(),
+        "audit_trail_policy": manifest.research_run.audit_trail.as_dict(),
+        "audit_trail_status": "PASS" if manifest.research_run.audit_trail.complete_external and not audit_reasons else (
+            "DISABLED" if not manifest.research_run.audit_trail.complete_external else "FAIL"
+        ),
+        "audit_trail_fail_reasons": sorted(set(audit_reasons)),
+        "audit_trail_trace_manifest_hash": (
+            audit_trace_manifest.get("content_hash") if isinstance(audit_trace_manifest, dict) else None
+        ),
+        "audit_trail_trace_manifest_ref": (
+            _data_dir_relative_ref(manager, audit_trace_manifest_path)
+            if manager is not None and audit_trace_manifest_path is not None
+            else None
+        ),
+        "audit_trail_trace_manifest_path": str(audit_trace_manifest_path.resolve()) if audit_trace_manifest_path else None,
+        "audit_trail_trace_index_count": len(audit_trace_indexes),
+        "audit_trail_verification": audit_verification,
         "metrics_schema_version": METRICS_SCHEMA_VERSION,
         "metrics_gate_policy": metrics_gate_policy_from_acceptance_gate(manifest.acceptance_gate),
         "metrics_gate_policy_hash": metrics_gate_policy_hash(

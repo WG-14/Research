@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ def build_candidate_return_panel(
     split: str,
     benchmark: str,
     candidates: list[dict[str, Any]],
+    manager: PathManager | None = None,
 ) -> dict[str, Any]:
     aligned = _build_aligned_portfolio_return_panel(
         experiment_id=experiment_id,
@@ -35,6 +37,7 @@ def build_candidate_return_panel(
         split=split,
         benchmark=benchmark,
         candidates=candidates,
+        manager=manager,
     )
     if aligned is not None:
         return aligned
@@ -148,13 +151,14 @@ def _build_aligned_portfolio_return_panel(
     split: str,
     benchmark: str,
     candidates: list[dict[str, Any]],
+    manager: PathManager | None = None,
 ) -> dict[str, Any] | None:
     if benchmark != "cash":
         return None
     rows: list[dict[str, Any]] = []
     canonical_index: list[int] | None = None
     for candidate in sorted(candidates, key=lambda item: str(item.get("parameter_candidate_id") or "")):
-        series = _candidate_portfolio_bar_return_series(candidate, split=split)
+        series = _candidate_portfolio_bar_return_series(candidate, split=split, manager=manager)
         if not series:
             return None
         timestamps = [int(row["ts"]) for row in series]
@@ -455,8 +459,13 @@ def _candidate_trade_return_series(candidate: dict[str, Any], *, split: str) -> 
     return sorted(rows, key=lambda row: (int(row["ts"]), int(row["sequence"])))
 
 
-def _candidate_portfolio_bar_return_series(candidate: dict[str, Any], *, split: str) -> list[dict[str, Any]]:
-    curve = _candidate_equity_curve(candidate, split=split)
+def _candidate_portfolio_bar_return_series(
+    candidate: dict[str, Any],
+    *,
+    split: str,
+    manager: PathManager | None = None,
+) -> list[dict[str, Any]]:
+    curve = _candidate_equity_curve(candidate, split=split, manager=manager)
     if len(curve) < 2:
         return []
     rows: list[dict[str, Any]] = []
@@ -476,7 +485,12 @@ def _candidate_portfolio_bar_return_series(candidate: dict[str, Any], *, split: 
     return rows
 
 
-def _candidate_equity_curve(candidate: dict[str, Any], *, split: str) -> list[dict[str, Any]]:
+def _candidate_equity_curve(
+    candidate: dict[str, Any],
+    *,
+    split: str,
+    manager: PathManager | None = None,
+) -> list[dict[str, Any]]:
     key = f"{split}_equity_curve"
     curve = candidate.get(key)
     if not isinstance(curve, list):
@@ -491,7 +505,13 @@ def _candidate_equity_curve(candidate: dict[str, Any], *, split: str) -> list[di
                 if isinstance(curve, list):
                     break
     if not isinstance(curve, list):
+        if manager is not None:
+            return _candidate_equity_curve_from_audit_trace(candidate, split=split, manager=manager)
         return []
+    if not curve and manager is not None:
+        traced = _candidate_equity_curve_from_audit_trace(candidate, split=split, manager=manager)
+        if traced:
+            return traced
     rows: list[dict[str, Any]] = []
     for item in curve:
         if hasattr(item, "as_dict"):
@@ -513,6 +533,55 @@ def _candidate_equity_curve(candidate: dict[str, Any], *, split: str) -> list[di
             }
         )
     return sorted(rows, key=lambda row: int(row["ts"]))
+
+
+def _candidate_equity_curve_from_audit_trace(
+    candidate: dict[str, Any],
+    *,
+    split: str,
+    manager: PathManager,
+) -> list[dict[str, Any]]:
+    scenario_results = candidate.get("scenario_results")
+    if not isinstance(scenario_results, list):
+        return []
+    for scenario in scenario_results:
+        if not isinstance(scenario, dict):
+            continue
+        if scenario.get("scenario_role") not in {None, "base"}:
+            continue
+        index = scenario.get(f"{split}_audit_trace_index")
+        if not isinstance(index, dict):
+            continue
+        equity = index.get("equity")
+        if not isinstance(equity, dict):
+            continue
+        ref = str(equity.get("path") or "")
+        if not ref:
+            continue
+        path = manager.data_dir() / ref
+        if not path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    return []
+                payload = event.get("payload")
+                if not isinstance(payload, dict):
+                    return []
+                ts = _as_int(payload.get("ts"))
+                equity_value = _as_float(payload.get("equity"))
+                cash = _as_float(payload.get("cash"))
+                asset_qty = _as_float(payload.get("asset_qty"))
+                if ts is None or equity_value is None:
+                    return []
+                rows.append({"ts": ts, "equity": equity_value, "cash": cash, "asset_qty": asset_qty})
+        return sorted(rows, key=lambda row: int(row["ts"]))
+    return []
 
 
 def _candidate_scenario_ids(candidate: dict[str, Any]) -> list[str]:

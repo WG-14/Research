@@ -14,6 +14,8 @@ REPORT_TOP_LEVEL_HASH_EXCLUDED_FIELDS = frozenset(
         "statistical_evidence_path",
         "return_panel_path",
         "family_trial_registry_path",
+        "audit_trail_trace_manifest_path",
+        "trace_manifest_path",
     }
 )
 REPORT_RUNTIME_ONLY_FIELDS = frozenset(
@@ -22,6 +24,9 @@ REPORT_RUNTIME_ONLY_FIELDS = frozenset(
         "statistical_evidence_path",
         "return_panel_path",
         "family_trial_registry_path",
+        "audit_trail_trace_manifest_path",
+        "trace_manifest_path",
+        "trace_manifest_path_value",
     }
 )
 

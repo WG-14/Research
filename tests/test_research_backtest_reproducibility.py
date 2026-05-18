@@ -23,6 +23,8 @@ from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot, TopOf
 from bithumb_bot.research.execution_calibration import build_calibration_artifact
 from bithumb_bot.research.execution_model import ExecutionFill, ExecutionRequest, FixedBpsExecutionModel, StressExecutionModel
 from bithumb_bot.research.experiment_manifest import ExecutionTimingPolicy, ManifestValidationError, parse_manifest
+from bithumb_bot.research.audit_trail import verify_audit_trail
+from bithumb_bot.research.return_panel import build_candidate_return_panel
 from bithumb_bot.research.cli import _print_report_summary
 from bithumb_bot.research.experiment_registry import (
     experiment_registry_path,
@@ -370,6 +372,7 @@ def test_same_manifest_and_dataset_produce_same_content_hash(tmp_path, monkeypat
         "candidate_events": "derived/research/deterministic_sma/candidate_events.jsonl",
         "candidate_results_dir": "derived/research/deterministic_sma/candidate_results",
         "candidate_failures_dir": "derived/research/deterministic_sma/candidate_failures",
+        "audit_trace_manifest": "derived/research/deterministic_sma/trace_manifest.json",
     }
     assert _verify_report_content_hash(persisted, label="backtest_report") == persisted["content_hash"]
 
@@ -934,7 +937,7 @@ def test_research_sweep_continues_after_guard_failure_and_writes_candidate_artif
     assert failed[0]["resource_guard"]["status"] == "TRIPPED"
 
 
-def test_full_decisions_external_jsonl_policy_is_rejected_clearly() -> None:
+def test_full_decisions_external_jsonl_maps_to_complete_external_audit_policy() -> None:
     payload = _manifest()
     payload["research_run"] = {
         "artifact_policy": {
@@ -942,8 +945,178 @@ def test_full_decisions_external_jsonl_policy_is_rejected_clearly() -> None:
         },
     }
 
-    with pytest.raises(ManifestValidationError, match="full_decisions_external_jsonl is not implemented yet"):
-        parse_manifest(payload)
+    manifest = parse_manifest(payload)
+
+    assert manifest.research_run.artifact_policy.full_decisions_external_jsonl is True
+    assert manifest.research_run.audit_trail.mode == "complete_external"
+    assert manifest.research_run.audit_trail.decisions_required is True
+    assert manifest.research_run.audit_trail.equity_required is True
+    assert manifest.research_run.audit_trail.executions_required is True
+
+
+def test_summary_zero_retention_writes_complete_external_audit_traces(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["experiment_id"] = "audit_summary_zero"
+    payload["research_run"] = {
+        "report_detail": "summary",
+        "artifact_policy": {"full_decisions_external_jsonl": True},
+        "resource_limits": {
+            "max_runtime_s_per_candidate_split": None,
+            "max_decisions_retained": 0,
+            "max_trades": None,
+            "max_equity_points_retained": 0,
+            "max_rss_mb": None,
+        },
+    }
+
+    report = run_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    candidate = report["candidates"][0]
+    scenario = candidate["scenario_results"][0]
+    validation_index = scenario["validation_audit_trace_index"]
+    assert candidate["validation_equity_curve"] == []
+    assert scenario["validation_equity_curve"] == []
+    assert scenario["retained_detail_summary"]["retained_decision_count"] == 0
+    assert scenario["retained_detail_summary"]["retained_equity_point_count"] == 0
+    assert validation_index["decision_row_count"] == scenario["retained_detail_summary"]["decision_count"]
+    assert validation_index["equity_row_count"] > 0
+    assert validation_index["completion_status"] == "completed"
+    assert report["audit_trail_status"] == "PASS"
+    assert report["audit_trail_trace_manifest_ref"] == "derived/research/audit_summary_zero/trace_manifest.json"
+    assert report["audit_trail_trace_manifest_hash"].startswith("sha256:")
+    assert Path(report["audit_trail_trace_manifest_path"]).exists()
+    assert report["artifact_refs"]["audit_trace_manifest"] == report["audit_trail_trace_manifest_ref"]
+    verification = verify_audit_trail(manager=manager, experiment_id="audit_summary_zero")
+    assert verification["ok"] is True
+    assert verification["reasons"] == []
+    decisions_path = manager.data_dir() / validation_index["decisions"]["path"]
+    equity_path = manager.data_dir() / validation_index["equity"]["path"]
+    assert sum(1 for _ in decisions_path.open("r", encoding="utf-8")) == validation_index["decision_row_count"]
+    assert sum(1 for _ in equity_path.open("r", encoding="utf-8")) == validation_index["equity_row_count"]
+
+
+def test_audit_trace_verification_detects_tamper_and_missing_stream(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["experiment_id"] = "audit_tamper"
+    payload["research_run"] = {"artifact_policy": {"full_decisions_external_jsonl": True}}
+    report = run_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+    index = report["candidates"][0]["scenario_results"][0]["validation_audit_trace_index"]
+    decisions_path = manager.data_dir() / index["decisions"]["path"]
+    lines = decisions_path.read_text(encoding="utf-8").splitlines()
+    row = json.loads(lines[0])
+    row["payload"]["raw_signal"] = "TAMPERED"
+    lines[0] = json.dumps(row, sort_keys=True, separators=(",", ":"))
+    decisions_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    tampered = verify_audit_trail(manager=manager, experiment_id="audit_tamper")
+    assert tampered["ok"] is False
+    assert "audit_trail_hash_chain_mismatch" in tampered["reasons"]
+
+    equity_path = manager.data_dir() / index["equity"]["path"]
+    equity_path.unlink()
+    missing = verify_audit_trail(manager=manager, experiment_id="audit_tamper")
+    assert missing["ok"] is False
+    assert "audit_trail_equity_stream_missing" in missing["reasons"]
+
+
+def test_return_panel_uses_external_equity_trace_when_embedded_curve_is_zero_retained(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["experiment_id"] = "audit_return_panel"
+    payload["research_run"] = {
+        "report_detail": "summary",
+        "artifact_policy": {"full_decisions_external_jsonl": True},
+        "resource_limits": {
+            "max_runtime_s_per_candidate_split": None,
+            "max_decisions_retained": 0,
+            "max_trades": None,
+            "max_equity_points_retained": 0,
+            "max_rss_mb": None,
+        },
+    }
+    report = run_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    panel = build_candidate_return_panel(
+        experiment_id=report["experiment_id"],
+        manifest_hash=report["manifest_hash"],
+        dataset_content_hash=report["dataset_content_hash"],
+        dataset_quality_hash=report["dataset_quality_hash"],
+        split="validation",
+        benchmark="cash",
+        candidates=report["candidates"],
+        manager=manager,
+    )
+
+    assert report["candidates"][0]["validation_equity_curve"] == []
+    assert panel["return_unit"] == "portfolio_bar_return"
+    assert panel["promotion_grade_available"] is True
+    assert panel["observation_count"] > 0
+
+
+def test_production_bound_statistical_validation_requires_audit_trace_when_missing(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _production_bound_statistical_manifest()
+    payload["experiment_id"] = "audit_required_prod"
+    payload["statistical_validation"]["bootstrap"]["method"] = "white_reality_check_block_bootstrap"
+    payload["statistical_validation"]["bootstrap"]["block_length_policy"] = "fixed"
+    payload["research_run"] = {
+        "report_detail": "summary",
+        "resource_limits": {
+            "max_runtime_s_per_candidate_split": None,
+            "max_decisions_retained": 0,
+            "max_trades": None,
+            "max_equity_points_retained": 0,
+            "max_rss_mb": None,
+        },
+    }
+
+    report = run_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    assert report["audit_trail_status"] == "DISABLED"
+    assert "audit_trail_required_for_promotion" in report["statistical_gate_fail_reasons"]
+    assert report["statistical_gate_result"] == "FAIL"
 
 
 def test_retention_caps_do_not_fail_candidate_but_max_trades_guard_does() -> None:

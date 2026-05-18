@@ -6,6 +6,67 @@ Research manifests define hypotheses, data splits, parameter spaces, cost models
 Root `backtest.py` and any simple close-price SMA script are smoke backtests only. This is a smoke backtest only. It must not be used as evidence for strategy promotion, approved profiles, live readiness, or capital allocation. Official evidence comes from the `research-backtest` and `research-walk-forward` CLI paths, their managed artifacts, and explicit promotion/profile gates.
 Runtime env/profile values should be treated as verified outputs of that process, not mutable knobs to tune until a backtest looks good.
 
+## Audit Trail Evidence
+
+`research_run.report_detail=summary` is a compact diagnostic/reporting mode. It
+is not, by itself, a complete experiment record. Embedded report retention caps
+such as `max_decisions_retained` and `max_equity_points_retained` control report
+preview size only; they must not be treated as forensic audit retention.
+
+Complete replay evidence is written as external candidate/scenario/split trace
+artifacts when `research_run.audit_trail.mode=complete_external` is enabled, or
+when legacy `research_run.artifact_policy.full_decisions_external_jsonl=true` is
+used. The managed storage location is:
+
+```text
+DATA_ROOT/<mode>/derived/research/<experiment_id>/
+  traces/
+    <candidate_id>/
+      <scenario_id>/
+        <split_name>/
+          decisions.jsonl
+          equity.jsonl
+          executions.jsonl
+          trace_index.json
+  trace_manifest.json
+```
+
+The trace files are classified as `data/<mode>/derived` because they are
+research replay evidence, not live order lifecycle recovery state. Each JSONL row
+contains the experiment id, manifest hash, dataset content hash, candidate id,
+scenario id, split, sequence number, event payload, payload hash, previous event
+hash, and event hash. `trace_index.json` records row counts, first/last
+timestamps, stream hashes, hash-chain head/tail, and terminal completion status.
+`trace_manifest.json` aggregates all per-split indexes and has its own content
+hash.
+
+Reports expose the audit policy, audit status, trace manifest ref/path/hash, and
+verification result. They do not embed full trace rows. Operators can verify a
+completed trace set with:
+
+```bash
+uv run bithumb-bot research-verify-audit --experiment-id <experiment_id>
+```
+
+Verification fails closed for missing manifests, missing indexes, missing stream
+files, row-count mismatches, stream hash mismatches, hash-chain mismatches,
+report/reference hash mismatches, and non-terminal trace statuses.
+
+Production/promotion-bound evidence requires complete trace evidence when the
+audit policy marks it required for promotion. Missing or corrupt trace evidence
+adds machine-readable audit fail reasons such as
+`audit_trail_trace_manifest_missing`, `audit_trail_trace_index_missing`,
+`audit_trail_decision_stream_missing`, `audit_trail_equity_stream_missing`,
+`audit_trail_execution_stream_missing`, `audit_trail_hash_chain_mismatch`,
+`audit_trail_row_count_mismatch`, `audit_trail_non_terminal_status`, and
+`audit_trail_required_for_promotion`.
+
+Candidate subprocess isolation remains explicitly pending unless a report shows
+real worker-process evidence. The current in-process evaluator reports
+`subprocess_candidate_isolation_pending`; operators must not treat that field as
+implemented process isolation until each candidate/scenario/split has worker PID,
+exit, timeout/resource, seed, and terminal trace-status evidence.
+
 ## Cost Assumption Contract
 
 Production-bound manifests (`paper_candidate`, `live_dry_run_candidate`, and `small_live_candidate`) must define explicit execution scenarios with typed cost assumptions. At least one scenario must be a `base` cost assumption with a label, fee source, fee authority policy, slippage source, and `promotable_as_base=true`. Stress scenarios must be labeled as stress and are survival evidence only; they are not runtime base cost authority.
@@ -67,6 +128,13 @@ values, observation counts, missing-observation policy, return unit, split,
 metadata hashes, series hashes, and content hashes. This panel is marked
 `promotion_grade_available=true` and is the only current input accepted for
 official WRC generation.
+
+When embedded equity curves are omitted by summary-mode retention caps but a
+complete external audit trail is present, the return-panel builder uses the
+external equity traces as the preferred source for aligned
+`portfolio_bar_return` generation. If trace evidence is missing, malformed, or
+unaligned, promotion-grade return-panel evidence remains unavailable and the
+statistical path fails closed rather than falling back to summary previews.
 
 If the aligned panel cannot be generated, the official path falls back to the
 smallest honest diagnostic panel available from the engine: validation split

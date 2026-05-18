@@ -15,6 +15,7 @@ from bithumb_bot.market_regime import RegimeAcceptanceGate
 
 from .deployment_policy import DEPLOYMENT_TIERS, is_production_bound_target, normalize_deployment_tier
 from .hashing import sha256_prefixed
+from .audit_trail import AuditTrailPolicy as ResearchAuditTrailPolicy
 
 
 class ManifestValidationError(ValueError):
@@ -348,6 +349,7 @@ class ResearchHeartbeatPolicy:
 class ResearchRunPolicy:
     report_detail: str = "summary"
     artifact_policy: ResearchArtifactPolicy = field(default_factory=ResearchArtifactPolicy)
+    audit_trail: ResearchAuditTrailPolicy = field(default_factory=ResearchAuditTrailPolicy)
     resource_limits: ResearchResourceLimits = field(default_factory=ResearchResourceLimits)
     heartbeat: ResearchHeartbeatPolicy = field(default_factory=ResearchHeartbeatPolicy)
 
@@ -355,6 +357,7 @@ class ResearchRunPolicy:
         return {
             "report_detail": self.report_detail,
             "artifact_policy": self.artifact_policy.as_dict(),
+            "audit_trail": self.audit_trail.as_dict(),
             "resource_limits": self.resource_limits.as_dict(),
             "heartbeat": self.heartbeat.as_dict(),
         }
@@ -2032,16 +2035,28 @@ def _parse_research_run(value: Any) -> ResearchRunPolicy:
         return ResearchRunPolicy()
     if not isinstance(value, dict):
         raise ManifestValidationError("research_run must be an object")
-    allowed_fields = {"report_detail", "artifact_policy", "resource_limits", "heartbeat"}
+    allowed_fields = {"report_detail", "artifact_policy", "audit_trail", "resource_limits", "heartbeat"}
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
         raise ManifestValidationError(f"research_run unsupported fields: {','.join(unknown)}")
     report_detail = str(value.get("report_detail") or "summary").strip().lower()
     if report_detail not in {"summary", "standard", "full"}:
         raise ManifestValidationError("research_run.report_detail must be summary, standard, or full")
+    artifact_policy = _parse_research_artifact_policy(value.get("artifact_policy"))
+    audit_trail = _parse_research_audit_trail(value.get("audit_trail"))
+    if artifact_policy.full_decisions_external_jsonl and value.get("audit_trail") is None:
+        audit_trail = ResearchAuditTrailPolicy(
+            mode="complete_external",
+            decisions_required=True,
+            equity_required=True,
+            executions_required=True,
+            hash_chain_required=True,
+            required_for_promotion=True,
+        )
     return ResearchRunPolicy(
         report_detail=report_detail,
-        artifact_policy=_parse_research_artifact_policy(value.get("artifact_policy")),
+        artifact_policy=artifact_policy,
+        audit_trail=audit_trail,
         resource_limits=_parse_research_resource_limits(value.get("resource_limits")),
         heartbeat=_parse_research_heartbeat(value.get("heartbeat")),
     )
@@ -2056,14 +2071,40 @@ def _parse_research_artifact_policy(value: Any) -> ResearchArtifactPolicy:
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
         raise ManifestValidationError(f"research_run.artifact_policy unsupported fields: {','.join(unknown)}")
-    if bool(value.get("full_decisions_external_jsonl", False)):
-        raise ManifestValidationError(
-            "research_run.artifact_policy.full_decisions_external_jsonl is not implemented yet"
-        )
     return ResearchArtifactPolicy(
         candidate_journal=bool(value.get("candidate_journal", True)),
         failed_candidate_evidence=bool(value.get("failed_candidate_evidence", True)),
         full_decisions_external_jsonl=bool(value.get("full_decisions_external_jsonl", False)),
+    )
+
+
+def _parse_research_audit_trail(value: Any) -> ResearchAuditTrailPolicy:
+    if value is None:
+        return ResearchAuditTrailPolicy()
+    if not isinstance(value, dict):
+        raise ManifestValidationError("research_run.audit_trail must be an object")
+    allowed_fields = {
+        "mode",
+        "decisions_required",
+        "equity_required",
+        "executions_required",
+        "hash_chain_required",
+        "required_for_promotion",
+    }
+    unknown = sorted(set(value) - allowed_fields)
+    if unknown:
+        raise ManifestValidationError(f"research_run.audit_trail unsupported fields: {','.join(unknown)}")
+    mode = str(value.get("mode") or "summary_only").strip().lower()
+    if mode not in {"summary_only", "complete_external"}:
+        raise ManifestValidationError("research_run.audit_trail.mode must be summary_only or complete_external")
+    complete = mode == "complete_external"
+    return ResearchAuditTrailPolicy(
+        mode=mode,
+        decisions_required=bool(value.get("decisions_required", complete)),
+        equity_required=bool(value.get("equity_required", complete)),
+        executions_required=bool(value.get("executions_required", complete)),
+        hash_chain_required=bool(value.get("hash_chain_required", True)),
+        required_for_promotion=bool(value.get("required_for_promotion", True)),
     )
 
 

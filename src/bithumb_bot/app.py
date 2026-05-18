@@ -169,6 +169,7 @@ from .research.cli import (
     cmd_research_registry_validate,
     cmd_research_reproduce,
     cmd_research_validate,
+    cmd_research_verify_audit,
     cmd_research_walk_forward,
 )
 from .research.readiness import cmd_research_readiness
@@ -7555,6 +7556,12 @@ def main(argv: list[str] | None = None) -> int:
     research_backtest.add_argument("--manifest", required=True)
     research_backtest.add_argument("--execution-calibration")
 
+    research_verify_audit = sub.add_parser(
+        "research-verify-audit",
+        help="verify research audit trace manifest and JSONL hash chains",
+    )
+    research_verify_audit.add_argument("--experiment-id", required=True)
+
     research_validate = sub.add_parser(
         "research-validate",
         help="run the fail-closed end-to-end research validation pipeline",
@@ -8055,6 +8062,8 @@ def main(argv: list[str] | None = None) -> int:
             manifest_path=str(args.manifest),
             execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None,
         )
+    elif args.cmd == "research-verify-audit":
+        return cmd_research_verify_audit(experiment_id=str(args.experiment_id))
     elif args.cmd == "research-validate":
         return cmd_research_validate(
             manifest_path=str(args.manifest),

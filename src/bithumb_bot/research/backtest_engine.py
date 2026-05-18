@@ -67,6 +67,7 @@ class BacktestRunContext:
     resource_limits: BacktestResourceLimits = field(default_factory=BacktestResourceLimits)
     heartbeat: BacktestHeartbeatPolicy = field(default_factory=BacktestHeartbeatPolicy)
     progress_callback: ProgressCallback | None = None
+    audit_trace: Any | None = None
     started_at: float = field(default_factory=time.perf_counter)
 
 
@@ -190,6 +191,8 @@ class _BacktestAccumulator:
             return
         evidence = self.heartbeat_payload(candles_processed=candles_processed)
         evidence.update({"status": "TRIPPED", "reasons": sorted(set(reasons))})
+        if self.context.audit_trace is not None:
+            evidence["audit_trace_index"] = self.context.audit_trace.complete(status="failed")
         raise BacktestResourceLimitExceeded("candidate_resource_limit_exceeded", evidence)
 
     def resource_usage(self, *, candles_processed: int) -> dict[str, Any]:
@@ -289,6 +292,7 @@ class BacktestRun:
     metrics_v2: MetricContractV2 | None = None
     resource_usage: dict[str, object] | None = None
     retained_detail_summary: dict[str, object] | None = None
+    audit_trace_index: dict[str, object] | None = None
 
 
 @dataclass
@@ -334,6 +338,7 @@ def run_sma_backtest(
     dataset_content_hash = dataset.content_hash()
     warnings: list[str] = []
     if len(candles) < long_n + 2:
+        audit_trace_index = _complete_audit_trace(run_context, status="completed")
         return BacktestRun(
             metrics=_empty_metrics(parameter_stability_score),
             metrics_v2=_empty_metrics_v2(),
@@ -345,6 +350,7 @@ def run_sma_backtest(
             execution_event_summary=empty_execution_event_summary(),
             resource_usage=accumulator.resource_usage(candles_processed=len(candles)),
             retained_detail_summary=_retained_detail_summary(accumulator, retained_regime_snapshot_count=0),
+            audit_trace_index=audit_trace_index,
         )
 
     closes = [candle.close for candle in candles]
@@ -384,6 +390,13 @@ def run_sma_backtest(
     accumulator.update_equity(
         retained=retain_initial_equity,
         ts=candle_close_ts(candles[0], interval=dataset.interval),
+        asset_qty=0.0,
+    )
+    _trace_equity_mark(
+        run_context,
+        ts=candle_close_ts(candles[0], interval=dataset.interval),
+        equity=START_CASH_KRW,
+        cash=START_CASH_KRW,
         asset_qty=0.0,
     )
     closed_pnls: list[float] = []
@@ -505,6 +518,7 @@ def run_sma_backtest(
         if retain_decision:
             decisions.append(decision_payload)
         accumulator.update_decision(decision_payload, retained=retain_decision)
+        _trace_decision(run_context, decision_payload)
 
         if action == "BUY":
             signal = build_signal_event(
@@ -540,6 +554,7 @@ def run_sma_backtest(
                 )
                 warnings.extend(_execution_reference_warnings(fill))
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
+                _trace_execution(run_context, trades[-1])
                 retain_equity = accumulator.retain_equity_point()
                 peak, max_drawdown = _record_equity_mark(
                     equity_curve=equity_curve,
@@ -552,6 +567,13 @@ def run_sma_backtest(
                     retain=retain_equity,
                 )
                 accumulator.update_equity(retained=retain_equity, ts=mark_boundary_ts, asset_qty=mark_qty)
+                _trace_equity_mark(
+                    run_context,
+                    ts=mark_boundary_ts,
+                    equity=mark_cash + mark_qty * candle.close,
+                    cash=mark_cash,
+                    asset_qty=mark_qty,
+                )
                 prev_above = above
                 accumulator.maybe_emit_heartbeat(index - long_n + 1)
                 accumulator.check_limits(candles_processed=index - long_n + 1, trades=trades)
@@ -571,6 +593,7 @@ def run_sma_backtest(
             warnings.extend(_execution_reference_warnings(fill))
             if fill.fill_status == "failed" or fill.avg_fill_price is None or fill.filled_qty <= 0.0:
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
+                _trace_execution(run_context, trades[-1])
                 retain_equity = accumulator.retain_equity_point()
                 peak, max_drawdown = _record_equity_mark(
                     equity_curve=equity_curve,
@@ -583,6 +606,13 @@ def run_sma_backtest(
                     retain=retain_equity,
                 )
                 accumulator.update_equity(retained=retain_equity, ts=mark_boundary_ts, asset_qty=mark_qty)
+                _trace_equity_mark(
+                    run_context,
+                    ts=mark_boundary_ts,
+                    equity=mark_cash + mark_qty * candle.close,
+                    cash=mark_cash,
+                    asset_qty=mark_qty,
+                )
                 prev_above = above
                 accumulator.maybe_emit_heartbeat(index - long_n + 1)
                 accumulator.check_limits(candles_processed=index - long_n + 1, trades=trades)
@@ -606,6 +636,7 @@ def run_sma_backtest(
                 entry_regime_snapshot=dict(regime_snapshot),
             )
             trades.append(_pending_trade_from_fill(fill, cash=cash, asset_qty=qty))
+            _trace_execution(run_context, trades[-1])
             if _fill_applies_to_mark(fill=pending.fill, effective_ts=pending.effective_ts, mark_boundary_ts=mark_boundary_ts):
                 mark_cash += pending.cash_delta
                 mark_qty += pending.qty
@@ -658,6 +689,7 @@ def run_sma_backtest(
                 )
                 warnings.extend(_execution_reference_warnings(fill))
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
+                _trace_execution(run_context, trades[-1])
                 retain_equity = accumulator.retain_equity_point()
                 peak, max_drawdown = _record_equity_mark(
                     equity_curve=equity_curve,
@@ -670,6 +702,13 @@ def run_sma_backtest(
                     retain=retain_equity,
                 )
                 accumulator.update_equity(retained=retain_equity, ts=mark_boundary_ts, asset_qty=mark_qty)
+                _trace_equity_mark(
+                    run_context,
+                    ts=mark_boundary_ts,
+                    equity=mark_cash + mark_qty * candle.close,
+                    cash=mark_cash,
+                    asset_qty=mark_qty,
+                )
                 prev_above = above
                 accumulator.maybe_emit_heartbeat(index - long_n + 1)
                 accumulator.check_limits(candles_processed=index - long_n + 1, trades=trades)
@@ -688,6 +727,7 @@ def run_sma_backtest(
             warnings.extend(_execution_reference_warnings(fill))
             if fill.fill_status == "failed" or fill.avg_fill_price is None or fill.filled_qty <= 0.0:
                 trades.append(_trade_from_fill(fill, cash=cash, asset_qty=qty, pnl=None))
+                _trace_execution(run_context, trades[-1])
                 retain_equity = accumulator.retain_equity_point()
                 peak, max_drawdown = _record_equity_mark(
                     equity_curve=equity_curve,
@@ -700,6 +740,13 @@ def run_sma_backtest(
                     retain=retain_equity,
                 )
                 accumulator.update_equity(retained=retain_equity, ts=mark_boundary_ts, asset_qty=mark_qty)
+                _trace_equity_mark(
+                    run_context,
+                    ts=mark_boundary_ts,
+                    equity=mark_cash + mark_qty * candle.close,
+                    cash=mark_cash,
+                    asset_qty=mark_qty,
+                )
                 prev_above = above
                 accumulator.maybe_emit_heartbeat(index - long_n + 1)
                 accumulator.check_limits(candles_processed=index - long_n + 1, trades=trades)
@@ -724,6 +771,7 @@ def run_sma_backtest(
                 exit_regime_snapshot=dict(regime_snapshot),
             )
             trades.append(_pending_trade_from_fill(fill, cash=cash, asset_qty=qty))
+            _trace_execution(run_context, trades[-1])
             if _fill_applies_to_mark(fill=pending.fill, effective_ts=pending.effective_ts, mark_boundary_ts=mark_boundary_ts):
                 mark_cash += pending.cash_delta
                 mark_qty = max(0.0, mark_qty - pending.qty)
@@ -755,6 +803,13 @@ def run_sma_backtest(
             retain=retain_equity,
         )
         accumulator.update_equity(retained=retain_equity, ts=mark_boundary_ts, asset_qty=mark_qty)
+        _trace_equity_mark(
+            run_context,
+            ts=mark_boundary_ts,
+            equity=mark_cash + mark_qty * candle.close,
+            cash=mark_cash,
+            asset_qty=mark_qty,
+        )
         prev_above = above
         accumulator.maybe_emit_heartbeat(index - long_n + 1)
         accumulator.check_limits(candles_processed=index - long_n + 1, trades=trades)
@@ -788,6 +843,13 @@ def run_sma_backtest(
             )
         )
     accumulator.update_equity(retained=retain_final_equity, ts=last_mark_ts, asset_qty=qty)
+    _trace_equity_mark(
+        run_context,
+        ts=last_mark_ts,
+        equity=final_equity,
+        cash=cash,
+        asset_qty=qty,
+    )
     return_pct = ((final_equity / START_CASH_KRW) - 1.0) * 100.0
     metrics = _metrics(
         return_pct=return_pct,
@@ -830,6 +892,7 @@ def run_sma_backtest(
                 sorted(set(metrics_v2.limitation_reasons) | {"bounded_detail_equity_curve_not_retained"})
             ),
         )
+    audit_trace_index = _complete_audit_trace(run_context, status="completed")
     return BacktestRun(
         metrics=metrics,
         metrics_v2=metrics_v2,
@@ -848,6 +911,7 @@ def run_sma_backtest(
             accumulator,
             retained_regime_snapshot_count=len(regime_snapshots),
         ),
+        audit_trace_index=audit_trace_index,
     )
 
 
@@ -881,6 +945,48 @@ def _retained_detail_summary(
         "retained_regime_snapshot_count": int(retained_regime_snapshot_count),
         "decision_hash": canonical_payload_hash(accumulator.decision_hash_material),
     }
+
+
+def _trace_decision(context: BacktestRunContext, payload: dict[str, object]) -> None:
+    sink = context.audit_trace
+    if sink is None:
+        return
+    sink.write_decision(dict(payload))
+
+
+def _trace_equity_mark(
+    context: BacktestRunContext,
+    *,
+    ts: int,
+    equity: float,
+    cash: float,
+    asset_qty: float,
+) -> None:
+    sink = context.audit_trace
+    if sink is None:
+        return
+    sink.write_equity(
+        {
+            "ts": int(ts),
+            "equity": float(equity),
+            "cash": float(cash),
+            "asset_qty": float(asset_qty),
+        }
+    )
+
+
+def _trace_execution(context: BacktestRunContext, trade: dict[str, object]) -> None:
+    sink = context.audit_trace
+    if sink is None:
+        return
+    sink.write_execution(dict(trade))
+
+
+def _complete_audit_trace(context: BacktestRunContext, *, status: str) -> dict[str, object] | None:
+    sink = context.audit_trace
+    if sink is None:
+        return None
+    return sink.complete(status=status)
 
 
 def _record_equity_mark(

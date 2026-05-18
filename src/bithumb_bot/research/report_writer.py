@@ -17,6 +17,7 @@ class ResearchReportPaths:
     candidate_events_path: Path
     candidate_results_dir: Path
     candidate_failures_dir: Path
+    trace_manifest_path: Path
 
 
 def research_paths(manager: PathManager, experiment_id: str, report_name: str) -> ResearchReportPaths:
@@ -26,17 +27,20 @@ def research_paths(manager: PathManager, experiment_id: str, report_name: str) -
     candidate_events_path = research_derived_root / "candidate_events.jsonl"
     candidate_results_dir = research_derived_root / "candidate_results"
     candidate_failures_dir = research_derived_root / "candidate_failures"
+    trace_manifest_path = research_derived_root / "trace_manifest.json"
     _ensure_research_output_path_allowed(manager, derived_path)
     _ensure_research_output_path_allowed(manager, report_path)
     _ensure_research_output_path_allowed(manager, candidate_events_path)
     _ensure_research_output_path_allowed(manager, candidate_results_dir)
     _ensure_research_output_path_allowed(manager, candidate_failures_dir)
+    _ensure_research_output_path_allowed(manager, trace_manifest_path)
     return ResearchReportPaths(
         derived_path=derived_path,
         report_path=report_path,
         candidate_events_path=candidate_events_path,
         candidate_results_dir=candidate_results_dir,
         candidate_failures_dir=candidate_failures_dir,
+        trace_manifest_path=trace_manifest_path,
     )
 
 
@@ -48,6 +52,7 @@ def research_artifact_refs(paths: ResearchReportPaths, *, manager: PathManager) 
         "candidate_events": _relative_artifact_ref(paths.candidate_events_path, data_dir),
         "candidate_results_dir": _relative_artifact_ref(paths.candidate_results_dir, data_dir),
         "candidate_failures_dir": _relative_artifact_ref(paths.candidate_failures_dir, data_dir),
+        "audit_trace_manifest": _relative_artifact_ref(paths.trace_manifest_path, data_dir),
     }
 
 
@@ -58,6 +63,7 @@ def research_artifact_paths(paths: ResearchReportPaths) -> dict[str, str]:
         "candidate_events_path": str(paths.candidate_events_path.resolve()),
         "candidate_results_dir": str(paths.candidate_results_dir.resolve()),
         "candidate_failures_dir": str(paths.candidate_failures_dir.resolve()),
+        "audit_trace_manifest_path": str(paths.trace_manifest_path.resolve()),
     }
 
 
