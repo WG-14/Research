@@ -3,8 +3,32 @@
 This repository separates research-stage candidate variables from runtime env values.
 Research manifests define hypotheses, data splits, parameter spaces, cost models, and acceptance gates.
 
-Root `backtest.py` and any simple close-price SMA script are smoke backtests only. This is a smoke backtest only. It must not be used as evidence for strategy promotion, approved profiles, live readiness, or capital allocation. Official evidence comes from the `research-backtest` and `research-walk-forward` CLI paths, their managed artifacts, and explicit promotion/profile gates.
+Root `backtest.py` and any simple close-price SMA script are smoke backtests only. This is a smoke backtest only. It must not be used as evidence for strategy promotion, approved profiles, live readiness, or capital allocation. For production-bound targets, the normal custody path is `research-validate`. It runs the policy-required lifecycle stages, creates the promotion artifact, reproduces it, and writes the hash-bound `validation_run.json` operator record. `research-backtest` and `research-walk-forward` remain diagnostic/development commands unless a specific runbook says otherwise; process success from a diagnostic command must not be interpreted as promotion-grade validation success.
 Runtime env/profile values should be treated as verified outputs of that process, not mutable knobs to tune until a backtest looks good.
+
+## Validation Run Stages
+
+`validation_run.json` is the operator-facing custody record for research-to-paper validation. The validation stage list is policy-driven from `deployment_tier`; a manifest may require stricter evidence, but production-bound tiers cannot weaken minimum required stages.
+
+Current stages are:
+
+```text
+readiness
+dataset_quality
+backtest
+final_holdout
+stress_suite
+statistical_validation
+final_selection
+walk_forward
+promotion_eligibility
+promotion
+reproduce
+```
+
+Each stage records `name`, `required`, `status`, `input_hashes`, `output_hashes`, `artifact_paths`, `artifact_hashes`, and `reasons`. Required stages fail closed when report evidence is missing, failed, unavailable, stale, or screening-only. Recovery is to regenerate or rebind evidence through the research commands from the fixed manifest and managed runtime paths; do not manually edit hashes, reports, JSONL registries, or evidence artifacts.
+
+Production-bound `paper_candidate`, `live_dry_run_candidate`, and `small_live_candidate` validation requires final holdout, walk-forward, stress suite, statistical validation, final selection, promotion eligibility, promotion, and reproduce stages. Execution calibration, audit/trace evidence, approved-profile chain readiness, and related policy checks remain enforced by the existing report, promotion, reproduction, and profile gates; the validation-run stages expose those outcomes instead of weakening them.
 
 ## Audit Trail Evidence
 
@@ -139,6 +163,11 @@ the run remains fail-closed with machine-readable promotion-grade limitations.
 Production-bound promotion requires `PROMOTION_GRADE_WRC` or
 `PROMOTION_GRADE_WRC_SPA_DSR` evidence. If only screening evidence is present,
 promotion fails closed with `statistical_evidence_grade_insufficient`.
+Production-bound validation also marks the `statistical_validation` stage
+non-passable for screening-only evidence such as `SCREENING_SUMMARY_BOOTSTRAP`
+or unavailable promotion-grade capability. Stage reasons include explicit
+machine-readable statuses such as `SCREENING_ONLY_NOT_PROMOTABLE`,
+`UNAVAILABLE_CAPABILITY`, and `MISSING_RETURN_PANEL` where applicable.
 SPA and Deflated Sharpe gates remain fail-closed when configured and unavailable;
 no placeholder p-values are acceptable.
 

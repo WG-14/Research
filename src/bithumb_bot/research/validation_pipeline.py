@@ -25,10 +25,59 @@ SKIPPED_NOT_REQUIRED = "SKIPPED_NOT_REQUIRED"
 NOT_RUN = "NOT_RUN"
 ERROR = "ERROR"
 TERMINAL_BAD_STATUSES = {FAIL_CLOSED, NOT_RUN, ERROR}
+VALIDATION_STAGE_ORDER = (
+    "readiness",
+    "dataset_quality",
+    "backtest",
+    "final_holdout",
+    "stress_suite",
+    "statistical_validation",
+    "final_selection",
+    "walk_forward",
+    "promotion_eligibility",
+    "promotion",
+    "reproduce",
+)
 
 
 class ValidationRunError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class ResearchValidationPolicy:
+    deployment_tier: str
+    production_bound: bool
+    required_stage_names: tuple[str, ...]
+    policy_source: str = "repo_research_validation_policy_v1"
+
+    def stage_required(self, name: str) -> bool:
+        return name in set(self.required_stage_names)
+
+
+def research_validation_policy(manifest: ExperimentManifest) -> ResearchValidationPolicy:
+    deployment_tier = str(getattr(manifest, "deployment_tier", None) or "research_only")
+    production_bound = is_production_bound_target(deployment_tier)
+    required: set[str] = {"readiness", "dataset_quality", "backtest", "promotion_eligibility", "promotion", "reproduce"}
+    gate = getattr(manifest, "acceptance_gate", None)
+    if production_bound or bool(getattr(gate, "walk_forward_required", False)):
+        required.add("walk_forward")
+    if production_bound or bool(getattr(gate, "final_holdout_required_for_promotion", False)):
+        required.add("final_holdout")
+    stress_suite = getattr(manifest, "stress_suite", None)
+    if production_bound or bool(getattr(stress_suite, "required_for_promotion", False)):
+        required.add("stress_suite")
+    statistical_validation = getattr(manifest, "statistical_validation", None)
+    if production_bound or bool(getattr(statistical_validation, "required_for_promotion", False)):
+        required.add("statistical_validation")
+    final_selection = getattr(manifest, "final_selection", None)
+    if production_bound or bool(getattr(final_selection, "required_for_promotion", False)):
+        required.add("final_selection")
+    return ResearchValidationPolicy(
+        deployment_tier=deployment_tier,
+        production_bound=production_bound,
+        required_stage_names=tuple(name for name in VALIDATION_STAGE_ORDER if name in required),
+    )
 
 
 def build_research_readiness_report(**kwargs: Any) -> dict[str, Any]:
@@ -325,11 +374,9 @@ def run_research_validation(
         "candidate_id": candidate_id,
         "mode": mode,
     }
-    walk_forward_required = bool(manifest.acceptance_gate.walk_forward_required)
-    required_stage_names = ["readiness", "backtest"]
-    if walk_forward_required:
-        required_stage_names.append("walk_forward")
-    required_stage_names.extend(["promotion", "reproduce"])
+    policy = research_validation_policy(manifest)
+    required_stage_names = list(policy.required_stage_names)
+    walk_forward_required = policy.stage_required("walk_forward")
     run = ValidationRun(
         validation_run_id=sha256_prefixed({"experiment_id": manifest.experiment_id, "manifest_hash": manifest.manifest_hash(), "generated_at": now}),
         experiment_id=manifest.experiment_id,
@@ -340,11 +387,13 @@ def run_research_validation(
         mode=mode,
         command_args_hash=sha256_prefixed(command_args),
         stages=[
-            ValidationStage("readiness", True),
-            ValidationStage("backtest", True),
-            ValidationStage("walk_forward", walk_forward_required, status=NOT_RUN if walk_forward_required else SKIPPED_NOT_REQUIRED),
-            ValidationStage("promotion", True),
-            ValidationStage("reproduce", True),
+            ValidationStage(
+                name,
+                policy.stage_required(name),
+                status=NOT_RUN if policy.stage_required(name) else SKIPPED_NOT_REQUIRED,
+                input_hashes={"policy_source": policy.policy_source} if name in policy.required_stage_names else {},
+            )
+            for name in VALIDATION_STAGE_ORDER
         ],
         required_stage_names=required_stage_names,
         generated_at=now,
@@ -379,6 +428,14 @@ def run_research_validation(
         if run.selected_candidate_id is None:
             _stage(run, "backtest").status = FAIL_CLOSED
             _stage(run, "backtest").reasons.append("selected_candidate_missing")
+            return _finalize_validation_run(run, manager=manager, out_path=out_path)
+        _project_backtest_report_stages(
+            run=run,
+            report=backtest_report,
+            selected_candidate_id=run.selected_candidate_id,
+            policy=policy,
+        )
+        if _has_failures(run):
             return _finalize_validation_run(run, manager=manager, out_path=out_path)
 
         if walk_forward_required:
@@ -513,6 +570,199 @@ def _stage_backtest(
     return report
 
 
+def _project_backtest_report_stages(
+    *,
+    run: ValidationRun,
+    report: dict[str, Any],
+    selected_candidate_id: str,
+    policy: ResearchValidationPolicy,
+) -> None:
+    candidate = _candidate(report, selected_candidate_id) or {}
+    report_path = _report_path(report)
+    report_hash = str(report.get("content_hash") or "")
+    _project_dataset_quality_stage(run, report=report, report_path=report_path, report_hash=report_hash)
+    _project_final_holdout_stage(run, report=report, candidate=candidate, report_path=report_path, report_hash=report_hash)
+    _project_stress_suite_stage(run, report=report, candidate=candidate, report_path=report_path, report_hash=report_hash)
+    _project_statistical_validation_stage(
+        run,
+        report=report,
+        candidate=candidate,
+        report_path=report_path,
+        report_hash=report_hash,
+        policy=policy,
+    )
+    _project_final_selection_stage(run, report=report, report_path=report_path, report_hash=report_hash)
+    _project_promotion_eligibility_stage(run, report=report, report_path=report_path, report_hash=report_hash)
+
+
+def _project_dataset_quality_stage(
+    run: ValidationRun,
+    *,
+    report: dict[str, Any],
+    report_path: str | None,
+    report_hash: str,
+) -> None:
+    status = report.get("dataset_quality_gate_status")
+    reasons = [str(item) for item in report.get("dataset_quality_gate_reasons") or []]
+    stage = _stage(run, "dataset_quality")
+    _bind_report_evidence(stage, report_path=report_path, report_hash=report_hash)
+    _record_hash_if_present(stage.output_hashes, "dataset_quality_hash", report.get("dataset_quality_hash"))
+    if status == PASS:
+        stage.status = PASS
+    elif stage.required:
+        stage.status = FAIL_CLOSED
+        stage.reasons.extend(reasons or ["dataset_quality_evidence_missing_or_failed"])
+    elif status is not None:
+        stage.status = FAIL_CLOSED
+        stage.reasons.extend(reasons or ["dataset_quality_failed"])
+
+
+def _project_final_holdout_stage(
+    run: ValidationRun,
+    *,
+    report: dict[str, Any],
+    candidate: dict[str, Any],
+    report_path: str | None,
+    report_hash: str,
+) -> None:
+    stage = _stage(run, "final_holdout")
+    _bind_report_evidence(stage, report_path=report_path, report_hash=report_hash)
+    split = _dataset_split(report, "final_holdout")
+    _record_hash_if_present(stage.input_hashes, "final_holdout_split_hash", split.get("content_hash") if split else None)
+    for key in ("final_holdout_identity_hash", "final_holdout_content_hash", "final_holdout_reuse_key_hash"):
+        _record_hash_if_present(stage.output_hashes, key, report.get(key) or candidate.get(key))
+    present = candidate.get("final_holdout_present") is True or isinstance(split, dict)
+    has_metrics = isinstance(candidate.get("final_holdout_metrics"), dict) or isinstance(
+        candidate.get("final_holdout_metrics_v2"), dict
+    )
+    has_hash = _is_hash((split or {}).get("content_hash")) or _is_hash(report.get("final_holdout_content_hash"))
+    if present and (has_metrics or has_hash):
+        stage.status = PASS
+    elif stage.required:
+        stage.status = FAIL_CLOSED
+        if candidate.get("final_holdout_required_for_promotion") is False:
+            stage.reasons.append("policy_requires_final_holdout_despite_manifest_candidate_flag")
+        stage.reasons.append("final_holdout_evidence_missing")
+
+
+def _project_stress_suite_stage(
+    run: ValidationRun,
+    *,
+    report: dict[str, Any],
+    candidate: dict[str, Any],
+    report_path: str | None,
+    report_hash: str,
+) -> None:
+    stage = _stage(run, "stress_suite")
+    _bind_report_evidence(stage, report_path=report_path, report_hash=report_hash)
+    _record_hash_if_present(
+        stage.input_hashes,
+        "stress_suite_contract_hash",
+        report.get("stress_suite_contract_hash") or candidate.get("stress_suite_contract_hash"),
+    )
+    gate = report.get("stress_suite_gate_result") or candidate.get("stress_suite_gate_result")
+    reasons = [str(item) for item in report.get("stress_suite_fail_reasons") or candidate.get("stress_suite_fail_reasons") or []]
+    if gate == PASS:
+        stage.status = PASS
+    elif stage.required:
+        stage.status = FAIL_CLOSED
+        stage.reasons.extend(reasons or ["stress_suite_evidence_missing_or_failed"])
+    elif gate is not None:
+        stage.status = FAIL_CLOSED
+        stage.reasons.extend(reasons or ["stress_suite_failed"])
+
+
+def _project_statistical_validation_stage(
+    run: ValidationRun,
+    *,
+    report: dict[str, Any],
+    candidate: dict[str, Any],
+    report_path: str | None,
+    report_hash: str,
+    policy: ResearchValidationPolicy,
+) -> None:
+    stage = _stage(run, "statistical_validation")
+    _bind_report_evidence(stage, report_path=report_path, report_hash=report_hash)
+    for path_key in ("statistical_evidence_path", "return_panel_path", "family_trial_registry_path"):
+        if report.get(path_key):
+            stage.artifact_paths[path_key] = str(report[path_key])
+    for hash_key in (
+        "statistical_evidence_hash",
+        "return_panel_hash",
+        "candidate_metric_values_hash",
+        "selection_universe_hash",
+        "bootstrap_sampling_contract_hash",
+        "family_trial_registry_prior_hash",
+        "family_trial_registry_row_hash",
+    ):
+        _record_hash_if_present(stage.artifact_hashes, hash_key, report.get(hash_key) or candidate.get(hash_key))
+    gate = report.get("statistical_gate_result") or candidate.get("statistical_gate_result")
+    reasons = [str(item) for item in report.get("statistical_gate_fail_reasons") or candidate.get("statistical_gate_fail_reasons") or []]
+    evidence_grade = str(report.get("evidence_grade") or candidate.get("evidence_grade") or "")
+    if stage.required and not _is_hash(report.get("statistical_evidence_hash") or candidate.get("statistical_evidence_hash")):
+        reasons.append("statistical_evidence_missing")
+    if stage.required and not _is_hash(report.get("return_panel_hash") or candidate.get("return_panel_hash")):
+        reasons.append("MISSING_RETURN_PANEL")
+    if policy.production_bound and evidence_grade == "SCREENING_SUMMARY_BOOTSTRAP":
+        reasons.append("SCREENING_ONLY_NOT_PROMOTABLE")
+    if policy.production_bound and report.get("official_promotion_grade_wrc_generation_available") is False:
+        reasons.append("UNAVAILABLE_CAPABILITY")
+    if gate == PASS and not reasons:
+        stage.status = PASS
+    elif stage.required:
+        stage.status = FAIL_CLOSED
+        stage.reasons.extend(reasons or ["statistical_validation_evidence_missing_or_failed"])
+    elif gate is not None:
+        stage.status = FAIL_CLOSED if gate != PASS else PASS
+        if gate != PASS:
+            stage.reasons.extend(reasons or ["statistical_validation_failed"])
+
+
+def _project_final_selection_stage(
+    run: ValidationRun,
+    *,
+    report: dict[str, Any],
+    report_path: str | None,
+    report_hash: str,
+) -> None:
+    stage = _stage(run, "final_selection")
+    _bind_report_evidence(stage, report_path=report_path, report_hash=report_hash)
+    for hash_key in ("final_selection_contract_hash", "selected_candidate_score_hash", "candidate_final_scores_hash"):
+        _record_hash_if_present(stage.output_hashes, hash_key, report.get(hash_key))
+    gate = report.get("final_selection_gate_result")
+    reasons = [str(item) for item in report.get("final_selection_fail_reasons") or []]
+    if gate == PASS:
+        stage.status = PASS
+    elif stage.required:
+        stage.status = FAIL_CLOSED
+        stage.reasons.extend(reasons or ["final_selection_evidence_missing_or_failed"])
+    elif gate is not None:
+        stage.status = FAIL_CLOSED if gate != PASS else PASS
+        if gate != PASS:
+            stage.reasons.extend(reasons or ["final_selection_failed"])
+
+
+def _project_promotion_eligibility_stage(
+    run: ValidationRun,
+    *,
+    report: dict[str, Any],
+    report_path: str | None,
+    report_hash: str,
+) -> None:
+    stage = _stage(run, "promotion_eligibility")
+    _bind_report_evidence(stage, report_path=report_path, report_hash=report_hash)
+    gate = report.get("promotion_eligibility_gate_result")
+    reasons = [str(item) for item in report.get("promotion_blocking_reasons") or []]
+    if gate == PASS:
+        stage.status = PASS
+    elif stage.required:
+        stage.status = FAIL_CLOSED
+        stage.reasons.extend(reasons or ["promotion_eligibility_gate_failed"])
+    elif gate is not None:
+        stage.status = FAIL_CLOSED
+        stage.reasons.extend(reasons or ["promotion_eligibility_gate_failed"])
+
+
 def _stage_walk_forward(
     *,
     stage: ValidationStage,
@@ -588,6 +838,30 @@ def _record_report_stage(stage: ValidationStage, report: dict[str, Any], label: 
     path = _report_path(report)
     if path:
         stage.artifact_paths[f"{label}_path"] = path
+
+
+def _bind_report_evidence(stage: ValidationStage, *, report_path: str | None, report_hash: str) -> None:
+    if report_path:
+        stage.artifact_paths.setdefault("backtest_report_path", report_path)
+    if report_hash:
+        stage.artifact_hashes.setdefault("backtest_report_hash", report_hash)
+
+
+def _record_hash_if_present(target: dict[str, Any], key: str, value: Any) -> None:
+    if _is_hash(value):
+        target[key] = str(value)
+
+
+def _is_hash(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith("sha256:")
+
+
+def _dataset_split(report: dict[str, Any], split_name: str) -> dict[str, Any] | None:
+    splits = report.get("dataset_splits")
+    if not isinstance(splits, dict):
+        return None
+    split = splits.get(split_name)
+    return split if isinstance(split, dict) else None
 
 
 def _report_path(report: dict[str, Any]) -> str | None:

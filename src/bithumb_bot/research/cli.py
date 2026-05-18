@@ -18,6 +18,7 @@ from .hashing import content_hash_payload, report_content_hash_payload, sha256_p
 from .audit_trail import validate_audit_trail_binding, verify_audit_trail
 from .return_panel import validate_return_panel_binding
 from .execution_calibration import ExecutionCalibrationError, load_calibration_artifact
+from .deployment_policy import is_production_bound_target
 from .promotion_gate import PromotionGateError, promote_candidate
 from .lineage import reproduce_promotion
 from .run_summary import ResearchRunSummary, build_research_run_summary
@@ -45,6 +46,8 @@ def cmd_research_backtest(*, manifest_path: str, execution_calibration_path: str
         print(f"[RESEARCH-BACKTEST] error={exc}")
         return 1
     _print_report_summary("RESEARCH-BACKTEST", report)
+    if _standalone_report_is_non_promotable_production_diagnostic(report):
+        return 1
     return 0
 
 
@@ -68,6 +71,8 @@ def cmd_research_walk_forward(*, manifest_path: str, execution_calibration_path:
         print(f"[RESEARCH-WALK-FORWARD] error={exc}")
         return 1
     _print_report_summary("RESEARCH-WALK-FORWARD", report)
+    if _standalone_report_is_non_promotable_production_diagnostic(report):
+        return 1
     return 0
 
 
@@ -439,6 +444,16 @@ def _print_validation_run_summary(payload: dict[str, object]) -> None:
     reasons = payload.get("fail_closed_reasons") or []
     print(f"  fail_closed_reasons={_format_items(tuple(str(item) for item in reasons))}")
     print(f"  next_required_action={_validation_next_action(payload)}")
+
+
+def _standalone_report_is_non_promotable_production_diagnostic(report: dict[str, object]) -> bool:
+    if not is_production_bound_target(report.get("deployment_tier")):
+        return False
+    if report.get("validation_run_complete") is True and report.get("promotion_eligibility_gate_result") == "PASS":
+        return False
+    if report.get("diagnostic_only") is True or report.get("standalone_backtest_not_full_validation") is True:
+        return True
+    return report.get("promotion_eligibility_gate_result") != "PASS"
 
 
 def _validation_next_action(payload: dict[str, object]) -> str:

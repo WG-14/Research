@@ -2641,7 +2641,7 @@ def test_research_validate_success_real_promotion_artifact_passes_profile_source
     monkeypatch,
 ) -> None:
     manager = _manager(tmp_path, monkeypatch)
-    candidate = _production_candidate()
+    candidate = _production_candidate(walk_forward_required=True)
     _write_report_with_lineage(
         manager,
         candidate,
@@ -2650,12 +2650,35 @@ def test_research_validate_success_real_promotion_artifact_passes_profile_source
             "promotion_blocking_reasons": [],
         },
     )
+    _write_walk_forward_report(manager, _walk_forward_candidate(candidate))
     report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    report.update(
+        {
+            "deployment_tier": candidate["deployment_tier"],
+            "strategy_name": candidate["strategy_name"],
+            "execution_model": candidate["execution_model"],
+            "execution_calibration_required": candidate["execution_calibration_required"],
+            "execution_calibration_artifact_hash": candidate["execution_calibration_artifact_hash"],
+        }
+    )
+    walk_report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "walk_forward_report.json"
+    walk_report = json.loads(walk_report_path.read_text(encoding="utf-8"))
+    walk_report.update(
+        {
+            "deployment_tier": candidate["deployment_tier"],
+            "strategy_name": candidate["strategy_name"],
+            "execution_model": candidate["execution_model"],
+            "execution_calibration_required": candidate["execution_calibration_required"],
+            "execution_calibration_artifact_hash": candidate["execution_calibration_artifact_hash"],
+            "promotion_eligibility_gate_result": "PASS",
+            "promotion_blocking_reasons": [],
+        }
+    )
     manifest = SimpleNamespace(
         experiment_id="promo_exp",
         deployment_tier="paper_candidate",
-        acceptance_gate=SimpleNamespace(walk_forward_required=False),
+        acceptance_gate=SimpleNamespace(walk_forward_required=True),
         manifest_hash=lambda: "sha256:manifest",
     )
 
@@ -2665,6 +2688,7 @@ def test_research_validate_success_real_promotion_artifact_passes_profile_source
         lambda **kwargs: {"status": "PASS", "next_actions": []},
     )
     monkeypatch.setattr(pipeline, "run_research_backtest", lambda **kwargs: report)
+    monkeypatch.setattr(pipeline, "run_research_walk_forward", lambda **kwargs: walk_report)
 
     payload = pipeline.run_research_validation(
         manifest=manifest,

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from bithumb_bot import app as app_module
 from bithumb_bot.paths import PathManager
+from bithumb_bot.research import cli as research_cli
 from bithumb_bot.research.hashing import sha256_prefixed
 from bithumb_bot.research import validation_pipeline as pipeline
 from bithumb_bot.storage_io import write_json_atomic
@@ -40,6 +41,36 @@ def _report(manager: PathManager, *, kind: str, candidate_id: str = "candidate_0
         "best_candidate_id": candidate_id,
         "promotion_eligibility_gate_result": "PASS",
         "promotion_blocking_reasons": [],
+        "dataset_quality_hash": "sha256:dataset-quality",
+        "dataset_quality_gate_status": "PASS",
+        "dataset_quality_gate_reasons": [],
+        "dataset_splits": {
+            "final_holdout": {
+                "content_hash": "sha256:final-holdout-split",
+                "quality_hash": "sha256:final-holdout-quality",
+            }
+        },
+        "final_holdout_content_hash": "sha256:final-holdout-content",
+        "stress_suite_required": True,
+        "stress_suite_contract_hash": "sha256:stress-contract",
+        "stress_suite_gate_result": "PASS",
+        "stress_suite_fail_reasons": [],
+        "statistical_validation_required": True,
+        "statistical_evidence_hash": "sha256:statistical-evidence",
+        "return_panel_hash": "sha256:return-panel",
+        "candidate_metric_values_hash": "sha256:candidate-metrics",
+        "selection_universe_hash": "sha256:selection-universe",
+        "bootstrap_sampling_contract_hash": "sha256:bootstrap",
+        "statistical_gate_result": "PASS",
+        "statistical_gate_fail_reasons": [],
+        "evidence_grade": "PROMOTION_GRADE_WRC",
+        "official_promotion_grade_wrc_generation_available": True,
+        "final_selection_required": True,
+        "final_selection_gate_result": "PASS",
+        "final_selection_fail_reasons": [],
+        "final_selection_contract_hash": "sha256:final-selection-contract",
+        "selected_candidate_score_hash": "sha256:selected-score",
+        "candidate_final_scores_hash": "sha256:final-scores",
         "artifact_paths": {"report_path": str(path.resolve())},
         "candidates": [
             {
@@ -53,6 +84,17 @@ def _report(manager: PathManager, *, kind: str, candidate_id: str = "candidate_0
                 "execution_calibration_artifact_hash": None,
                 "execution_calibration_artifact_hashes": [],
                 "manifest_hash": "sha256:manifest",
+                "final_holdout_present": True,
+                "final_holdout_required_for_promotion": True,
+                "final_holdout_metrics": {"return_pct": 1.0},
+                "statistical_validation_required": True,
+                "statistical_evidence_hash": "sha256:statistical-evidence",
+                "return_panel_hash": "sha256:return-panel",
+                "candidate_metric_values_hash": "sha256:candidate-metrics",
+                "selection_universe_hash": "sha256:selection-universe",
+                "statistical_gate_result": "PASS",
+                "statistical_gate_fail_reasons": [],
+                "evidence_grade": "PROMOTION_GRADE_WRC",
             }
         ],
     }
@@ -228,3 +270,179 @@ def test_research_validate_success_binds_promotion_to_validation_run(tmp_path, m
     assert promotion["validation_run_binding_status"] == "verified_pre_promotion_binding"
     assert promotion["validation_run_binding_status"] != "pending_validation_pipeline"
     assert promotion["validation_run_binding_hash"] == payload["validation_run_binding_hash"]
+
+
+def test_validation_run_emits_expanded_policy_stage_records(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch)
+    manifest = _manifest(walk_forward_required=True)
+
+    monkeypatch.setattr(
+        pipeline,
+        "build_research_readiness_report",
+        lambda **kwargs: {"status": "PASS", "next_actions": []},
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "run_research_backtest",
+        lambda **kwargs: _report(manager, kind="backtest"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "run_research_walk_forward",
+        lambda **kwargs: _report(manager, kind="walk_forward"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_stage_promotion",
+        lambda *, stage, experiment_id, candidate_id, manager, validation_run_path, validation_run_binding_hash: SimpleNamespace(
+            artifact={"gate_result": "PASS"},
+            artifact_path=manager.data_dir() / "reports" / "research" / experiment_id / f"promotion_{candidate_id}.json",
+            content_hash="sha256:promotion",
+        ),
+    )
+    monkeypatch.setattr(pipeline, "_stage_reproduce", lambda *, stage, promotion_path: {"ok": True})
+
+    payload = pipeline.run_research_validation(
+        manifest=manifest,
+        db_path=tmp_path / "paper.sqlite",
+        manager=manager,
+        manifest_path=str(tmp_path / "manifest.json"),
+    )
+
+    stages = {stage["name"]: stage for stage in payload["stages"]}
+    for name in (
+        "readiness",
+        "dataset_quality",
+        "backtest",
+        "final_holdout",
+        "stress_suite",
+        "statistical_validation",
+        "final_selection",
+        "walk_forward",
+        "promotion_eligibility",
+        "promotion",
+        "reproduce",
+    ):
+        assert name in stages
+        assert name in payload["required_stage_names"]
+        assert stages[name]["required"] is True
+        assert stages[name]["status"] == "PASS"
+        assert set(stages[name]) >= {
+            "name",
+            "required",
+            "status",
+            "input_hashes",
+            "output_hashes",
+            "artifact_paths",
+            "artifact_hashes",
+            "reasons",
+        }
+    assert stages["statistical_validation"]["artifact_hashes"]["statistical_evidence_hash"] == "sha256:statistical-evidence"
+    assert stages["final_selection"]["output_hashes"]["candidate_final_scores_hash"] == "sha256:final-scores"
+
+
+def test_production_policy_requires_walk_forward_even_if_manifest_flag_is_weaker(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch)
+    manifest = _manifest(walk_forward_required=False)
+
+    monkeypatch.setattr(
+        pipeline,
+        "build_research_readiness_report",
+        lambda **kwargs: {"status": "PASS", "next_actions": []},
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "run_research_backtest",
+        lambda **kwargs: _report(manager, kind="backtest"),
+    )
+
+    def fail_walk_forward(**kwargs):
+        raise pipeline.ValidationRunError("policy_required_walk_forward")
+
+    monkeypatch.setattr(pipeline, "run_research_walk_forward", fail_walk_forward)
+
+    payload = pipeline.run_research_validation(
+        manifest=manifest,
+        db_path=tmp_path / "paper.sqlite",
+        manager=manager,
+        manifest_path=str(tmp_path / "manifest.json"),
+    )
+
+    assert "walk_forward" in payload["required_stage_names"]
+    stages = {stage["name"]: stage for stage in payload["stages"]}
+    assert stages["walk_forward"]["status"] == "ERROR"
+    assert payload["end_to_end_validation_result"] == "FAIL_CLOSED"
+
+
+def test_statistical_screening_only_fails_production_validation_stage(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch)
+    manifest = _manifest(walk_forward_required=True)
+    report = _report(manager, kind="backtest")
+    report["evidence_grade"] = "SCREENING_SUMMARY_BOOTSTRAP"
+    report["official_promotion_grade_wrc_generation_available"] = False
+    report["statistical_gate_result"] = "PASS"
+    report["promotion_eligibility_gate_result"] = "PASS"
+    report["promotion_blocking_reasons"] = []
+    report["candidates"][0]["evidence_grade"] = "SCREENING_SUMMARY_BOOTSTRAP"
+    report["candidates"][0]["statistical_gate_result"] = "PASS"
+
+    monkeypatch.setattr(
+        pipeline,
+        "build_research_readiness_report",
+        lambda **kwargs: {"status": "PASS", "next_actions": []},
+    )
+    monkeypatch.setattr(pipeline, "run_research_backtest", lambda **kwargs: report)
+
+    payload = pipeline.run_research_validation(
+        manifest=manifest,
+        db_path=tmp_path / "paper.sqlite",
+        manager=manager,
+        manifest_path=str(tmp_path / "manifest.json"),
+    )
+
+    stages = {stage["name"]: stage for stage in payload["stages"]}
+    assert stages["statistical_validation"]["status"] == "FAIL_CLOSED"
+    assert "SCREENING_ONLY_NOT_PROMOTABLE" in stages["statistical_validation"]["reasons"]
+    assert "UNAVAILABLE_CAPABILITY" in stages["statistical_validation"]["reasons"]
+    assert payload["end_to_end_validation_result"] == "FAIL_CLOSED"
+
+
+def test_standalone_production_backtest_returns_nonzero_for_diagnostic_report(monkeypatch):
+    monkeypatch.setattr(research_cli, "load_manifest", lambda path: SimpleNamespace(deployment_tier="paper_candidate"))
+    monkeypatch.setattr(research_cli, "load_calibration_artifact", lambda path: None)
+    monkeypatch.setattr(
+        research_cli,
+        "run_research_backtest",
+        lambda **kwargs: {
+            "experiment_id": "validation_exp",
+            "deployment_tier": "paper_candidate",
+            "promotion_eligibility_gate_result": "FAIL",
+            "promotion_blocking_reasons": ["walk_forward_required_but_not_executed_in_this_run"],
+            "validation_run_complete": False,
+            "diagnostic_only": True,
+            "standalone_backtest_not_full_validation": True,
+            "candidates": [],
+        },
+    )
+
+    assert research_cli.cmd_research_backtest(manifest_path="manifest.json") == 1
+
+
+def test_standalone_research_only_backtest_keeps_diagnostic_zero_exit(monkeypatch):
+    monkeypatch.setattr(research_cli, "load_manifest", lambda path: SimpleNamespace(deployment_tier="research_only"))
+    monkeypatch.setattr(
+        research_cli,
+        "run_research_backtest",
+        lambda **kwargs: {
+            "experiment_id": "validation_exp",
+            "deployment_tier": "research_only",
+            "promotion_eligibility_gate_result": "FAIL",
+            "promotion_blocking_reasons": ["diagnostic_failure"],
+            "validation_run_complete": False,
+            "diagnostic_only": True,
+            "standalone_backtest_not_full_validation": True,
+            "candidates": [],
+        },
+    )
+
+    assert research_cli.cmd_research_backtest(manifest_path="manifest.json") == 0
