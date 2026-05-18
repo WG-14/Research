@@ -13,6 +13,7 @@ from bithumb_bot.orderbook_depth_store import (
     depth_snapshot_from_orderbook_snapshot,
     has_orderbook_depth_evidence,
     load_orderbook_depth_snapshot_after_or_equal,
+    summarize_orderbook_depth_evidence,
     upsert_orderbook_depth_snapshot,
 )
 from bithumb_bot.public_api_orderbook import OrderbookSnapshot, OrderbookUnit
@@ -175,6 +176,60 @@ def test_valid_depth_snapshot_insert_and_load(tmp_path) -> None:
     assert loaded is not None
     assert [level.price for level in loaded.bids] == [100.0, 99.0]
     assert [level.size for level in loaded.asks] == [1.5, 4.0]
+
+
+def test_depth_summary_separates_rows_from_complete_snapshots(tmp_path) -> None:
+    conn = ensure_db(str(tmp_path / "quotes.sqlite"))
+    try:
+        conn.execute(
+            """
+            INSERT INTO orderbook_depth_levels(
+                ts, pair, side, level_index, price, size,
+                cumulative_size, cumulative_notional, source, observed_at_epoch_sec
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1_700_000_000_000, "KRW-BTC", "bid", 0, 100.0, 1.0, 1.0, 100.0, "manual_test", None),
+        )
+        conn.commit()
+
+        rows_only = summarize_orderbook_depth_evidence(
+            conn,
+            pair="KRW-BTC",
+            start_ts=1,
+            end_ts=2_000_000_000_000,
+        )
+        assert rows_only["l2_depth_rows_available"] is True
+        assert rows_only["l2_depth_complete_snapshots_available"] is False
+        assert rows_only["l2_depth_snapshot_count"] == 0
+        assert rows_only["l2_depth_row_count"] == 1
+        assert rows_only["full_orderbook_depth_available"] is False
+
+        upsert_orderbook_depth_snapshot(
+            conn,
+            build_orderbook_depth_snapshot(
+                ts=1_700_000_060_000,
+                pair="KRW-BTC",
+                bid_levels=[(100.0, 1.0)],
+                ask_levels=[(101.0, 2.0)],
+                source="bithumb_public_v1_orderbook",
+            ),
+        )
+        conn.commit()
+        complete = summarize_orderbook_depth_evidence(
+            conn,
+            pair="KRW-BTC",
+            start_ts=1,
+            end_ts=2_000_000_000_000,
+        )
+    finally:
+        conn.close()
+
+    assert complete["l2_depth_rows_available"] is True
+    assert complete["l2_depth_complete_snapshots_available"] is True
+    assert complete["l2_depth_snapshot_count"] == 1
+    assert complete["l2_depth_row_count"] == 3
+    assert complete["l2_depth_content_hash"] != rows_only["l2_depth_content_hash"]
 
 
 @pytest.mark.parametrize(

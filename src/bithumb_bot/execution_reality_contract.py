@@ -14,6 +14,9 @@ EXECUTION_OBSERVED_EVIDENCE_FIELDS = frozenset(
     {
         "quote_evidence_available",
         "depth_available",
+        "depth_evidence_available",
+        "l2_depth_rows_available",
+        "l2_depth_complete_snapshots_available",
         "trade_ticks_available",
         "queue_position_available",
         "market_impact_model_available",

@@ -596,6 +596,9 @@ def _evaluate_candidates(
     metrics_gate_policy = metrics_gate_policy_from_acceptance_gate(manifest.acceptance_gate)
     metrics_gate_policy_digest = metrics_gate_policy_hash(metrics_gate_policy)
     probe_warnings = _probe_grade_gate_warnings(manifest)
+    l2_depth_complete_snapshots_available = bool(
+        top_of_book_quality_summary.get("l2_depth_complete_snapshots_available")
+    )
     _emit_progress(
         progress_callback,
         stage="workload",
@@ -629,7 +632,7 @@ def _evaluate_candidates(
             scenario=scenario,
             calibration_hash=expected_calibration_hash,
             top_of_book_available=int(top_of_book_quality_summary.get("joined_quote_count") or 0) > 0,
-            depth_available=bool(top_of_book_quality_summary.get("depth_available")),
+            depth_available=l2_depth_complete_snapshots_available,
         )
         calibration_gate = compare_calibration_to_scenario(
             calibration=execution_calibration,
@@ -893,7 +896,7 @@ def _evaluate_candidates(
                 scenario=scenario,
                 calibration_hash=calibration_gate.get("artifact_hash") if isinstance(calibration_gate, dict) else None,
                 top_of_book_available=int(top_of_book_quality_summary.get("joined_quote_count") or 0) > 0,
-                depth_available=bool(top_of_book_quality_summary.get("depth_available")),
+                depth_available=l2_depth_complete_snapshots_available,
             )
             capability_contract = _execution_capability_contract_from_reality(execution_contract)
             scenario_result = {
@@ -989,6 +992,7 @@ def _evaluate_candidates(
                         scenario=scenario,
                         calibration_hash=calibration_gate.get("artifact_hash") if isinstance(calibration_gate, dict) else None,
                         top_of_book_available=int(top_of_book_quality_summary.get("joined_quote_count") or 0) > 0,
+                        depth_available=l2_depth_complete_snapshots_available,
                     ),
                     "strategy_name": manifest.strategy_name,
                     "parameter_candidate_id": base["candidate_id"],
@@ -2002,6 +2006,9 @@ def _report_payload(
         for report in quality_reports
     )
     l2_depth_rows_available = any(bool(report.payload.get("l2_depth_rows_available")) for report in quality_reports)
+    l2_depth_complete_snapshots_available = bool(
+        top_of_book_quality_summary.get("l2_depth_complete_snapshots_available")
+    )
     repository_version = _repository_version()
     calibration_hash = (
         str(execution_calibration.get("content_hash"))
@@ -2013,7 +2020,7 @@ def _report_payload(
         scenario=_base_report_scenario(manifest),
         calibration_hash=calibration_hash,
         top_of_book_available=top_of_book_joined_count > 0,
-        depth_available=l2_depth_rows_available,
+        depth_available=l2_depth_complete_snapshots_available,
     )
     report_capability_contract = _execution_capability_contract_from_reality(report_execution_contract)
     parameter_grid_size = _parameter_grid_size(manifest)
@@ -2386,11 +2393,13 @@ def _report_payload(
             "top_of_book_required": bool(manifest.dataset.top_of_book.required) if manifest.dataset.top_of_book else False,
             "top_of_book_available": top_of_book_joined_count > 0,
             "top_of_book_is_full_depth": False,
-            "orderbook_depth_available": l2_depth_rows_available,
-            "depth_available": l2_depth_rows_available,
-            "depth_available_semantics": "stored_l2_depth_rows_exist_not_execution_model_used",
-            "l2_depth_evidence_available": l2_depth_rows_available,
+            "orderbook_depth_available": l2_depth_complete_snapshots_available,
+            "depth_available": l2_depth_complete_snapshots_available,
+            "depth_available_semantics": "stored_l2_depth_complete_snapshots_exist_not_execution_model_used",
+            "l2_depth_evidence_available": l2_depth_complete_snapshots_available,
+            "depth_evidence_available": l2_depth_complete_snapshots_available,
             "l2_depth_rows_available": l2_depth_rows_available,
+            "l2_depth_complete_snapshots_available": l2_depth_complete_snapshots_available,
             "l2_depth_snapshot_count": top_of_book_quality_summary.get("l2_depth_snapshot_count"),
             "l2_depth_row_count": top_of_book_quality_summary.get("l2_depth_row_count"),
             "l2_depth_first_ts": top_of_book_quality_summary.get("l2_depth_first_ts"),
@@ -3063,8 +3072,10 @@ def _execution_reality_contract(
         extra={
             "quote_evidence_available": bool(top_of_book_available),
             "depth_available": bool(depth_available),
-            "depth_available_semantics": "stored_l2_depth_rows_exist_not_execution_model_used",
-            "l2_depth_rows_available": bool(depth_available),
+            "depth_available_semantics": "stored_l2_depth_complete_snapshots_exist_not_execution_model_used",
+            "depth_evidence_available": bool(depth_available),
+            "l2_depth_evidence_available": bool(depth_available),
+            "l2_depth_complete_snapshots_available": bool(depth_available),
             "depth_walk_execution_model_available": True,
             "depth_walk_execution_model_used": False,
             "full_orderbook_depth_available": False,
@@ -3295,7 +3306,11 @@ def _top_of_book_quality_summary(reports: dict[str, DatasetQualityReport]) -> di
             "next_action": None,
             "limitations": [
                 "top_of_book_not_requested",
-                "orderbook_depth_unavailable",
+                (
+                    "orderbook_depth_complete_snapshots_stored_not_execution_model_used"
+                    if depth_summary.get("l2_depth_complete_snapshots_available")
+                    else "orderbook_depth_unavailable"
+                ),
                 "intra_candle_path_unavailable",
             ],
         }
@@ -3378,6 +3393,9 @@ def _top_of_book_quality_summary(reports: dict[str, DatasetQualityReport]) -> di
 
 def _combined_l2_depth_summary(payloads: list[dict[str, Any]]) -> dict[str, Any]:
     rows_available = any(bool(payload.get("l2_depth_rows_available")) for payload in payloads)
+    complete_snapshots_available = any(
+        bool(payload.get("l2_depth_complete_snapshots_available")) for payload in payloads
+    )
     first_values = [int(payload["l2_depth_first_ts"]) for payload in payloads if payload.get("l2_depth_first_ts") is not None]
     last_values = [int(payload["l2_depth_last_ts"]) for payload in payloads if payload.get("l2_depth_last_ts") is not None]
     hashes = [
@@ -3386,10 +3404,12 @@ def _combined_l2_depth_summary(payloads: list[dict[str, Any]]) -> dict[str, Any]
         if isinstance(payload.get("l2_depth_content_hash"), str)
     ]
     return {
-        "depth_available": rows_available,
-        "depth_available_semantics": "stored_l2_depth_rows_exist_not_execution_model_used",
-        "depth_evidence_available": rows_available,
+        "depth_available": complete_snapshots_available,
+        "depth_available_semantics": "stored_l2_depth_complete_snapshots_exist_not_execution_model_used",
+        "depth_evidence_available": complete_snapshots_available,
+        "l2_depth_evidence_available": complete_snapshots_available,
         "l2_depth_rows_available": rows_available,
+        "l2_depth_complete_snapshots_available": complete_snapshots_available,
         "l2_depth_snapshot_count": sum(int(payload.get("l2_depth_snapshot_count") or 0) for payload in payloads),
         "l2_depth_row_count": sum(int(payload.get("l2_depth_row_count") or 0) for payload in payloads),
         "l2_depth_first_ts": min(first_values) if first_values else None,

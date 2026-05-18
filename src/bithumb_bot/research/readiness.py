@@ -175,8 +175,11 @@ def _split_payload(report: dict[str, Any]) -> dict[str, Any]:
         "signal_level_depth_coverage_status": report.get("signal_level_depth_coverage_status"),
         "depth_available": bool(report.get("depth_available")),
         "depth_available_semantics": report.get("depth_available_semantics"),
+        "depth_evidence_available": bool(report.get("depth_evidence_available")),
+        "l2_depth_evidence_available": bool(report.get("depth_evidence_available")),
         "depth_availability_source": report.get("depth_availability_source"),
         "l2_depth_rows_available": bool(report.get("l2_depth_rows_available")),
+        "l2_depth_complete_snapshots_available": bool(report.get("l2_depth_complete_snapshots_available")),
         "l2_depth_snapshot_count": int(report.get("l2_depth_snapshot_count") or 0),
         "l2_depth_row_count": int(report.get("l2_depth_row_count") or 0),
         "l2_depth_first_ts": report.get("l2_depth_first_ts"),
@@ -199,6 +202,7 @@ def _split_payload(report: dict[str, Any]) -> dict[str, Any]:
 
 def _top_of_book_payload(*, manifest: ExperimentManifest, split_reports: dict[str, dict[str, Any]]) -> dict[str, Any]:
     spec = manifest.dataset.top_of_book
+    depth_summary = _aggregate_l2_depth_summary(split_reports)
     if spec is None:
         return {
             "required": False,
@@ -213,17 +217,7 @@ def _top_of_book_payload(*, manifest: ExperimentManifest, split_reports: dict[st
             "signal_level_depth_coverage_pct": None,
             "signal_level_depth_coverage_status": "not_computed_depth_walk_not_wired_to_research_backtest",
             "signal_depth_coverage_limitation": "readiness_sql_scan_has_no_strategy_signal_events",
-            "depth_available": False,
-            "depth_available_semantics": "stored_l2_depth_rows_exist_not_execution_model_used",
-            "depth_evidence_available": False,
-            "depth_availability_source": "not_requested_or_not_scanned",
-            "l2_depth_rows_available": False,
-            "l2_depth_snapshot_count": 0,
-            "l2_depth_row_count": 0,
-            "l2_depth_first_ts": None,
-            "l2_depth_last_ts": None,
-            "l2_depth_sources": [],
-            "l2_depth_content_hash": None,
+            **depth_summary,
             "depth_snapshot_selection_policy": "first_snapshot_after_or_equal_reference_ts_with_max_wait",
             "depth_liquidity_sufficiency_status": "not_computed_depth_walk_not_wired_to_research_backtest",
             "depth_walk_execution_model_available": True,
@@ -259,11 +253,6 @@ def _top_of_book_payload(*, manifest: ExperimentManifest, split_reports: dict[st
             "candle backfill does not satisfy production top-of-book requirements; "
             "collect or backfill real orderbook_top_snapshots, or use a separate non-production candle-only manifest"
         )
-    depth_available = any(bool(item.get("l2_depth_rows_available")) for item in split_reports.values())
-    l2_row_count = sum(int(item.get("l2_depth_row_count") or 0) for item in split_reports.values())
-    l2_snapshot_count = sum(int(item.get("l2_depth_snapshot_count") or 0) for item in split_reports.values())
-    first_values = [int(item["l2_depth_first_ts"]) for item in split_reports.values() if item.get("l2_depth_first_ts") is not None]
-    last_values = [int(item["l2_depth_last_ts"]) for item in split_reports.values() if item.get("l2_depth_last_ts") is not None]
     return {
         "required": bool(spec.required),
         "missing_policy": spec.missing_policy,
@@ -279,25 +268,7 @@ def _top_of_book_payload(*, manifest: ExperimentManifest, split_reports: dict[st
         "signal_level_depth_coverage_pct": None,
         "signal_level_depth_coverage_status": "not_computed_depth_walk_not_wired_to_research_backtest",
         "signal_depth_coverage_limitation": "readiness_sql_scan_has_no_strategy_signal_events",
-        "depth_available": depth_available,
-        "depth_available_semantics": "stored_l2_depth_rows_exist_not_execution_model_used",
-        "depth_evidence_available": depth_available,
-        "depth_availability_source": (
-            "sqlite_orderbook_depth_levels" if depth_available else "orderbook_depth_levels_missing_or_empty"
-        ),
-        "l2_depth_rows_available": depth_available,
-        "l2_depth_snapshot_count": l2_snapshot_count,
-        "l2_depth_row_count": l2_row_count,
-        "l2_depth_first_ts": min(first_values) if first_values else None,
-        "l2_depth_last_ts": max(last_values) if last_values else None,
-        "l2_depth_sources": sorted(
-            {
-                str(source)
-                for item in split_reports.values()
-                for source in item.get("l2_depth_sources") or []
-            }
-        ),
-        "l2_depth_content_hash": None,
+        **depth_summary,
         "depth_snapshot_selection_policy": "first_snapshot_after_or_equal_reference_ts_with_max_wait",
         "depth_liquidity_sufficiency_status": "not_computed_depth_walk_not_wired_to_research_backtest",
         "depth_walk_execution_model_available": True,
@@ -354,6 +325,7 @@ def _execution_capability_payload(*, manifest: ExperimentManifest, top_of_book: 
         "depth_required": policy.depth_required,
         "depth_available": contract["available_capabilities"]["full_orderbook_depth"],
         "l2_depth_rows_available": bool(top_of_book.get("l2_depth_rows_available")),
+        "l2_depth_complete_snapshots_available": bool(top_of_book.get("l2_depth_complete_snapshots_available")),
         "l2_depth_snapshot_count": int(top_of_book.get("l2_depth_snapshot_count") or 0),
         "l2_depth_row_count": int(top_of_book.get("l2_depth_row_count") or 0),
         "depth_walk_execution_model_available": bool(top_of_book.get("depth_walk_execution_model_available")),
@@ -366,6 +338,50 @@ def _execution_capability_payload(*, manifest: ExperimentManifest, top_of_book: 
         "top_of_book_is_full_depth": contract["available_capabilities"]["top_of_book_is_full_depth"],
         "status": "PASS" if not unavailable else "FAIL",
         "next_action": next_action,
+    }
+
+
+def _aggregate_l2_depth_summary(split_reports: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    rows_available = any(bool(item.get("l2_depth_rows_available")) for item in split_reports.values())
+    complete_snapshots_available = any(
+        bool(item.get("l2_depth_complete_snapshots_available")) for item in split_reports.values()
+    )
+    l2_row_count = sum(int(item.get("l2_depth_row_count") or 0) for item in split_reports.values())
+    l2_snapshot_count = sum(int(item.get("l2_depth_snapshot_count") or 0) for item in split_reports.values())
+    first_values = [int(item["l2_depth_first_ts"]) for item in split_reports.values() if item.get("l2_depth_first_ts") is not None]
+    last_values = [int(item["l2_depth_last_ts"]) for item in split_reports.values() if item.get("l2_depth_last_ts") is not None]
+    content_hashes = sorted(
+        {
+            str(item.get("l2_depth_content_hash"))
+            for item in split_reports.values()
+            if isinstance(item.get("l2_depth_content_hash"), str)
+        }
+    )
+    return {
+        "depth_available": complete_snapshots_available,
+        "depth_available_semantics": "stored_l2_depth_complete_snapshots_exist_not_execution_model_used",
+        "depth_evidence_available": complete_snapshots_available,
+        "l2_depth_evidence_available": complete_snapshots_available,
+        "depth_availability_source": (
+            "sqlite_orderbook_depth_levels_complete_snapshots"
+            if complete_snapshots_available
+            else ("sqlite_orderbook_depth_levels_rows_only" if rows_available else "orderbook_depth_levels_missing_or_empty")
+        ),
+        "l2_depth_rows_available": rows_available,
+        "l2_depth_complete_snapshots_available": complete_snapshots_available,
+        "l2_depth_snapshot_count": l2_snapshot_count,
+        "l2_depth_row_count": l2_row_count,
+        "l2_depth_first_ts": min(first_values) if first_values else None,
+        "l2_depth_last_ts": max(last_values) if last_values else None,
+        "l2_depth_sources": sorted(
+            {
+                str(source)
+                for item in split_reports.values()
+                for source in item.get("l2_depth_sources") or []
+            }
+        ),
+        "l2_depth_content_hash": content_hashes[0] if len(content_hashes) == 1 else None,
+        "l2_depth_content_hashes": content_hashes,
     }
 
 

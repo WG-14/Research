@@ -287,12 +287,16 @@ def test_stored_l2_depth_rows_are_reported_without_claiming_depth_execution(
     limitations = report["data_limitations"]
     capability = report["execution_capability_contract"]["available_capabilities"]
     assert train_quality["l2_depth_rows_available"] is True
+    assert train_quality["l2_depth_complete_snapshots_available"] is True
+    assert train_quality["depth_evidence_available"] is True
     assert train_quality["l2_depth_snapshot_count"] == 1
     assert train_quality["l2_depth_row_count"] == 4
     assert train_quality["l2_depth_first_ts"] == ts
     assert train_quality["l2_depth_last_ts"] == ts
     assert train_quality["l2_depth_content_hash"].startswith("sha256:")
     assert limitations["l2_depth_rows_available"] is True
+    assert limitations["l2_depth_complete_snapshots_available"] is True
+    assert limitations["depth_evidence_available"] is True
     assert limitations["depth_walk_execution_model_available"] is True
     assert limitations["depth_walk_execution_model_used"] is False
     assert limitations["signal_level_depth_coverage_status"] == "not_computed_depth_walk_not_wired_to_research_backtest"
@@ -341,6 +345,37 @@ def test_depth_evidence_digest_changes_when_depth_level_changes(tmp_path: Path) 
     assert first != second
 
 
+def test_rows_only_depth_evidence_is_not_complete_depth_evidence(tmp_path: Path) -> None:
+    db_path = tmp_path / "quotes.sqlite"
+    _create_candle_db(db_path)
+    manifest = _manifest()
+    snapshot = load_dataset_split(db_path=db_path, manifest=manifest, split_name="train")
+    conn = ensure_db(str(db_path))
+    try:
+        conn.execute(
+            """
+            INSERT INTO orderbook_depth_levels(
+                ts, pair, side, level_index, price, size,
+                cumulative_size, cumulative_notional, source, observed_at_epoch_sec
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (_ts("2023-01-01", 10), "KRW-BTC", "bid", 0, 99.0, 1.0, 1.0, 99.0, "manual_test", None),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = build_dataset_quality_report(db_path=db_path, snapshot=snapshot).payload
+
+    assert report["l2_depth_rows_available"] is True
+    assert report["l2_depth_complete_snapshots_available"] is False
+    assert report["depth_evidence_available"] is False
+    assert report["depth_available"] is False
+    assert report["full_orderbook_depth_available"] is False
+    assert report["limitations"]["full_orderbook_depth_available"] is False
+
+
 def test_research_readiness_reports_split_level_depth_without_full_depth_claim(
     tmp_path: Path,
     monkeypatch,
@@ -368,11 +403,55 @@ def test_research_readiness_reports_split_level_depth_without_full_depth_claim(
     report = build_research_readiness_report(manifest_path=manifest_path, db_path=db_path)
 
     assert report["splits"]["train"]["l2_depth_rows_available"] is True
+    assert report["splits"]["train"]["l2_depth_complete_snapshots_available"] is True
     assert report["splits"]["validation"]["l2_depth_rows_available"] is False
     assert report["top_of_book"]["l2_depth_row_count"] == 2
+    assert report["top_of_book"]["l2_depth_complete_snapshots_available"] is True
+    assert report["top_of_book"]["depth_evidence_available"] is True
     assert report["top_of_book"]["signal_level_depth_coverage_status"] == "not_computed_depth_walk_not_wired_to_research_backtest"
     assert report["top_of_book"]["depth_liquidity_sufficiency_status"] == "not_computed_depth_walk_not_wired_to_research_backtest"
     assert report["execution_capability"]["l2_depth_rows_available"] is True
+    assert report["execution_capability"]["l2_depth_complete_snapshots_available"] is True
+    assert report["execution_capability"]["full_orderbook_depth_available"] is False
+    assert report["execution_capability_contract"]["available_capabilities"]["full_orderbook_depth"] is False
+
+
+def test_research_readiness_aggregates_depth_when_top_of_book_not_requested(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "quotes.sqlite"
+    _create_candle_db(db_path)
+    conn = ensure_db(str(db_path))
+    try:
+        upsert_orderbook_depth_snapshot(
+            conn,
+            build_orderbook_depth_snapshot(
+                ts=_ts("2023-01-01", 10),
+                pair="KRW-BTC",
+                bid_levels=[(99.0, 1.0)],
+                ask_levels=[(101.0, 1.0)],
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(_manifest().raw), encoding="utf-8")
+    _manager(tmp_path, monkeypatch)
+
+    report = build_research_readiness_report(manifest_path=manifest_path, db_path=db_path)
+
+    assert report["top_of_book"]["status"] == "NOT_REQUESTED"
+    assert report["top_of_book"]["top_of_book_candle_quote_expected_count"] == 0
+    assert report["top_of_book"]["l2_depth_rows_available"] is True
+    assert report["top_of_book"]["l2_depth_complete_snapshots_available"] is True
+    assert report["top_of_book"]["depth_evidence_available"] is True
+    assert report["top_of_book"]["depth_walk_execution_model_available"] is True
+    assert report["top_of_book"]["depth_walk_execution_model_used"] is False
+    assert report["top_of_book"]["full_orderbook_depth_available"] is False
+    assert report["execution_capability"]["l2_depth_rows_available"] is True
+    assert report["execution_capability"]["l2_depth_complete_snapshots_available"] is True
     assert report["execution_capability"]["full_orderbook_depth_available"] is False
     assert report["execution_capability_contract"]["available_capabilities"]["full_orderbook_depth"] is False
 

@@ -329,7 +329,8 @@ def build_dataset_quality_report(
     present_expected_count = len(actual_expected_ts)
     coverage_pct = (present_expected_count / expected_count * 100.0) if expected_count else 0.0
     depth_summary = _orderbook_depth_summary(db_path=db_path, snapshot=snapshot)
-    depth_available = bool(depth_summary["l2_depth_rows_available"])
+    depth_rows_available = bool(depth_summary["l2_depth_rows_available"])
+    depth_complete_snapshots_available = bool(depth_summary["l2_depth_complete_snapshots_available"])
     payload: dict[str, Any] = {
         "schema_version": 1,
         "artifact_type": "dataset_quality_report",
@@ -361,9 +362,10 @@ def build_dataset_quality_report(
         "quality_gate_status": "PASS" if not reasons else "FAIL",
         "quality_gate_reasons": reasons,
         "limitations": {
-            "orderbook_depth_available": depth_available,
-            "l2_depth_evidence_available": depth_available,
-            "l2_depth_rows_available": depth_available,
+            "orderbook_depth_available": depth_complete_snapshots_available,
+            "l2_depth_evidence_available": depth_complete_snapshots_available,
+            "l2_depth_rows_available": depth_rows_available,
+            "l2_depth_complete_snapshots_available": depth_complete_snapshots_available,
             "full_orderbook_depth_available": False,
             "trade_tick_evidence_available": False,
             "queue_evidence_available": False,
@@ -378,10 +380,14 @@ def build_dataset_quality_report(
             "intra_candle_policy": "configured_by_execution_timing_policy",
             "top_of_book_is_full_depth": False,
         },
-        "depth_available": depth_available,
-        "depth_available_semantics": "stored_l2_depth_rows_exist_not_execution_model_used",
+        "depth_available": depth_complete_snapshots_available,
+        "depth_available_semantics": "stored_l2_depth_complete_snapshots_exist_not_execution_model_used",
+        "depth_evidence_available": depth_complete_snapshots_available,
+        "l2_depth_evidence_available": depth_complete_snapshots_available,
         "depth_availability_source": (
-            "sqlite_orderbook_depth_levels" if depth_available else "orderbook_depth_levels_missing_or_empty"
+            "sqlite_orderbook_depth_levels_complete_snapshots"
+            if depth_complete_snapshots_available
+            else ("sqlite_orderbook_depth_levels_rows_only" if depth_rows_available else "orderbook_depth_levels_missing_or_empty")
         ),
         **depth_summary,
         "signal_level_depth_coverage_pct": None,

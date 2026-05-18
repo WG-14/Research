@@ -121,6 +121,9 @@ def test_dataset_quality_depth_available_only_when_depth_rows_exist(tmp_path: Pa
 
     without_depth = build_dataset_quality_report(db_path=db_path, snapshot=snapshot)
     assert without_depth.payload["depth_available"] is False
+    assert without_depth.payload["l2_depth_rows_available"] is False
+    assert without_depth.payload["l2_depth_complete_snapshots_available"] is False
+    assert without_depth.payload["depth_evidence_available"] is False
     assert without_depth.payload["limitations"]["orderbook_depth_available"] is False
 
     conn = ensure_db(str(db_path))
@@ -141,6 +144,9 @@ def test_dataset_quality_depth_available_only_when_depth_rows_exist(tmp_path: Pa
 
     with_depth = build_dataset_quality_report(db_path=db_path, snapshot=snapshot)
     assert with_depth.payload["depth_available"] is True
+    assert with_depth.payload["l2_depth_rows_available"] is True
+    assert with_depth.payload["l2_depth_complete_snapshots_available"] is True
+    assert with_depth.payload["depth_evidence_available"] is True
     assert with_depth.payload["limitations"]["orderbook_depth_available"] is True
     assert with_depth.payload["limitations"]["top_of_book_is_full_depth"] is False
 

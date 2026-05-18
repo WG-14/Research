@@ -219,8 +219,10 @@ def test_l2_depth_rows_do_not_imply_full_orderbook_depth_capability() -> None:
         extra={
             "quote_evidence_available": True,
             "depth_available": True,
-            "depth_available_semantics": "stored_l2_depth_rows_exist_not_execution_model_used",
+            "depth_available_semantics": "stored_l2_depth_complete_snapshots_exist_not_execution_model_used",
+            "depth_evidence_available": True,
             "l2_depth_rows_available": True,
+            "l2_depth_complete_snapshots_available": True,
             "depth_walk_execution_model_available": True,
             "depth_walk_execution_model_used": False,
             "full_orderbook_depth_available": False,
@@ -229,6 +231,7 @@ def test_l2_depth_rows_do_not_imply_full_orderbook_depth_capability() -> None:
 
     capability = contract["execution_capability_contract"]
     assert contract["depth_available"] is True
+    assert contract["l2_depth_complete_snapshots_available"] is True
     assert capability["available_capabilities"]["full_orderbook_depth"] is False
     assert capability["available_capabilities"]["top_of_book_is_full_depth"] is False
     assert "execution_depth_required_but_unavailable" in unsupported_capability_reasons(contract)
@@ -804,6 +807,8 @@ def test_depth_availability_does_not_satisfy_queue_ticks_impact_or_intracandle()
         extra={
             "quote_evidence_available": True,
             "depth_available": True,
+            "depth_evidence_available": True,
+            "l2_depth_complete_snapshots_available": True,
             "trade_ticks_available": False,
             "queue_position_available": False,
             "market_impact_model_available": False,

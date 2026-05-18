@@ -260,6 +260,7 @@ def summarize_orderbook_depth_evidence(
     base_payload: dict[str, Any] = {
         "l2_depth_table_exists": table_exists,
         "l2_depth_rows_available": False,
+        "l2_depth_complete_snapshots_available": False,
         "l2_depth_snapshot_count": 0,
         "l2_depth_row_count": 0,
         "l2_depth_first_ts": None,
@@ -331,6 +332,7 @@ def summarize_orderbook_depth_evidence(
     base_payload.update(
         {
             "l2_depth_rows_available": True,
+            "l2_depth_complete_snapshots_available": len(complete_snapshots) > 0,
             "l2_depth_snapshot_count": len(complete_snapshots),
             "l2_depth_row_count": len(row_payloads),
             "l2_depth_first_ts": min(timestamps),
