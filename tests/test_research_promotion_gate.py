@@ -11,6 +11,7 @@ from bithumb_bot import app as app_module
 from bithumb_bot.execution_reality_contract import build_execution_reality_contract
 from bithumb_bot.execution_reality_contract import execution_capability_contract_hash, execution_contract_hash
 from bithumb_bot.research import cli as research_cli
+from bithumb_bot.research.audit_trail import AuditTraceScope, AuditTrailPolicy, trace_manifest_path, write_trace_manifest
 from bithumb_bot.research.hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
 from bithumb_bot.research.final_selection import apply_final_selection_contract
 from bithumb_bot.research.lineage import build_research_lineage, compute_lineage_hash, reproduce_promotion
@@ -1259,6 +1260,50 @@ def _rewrite_promotion_with_backtest_hash(promotion_path: Path, backtest_hash: s
     promotion.pop("content_hash", None)
     promotion["content_hash"] = sha256_prefixed(content_hash_payload(promotion))
     write_json_atomic(promotion_path, promotion)
+
+
+def _complete_audit_report_overrides(manager: PathManager) -> dict[str, object]:
+    scope = AuditTraceScope(
+        manager=manager,
+        experiment_id="promo_exp",
+        manifest_hash="sha256:manifest",
+        dataset_content_hash="sha256:dataset",
+        candidate_id="candidate_001",
+        scenario_id="scenario_001_fixed_bps_unit",
+        scenario_index=0,
+        split="validation",
+        parameter_values={"SMA_SHORT": 2, "SMA_LONG": 4},
+    )
+    scope.write_decision({"decision_ts": 1, "raw_signal": "HOLD"})
+    scope.write_equity({"ts": 1, "equity": 1_000_000.0})
+    scope.write_execution({"ts": 1, "status": "skipped"})
+    index = scope.complete(status="completed")
+    manifest = write_trace_manifest(
+        manager=manager,
+        experiment_id="promo_exp",
+        manifest_hash="sha256:manifest",
+        dataset_content_hash="sha256:dataset",
+        trace_indexes=[index],
+        policy=AuditTrailPolicy(
+            mode="complete_external",
+            decisions_required=True,
+            equity_required=True,
+            executions_required=True,
+            hash_chain_required=True,
+            required_for_promotion=True,
+        ),
+    )
+    manifest_path = trace_manifest_path(manager=manager, experiment_id="promo_exp")
+    return {
+        "audit_trail_policy": manifest["audit_trail_policy"],
+        "audit_trail_status": "PASS",
+        "audit_trail_fail_reasons": [],
+        "audit_trail_trace_manifest_hash": manifest["content_hash"],
+        "audit_trail_trace_manifest_ref": manifest_path.resolve().relative_to(manager.data_dir().resolve()).as_posix(),
+        "audit_trail_trace_manifest_path": str(manifest_path.resolve()),
+        "audit_trail_trace_index_count": 1,
+        "audit_trail_verification": {"ok": True, "reasons": []},
+    }
 
 
 def test_promotion_refuses_candidate_without_validation_evidence(tmp_path, monkeypatch) -> None:
@@ -2765,6 +2810,84 @@ def test_reproduce_fails_when_statistical_evidence_hash_mismatches(tmp_path, mon
 
     assert summary["ok"] is False
     assert summary["reason"] == "statistical_evidence_hash_mismatch"
+
+
+def test_reproduce_revalidates_complete_audit_trace_before_tamper(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report_with_lineage(manager, candidate, report_overrides=_complete_audit_report_overrides(manager))
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+    summary = reproduce_promotion(result.artifact_path, manager=manager).summary
+
+    assert summary["ok"] is True
+    assert summary["audit_trail_fail_reasons"] == []
+
+
+def test_reproduce_fails_after_decision_audit_stream_tamper(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report_with_lineage(manager, candidate, report_overrides=_complete_audit_report_overrides(manager))
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    report = json.loads((manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json").read_text(encoding="utf-8"))
+    trace_manifest = json.loads((manager.data_dir() / report["audit_trail_trace_manifest_ref"]).read_text(encoding="utf-8"))
+    persisted_index = json.loads((manager.data_dir() / trace_manifest["trace_indexes"][0]["trace_index_ref"]).read_text(encoding="utf-8"))
+    stream_path = manager.data_dir() / persisted_index["decisions"]["path"]
+    lines = stream_path.read_text(encoding="utf-8").splitlines()
+    row = json.loads(lines[0])
+    row["payload"]["raw_signal"] = "TAMPERED"
+    lines[0] = json.dumps(row, sort_keys=True, separators=(",", ":"))
+    stream_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    summary = reproduce_promotion(result.artifact_path, manager=manager).summary
+
+    assert summary["ok"] is False
+    assert summary["reason"] == "audit_trail_hash_chain_mismatch"
+    assert "audit_trail_hash_chain_mismatch" in summary["audit_trail_fail_reasons"]
+
+
+def test_reproduce_fails_after_equity_audit_stream_deletion(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report_with_lineage(manager, candidate, report_overrides=_complete_audit_report_overrides(manager))
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    report = json.loads((manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json").read_text(encoding="utf-8"))
+    trace_manifest = json.loads((manager.data_dir() / report["audit_trail_trace_manifest_ref"]).read_text(encoding="utf-8"))
+    persisted_index = json.loads((manager.data_dir() / trace_manifest["trace_indexes"][0]["trace_index_ref"]).read_text(encoding="utf-8"))
+    (manager.data_dir() / persisted_index["equity"]["path"]).unlink()
+
+    summary = reproduce_promotion(result.artifact_path, manager=manager).summary
+
+    assert summary["ok"] is False
+    assert summary["reason"] == "audit_trail_equity_stream_missing"
+    assert "audit_trail_equity_stream_missing" in summary["audit_trail_fail_reasons"]
+
+
+def test_reproduce_fails_when_audit_required_report_lacks_trace_manifest(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    candidate = _production_candidate()
+    _write_report_with_lineage(manager, candidate, report_overrides=_complete_audit_report_overrides(manager))
+    result = promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+    report_path = manager.data_dir() / "reports" / "research" / "promo_exp" / "backtest_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    for field in (
+        "audit_trail_trace_manifest_hash",
+        "audit_trail_trace_manifest_ref",
+        "audit_trail_trace_manifest_path",
+        "audit_trail_verification",
+    ):
+        report[field] = None
+    report["audit_trail_status"] = "FAIL"
+    report["audit_trail_fail_reasons"] = ["audit_trail_trace_manifest_missing"]
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+    write_json_atomic(report_path, report)
+    _rewrite_promotion_with_backtest_hash(result.artifact_path, report["content_hash"])
+
+    summary = reproduce_promotion(result.artifact_path, manager=manager).summary
+
+    assert summary["ok"] is False
+    assert summary["reason"] == "audit_trail_trace_manifest_missing"
+    assert "audit_trail_trace_manifest_missing" in summary["audit_trail_fail_reasons"]
 
 
 @pytest.mark.parametrize(

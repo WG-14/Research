@@ -6,6 +6,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from bithumb_bot.paths import PathManager
+
+from .audit_trail import validate_audit_trail_binding
 from .deployment_policy import is_production_bound_target
 from .hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
 from .statistical_selection import recompute_candidate_metric_values_hash_from_report
@@ -288,8 +291,9 @@ def _normalized_sha256(value: object) -> str | None:
     return None
 
 
-def reproduce_promotion(promotion_path: str | Path) -> ReproducibilityResult:
+def reproduce_promotion(promotion_path: str | Path, *, manager: PathManager | None = None) -> ReproducibilityResult:
     path = Path(promotion_path).expanduser()
+    active_manager = manager or PathManager.from_env(Path.cwd())
     summary: dict[str, Any] = {
         "ok": False,
         "reason": "unknown",
@@ -344,6 +348,8 @@ def reproduce_promotion(promotion_path: str | Path) -> ReproducibilityResult:
         "selected_candidate_id": None,
         "selected_candidate_score_hash": None,
         "candidate_final_scores_hash": None,
+        "audit_trail_status": None,
+        "audit_trail_fail_reasons": [],
         "mismatches": [],
         "missing_artifacts": [],
         "legacy_compatibility_used": False,
@@ -456,6 +462,7 @@ def reproduce_promotion(promotion_path: str | Path) -> ReproducibilityResult:
     )
 
     _verify_artifact_hash(summary, lineage, "backtest_report", required=True)
+    _verify_backtest_audit_trail_binding(summary, lineage, active_manager)
     final_selection_required = bool(promotion.get("final_selection_required")) or is_production_bound_target(
         promotion.get("deployment_tier")
     )
@@ -597,6 +604,23 @@ def reproduce_promotion(promotion_path: str | Path) -> ReproducibilityResult:
         summary["ok"] = True
         summary["reason"] = "ok"
     return ReproducibilityResult(summary)
+
+
+def _verify_backtest_audit_trail_binding(
+    summary: dict[str, Any],
+    lineage: dict[str, Any],
+    manager: PathManager,
+) -> None:
+    report = _load_optional_artifact(lineage.get("backtest_report_path"))
+    if not isinstance(report, dict):
+        return
+    summary["audit_trail_status"] = report.get("audit_trail_status")
+    reasons = validate_audit_trail_binding(report=report, manager=manager)
+    summary["audit_trail_fail_reasons"] = sorted(set(str(item) for item in reasons))
+    for reason in summary["audit_trail_fail_reasons"]:
+        summary["mismatches"].append(
+            _mismatch("backtest_report.audit_trail", "valid_binding", reason, reason)
+        )
 
 
 def _verify_artifact_hash(

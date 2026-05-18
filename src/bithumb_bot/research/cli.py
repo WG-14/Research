@@ -109,7 +109,7 @@ def cmd_research_validate(
 
 
 def cmd_research_reproduce(*, promotion_path: str) -> int:
-    result = reproduce_promotion(promotion_path)
+    result = reproduce_promotion(promotion_path, manager=PATH_MANAGER)
     print(json.dumps(result.summary, ensure_ascii=False, sort_keys=True, indent=2))
     return 0 if result.ok else 1
 

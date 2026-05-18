@@ -955,6 +955,22 @@ def test_full_decisions_external_jsonl_maps_to_complete_external_audit_policy() 
     assert manifest.research_run.audit_trail.executions_required is True
 
 
+def test_production_example_declares_complete_external_audit_policy() -> None:
+    path = Path("examples/research/sma_filter_manifest.production.example.json")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    manifest = parse_manifest(payload)
+
+    assert manifest.research_run.report_detail == "summary"
+    assert manifest.research_run.artifact_policy.full_decisions_external_jsonl is True
+    assert manifest.research_run.audit_trail.mode == "complete_external"
+    assert manifest.research_run.audit_trail.decisions_required is True
+    assert manifest.research_run.audit_trail.equity_required is True
+    assert manifest.research_run.audit_trail.executions_required is True
+    assert manifest.research_run.audit_trail.hash_chain_required is True
+    assert manifest.research_run.audit_trail.required_for_promotion is True
+
+
 def test_summary_zero_retention_writes_complete_external_audit_traces(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -1005,6 +1021,24 @@ def test_summary_zero_retention_writes_complete_external_audit_traces(tmp_path, 
     equity_path = manager.data_dir() / validation_index["equity"]["path"]
     assert sum(1 for _ in decisions_path.open("r", encoding="utf-8")) == validation_index["decision_row_count"]
     assert sum(1 for _ in equity_path.open("r", encoding="utf-8")) == validation_index["equity_row_count"]
+
+
+def test_research_report_keeps_subprocess_candidate_isolation_pending_visible(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+
+    report = run_research_backtest(
+        manifest=parse_manifest(_manifest()),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    assert report["data_limitations"]["subprocess_candidate_isolation"] == "subprocess_candidate_isolation_pending"
 
 
 def test_audit_trace_verification_detects_tamper_and_missing_stream(tmp_path, monkeypatch) -> None:
