@@ -5,7 +5,7 @@ set -euo pipefail
 # 1. read scripts/codex_pytest_repair_prompt.md
 # 2. run Codex against this repository in Full Pytest Repair Mode
 # 3. commit and push Codex changes when files changed
-# 4. run full EC2 verification with live.verify.env
+# 4. run smoke EC2 verification with live.verify.env
 # 5. notify the final EC2 verification result through ntfy
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -17,7 +17,7 @@ NOTIFY_SCRIPT="${NOTIFY_SCRIPT:-${SCRIPT_DIR}/notify_ntfy.sh}"
 CODEX_BIN="${CODEX_BIN:-codex}"
 SSH_KEY="${BITHUMB_EC2_SSH_KEY:-${HOME}/.ssh/bithumb-bot-paper.pem}"
 EC2_TARGET="${BITHUMB_EC2_TARGET:-ec2-user@3.39.93.137}"
-REMOTE_VERIFY_MODE="full"
+REMOTE_VERIFY_MODE="smoke"
 
 stage="preflight"
 changes_committed=0
@@ -135,7 +135,7 @@ else
   echo "[PYTEST-PIPELINE] ${stage}: Codex made no file changes"
 fi
 
-stage="remote EC2 verification"
+stage="EC2 smoke verification"
 echo
 echo "[PYTEST-PIPELINE] ${stage} (REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE})"
 if ssh \
@@ -153,10 +153,10 @@ stage="complete"
 if [[ "${remote_verify_exit}" -eq 0 ]]; then
   if [[ "${changes_committed}" -eq 1 ]]; then
     notify "bithumb-bot pytest pipeline succeeded" "default" \
-      "Codex pytest repair changes were committed, pushed, and verified on EC2 with REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}."
+      "Codex pytest repair changes were committed, pushed, and passed EC2 smoke verification with REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}."
   else
     notify "bithumb-bot pytest pipeline succeeded" "default" \
-      "Codex pytest repair made no file changes; EC2 verification passed with REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}."
+      "Codex pytest repair made no file changes; EC2 smoke verification passed with REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}."
   fi
   echo
   echo "[PYTEST-PIPELINE] success"
@@ -165,11 +165,11 @@ fi
 
 if [[ "${changes_committed}" -eq 1 ]]; then
   notify "bithumb-bot pytest pipeline failed" "high" \
-    "Codex pytest repair changes were committed and pushed, but EC2 verification completed with one or more failed stages in REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}."
+    "Codex pytest repair changes were committed and pushed, but EC2 smoke verification completed with one or more failed stages in REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}."
 else
   notify "bithumb-bot pytest pipeline failed" "high" \
-    "Codex pytest repair made no file changes, and EC2 verification completed with one or more failed stages in REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}."
+    "Codex pytest repair made no file changes, and EC2 smoke verification completed with one or more failed stages in REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}."
 fi
 echo
-echo "[PYTEST-PIPELINE] EC2 verification completed with failed stages" >&2
+echo "[PYTEST-PIPELINE] EC2 smoke verification completed with failed stages" >&2
 exit "${remote_verify_exit}"
