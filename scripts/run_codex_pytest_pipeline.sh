@@ -5,8 +5,8 @@ set -euo pipefail
 # 1. read scripts/codex_pytest_repair_prompt.md
 # 2. run Codex against this repository in Full Pytest Repair Mode
 # 3. commit and push Codex changes when files changed
-# 4. run smoke EC2 verification with live.verify.env
-# 5. notify the final EC2 verification result through ntfy
+# 4. run smoke EC2 verification with live.verify.env when changes were pushed
+# 5. notify the final pipeline result through ntfy
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
@@ -20,7 +20,6 @@ EC2_TARGET="${BITHUMB_EC2_TARGET:-ec2-user@3.39.93.137}"
 REMOTE_VERIFY_MODE="smoke"
 
 stage="preflight"
-changes_committed=0
 
 notify() {
   local title="$1"
@@ -87,10 +86,6 @@ if [[ ! -s "${REQUEST_FILE}" ]]; then
   fail "pytest repair prompt file is empty: ${REQUEST_FILE}"
 fi
 
-if [[ ! -x "${REMOTE_VERIFY_SCRIPT}" ]]; then
-  fail "remote verify script is not executable: ${REMOTE_VERIFY_SCRIPT}"
-fi
-
 if [[ ! -x "${NOTIFY_SCRIPT}" ]]; then
   fail "ntfy helper is not executable: ${NOTIFY_SCRIPT}"
 fi
@@ -101,10 +96,6 @@ fi
 
 if ! command -v "${CODEX_BIN}" >/dev/null 2>&1; then
   fail "Codex binary not found: ${CODEX_BIN}"
-fi
-
-if [[ ! -f "${SSH_KEY}" ]]; then
-  fail "SSH key not found: ${SSH_KEY}"
 fi
 
 request_rel="$(realpath --relative-to="${PROJECT_ROOT}" "${REQUEST_FILE}")"
@@ -128,11 +119,23 @@ if [[ -n "${post_codex_non_request}" ]]; then
   run_stage "git add ." git add .
   run_stage "git commit -m pytest-repair" git commit -m "pytest-repair"
   run_stage "git push" git push
-  changes_committed=1
 else
-  stage="skip commit and push"
+  stage="complete without repository changes"
   echo
   echo "[PYTEST-PIPELINE] ${stage}: Codex made no file changes"
+  notify "bithumb-bot pytest pipeline succeeded" "default" \
+    "Codex pytest repair made no file changes; commit, push, and EC2 smoke verification were skipped."
+  echo
+  echo "[PYTEST-PIPELINE] success"
+  exit 0
+fi
+
+if [[ ! -x "${REMOTE_VERIFY_SCRIPT}" ]]; then
+  fail "remote verify script is not executable: ${REMOTE_VERIFY_SCRIPT}"
+fi
+
+if [[ ! -f "${SSH_KEY}" ]]; then
+  fail "SSH key not found: ${SSH_KEY}"
 fi
 
 stage="EC2 smoke verification"
@@ -151,25 +154,15 @@ fi
 
 stage="complete"
 if [[ "${remote_verify_exit}" -eq 0 ]]; then
-  if [[ "${changes_committed}" -eq 1 ]]; then
-    notify "bithumb-bot pytest pipeline succeeded" "default" \
-      "Codex pytest repair changes were committed, pushed, and passed EC2 smoke verification with REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}."
-  else
-    notify "bithumb-bot pytest pipeline succeeded" "default" \
-      "Codex pytest repair made no file changes; EC2 smoke verification passed with REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}."
-  fi
+  notify "bithumb-bot pytest pipeline succeeded" "default" \
+    "Codex pytest repair changes were committed, pushed, and passed EC2 smoke verification with REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}."
   echo
   echo "[PYTEST-PIPELINE] success"
   exit 0
 fi
 
-if [[ "${changes_committed}" -eq 1 ]]; then
-  notify "bithumb-bot pytest pipeline failed" "high" \
-    "Codex pytest repair changes were committed and pushed, but EC2 smoke verification completed with one or more failed stages in REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}."
-else
-  notify "bithumb-bot pytest pipeline failed" "high" \
-    "Codex pytest repair made no file changes, and EC2 smoke verification completed with one or more failed stages in REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}."
-fi
+notify "bithumb-bot pytest pipeline failed" "high" \
+  "Codex pytest repair changes were committed and pushed, but EC2 smoke verification completed with one or more failed stages in REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}."
 echo
 echo "[PYTEST-PIPELINE] EC2 smoke verification completed with failed stages" >&2
 exit "${remote_verify_exit}"
