@@ -16,6 +16,7 @@ from bithumb_bot.execution_reality_contract import build_execution_reality_contr
 from bithumb_bot.profile_cli import (
     _candidate_regime_policy_from_approved_profile,
     _validate_research_export_profile_binding,
+    cmd_candidate_regime_policy_equivalence_evidence,
     cmd_decision_equivalence,
 )
 from bithumb_bot.research.dataset_snapshot import load_dataset_split
@@ -151,6 +152,38 @@ def test_cli_dispatch_reaches_decision_equivalence(monkeypatch) -> None:
         "market": "KRW-BTC",
         "interval": "1m",
         "data_fingerprint": "sha256:data",
+    }
+
+
+def test_cli_dispatch_reaches_candidate_regime_policy_equivalence_evidence(monkeypatch) -> None:
+    calls: dict[str, object] = {}
+
+    def fake_cmd(**kwargs):
+        calls.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(app, "cmd_candidate_regime_policy_equivalence_evidence", fake_cmd)
+
+    assert app.main(
+        [
+            "candidate-regime-policy-equivalence-evidence",
+            "--backtest-report",
+            "backtest_report.json",
+            "--candidate-id",
+            "candidate_001",
+            "--decision-equivalence-report",
+            "decision_equivalence.json",
+            "--out",
+            "candidate_regime_evidence.json",
+            "--bind",
+        ]
+    ) == 0
+    assert calls == {
+        "backtest_report_path": "backtest_report.json",
+        "candidate_id_value": "candidate_001",
+        "decision_equivalence_report_path": "decision_equivalence.json",
+        "out_path": "candidate_regime_evidence.json",
+        "bind": True,
     }
 
 

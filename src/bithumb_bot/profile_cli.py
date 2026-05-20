@@ -26,6 +26,10 @@ from .approved_profile import (
 )
 from .config import PATH_MANAGER, settings
 from .evidence_chain import evidence_report_failure_payload
+from .evidence_chain import (
+    build_candidate_regime_policy_equivalence_evidence,
+    validate_candidate_regime_policy_equivalence_evidence,
+)
 from .decision_equivalence import (
     compare_decision_equivalence,
     compare_decision_export_artifacts,
@@ -36,9 +40,9 @@ from .decision_equivalence import (
 )
 from .research.dataset_snapshot import load_dataset_split
 from .research.experiment_manifest import load_manifest
-from .research.hashing import content_hash_payload, sha256_prefixed
+from .research.hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
 from .research.parameter_space import candidate_id, iter_parameter_candidates
-from .research.promotion_gate import PromotionGateError
+from .research.promotion_gate import PromotionGateError, build_candidate_profile
 from .research.strategy_registry import resolve_research_strategy
 from .research.strategy_spec import materialize_strategy_parameters
 from .strategy.market_regime import classify_sma_market_regime
@@ -89,6 +93,37 @@ def _profile_execution_capability_summary(profile: dict[str, object]) -> dict[st
     }
 
 
+def _candidate_regime_policy_summary(profile: dict[str, object]) -> dict[str, object]:
+    required = bool(profile.get("candidate_regime_policy_required_for_live"))
+    applied = bool(profile.get("candidate_regime_policy_applied_in_research"))
+    evidence_hash = profile.get("candidate_regime_policy_equivalence_evidence_hash")
+    verified = str(evidence_hash or "").startswith("sha256:") and bool(
+        profile.get("candidate_regime_policy_equivalence_evidence_path")
+    )
+    if not required or applied:
+        next_action = "none"
+    elif verified:
+        next_action = "continue_promotion_profile_verification"
+    else:
+        next_action = "generate_and_bind_candidate_regime_policy_equivalence_evidence"
+    return {
+        "candidate_regime_policy_applied_in_research": applied,
+        "candidate_regime_policy_required_for_live": required,
+        "candidate_regime_policy_equivalence_required": bool(
+            profile.get("candidate_regime_policy_equivalence_required")
+        ),
+        "candidate_regime_policy_equivalence_evidence_hash": evidence_hash,
+        "candidate_regime_policy_equivalence_evidence_path": profile.get(
+            "candidate_regime_policy_equivalence_evidence_path"
+        ),
+        "candidate_regime_policy_evidence_verified": verified,
+        "candidate_regime_policy_limitation_reasons": list(
+            profile.get("candidate_regime_policy_limitation_reasons") or []
+        ),
+        "candidate_regime_policy_next_action": next_action,
+    }
+
+
 def cmd_profile_generate(
     *,
     promotion_path: str,
@@ -135,6 +170,7 @@ def cmd_profile_generate(
             "manifest_hash": profile.get("manifest_hash"),
             "dataset_content_hash": profile.get("dataset_content_hash"),
             **_profile_execution_capability_summary(profile),
+            **_candidate_regime_policy_summary(profile),
             "next_action": "operator_review_then_profile-verify_against_target_env",
         }
     )
@@ -244,6 +280,7 @@ def cmd_profile_promote(
             "profile_mode": child.get("profile_mode"),
             "parent_profile_hash": child.get("parent_profile_hash"),
             **_profile_execution_capability_summary(child),
+            **_candidate_regime_policy_summary(child),
         }
     )
     return 0
@@ -298,6 +335,100 @@ def cmd_decision_equivalence(
         return 1
     _print_json({"command": "decision-equivalence", **result.report})
     return 0 if result.ok else 1
+
+
+def cmd_candidate_regime_policy_equivalence_evidence(
+    *,
+    backtest_report_path: str,
+    candidate_id_value: str,
+    decision_equivalence_report_path: str,
+    out_path: str | None,
+    bind: bool,
+) -> int:
+    try:
+        report_path = Path(backtest_report_path).expanduser().resolve()
+        report = _load_json(str(report_path))
+        candidates = report.get("candidates")
+        if not isinstance(candidates, list):
+            raise ValueError("backtest_report_candidates_missing")
+        candidate = next(
+            (
+                item
+                for item in candidates
+                if isinstance(item, dict)
+                and str(item.get("parameter_candidate_id") or item.get("candidate_id") or "") == candidate_id_value
+            ),
+            None,
+        )
+        if not isinstance(candidate, dict):
+            raise ValueError("candidate_id_not_found")
+        decision_path = Path(decision_equivalence_report_path).expanduser().resolve()
+        decision_report = _load_json(str(decision_path))
+        candidate_contract = dict(candidate)
+        for key in (
+            "candidate_regime_policy_equivalence_evidence_hash",
+            "candidate_regime_policy_equivalence_evidence_path",
+            "candidate_regime_policy_equivalence_evidence_status",
+            "candidate_profile_evidence_contract_hash",
+        ):
+            candidate_contract.pop(key, None)
+        candidate_profile_contract_hash = sha256_prefixed(build_candidate_profile(candidate_contract))
+        evidence = build_candidate_regime_policy_equivalence_evidence(
+            candidate={**candidate_contract, "candidate_profile_evidence_contract_hash": candidate_profile_contract_hash},
+            decision_equivalence_report=decision_report,
+            candidate_profile_contract_hash=candidate_profile_contract_hash,
+            decision_equivalence_report_path=decision_path,
+        )
+        resolved_out = (
+            Path(out_path).expanduser().resolve()
+            if out_path
+            else report_path.parent / f"candidate_regime_policy_equivalence_{candidate_id_value}.json"
+        )
+        if PATH_MANAGER._is_within(resolved_out, PATH_MANAGER.project_root.resolve()):
+            raise ValueError("candidate_regime_policy_equivalence_evidence_output_repo_local_not_allowed")
+        write_json_atomic(resolved_out, evidence)
+        validate_candidate_regime_policy_equivalence_evidence(
+            evidence,
+            candidate_or_profile={
+                **candidate_contract,
+                "candidate_profile_evidence_contract_hash": candidate_profile_contract_hash,
+            },
+            expected_hash=str(evidence["content_hash"]),
+            evidence_path=resolved_out,
+        )
+        if bind:
+            candidate["candidate_profile_evidence_contract_hash"] = candidate_profile_contract_hash
+            candidate["candidate_regime_policy_equivalence_evidence_path"] = str(resolved_out)
+            candidate["candidate_regime_policy_equivalence_evidence_hash"] = evidence["content_hash"]
+            candidate["candidate_regime_policy_equivalence_evidence_status"] = "verified"
+            candidate["candidate_regime_policy_equivalence_required"] = bool(
+                candidate.get("candidate_regime_policy_equivalence_required")
+            )
+            candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+            report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+            write_json_atomic(report_path, report)
+    except (OSError, ValueError) as exc:
+        _print_json(
+            {
+                "ok": False,
+                "error": str(exc),
+                "command": "candidate-regime-policy-equivalence-evidence",
+            }
+        )
+        return 1
+    _print_json(
+        {
+            "ok": True,
+            "command": "candidate-regime-policy-equivalence-evidence",
+            "evidence_path": str(resolved_out),
+            "content_hash": evidence["content_hash"],
+            "candidate_id": candidate_id_value,
+            "candidate_profile_evidence_contract_hash": candidate_profile_contract_hash,
+            "bound_to_backtest_report": bind,
+            "next_action": "research-promote-candidate" if bind else "rerun_with_--bind",
+        }
+    )
+    return 0
 
 
 def cmd_research_export_decisions(
@@ -684,6 +815,7 @@ def _candidate_regime_policy_from_approved_profile(profile: dict[str, object]) -
         "legacy_compatibility_used": bool(profile.get("legacy_compatibility_used")),
         "decision_equivalence_report_path": profile.get("decision_equivalence_report_path"),
         "decision_equivalence_content_hash": profile.get("decision_equivalence_content_hash"),
+        **_candidate_regime_policy_summary(profile),
     }
 
 

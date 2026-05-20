@@ -180,6 +180,7 @@ from .research.data_plane import (
     write_missing_candle_ranges_artifact,
 )
 from .profile_cli import (
+    cmd_candidate_regime_policy_equivalence_evidence,
     cmd_decision_equivalence,
     cmd_profile_diff,
     cmd_profile_generate,
@@ -7746,6 +7747,20 @@ def main(argv: list[str] | None = None) -> int:
     decision_equivalence.add_argument("--interval", required=True)
     decision_equivalence.add_argument("--data-fingerprint", required=True)
 
+    candidate_regime_policy_evidence = sub.add_parser(
+        "candidate-regime-policy-equivalence-evidence",
+        help="bind promotion-grade decision-equivalence evidence to candidate regime policy equivalence",
+        description=(
+            "Generate a typed candidate-regime-policy equivalence artifact and optionally bind it "
+            "into the research backtest report candidate before promotion."
+        ),
+    )
+    candidate_regime_policy_evidence.add_argument("--backtest-report", required=True)
+    candidate_regime_policy_evidence.add_argument("--candidate-id", required=True)
+    candidate_regime_policy_evidence.add_argument("--decision-equivalence-report", required=True)
+    candidate_regime_policy_evidence.add_argument("--out")
+    candidate_regime_policy_evidence.add_argument("--bind", action="store_true")
+
     research_export_decisions = sub.add_parser(
         "research-export-decisions",
         help="export repo-generated canonical research decisions for a manifest candidate",
@@ -8296,6 +8311,14 @@ def main(argv: list[str] | None = None) -> int:
             market=str(args.market),
             interval=str(args.interval),
             data_fingerprint=str(args.data_fingerprint),
+        )
+    elif args.cmd == "candidate-regime-policy-equivalence-evidence":
+        return cmd_candidate_regime_policy_equivalence_evidence(
+            backtest_report_path=str(args.backtest_report),
+            candidate_id_value=str(args.candidate_id),
+            decision_equivalence_report_path=str(args.decision_equivalence_report),
+            out_path=str(args.out) if args.out is not None else None,
+            bind=bool(args.bind),
         )
     elif args.cmd == "research-export-decisions":
         return cmd_research_export_decisions(

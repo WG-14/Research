@@ -39,6 +39,8 @@ from bithumb_bot.research.strategy_spec import (
 from bithumb_bot.research import validation_pipeline as pipeline
 from bithumb_bot.research.validation_pipeline import validation_run_binding_hash, validation_run_content_hash
 from bithumb_bot.approved_profile import build_approved_profile, verify_promotion_artifact
+from bithumb_bot.decision_equivalence import compute_decision_equivalence_hash
+from bithumb_bot.evidence_chain import build_candidate_regime_policy_equivalence_evidence
 from bithumb_bot.storage_io import write_json_atomic
 
 
@@ -478,6 +480,96 @@ def _attach_effective_parameter_contract(payload: dict[str, object]) -> None:
     payload.setdefault("candidate_regime_policy_limitation_reasons", [])
 
 
+def _decision_equivalence_report_for_candidate(candidate: dict[str, object], tmp_path: Path) -> Path:
+    report = {
+        "schema_version": 2,
+        "comparison_contract_version": "canonical_decision_v1",
+        "canonical_schema": True,
+        "legacy_schema": False,
+        "promotion_grade_comparison": True,
+        "ok": True,
+        "reason_codes": [],
+        "profile_content_hash": candidate["candidate_profile_hash"],
+        "market": "KRW-BTC",
+        "interval": "1m",
+        "data_fingerprint": candidate["dataset_content_hash"],
+        "dataset_content_hash": candidate["dataset_content_hash"],
+        "research_decision_count": 12,
+        "runtime_decision_count": 12,
+        "matched_decision_count": 12,
+        "mismatched_decision_count": 0,
+        "mismatch_count": 0,
+        "mismatch_reasons": [],
+        "blocked_decision_equivalence": False,
+        "missing_research_decisions": [],
+        "missing_runtime_decisions": [],
+        "mismatches": [],
+        "canonical_incomplete_decision_count": 0,
+        "canonical_missing_field_count": 0,
+        "binding_validation": [],
+        "artifact_binding_validation": [],
+        "research_export_content_hash": "sha256:research-export",
+        "runtime_export_content_hash": "sha256:runtime-export",
+        "repo_owned_export_artifacts": True,
+        "legacy_or_unverified_export": False,
+        "outcome": "PASS_POSITIVE_EQUIVALENCE",
+        "claims_scope": {
+            "positive_equivalence_state_classes": ["flat_no_dust_no_position"],
+            "unsupported_state_classes": [],
+            "promotion_claim": "positive_decision_equivalence_for_explicitly_modeled_state_classes_only",
+            "full_lifecycle_equivalence_supported": False,
+            "signal_equivalence_supported": True,
+            "position_lifecycle_equivalence_supported": False,
+            "fail_closed_unmodeled_state_count": 0,
+            "limitations": ["candle_only_execution_equivalence"],
+        },
+        "state_coverage_matrix": {
+            "flat_no_dust_no_position": {
+                "research_decision_count": 12,
+                "runtime_decision_count": 12,
+                "positive_equivalence_supported": True,
+                "fail_closed_expected": False,
+                "mismatch_count": 0,
+                "representative_reason_codes": [],
+            }
+        },
+        "generated_at": "2026-05-04T00:00:00+00:00",
+    }
+    report["content_hash"] = compute_decision_equivalence_hash(report)
+    path = tmp_path / "decision_equivalence.json"
+    write_json_atomic(path, report)
+    return path
+
+
+def _bind_candidate_regime_policy_evidence(candidate: dict[str, object], tmp_path: Path) -> Path:
+    candidate_contract = dict(candidate)
+    for key in (
+        "candidate_regime_policy_equivalence_evidence_hash",
+        "candidate_regime_policy_equivalence_evidence_path",
+        "candidate_regime_policy_equivalence_evidence_status",
+        "candidate_profile_evidence_contract_hash",
+    ):
+        candidate_contract.pop(key, None)
+    contract_hash = sha256_prefixed(build_candidate_profile(candidate_contract))
+    decision_path = _decision_equivalence_report_for_candidate(candidate_contract, tmp_path)
+    with decision_path.open("r", encoding="utf-8") as handle:
+        decision_report = json.load(handle)
+    evidence = build_candidate_regime_policy_equivalence_evidence(
+        candidate={**candidate_contract, "candidate_profile_evidence_contract_hash": contract_hash},
+        decision_equivalence_report=decision_report,
+        candidate_profile_contract_hash=contract_hash,
+        decision_equivalence_report_path=decision_path,
+    )
+    evidence_path = tmp_path / "candidate_regime_policy_equivalence.json"
+    write_json_atomic(evidence_path, evidence)
+    candidate["candidate_profile_evidence_contract_hash"] = contract_hash
+    candidate["candidate_regime_policy_equivalence_evidence_path"] = str(evidence_path.resolve())
+    candidate["candidate_regime_policy_equivalence_evidence_hash"] = evidence["content_hash"]
+    candidate["candidate_regime_policy_equivalence_evidence_status"] = "verified"
+    candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+    return evidence_path
+
+
 def test_promotion_requires_candidate_regime_policy_equivalence_when_policy_affects_entries() -> None:
     candidate = _production_candidate(
         candidate_regime_policy_required_for_live=True,
@@ -493,6 +585,72 @@ def test_promotion_requires_candidate_regime_policy_equivalence_when_policy_affe
 
     assert not allowed
     assert "candidate_regime_policy_equivalence_evidence_missing" in reasons
+
+
+def test_candidate_regime_policy_equivalence_evidence_required_for_production_bound_promotion() -> None:
+    test_promotion_requires_candidate_regime_policy_equivalence_when_policy_affects_entries()
+
+
+def test_candidate_regime_policy_equivalence_evidence_can_be_bound_to_candidate_profile(tmp_path: Path) -> None:
+    candidate = _production_candidate(
+        candidate_regime_policy_required_for_live=True,
+        candidate_regime_policy_equivalence_required=True,
+        candidate_regime_policy_applied_in_research=False,
+    )
+
+    evidence_path = _bind_candidate_regime_policy_evidence(candidate, tmp_path)
+    allowed, reasons = validate_backtest_candidate_for_promotion(candidate)
+
+    assert evidence_path.exists()
+    assert allowed, reasons
+    assert str(candidate["candidate_regime_policy_equivalence_evidence_hash"]).startswith("sha256:")
+    assert str(candidate["candidate_profile_evidence_contract_hash"]).startswith("sha256:")
+
+
+def test_candidate_regime_policy_equivalence_evidence_hash_mismatch_fails_promotion(
+    tmp_path: Path,
+) -> None:
+    candidate = _production_candidate(
+        candidate_regime_policy_required_for_live=True,
+        candidate_regime_policy_equivalence_required=True,
+        candidate_regime_policy_applied_in_research=False,
+    )
+    _bind_candidate_regime_policy_evidence(candidate, tmp_path)
+    candidate["candidate_regime_policy_equivalence_evidence_hash"] = "sha256:" + "0" * 64
+    candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+
+    allowed, reasons = validate_backtest_candidate_for_promotion(candidate)
+
+    assert not allowed
+    assert "candidate_regime_policy_equivalence_evidence_invalid" in reasons
+
+
+def test_candidate_regime_policy_equivalence_evidence_binds_candidate_profile_hash(
+    tmp_path: Path,
+) -> None:
+    candidate = _production_candidate(
+        candidate_regime_policy_required_for_live=True,
+        candidate_regime_policy_equivalence_required=True,
+        candidate_regime_policy_applied_in_research=False,
+    )
+    evidence_path = _bind_candidate_regime_policy_evidence(candidate, tmp_path)
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+
+    assert evidence["candidate_profile_hash"] == candidate["candidate_profile_evidence_contract_hash"]
+
+
+def test_candidate_regime_policy_equivalence_evidence_binds_effective_strategy_parameters_hash(
+    tmp_path: Path,
+) -> None:
+    candidate = _production_candidate(
+        candidate_regime_policy_required_for_live=True,
+        candidate_regime_policy_equivalence_required=True,
+        candidate_regime_policy_applied_in_research=False,
+    )
+    evidence_path = _bind_candidate_regime_policy_evidence(candidate, tmp_path)
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+
+    assert evidence["effective_strategy_parameters_hash"] == candidate["effective_strategy_parameters_hash"]
 
 
 def _lineage(*, execution_calibration_artifact_hash: str | None = None) -> dict[str, object]:

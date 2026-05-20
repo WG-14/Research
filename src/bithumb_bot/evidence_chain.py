@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import math
+import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .execution_reality_contract import contract_hash_matches
 from .research.hashing import content_hash_payload, sha256_prefixed
+from .decision_equivalence import compute_decision_equivalence_hash
 
 
 EVIDENCE_SCHEMA_VERSION = 1
 EVIDENCE_HASH_FIELD = "content_hash"
 EVIDENCE_HASH_EXCLUDED_FIELDS = frozenset({EVIDENCE_HASH_FIELD, "generated_at"})
+CANDIDATE_REGIME_POLICY_EQUIVALENCE_EVIDENCE_TYPE = "candidate_regime_policy_equivalence"
 
 
 class EvidenceValidationError(ValueError):
@@ -87,6 +90,152 @@ def validate_evidence_content_hash(payload: dict[str, Any], *, label: str) -> st
     if actual != expected:
         raise EvidenceValidationError(f"{label}_content_hash_mismatch")
     return actual
+
+
+def build_candidate_regime_policy_equivalence_evidence(
+    *,
+    candidate: dict[str, Any],
+    decision_equivalence_report: dict[str, Any],
+    candidate_profile_contract_hash: str,
+    decision_equivalence_report_path: str | Path | None = None,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    claims_scope = (
+        decision_equivalence_report.get("claims_scope")
+        if isinstance(decision_equivalence_report.get("claims_scope"), dict)
+        else {}
+    )
+    regime_policy = {
+        "regime_classifier_version": candidate.get("regime_classifier_version"),
+        "allowed_regimes": list(candidate.get("allowed_live_regimes") or []),
+        "blocked_regimes": list(candidate.get("blocked_live_regimes") or []),
+    }
+    payload: dict[str, Any] = {
+        "schema_version": EVIDENCE_SCHEMA_VERSION,
+        "evidence_type": CANDIDATE_REGIME_POLICY_EQUIVALENCE_EVIDENCE_TYPE,
+        "strategy_name": candidate.get("strategy_name"),
+        "candidate_id": candidate.get("parameter_candidate_id") or candidate.get("candidate_id"),
+        "candidate_profile_hash": candidate_profile_contract_hash,
+        "candidate_profile_hash_semantics": "pre_evidence_candidate_profile_contract",
+        "manifest_hash": candidate.get("manifest_hash"),
+        "dataset_content_hash": candidate.get("dataset_content_hash"),
+        "strategy_spec_hash": candidate.get("strategy_spec_hash"),
+        "effective_strategy_parameters_hash": candidate.get("effective_strategy_parameters_hash"),
+        "exit_policy_hash": candidate.get("exit_policy_hash"),
+        "live_regime_policy_hash": sha256_prefixed(regime_policy),
+        "regime_policy_hash": sha256_prefixed(regime_policy),
+        "decision_equivalence_report_path": (
+            str(Path(decision_equivalence_report_path).expanduser().resolve())
+            if decision_equivalence_report_path
+            else None
+        ),
+        "decision_equivalence_content_hash": decision_equivalence_report.get("content_hash"),
+        "research_decision_export_hash": decision_equivalence_report.get("research_export_content_hash"),
+        "runtime_decision_export_hash": decision_equivalence_report.get("runtime_export_content_hash"),
+        "matched_decision_count": int(decision_equivalence_report.get("matched_decision_count") or 0),
+        "mismatched_decision_count": int(
+            decision_equivalence_report.get("mismatched_decision_count")
+            or decision_equivalence_report.get("mismatch_count")
+            or 0
+        ),
+        "mismatch_reasons": list(decision_equivalence_report.get("mismatch_reasons") or []),
+        "candidate_regime_policy_applied": bool(candidate.get("candidate_regime_policy_applied_in_research")),
+        "candidate_regime_policy_equivalence_passed": bool(
+            decision_equivalence_report.get("ok") is True
+            and decision_equivalence_report.get("promotion_grade_comparison") is True
+            and decision_equivalence_report.get("outcome") == "PASS_POSITIVE_EQUIVALENCE"
+            and int(decision_equivalence_report.get("mismatch_count") or 0) == 0
+            and int(decision_equivalence_report.get("mismatched_decision_count") or 0) == 0
+        ),
+        "limitations": list(claims_scope.get("limitations") or []),
+        "generated_at": generated_at or datetime.now(timezone.utc).isoformat(),
+    }
+    payload["content_hash"] = compute_evidence_content_hash(payload)
+    return payload
+
+
+def validate_candidate_regime_policy_equivalence_evidence(
+    payload: dict[str, Any],
+    *,
+    candidate_or_profile: dict[str, Any],
+    expected_hash: str,
+    evidence_path: str | Path | None = None,
+    label: str = "candidate_regime_policy_equivalence_evidence",
+) -> str:
+    prefix = str(label)
+    _require_object(payload, prefix)
+    if int(payload.get("schema_version") or 0) != EVIDENCE_SCHEMA_VERSION:
+        raise EvidenceValidationError(f"{prefix}_schema_invalid:schema_version")
+    _require_equal(
+        payload.get("evidence_type"),
+        CANDIDATE_REGIME_POLICY_EQUIVALENCE_EVIDENCE_TYPE,
+        f"{prefix}_schema_invalid:evidence_type",
+    )
+    actual_hash = validate_evidence_content_hash(payload, label=prefix)
+    if actual_hash != expected_hash:
+        raise EvidenceValidationError(f"{prefix}_hash_mismatch")
+    if evidence_path is not None:
+        recorded = str(payload.get("decision_equivalence_report_path") or "").strip()
+        # The artifact may be generated before custody location is final, but
+        # when it records a report path the decision report itself is validated below.
+        if recorded:
+            Path(recorded).expanduser()
+    for key in (
+        "strategy_name",
+        "manifest_hash",
+        "dataset_content_hash",
+        "strategy_spec_hash",
+        "effective_strategy_parameters_hash",
+        "exit_policy_hash",
+    ):
+        expected = candidate_or_profile.get(key)
+        if expected is not None and str(payload.get(key) or "").strip() != str(expected or "").strip():
+            raise EvidenceValidationError(f"{prefix}_{key}_mismatch")
+    expected_candidate_id = (
+        candidate_or_profile.get("parameter_candidate_id") or candidate_or_profile.get("candidate_id")
+    )
+    if expected_candidate_id is not None and str(payload.get("candidate_id") or "") != str(expected_candidate_id):
+        raise EvidenceValidationError(f"{prefix}_candidate_id_mismatch")
+    expected_profile_hash = str(
+        candidate_or_profile.get("candidate_profile_evidence_contract_hash")
+        or candidate_or_profile.get("candidate_profile_hash_without_regime_policy_evidence")
+        or ""
+    ).strip()
+    if expected_profile_hash and str(payload.get("candidate_profile_hash") or "").strip() != expected_profile_hash:
+        raise EvidenceValidationError(f"{prefix}_candidate_profile_hash_mismatch")
+    if not str(payload.get("live_regime_policy_hash") or payload.get("regime_policy_hash") or "").startswith("sha256:"):
+        raise EvidenceValidationError(f"{prefix}_regime_policy_hash_missing")
+    if not str(payload.get("research_decision_export_hash") or "").startswith("sha256:"):
+        raise EvidenceValidationError(f"{prefix}_research_decision_export_hash_missing")
+    if not str(payload.get("runtime_decision_export_hash") or "").startswith("sha256:"):
+        raise EvidenceValidationError(f"{prefix}_runtime_decision_export_hash_missing")
+    if int(payload.get("mismatched_decision_count") or 0) != 0:
+        raise EvidenceValidationError(f"{prefix}_mismatch_count_nonzero")
+    if payload.get("candidate_regime_policy_equivalence_passed") is not True:
+        raise EvidenceValidationError(f"{prefix}_not_passed")
+    report_hash = str(payload.get("decision_equivalence_content_hash") or "").strip()
+    if not report_hash.startswith("sha256:"):
+        raise EvidenceValidationError(f"{prefix}_decision_equivalence_hash_missing")
+    report_path = str(payload.get("decision_equivalence_report_path") or "").strip()
+    if report_path:
+        with Path(report_path).expanduser().open("r", encoding="utf-8") as handle:
+            report = json.load(handle)
+        if not isinstance(report, dict):
+            raise EvidenceValidationError(f"{prefix}_decision_equivalence_report_invalid")
+        if str(report.get("content_hash") or "") != report_hash:
+            raise EvidenceValidationError(f"{prefix}_decision_equivalence_hash_mismatch")
+        if compute_decision_equivalence_hash(report) != report_hash:
+            raise EvidenceValidationError(f"{prefix}_decision_equivalence_hash_mismatch")
+        if report.get("ok") is not True or report.get("promotion_grade_comparison") is not True:
+            raise EvidenceValidationError(f"{prefix}_decision_equivalence_not_promotion_grade")
+        if report.get("outcome") != "PASS_POSITIVE_EQUIVALENCE":
+            raise EvidenceValidationError(f"{prefix}_decision_equivalence_outcome_not_positive")
+        report_profile_hash = str(
+            report.get("approved_profile_hash") or report.get("profile_content_hash") or ""
+        ).strip()
+        if report_profile_hash and report_profile_hash != str(payload.get("candidate_profile_hash") or "").strip():
+            raise EvidenceValidationError(f"{prefix}_decision_equivalence_profile_hash_mismatch")
+    return actual_hash
 
 
 def validate_profile_transition_evidence(

@@ -122,6 +122,15 @@ def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
         "candidate_regime_policy_equivalence_evidence_hash": candidate.get(
             "candidate_regime_policy_equivalence_evidence_hash"
         ),
+        "candidate_regime_policy_equivalence_evidence_path": candidate.get(
+            "candidate_regime_policy_equivalence_evidence_path"
+        ),
+        "candidate_regime_policy_equivalence_evidence_status": candidate.get(
+            "candidate_regime_policy_equivalence_evidence_status"
+        ),
+        "candidate_profile_evidence_contract_hash": candidate.get(
+            "candidate_profile_evidence_contract_hash"
+        ),
         "candidate_regime_policy_limitation_reasons": list(
             candidate.get("candidate_regime_policy_limitation_reasons") or []
         ),
@@ -507,6 +516,38 @@ def _extend_candidate_regime_policy_reasons(
         reasons.extend([
             f"{prefix}candidate_regime_policy_equivalence_evidence_missing",
             "candidate_regime_policy_equivalence_evidence_missing",
+        ])
+        return
+    if not bool(candidate.get("candidate_regime_policy_equivalence_required")):
+        return
+    evidence_path = str(candidate.get("candidate_regime_policy_equivalence_evidence_path") or "").strip()
+    if not evidence_path:
+        reasons.extend([
+            f"{prefix}candidate_regime_policy_equivalence_evidence_path_missing",
+            "candidate_regime_policy_equivalence_evidence_path_missing",
+        ])
+        return
+    try:
+        from bithumb_bot.evidence_chain import (
+            EvidenceValidationError,
+            validate_candidate_regime_policy_equivalence_evidence,
+        )
+
+        with Path(evidence_path).expanduser().open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if not isinstance(payload, dict):
+            raise EvidenceValidationError("payload_not_object")
+        validate_candidate_regime_policy_equivalence_evidence(
+            payload,
+            candidate_or_profile=candidate,
+            expected_hash=evidence_hash,
+            evidence_path=evidence_path,
+        )
+    except (OSError, ValueError, EvidenceValidationError) as exc:
+        reasons.extend([
+            f"{prefix}candidate_regime_policy_equivalence_evidence_invalid",
+            "candidate_regime_policy_equivalence_evidence_invalid",
+            f"candidate_regime_policy_equivalence_evidence_error:{exc}",
         ])
 
 
@@ -1285,6 +1326,30 @@ def promote_candidate(
         "promotion_grade_limitations": candidate.get("promotion_grade_limitations") or [],
         "effective_trial_count": candidate.get("effective_trial_count"),
         "metrics_v2_summary": _promotion_metrics_v2_summary(candidate),
+        "candidate_regime_policy_applied_in_research": bool(
+            candidate.get("candidate_regime_policy_applied_in_research")
+        ),
+        "candidate_regime_policy_required_for_live": bool(
+            candidate.get("candidate_regime_policy_required_for_live")
+        ),
+        "candidate_regime_policy_equivalence_required": bool(
+            candidate.get("candidate_regime_policy_equivalence_required")
+        ),
+        "candidate_regime_policy_equivalence_evidence_hash": candidate.get(
+            "candidate_regime_policy_equivalence_evidence_hash"
+        ),
+        "candidate_regime_policy_equivalence_evidence_path": candidate.get(
+            "candidate_regime_policy_equivalence_evidence_path"
+        ),
+        "candidate_regime_policy_equivalence_evidence_status": candidate.get(
+            "candidate_regime_policy_equivalence_evidence_status"
+        ),
+        "candidate_profile_evidence_contract_hash": candidate.get(
+            "candidate_profile_evidence_contract_hash"
+        ),
+        "candidate_regime_policy_limitation_reasons": list(
+            candidate.get("candidate_regime_policy_limitation_reasons") or []
+        ),
         "scenario_policy": candidate.get("scenario_policy"),
         "execution_timing_policy": candidate.get("execution_timing_policy"),
         "execution_reality_contract": candidate.get("execution_reality_contract"),

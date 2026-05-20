@@ -1141,6 +1141,46 @@ class SmaWithFilterStrategy:
                 if isinstance(self.candidate_regime_policy, dict)
                 else None
             ),
+            "candidate_regime_policy_applied_in_research": (
+                self.candidate_regime_policy.get("candidate_regime_policy_applied_in_research")
+                if isinstance(self.candidate_regime_policy, dict)
+                else None
+            ),
+            "candidate_regime_policy_required_for_live": (
+                self.candidate_regime_policy.get("candidate_regime_policy_required_for_live")
+                if isinstance(self.candidate_regime_policy, dict)
+                else None
+            ),
+            "candidate_regime_policy_equivalence_required": (
+                self.candidate_regime_policy.get("candidate_regime_policy_equivalence_required")
+                if isinstance(self.candidate_regime_policy, dict)
+                else None
+            ),
+            "candidate_regime_policy_equivalence_evidence_hash": (
+                self.candidate_regime_policy.get("candidate_regime_policy_equivalence_evidence_hash")
+                if isinstance(self.candidate_regime_policy, dict)
+                else None
+            ),
+            "candidate_regime_policy_equivalence_evidence_path": (
+                self.candidate_regime_policy.get("candidate_regime_policy_equivalence_evidence_path")
+                if isinstance(self.candidate_regime_policy, dict)
+                else None
+            ),
+            "candidate_regime_policy_equivalence_evidence_status": (
+                self.candidate_regime_policy.get("candidate_regime_policy_equivalence_evidence_status")
+                if isinstance(self.candidate_regime_policy, dict)
+                else None
+            ),
+            "candidate_regime_policy_limitation_reasons": (
+                self.candidate_regime_policy.get("candidate_regime_policy_limitation_reasons")
+                if isinstance(self.candidate_regime_policy, dict)
+                else None
+            ),
+            "candidate_regime_policy_next_action": (
+                self.candidate_regime_policy.get("candidate_regime_policy_next_action")
+                if isinstance(self.candidate_regime_policy, dict)
+                else None
+            ),
             "base_signal": base_signal,
             "base_reason": base_reason,
             "entry_signal": entry_signal,

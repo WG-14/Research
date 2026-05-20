@@ -27,6 +27,7 @@ from bithumb_bot.approved_profile import (
 )
 from bithumb_bot.evidence_chain import (
     EvidenceValidationError,
+    build_candidate_regime_policy_equivalence_evidence,
     compute_evidence_content_hash,
     validate_profile_transition_evidence,
 )
@@ -708,6 +709,74 @@ def _attach_decision_equivalence_report(
     return report_path
 
 
+def _attach_candidate_regime_policy_evidence(
+    tmp_path: Path,
+    promotion: dict[str, object],
+) -> Path:
+    candidate_profile = dict(promotion["candidate_profile"])  # type: ignore[index]
+    contract_hash = str(promotion["candidate_profile_hash"])
+    decision_payload = {
+        "market": promotion.get("market"),
+        "interval": promotion.get("interval"),
+    }
+    decision_path = _attach_decision_equivalence_report(tmp_path, decision_payload, {
+        **candidate_profile,
+        "profile_content_hash": contract_hash,
+        "dataset_content_hash": promotion.get("dataset_content_hash"),
+    })
+    with decision_path.open("r", encoding="utf-8") as handle:
+        decision_report = json.load(handle)
+    candidate_like = {
+        **candidate_profile,
+        "parameter_candidate_id": promotion.get("candidate_id"),
+        "candidate_profile_evidence_contract_hash": contract_hash,
+    }
+    evidence = build_candidate_regime_policy_equivalence_evidence(
+        candidate=candidate_like,
+        decision_equivalence_report=decision_report,
+        candidate_profile_contract_hash=contract_hash,
+        decision_equivalence_report_path=decision_path,
+    )
+    evidence_path = tmp_path / "candidate_regime_policy_equivalence.json"
+    write_json_atomic(evidence_path, evidence)
+    candidate_profile.update(
+        {
+            "candidate_regime_policy_required_for_live": True,
+            "candidate_regime_policy_equivalence_required": True,
+            "candidate_regime_policy_applied_in_research": False,
+            "candidate_profile_evidence_contract_hash": contract_hash,
+            "candidate_regime_policy_equivalence_evidence_path": str(evidence_path.resolve()),
+            "candidate_regime_policy_equivalence_evidence_hash": evidence["content_hash"],
+            "candidate_regime_policy_equivalence_evidence_status": "verified",
+        }
+    )
+    rebuilt_candidate = {
+        **candidate_profile,
+        "parameter_candidate_id": promotion.get("candidate_id"),
+        "experiment_id": promotion.get("strategy_profile_source_experiment"),
+    }
+    candidate_profile = build_candidate_profile(rebuilt_candidate)
+    profile_hash = sha256_prefixed(candidate_profile)
+    promotion.update(
+        {
+            "candidate_profile": candidate_profile,
+            "candidate_profile_hash": profile_hash,
+            "verified_candidate_profile_hash": profile_hash,
+            "strategy_profile_hash": profile_hash,
+            "candidate_regime_policy_required_for_live": True,
+            "candidate_regime_policy_equivalence_required": True,
+            "candidate_regime_policy_applied_in_research": False,
+            "candidate_profile_evidence_contract_hash": contract_hash,
+            "candidate_regime_policy_equivalence_evidence_path": str(evidence_path.resolve()),
+            "candidate_regime_policy_equivalence_evidence_hash": evidence["content_hash"],
+            "candidate_regime_policy_equivalence_evidence_status": "verified",
+        }
+    )
+    promotion.pop("content_hash", None)
+    promotion["content_hash"] = sha256_prefixed(content_hash_payload(promotion))
+    return evidence_path
+
+
 def test_profile_generation_rejects_tampered_candidate_profile_hash(tmp_path: Path) -> None:
     promotion = _promotion(candidate_profile_hash="sha256:tampered")
     promotion["content_hash"] = sha256_prefixed(content_hash_payload(promotion))
@@ -1207,6 +1276,27 @@ def test_profile_runtime_diff_rejects_missing_behavior_affecting_profile_key(tmp
     assert any(item.get("reason") == "runtime_behavior_parameter_unbound_by_profile" for item in mismatches)
 
 
+def test_runtime_profile_diff_rejects_missing_behavior_affecting_runtime_key(tmp_path: Path) -> None:
+    promotion_path = tmp_path / "promotion.json"
+    write_json_atomic(promotion_path, _promotion())
+    profile = _profile(str(promotion_path))
+    runtime = {
+        "mode": "paper",
+        "strategy_name": profile["strategy_name"],
+        "market": profile["market"],
+        "interval": profile["interval"],
+        "strategy_parameters": dict(profile["strategy_parameters"]),
+        "cost_model": {"fee_rate": 0.0025, "slippage_bps": 50.0},
+        "execution_reality_contract": profile["execution_reality_contract"],
+        "execution_capability_contract": profile["execution_capability_contract"],
+    }
+    runtime["strategy_parameters"].pop("SMA_MARKET_REGIME_ENABLED")  # type: ignore[index]
+
+    mismatches = diff_profile_to_runtime(profile, runtime)
+
+    assert any(item.get("reason") == "runtime_behavior_parameter_missing" for item in mismatches)
+
+
 def test_profile_runtime_diff_detects_sma_market_regime_enabled_default_drift(tmp_path: Path) -> None:
     profile_path = _write_profile_with_source(tmp_path)
     profile = load_approved_profile(profile_path)
@@ -1272,6 +1362,34 @@ def test_live_ready_profile_requires_candidate_regime_policy_evidence(tmp_path: 
     )
 
     with pytest.raises(ApprovedProfileError, match="candidate_regime_policy_equivalence_evidence_missing"):
+        validate_approved_profile(profile)
+
+
+def test_live_compatible_profile_requires_candidate_regime_policy_equivalence_evidence(
+    tmp_path: Path,
+) -> None:
+    test_live_ready_profile_requires_candidate_regime_policy_evidence(tmp_path)
+
+
+def test_candidate_regime_policy_equivalence_evidence_hash_mismatch_fails_approved_profile(
+    tmp_path: Path,
+) -> None:
+    promotion = _promotion()
+    _attach_candidate_regime_policy_evidence(tmp_path, promotion)
+    promotion_path = tmp_path / "promotion.json"
+    write_json_atomic(promotion_path, promotion)
+    profile = build_approved_profile(
+        promotion=promotion,
+        mode="live_dry_run",
+        source_promotion_path=str(promotion_path),
+        market="KRW-BTC",
+        interval="1m",
+        generated_at="2026-05-04T00:00:00+00:00",
+    )
+    profile["candidate_regime_policy_equivalence_evidence_hash"] = "sha256:" + "0" * 64
+    profile["profile_content_hash"] = compute_approved_profile_hash(profile)
+
+    with pytest.raises(ApprovedProfileError, match="candidate_regime_policy_equivalence_evidence_invalid"):
         validate_approved_profile(profile)
 
 

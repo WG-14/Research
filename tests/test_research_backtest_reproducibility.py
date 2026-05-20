@@ -268,6 +268,13 @@ def test_trade_ledger_hash_changes_when_portfolio_effective_ts_changes() -> None
     assert _hash_for_trade(base) != _hash_for_trade(changed)
 
 
+def test_trade_ledger_hash_changes_when_model_params_hash_changes() -> None:
+    base = {"execution": {"avg_fill_price": 101.0, "fill_status": "filled", "model_params_hash": "sha256:model-a"}}
+    changed = {"execution": {"avg_fill_price": 101.0, "fill_status": "filled", "model_params_hash": "sha256:model-b"}}
+
+    assert _hash_for_trade(base) != _hash_for_trade(changed)
+
+
 def _hash_for_trade(trade: dict[str, object]) -> str:
     return _behavior_hashes(
         decision_material=[],

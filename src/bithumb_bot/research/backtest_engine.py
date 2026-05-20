@@ -1140,6 +1140,7 @@ def _sma(values: list[float], n: int, end: int) -> float:
 
 
 def _create_exit_rules(**kwargs: Any):
+    # Keep this local to avoid config -> approved_profile -> research -> strategy -> config imports.
     from bithumb_bot.strategy.exit_rules import create_exit_rules
 
     return create_exit_rules(**kwargs)

@@ -18,7 +18,11 @@ from .execution_reality_contract import (
     unsupported_capability_reasons,
     validate_execution_capability_contract,
 )
-from .evidence_chain import validate_profile_transition_evidence
+from .evidence_chain import (
+    EvidenceValidationError,
+    validate_candidate_regime_policy_equivalence_evidence,
+    validate_profile_transition_evidence,
+)
 from .decision_equivalence import compute_decision_equivalence_hash
 from .research.hashing import content_hash_payload, sha256_prefixed
 from .research.lineage import validate_lineage_artifact, LineageValidationError
@@ -157,6 +161,28 @@ class ProfileVerificationResult:
             "paper_validation_evidence_content_hash": profile.get("paper_validation_evidence_content_hash"),
             "decision_equivalence_report_path": profile.get("decision_equivalence_report_path"),
             "decision_equivalence_content_hash": profile.get("decision_equivalence_content_hash"),
+            "candidate_regime_policy_applied_in_research": profile.get(
+                "candidate_regime_policy_applied_in_research"
+            ),
+            "candidate_regime_policy_required_for_live": profile.get(
+                "candidate_regime_policy_required_for_live"
+            ),
+            "candidate_regime_policy_equivalence_required": profile.get(
+                "candidate_regime_policy_equivalence_required"
+            ),
+            "candidate_regime_policy_equivalence_evidence_hash": profile.get(
+                "candidate_regime_policy_equivalence_evidence_hash"
+            ),
+            "candidate_regime_policy_equivalence_evidence_path": profile.get(
+                "candidate_regime_policy_equivalence_evidence_path"
+            ),
+            "candidate_regime_policy_equivalence_evidence_status": profile.get(
+                "candidate_regime_policy_equivalence_evidence_status"
+            ),
+            "candidate_regime_policy_limitation_reasons": list(
+                profile.get("candidate_regime_policy_limitation_reasons") or []
+            ),
+            "candidate_regime_policy_next_action": _candidate_regime_policy_next_action(profile),
             "live_readiness_evidence_path": profile.get("live_readiness_evidence_path"),
             "live_readiness_evidence_content_hash": profile.get("live_readiness_evidence_content_hash"),
             "approved_profile_mismatch_count": len(self.mismatches),
@@ -595,6 +621,15 @@ def build_approved_profile(
         "candidate_regime_policy_equivalence_evidence_hash": promotion_source.get(
             "candidate_regime_policy_equivalence_evidence_hash"
         ),
+        "candidate_regime_policy_equivalence_evidence_path": promotion_source.get(
+            "candidate_regime_policy_equivalence_evidence_path"
+        ),
+        "candidate_regime_policy_equivalence_evidence_status": promotion_source.get(
+            "candidate_regime_policy_equivalence_evidence_status"
+        ),
+        "candidate_profile_evidence_contract_hash": promotion_source.get(
+            "candidate_profile_evidence_contract_hash"
+        ),
         "candidate_regime_policy_limitation_reasons": list(
             promotion_source.get("candidate_regime_policy_limitation_reasons") or []
         ),
@@ -731,10 +766,8 @@ def validate_approved_profile(profile: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(regime_policy.get("blocked_regimes"), list):
         raise ApprovedProfileError("regime_policy_missing_blocked_regimes")
     if mode in LIVE_COMPATIBLE_PROFILE_MODES and bool(profile.get("candidate_regime_policy_required_for_live")):
-        if not bool(profile.get("candidate_regime_policy_applied_in_research")) and not str(
-            profile.get("candidate_regime_policy_equivalence_evidence_hash") or ""
-        ).startswith("sha256:"):
-            raise ApprovedProfileError("candidate_regime_policy_equivalence_evidence_missing")
+        if not bool(profile.get("candidate_regime_policy_applied_in_research")):
+            _validate_profile_candidate_regime_policy_evidence(profile)
     expected = profile.get(PROFILE_HASH_FIELD)
     if not isinstance(expected, str) or not expected.startswith("sha256:"):
         raise ApprovedProfileError("profile_content_hash_missing")
@@ -742,6 +775,38 @@ def validate_approved_profile(profile: dict[str, Any]) -> dict[str, Any]:
     if actual != expected:
         raise ApprovedProfileError("profile_content_hash_mismatch")
     return profile
+
+
+def _candidate_regime_policy_next_action(profile: dict[str, Any]) -> str:
+    if not bool(profile.get("candidate_regime_policy_required_for_live")):
+        return "none"
+    if bool(profile.get("candidate_regime_policy_applied_in_research")):
+        return "none"
+    if str(profile.get("candidate_regime_policy_equivalence_evidence_hash") or "").startswith("sha256:"):
+        return "verify_candidate_regime_policy_equivalence_evidence"
+    return "generate_and_bind_candidate_regime_policy_equivalence_evidence"
+
+
+def _validate_profile_candidate_regime_policy_evidence(profile: dict[str, Any]) -> None:
+    expected_hash = str(profile.get("candidate_regime_policy_equivalence_evidence_hash") or "").strip()
+    if not expected_hash.startswith("sha256:"):
+        raise ApprovedProfileError("candidate_regime_policy_equivalence_evidence_missing")
+    path = str(profile.get("candidate_regime_policy_equivalence_evidence_path") or "").strip()
+    if not path:
+        raise ApprovedProfileError("candidate_regime_policy_equivalence_evidence_path_missing")
+    try:
+        resolved = resolve_runtime_artifact_path(path, label="candidate_regime_policy_equivalence_evidence")
+        payload = _load_json(resolved)
+        validate_candidate_regime_policy_equivalence_evidence(
+            payload,
+            candidate_or_profile=profile,
+            expected_hash=expected_hash,
+            evidence_path=resolved,
+        )
+    except ApprovedProfileError:
+        raise
+    except (OSError, ValueError, EvidenceValidationError) as exc:
+        raise ApprovedProfileError(f"candidate_regime_policy_equivalence_evidence_invalid:{exc}") from exc
 
 
 def load_approved_profile(path: str | Path) -> dict[str, Any]:
@@ -805,6 +870,16 @@ def verify_profile_source_artifact(profile: dict[str, Any]) -> dict[str, Any]:
         for key in ("validation_run_binding_status", "validation_run_path", "validation_run_hash", "validation_run_binding_hash"):
             if not _values_equal(validated.get(key), promotion.get(key)):
                 raise ApprovedProfileError(f"source_promotion_{key}_mismatch")
+    for key in (
+        "candidate_regime_policy_equivalence_evidence_hash",
+        "candidate_regime_policy_equivalence_evidence_path",
+        "candidate_profile_evidence_contract_hash",
+    ):
+        promotion_value = promotion.get(key)
+        if promotion_value is None and isinstance(promotion_profile, dict):
+            promotion_value = promotion_profile.get(key)
+        if promotion_value is not None and not _values_equal(validated.get(key), promotion_value):
+            raise ApprovedProfileError(f"source_promotion_{key}_mismatch")
     return promotion
 
 
@@ -992,6 +1067,28 @@ def load_profile_or_promotion_regime_policy(
                 "dataset_content_hash": profile.get("dataset_content_hash"),
                 "paper_validation_evidence_path": profile.get("paper_validation_evidence_path"),
                 "paper_validation_evidence_content_hash": profile.get("paper_validation_evidence_content_hash"),
+                "candidate_regime_policy_applied_in_research": profile.get(
+                    "candidate_regime_policy_applied_in_research"
+                ),
+                "candidate_regime_policy_required_for_live": profile.get(
+                    "candidate_regime_policy_required_for_live"
+                ),
+                "candidate_regime_policy_equivalence_required": profile.get(
+                    "candidate_regime_policy_equivalence_required"
+                ),
+                "candidate_regime_policy_equivalence_evidence_hash": profile.get(
+                    "candidate_regime_policy_equivalence_evidence_hash"
+                ),
+                "candidate_regime_policy_equivalence_evidence_path": profile.get(
+                    "candidate_regime_policy_equivalence_evidence_path"
+                ),
+                "candidate_regime_policy_equivalence_evidence_status": profile.get(
+                    "candidate_regime_policy_equivalence_evidence_status"
+                ),
+                "candidate_regime_policy_limitation_reasons": list(
+                    profile.get("candidate_regime_policy_limitation_reasons") or []
+                ),
+                "candidate_regime_policy_next_action": _candidate_regime_policy_next_action(profile),
                 "live_readiness_evidence_path": profile.get("live_readiness_evidence_path"),
                 "live_readiness_evidence_content_hash": profile.get("live_readiness_evidence_content_hash"),
             }
