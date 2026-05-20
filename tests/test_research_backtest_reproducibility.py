@@ -22,7 +22,13 @@ from bithumb_bot.research.backtest_engine import (
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot, TopOfBookQuote
 from bithumb_bot.research.execution_calibration import build_calibration_artifact
 from bithumb_bot.research.execution_model import ExecutionFill, ExecutionRequest, FixedBpsExecutionModel, StressExecutionModel
-from bithumb_bot.research.experiment_manifest import ExecutionTimingPolicy, ManifestValidationError, parse_manifest
+from bithumb_bot.research.experiment_manifest import (
+    DateRange,
+    ExecutionTimingPolicy,
+    ManifestValidationError,
+    legacy_research_portfolio_policy,
+    parse_manifest,
+)
 from bithumb_bot.research.audit_trail import AuditTraceScope, AuditTrailPolicy, verify_audit_trail, write_trace_manifest
 from bithumb_bot.research.return_panel import build_candidate_return_panel
 from bithumb_bot.research import cli as research_cli
@@ -131,6 +137,96 @@ def _portfolio_policy(*, starting_cash: float = 1_000_000.0, buy_fraction: float
         },
         "source": "manifest",
     }
+
+
+def _max_holding_dataset() -> DatasetSnapshot:
+    prices = [10, 9, 8, 9, 10, 11, 12, 12, 12, 12, 12, 12]
+    candles = tuple(
+        Candle(index * 60_000, price, price, price, price, 1.0)
+        for index, price in enumerate(prices)
+    )
+    return DatasetSnapshot(
+        snapshot_id="max_holding_fixture",
+        source="unit",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="validation",
+        date_range=DateRange("2026-01-01", "2026-01-02"),
+        candles=candles,
+    )
+
+
+def test_backtest_max_holding_changes_decision_hash() -> None:
+    dataset = _max_holding_dataset()
+    base = {
+        "SMA_SHORT": 2,
+        "SMA_LONG": 3,
+        "SMA_FILTER_GAP_MIN_RATIO": 0.0,
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": 0.0,
+        "STRATEGY_EXIT_RULES": "opposite_cross,max_holding_time",
+        "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": 0.0,
+        "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": 0.0,
+    }
+
+    disabled = run_sma_backtest(
+        dataset=dataset,
+        parameter_values={**base, "STRATEGY_EXIT_MAX_HOLDING_MIN": 0},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        portfolio_policy=legacy_research_portfolio_policy(),
+    )
+    enabled = run_sma_backtest(
+        dataset=dataset,
+        parameter_values={**base, "STRATEGY_EXIT_MAX_HOLDING_MIN": 2},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        portfolio_policy=legacy_research_portfolio_policy(),
+    )
+
+    assert disabled.resource_usage["behavior_hash"] != enabled.resource_usage["behavior_hash"]
+    assert any(trade.exit_rule == "max_holding_time" for trade in enabled.closed_trades)
+
+
+def test_closed_trade_diagnostics_include_mae_mfe_and_exit_rule() -> None:
+    result = run_sma_backtest(
+        dataset=_max_holding_dataset(),
+        parameter_values={
+            "SMA_SHORT": 2,
+            "SMA_LONG": 3,
+            "SMA_FILTER_GAP_MIN_RATIO": 0.0,
+            "SMA_FILTER_VOL_MIN_RANGE_RATIO": 0.0,
+            "STRATEGY_EXIT_RULES": "opposite_cross,max_holding_time",
+            "STRATEGY_EXIT_MAX_HOLDING_MIN": 2,
+        },
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        portfolio_policy=legacy_research_portfolio_policy(),
+    )
+
+    closed = result.closed_trades[0].as_dict()
+    for key in (
+        "entry_ts",
+        "exit_ts",
+        "holding_minutes",
+        "entry_price",
+        "exit_price",
+        "entry_regime",
+        "exit_regime",
+        "exit_rule",
+        "exit_reason",
+        "mae",
+        "mfe",
+        "mae_pct",
+        "mfe_pct",
+        "bars_to_mae",
+        "bars_to_mfe",
+        "unrealized_pnl_path_summary",
+        "entry_decision_hash",
+        "exit_decision_hash",
+    ):
+        assert key in closed
+    assert closed["exit_rule"] == "max_holding_time"
+    assert closed["exit_reason"] == "exit by max holding time"
 
 
 def _production_bound_statistical_manifest() -> dict[str, object]:

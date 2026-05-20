@@ -20,6 +20,7 @@ from .lineage import build_promotion_lineage, validate_lineage_artifact, Lineage
 from .experiment_registry import append_promotion_registry_event, validate_experiment_registry_binding
 from .final_selection import validate_final_selection_report
 from .deployment_policy import is_production_bound_target, validate_production_calibration_policy
+from .strategy_spec import exit_policy_from_parameters, exit_policy_hash
 from .metrics_contract import METRICS_SCHEMA_VERSION
 from .metrics_gate_policy import metrics_gate_policy_hash
 from .statistical_selection import validate_statistical_evidence_for_candidate
@@ -47,8 +48,19 @@ class ValidatedCandidate:
 
 def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
     warning_reasons = _execution_calibration_warning_reasons(candidate)
+    strategy_name = str(candidate.get("strategy_name") or "sma_with_filter")
+    parameters = candidate.get("parameter_values") if isinstance(candidate.get("parameter_values"), dict) else {}
+    exit_policy = candidate.get("exit_policy")
+    if not isinstance(exit_policy, dict):
+        exit_policy = exit_policy_from_parameters(strategy_name, parameters)
     profile = {
         "strategy_name": candidate.get("strategy_name"),
+        "strategy_spec": candidate.get("strategy_spec"),
+        "strategy_spec_hash": candidate.get("strategy_spec_hash"),
+        "exit_policy": exit_policy,
+        "exit_policy_hash": candidate.get("exit_policy_hash") or exit_policy_hash(exit_policy),
+        "behavior_hash": candidate.get("behavior_hash"),
+        "validation_behavior_hash": candidate.get("validation_behavior_hash"),
         "candidate_id": candidate.get("parameter_candidate_id"),
         "parameter_values": candidate.get("parameter_values"),
         "cost_model": candidate.get("cost_model"),

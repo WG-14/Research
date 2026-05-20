@@ -24,6 +24,7 @@ from .research.hashing import content_hash_payload, sha256_prefixed
 from .research.lineage import validate_lineage_artifact, LineageValidationError
 from .research.promotion_gate import build_candidate_profile
 from .research.deployment_policy import deployment_tier_for_profile_mode, validate_production_calibration_policy
+from .research.strategy_spec import exit_policy_from_parameters
 from .storage_io import write_json_atomic
 
 
@@ -530,6 +531,12 @@ def build_approved_profile(
         "validation_run_binding_hash": verified_promotion.get("validation_run_binding_hash"),
         "repository_version": repository_version or verified_promotion.get("repository_version") or "unknown",
         "strategy_name": verified_promotion.get("strategy_name"),
+        "strategy_spec": promotion_source.get("strategy_spec"),
+        "strategy_spec_hash": promotion_source.get("strategy_spec_hash"),
+        "exit_policy": promotion_source.get("exit_policy"),
+        "exit_policy_hash": promotion_source.get("exit_policy_hash"),
+        "behavior_hash": promotion_source.get("behavior_hash"),
+        "validation_behavior_hash": promotion_source.get("validation_behavior_hash"),
         "market": str(market),
         "interval": str(interval),
         "strategy_parameters": _strategy_parameters_from_promotion(verified_promotion),
@@ -589,6 +596,12 @@ def validate_approved_profile(profile: dict[str, Any]) -> dict[str, Any]:
             raise ApprovedProfileError(f"{key}_missing")
     if not isinstance(profile.get("strategy_parameters"), dict):
         raise ApprovedProfileError("strategy_parameters_missing")
+    if not isinstance(profile.get("exit_policy"), dict):
+        raise ApprovedProfileError("exit_policy_missing")
+    if not str(profile.get("exit_policy_hash") or "").startswith("sha256:"):
+        raise ApprovedProfileError("exit_policy_hash_missing")
+    if sha256_prefixed(profile.get("exit_policy")) != profile.get("exit_policy_hash"):
+        raise ApprovedProfileError("exit_policy_hash_mismatch")
     if not isinstance(profile.get("cost_model"), dict):
         raise ApprovedProfileError("cost_model_missing")
     if profile.get("base_cost_assumption") is not None and not isinstance(profile.get("base_cost_assumption"), dict):
@@ -994,6 +1007,8 @@ def runtime_contract_from_env_values(env: dict[str, str]) -> dict[str, Any]:
             ),
         },
     }
+    runtime["exit_policy"] = exit_policy_from_parameters("sma_with_filter", strategy_parameters)
+    runtime["exit_policy_hash"] = sha256_prefixed(runtime["exit_policy"])
     execution_contract = _execution_contract_from_env_values(env)
     if execution_contract is not None:
         runtime["execution_reality_contract"] = execution_contract
@@ -1040,6 +1055,8 @@ def runtime_contract_from_settings(cfg: object) -> dict[str, Any]:
             "slippage_bps": float(getattr(cfg, "STRATEGY_ENTRY_SLIPPAGE_BPS")),
         },
     }
+    runtime["exit_policy"] = exit_policy_from_parameters("sma_with_filter", runtime["strategy_parameters"])
+    runtime["exit_policy_hash"] = sha256_prefixed(runtime["exit_policy"])
     execution_contract = _execution_contract_from_settings(cfg)
     if execution_contract is not None:
         runtime["execution_reality_contract"] = execution_contract
@@ -1189,6 +1206,19 @@ def diff_profile_to_runtime(
             mismatches.append(
                 {"field": f"strategy_parameters.{key}", "expected": expected, "actual": runtime_params[key]}
             )
+    runtime_exit_policy = runtime.get("exit_policy")
+    runtime_exit_policy_hash = runtime.get("exit_policy_hash")
+    if isinstance(runtime_exit_policy, dict):
+        runtime_exit_policy_hash = sha256_prefixed(runtime_exit_policy)
+    if profile.get("exit_policy_hash") != runtime_exit_policy_hash:
+        mismatches.append(
+            {
+                "field": "exit_policy_hash",
+                "expected": profile.get("exit_policy_hash"),
+                "actual": runtime_exit_policy_hash,
+                "reason": "runtime_exit_policy_mismatch",
+            }
+        )
     profile_cost = profile.get("cost_model") if isinstance(profile.get("cost_model"), dict) else {}
     runtime_cost = runtime.get("cost_model") if isinstance(runtime.get("cost_model"), dict) else {}
     for key, expected in profile_cost.items():

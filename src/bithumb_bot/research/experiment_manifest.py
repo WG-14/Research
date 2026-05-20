@@ -15,6 +15,7 @@ from bithumb_bot.market_regime import RegimeAcceptanceGate
 
 from .deployment_policy import DEPLOYMENT_TIERS, is_production_bound_target, normalize_deployment_tier
 from .hashing import sha256_prefixed
+from .strategy_spec import StrategySpecError, validate_parameter_space_against_strategy_spec
 from .audit_trail import AuditTrailPolicy as ResearchAuditTrailPolicy
 
 
@@ -724,6 +725,15 @@ def parse_manifest(payload: dict[str, Any]) -> ExperimentManifest:
     dataset_payload = _required_dict(payload, "dataset")
     dataset = _parse_dataset(dataset_payload)
     parameter_space = _parse_parameter_space(payload.get("parameter_space"))
+    deployment_tier = _parse_deployment_tier(payload.get("deployment_tier") or payload.get("promotion_target"))
+    try:
+        validate_parameter_space_against_strategy_spec(
+            strategy_name=strategy_name,
+            parameter_space=parameter_space,
+            deployment_tier=deployment_tier,
+        )
+    except StrategySpecError as exc:
+        raise ManifestValidationError(str(exc)) from exc
     if payload.get("cost_model") is None and payload.get("execution_model") is None:
         raise ManifestValidationError("manifest requires cost_model or execution_model")
     cost_model = _parse_cost_model(payload.get("cost_model"))
@@ -735,7 +745,6 @@ def parse_manifest(payload: dict[str, Any]) -> ExperimentManifest:
         execution_timing=execution_timing,
     )
     _parse_dataset_quality_policy(payload.get("dataset_quality_policy"))
-    deployment_tier = _parse_deployment_tier(payload.get("deployment_tier") or payload.get("promotion_target"))
     portfolio_policy = _parse_portfolio_policy(payload.get("portfolio_policy"), deployment_tier=deployment_tier)
     acceptance_gate = _parse_acceptance_gate(_required_dict(payload, "acceptance_gate"))
     if is_production_bound_target(deployment_tier) and acceptance_gate.max_single_trade_dependency_score is None:

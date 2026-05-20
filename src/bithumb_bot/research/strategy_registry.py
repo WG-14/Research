@@ -7,6 +7,7 @@ from .backtest_engine import BacktestRun, BacktestRunContext, run_sma_backtest
 from .dataset_snapshot import DatasetSnapshot
 from .execution_model import ExecutionModel
 from .experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
+from .strategy_spec import strategy_spec_for_name
 
 
 ResearchStrategyRunner = Callable[
@@ -41,7 +42,11 @@ TEST_TOP_OF_BOOK_REQUIRED_STRATEGY = "__test_top_of_book_required__"
 
 def research_strategy_data_requirements(strategy_name: str) -> ResearchStrategyDataRequirements:
     if strategy_name == "sma_with_filter":
-        return ResearchStrategyDataRequirements(required_data=("candles",), optional_data=("top_of_book",))
+        spec = strategy_spec_for_name(strategy_name)
+        return ResearchStrategyDataRequirements(
+            required_data=spec.required_data,
+            optional_data=spec.optional_data,
+        )
     if strategy_name == TEST_TOP_OF_BOOK_REQUIRED_STRATEGY:
         return ResearchStrategyDataRequirements(required_data=("candles", "top_of_book"))
     raise ResearchStrategyRegistryError(f"unsupported research strategy: {strategy_name}")

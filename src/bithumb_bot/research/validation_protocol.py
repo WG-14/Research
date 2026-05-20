@@ -79,6 +79,7 @@ from .statistical_selection import (
 from .return_panel import build_candidate_return_panel, write_candidate_return_panel
 from .stress_suite import StressSuiteContext, analyze_stress_suite, stress_suite_required
 from .strategy_registry import research_strategy_data_requirements, resolve_research_strategy
+from .strategy_spec import exit_policy_from_parameters, exit_policy_hash, materialize_strategy_parameters, strategy_spec_for_name
 
 
 class ResearchValidationError(ValueError):
@@ -618,6 +619,7 @@ def _evaluate_candidates(
     dataset_warning_codes = _dataset_quality_warning_codes(quality_reports)
     top_of_book_quality_summary = _top_of_book_quality_summary(quality_reports)
     runner = resolve_research_strategy(manifest.strategy_name)
+    strategy_spec = strategy_spec_for_name(manifest.strategy_name)
     metrics_gate_policy = metrics_gate_policy_from_acceptance_gate(manifest.acceptance_gate)
     metrics_gate_policy_digest = metrics_gate_policy_hash(metrics_gate_policy)
     probe_warnings = _probe_grade_gate_warnings(manifest)
@@ -796,6 +798,14 @@ def _evaluate_candidates(
         for base in base_results:
             index = int(base["index"])
             params = dict(base["parameter_values"])
+            effective_params = materialize_strategy_parameters(
+                manifest.strategy_name,
+                params,
+                fee_rate=scenario.fee_rate,
+                slippage_bps=float(scenario.slippage_bps),
+            )
+            active_exit_policy = exit_policy_from_parameters(manifest.strategy_name, effective_params)
+            active_exit_policy_hash = exit_policy_hash(active_exit_policy)
             stability_payload = stability[index]
             stability_score = stability_payload["score"]
             train_metrics = dict(base["train_metrics"])
@@ -969,6 +979,18 @@ def _evaluate_candidates(
                 "validation_execution_event_summary": base.get("validation_execution_event_summary") or {},
                 "final_holdout_execution_event_summary": base.get("final_holdout_execution_event_summary"),
                 "execution_event_summary": base.get("validation_execution_event_summary") or {},
+                "behavior_hash": (base.get("validation_resource_usage") or {}).get("behavior_hash"),
+                "train_behavior_hash": (base.get("train_resource_usage") or {}).get("behavior_hash"),
+                "validation_behavior_hash": (base.get("validation_resource_usage") or {}).get("behavior_hash"),
+                "final_holdout_behavior_hash": (
+                    (base.get("final_holdout_resource_usage") or {}).get("behavior_hash")
+                    if base.get("final_holdout_resource_usage")
+                    else None
+                ),
+                "strategy_spec": strategy_spec.as_dict(),
+                "strategy_spec_hash": strategy_spec.spec_hash(),
+                "exit_policy": active_exit_policy,
+                "exit_policy_hash": active_exit_policy_hash,
                 "train_metrics": train_metrics,
                 "validation_metrics": validation_metrics,
                 "final_holdout_metrics": final_holdout_metrics,
@@ -1047,6 +1069,10 @@ def _evaluate_candidates(
                         depth_available=l2_depth_complete_snapshots_available,
                     ),
                     "strategy_name": manifest.strategy_name,
+                    "strategy_spec": strategy_spec.as_dict(),
+                    "strategy_spec_hash": strategy_spec.spec_hash(),
+                    "exit_policy": active_exit_policy,
+                    "exit_policy_hash": active_exit_policy_hash,
                     "parameter_candidate_id": base["candidate_id"],
                     "parameter_values": params,
                     "scenario_policy": manifest.execution_model.scenario_policy,
@@ -1066,7 +1092,7 @@ def _evaluate_candidates(
                     "stress_suite_contract": stress_contract,
                     "stress_suite_contract_hash": stress_contract_hash,
                     "regime_classifier_version": MARKET_REGIME_VERSION,
-                "warnings": [],
+                    "warnings": [],
                     "repository_version": _repository_version(),
                 },
             )
@@ -1139,6 +1165,14 @@ def _evaluate_candidates(
                 "unavailable_required_capabilities": primary.get("unavailable_required_capabilities"),
                 "execution_reality_summary": primary.get("execution_reality_summary"),
                 "execution_event_summary": primary.get("execution_event_summary"),
+                "behavior_hash": primary.get("behavior_hash"),
+                "train_behavior_hash": primary.get("train_behavior_hash"),
+                "validation_behavior_hash": primary.get("validation_behavior_hash"),
+                "final_holdout_behavior_hash": primary.get("final_holdout_behavior_hash"),
+                "strategy_spec": primary.get("strategy_spec") or strategy_spec.as_dict(),
+                "strategy_spec_hash": primary.get("strategy_spec_hash") or strategy_spec.spec_hash(),
+                "exit_policy": primary.get("exit_policy"),
+                "exit_policy_hash": primary.get("exit_policy_hash"),
                 "train_execution_event_summary": primary.get("train_execution_event_summary"),
                 "validation_execution_event_summary": primary.get("validation_execution_event_summary"),
                 "final_holdout_execution_event_summary": primary.get("final_holdout_execution_event_summary"),
@@ -1195,7 +1229,51 @@ def _evaluate_candidates(
             },
         )
         rows.append(candidate_payload)
+    _mark_noop_behavior_hash_groups(
+        rows=rows,
+        behavior_parameter_names=set(strategy_spec.behavior_affecting_parameter_names),
+        production_bound=manifest.deployment_tier != "research_only",
+    )
     return sorted(rows, key=_candidate_rank_key)
+
+
+def _mark_noop_behavior_hash_groups(
+    *,
+    rows: list[dict[str, Any]],
+    behavior_parameter_names: set[str],
+    production_bound: bool,
+) -> None:
+    by_hash: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        behavior_hash = str(row.get("behavior_hash") or "")
+        if behavior_hash:
+            by_hash.setdefault(behavior_hash, []).append(row)
+    for behavior_hash, group in by_hash.items():
+        if len(group) < 2:
+            continue
+        behavior_param_sets = {
+            tuple(
+                sorted(
+                    (key, repr(value))
+                    for key, value in (row.get("parameter_values") or {}).items()
+                    if key in behavior_parameter_names
+                )
+            )
+            for row in group
+        }
+        if len(behavior_param_sets) < 2:
+            continue
+        ids = sorted(str(row.get("parameter_candidate_id") or "") for row in group)
+        for row in group:
+            row["no_op_behavior_hash_detected"] = True
+            row["no_op_behavior_hash"] = behavior_hash
+            row["no_op_behavior_candidate_ids"] = ids
+            if production_bound:
+                row["acceptance_gate_result"] = "FAIL"
+                row["gate_fail_reasons"] = sorted(
+                    set(row.get("gate_fail_reasons") or ())
+                    | {"no_op_behavior_parameter_detected"}
+                )
 
 
 def _evaluate_candidate_base_result(
@@ -2835,6 +2913,11 @@ def _report_payload(
         "holdout_reuse_count": lineage.get("holdout_reuse_count"),
         "dataset_reuse_policy": lineage.get("dataset_reuse_policy"),
         "best_candidate_id": best.get("parameter_candidate_id") if best else None,
+        "best_behavior_hash": best.get("behavior_hash") if best else None,
+        "strategy_spec": best.get("strategy_spec") if best else strategy_spec.as_dict(),
+        "strategy_spec_hash": best.get("strategy_spec_hash") if best else strategy_spec.spec_hash(),
+        "exit_policy": best.get("exit_policy") if best else None,
+        "exit_policy_hash": best.get("exit_policy_hash") if best else None,
         "best_validation_metrics_v2": best.get("validation_metrics_v2") if best else None,
         "best_final_holdout_metrics_v2": best.get("final_holdout_metrics_v2") if best else None,
         "stress_suite_gate_result": (

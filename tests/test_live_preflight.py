@@ -482,6 +482,24 @@ def test_live_armed_preflight_rejects_profile_env_mismatch(
     assert "approved_profile_runtime_mismatch" in str(exc.value)
 
 
+def test_live_startup_fails_closed_on_exit_policy_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _set_valid_live_defaults(monkeypatch)
+    object.__setattr__(settings, "LIVE_DRY_RUN", False)
+    object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
+    object.__setattr__(settings, "STRATEGY_EXIT_MAX_HOLDING_MIN", 0)
+    profile_path = _write_live_profile(tmp_path, mode="small_live")
+    object.__setattr__(settings, "APPROVED_STRATEGY_PROFILE_PATH", str(profile_path))
+    object.__setattr__(settings, "STRATEGY_EXIT_MAX_HOLDING_MIN", 10)
+
+    with pytest.raises(config.LiveModeValidationError) as exc:
+        config.validate_live_mode_preflight(settings)
+
+    assert "approved_profile_runtime_mismatch" in str(exc.value)
+
+
 def test_live_armed_preflight_rejects_paper_profile(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

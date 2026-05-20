@@ -35,6 +35,51 @@ def _manifest() -> dict[str, object]:
     }
 
 
+def test_research_rejects_unknown_strategy_params() -> None:
+    payload = _manifest()
+    payload["parameter_space"] = {
+        **payload["parameter_space"],  # type: ignore[arg-type]
+        "UNUSED_NOOP_PARAM": [1],
+    }
+
+    with pytest.raises(ManifestValidationError, match="unknown strategy parameter"):
+        parse_manifest(payload)
+
+
+def test_research_rejects_unused_behavior_params_for_production_bound() -> None:
+    payload = _manifest()
+    payload["deployment_tier"] = "paper_candidate"
+    payload["portfolio_policy"] = _portfolio_policy()
+    payload["execution_model"] = {
+        "source": "manifest",
+        "scenario_policy": "single_base",
+        "calibration_required": False,
+        "calibration_strictness": "warn",
+        "scenarios": [
+            {
+                "type": "fixed_bps",
+                "fee_rate": 0.001,
+                "slippage_bps": 0.0,
+                "scenario_role": "base",
+                "promotable_as_base": True,
+                "fee_source": "manifest",
+                "slippage_source": "manifest",
+                "fee_authority_policy": "runtime_fee_authority_or_config_fallback",
+            }
+        ],
+    }
+    payload["statistical_validation"] = _statistical_validation()
+    payload["stress_suite"] = _stress_suite()
+    payload["final_selection"] = _final_selection()
+    payload["parameter_space"] = {
+        **payload["parameter_space"],  # type: ignore[arg-type]
+        "UNUSED_NOOP_PARAM": [1],
+    }
+
+    with pytest.raises(ManifestValidationError, match="unknown strategy parameter"):
+        parse_manifest(payload)
+
+
 def _portfolio_policy(*, starting_cash: float = 1_000_000.0, buy_fraction: float = 0.99) -> dict[str, object]:
     cash_buffer_policy = (
         "retain_1_percent_before_fees"

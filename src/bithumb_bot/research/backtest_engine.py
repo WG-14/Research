@@ -25,6 +25,12 @@ from .execution_timing import (
     resolve_execution_reference,
 )
 from .experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy, legacy_research_portfolio_policy
+from .strategy_spec import (
+    exit_policy_from_parameters,
+    exit_policy_hash,
+    materialize_strategy_parameters,
+    strategy_spec_for_name,
+)
 from .metrics import ResearchMetrics
 from .metrics_contract import (
     ClosedTradeRecord,
@@ -92,6 +98,7 @@ class _BacktestAccumulator:
     last_heartbeat_s: float = field(default_factory=time.perf_counter)
     last_heartbeat_bar: int = 0
     decision_hash_material: list[str] = field(default_factory=list)
+    behavior_hash_material: list[dict[str, object]] = field(default_factory=list)
 
     @property
     def report_detail(self) -> str:
@@ -122,6 +129,15 @@ class _BacktestAccumulator:
         if str(payload.get("raw_signal") or "").upper() in {"BUY", "SELL"}:
             self.signal_count += 1
         self.decision_hash_material.append(str(payload.get("replay_fingerprint_hash") or ""))
+        self.behavior_hash_material.append(
+            {
+                "candle_ts": payload.get("candle_ts"),
+                "raw_signal": payload.get("raw_signal"),
+                "final_signal": payload.get("final_signal"),
+                "exit_rule": payload.get("exit_rule"),
+                "blocked_filters": payload.get("blocked_filters"),
+            }
+        )
         if retained:
             self.retained_decision_count += 1
 
@@ -199,6 +215,7 @@ class _BacktestAccumulator:
         payload.pop("elapsed_s", None)
         payload.pop("rss_mb", None)
         payload["decision_hash"] = canonical_payload_hash(self.decision_hash_material)
+        payload["behavior_hash"] = canonical_payload_hash(self.behavior_hash_material)
         return payload
 
     def metrics_summary_inputs(self, *, max_drawdown_pct: float) -> dict[str, Any]:
@@ -307,6 +324,17 @@ class _PendingFill:
     exit_regime_snapshot: dict[str, object] | None = None
 
 
+@dataclass(frozen=True)
+class _ResearchPositionContext:
+    in_position: bool
+    entry_ts: int | None = None
+    entry_price: float | None = None
+    qty_open: float = 0.0
+    holding_time_sec: float = 0.0
+    unrealized_pnl: float = 0.0
+    unrealized_pnl_ratio: float = 0.0
+
+
 def run_sma_backtest(
     *,
     dataset: DatasetSnapshot,
@@ -319,15 +347,24 @@ def run_sma_backtest(
     portfolio_policy: PortfolioPolicy | None = None,
     context: BacktestRunContext | None = None,
 ) -> BacktestRun:
-    short_n = int(parameter_values.get("SMA_SHORT", parameter_values.get("short_n", 0)))
-    long_n = int(parameter_values.get("SMA_LONG", parameter_values.get("long_n", 0)))
+    strategy_spec = strategy_spec_for_name("sma_with_filter")
+    effective_parameters = materialize_strategy_parameters(
+        "sma_with_filter",
+        parameter_values,
+        fee_rate=fee_rate,
+        slippage_bps=slippage_bps,
+    )
+    active_exit_policy = exit_policy_from_parameters("sma_with_filter", effective_parameters)
+    active_exit_policy_hash = exit_policy_hash(active_exit_policy)
+    short_n = int(effective_parameters.get("SMA_SHORT", effective_parameters.get("short_n", 0)))
+    long_n = int(effective_parameters.get("SMA_LONG", effective_parameters.get("long_n", 0)))
     min_gap = float(
-        parameter_values.get(
+        effective_parameters.get(
             "SMA_FILTER_GAP_MIN_RATIO",
-            parameter_values.get("strategy_min_expected_edge_ratio", 0.0),
+            effective_parameters.get("strategy_min_expected_edge_ratio", 0.0),
         )
     )
-    min_range = float(parameter_values.get("SMA_FILTER_VOL_MIN_RANGE_RATIO", 0.0))
+    min_range = float(effective_parameters.get("SMA_FILTER_VOL_MIN_RANGE_RATIO", 0.0))
     if short_n <= 0 or long_n <= 0 or short_n >= long_n:
         raise ValueError("SMA_SHORT must be smaller than SMA_LONG")
 
@@ -370,6 +407,10 @@ def run_sma_backtest(
     qty = initial_qty
     entry_cost_basis = 0.0
     entry_regime_snapshot: dict[str, object] | None = None
+    entry_ts: int | None = None
+    entry_price: float | None = None
+    entry_decision_hash: str | None = None
+    open_trade_path: list[dict[str, float | int]] = []
     entry_fee = 0.0
     entry_slippage = 0.0
     peak = starting_cash
@@ -411,7 +452,7 @@ def run_sma_backtest(
         candle = candles[index]
         mark_boundary_ts = candle_close_ts(candle, interval=dataset.interval)
         decision_boundary_ts = mark_boundary_ts + int(timing_policy.decision_guard_ms)
-        cash, qty, entry_cost_basis, entry_regime_snapshot, entry_fee, entry_slippage, fee_total, slippage_total = _apply_pending_fills(
+        cash, qty, entry_cost_basis, entry_regime_snapshot, entry_ts, entry_price, entry_decision_hash, open_trade_path, entry_fee, entry_slippage, fee_total, slippage_total = _apply_pending_fills(
             pending_fills=pending_fills,
             trades=trades,
             boundary_ts=mark_boundary_ts,
@@ -419,6 +460,10 @@ def run_sma_backtest(
             qty=qty,
             entry_cost_basis=entry_cost_basis,
             entry_regime_snapshot=entry_regime_snapshot,
+            entry_ts=entry_ts,
+            entry_price=entry_price,
+            entry_decision_hash=entry_decision_hash,
+            open_trade_path=open_trade_path,
             entry_fee=entry_fee,
             entry_slippage=entry_slippage,
             fee_total=fee_total,
@@ -427,7 +472,7 @@ def run_sma_backtest(
         )
         mark_cash = cash
         mark_qty = qty
-        cash, qty, entry_cost_basis, entry_regime_snapshot, entry_fee, entry_slippage, fee_total, slippage_total = _apply_pending_fills(
+        cash, qty, entry_cost_basis, entry_regime_snapshot, entry_ts, entry_price, entry_decision_hash, open_trade_path, entry_fee, entry_slippage, fee_total, slippage_total = _apply_pending_fills(
             pending_fills=pending_fills,
             trades=trades,
             boundary_ts=decision_boundary_ts,
@@ -435,6 +480,10 @@ def run_sma_backtest(
             qty=qty,
             entry_cost_basis=entry_cost_basis,
             entry_regime_snapshot=entry_regime_snapshot,
+            entry_ts=entry_ts,
+            entry_price=entry_price,
+            entry_decision_hash=entry_decision_hash,
+            open_trade_path=open_trade_path,
             entry_fee=entry_fee,
             entry_slippage=entry_slippage,
             fee_total=fee_total,
@@ -456,12 +505,12 @@ def run_sma_backtest(
             index=index,
             short_sma=curr_short,
             long_sma=curr_long,
-            volatility_window=max(1, int(parameter_values.get("SMA_FILTER_VOL_WINDOW", 10))),
-            volume_window=max(1, int(parameter_values.get("SMA_FILTER_VOLUME_WINDOW", 10))),
-            liquidity_window=max(1, int(parameter_values.get("SMA_FILTER_LIQUIDITY_WINDOW", 10))),
+            volatility_window=max(1, int(effective_parameters.get("SMA_FILTER_VOL_WINDOW", 10))),
+            volume_window=max(1, int(effective_parameters.get("SMA_FILTER_VOLUME_WINDOW", 10))),
+            liquidity_window=max(1, int(effective_parameters.get("SMA_FILTER_LIQUIDITY_WINDOW", 10))),
             thresholds=thresholds,
-            overextended_lookback=max(1, int(parameter_values.get("SMA_FILTER_OVEREXT_LOOKBACK", 3))),
-            overextended_max_return_ratio=float(parameter_values.get("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO", 0.0)),
+            overextended_lookback=max(1, int(effective_parameters.get("SMA_FILTER_OVEREXT_LOOKBACK", 3))),
+            overextended_max_return_ratio=float(effective_parameters.get("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO", 0.0)),
         ).as_dict()
         regime_coverage_accumulator.update(regime_snapshot)
         if accumulator.retain_full_detail():
@@ -470,6 +519,9 @@ def run_sma_backtest(
         action = "HOLD"
         raw_signal = "HOLD"
         raw_reason = "sma no crossover"
+        exit_rule = ""
+        exit_reason = ""
+        exit_evaluations: list[dict[str, object]] = []
         pending_buy_qty = sum(item.qty for item in pending_fills if item.side == "BUY")
         pending_sell_qty = sum(item.qty for item in pending_fills if item.side == "SELL")
         sellable_qty = max(0.0, qty - pending_sell_qty)
@@ -488,15 +540,82 @@ def run_sma_backtest(
         if raw_signal in {"BUY", "SELL"} and range_ratio < min_range:
             filter_blocked = True
             blocked_filters.append("volatility")
+        if qty > 1e-12 and entry_price is not None:
+            pnl_ratio = ((float(candle.close) - float(entry_price)) / float(entry_price)) if float(entry_price) > 0 else 0.0
+            open_trade_path.append(
+                {
+                    "ts": int(candle.ts),
+                    "close": float(candle.close),
+                    "unrealized_pnl": (float(candle.close) - float(entry_price)) * float(qty),
+                    "unrealized_pnl_pct": pnl_ratio * 100.0,
+                }
+            )
         if not filter_blocked and prev_above is not None:
             if raw_signal == "BUY" and qty <= 0.0 and pending_buy_qty <= 0.0:
                 action = "BUY"
-            elif raw_signal == "SELL" and sellable_qty > 0.0:
-                action = "SELL"
+        if sellable_qty > 0.0:
+            from bithumb_bot.strategy.exit_rules import create_exit_rules
+
+            position = _ResearchPositionContext(
+                in_position=True,
+                entry_ts=entry_ts,
+                entry_price=entry_price,
+                qty_open=sellable_qty,
+                holding_time_sec=(
+                    max(0.0, (int(candle.ts) - int(entry_ts)) / 1000.0)
+                    if entry_ts is not None
+                    else 0.0
+                ),
+                unrealized_pnl=(
+                    (float(candle.close) - float(entry_price)) * sellable_qty
+                    if entry_price is not None
+                    else 0.0
+                ),
+                unrealized_pnl_ratio=(
+                    ((float(candle.close) - float(entry_price)) / float(entry_price))
+                    if entry_price not in (None, 0.0)
+                    else 0.0
+                ),
+            )
+            for rule in create_exit_rules(
+                rule_names=list(active_exit_policy["rules"]),
+                max_holding_sec=float(active_exit_policy["max_holding_time"]["max_holding_min"]) * 60.0,
+                min_take_profit_ratio=float(active_exit_policy["opposite_cross"]["min_take_profit_ratio"]),
+                live_fee_rate_estimate=float(effective_parameters.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate),
+                small_loss_tolerance_ratio=float(active_exit_policy["opposite_cross"]["small_loss_tolerance_ratio"]),
+            ):
+                result = rule.evaluate(
+                    position=position,
+                    candle_ts=int(candle.ts),
+                    market_price=float(candle.close),
+                    signal_context={
+                        "base_signal": "HOLD" if filter_blocked else raw_signal,
+                        "base_reason": raw_reason,
+                        "curr_s": curr_short,
+                        "curr_l": curr_long,
+                    },
+                )
+                exit_evaluations.append(
+                    {
+                        "rule": rule.name,
+                        "triggered": bool(result.should_exit),
+                        "reason": result.reason,
+                        "context": result.context,
+                    }
+                )
+                if result.should_exit:
+                    action = "SELL"
+                    exit_rule = rule.name
+                    exit_reason = result.reason
+                    break
         decision_payload = _research_decision_payload(
             dataset=dataset,
             dataset_content_hash=dataset_content_hash,
-            parameter_values=parameter_values,
+            parameter_values=effective_parameters,
+            strategy_spec=strategy_spec.as_dict(),
+            strategy_spec_hash=strategy_spec.spec_hash(),
+            exit_policy=active_exit_policy,
+            exit_policy_hash=active_exit_policy_hash,
             fee_rate=fee_rate,
             slippage_bps=slippage_bps,
             timing_policy=timing_policy,
@@ -517,6 +636,9 @@ def run_sma_backtest(
             regime_snapshot=regime_snapshot,
             qty=qty,
             sellable_qty=sellable_qty,
+            exit_rule=exit_rule,
+            exit_reason=exit_reason,
+            exit_evaluations=exit_evaluations,
         )
         retain_decision = accumulator.retain_decision()
         if retain_decision:
@@ -646,12 +768,13 @@ def run_sma_backtest(
                 entry_regime_snapshot=dict(regime_snapshot),
             )
             trades.append(_pending_trade_from_fill(fill, cash=cash, asset_qty=qty))
+            trades[-1]["entry_decision_hash"] = decision_payload.get("replay_fingerprint_hash")
             _trace_execution(run_context, trades[-1])
             if _fill_applies_to_mark(fill=pending.fill, effective_ts=pending.effective_ts, mark_boundary_ts=mark_boundary_ts):
                 mark_cash += pending.cash_delta
                 mark_qty += pending.qty
             pending_fills.append(pending)
-            cash, qty, entry_cost_basis, entry_regime_snapshot, entry_fee, entry_slippage, fee_total, slippage_total = _apply_pending_fills(
+            cash, qty, entry_cost_basis, entry_regime_snapshot, entry_ts, entry_price, entry_decision_hash, open_trade_path, entry_fee, entry_slippage, fee_total, slippage_total = _apply_pending_fills(
                 pending_fills=pending_fills,
                 trades=trades,
                 boundary_ts=decision_boundary_ts,
@@ -659,6 +782,10 @@ def run_sma_backtest(
                 qty=qty,
                 entry_cost_basis=entry_cost_basis,
                 entry_regime_snapshot=entry_regime_snapshot,
+                entry_ts=entry_ts,
+                entry_price=entry_price,
+                entry_decision_hash=entry_decision_hash,
+                open_trade_path=open_trade_path,
                 entry_fee=entry_fee,
                 entry_slippage=entry_slippage,
                 fee_total=fee_total,
@@ -787,12 +914,27 @@ def run_sma_backtest(
                 exit_regime_snapshot=dict(regime_snapshot),
             )
             trades.append(_pending_trade_from_fill(fill, cash=cash, asset_qty=qty))
+            trades[-1].update(
+                _closed_trade_diagnostics(
+                    entry_ts=entry_ts,
+                    exit_ts=int(candle.ts),
+                    entry_price=entry_price,
+                    exit_price=exec_price,
+                    entry_regime_snapshot=entry_regime_snapshot,
+                    exit_regime_snapshot=dict(regime_snapshot),
+                    exit_rule=exit_rule,
+                    exit_reason=exit_reason,
+                    path=open_trade_path,
+                    entry_decision_hash=entry_decision_hash,
+                    exit_decision_hash=str(decision_payload.get("replay_fingerprint_hash") or ""),
+                )
+            )
             _trace_execution(run_context, trades[-1])
             if _fill_applies_to_mark(fill=pending.fill, effective_ts=pending.effective_ts, mark_boundary_ts=mark_boundary_ts):
                 mark_cash += pending.cash_delta
                 mark_qty = max(0.0, mark_qty - pending.qty)
             pending_fills.append(pending)
-            cash, qty, entry_cost_basis, entry_regime_snapshot, entry_fee, entry_slippage, fee_total, slippage_total = _apply_pending_fills(
+            cash, qty, entry_cost_basis, entry_regime_snapshot, entry_ts, entry_price, entry_decision_hash, open_trade_path, entry_fee, entry_slippage, fee_total, slippage_total = _apply_pending_fills(
                 pending_fills=pending_fills,
                 trades=trades,
                 boundary_ts=decision_boundary_ts,
@@ -800,6 +942,10 @@ def run_sma_backtest(
                 qty=qty,
                 entry_cost_basis=entry_cost_basis,
                 entry_regime_snapshot=entry_regime_snapshot,
+                entry_ts=entry_ts,
+                entry_price=entry_price,
+                entry_decision_hash=entry_decision_hash,
+                open_trade_path=open_trade_path,
                 entry_fee=entry_fee,
                 entry_slippage=entry_slippage,
                 fee_total=fee_total,
@@ -832,7 +978,7 @@ def run_sma_backtest(
 
     last = candles[-1]
     last_mark_ts = candle_close_ts(last, interval=dataset.interval)
-    cash, qty, entry_cost_basis, entry_regime_snapshot, entry_fee, entry_slippage, fee_total, slippage_total = _apply_pending_fills(
+    cash, qty, entry_cost_basis, entry_regime_snapshot, entry_ts, entry_price, entry_decision_hash, open_trade_path, entry_fee, entry_slippage, fee_total, slippage_total = _apply_pending_fills(
         pending_fills=pending_fills,
         trades=trades,
         boundary_ts=last_mark_ts,
@@ -840,6 +986,10 @@ def run_sma_backtest(
         qty=qty,
         entry_cost_basis=entry_cost_basis,
         entry_regime_snapshot=entry_regime_snapshot,
+        entry_ts=entry_ts,
+        entry_price=entry_price,
+        entry_decision_hash=entry_decision_hash,
+        open_trade_path=open_trade_path,
         entry_fee=entry_fee,
         entry_slippage=entry_slippage,
         fee_total=fee_total,
@@ -960,6 +1110,7 @@ def _retained_detail_summary(
         "retained_equity_point_count": accumulator.retained_equity_point_count,
         "retained_regime_snapshot_count": int(retained_regime_snapshot_count),
         "decision_hash": canonical_payload_hash(accumulator.decision_hash_material),
+        "behavior_hash": canonical_payload_hash(accumulator.behavior_hash_material),
     }
 
 
@@ -1052,12 +1203,29 @@ def _apply_pending_fills(
     qty: float,
     entry_cost_basis: float,
     entry_regime_snapshot: dict[str, object] | None,
+    entry_ts: int | None,
+    entry_price: float | None,
+    entry_decision_hash: str | None,
+    open_trade_path: list[dict[str, float | int]],
     entry_fee: float,
     entry_slippage: float,
     fee_total: float,
     slippage_total: float,
     closed_pnls: list[float],
-) -> tuple[float, float, float, dict[str, object] | None, float, float, float, float]:
+) -> tuple[
+    float,
+    float,
+    float,
+    dict[str, object] | None,
+    int | None,
+    float | None,
+    str | None,
+    list[dict[str, float | int]],
+    float,
+    float,
+    float,
+    float,
+]:
     ready = sorted(
         [item for item in pending_fills if item.effective_ts <= int(boundary_ts)],
         key=lambda item: (item.effective_ts, item.trade_index),
@@ -1071,6 +1239,10 @@ def _apply_pending_fills(
             qty += pending.qty
             entry_cost_basis = abs(pending.cash_delta)
             entry_regime_snapshot = pending.entry_regime_snapshot
+            entry_ts = int(pending.fill.signal_ts)
+            entry_price = float(pending.fill.avg_fill_price or pending.fill.reference_price)
+            entry_decision_hash = str(trade.get("entry_decision_hash") or "") or entry_decision_hash
+            open_trade_path = []
             entry_fee = pending.fee
             entry_slippage = pending.slippage
             fee_total += pending.fee
@@ -1111,9 +1283,26 @@ def _apply_pending_fills(
             )
             if qty <= 0.0:
                 entry_regime_snapshot = None
+                entry_ts = None
+                entry_price = None
+                entry_decision_hash = None
+                open_trade_path = []
                 entry_fee = 0.0
                 entry_slippage = 0.0
-    return cash, qty, entry_cost_basis, entry_regime_snapshot, entry_fee, entry_slippage, fee_total, slippage_total
+    return (
+        cash,
+        qty,
+        entry_cost_basis,
+        entry_regime_snapshot,
+        entry_ts,
+        entry_price,
+        entry_decision_hash,
+        open_trade_path,
+        entry_fee,
+        entry_slippage,
+        fee_total,
+        slippage_total,
+    )
 
 
 def _timing_request_fields(
@@ -1208,6 +1397,10 @@ def _research_decision_payload(
     dataset: DatasetSnapshot,
     dataset_content_hash: str,
     parameter_values: dict[str, Any],
+    strategy_spec: dict[str, Any],
+    strategy_spec_hash: str,
+    exit_policy: dict[str, Any],
+    exit_policy_hash: str,
     fee_rate: float,
     slippage_bps: float,
     timing_policy: ExecutionTimingPolicy,
@@ -1228,6 +1421,9 @@ def _research_decision_payload(
     regime_snapshot: dict[str, object],
     qty: float,
     sellable_qty: float,
+    exit_rule: str = "",
+    exit_reason: str = "",
+    exit_evaluations: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     from bithumb_bot.research.lot_native_simulation import lot_native_model_from_quantities
 
@@ -1257,6 +1453,8 @@ def _research_decision_payload(
             "execution_timing_policy_hash": execution_timing_policy_hash,
             "fee_model_hash": fee_model_hash,
             "slippage_model_hash": slippage_model_hash,
+            "strategy_spec_hash": strategy_spec_hash,
+            "exit_policy_hash": exit_policy_hash,
         }
     )
     lot_native_authority = lot_native_model_from_quantities(
@@ -1288,6 +1486,10 @@ def _research_decision_payload(
         legacy_authority = None
     payload = {
         "strategy_name": "sma_with_filter",
+        "strategy_spec": strategy_spec,
+        "strategy_spec_hash": strategy_spec_hash,
+        "exit_policy": exit_policy,
+        "exit_policy_hash": exit_policy_hash,
         "market": dataset.market,
         "interval": dataset.interval,
         "signal_timestamp": str(candle_ts),
@@ -1339,11 +1541,20 @@ def _research_decision_payload(
         ),
         "effective_flat": bool(lot_native_authority.entry_allowed),
         "normalized_exposure_active": bool(lot_native_authority.open_lot_count > 0),
-        "exit_rule": "opposite_cross" if final_signal == "SELL" and raw_signal == "SELL" else "",
-        "exit_reason": "exit by opposite cross" if final_signal == "SELL" and raw_signal == "SELL" else "",
+        "exit_rule": str(exit_rule or ""),
+        "exit_reason": str(exit_reason or ""),
         "exit_evaluations_hash": canonical_payload_hash(
-            {"raw_signal": raw_signal, "final_signal": final_signal, "position_qty": float(qty)}
+            {
+                "raw_signal": raw_signal,
+                "final_signal": final_signal,
+                "position_qty": float(qty),
+                "exit_rule": str(exit_rule or ""),
+                "exit_reason": str(exit_reason or ""),
+                "exit_evaluations": exit_evaluations or [],
+                "exit_policy_hash": exit_policy_hash,
+            }
         ),
+        "exit_evaluations": exit_evaluations or [],
         "portfolio_policy_hash": portfolio_policy_hash,
         "execution_timing_policy_hash": execution_timing_policy_hash,
         "decision_contract_hash": decision_contract_hash,
@@ -1746,6 +1957,66 @@ def _metrics_v2_ledgers_from_trades(
                         entry_notional=allocated_basis if allocated_basis > 0.0 else None,
                         net_pnl=float(pnl),
                         return_pct=(float(pnl) / allocated_basis * 100.0) if allocated_basis > 0.0 else None,
+                        holding_minutes=(
+                            float(trade.get("holding_minutes"))
+                            if trade.get("holding_minutes") is not None
+                            else None
+                        ),
+                        entry_price=(
+                            float(trade.get("entry_price"))
+                            if trade.get("entry_price") is not None
+                            else None
+                        ),
+                        exit_price=(
+                            float(trade.get("exit_price"))
+                            if trade.get("exit_price") is not None
+                            else None
+                        ),
+                        entry_regime=(
+                            str(trade.get("entry_regime"))
+                            if trade.get("entry_regime") is not None
+                            else None
+                        ),
+                        exit_regime=(
+                            str(trade.get("exit_regime"))
+                            if trade.get("exit_regime") is not None
+                            else None
+                        ),
+                        exit_rule=(
+                            str(trade.get("exit_rule")) if trade.get("exit_rule") is not None else None
+                        ),
+                        exit_reason=(
+                            str(trade.get("exit_reason")) if trade.get("exit_reason") is not None else None
+                        ),
+                        mae=float(trade.get("mae")) if trade.get("mae") is not None else None,
+                        mfe=float(trade.get("mfe")) if trade.get("mfe") is not None else None,
+                        mae_pct=float(trade.get("mae_pct")) if trade.get("mae_pct") is not None else None,
+                        mfe_pct=float(trade.get("mfe_pct")) if trade.get("mfe_pct") is not None else None,
+                        bars_to_mae=(
+                            int(trade.get("bars_to_mae"))
+                            if trade.get("bars_to_mae") is not None
+                            else None
+                        ),
+                        bars_to_mfe=(
+                            int(trade.get("bars_to_mfe"))
+                            if trade.get("bars_to_mfe") is not None
+                            else None
+                        ),
+                        unrealized_pnl_path_summary=(
+                            dict(trade.get("unrealized_pnl_path_summary"))
+                            if isinstance(trade.get("unrealized_pnl_path_summary"), dict)
+                            else None
+                        ),
+                        entry_decision_hash=(
+                            str(trade.get("entry_decision_hash"))
+                            if trade.get("entry_decision_hash") is not None
+                            else None
+                        ),
+                        exit_decision_hash=(
+                            str(trade.get("exit_decision_hash"))
+                            if trade.get("exit_decision_hash") is not None
+                            else None
+                        ),
                         fee_total=float(trade.get("fee_total") or fee),
                         slippage_total=float(trade.get("slippage_total") or 0.0),
                     )
@@ -1797,6 +2068,57 @@ def _trade_execution_slippage(trade: dict[str, object]) -> float:
     if side == "SELL":
         return max(0.0, (float(ref_price) - float(avg_price)) * qty)
     return 0.0
+
+
+def _closed_trade_diagnostics(
+    *,
+    entry_ts: int | None,
+    exit_ts: int,
+    entry_price: float | None,
+    exit_price: float,
+    entry_regime_snapshot: dict[str, object] | None,
+    exit_regime_snapshot: dict[str, object] | None,
+    exit_rule: str,
+    exit_reason: str,
+    path: list[dict[str, float | int]],
+    entry_decision_hash: str | None,
+    exit_decision_hash: str,
+) -> dict[str, object]:
+    points = list(path)
+    mae_point = min(points, key=lambda item: float(item.get("unrealized_pnl", 0.0)), default=None)
+    mfe_point = max(points, key=lambda item: float(item.get("unrealized_pnl", 0.0)), default=None)
+    entry_ts_int = int(entry_ts) if entry_ts is not None else None
+    holding_minutes = (
+        max(0.0, (int(exit_ts) - int(entry_ts_int)) / 60_000.0)
+        if entry_ts_int is not None
+        else None
+    )
+    return {
+        "entry_ts": entry_ts_int,
+        "exit_ts": int(exit_ts),
+        "holding_minutes": holding_minutes,
+        "entry_price": float(entry_price) if entry_price is not None else None,
+        "exit_price": float(exit_price),
+        "entry_regime": _regime_snapshot_value(entry_regime_snapshot, "composite_regime"),
+        "exit_regime": _regime_snapshot_value(exit_regime_snapshot, "composite_regime"),
+        "exit_rule": str(exit_rule or "unknown"),
+        "exit_reason": str(exit_reason or "unknown"),
+        "mae": float(mae_point.get("unrealized_pnl", 0.0)) if mae_point else 0.0,
+        "mfe": float(mfe_point.get("unrealized_pnl", 0.0)) if mfe_point else 0.0,
+        "mae_pct": float(mae_point.get("unrealized_pnl_pct", 0.0)) if mae_point else 0.0,
+        "mfe_pct": float(mfe_point.get("unrealized_pnl_pct", 0.0)) if mfe_point else 0.0,
+        "bars_to_mae": points.index(mae_point) if mae_point in points else None,
+        "bars_to_mfe": points.index(mfe_point) if mfe_point in points else None,
+        "unrealized_pnl_path_summary": {
+            "point_count": len(points),
+            "first": points[0] if points else None,
+            "last": points[-1] if points else None,
+            "mae_point": mae_point,
+            "mfe_point": mfe_point,
+        },
+        "entry_decision_hash": str(entry_decision_hash or ""),
+        "exit_decision_hash": str(exit_decision_hash or ""),
+    }
 
 
 def _execution_reference_warnings(fill: Any) -> list[str]:

@@ -48,6 +48,22 @@ class ClosedTradeRecord:
     return_pct: float | None = None
     entry_ts: int | None = None
     entry_notional: float | None = None
+    holding_minutes: float | None = None
+    entry_price: float | None = None
+    exit_price: float | None = None
+    entry_regime: str | None = None
+    exit_regime: str | None = None
+    exit_rule: str | None = None
+    exit_reason: str | None = None
+    mae: float | None = None
+    mfe: float | None = None
+    mae_pct: float | None = None
+    mfe_pct: float | None = None
+    bars_to_mae: int | None = None
+    bars_to_mfe: int | None = None
+    unrealized_pnl_path_summary: dict[str, Any] | None = None
+    entry_decision_hash: str | None = None
+    exit_decision_hash: str | None = None
     fee_total: float = 0.0
     slippage_total: float = 0.0
 
@@ -55,6 +71,22 @@ class ClosedTradeRecord:
         return {
             "entry_ts": int(self.entry_ts) if self.entry_ts is not None else None,
             "exit_ts": int(self.exit_ts),
+            "holding_minutes": float(self.holding_minutes) if self.holding_minutes is not None else None,
+            "entry_price": float(self.entry_price) if self.entry_price is not None else None,
+            "exit_price": float(self.exit_price) if self.exit_price is not None else None,
+            "entry_regime": self.entry_regime,
+            "exit_regime": self.exit_regime,
+            "exit_rule": self.exit_rule,
+            "exit_reason": self.exit_reason,
+            "mae": float(self.mae) if self.mae is not None else None,
+            "mfe": float(self.mfe) if self.mfe is not None else None,
+            "mae_pct": float(self.mae_pct) if self.mae_pct is not None else None,
+            "mfe_pct": float(self.mfe_pct) if self.mfe_pct is not None else None,
+            "bars_to_mae": int(self.bars_to_mae) if self.bars_to_mae is not None else None,
+            "bars_to_mfe": int(self.bars_to_mfe) if self.bars_to_mfe is not None else None,
+            "unrealized_pnl_path_summary": self.unrealized_pnl_path_summary,
+            "entry_decision_hash": self.entry_decision_hash,
+            "exit_decision_hash": self.exit_decision_hash,
             "entry_notional": float(self.entry_notional) if self.entry_notional is not None else None,
             "net_pnl": float(self.net_pnl),
             "return_pct": float(self.return_pct) if self.return_pct is not None else None,
