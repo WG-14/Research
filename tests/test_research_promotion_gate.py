@@ -692,6 +692,26 @@ def test_candidate_regime_policy_equivalence_evidence_regime_policy_hash_mismatc
     )
     evidence_path = _bind_candidate_regime_policy_evidence(candidate, tmp_path)
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+
+    validate_candidate_regime_policy_equivalence_evidence(
+        evidence,
+        candidate_or_profile=candidate,
+        expected_hash=evidence["content_hash"],
+    )
+
+    changed_candidate = dict(candidate)
+    changed_candidate["allowed_live_regimes"] = ["sideways_normal_vol_unknown"]
+
+    with pytest.raises(
+        EvidenceValidationError,
+        match="candidate_regime_policy_equivalence_evidence_regime_policy_hash_mismatch",
+    ):
+        validate_candidate_regime_policy_equivalence_evidence(
+            evidence,
+            candidate_or_profile=changed_candidate,
+            expected_hash=evidence["content_hash"],
+        )
+
     evidence["regime_policy_hash"] = "sha256:" + "2" * 64
     evidence["content_hash"] = compute_evidence_content_hash(evidence)
 
@@ -706,7 +726,7 @@ def test_candidate_regime_policy_equivalence_evidence_regime_policy_hash_mismatc
         )
 
 
-def test_candidate_regime_policy_equivalence_evidence_regime_policy_hash_binds_profile_regime_policy(
+def test_candidate_regime_policy_equivalence_evidence_binds_profile_regime_policy_hash(
     tmp_path: Path,
 ) -> None:
     candidate = _production_candidate(
@@ -746,8 +766,22 @@ def test_candidate_regime_policy_equivalence_evidence_regime_policy_hash_binds_p
         expected_hash=evidence["content_hash"],
     )
 
+    changed_profile = dict(profile)
+    changed_profile["regime_policy"] = dict(profile["regime_policy"])
+    changed_profile["regime_policy"]["blocked_regimes"] = ["sideways_normal_vol_unknown"]
 
-def test_candidate_regime_policy_equivalence_evidence_regime_policy_hash_binds_candidate_regime_policy(
+    with pytest.raises(
+        EvidenceValidationError,
+        match="candidate_regime_policy_equivalence_evidence_regime_policy_hash_mismatch",
+    ):
+        validate_candidate_regime_policy_equivalence_evidence(
+            evidence,
+            candidate_or_profile=changed_profile,
+            expected_hash=evidence["content_hash"],
+        )
+
+
+def test_candidate_regime_policy_equivalence_evidence_binds_candidate_regime_policy_hash(
     tmp_path: Path,
 ) -> None:
     candidate = _production_candidate(
