@@ -25,6 +25,18 @@ def _ts(day: str, minute: int) -> int:
     return int(base.timestamp() * 1000) + minute * 60_000
 
 
+def _execution_test_params(*, short: int = 1, long: int = 2) -> dict[str, object]:
+    return {
+        "SMA_SHORT": short,
+        "SMA_LONG": long,
+        "SMA_FILTER_GAP_MIN_RATIO": 0.0,
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": 0.0,
+        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": 0.0,
+        "SMA_COST_EDGE_ENABLED": False,
+        "SMA_MARKET_REGIME_ENABLED": False,
+    }
+
+
 def _manifest(
     *,
     top_of_book: dict[str, object] | None = None,
@@ -628,7 +640,7 @@ def test_sma_backtest_execution_metadata_includes_joined_quote_fields() -> None:
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
     )
@@ -658,7 +670,7 @@ def test_candle_only_execution_metadata_records_no_quote_data() -> None:
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
     )
@@ -683,7 +695,7 @@ def test_orderbook_policy_uses_first_quote_after_decision_not_nearest_before() -
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
         execution_timing_policy=ExecutionTimingPolicy(
@@ -756,7 +768,7 @@ def test_latency_changes_fill_reference_quote() -> None:
 
     fast = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
         execution_model=StressExecutionModel(fee_rate=0.0, slippage_bps=0.0, latency_ms=0, seed=1),
@@ -764,7 +776,7 @@ def test_latency_changes_fill_reference_quote() -> None:
     )
     slow = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
         execution_model=StressExecutionModel(fee_rate=0.0, slippage_bps=0.0, latency_ms=700, seed=1),
@@ -828,7 +840,7 @@ def test_latency_adjusted_orderbook_loads_quote_after_latency_plus_wait(tmp_path
     snapshot = load_dataset_split(db_path=db_path, manifest=manifest, split_name="train")
     result = run_sma_backtest(
         dataset=snapshot,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
         execution_model=StressExecutionModel(fee_rate=0.0, slippage_bps=0.0, latency_ms=7000, seed=1),
@@ -853,7 +865,7 @@ def test_top_of_book_model_uses_ask_for_buy_bid_for_sell() -> None:
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
         execution_timing_policy=ExecutionTimingPolicy(
@@ -882,7 +894,7 @@ def test_execution_metadata_includes_reference_source_and_quote_age() -> None:
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
         execution_timing_policy=ExecutionTimingPolicy(
@@ -914,7 +926,7 @@ def test_trade_top_level_records_signal_and_fill_timestamps_separately() -> None
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
         execution_timing_policy=ExecutionTimingPolicy(
@@ -961,7 +973,7 @@ def test_next_open_fill_does_not_affect_signal_candle_close_equity() -> None:
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
         execution_timing_policy=ExecutionTimingPolicy(
@@ -988,7 +1000,7 @@ def test_latency_fill_after_next_candle_close_does_not_update_position_early() -
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
         execution_timing_policy=ExecutionTimingPolicy(
@@ -1022,7 +1034,7 @@ def test_pending_buy_fill_does_not_enable_sell_before_fill_ts() -> None:
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
         execution_timing_policy=ExecutionTimingPolicy(
@@ -1052,7 +1064,7 @@ def test_delayed_fill_crossing_mark_boundary_is_pending_not_early_applied() -> N
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
         execution_timing_policy=ExecutionTimingPolicy(
@@ -1087,7 +1099,7 @@ def test_not_enough_candles_backtest_has_empty_execution_event_summary() -> None
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 2, "SMA_LONG": 5},
+        parameter_values=_execution_test_params(short=2, long=5),
         fee_rate=0.0,
         slippage_bps=0.0,
     )
@@ -1102,7 +1114,7 @@ def test_empty_execution_event_summary_schema_matches_non_empty_summary() -> Non
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
     )
@@ -1158,7 +1170,7 @@ def test_latency_submit_and_reference_application_are_reported_separately() -> N
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
         execution_model=StressExecutionModel(fee_rate=0.0, slippage_bps=0.0, latency_ms=900, seed=1),
@@ -1211,7 +1223,7 @@ def test_missing_quote_policy_skip_records_skip_not_failed_fill() -> None:
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
         execution_timing_policy=ExecutionTimingPolicy(
@@ -1242,7 +1254,7 @@ def test_skipped_execution_attempt_is_not_counted_as_filled_trade() -> None:
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
         execution_timing_policy=ExecutionTimingPolicy(
@@ -1265,7 +1277,7 @@ def test_failed_execution_has_not_applicable_portfolio_application_status() -> N
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
         execution_timing_policy=ExecutionTimingPolicy(
@@ -1360,7 +1372,7 @@ def test_regime_coverage_does_not_treat_skipped_execution_as_filled_trade() -> N
 
     result = run_sma_backtest(
         dataset=dataset,
-        parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2},
+        parameter_values=_execution_test_params(),
         fee_rate=0.0,
         slippage_bps=0.0,
         execution_timing_policy=ExecutionTimingPolicy(

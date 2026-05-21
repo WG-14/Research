@@ -127,6 +127,7 @@ def evaluate_sma_entry_decision(
     cost_edge_min_ratio: float,
     market_regime_enabled: bool,
     candidate_regime_policy: dict[str, object] | None = None,
+    require_candidate_regime_policy: bool = False,
     fee_authority_degraded_blocks_entry: bool = False,
 ) -> SmaEntryDecision:
     close_values = [float(value) for value in closes]
@@ -194,7 +195,7 @@ def evaluate_sma_entry_decision(
     )
     candidate_regime_triggered = bool(
         raw_signal == "BUY"
-        and candidate_regime_policy is not None
+        and (require_candidate_regime_policy or candidate_regime_policy is not None)
         and not bool(candidate_regime_decision.get("allowed"))
     )
 

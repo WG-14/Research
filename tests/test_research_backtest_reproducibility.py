@@ -117,6 +117,34 @@ def _manifest() -> dict[str, object]:
     }
 
 
+def _complete_runtime_bound_parameter_space(
+    overrides: dict[str, list[object]] | None = None,
+) -> dict[str, list[object]]:
+    payload: dict[str, list[object]] = {
+        "SMA_SHORT": [2],
+        "SMA_LONG": [4],
+        "SMA_FILTER_GAP_MIN_RATIO": [0.0],
+        "SMA_FILTER_VOL_WINDOW": [10],
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": [0.0],
+        "SMA_FILTER_OVEREXT_LOOKBACK": [3],
+        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": [0.02],
+        "SMA_MARKET_REGIME_ENABLED": [True],
+        "SMA_COST_EDGE_ENABLED": [True],
+        "SMA_COST_EDGE_MIN_RATIO": [0.0],
+        "ENTRY_EDGE_BUFFER_RATIO": [0.0005],
+        "STRATEGY_MIN_EXPECTED_EDGE_RATIO": [0.0],
+        "STRATEGY_ENTRY_SLIPPAGE_BPS": [0.0],
+        "LIVE_FEE_RATE_ESTIMATE": [0.0],
+        "STRATEGY_EXIT_RULES": ["opposite_cross,max_holding_time"],
+        "STRATEGY_EXIT_MAX_HOLDING_MIN": [0],
+        "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": [0.0],
+        "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": [0.0],
+    }
+    if overrides:
+        payload.update(overrides)
+    return payload
+
+
 def _portfolio_policy(*, starting_cash: float = 1_000_000.0, buy_fraction: float = 0.99) -> dict[str, object]:
     cash_buffer_policy = (
         "retain_1_percent_before_fees"
@@ -331,6 +359,11 @@ def test_closed_trade_diagnostics_include_mae_mfe_and_exit_rule() -> None:
 def _production_bound_statistical_manifest() -> dict[str, object]:
     payload = _manifest()
     payload["deployment_tier"] = "paper_candidate"
+    payload["parameter_space"] = _complete_runtime_bound_parameter_space(
+        {
+            "SMA_FILTER_VOL_MIN_RANGE_RATIO": [0.0],
+        }
+    )
     payload["portfolio_policy"] = _portfolio_policy()
     payload["execution_model"] = {
         "type": "fixed_bps",

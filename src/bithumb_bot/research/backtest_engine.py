@@ -378,6 +378,20 @@ def run_sma_backtest(
         fee_rate=fee_rate,
         slippage_bps=slippage_bps,
     )
+    # Backward-compatible research-only behavior: minimal historical test and
+    # diagnostic parameter sets exercised raw SMA crosses unless a filter was
+    # explicitly part of the candidate. Production-bound manifests still fail
+    # closed unless every runtime-bound behavior parameter is declared.
+    legacy_disabled_filter_defaults = {
+        "SMA_FILTER_GAP_MIN_RATIO": 0.0,
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": 0.0,
+        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": 0.0,
+        "SMA_COST_EDGE_ENABLED": False,
+        "SMA_MARKET_REGIME_ENABLED": False,
+    }
+    for key, value in legacy_disabled_filter_defaults.items():
+        if key not in parameter_values:
+            effective_parameters[key] = value
     active_exit_policy = exit_policy_from_parameters("sma_with_filter", effective_parameters)
     active_exit_policy_hash = exit_policy_hash(active_exit_policy)
     short_n = int(effective_parameters.get("SMA_SHORT", effective_parameters.get("short_n", 0)))

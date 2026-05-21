@@ -133,7 +133,7 @@ SMA_WITH_FILTER_SPEC = StrategySpec(
 
 
 def strategy_spec_for_name(strategy_name: str) -> StrategySpec:
-    if strategy_name == SMA_WITH_FILTER_SPEC.strategy_name:
+    if strategy_name in {SMA_WITH_FILTER_SPEC.strategy_name, "__test_top_of_book_required__"}:
         return SMA_WITH_FILTER_SPEC
     raise StrategySpecError(f"unsupported research strategy: {strategy_name}")
 

@@ -14,6 +14,13 @@ from bithumb_bot.execution_reality_contract import (
     validate_execution_capability_contract,
 )
 from bithumb_bot.research.experiment_manifest import ManifestValidationError, parse_manifest
+from bithumb_bot.research.hashing import sha256_prefixed
+from bithumb_bot.research.strategy_spec import (
+    exit_policy_from_parameters,
+    materialize_strategy_parameters,
+    materialized_strategy_parameters_hash,
+    strategy_parameter_source_map,
+)
 
 
 def _contract(**overrides):
@@ -393,6 +400,34 @@ def _manifest_payload() -> dict[str, object]:
     }
 
 
+def _complete_runtime_bound_parameter_space(
+    overrides: dict[str, list[object]] | None = None,
+) -> dict[str, list[object]]:
+    payload: dict[str, list[object]] = {
+        "SMA_SHORT": [2],
+        "SMA_LONG": [4],
+        "SMA_FILTER_GAP_MIN_RATIO": [0.0],
+        "SMA_FILTER_VOL_WINDOW": [10],
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": [0.0],
+        "SMA_FILTER_OVEREXT_LOOKBACK": [3],
+        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": [0.02],
+        "SMA_MARKET_REGIME_ENABLED": [True],
+        "SMA_COST_EDGE_ENABLED": [True],
+        "SMA_COST_EDGE_MIN_RATIO": [0.0],
+        "ENTRY_EDGE_BUFFER_RATIO": [0.0005],
+        "STRATEGY_MIN_EXPECTED_EDGE_RATIO": [0.0],
+        "STRATEGY_ENTRY_SLIPPAGE_BPS": [5.0],
+        "LIVE_FEE_RATE_ESTIMATE": [0.0004],
+        "STRATEGY_EXIT_RULES": ["opposite_cross,max_holding_time"],
+        "STRATEGY_EXIT_MAX_HOLDING_MIN": [0],
+        "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": [0.0],
+        "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": [0.0],
+    }
+    if overrides:
+        payload.update(overrides)
+    return payload
+
+
 def _portfolio_policy() -> dict[str, object]:
     return {
         "schema_version": 1,
@@ -458,6 +493,7 @@ def _production_bound_manifest_payload(**overrides: object) -> dict[str, object]
     payload.update(
         {
             "deployment_tier": "paper_candidate",
+            "parameter_space": _complete_runtime_bound_parameter_space(),
             "portfolio_policy": _portfolio_policy(),
             "statistical_validation": _statistical_validation(),
             "stress_suite": _stress_suite(),
@@ -938,6 +974,8 @@ def test_depth_availability_does_not_satisfy_queue_ticks_impact_or_intracandle()
 def test_profile_runtime_execution_contract_mismatch_is_reason_coded() -> None:
     profile_contract = _contract()
     runtime_contract = _contract(fill_reference_policy="latency_adjusted_orderbook")
+    strategy_parameters = materialize_strategy_parameters("sma_with_filter", {})
+    exit_policy = exit_policy_from_parameters("sma_with_filter", strategy_parameters)
     profile = {
         "profile_schema_version": 1,
         "profile_mode": "paper",
@@ -948,7 +986,12 @@ def test_profile_runtime_execution_contract_mismatch_is_reason_coded() -> None:
         "strategy_name": "sma_with_filter",
         "market": "KRW-BTC",
         "interval": "1m",
-        "strategy_parameters": {},
+        "strategy_parameters": strategy_parameters,
+        "effective_strategy_parameters": strategy_parameters,
+        "effective_strategy_parameters_hash": materialized_strategy_parameters_hash(strategy_parameters),
+        "strategy_parameter_source_map": strategy_parameter_source_map("sma_with_filter", {}),
+        "exit_policy": exit_policy,
+        "exit_policy_hash": sha256_prefixed(exit_policy),
         "cost_model": {},
         "base_cost_assumption": {
             "role": "base",

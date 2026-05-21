@@ -962,6 +962,7 @@ class SmaWithFilterStrategy:
             cost_edge_min_ratio=float(self.cost_edge_min_ratio),
             market_regime_enabled=bool(self.market_regime_enabled),
             candidate_regime_policy=self.candidate_regime_policy,
+            require_candidate_regime_policy=True,
             fee_authority_degraded_blocks_entry=_live_armed_entry_fee_authority_blocks(fee_authority),
         )
         base_signal = entry_decision.base_signal
