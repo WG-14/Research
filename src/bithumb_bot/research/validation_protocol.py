@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
@@ -49,6 +50,12 @@ from .execution_plan import (
     ResearchWorkUnit,
     build_research_execution_plan,
     build_research_work_unit,
+)
+from .executor import (
+    ResearchWorkResult,
+    execute_research_work_units_parallel,
+    execute_research_work_units_serial,
+    sort_work_results_deterministically,
 )
 from .final_selection import apply_final_selection_contract
 from .hashing import content_hash_payload, sha256_prefixed
@@ -103,6 +110,148 @@ TOP_OF_BOOK_OPERATOR_NEXT_ACTION = (
     "and verify top_of_book_coverage_pct"
 )
 ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def _candidate_scenario_worker(task: dict[str, Any]) -> ResearchWorkResult:
+    return _evaluate_candidate_scenario_task(
+        task=task,
+        manager=None,
+        progress_callback=None,
+        worker_pid=os.getpid(),
+    )
+
+
+def _evaluate_candidate_scenario_task(
+    *,
+    task: dict[str, Any],
+    manager: PathManager | None,
+    progress_callback: ProgressCallback | None,
+    worker_pid: int | None,
+) -> ResearchWorkResult:
+    manifest = task["manifest"]
+    snapshots = task["snapshots"]
+    params = dict(task["params"])
+    index = int(task["candidate_index"])
+    scenario = task["scenario"]
+    scenario_index = int(task["scenario_index"])
+    scenario_id = str(task["scenario_id"])
+    manifest_hash = str(task["manifest_hash"])
+    include_walk_forward = bool(task["include_walk_forward"])
+    work_unit = task["work_unit"]
+    raw_candidate_count = int(task["raw_candidate_count"])
+    param_candidate_id = candidate_id(params, index)
+    worker_observability: list[dict[str, Any]] = []
+    try:
+        base = _evaluate_candidate_base_result(
+            manifest=manifest,
+            manager=manager,
+            runner=resolve_research_strategy(manifest.strategy_name),
+            snapshots=snapshots,
+            params=params,
+            index=index,
+            raw_candidate_count=raw_candidate_count,
+            scenario=scenario,
+            scenario_index=scenario_index,
+            scenario_id=scenario_id,
+            manifest_hash=manifest_hash,
+            include_walk_forward=include_walk_forward,
+            work_unit=work_unit,
+            work_unit_observability=worker_observability,
+            progress_callback=progress_callback,
+        )
+        observability = worker_observability[-1] if worker_observability else {}
+        if worker_pid is not None:
+            observability = {**observability, "worker_pid": worker_pid}
+        return ResearchWorkResult(
+            work_unit=work_unit,
+            work_unit_hash=work_unit.work_unit_hash,
+            candidate_index=index,
+            candidate_id=param_candidate_id,
+            scenario_index=scenario_index,
+            scenario_id=scenario_id,
+            status="completed",
+            base_result=base,
+            observability=observability,
+        )
+    except BacktestResourceLimitExceeded as exc:
+        _record_failed_work_unit(
+            work_unit_observability=worker_observability,
+            work_unit=work_unit,
+            reason=exc.reason,
+            resource_guard=exc.evidence,
+        )
+        base = _failed_candidate_base_result(
+            manifest=manifest,
+            candidate_index=index,
+            candidate_id=param_candidate_id,
+            params=params,
+            scenario=scenario,
+            scenario_index=scenario_index,
+            scenario_id=scenario_id,
+            reason=exc.reason,
+            resource_guard=exc.evidence,
+        )
+        observability = worker_observability[-1] if worker_observability else {}
+        if worker_pid is not None:
+            observability = {**observability, "worker_pid": worker_pid}
+        return ResearchWorkResult(
+            work_unit=work_unit,
+            work_unit_hash=work_unit.work_unit_hash,
+            candidate_index=index,
+            candidate_id=param_candidate_id,
+            scenario_index=scenario_index,
+            scenario_id=scenario_id,
+            status="failed",
+            base_result=base,
+            failure_reason=exc.reason,
+            failure_evidence=exc.evidence,
+            observability=observability,
+        )
+    except Exception as exc:
+        evidence = {
+            "status": "ERROR",
+            "exception_type": type(exc).__name__,
+            "message": str(exc),
+            "split": str(getattr(exc, "failed_split", "unknown")),
+            **(
+                {"audit_trace_index": getattr(exc, "audit_trace_index")}
+                if isinstance(getattr(exc, "audit_trace_index", None), dict)
+                else {}
+            ),
+        }
+        _record_failed_work_unit(
+            work_unit_observability=worker_observability,
+            work_unit=work_unit,
+            reason="candidate_exception",
+            resource_guard=evidence,
+        )
+        base = _failed_candidate_base_result(
+            manifest=manifest,
+            candidate_index=index,
+            candidate_id=param_candidate_id,
+            params=params,
+            scenario=scenario,
+            scenario_index=scenario_index,
+            scenario_id=scenario_id,
+            reason="candidate_exception",
+            resource_guard=evidence,
+        )
+        observability = worker_observability[-1] if worker_observability else {}
+        if worker_pid is not None:
+            observability = {**observability, "worker_pid": worker_pid}
+        return ResearchWorkResult(
+            work_unit=work_unit,
+            work_unit_hash=work_unit.work_unit_hash,
+            candidate_index=index,
+            candidate_id=param_candidate_id,
+            scenario_index=scenario_index,
+            scenario_id=scenario_id,
+            status="failed",
+            base_result=base,
+            failure_reason="candidate_exception",
+            failure_evidence=evidence,
+            observability=observability,
+        )
 
 
 def _emit_progress(callback: ProgressCallback | None, **payload: Any) -> None:
@@ -315,7 +464,7 @@ def _append_candidate_event(
 def _backtest_context(
     *,
     manifest: ExperimentManifest,
-    manager: PathManager,
+    manager: PathManager | None,
     candidate_id: str,
     scenario_id: str,
     scenario_index: int,
@@ -328,6 +477,8 @@ def _backtest_context(
     heartbeat = manifest.research_run.heartbeat
     audit_trace = None
     if manifest.research_run.audit_trail.complete_external:
+        if manager is None:
+            raise ResearchValidationError("audit_trace_requires_main_process_artifact_manager")
         audit_trace = AuditTraceScope(
             manager=manager,
             experiment_id=manifest.experiment_id,
@@ -338,6 +489,14 @@ def _backtest_context(
             scenario_index=scenario_index,
             split=split_name,
             parameter_values=parameter_values,
+        )
+    context_progress_callback = None
+    if progress_callback is not None or manager is not None:
+        context_progress_callback = lambda event: _progress_and_journal(
+            callback=progress_callback,
+            manager=manager,
+            manifest=manifest,
+            event=event,
         )
     return BacktestRunContext(
         experiment_id=manifest.experiment_id,
@@ -357,12 +516,7 @@ def _backtest_context(
             interval_s=heartbeat.interval_s,
             bar_interval=heartbeat.bar_interval,
         ),
-        progress_callback=lambda event: _progress_and_journal(
-            callback=progress_callback,
-            manager=manager,
-            manifest=manifest,
-            event=event,
-        ),
+        progress_callback=context_progress_callback,
         audit_trace=audit_trace,
     )
 
@@ -750,7 +904,6 @@ def _evaluate_candidates(
     dataset_quality_status, dataset_quality_reasons = _combined_dataset_quality_gate(quality_reports)
     dataset_warning_codes = _dataset_quality_warning_codes(quality_reports)
     top_of_book_quality_summary = _top_of_book_quality_summary(quality_reports)
-    runner = resolve_research_strategy(manifest.strategy_name)
     strategy_spec = strategy_spec_for_name(manifest.strategy_name)
     metrics_gate_policy = metrics_gate_policy_from_acceptance_gate(manifest.acceptance_gate)
     metrics_gate_policy_digest = metrics_gate_policy_hash(metrics_gate_policy)
@@ -778,6 +931,125 @@ def _evaluate_candidates(
         top_of_book_required=bool(manifest.dataset.top_of_book.required) if manifest.dataset.top_of_book else False,
         calibration_required=manifest.execution_model.calibration_required,
     )
+
+    if manifest.research_run.execution.mode == "parallel" and manifest.research_run.audit_trail.complete_external:
+        raise ResearchValidationError("parallel_execution_complete_external_audit_trail_not_supported")
+
+    work_tasks: list[dict[str, Any]] = []
+    for scenario_index, scenario in enumerate(manifest.execution_model.scenarios):
+        scenario_id = _scenario_id(scenario, scenario_index)
+        for index, params in enumerate(raw_candidates):
+            work_unit = build_research_work_unit(
+                manifest=manifest,
+                snapshots=snapshots,
+                params=params,
+                candidate_index=index,
+                scenario=scenario,
+                scenario_index=scenario_index,
+                scenario_id=scenario_id,
+                manifest_hash=manifest_hash,
+            )
+            work_tasks.append(
+                {
+                    "manifest": manifest,
+                    "snapshots": snapshots,
+                    "params": params,
+                    "candidate_index": index,
+                    "raw_candidate_count": len(raw_candidates),
+                    "scenario": scenario,
+                    "scenario_index": scenario_index,
+                    "scenario_id": scenario_id,
+                    "manifest_hash": manifest_hash,
+                    "include_walk_forward": include_walk_forward,
+                    "work_unit": work_unit,
+                }
+            )
+
+    if manifest.research_run.execution.mode == "parallel":
+        for task in work_tasks:
+            _append_candidate_event(
+                manager=manager,
+                manifest=manifest,
+                event={
+                    "stage": "candidate_start",
+                    "candidate_id": candidate_id(dict(task["params"]), int(task["candidate_index"])),
+                    "scenario_id": task["scenario_id"],
+                    "scenario_index": task["scenario_index"],
+                    "parameter_values": task["params"],
+                    "work_unit_hash": task["work_unit"].work_unit_hash,
+                },
+            )
+        raw_results = execute_research_work_units_parallel(
+            tasks=work_tasks,
+            worker=_candidate_scenario_worker,
+            max_workers=manifest.research_run.execution.max_workers,
+        )
+    else:
+        raw_results = []
+        for task in work_tasks:
+            _append_candidate_event(
+                manager=manager,
+                manifest=manifest,
+                event={
+                    "stage": "candidate_start",
+                    "candidate_id": candidate_id(dict(task["params"]), int(task["candidate_index"])),
+                    "scenario_id": task["scenario_id"],
+                    "scenario_index": task["scenario_index"],
+                    "parameter_values": task["params"],
+                    "work_unit_hash": task["work_unit"].work_unit_hash,
+                },
+            )
+            raw_results.extend(
+                execute_research_work_units_serial(
+                    tasks=(task,),
+                    worker=lambda item: _evaluate_candidate_scenario_task(
+                        task=item,
+                        manager=manager,
+                        progress_callback=progress_callback,
+                        worker_pid=None,
+                    ),
+                )
+            )
+    work_results = sort_work_results_deterministically(raw_results)
+    if work_unit_observability is not None:
+        work_unit_observability.extend(result.observability_payload() for result in work_results)
+    for result in work_results:
+        if result.status == "failed":
+            if result.base_result is not None:
+                _write_failed_candidate_evidence(
+                    manager=manager,
+                    manifest=manifest,
+                    candidate=result.base_result,
+                )
+            event = {
+                "stage": "candidate_failure",
+                "candidate_id": result.candidate_id,
+                "scenario_id": result.scenario_id,
+                "reason": result.failure_reason,
+                "work_unit_hash": result.work_unit_hash,
+            }
+            if result.failure_evidence:
+                event["resource_guard"] = result.failure_evidence
+                if result.failure_reason == "candidate_exception":
+                    event["exception_type"] = result.failure_evidence.get("exception_type")
+                    event["message"] = result.failure_evidence.get("message")
+            _append_candidate_event(manager=manager, manifest=manifest, event=event)
+        elif manifest.research_run.execution.mode == "parallel":
+            _emit_progress(
+                progress_callback,
+                stage="work_unit_complete",
+                candidate_id=result.candidate_id,
+                scenario_id=result.scenario_id,
+                scenario_index=result.scenario_index,
+                work_unit_hash=result.work_unit_hash,
+                wall_seconds=round(float((result.observability or {}).get("wall_seconds") or 0.0), 3),
+                candles_processed=int((result.observability or {}).get("candles_processed") or 0),
+            )
+    base_results_by_scenario: dict[int, list[dict[str, Any]]] = {}
+    for result in work_results:
+        if result.base_result is None:
+            raise ResearchValidationError(f"work_result_missing_base_result: {result.work_unit_hash}")
+        base_results_by_scenario.setdefault(result.scenario_index, []).append(result.base_result)
 
     for scenario_index, scenario in enumerate(manifest.execution_model.scenarios):
         scenario_id = _scenario_id(scenario, scenario_index)
@@ -811,135 +1083,7 @@ def _evaluate_candidates(
                 or manifest.execution_model.calibration_strictness == "fail"
             ),
         )
-        base_results: list[dict[str, Any]] = []
-        for index, params in enumerate(raw_candidates):
-            param_candidate_id = candidate_id(params, index)
-            work_unit = build_research_work_unit(
-                manifest=manifest,
-                snapshots=snapshots,
-                params=params,
-                candidate_index=index,
-                scenario=scenario,
-                scenario_index=scenario_index,
-                scenario_id=scenario_id,
-                manifest_hash=manifest_hash,
-            )
-            _append_candidate_event(
-                manager=manager,
-                manifest=manifest,
-                event={
-                    "stage": "candidate_start",
-                    "candidate_id": param_candidate_id,
-                    "scenario_id": scenario_id,
-                    "scenario_index": scenario_index,
-                    "parameter_values": params,
-                    "work_unit_hash": work_unit.work_unit_hash,
-                },
-            )
-            try:
-                base = _evaluate_candidate_base_result(
-                    manifest=manifest,
-                    manager=manager,
-                    runner=runner,
-                    snapshots=snapshots,
-                    params=params,
-                    index=index,
-                    raw_candidate_count=len(raw_candidates),
-                    scenario=scenario,
-                    scenario_index=scenario_index,
-                    scenario_id=scenario_id,
-                    manifest_hash=manifest_hash,
-                    include_walk_forward=include_walk_forward,
-                    work_unit=work_unit,
-                    work_unit_observability=work_unit_observability,
-                    progress_callback=progress_callback,
-                )
-            except BacktestResourceLimitExceeded as exc:
-                _record_failed_work_unit(
-                    work_unit_observability=work_unit_observability,
-                    work_unit=work_unit,
-                    reason=exc.reason,
-                    resource_guard=exc.evidence,
-                )
-                base = _failed_candidate_base_result(
-                    manifest=manifest,
-                    candidate_index=index,
-                    candidate_id=param_candidate_id,
-                    params=params,
-                    scenario=scenario,
-                    scenario_index=scenario_index,
-                    scenario_id=scenario_id,
-                    reason=exc.reason,
-                    resource_guard=exc.evidence,
-                )
-                _write_failed_candidate_evidence(
-                    manager=manager,
-                    manifest=manifest,
-                    candidate=base,
-                )
-                _append_candidate_event(
-                    manager=manager,
-                    manifest=manifest,
-                    event={
-                        "stage": "candidate_failure",
-                        "candidate_id": param_candidate_id,
-                        "scenario_id": scenario_id,
-                        "reason": exc.reason,
-                        "resource_guard": exc.evidence,
-                        "work_unit_hash": work_unit.work_unit_hash,
-                    },
-                )
-            except Exception as exc:
-                _record_failed_work_unit(
-                    work_unit_observability=work_unit_observability,
-                    work_unit=work_unit,
-                    reason="candidate_exception",
-                    resource_guard={
-                        "exception_type": type(exc).__name__,
-                        "message": str(exc),
-                        "split": str(getattr(exc, "failed_split", "unknown")),
-                    },
-                )
-                base = _failed_candidate_base_result(
-                    manifest=manifest,
-                    candidate_index=index,
-                    candidate_id=param_candidate_id,
-                    params=params,
-                    scenario=scenario,
-                    scenario_index=scenario_index,
-                    scenario_id=scenario_id,
-                    reason="candidate_exception",
-                    resource_guard={
-                        "status": "ERROR",
-                        "exception_type": type(exc).__name__,
-                        "message": str(exc),
-                        "split": str(getattr(exc, "failed_split", "unknown")),
-                        **(
-                            {"audit_trace_index": getattr(exc, "audit_trace_index")}
-                            if isinstance(getattr(exc, "audit_trace_index", None), dict)
-                            else {}
-                        ),
-                    },
-                )
-                _write_failed_candidate_evidence(
-                    manager=manager,
-                    manifest=manifest,
-                    candidate=base,
-                )
-                _append_candidate_event(
-                    manager=manager,
-                    manifest=manifest,
-                    event={
-                        "stage": "candidate_failure",
-                        "candidate_id": param_candidate_id,
-                        "scenario_id": scenario_id,
-                        "reason": "candidate_exception",
-                        "exception_type": type(exc).__name__,
-                        "message": str(exc),
-                        "work_unit_hash": work_unit.work_unit_hash,
-                    },
-                )
-            base_results.append(base)
+        base_results = sorted(base_results_by_scenario.get(scenario_index, []), key=lambda item: int(item["index"]))
         stability = _parameter_stability_scores(
             manifest=manifest,
             candidates=raw_candidates,
@@ -1518,7 +1662,7 @@ def _mark_noop_behavior_hash_groups(
 def _evaluate_candidate_base_result(
     *,
     manifest: ExperimentManifest,
-    manager: PathManager,
+    manager: PathManager | None,
     runner: Any,
     snapshots: dict[str, DatasetSnapshot],
     params: dict[str, Any],

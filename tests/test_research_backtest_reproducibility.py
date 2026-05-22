@@ -33,6 +33,7 @@ from bithumb_bot.research.experiment_manifest import (
     parse_manifest,
 )
 from bithumb_bot.research.execution_plan import build_research_execution_plan
+from bithumb_bot.research.executor import ResearchWorkResult, sort_work_results_deterministically
 from bithumb_bot.research.hashing import report_content_hash_payload, sha256_prefixed
 from bithumb_bot.research.strategy_spec import strategy_spec_for_name
 from bithumb_bot.research.audit_trail import AuditTraceScope, AuditTrailPolicy, verify_audit_trail, write_trace_manifest
@@ -46,7 +47,12 @@ from bithumb_bot.research.experiment_registry import (
 )
 from bithumb_bot.research.parameter_space import candidate_id
 from bithumb_bot.research.promotion_gate import PromotionGateError, _verify_report_content_hash, promote_candidate
-from bithumb_bot.research.validation_protocol import _promotion_blocking_reasons, run_research_backtest, run_research_walk_forward
+from bithumb_bot.research.validation_protocol import (
+    ResearchValidationError,
+    _promotion_blocking_reasons,
+    run_research_backtest,
+    run_research_walk_forward,
+)
 from bithumb_bot.research import validation_protocol
 from bithumb_bot.sma_decision import evaluate_sma_entry_decision, evaluate_sma_entry_decision_from_features
 from bithumb_bot.market_regime import classify_sma_market_regime
@@ -665,6 +671,57 @@ def test_research_execution_policy_rejects_serial_max_workers_above_one() -> Non
         parse_manifest(payload)
 
 
+def test_research_execution_policy_accepts_parallel_max_workers_two() -> None:
+    payload = _manifest()
+    payload["research_run"] = {
+        "execution": {
+            "mode": "parallel",
+            "max_workers": 2,
+            "work_unit": "candidate_scenario",
+            "deterministic_merge_order": "scenario_index,candidate_index,split_name",
+            "resume": False,
+        }
+    }
+
+    manifest = parse_manifest(payload)
+
+    assert manifest.research_run.execution.mode == "parallel"
+    assert manifest.research_run.execution.max_workers == 2
+
+
+def test_research_execution_policy_rejects_parallel_max_workers_one() -> None:
+    payload = _manifest()
+    payload["research_run"] = {"execution": {"mode": "parallel", "max_workers": 1}}
+
+    with pytest.raises(ManifestValidationError, match="parallel execution requires max_workers>=2"):
+        parse_manifest(payload)
+
+
+def test_research_execution_policy_rejects_unsupported_work_unit() -> None:
+    payload = _manifest()
+    payload["research_run"] = {"execution": {"mode": "parallel", "max_workers": 2, "work_unit": "candidate_split"}}
+
+    with pytest.raises(ManifestValidationError, match="research_run.execution.work_unit must be candidate_scenario"):
+        parse_manifest(payload)
+
+
+def test_research_execution_policy_rejects_changed_merge_order() -> None:
+    payload = _manifest()
+    payload["research_run"] = {
+        "execution": {
+            "mode": "parallel",
+            "max_workers": 2,
+            "deterministic_merge_order": "completion_order",
+        }
+    }
+
+    with pytest.raises(
+        ManifestValidationError,
+        match="research_run.execution.deterministic_merge_order must be scenario_index,candidate_index,split_name",
+    ):
+        parse_manifest(payload)
+
+
 def test_research_execution_policy_rejects_resume_true() -> None:
     payload = _manifest()
     payload["research_run"] = {"execution": {"mode": "serial", "max_workers": 1, "resume": True}}
@@ -773,6 +830,44 @@ def test_research_execution_plan_counts_multiple_candidates_and_scenarios(tmp_pa
     assert plan["plan_hash"] == later_plan["plan_hash"]
 
 
+def test_research_execution_plan_records_parallel_policy(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    payload = _manifest()
+    payload["research_run"] = {
+        "execution": {
+            "mode": "parallel",
+            "max_workers": 2,
+            "work_unit": "candidate_scenario",
+            "deterministic_merge_order": "scenario_index,candidate_index,split_name",
+            "resume": False,
+        }
+    }
+    manifest = parse_manifest(payload)
+    snapshots = {
+        split_name: validation_protocol.load_dataset_split(db_path=db_path, manifest=manifest, split_name=split_name)
+        for split_name in ("train", "validation", "final_holdout")
+    }
+    quality_reports = validation_protocol._quality_reports(db_path=db_path, snapshots=snapshots)
+
+    plan = build_research_execution_plan(
+        manifest=manifest,
+        snapshots=snapshots,
+        quality_reports=quality_reports,
+        db_path=db_path,
+        repository_version="unit",
+        created_at="2026-05-03T00:00:00+00:00",
+    ).as_dict()
+
+    assert plan["execution_mode"] == "parallel"
+    assert plan["max_workers"] == 2
+    assert plan["work_unit_type"] == "candidate_scenario"
+    assert plan["deterministic_merge_order"] == "scenario_index,candidate_index,split_name"
+    assert plan["estimated_strategy_runs"] == 3
+    assert plan["estimated_candle_evaluations"] == 4320
+    assert plan["plan_hash"].startswith("sha256:")
+
+
 def test_serial_work_unit_order_is_deterministic(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -816,6 +911,78 @@ def test_serial_work_unit_order_is_deterministic(tmp_path, monkeypatch) -> None:
     assert first["content_hash"] == second["content_hash"]
 
 
+def test_work_results_sort_by_deterministic_merge_order() -> None:
+    manifest = parse_manifest(_manifest())
+    snapshots = {
+        "train": _snapshot_from_closes([100.0, 101.0, 102.0]),
+        "validation": _snapshot_from_closes([100.0, 99.0, 101.0]),
+    }
+    first = validation_protocol.build_research_work_unit(
+        manifest=manifest,
+        snapshots=snapshots,
+        params={"SMA_SHORT": 2, "SMA_LONG": 4},
+        candidate_index=1,
+        scenario=manifest.execution_model.scenarios[0],
+        scenario_index=0,
+        scenario_id="scenario_0",
+        manifest_hash=manifest.manifest_hash(),
+    )
+    second = validation_protocol.build_research_work_unit(
+        manifest=manifest,
+        snapshots=snapshots,
+        params={"SMA_SHORT": 2, "SMA_LONG": 4},
+        candidate_index=0,
+        scenario=manifest.execution_model.scenarios[0],
+        scenario_index=1,
+        scenario_id="scenario_1",
+        manifest_hash=manifest.manifest_hash(),
+    )
+    third = validation_protocol.build_research_work_unit(
+        manifest=manifest,
+        snapshots=snapshots,
+        params={"SMA_SHORT": 2, "SMA_LONG": 4},
+        candidate_index=0,
+        scenario=manifest.execution_model.scenarios[0],
+        scenario_index=0,
+        scenario_id="scenario_0",
+        manifest_hash=manifest.manifest_hash(),
+    )
+
+    ordered = sort_work_results_deterministically(
+        [
+            ResearchWorkResult(
+                work_unit=first,
+                work_unit_hash=first.work_unit_hash,
+                candidate_index=1,
+                candidate_id=first.candidate_id,
+                scenario_index=0,
+                scenario_id="scenario_0",
+                status="completed",
+            ),
+            ResearchWorkResult(
+                work_unit=second,
+                work_unit_hash=second.work_unit_hash,
+                candidate_index=0,
+                candidate_id=second.candidate_id,
+                scenario_index=1,
+                scenario_id="scenario_1",
+                status="completed",
+            ),
+            ResearchWorkResult(
+                work_unit=third,
+                work_unit_hash=third.work_unit_hash,
+                candidate_index=0,
+                candidate_id=third.candidate_id,
+                scenario_index=0,
+                scenario_id="scenario_0",
+                status="completed",
+            ),
+        ]
+    )
+
+    assert [(item.scenario_index, item.candidate_index) for item in ordered] == [(0, 0), (0, 1), (1, 0)]
+
+
 def test_explicit_default_execution_policy_preserves_serial_metrics(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -853,6 +1020,94 @@ def test_explicit_default_execution_policy_preserves_serial_metrics(tmp_path, mo
     assert default_report["candidates"][0]["validation_metrics"] == explicit_report["candidates"][0]["validation_metrics"]
     assert default_report["candidates"][0]["behavior_hash"] == explicit_report["candidates"][0]["behavior_hash"]
     assert default_report["content_hash"] == explicit_report["content_hash"]
+
+
+def test_parallel_candidate_scenario_matches_serial_logical_results(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    base_payload = _manifest()
+    base_payload["experiment_id"] = "parallel_equivalence"
+    base_payload["parameter_space"] = {
+        "SMA_SHORT": [2, 3],
+        "SMA_LONG": [4],
+        "SMA_FILTER_GAP_MIN_RATIO": [0.0],
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": [0.0],
+    }
+    base_payload["cost_model"] = {"fee_rate": 0.0, "slippage_bps": [0, 1]}
+    parallel_payload = json.loads(json.dumps(base_payload))
+    parallel_payload["research_run"] = {
+        "execution": {
+            "mode": "parallel",
+            "max_workers": 2,
+            "work_unit": "candidate_scenario",
+            "deterministic_merge_order": "scenario_index,candidate_index,split_name",
+            "resume": False,
+        }
+    }
+
+    serial = run_research_backtest(
+        manifest=parse_manifest(base_payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+    parallel = run_research_backtest(
+        manifest=parse_manifest(parallel_payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    assert parallel["execution_policy"]["mode"] == "parallel"
+    assert parallel["execution_policy"]["max_workers"] == 2
+    assert len(parallel["execution_observability"]["work_units"]) == 4
+    assert _logical_candidate_summary(serial) == _logical_candidate_summary(parallel)
+    assert [
+        (item["work_unit"]["scenario_index"], item["work_unit"]["candidate_index"])
+        for item in parallel["execution_observability"]["work_units"]
+    ] == [(0, 0), (0, 1), (1, 0), (1, 1)]
+
+
+def _logical_candidate_summary(report: dict[str, object]) -> list[dict[str, object]]:
+    candidates = report["candidates"]
+    assert isinstance(candidates, list)
+    summary: list[dict[str, object]] = []
+    for candidate in candidates:
+        assert isinstance(candidate, dict)
+        summary.append(
+            {
+                "parameter_candidate_id": candidate["parameter_candidate_id"],
+                "acceptance_gate_result": candidate.get("acceptance_gate_result"),
+                "gate_fail_reasons": candidate.get("gate_fail_reasons"),
+                "validation_metrics": candidate.get("validation_metrics"),
+                "validation_metrics_v2": candidate.get("validation_metrics_v2"),
+                "behavior_hash": candidate.get("behavior_hash"),
+                "decision_behavior_hash": candidate.get("decision_behavior_hash"),
+                "trade_ledger_hash": candidate.get("trade_ledger_hash"),
+                "equity_curve_hash": candidate.get("equity_curve_hash"),
+                "composite_behavior_hash": candidate.get("composite_behavior_hash"),
+                "scenario_results": [
+                    {
+                        "scenario_id": scenario.get("scenario_id"),
+                        "scenario_acceptance_gate_result": scenario.get("scenario_acceptance_gate_result"),
+                        "scenario_fail_reasons": scenario.get("scenario_fail_reasons"),
+                        "validation_metrics": scenario.get("validation_metrics"),
+                        "validation_metrics_v2": scenario.get("validation_metrics_v2"),
+                        "behavior_hash": scenario.get("behavior_hash"),
+                        "decision_behavior_hash": scenario.get("decision_behavior_hash"),
+                        "trade_ledger_hash": scenario.get("trade_ledger_hash"),
+                        "equity_curve_hash": scenario.get("equity_curve_hash"),
+                        "composite_behavior_hash": scenario.get("composite_behavior_hash"),
+                    }
+                    for scenario in candidate.get("scenario_results", [])
+                ],
+            }
+        )
+    return sorted(summary, key=lambda item: str(item["parameter_candidate_id"]))
 
 
 def test_research_report_candidate_and_lineage_bind_portfolio_policy(tmp_path, monkeypatch) -> None:
@@ -1748,6 +2003,59 @@ def test_research_sweep_continues_after_guard_failure_and_writes_candidate_artif
     assert failed[0]["resource_guard"]["status"] == "TRIPPED"
 
 
+def test_parallel_research_failure_is_committed_by_main_process(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["experiment_id"] = "parallel_bounded_sweep"
+    payload["parameter_space"] = {
+        "SMA_SHORT": [2],
+        "SMA_LONG": [4],
+        "SMA_FILTER_GAP_MIN_RATIO": [0.0, 1.0],
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": [0.0],
+    }
+    payload["research_run"] = {
+        "report_detail": "summary",
+        "resource_limits": {
+            "max_runtime_s_per_candidate_split": 60,
+            "max_decisions_retained": 0,
+            "max_trades": 1,
+            "max_equity_points_retained": 0,
+            "max_rss_mb": None,
+        },
+        "heartbeat": {"interval_s": None, "bar_interval": 5},
+        "execution": {
+            "mode": "parallel",
+            "max_workers": 2,
+            "work_unit": "candidate_scenario",
+            "deterministic_merge_order": "scenario_index,candidate_index,split_name",
+            "resume": False,
+        },
+    }
+
+    report = run_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    root = manager.data_dir() / "derived" / "research" / "parallel_bounded_sweep"
+    events = (root / "candidate_events.jsonl").read_text(encoding="utf-8").splitlines()
+    failures = list((root / "candidate_failures").glob("candidate_*.json"))
+    assert len(report["candidates"]) == 2
+    assert any(item["status"] == "failed" for item in report["execution_observability"]["work_units"])
+    assert any('"stage":"candidate_failure"' in line for line in events)
+    assert failures
+    failed_payload = json.loads(failures[0].read_text(encoding="utf-8"))
+    assert failed_payload["resource_guard"]["status"] == "TRIPPED"
+    assert Path(report["artifact_paths"]["report_path"]).exists()
+
+
 def test_full_decisions_external_jsonl_maps_to_complete_external_audit_policy() -> None:
     payload = _manifest()
     payload["research_run"] = {
@@ -1779,6 +2087,34 @@ def test_production_example_declares_complete_external_audit_policy() -> None:
     assert manifest.research_run.audit_trail.executions_required is True
     assert manifest.research_run.audit_trail.hash_chain_required is True
     assert manifest.research_run.audit_trail.required_for_promotion is True
+
+
+def test_parallel_complete_external_audit_trail_fails_closed(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["research_run"] = {
+        "artifact_policy": {"full_decisions_external_jsonl": True},
+        "execution": {
+            "mode": "parallel",
+            "max_workers": 2,
+            "work_unit": "candidate_scenario",
+            "deterministic_merge_order": "scenario_index,candidate_index,split_name",
+            "resume": False,
+        },
+    }
+
+    with pytest.raises(ResearchValidationError, match="parallel_execution_complete_external_audit_trail_not_supported"):
+        run_research_backtest(
+            manifest=parse_manifest(payload),
+            db_path=db_path,
+            manager=manager,
+            generated_at="2026-05-03T00:00:00+00:00",
+        )
 
 
 def test_summary_zero_retention_writes_complete_external_audit_traces(tmp_path, monkeypatch) -> None:

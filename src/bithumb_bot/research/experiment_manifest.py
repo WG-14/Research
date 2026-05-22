@@ -2420,11 +2420,13 @@ def _parse_research_execution(value: Any) -> ResearchExecutionPolicy:
     if unknown:
         raise ManifestValidationError(f"research_run.execution unsupported fields: {','.join(unknown)}")
     mode = str(value.get("mode") or "serial").strip().lower()
-    if mode != "serial":
-        raise ManifestValidationError("research_run.execution.mode must be serial")
+    if mode not in {"serial", "parallel"}:
+        raise ManifestValidationError("research_run.execution.mode must be one of: serial, parallel")
     max_workers = _positive_int(value.get("max_workers", 1), "research_run.execution.max_workers")
-    if max_workers != 1:
+    if mode == "serial" and max_workers != 1:
         raise ManifestValidationError("serial execution currently supports only max_workers=1")
+    if mode == "parallel" and max_workers < 2:
+        raise ManifestValidationError("parallel execution requires max_workers>=2")
     resume = bool(value.get("resume", False))
     if resume:
         raise ManifestValidationError("research_run.execution.resume is not supported yet")
