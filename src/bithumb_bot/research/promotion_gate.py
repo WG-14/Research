@@ -52,6 +52,30 @@ class ValidatedCandidate:
     source_report_hash: str | None = None
 
 
+_CANDIDATE_BEHAVIOR_RUNTIME_KEYS = {
+    "audit_trace_index",
+    "artifact_namespace",
+    "artifact_locator",
+    "artifact_path",
+    "artifact_ref",
+    "attempt_id",
+    "completion_order",
+    "experiment_id",
+    "failure_artifact_path",
+    "failure_artifact_ref",
+    "report_path",
+    "provenance_identity",
+    "run_uuid",
+    "runtime_observability",
+    "trace_manifest_path",
+    "wall_seconds",
+    "cpu_seconds",
+    "candles_per_second",
+    "worker_hostname",
+    "worker_pid",
+}
+
+
 def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
     warning_reasons = _execution_calibration_warning_reasons(candidate)
     strategy_name = str(candidate.get("strategy_name") or "sma_with_filter")
@@ -396,25 +420,19 @@ def _candidate_behavior_scenario_result(result: dict[str, Any]) -> dict[str, Any
             "stress_suite_gate_result",
             "stress_suite_fail_reasons",
         }
+        | _CANDIDATE_BEHAVIOR_RUNTIME_KEYS
     }
 
 
 def _strip_candidate_behavior_runtime_fields(value: Any) -> Any:
-    runtime_keys = {
-        "audit_trace_index",
-        "failure_artifact_path",
-        "failure_artifact_ref",
-        "wall_seconds",
-        "cpu_seconds",
-        "candles_per_second",
-        "worker_pid",
-        "completion_order",
-    }
+    # Compatibility boundary for behavior identity. These fields are useful in
+    # reports as provenance, runtime observability, or artifact locators, but
+    # must not make behavior hashes depend on run/report namespace.
     if isinstance(value, dict):
         return {
             key: _strip_candidate_behavior_runtime_fields(item)
             for key, item in value.items()
-            if key not in runtime_keys
+            if key not in _CANDIDATE_BEHAVIOR_RUNTIME_KEYS
         }
     if isinstance(value, list):
         return [_strip_candidate_behavior_runtime_fields(item) for item in value]

@@ -1399,6 +1399,7 @@ def test_candidate_profile_hash_remains_promotion_bound_while_behavior_hash_is_l
     payload = _manifest()
     payload["experiment_id"] = "candidate_behavior_identity"
     parallel_payload = json.loads(json.dumps(payload))
+    parallel_payload["experiment_id"] = "candidate_behavior_identity_parallel_namespace"
     parallel_payload["research_run"] = {
         "execution": {
             "mode": "parallel",
@@ -1432,8 +1433,20 @@ def test_candidate_profile_hash_remains_promotion_bound_while_behavior_hash_is_l
 
     serial_candidate = serial["candidates"][0]
     parallel_candidate = parallel["candidates"][0]
+    assert serial["manifest_hash"] != parallel["manifest_hash"]
     assert serial_candidate["candidate_profile_hash"] != parallel_candidate["candidate_profile_hash"]
     assert serial_candidate["candidate_behavior_profile_hash"] == parallel_candidate["candidate_behavior_profile_hash"]
+    for key in (
+        "behavior_hash",
+        "decision_behavior_hash",
+        "trade_ledger_hash",
+        "equity_curve_hash",
+        "composite_behavior_hash",
+        "train_composite_behavior_hash",
+        "validation_composite_behavior_hash",
+        "final_holdout_composite_behavior_hash",
+    ):
+        assert serial_candidate[key] == parallel_candidate[key], key
     assert serial_candidate["candidate_behavior_profile_hash"] != changed["candidates"][0]["candidate_behavior_profile_hash"]
 
     profile_consistent_candidate = dict(serial_candidate)
@@ -1446,6 +1459,80 @@ def test_candidate_profile_hash_remains_promotion_bound_while_behavior_hash_is_l
     tampered["candidate_profile_hash"] = "sha256:tampered"
     _, tampered_reasons = evaluate_candidate_for_promotion(tampered)
     assert "candidate_profile_hash_mismatch" in tampered_reasons
+
+
+def test_candidate_behavior_profile_hash_excludes_nested_resource_usage_experiment_id(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["experiment_id"] = "behavior_profile_resource_usage_base"
+    report = run_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+    candidate = report["candidates"][0]
+    base_behavior_hash = sha256_prefixed(build_candidate_behavior_profile(candidate))
+    base_profile_hash = sha256_prefixed(build_candidate_profile(candidate))
+
+    changed = json.loads(json.dumps(candidate))
+    changed["experiment_id"] = "behavior_profile_resource_usage_changed"
+    for scenario in changed.get("scenario_results") or []:
+        for key in ("train_resource_usage", "validation_resource_usage", "final_holdout_resource_usage"):
+            resource_usage = scenario.get(key)
+            if isinstance(resource_usage, dict):
+                assert "experiment_id" in resource_usage
+                resource_usage["experiment_id"] = "behavior_profile_resource_usage_changed"
+
+    assert sha256_prefixed(build_candidate_profile(changed)) != base_profile_hash
+    assert sha256_prefixed(build_candidate_behavior_profile(changed)) == base_behavior_hash
+
+
+def test_candidate_behavior_profile_hash_excludes_nested_runtime_provenance_artifact_fields(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["experiment_id"] = "behavior_profile_runtime_provenance_base"
+    report = run_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+    candidate = report["candidates"][0]
+    base_behavior_hash = sha256_prefixed(build_candidate_behavior_profile(candidate))
+    base_profile_hash = sha256_prefixed(build_candidate_profile(candidate))
+    runtime_provenance_fields = {
+        "run_uuid": "changed",
+        "artifact_namespace": "changed",
+        "worker_hostname": "changed",
+        "attempt_id": "changed",
+        "report_path": "/tmp/changed/report.json",
+        "trace_manifest_path": "/tmp/changed/trace_manifest.json",
+        "artifact_path": "/tmp/changed/artifact.json",
+        "artifact_ref": "changed-artifact-ref",
+    }
+
+    changed = json.loads(json.dumps(candidate))
+    for scenario in changed.get("scenario_results") or []:
+        scenario.update(runtime_provenance_fields)
+        scenario.setdefault("runtime_observability", {}).update(runtime_provenance_fields)
+        for key in ("train_resource_usage", "validation_resource_usage", "final_holdout_resource_usage"):
+            resource_usage = scenario.get(key)
+            if isinstance(resource_usage, dict):
+                resource_usage.update(runtime_provenance_fields)
+
+    assert sha256_prefixed(build_candidate_profile(changed)) != base_profile_hash
+    assert sha256_prefixed(build_candidate_behavior_profile(changed)) == base_behavior_hash
 
 
 def test_candidate_behavior_profile_hash_excludes_evaluation_policy_fields(tmp_path, monkeypatch) -> None:
@@ -1596,6 +1683,7 @@ def test_candidate_behavior_profile_hash_has_explicit_behavior_only_boundary(tmp
         ("portfolio_policy", {"portfolio_policy": {"starting_cash_krw": 2_000_000.0, "buy_fraction": 0.5}}),
         ("dataset_content_hash", {"dataset_content_hash": "sha256:changed-dataset-content"}),
         ("cost_model", {"cost_model": {"fee_rate": 0.001, "slippage_bps": 3.0}}),
+        ("behavior_hash", {"behavior_hash": "sha256:changed-behavior"}),
     ]
     for label, changes in behavior_affecting_changes:
         changed = json.loads(json.dumps(candidate))
