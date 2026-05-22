@@ -28,6 +28,7 @@ class ResearchWorkUnit:
     execution_timing_hash: str
     seed_context: dict[str, Any]
     work_unit_hash: str
+    work_result_input_hash: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -44,6 +45,7 @@ class ResearchWorkUnit:
             "execution_timing_hash": self.execution_timing_hash,
             "seed_context": dict(self.seed_context),
             "work_unit_hash": self.work_unit_hash,
+            "work_result_input_hash": self.work_result_input_hash,
         }
 
 
@@ -150,7 +152,15 @@ def build_research_work_unit(
         "simulation_policy_hash": manifest.simulation_policy_hash(),
         "execution_model_hash": sha256_prefixed(scenario.as_dict()),
         "execution_timing_hash": sha256_prefixed(manifest.execution_timing.as_dict()),
-        "seed_context": seed_context,
+    }
+    work_unit_hash = sha256_prefixed(payload)
+    result_input_payload = {
+        "work_unit_hash": work_unit_hash,
+        "report_detail": manifest.research_run.report_detail,
+        "resource_limits": manifest.research_run.resource_limits.as_dict(),
+        "audit_trail": manifest.research_run.audit_trail.as_dict(),
+        "artifact_policy": manifest.research_run.artifact_policy.as_dict(),
+        "heartbeat": manifest.research_run.heartbeat.as_dict(),
     }
     return ResearchWorkUnit(
         candidate_index=candidate_index,
@@ -165,7 +175,8 @@ def build_research_work_unit(
         execution_model_hash=str(payload["execution_model_hash"]),
         execution_timing_hash=str(payload["execution_timing_hash"]),
         seed_context=seed_context,
-        work_unit_hash=sha256_prefixed(payload),
+        work_unit_hash=work_unit_hash,
+        work_result_input_hash=sha256_prefixed(result_input_payload),
     )
 
 

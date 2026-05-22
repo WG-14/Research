@@ -32,13 +32,13 @@ class ResearchWorkResult:
             sha256_prefixed(
                 {
                     "work_unit_hash": self.work_unit_hash,
+                    "work_result_input_hash": self.work_unit.work_result_input_hash,
                     "candidate_index": self.candidate_index,
                     "candidate_id": self.candidate_id,
                     "scenario_index": self.scenario_index,
                     "scenario_id": self.scenario_id,
                     "status": self.status,
                     "failure_reason": self.failure_reason,
-                    "base_result_available": self.base_result is not None,
                     "failure_evidence_hash": (
                         sha256_prefixed(self.failure_evidence) if self.failure_evidence is not None else None
                     ),

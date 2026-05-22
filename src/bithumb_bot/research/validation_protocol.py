@@ -78,7 +78,7 @@ from .lineage import build_research_lineage, compute_lineage_hash
 from .metrics_gate_policy import metrics_gate_policy_from_acceptance_gate, metrics_gate_policy_hash
 from .metrics_contract import METRICS_SCHEMA_VERSION
 from .parameter_space import candidate_id, iter_parameter_candidates
-from .promotion_gate import build_candidate_profile
+from .promotion_gate import build_candidate_behavior_profile, build_candidate_profile
 from .report_writer import research_artifact_paths, research_artifact_refs, write_research_report
 from bithumb_bot.storage_io import append_jsonl, write_json_atomic
 from .statistical_selection import (
@@ -1666,6 +1666,9 @@ def _evaluate_candidates(
         production_bound=manifest.deployment_tier != "research_only",
     )
     for candidate_payload in rows:
+        candidate_payload["candidate_behavior_profile_hash"] = sha256_prefixed(
+            build_candidate_behavior_profile(candidate_payload)
+        )
         candidate_payload["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate_payload))
         write_json_atomic(
             _candidate_result_path(manager, manifest.experiment_id, str(candidate_payload["parameter_candidate_id"])),
@@ -1721,7 +1724,6 @@ def _normalize_failed_work_result_without_base(
         failure_reason=reason,
         failure_evidence=evidence,
         observability=result.observability,
-        content_hash=result.content_hash,
     )
 
 

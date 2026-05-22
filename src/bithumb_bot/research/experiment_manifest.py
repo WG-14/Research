@@ -713,10 +713,18 @@ class ExperimentManifest:
         return sha256_prefixed(self.canonical_payload())
 
     def simulation_seed_scope_payload(self) -> dict[str, Any]:
-        payload = self.canonical_payload()
-        # Runtime execution/report/audit policy changes must not perturb stochastic simulation seeds.
-        payload.pop("research_run", None)
-        return payload
+        return {
+            "strategy_name": self.strategy_name,
+            "market": self.market,
+            "interval": self.interval,
+            "dataset": self.dataset.as_dict(),
+            "parameter_space": {key: sorted(list(value), key=repr) for key, value in sorted(self.parameter_space.items())},
+            "cost_model": self.cost_model.as_dict(),
+            "execution_model": self.execution_model.as_dict(),
+            "execution_timing": self.execution_timing.as_dict(),
+            "portfolio_policy": self.portfolio_policy.as_dict(),
+            "walk_forward": self.walk_forward.as_dict() if self.walk_forward is not None else None,
+        }
 
     def simulation_seed_scope_hash(self) -> str:
         return sha256_prefixed(self.simulation_seed_scope_payload())

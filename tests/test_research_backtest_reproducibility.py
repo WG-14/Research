@@ -50,7 +50,13 @@ from bithumb_bot.research.experiment_registry import (
     reserve_research_attempt_checked,
 )
 from bithumb_bot.research.parameter_space import candidate_id
-from bithumb_bot.research.promotion_gate import PromotionGateError, _verify_report_content_hash, promote_candidate
+from bithumb_bot.research.promotion_gate import (
+    PromotionGateError,
+    _verify_report_content_hash,
+    build_candidate_profile,
+    evaluate_candidate_for_promotion,
+    promote_candidate,
+)
 from bithumb_bot.research.validation_protocol import (
     ResearchValidationError,
     _promotion_blocking_reasons,
@@ -1114,6 +1120,107 @@ def test_simulation_seed_scope_hash_ignores_execution_policy_only_changes() -> N
     assert serial.simulation_seed_scope_hash() != behavior_changed.simulation_seed_scope_hash()
 
 
+def test_simulation_seed_scope_hash_separates_evaluation_and_behavior_boundaries() -> None:
+    base_payload = _production_bound_statistical_manifest()
+    base_payload["deployment_tier"] = "research_only"
+    base_payload["acceptance_gate"]["metrics_contract_required"] = False
+    base = parse_manifest(base_payload)
+
+    acceptance_changed_payload = json.loads(json.dumps(base_payload))
+    acceptance_changed_payload["acceptance_gate"]["min_trade_count"] = 99
+    statistical_changed_payload = json.loads(json.dumps(base_payload))
+    statistical_changed_payload["statistical_validation"]["gates"]["max_reality_check_p_value"] = 0.5
+    final_selection_changed_payload = json.loads(json.dumps(base_payload))
+    final_selection_changed_payload["final_selection"]["ranking"][0]["order"] = "asc"
+    runtime_changed_payload = json.loads(json.dumps(base_payload))
+    runtime_changed_payload["research_run"] = {
+        "report_detail": "full",
+        "resource_limits": {"max_trades": 7, "max_decisions_retained": 3},
+        "heartbeat": {"interval_s": 1.0, "bar_interval": 2},
+        "artifact_policy": {"candidate_journal": False},
+        "audit_trail": {"mode": "summary_only"},
+        "execution": {
+            "mode": "parallel",
+            "max_workers": 2,
+            "work_unit": "candidate_scenario",
+            "deterministic_merge_order": "scenario_index,candidate_index,split_name",
+            "resume": False,
+        },
+    }
+
+    for payload in (
+        acceptance_changed_payload,
+        statistical_changed_payload,
+        final_selection_changed_payload,
+        runtime_changed_payload,
+    ):
+        assert parse_manifest(payload).simulation_seed_scope_hash() == base.simulation_seed_scope_hash()
+
+    for payload, key in (
+        (json.loads(json.dumps(base_payload)), "execution_model"),
+        (json.loads(json.dumps(base_payload)), "execution_timing"),
+        (json.loads(json.dumps(base_payload)), "portfolio_policy"),
+        (json.loads(json.dumps(base_payload)), "parameter_space"),
+    ):
+        if key == "execution_model":
+            payload[key]["latency_ms"] = 50
+        elif key == "execution_timing":
+            payload[key]["decision_guard_ms"] = 1
+        elif key == "portfolio_policy":
+            payload[key]["starting_cash_krw"] = 2_000_000.0
+        else:
+            payload[key]["SMA_SHORT"] = [3]
+        assert parse_manifest(payload).simulation_seed_scope_hash() != base.simulation_seed_scope_hash()
+
+
+def test_work_unit_hash_and_work_result_input_hash_have_separate_boundaries() -> None:
+    snapshots = {
+        "train": _snapshot_from_closes([100.0, 101.0, 102.0]),
+        "validation": _snapshot_from_closes([100.0, 99.0, 101.0]),
+    }
+    base_payload = _manifest()
+    changed_payload = json.loads(json.dumps(base_payload))
+    changed_payload["research_run"] = {
+        "report_detail": "full",
+        "resource_limits": {"max_trades": 1, "max_decisions_retained": 1, "max_equity_points_retained": 1},
+    }
+    parallel_payload = json.loads(json.dumps(base_payload))
+    parallel_payload["research_run"] = {
+        "execution": {
+            "mode": "parallel",
+            "max_workers": 2,
+            "work_unit": "candidate_scenario",
+            "deterministic_merge_order": "scenario_index,candidate_index,split_name",
+            "resume": False,
+        }
+    }
+
+    base = parse_manifest(base_payload)
+    changed = parse_manifest(changed_payload)
+    parallel = parse_manifest(parallel_payload)
+
+    def unit(manifest):
+        return validation_protocol.build_research_work_unit(
+            manifest=manifest,
+            snapshots=snapshots,
+            params={"SMA_SHORT": 2, "SMA_LONG": 4},
+            candidate_index=0,
+            scenario=manifest.execution_model.scenarios[0],
+            scenario_index=0,
+            scenario_id="scenario_0",
+            manifest_hash=manifest.manifest_hash(),
+            simulation_seed_scope_hash=manifest.simulation_seed_scope_hash(),
+        )
+
+    base_unit = unit(base)
+    changed_unit = unit(changed)
+    parallel_unit = unit(parallel)
+
+    assert base_unit.work_unit_hash == changed_unit.work_unit_hash
+    assert base_unit.work_result_input_hash != changed_unit.work_result_input_hash
+    assert base_unit.work_result_input_hash == parallel_unit.work_result_input_hash
+
+
 def test_parallel_stress_candidate_scenario_matches_serial_logical_results(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -1167,6 +1274,7 @@ def test_parallel_stress_candidate_scenario_matches_serial_logical_results(tmp_p
     assert parallel["execution_observability"]["worker_context_mode"] == "worker_initializer"
     assert parallel["execution_observability"]["parallel_task_count"] == 2
     assert _logical_candidate_summary(serial) == _logical_candidate_summary(parallel)
+    assert serial["candidates"][0]["candidate_behavior_profile_hash"] == parallel["candidates"][0]["candidate_behavior_profile_hash"]
     assert serial["candidates"][0]["candidate_profile_hash"] != parallel["candidates"][0]["candidate_profile_hash"]
 
 
@@ -1262,6 +1370,65 @@ def _logical_candidate_summary(report: dict[str, object]) -> list[dict[str, obje
             }
         )
     return sorted(summary, key=lambda item: str(item["parameter_candidate_id"]))
+
+
+def test_candidate_profile_hash_remains_promotion_bound_while_behavior_hash_is_logical(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["experiment_id"] = "candidate_behavior_identity"
+    parallel_payload = json.loads(json.dumps(payload))
+    parallel_payload["research_run"] = {
+        "execution": {
+            "mode": "parallel",
+            "max_workers": 2,
+            "work_unit": "candidate_scenario",
+            "deterministic_merge_order": "scenario_index,candidate_index,split_name",
+            "resume": False,
+        }
+    }
+
+    serial = run_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+    parallel = run_research_backtest(
+        manifest=parse_manifest(parallel_payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+    changed_payload = json.loads(json.dumps(payload))
+    changed_payload["parameter_space"]["SMA_SHORT"] = [3]
+    changed = run_research_backtest(
+        manifest=parse_manifest(changed_payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    serial_candidate = serial["candidates"][0]
+    parallel_candidate = parallel["candidates"][0]
+    assert serial_candidate["candidate_profile_hash"] != parallel_candidate["candidate_profile_hash"]
+    assert serial_candidate["candidate_behavior_profile_hash"] == parallel_candidate["candidate_behavior_profile_hash"]
+    assert serial_candidate["candidate_behavior_profile_hash"] != changed["candidates"][0]["candidate_behavior_profile_hash"]
+
+    profile_consistent_candidate = dict(serial_candidate)
+    profile_consistent_candidate["candidate_profile_hash"] = sha256_prefixed(
+        build_candidate_profile(profile_consistent_candidate)
+    )
+    _, reasons = evaluate_candidate_for_promotion(profile_consistent_candidate)
+    assert "candidate_profile_hash_mismatch" not in reasons
+    tampered = dict(profile_consistent_candidate)
+    tampered["candidate_profile_hash"] = "sha256:tampered"
+    _, tampered_reasons = evaluate_candidate_for_promotion(tampered)
+    assert "candidate_profile_hash_mismatch" in tampered_reasons
 
 
 def test_research_report_candidate_and_lineage_bind_portfolio_policy(tmp_path, monkeypatch) -> None:
@@ -2239,6 +2406,46 @@ def test_parallel_executor_maps_future_level_exception_to_failed_work_result() -
     assert results[0].failure_reason == "parallel_executor_exception"
     assert results[0].failure_evidence["phase"] == "future_result"
     assert results[0].failure_evidence["work_unit_hash"] == work_unit.work_unit_hash
+
+
+def test_failed_future_normalization_preserves_stable_content_hash() -> None:
+    manifest = parse_manifest(_manifest())
+    snapshots = {
+        "train": _snapshot_from_closes([100.0, 101.0, 102.0]),
+        "validation": _snapshot_from_closes([100.0, 99.0, 101.0]),
+    }
+    work_unit = validation_protocol.build_research_work_unit(
+        manifest=manifest,
+        snapshots=snapshots,
+        params={"SMA_SHORT": 2, "SMA_LONG": 4},
+        candidate_index=0,
+        scenario=manifest.execution_model.scenarios[0],
+        scenario_index=0,
+        scenario_id="scenario_0",
+        manifest_hash=manifest.manifest_hash(),
+        simulation_seed_scope_hash=manifest.simulation_seed_scope_hash(),
+    )
+    failed = ResearchWorkResult(
+        work_unit=work_unit,
+        work_unit_hash=work_unit.work_unit_hash,
+        candidate_index=0,
+        candidate_id=work_unit.candidate_id,
+        scenario_index=0,
+        scenario_id=work_unit.scenario_id,
+        status="failed",
+        failure_reason="parallel_executor_exception",
+        failure_evidence={"phase": "future_result", "work_unit_hash": work_unit.work_unit_hash},
+    )
+
+    normalized = validation_protocol._normalize_failed_work_result_without_base(
+        manifest=manifest,
+        result=failed,
+    )
+
+    assert failed.base_result is None
+    assert normalized.base_result is not None
+    assert normalized.content_hash == failed.content_hash
+    assert normalized.observability_payload()["content_hash"] == normalized.content_hash
 
 
 def test_full_decisions_external_jsonl_maps_to_complete_external_audit_policy() -> None:

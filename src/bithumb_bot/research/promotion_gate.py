@@ -269,6 +269,121 @@ def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
     return profile
 
 
+def build_candidate_behavior_profile(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Logical behavior identity, separate from manifest/run provenance."""
+    profile = build_candidate_profile(candidate)
+    for key in (
+        "source_experiment",
+        "manifest_hash",
+        "experiment_family_id",
+        "hypothesis_id",
+        "hypothesis_status",
+        "hypothesis_identity_source",
+        "experiment_family_identity_source",
+        "deployment_tier",
+        "acceptance_gate_result",
+        "stress_suite_required",
+        "stress_suite_contract",
+        "stress_suite_contract_hash",
+        "validation_stress_suite",
+        "final_holdout_stress_suite",
+        "stress_suite_gate_result",
+        "stress_suite_fail_reasons",
+        "statistical_validation_required",
+        "statistical_validation_contract",
+        "evidence_grade",
+        "statistical_method",
+        "return_panel_path",
+        "family_trial_registry_path",
+        "family_trial_registry_prior_hash",
+        "family_trial_registry_row_hash",
+        "experiment_registry_path",
+        "experiment_registry_prior_hash",
+        "experiment_registry_row_hash",
+        "experiment_registry_completion_row_hash",
+        "experiment_registry_bound_evidence_hash",
+        "experiment_registry_evidence_hash_phase",
+        "computed_attempt_index",
+        "computed_holdout_reuse_count",
+        "declared_attempt_index",
+        "declared_holdout_reuse_count",
+        "research_freedom_hash",
+        "registry_gate_result",
+        "registry_gate_fail_reasons",
+        "selection_universe_hash",
+        "statistical_evidence_hash",
+        "statistical_gate_result",
+        "statistical_gate_fail_reasons",
+        "white_reality_check_p_value",
+        "summary_metric_max_bootstrap_p_value",
+        "white_reality_check_method",
+        "bootstrap_sampling_contract_hash",
+        "promotion_grade_limitations",
+        "official_promotion_grade_wrc_generation_available",
+        "effective_trial_count",
+    ):
+        profile.pop(key, None)
+    if isinstance(profile.get("scenario_results"), list):
+        profile["scenario_results"] = [
+            _candidate_behavior_scenario_result(item)
+            for item in profile["scenario_results"]
+            if isinstance(item, dict)
+        ]
+    return profile
+
+
+def _candidate_behavior_scenario_result(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: _strip_candidate_behavior_runtime_fields(value)
+        for key, value in result.items()
+        if key
+        not in {
+            "scenario_acceptance_gate_result",
+            "scenario_fail_reasons",
+            "resource_guard",
+            "failure_artifact_ref",
+            "failure_artifact_path",
+            "retained_detail_summary",
+            "train_audit_trace_index",
+            "validation_audit_trace_index",
+            "final_holdout_audit_trace_index",
+            "validation_equity_curve",
+            "final_holdout_equity_curve",
+            "execution_calibration_gate",
+            "stress_suite_contract",
+            "stress_suite_contract_hash",
+            "validation_stress_suite",
+            "final_holdout_stress_suite",
+            "stress_suite_gate_result",
+            "stress_suite_fail_reasons",
+        }
+    }
+
+
+def _strip_candidate_behavior_runtime_fields(value: Any) -> Any:
+    runtime_keys = {
+        "audit_trace_index",
+        "failure_artifact_path",
+        "failure_artifact_ref",
+        "wall_seconds",
+        "cpu_seconds",
+        "candles_per_second",
+        "worker_pid",
+        "completion_order",
+    }
+    if isinstance(value, dict):
+        return {
+            key: _strip_candidate_behavior_runtime_fields(item)
+            for key, item in value.items()
+            if key not in runtime_keys
+        }
+    if isinstance(value, list):
+        return [_strip_candidate_behavior_runtime_fields(item) for item in value]
+    if isinstance(value, tuple):
+        return [_strip_candidate_behavior_runtime_fields(item) for item in value]
+    return value
+
+
 def evaluate_candidate_for_promotion(candidate: dict[str, Any]) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     if not candidate:
