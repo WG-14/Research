@@ -74,12 +74,19 @@ def execute_research_work_units_parallel(
     tasks: Iterable[Any],
     worker: ResearchWorker,
     max_workers: int,
+    initializer: Callable[..., None] | None = None,
+    initargs: tuple[Any, ...] = (),
 ) -> list[ResearchWorkResult]:
     results: list[ResearchWorkResult] = []
-    with ProcessPoolExecutor(max_workers=int(max_workers)) as pool:
-        futures = [pool.submit(worker, task) for task in tasks]
-        for completion_order, future in enumerate(as_completed(futures)):
-            result = future.result()
+    task_list = list(tasks)
+    with ProcessPoolExecutor(max_workers=int(max_workers), initializer=initializer, initargs=initargs) as pool:
+        future_to_task = {pool.submit(worker, task): task for task in task_list}
+        for completion_order, future in enumerate(as_completed(future_to_task)):
+            task = future_to_task[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = _future_exception_result(task=task, exc=exc)
             observability = dict(result.observability or {})
             observability["completion_order"] = completion_order
             results.append(
@@ -99,6 +106,52 @@ def execute_research_work_units_parallel(
                 )
             )
     return results
+
+
+def _future_exception_result(*, task: Any, exc: Exception) -> ResearchWorkResult:
+    work_unit = _task_work_unit(task)
+    candidate_index = int(_task_value(task, "candidate_index", work_unit.candidate_index))
+    scenario_index = int(_task_value(task, "scenario_index", work_unit.scenario_index))
+    evidence = {
+        "status": "ERROR",
+        "exception_type": type(exc).__name__,
+        "message": str(exc),
+        "phase": "future_result",
+        "candidate_index": candidate_index,
+        "candidate_id": str(_task_value(task, "candidate_id", work_unit.candidate_id)),
+        "scenario_index": scenario_index,
+        "scenario_id": str(_task_value(task, "scenario_id", work_unit.scenario_id)),
+        "work_unit_hash": work_unit.work_unit_hash,
+    }
+    return ResearchWorkResult(
+        work_unit=work_unit,
+        work_unit_hash=work_unit.work_unit_hash,
+        candidate_index=candidate_index,
+        candidate_id=str(_task_value(task, "candidate_id", work_unit.candidate_id)),
+        scenario_index=scenario_index,
+        scenario_id=str(_task_value(task, "scenario_id", work_unit.scenario_id)),
+        status="failed",
+        failure_reason="parallel_executor_exception",
+        failure_evidence=evidence,
+        observability={
+            "work_unit": work_unit.as_dict(),
+            "status": "failed",
+            "failure_reason": "parallel_executor_exception",
+            "resource_guard": evidence,
+        },
+    )
+
+
+def _task_work_unit(task: Any) -> ResearchWorkUnit:
+    if isinstance(task, dict) and isinstance(task.get("work_unit"), ResearchWorkUnit):
+        return task["work_unit"]
+    raise TypeError("parallel task failure cannot be mapped without ResearchWorkUnit")
+
+
+def _task_value(task: Any, key: str, default: Any) -> Any:
+    if isinstance(task, dict):
+        return task.get(key, default)
+    return default
 
 
 def sort_work_results_deterministically(results: Iterable[ResearchWorkResult]) -> list[ResearchWorkResult]:

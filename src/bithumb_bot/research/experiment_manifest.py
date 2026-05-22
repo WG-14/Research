@@ -712,6 +712,15 @@ class ExperimentManifest:
     def manifest_hash(self) -> str:
         return sha256_prefixed(self.canonical_payload())
 
+    def simulation_seed_scope_payload(self) -> dict[str, Any]:
+        payload = self.canonical_payload()
+        # Runtime execution/report/audit policy changes must not perturb stochastic simulation seeds.
+        payload.pop("research_run", None)
+        return payload
+
+    def simulation_seed_scope_hash(self) -> str:
+        return sha256_prefixed(self.simulation_seed_scope_payload())
+
     def portfolio_policy_hash(self) -> str:
         return self.portfolio_policy.policy_hash()
 
@@ -2306,7 +2315,7 @@ def _parse_research_run(value: Any) -> ResearchRunPolicy:
             hash_chain_required=True,
             required_for_promotion=True,
         )
-    return ResearchRunPolicy(
+    policy = ResearchRunPolicy(
         report_detail=report_detail,
         artifact_policy=artifact_policy,
         audit_trail=audit_trail,
@@ -2314,6 +2323,17 @@ def _parse_research_run(value: Any) -> ResearchRunPolicy:
         heartbeat=_parse_research_heartbeat(value.get("heartbeat")),
         execution=_parse_research_execution(value.get("execution")),
     )
+    _validate_research_run_policy(policy)
+    return policy
+
+
+def _validate_research_run_policy(policy: ResearchRunPolicy) -> None:
+    if policy.execution.mode != "parallel":
+        return
+    if policy.audit_trail.complete_external:
+        raise ManifestValidationError("parallel_execution_complete_external_audit_trail_not_supported")
+    if policy.artifact_policy.full_decisions_external_jsonl:
+        raise ManifestValidationError("parallel_execution_full_decisions_external_jsonl_not_supported")
 
 
 def _parse_research_artifact_policy(value: Any) -> ResearchArtifactPolicy:

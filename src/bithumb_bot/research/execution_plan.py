@@ -87,6 +87,7 @@ def build_research_execution_plan(
     plan = {
         "schema_version": 1,
         "manifest_hash": manifest.manifest_hash(),
+        "simulation_seed_scope_hash": manifest.simulation_seed_scope_hash(),
         "experiment_id": manifest.experiment_id,
         "dataset_hashes": {name: snapshots[name].content_hash() for name in split_names},
         "dataset_quality_hash": combined_dataset_quality_hash(tuple(quality_reports.values())),
@@ -126,12 +127,13 @@ def build_research_work_unit(
     scenario_index: int,
     scenario_id: str,
     manifest_hash: str,
+    simulation_seed_scope_hash: str | None = None,
     split_name: str = "candidate_scenario",
 ) -> ResearchWorkUnit:
     candidate = candidate_id(params, candidate_index)
     dataset_hashes = {name: snapshot.content_hash() for name, snapshot in sorted(snapshots.items())}
     seed_context = {
-        "manifest_hash": manifest_hash,
+        "simulation_seed_scope_hash": simulation_seed_scope_hash or manifest_hash,
         "scenario_id": scenario_id,
         "candidate_id": candidate,
         "split_name": split_name,

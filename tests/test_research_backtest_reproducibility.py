@@ -32,8 +32,12 @@ from bithumb_bot.research.experiment_manifest import (
     legacy_research_portfolio_policy,
     parse_manifest,
 )
-from bithumb_bot.research.execution_plan import build_research_execution_plan
-from bithumb_bot.research.executor import ResearchWorkResult, sort_work_results_deterministically
+from bithumb_bot.research.execution_plan import ResearchWorkUnit, build_research_execution_plan
+from bithumb_bot.research.executor import (
+    ResearchWorkResult,
+    execute_research_work_units_parallel,
+    sort_work_results_deterministically,
+)
 from bithumb_bot.research.hashing import report_content_hash_payload, sha256_prefixed
 from bithumb_bot.research.strategy_spec import strategy_spec_for_name
 from bithumb_bot.research.audit_trail import AuditTraceScope, AuditTrailPolicy, verify_audit_trail, write_trace_manifest
@@ -567,6 +571,20 @@ class _PartialSellExecutionModel:
         )
 
 
+def _executor_completed_result(task: dict[str, object]) -> ResearchWorkResult:
+    work_unit = task["work_unit"]
+    assert isinstance(work_unit, ResearchWorkUnit)
+    return ResearchWorkResult(
+        work_unit=work_unit,
+        work_unit_hash=work_unit.work_unit_hash,
+        candidate_index=work_unit.candidate_index,
+        candidate_id=work_unit.candidate_id,
+        scenario_index=work_unit.scenario_index,
+        scenario_id=work_unit.scenario_id,
+        status="completed",
+    )
+
+
 def _snapshot_from_closes(closes: list[float], *, quotes: tuple[TopOfBookQuote, ...] = ()) -> DatasetSnapshot:
     base_ts = 1_700_000_000_000
     candles = tuple(
@@ -1072,6 +1090,139 @@ def test_parallel_candidate_scenario_matches_serial_logical_results(tmp_path, mo
     ] == [(0, 0), (0, 1), (1, 0), (1, 1)]
 
 
+def test_simulation_seed_scope_hash_ignores_execution_policy_only_changes() -> None:
+    serial_payload = _manifest()
+    parallel_payload = json.loads(json.dumps(serial_payload))
+    parallel_payload["research_run"] = {
+        "execution": {
+            "mode": "parallel",
+            "max_workers": 2,
+            "work_unit": "candidate_scenario",
+            "deterministic_merge_order": "scenario_index,candidate_index,split_name",
+            "resume": False,
+        }
+    }
+    behavior_changed_payload = json.loads(json.dumps(serial_payload))
+    behavior_changed_payload["parameter_space"]["SMA_SHORT"] = [3]
+
+    serial = parse_manifest(serial_payload)
+    parallel = parse_manifest(parallel_payload)
+    behavior_changed = parse_manifest(behavior_changed_payload)
+
+    assert serial.manifest_hash() != parallel.manifest_hash()
+    assert serial.simulation_seed_scope_hash() == parallel.simulation_seed_scope_hash()
+    assert serial.simulation_seed_scope_hash() != behavior_changed.simulation_seed_scope_hash()
+
+
+def test_parallel_stress_candidate_scenario_matches_serial_logical_results(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    base_payload = _manifest()
+    base_payload["experiment_id"] = "parallel_stress_equivalence"
+    base_payload["parameter_space"] = {
+        "SMA_SHORT": [2, 3],
+        "SMA_LONG": [4],
+        "SMA_FILTER_GAP_MIN_RATIO": [0.0],
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": [0.0],
+    }
+    base_payload["execution_model"] = {
+        "type": "stress",
+        "fee_rate": [0.0],
+        "slippage_bps": [5],
+        "partial_fill_rate": [0.5],
+        "order_failure_rate": [0.1],
+        "market_order_extra_cost_bps": [2],
+        "latency_ms": [25],
+        "seed": 42,
+    }
+    parallel_payload = json.loads(json.dumps(base_payload))
+    parallel_payload["research_run"] = {
+        "execution": {
+            "mode": "parallel",
+            "max_workers": 2,
+            "work_unit": "candidate_scenario",
+            "deterministic_merge_order": "scenario_index,candidate_index,split_name",
+            "resume": False,
+        }
+    }
+
+    serial = run_research_backtest(
+        manifest=parse_manifest(base_payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+    parallel = run_research_backtest(
+        manifest=parse_manifest(parallel_payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    assert serial["manifest_hash"] != parallel["manifest_hash"]
+    assert parallel["execution_observability"]["worker_context_mode"] == "worker_initializer"
+    assert parallel["execution_observability"]["parallel_task_count"] == 2
+    assert _logical_candidate_summary(serial) == _logical_candidate_summary(parallel)
+    assert serial["candidates"][0]["candidate_profile_hash"] != parallel["candidates"][0]["candidate_profile_hash"]
+
+
+def test_parallel_executor_uses_lightweight_tasks_with_worker_initializer(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["experiment_id"] = "parallel_lightweight_tasks"
+    payload["parameter_space"] = {
+        "SMA_SHORT": [2, 3],
+        "SMA_LONG": [4],
+        "SMA_FILTER_GAP_MIN_RATIO": [0.0],
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": [0.0],
+    }
+    payload["research_run"] = {
+        "execution": {
+            "mode": "parallel",
+            "max_workers": 2,
+            "work_unit": "candidate_scenario",
+            "deterministic_merge_order": "scenario_index,candidate_index,split_name",
+            "resume": False,
+        }
+    }
+    captured_tasks: list[dict[str, object]] = []
+    captured_context: dict[str, object] = {}
+
+    def fake_parallel_executor(*, tasks, worker, max_workers, initializer=None, initargs=()):
+        task_list = list(tasks)
+        captured_tasks.extend(task_list)
+        assert initializer is not None
+        assert initargs
+        captured_context.update(initargs[0])
+        initializer(*initargs)
+        return [worker(task) for task in task_list]
+
+    monkeypatch.setattr(validation_protocol, "execute_research_work_units_parallel", fake_parallel_executor)
+
+    report = run_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    assert report["execution_observability"]["worker_context_mode"] == "worker_initializer"
+    assert captured_tasks
+    assert all("snapshots" not in task for task in captured_tasks)
+    assert all("manifest" not in task for task in captured_tasks)
+    assert "snapshots" in captured_context
+    assert "manifest" in captured_context
+
+
 def _logical_candidate_summary(report: dict[str, object]) -> list[dict[str, object]]:
     candidates = report["candidates"]
     assert isinstance(candidates, list)
@@ -1090,6 +1241,8 @@ def _logical_candidate_summary(report: dict[str, object]) -> list[dict[str, obje
                 "trade_ledger_hash": candidate.get("trade_ledger_hash"),
                 "equity_curve_hash": candidate.get("equity_curve_hash"),
                 "composite_behavior_hash": candidate.get("composite_behavior_hash"),
+                "execution_event_summary": candidate.get("execution_event_summary"),
+                "promotion_blocking_reasons": candidate.get("promotion_blocking_reasons"),
                 "scenario_results": [
                     {
                         "scenario_id": scenario.get("scenario_id"),
@@ -1102,6 +1255,7 @@ def _logical_candidate_summary(report: dict[str, object]) -> list[dict[str, obje
                         "trade_ledger_hash": scenario.get("trade_ledger_hash"),
                         "equity_curve_hash": scenario.get("equity_curve_hash"),
                         "composite_behavior_hash": scenario.get("composite_behavior_hash"),
+                        "execution_event_summary": scenario.get("execution_event_summary"),
                     }
                     for scenario in candidate.get("scenario_results", [])
                 ],
@@ -2056,6 +2210,37 @@ def test_parallel_research_failure_is_committed_by_main_process(tmp_path, monkey
     assert Path(report["artifact_paths"]["report_path"]).exists()
 
 
+def test_parallel_executor_maps_future_level_exception_to_failed_work_result() -> None:
+    manifest = parse_manifest(_manifest())
+    snapshots = {
+        "train": _snapshot_from_closes([100.0, 101.0, 102.0]),
+        "validation": _snapshot_from_closes([100.0, 99.0, 101.0]),
+    }
+    work_unit = validation_protocol.build_research_work_unit(
+        manifest=manifest,
+        snapshots=snapshots,
+        params={"SMA_SHORT": 2, "SMA_LONG": 4},
+        candidate_index=0,
+        scenario=manifest.execution_model.scenarios[0],
+        scenario_index=0,
+        scenario_id="scenario_0",
+        manifest_hash=manifest.manifest_hash(),
+        simulation_seed_scope_hash=manifest.simulation_seed_scope_hash(),
+    )
+
+    results = execute_research_work_units_parallel(
+        tasks=({"work_unit": work_unit, "candidate_index": 0, "scenario_index": 0, "not_pickleable": lambda: None},),
+        worker=_executor_completed_result,
+        max_workers=2,
+    )
+
+    assert len(results) == 1
+    assert results[0].status == "failed"
+    assert results[0].failure_reason == "parallel_executor_exception"
+    assert results[0].failure_evidence["phase"] == "future_result"
+    assert results[0].failure_evidence["work_unit_hash"] == work_unit.work_unit_hash
+
+
 def test_full_decisions_external_jsonl_maps_to_complete_external_audit_policy() -> None:
     payload = _manifest()
     payload["research_run"] = {
@@ -2108,13 +2293,78 @@ def test_parallel_complete_external_audit_trail_fails_closed(tmp_path, monkeypat
         },
     }
 
+    with pytest.raises(ManifestValidationError, match="parallel_execution_complete_external_audit_trail_not_supported"):
+        parse_manifest(payload)
+
+
+def test_parallel_complete_external_audit_trail_rejected_before_split_load(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    manifest = parse_manifest(_manifest())
+    manifest = replace(
+        manifest,
+        research_run=replace(
+            manifest.research_run,
+            audit_trail=AuditTrailPolicy(mode="complete_external"),
+            execution=replace(manifest.research_run.execution, mode="parallel", max_workers=2),
+        ),
+    )
+    loads: list[str] = []
+    monkeypatch.setattr(
+        validation_protocol,
+        "load_dataset_split",
+        lambda **kwargs: loads.append(str(kwargs["split_name"])) or pytest.fail("split loaded before rejection"),
+    )
+
     with pytest.raises(ResearchValidationError, match="parallel_execution_complete_external_audit_trail_not_supported"):
         run_research_backtest(
-            manifest=parse_manifest(payload),
+            manifest=manifest,
             db_path=db_path,
             manager=manager,
             generated_at="2026-05-03T00:00:00+00:00",
         )
+
+    assert loads == []
+
+
+def test_parallel_full_decisions_external_jsonl_rejected_before_registry_reservation(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    manifest = parse_manifest(_manifest())
+    manifest = replace(
+        manifest,
+        research_run=replace(
+            manifest.research_run,
+            artifact_policy=replace(manifest.research_run.artifact_policy, full_decisions_external_jsonl=True),
+            execution=replace(manifest.research_run.execution, mode="parallel", max_workers=2),
+        ),
+    )
+    reserved = False
+
+    def fail_reserve(**kwargs):
+        nonlocal reserved
+        reserved = True
+        pytest.fail("registry reserved before rejection")
+
+    monkeypatch.setattr(validation_protocol, "_reserve_experiment_attempt", fail_reserve)
+
+    with pytest.raises(ResearchValidationError, match="parallel_execution_full_decisions_external_jsonl_not_supported"):
+        run_research_backtest(
+            manifest=manifest,
+            db_path=db_path,
+            manager=manager,
+            generated_at="2026-05-03T00:00:00+00:00",
+        )
+
+    assert reserved is False
 
 
 def test_summary_zero_retention_writes_complete_external_audit_traces(tmp_path, monkeypatch) -> None:
