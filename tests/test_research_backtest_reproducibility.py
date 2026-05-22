@@ -53,6 +53,7 @@ from bithumb_bot.research.parameter_space import candidate_id
 from bithumb_bot.research.promotion_gate import (
     PromotionGateError,
     _verify_report_content_hash,
+    build_candidate_behavior_profile,
     build_candidate_profile,
     evaluate_candidate_for_promotion,
     promote_candidate,
@@ -1184,6 +1185,14 @@ def test_work_unit_hash_and_work_result_input_hash_have_separate_boundaries() ->
         "report_detail": "full",
         "resource_limits": {"max_trades": 1, "max_decisions_retained": 1, "max_equity_points_retained": 1},
     }
+    heartbeat_payload = json.loads(json.dumps(base_payload))
+    heartbeat_payload["research_run"] = {
+        "heartbeat": {"interval_s": 1.0, "bar_interval": 2},
+    }
+    artifact_payload = json.loads(json.dumps(base_payload))
+    artifact_payload["research_run"] = {
+        "artifact_policy": {"candidate_journal": False, "failed_candidate_evidence": False},
+    }
     parallel_payload = json.loads(json.dumps(base_payload))
     parallel_payload["research_run"] = {
         "execution": {
@@ -1197,6 +1206,8 @@ def test_work_unit_hash_and_work_result_input_hash_have_separate_boundaries() ->
 
     base = parse_manifest(base_payload)
     changed = parse_manifest(changed_payload)
+    heartbeat_changed = parse_manifest(heartbeat_payload)
+    artifact_changed = parse_manifest(artifact_payload)
     parallel = parse_manifest(parallel_payload)
 
     def unit(manifest):
@@ -1214,10 +1225,16 @@ def test_work_unit_hash_and_work_result_input_hash_have_separate_boundaries() ->
 
     base_unit = unit(base)
     changed_unit = unit(changed)
+    heartbeat_unit = unit(heartbeat_changed)
+    artifact_unit = unit(artifact_changed)
     parallel_unit = unit(parallel)
 
     assert base_unit.work_unit_hash == changed_unit.work_unit_hash
     assert base_unit.work_result_input_hash != changed_unit.work_result_input_hash
+    assert base_unit.work_unit_hash == heartbeat_unit.work_unit_hash
+    assert base_unit.work_result_input_hash != heartbeat_unit.work_result_input_hash
+    assert base_unit.work_unit_hash == artifact_unit.work_unit_hash
+    assert base_unit.work_result_input_hash != artifact_unit.work_result_input_hash
     assert base_unit.work_result_input_hash == parallel_unit.work_result_input_hash
 
 
@@ -1429,6 +1446,71 @@ def test_candidate_profile_hash_remains_promotion_bound_while_behavior_hash_is_l
     tampered["candidate_profile_hash"] = "sha256:tampered"
     _, tampered_reasons = evaluate_candidate_for_promotion(tampered)
     assert "candidate_profile_hash_mismatch" in tampered_reasons
+
+
+def test_candidate_behavior_profile_hash_excludes_evaluation_policy_fields(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    report = run_research_backtest(
+        manifest=parse_manifest(_production_bound_statistical_manifest()),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+    candidate = report["candidates"][0]
+    base_behavior_hash = sha256_prefixed(build_candidate_behavior_profile(candidate))
+    base_profile_hash = sha256_prefixed(build_candidate_profile(candidate))
+
+    policy_changed = json.loads(json.dumps(candidate))
+    policy_changed.update(
+        {
+            "acceptance_gate_result": "FAIL",
+            "final_holdout_required_for_promotion": False,
+            "metrics_contract_required": not bool(candidate.get("metrics_contract_required")),
+            "metrics_gate_policy": {"policy": "changed_without_resimulation"},
+            "metrics_gate_policy_hash": "sha256:changed-metrics-policy",
+            "statistical_validation_required": not bool(candidate.get("statistical_validation_required")),
+            "statistical_validation_contract": {"contract": "changed_without_resimulation"},
+            "statistical_gate_result": "FAIL",
+            "statistical_gate_fail_reasons": ["changed_without_resimulation"],
+            "selection_universe_hash": "sha256:changed-selection-universe",
+            "candidate_metric_values_hash": "sha256:changed-candidate-metric-values",
+            "candidate_metric_values_summary": {"changed": True},
+            "return_panel_hash": "sha256:changed-return-panel",
+            "return_unit": "changed_return_unit",
+            "return_panel_observation_count": 999,
+            "final_holdout_content_hash": "sha256:changed-final-holdout-content",
+            "execution_calibration_required": True,
+            "execution_calibration_strictness": "fail",
+            "execution_calibration_gate": {"status": "FAIL", "reasons": ["changed_without_resimulation"]},
+            "execution_calibration_artifact_hash": "sha256:changed-calibration",
+            "execution_calibration_policy_source": "changed_without_resimulation",
+            "production_calibration_policy_result": {"status": "FAIL"},
+            "production_calibration_policy_reasons": ["changed_without_resimulation"],
+        }
+    )
+    for scenario in policy_changed.get("scenario_results") or []:
+        scenario["scenario_acceptance_gate_result"] = "FAIL"
+        scenario["scenario_fail_reasons"] = ["changed_without_resimulation"]
+        scenario["metrics_gate_policy"] = {"policy": "changed_without_resimulation"}
+        scenario["metrics_gate_policy_hash"] = "sha256:changed-scenario-metrics-policy"
+        scenario["metrics_contract_required"] = True
+        scenario["execution_calibration_gate"] = {"status": "FAIL"}
+        scenario["stress_suite_contract"] = {"contract": "changed_without_resimulation"}
+        scenario["stress_suite_contract_hash"] = "sha256:changed-stress-contract"
+        scenario["stress_suite_gate_result"] = "FAIL"
+        scenario["stress_suite_fail_reasons"] = ["changed_without_resimulation"]
+
+    assert sha256_prefixed(build_candidate_profile(policy_changed)) != base_profile_hash
+    assert sha256_prefixed(build_candidate_behavior_profile(policy_changed)) == base_behavior_hash
+
+    behavior_changed = json.loads(json.dumps(candidate))
+    behavior_changed["behavior_hash"] = "sha256:changed-behavior"
+    assert sha256_prefixed(build_candidate_behavior_profile(behavior_changed)) != base_behavior_hash
 
 
 def test_research_report_candidate_and_lineage_bind_portfolio_policy(tmp_path, monkeypatch) -> None:
