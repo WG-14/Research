@@ -270,7 +270,7 @@ def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_candidate_behavior_profile(candidate: dict[str, Any]) -> dict[str, Any]:
-    """Logical behavior identity, separate from manifest/run provenance."""
+    """Behavior-only candidate identity, separate from evaluation/promotion provenance."""
     profile = build_candidate_profile(candidate)
     for key in (
         "source_experiment",
@@ -281,11 +281,20 @@ def build_candidate_behavior_profile(candidate: dict[str, Any]) -> dict[str, Any
         "hypothesis_identity_source",
         "experiment_family_identity_source",
         "deployment_tier",
+        "candidate_regime_policy_required_for_live",
+        "candidate_regime_policy_equivalence_required",
+        "candidate_regime_policy_equivalence_evidence_hash",
+        "candidate_regime_policy_equivalence_evidence_path",
+        "candidate_regime_policy_equivalence_evidence_status",
+        "candidate_profile_evidence_contract_hash",
+        "candidate_regime_policy_limitation_reasons",
         "acceptance_gate_result",
         "final_holdout_required_for_promotion",
         "metrics_gate_policy",
         "metrics_gate_policy_hash",
         "metrics_contract_required",
+        "has_execution_calibration_warning",
+        "execution_calibration_warning_reasons",
         "execution_calibration_required",
         "execution_calibration_strictness",
         "execution_calibration_gate",

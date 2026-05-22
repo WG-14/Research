@@ -1513,6 +1513,96 @@ def test_candidate_behavior_profile_hash_excludes_evaluation_policy_fields(tmp_p
     assert sha256_prefixed(build_candidate_behavior_profile(behavior_changed)) != base_behavior_hash
 
 
+def test_candidate_behavior_profile_hash_has_explicit_behavior_only_boundary(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    report = run_research_backtest(
+        manifest=parse_manifest(_production_bound_statistical_manifest()),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+    candidate = report["candidates"][0]
+    base_behavior_hash = sha256_prefixed(build_candidate_behavior_profile(candidate))
+
+    evaluation_only_changes = [
+        {
+            "acceptance_gate_result": "FAIL",
+            "gate_fail_reasons": ["changed_without_resimulation"],
+        },
+        {
+            "metrics_contract_required": not bool(candidate.get("metrics_contract_required")),
+            "metrics_gate_policy": {"policy": "changed_without_resimulation"},
+            "metrics_gate_policy_hash": "sha256:changed-metrics-policy",
+        },
+        {
+            "statistical_validation_required": not bool(candidate.get("statistical_validation_required")),
+            "statistical_validation_contract": {"contract": "changed_without_resimulation"},
+            "statistical_gate_result": "FAIL",
+            "statistical_gate_fail_reasons": ["changed_without_resimulation"],
+            "return_panel_hash": "sha256:changed-return-panel",
+        },
+        {
+            "selection_universe_hash": "sha256:changed-selection-universe",
+            "candidate_metric_values_hash": "sha256:changed-candidate-metric-values",
+            "candidate_metric_values_summary": {"changed": True},
+            "final_holdout_content_hash": "sha256:changed-final-holdout-content",
+        },
+        {
+            "has_execution_calibration_warning": True,
+            "execution_calibration_warning_reasons": ["changed_without_resimulation"],
+            "execution_calibration_required": True,
+            "execution_calibration_strictness": "fail",
+            "execution_calibration_gate": {"status": "FAIL", "reasons": ["changed_without_resimulation"]},
+            "production_calibration_policy_result": {"status": "FAIL"},
+            "production_calibration_policy_reasons": ["changed_without_resimulation"],
+        },
+        {
+            "candidate_regime_policy_required_for_live": True,
+            "candidate_regime_policy_equivalence_required": True,
+            "candidate_regime_policy_equivalence_evidence_hash": "sha256:changed-regime-evidence",
+            "candidate_regime_policy_equivalence_evidence_path": "/runtime/reports/changed.json",
+            "candidate_regime_policy_equivalence_evidence_status": "changed_without_resimulation",
+            "candidate_profile_evidence_contract_hash": "sha256:changed-profile-evidence-contract",
+            "candidate_regime_policy_limitation_reasons": ["changed_without_resimulation"],
+        },
+    ]
+    for changes in evaluation_only_changes:
+        changed = json.loads(json.dumps(candidate))
+        changed.update(changes)
+        assert sha256_prefixed(build_candidate_behavior_profile(changed)) == base_behavior_hash
+
+    behavior_affecting_changes = [
+        (
+            "parameter_space",
+            {
+                "parameter_values": {"SMA_SHORT": 3, "SMA_LONG": 4, "SMA_FILTER_GAP_MIN_RATIO": 0.0},
+                "parameter_values_raw": {"SMA_SHORT": 3, "SMA_LONG": 4, "SMA_FILTER_GAP_MIN_RATIO": 0.0},
+            },
+        ),
+        (
+            "effective_strategy_parameters",
+            {
+                "effective_strategy_parameters": {"SMA_SHORT": 3, "SMA_LONG": 4, "SMA_FILTER_GAP_MIN_RATIO": 0.0},
+                "effective_strategy_parameters_hash": "sha256:changed-effective-parameters",
+            },
+        ),
+        ("execution_model", {"execution_model": {"type": "fixed_bps", "slippage_bps": 2.0}}),
+        ("execution_timing", {"execution_timing_policy": {"decision_guard_ms": 99}}),
+        ("portfolio_policy", {"portfolio_policy": {"starting_cash_krw": 2_000_000.0, "buy_fraction": 0.5}}),
+        ("dataset_content_hash", {"dataset_content_hash": "sha256:changed-dataset-content"}),
+        ("cost_model", {"cost_model": {"fee_rate": 0.001, "slippage_bps": 3.0}}),
+    ]
+    for label, changes in behavior_affecting_changes:
+        changed = json.loads(json.dumps(candidate))
+        changed.update(changes)
+        assert sha256_prefixed(build_candidate_behavior_profile(changed)) != base_behavior_hash, label
+
+
 def test_research_report_candidate_and_lineage_bind_portfolio_policy(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
