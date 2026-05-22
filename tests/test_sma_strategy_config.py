@@ -97,6 +97,7 @@ def settings_guard():
         "PAIR",
         "INTERVAL",
         "STRATEGY_EXIT_RULES",
+        "STRATEGY_EXIT_STOP_LOSS_RATIO",
         "STRATEGY_EXIT_MAX_HOLDING_MIN",
         "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO",
         "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO",
@@ -177,6 +178,7 @@ def _write_paper_profile(tmp_path: Path, *, sma_short: int) -> Path:
         "ENTRY_EDGE_BUFFER_RATIO": float(settings.ENTRY_EDGE_BUFFER_RATIO),
         "STRATEGY_MIN_EXPECTED_EDGE_RATIO": float(settings.STRATEGY_MIN_EXPECTED_EDGE_RATIO),
         "STRATEGY_EXIT_RULES": str(settings.STRATEGY_EXIT_RULES),
+        "STRATEGY_EXIT_STOP_LOSS_RATIO": float(settings.STRATEGY_EXIT_STOP_LOSS_RATIO),
         "STRATEGY_EXIT_MAX_HOLDING_MIN": int(settings.STRATEGY_EXIT_MAX_HOLDING_MIN),
         "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": float(settings.STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO),
         "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": float(settings.STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO),
@@ -321,6 +323,7 @@ def test_sma_strategy_config_factory_preserves_settings_defaults(settings_guard)
     object.__setattr__(settings, "PAIR", "BTC_KRW")
     object.__setattr__(settings, "INTERVAL", "1m")
     object.__setattr__(settings, "STRATEGY_EXIT_RULES", "opposite_cross, max_holding_time")
+    object.__setattr__(settings, "STRATEGY_EXIT_STOP_LOSS_RATIO", 0.025)
     object.__setattr__(settings, "STRATEGY_EXIT_MAX_HOLDING_MIN", 45)
     object.__setattr__(settings, "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO", 0.012)
     object.__setattr__(settings, "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO", 0.003)
@@ -341,6 +344,7 @@ def test_sma_strategy_config_factory_preserves_settings_defaults(settings_guard)
     assert config.pair == "BTC_KRW"
     assert config.interval == "1m"
     assert config.exit_rule_names == ("opposite_cross", "max_holding_time")
+    assert config.exit_stop_loss_ratio == pytest.approx(0.025)
     assert config.exit_max_holding_min == 45
     assert config.exit_min_take_profit_ratio == pytest.approx(0.012)
     assert config.exit_small_loss_tolerance_ratio == pytest.approx(0.003)

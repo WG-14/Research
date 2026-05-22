@@ -108,7 +108,9 @@ class _BacktestAccumulator:
     opposite_cross_triggered_count: int = 0
     opposite_cross_deferred_small_loss_count: int = 0
     opposite_cross_deferred_small_gain_count: int = 0
+    stop_loss_exit_count: int = 0
     max_holding_exit_count: int = 0
+    exit_filter_suppression_prevented_count: int = 0
 
     @property
     def report_detail(self) -> str:
@@ -139,12 +141,17 @@ class _BacktestAccumulator:
         raw_signal = str(payload.get("raw_signal") or "").upper()
         if raw_signal in {"BUY", "SELL"}:
             self.signal_count += 1
-        entry_filter_blocked = bool(payload.get("entry_filter_blocked"))
+        raw_filter_would_block = bool(
+            payload.get("raw_filter_would_block", payload.get("entry_filter_blocked"))
+        )
+        entry_blocked = bool(payload.get("entry_blocked"))
         sellable_qty = float(payload.get("sellable_qty") or 0.0)
-        if raw_signal == "BUY" and entry_filter_blocked:
+        if raw_signal == "BUY" and entry_blocked:
             self.raw_buy_filter_blocked_count += 1
-        if raw_signal == "SELL" and entry_filter_blocked and sellable_qty > 1e-12:
+        if raw_signal == "SELL" and raw_filter_would_block and sellable_qty > 1e-12:
             self.raw_sell_filter_blocked_while_in_position_count += 1
+        if bool(payload.get("exit_filter_suppression_prevented")):
+            self.exit_filter_suppression_prevented_count += 1
         for evaluation in payload.get("exit_evaluations") or []:
             if not isinstance(evaluation, dict):
                 continue
@@ -159,6 +166,8 @@ class _BacktestAccumulator:
                         self.opposite_cross_deferred_small_loss_count += 1
                     elif zone == "small_gain":
                         self.opposite_cross_deferred_small_gain_count += 1
+            elif rule == "stop_loss" and bool(evaluation.get("triggered")):
+                self.stop_loss_exit_count += 1
             elif rule == "max_holding_time" and bool(evaluation.get("triggered")):
                 self.max_holding_exit_count += 1
         self.decision_hash_material.append(str(payload.get("replay_fingerprint_hash") or ""))
@@ -297,7 +306,9 @@ class _BacktestAccumulator:
             opposite_cross_triggered_count=self.opposite_cross_triggered_count,
             opposite_cross_deferred_small_loss_count=self.opposite_cross_deferred_small_loss_count,
             opposite_cross_deferred_small_gain_count=self.opposite_cross_deferred_small_gain_count,
+            stop_loss_exit_count=self.stop_loss_exit_count,
             max_holding_exit_count=self.max_holding_exit_count,
+            exit_filter_suppression_prevented_count=self.exit_filter_suppression_prevented_count,
         )
 
 
@@ -646,12 +657,13 @@ def run_sma_backtest(
                 raw_signal = "SELL"
                 raw_reason = "sma dead cross"
         blocked_filters = list(entry_decision.blocked_filters) if raw_signal in {"BUY", "SELL"} else []
-        entry_filter_blocked = bool(
+        raw_filter_would_block = bool(
             raw_signal in {"BUY", "SELL"}
             and (blocked_filters or entry_decision.market_regime_triggered or entry_decision.candidate_regime_triggered)
         )
-        entry_signal = "HOLD" if raw_signal == "BUY" and entry_filter_blocked else raw_signal
-        entry_reason = entry_decision.entry_reason if raw_signal == "BUY" and entry_filter_blocked else raw_reason
+        entry_blocked = bool(raw_signal == "BUY" and raw_filter_would_block)
+        entry_signal = "HOLD" if entry_blocked else raw_signal
+        entry_reason = entry_decision.entry_reason if entry_blocked else raw_reason
         gap_ratio = entry_decision.gap_ratio
         range_ratio = entry_decision.volatility_ratio
         if qty > 1e-12 and entry_price is not None:
@@ -664,7 +676,7 @@ def run_sma_backtest(
                     "unrealized_pnl_pct": pnl_ratio * 100.0,
                 }
             )
-        if not entry_filter_blocked and prev_above is not None:
+        if not entry_blocked and prev_above is not None:
             if entry_signal == "BUY" and qty <= 0.0 and pending_buy_qty <= 0.0:
                 action = "BUY"
         if sellable_qty > 0.0:
@@ -691,6 +703,7 @@ def run_sma_backtest(
             )
             for rule in _create_exit_rules(
                 rule_names=list(active_exit_policy["rules"]),
+                stop_loss_ratio=float(active_exit_policy["stop_loss"]["stop_loss_ratio"]),
                 max_holding_sec=float(active_exit_policy["max_holding_time"]["max_holding_min"]) * 60.0,
                 min_take_profit_ratio=float(active_exit_policy["opposite_cross"]["min_take_profit_ratio"]),
                 live_fee_rate_estimate=float(effective_parameters.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate),
@@ -742,7 +755,14 @@ def run_sma_backtest(
             final_signal=action,
             raw_reason=raw_reason,
             blocked=bool(raw_signal in {"BUY", "SELL"} and action == "HOLD"),
-            entry_filter_blocked=entry_filter_blocked,
+            raw_filter_would_block=raw_filter_would_block,
+            entry_blocked=entry_blocked,
+            exit_filter_suppression_prevented=bool(
+                raw_signal == "SELL"
+                and raw_filter_would_block
+                and sellable_qty > 1e-12
+                and bool(exit_evaluations)
+            ),
             blocked_filters=blocked_filters,
             prev_s=prev_short,
             prev_l=prev_long,
@@ -1676,7 +1696,9 @@ def _research_decision_payload(
     final_signal: str,
     raw_reason: str,
     blocked: bool,
-    entry_filter_blocked: bool,
+    raw_filter_would_block: bool,
+    entry_blocked: bool,
+    exit_filter_suppression_prevented: bool,
     blocked_filters: list[str],
     prev_s: float,
     prev_l: float,
@@ -1774,8 +1796,12 @@ def _research_decision_payload(
         "side": final_signal,
         "entry_reason": str(entry_reason),
         "blocked": bool(blocked),
-        "entry_filter_blocked": bool(entry_filter_blocked),
-        "entry_blocked": bool(raw_signal == "BUY" and entry_filter_blocked),
+        "raw_filter_would_block": bool(raw_filter_would_block),
+        "entry_blocked": bool(entry_blocked),
+        # Legacy compatibility alias: for SELL this means filters would have
+        # blocked the raw signal if entry filters governed exits.
+        "entry_filter_blocked": bool(raw_filter_would_block),
+        "exit_filter_suppression_prevented": bool(exit_filter_suppression_prevented),
         "entry_blocked_filters": tuple(blocked_filters),
         "block_reason": str(entry_reason) if blocked else "",
         "blocked_filters": tuple(blocked_filters),
@@ -2187,7 +2213,9 @@ def _strategy_diagnostics_from_trades(
     opposite_cross_triggered_count: int,
     opposite_cross_deferred_small_loss_count: int,
     opposite_cross_deferred_small_gain_count: int,
+    stop_loss_exit_count: int,
     max_holding_exit_count: int,
+    exit_filter_suppression_prevented_count: int,
 ) -> dict[str, object]:
     closed = [
         trade
@@ -2217,7 +2245,9 @@ def _strategy_diagnostics_from_trades(
         "opposite_cross_triggered_count": int(opposite_cross_triggered_count),
         "opposite_cross_deferred_small_loss_count": int(opposite_cross_deferred_small_loss_count),
         "opposite_cross_deferred_small_gain_count": int(opposite_cross_deferred_small_gain_count),
+        "stop_loss_exit_count": int(stop_loss_exit_count),
         "max_holding_exit_count": int(max_holding_exit_count),
+        "exit_filter_suppression_prevented_count": int(exit_filter_suppression_prevented_count),
         "exit_reason_distribution": dict(sorted(exit_reason_distribution.items())),
         "mae_pct_by_trade": mae_pct_by_trade,
         "mfe_pct_by_trade": mfe_pct_by_trade,

@@ -94,6 +94,43 @@ class OppositeCrossExitRule:
 
 
 @dataclass(frozen=True)
+class StopLossExitRule:
+    stop_loss_ratio: float
+    name: str = "stop_loss"
+
+    def evaluate(
+        self,
+        *,
+        position: PositionContext,
+        candle_ts: int,
+        market_price: float,
+        signal_context: dict[str, object],
+    ) -> ExitRuleDecision:
+        threshold = max(0.0, float(self.stop_loss_ratio))
+        unrealized_pnl_ratio = float(position.unrealized_pnl_ratio)
+        should_exit = bool(
+            position.in_position
+            and threshold > 0.0
+            and unrealized_pnl_ratio <= -threshold
+        )
+        return ExitRuleDecision(
+            should_exit=should_exit,
+            reason="exit by stop loss" if should_exit else "stop loss not triggered",
+            context={
+                "rule": self.name,
+                "threshold_ratio": threshold,
+                "unrealized_pnl_ratio": unrealized_pnl_ratio,
+                "base_signal": str(signal_context.get("base_signal", "HOLD")),
+                "raw_signal": str(signal_context.get("raw_signal", signal_context.get("base_signal", "HOLD"))),
+                "entry_signal": str(signal_context.get("entry_signal", "HOLD")),
+                "exit_signal": str(signal_context.get("exit_signal", signal_context.get("base_signal", "HOLD"))),
+                "candle_ts": int(candle_ts),
+                "market_price": float(market_price),
+            },
+        )
+
+
+@dataclass(frozen=True)
 class MaxHoldingTimeExitRule:
     max_holding_sec: float
     name: str = "max_holding_time"
@@ -132,13 +169,18 @@ def create_exit_rules(
     min_take_profit_ratio: float,
     live_fee_rate_estimate: float,
     small_loss_tolerance_ratio: float,
+    stop_loss_ratio: float = 0.0,
 ) -> list[ExitRule]:
     rules: list[ExitRule] = []
-    for raw_name in rule_names:
-        name = str(raw_name).strip().lower()
-        if not name:
-            continue
-        if name == "opposite_cross":
+    priority = {"stop_loss": 0, "opposite_cross": 1, "max_holding_time": 2}
+    normalized_names = [str(raw_name).strip().lower() for raw_name in rule_names if str(raw_name).strip()]
+    unknown = [name for name in normalized_names if name not in priority]
+    if unknown:
+        raise ValueError(f"unknown exit rule={unknown[0]!r}")
+    for name in sorted(dict.fromkeys(normalized_names), key=lambda item: priority[item]):
+        if name == "stop_loss":
+            rules.append(StopLossExitRule(stop_loss_ratio=float(stop_loss_ratio)))
+        elif name == "opposite_cross":
             rules.append(
                 OppositeCrossExitRule(
                     min_take_profit_ratio=float(min_take_profit_ratio),
@@ -148,6 +190,4 @@ def create_exit_rules(
             )
         elif name == "max_holding_time":
             rules.append(MaxHoldingTimeExitRule(max_holding_sec=float(max_holding_sec)))
-        else:
-            raise ValueError(f"unknown exit rule={raw_name!r}")
     return rules

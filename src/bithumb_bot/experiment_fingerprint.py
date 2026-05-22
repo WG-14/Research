@@ -40,6 +40,7 @@ def build_experiment_fingerprint_payload(*, strategy_name: str | None = None) ->
         "strategy_min_expected_edge_ratio": float(settings.STRATEGY_MIN_EXPECTED_EDGE_RATIO),
         "entry_edge_buffer_ratio": float(settings.ENTRY_EDGE_BUFFER_RATIO),
         "exit_rules": str(settings.STRATEGY_EXIT_RULES),
+        "exit_stop_loss_ratio": float(settings.STRATEGY_EXIT_STOP_LOSS_RATIO),
         "exit_max_holding_min": int(settings.STRATEGY_EXIT_MAX_HOLDING_MIN),
         "exit_min_take_profit_ratio": float(settings.STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO),
         "exit_small_loss_tolerance_ratio": float(settings.STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO),

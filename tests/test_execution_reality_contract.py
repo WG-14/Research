@@ -419,6 +419,7 @@ def _complete_runtime_bound_parameter_space(
         "STRATEGY_ENTRY_SLIPPAGE_BPS": [5.0],
         "LIVE_FEE_RATE_ESTIMATE": [0.0004],
         "STRATEGY_EXIT_RULES": ["opposite_cross,max_holding_time"],
+        "STRATEGY_EXIT_STOP_LOSS_RATIO": [0.0],
         "STRATEGY_EXIT_MAX_HOLDING_MIN": [0],
         "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": [0.0],
         "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": [0.0],

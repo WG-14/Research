@@ -546,6 +546,7 @@ def cmd_runtime_replay_decisions(
             slippage_bps=float(cost.get("slippage_bps", settings.STRATEGY_ENTRY_SLIPPAGE_BPS)),
             live_fee_rate_estimate=float(cost.get("fee_rate", settings.LIVE_FEE_RATE_ESTIMATE)),
             exit_rule_names=str(params.get("STRATEGY_EXIT_RULES", settings.STRATEGY_EXIT_RULES)).split(","),
+            exit_stop_loss_ratio=float(params.get("STRATEGY_EXIT_STOP_LOSS_RATIO", settings.STRATEGY_EXIT_STOP_LOSS_RATIO)),
             exit_max_holding_min=int(params.get("STRATEGY_EXIT_MAX_HOLDING_MIN", settings.STRATEGY_EXIT_MAX_HOLDING_MIN)),
             exit_min_take_profit_ratio=float(params.get("STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO", settings.STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO)),
             exit_small_loss_tolerance_ratio=float(params.get("STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO", settings.STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO)),

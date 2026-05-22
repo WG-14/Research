@@ -16,6 +16,14 @@ class ResearchRunSummary:
     promotion_allowed: bool
     nearest_failed_candidate_id: str | None
     nearest_failed_candidate_fail_reasons: tuple[str, ...]
+    strategy_diagnostics_summary: dict[str, object]
+    top_exit_reasons: dict[str, int]
+    validation_raw_sell_filter_blocked_while_in_position_count: int | None
+    final_holdout_raw_sell_filter_blocked_while_in_position_count: int | None
+    validation_p95_mae_pct: float | None
+    final_holdout_p95_mae_pct: float | None
+    validation_worst_trade_mae_pct: float | None
+    final_holdout_worst_trade_mae_pct: float | None
     next_action: str
 
 
@@ -61,6 +69,12 @@ def build_research_run_summary(report: dict[str, object]) -> ResearchRunSummary:
     )
     has_pass_candidate = any(candidate.get("acceptance_gate_result") == "PASS" for candidate in candidates)
     nearest_candidate = candidates[0] if candidates and not has_pass_candidate else None
+    diagnostic_candidate = _primary_candidate(report, candidates)
+    diagnostics_summary = _strategy_diagnostics_summary(diagnostic_candidate or report)
+    has_entry_exit_diagnostics = bool(
+        diagnostics_summary.get("validation_raw_sell_filter_blocked_while_in_position_count")
+        or diagnostics_summary.get("final_holdout_raw_sell_filter_blocked_while_in_position_count")
+    )
 
     return ResearchRunSummary(
         candidate_gate_counts=_ordered_gate_counts(gate_counts) if candidates else {},
@@ -80,6 +94,18 @@ def build_research_run_summary(report: dict[str, object]) -> ResearchRunSummary:
         nearest_failed_candidate_fail_reasons=tuple(_string_items(nearest_candidate.get("gate_fail_reasons")))
         if nearest_candidate is not None
         else (),
+        strategy_diagnostics_summary=diagnostics_summary,
+        top_exit_reasons=dict(diagnostics_summary.get("top_exit_reasons") or {}),
+        validation_raw_sell_filter_blocked_while_in_position_count=_safe_int(
+            diagnostics_summary.get("validation_raw_sell_filter_blocked_while_in_position_count")
+        ),
+        final_holdout_raw_sell_filter_blocked_while_in_position_count=_safe_int(
+            diagnostics_summary.get("final_holdout_raw_sell_filter_blocked_while_in_position_count")
+        ),
+        validation_p95_mae_pct=_safe_float(diagnostics_summary.get("validation_p95_mae_pct")),
+        final_holdout_p95_mae_pct=_safe_float(diagnostics_summary.get("final_holdout_p95_mae_pct")),
+        validation_worst_trade_mae_pct=_safe_float(diagnostics_summary.get("validation_worst_trade_mae_pct")),
+        final_holdout_worst_trade_mae_pct=_safe_float(diagnostics_summary.get("final_holdout_worst_trade_mae_pct")),
         next_action=_next_action(
             promotion_allowed=promotion_allowed,
             has_candidates=bool(candidates),
@@ -88,6 +114,7 @@ def build_research_run_summary(report: dict[str, object]) -> ResearchRunSummary:
             statistical_gate_failed=statistical_gate_failed,
             final_selection_gate_failed=final_selection_gate_failed,
             promotion_eligibility_failed=promotion_eligibility_failed,
+            has_entry_exit_diagnostics=has_entry_exit_diagnostics,
         ),
     )
 
@@ -120,6 +147,14 @@ def _safe_int(value: object) -> int | None:
     return None
 
 
+def _safe_float(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
 def _candidate_id(candidate: dict[str, Any] | None) -> str | None:
     if candidate is None:
         return None
@@ -142,6 +177,60 @@ def _ordered_gate_counts(counts: Counter[str]) -> dict[str, int]:
     return ordered
 
 
+def _primary_candidate(report: dict[str, object], candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    preferred_ids = [
+        str(report.get("selected_candidate_id") or "").strip(),
+        str(report.get("best_candidate_id") or "").strip(),
+    ]
+    for candidate_id in preferred_ids:
+        if not candidate_id:
+            continue
+        for candidate in candidates:
+            if _candidate_id(candidate) == candidate_id:
+                return candidate
+    return candidates[0] if candidates else None
+
+
+def _diagnostics_dict(container: dict[str, Any], key: str) -> dict[str, Any] | None:
+    value = container.get(key)
+    return dict(value) if isinstance(value, dict) else None
+
+
+def _strategy_diagnostics_summary(container: dict[str, Any]) -> dict[str, object]:
+    validation = (
+        _diagnostics_dict(container, "validation_strategy_diagnostics")
+        or _diagnostics_dict(container, "strategy_diagnostics")
+        or {}
+    )
+    final_holdout = _diagnostics_dict(container, "final_holdout_strategy_diagnostics")
+    top_exit_reasons = Counter()
+    for diagnostics in (validation, final_holdout or {}):
+        distribution = diagnostics.get("exit_reason_distribution") if isinstance(diagnostics, dict) else None
+        if not isinstance(distribution, dict):
+            continue
+        for reason, count in distribution.items():
+            top_exit_reasons[str(reason)] += int(count) if isinstance(count, int) else 0
+    return {
+        "top_exit_reasons": _ordered_counts(top_exit_reasons),
+        "validation_raw_sell_filter_blocked_while_in_position_count": _safe_int(
+            validation.get("raw_sell_filter_blocked_while_in_position_count")
+        ),
+        "final_holdout_raw_sell_filter_blocked_while_in_position_count": (
+            _safe_int(final_holdout.get("raw_sell_filter_blocked_while_in_position_count"))
+            if final_holdout is not None
+            else None
+        ),
+        "validation_p95_mae_pct": _safe_float(validation.get("p95_mae_pct")),
+        "final_holdout_p95_mae_pct": (
+            _safe_float(final_holdout.get("p95_mae_pct")) if final_holdout is not None else None
+        ),
+        "validation_worst_trade_mae_pct": _safe_float(validation.get("worst_trade_mae_pct")),
+        "final_holdout_worst_trade_mae_pct": (
+            _safe_float(final_holdout.get("worst_trade_mae_pct")) if final_holdout is not None else None
+        ),
+    }
+
+
 def _next_action(
     *,
     promotion_allowed: bool,
@@ -151,6 +240,7 @@ def _next_action(
     statistical_gate_failed: bool = False,
     final_selection_gate_failed: bool = False,
     promotion_eligibility_failed: bool = False,
+    has_entry_exit_diagnostics: bool = False,
 ) -> str:
     if promotion_allowed:
         return "review_promotion_candidate"
@@ -168,6 +258,8 @@ def _next_action(
         return "do_not_promote_review_walk_forward_windows"
     if "profit_factor_failed" in top_fail_reasons or "min_trade_count_failed" in top_fail_reasons:
         return "do_not_promote_revise_strategy_hypothesis"
+    if has_entry_exit_diagnostics:
+        return "review_entry_exit_channel_diagnostics"
     if gate_result == "FAIL":
         return "inspect_report_or_adjust_hypothesis_not_promote"
     return "inspect_report_or_adjust_hypothesis_not_promote"

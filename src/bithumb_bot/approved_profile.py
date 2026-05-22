@@ -61,6 +61,7 @@ STRATEGY_PARAMETER_ENV_KEYS = (
     "STRATEGY_ENTRY_SLIPPAGE_BPS",
     "LIVE_FEE_RATE_ESTIMATE",
     "STRATEGY_EXIT_RULES",
+    "STRATEGY_EXIT_STOP_LOSS_RATIO",
     "STRATEGY_EXIT_MAX_HOLDING_MIN",
     "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO",
     "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO",
@@ -1169,6 +1170,7 @@ def runtime_contract_from_env_values(env: dict[str, str]) -> dict[str, Any]:
             default="0.0004",
         ),
         "STRATEGY_EXIT_RULES": _value("STRATEGY_EXIT_RULES", default="opposite_cross,max_holding_time"),
+        "STRATEGY_EXIT_STOP_LOSS_RATIO": _value("STRATEGY_EXIT_STOP_LOSS_RATIO", default="0"),
         "STRATEGY_EXIT_MAX_HOLDING_MIN": _value("STRATEGY_EXIT_MAX_HOLDING_MIN", default="0"),
         "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": _value("STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO", default="0"),
         "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": _value(
@@ -1241,6 +1243,7 @@ def runtime_contract_from_settings(cfg: object) -> dict[str, Any]:
             "STRATEGY_ENTRY_SLIPPAGE_BPS": float(getattr(cfg, "STRATEGY_ENTRY_SLIPPAGE_BPS")),
             "LIVE_FEE_RATE_ESTIMATE": float(getattr(cfg, "LIVE_FEE_RATE_ESTIMATE")),
             "STRATEGY_EXIT_RULES": str(getattr(cfg, "STRATEGY_EXIT_RULES")),
+            "STRATEGY_EXIT_STOP_LOSS_RATIO": float(getattr(cfg, "STRATEGY_EXIT_STOP_LOSS_RATIO")),
             "STRATEGY_EXIT_MAX_HOLDING_MIN": int(getattr(cfg, "STRATEGY_EXIT_MAX_HOLDING_MIN")),
             "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": float(getattr(cfg, "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO")),
             "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": float(

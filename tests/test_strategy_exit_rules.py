@@ -8,8 +8,8 @@ from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_db
 from bithumb_bot.strategy.base import PositionContext
 
-from bithumb_bot.strategy.exit_rules import OppositeCrossExitRule, create_exit_rules
-from bithumb_bot.strategy.sma import create_sma_strategy
+from bithumb_bot.strategy.exit_rules import OppositeCrossExitRule, StopLossExitRule, create_exit_rules
+from bithumb_bot.strategy.sma import create_sma_strategy, create_sma_with_filter_strategy
 
 
 def _insert_candles(conn, closes: list[float], *, base_ts: int = 1_700_000_000_000) -> int:
@@ -133,6 +133,88 @@ def test_opposite_cross_exit_and_position_context_are_recorded(
     assert decision.context["exit"]["rule"] == "opposite_cross"
 
 
+def test_runtime_stop_loss_exits_while_raw_signal_is_hold(
+    tmp_path,
+    relaxed_test_order_rules,
+) -> None:
+    old_db_path = settings.DB_PATH
+    old_env_db_path = os.environ.get("DB_PATH")
+    db_path = str(tmp_path / "exit_stop_loss_hold.sqlite")
+    os.environ["DB_PATH"] = db_path
+    object.__setattr__(settings, "DB_PATH", db_path)
+
+    conn = ensure_db()
+    try:
+        candle_ts = _insert_candles(conn, [90.0, 90.0, 90.0, 90.0, 90.0])
+        _insert_open_position_lot(conn, entry_ts=candle_ts - (2 * 60_000), entry_price=100.0)
+        decision = create_sma_strategy(
+            short_n=2,
+            long_n=3,
+            exit_rule_names=["stop_loss", "opposite_cross", "max_holding_time"],
+            exit_stop_loss_ratio=0.05,
+            exit_max_holding_min=999,
+        ).decide(conn)
+    finally:
+        conn.close()
+        object.__setattr__(settings, "DB_PATH", old_db_path)
+        if old_env_db_path is None:
+            os.environ.pop("DB_PATH", None)
+        else:
+            os.environ["DB_PATH"] = old_env_db_path
+
+    assert decision is not None
+    assert decision.signal == "SELL"
+    assert decision.context["raw_signal"] == "HOLD"
+    assert decision.context["exit"]["rule"] == "stop_loss"
+
+
+def test_runtime_stop_loss_priority_over_opposite_cross_when_entry_filters_would_block(
+    tmp_path,
+    relaxed_test_order_rules,
+) -> None:
+    old_db_path = settings.DB_PATH
+    old_env_db_path = os.environ.get("DB_PATH")
+    db_path = str(tmp_path / "exit_stop_loss_priority.sqlite")
+    os.environ["DB_PATH"] = db_path
+    object.__setattr__(settings, "DB_PATH", db_path)
+
+    conn = ensure_db()
+    try:
+        candle_ts = _insert_candles(conn, [100.0, 100.0, 120.0, 120.0, 80.0])
+        _insert_open_position_lot(conn, entry_ts=candle_ts - (2 * 60_000), entry_price=100.0)
+        decision = create_sma_with_filter_strategy(
+            short_n=2,
+            long_n=3,
+            min_gap_ratio=0.40,
+            volatility_window=3,
+            min_volatility_ratio=0.0,
+            overextended_lookback=1,
+            overextended_max_return_ratio=0.0,
+            cost_edge_enabled=False,
+            market_regime_enabled=False,
+            candidate_regime_policy={"allowed": True},
+            exit_rule_names=["opposite_cross", "stop_loss", "max_holding_time"],
+            exit_stop_loss_ratio=0.05,
+            exit_max_holding_min=999,
+        ).decide(conn)
+    finally:
+        conn.close()
+        object.__setattr__(settings, "DB_PATH", old_db_path)
+        if old_env_db_path is None:
+            os.environ.pop("DB_PATH", None)
+        else:
+            os.environ["DB_PATH"] = old_env_db_path
+
+    assert decision is not None
+    assert decision.signal == "SELL"
+    assert decision.context["raw_signal"] == "SELL"
+    assert decision.context["raw_filter_would_block"] is True
+    assert decision.context["entry_blocked"] is False
+    assert decision.context["exit_filter_suppression_prevented"] is True
+    assert decision.context["exit"]["rule"] == "stop_loss"
+    assert [item["rule"] for item in decision.context["exit"]["evaluations"]] == ["stop_loss"]
+
+
 def test_opposite_cross_is_deferred_when_pnl_is_below_take_profit_floor() -> None:
     rule = OppositeCrossExitRule(min_take_profit_ratio=0.002, live_fee_rate_estimate=0.0004)
     position = PositionContext(in_position=True, entry_price=100.0, qty_open=1.0, unrealized_pnl_ratio=0.001)
@@ -199,6 +281,24 @@ def test_adverse_move_without_opposite_cross_or_max_holding_does_not_exit() -> N
 
     assert decision.should_exit is False
     assert decision.context["opposite_cross_triggered"] is False
+
+
+def test_stop_loss_exits_on_adverse_move_without_raw_sell_signal() -> None:
+    rule = StopLossExitRule(stop_loss_ratio=0.03)
+    position = PositionContext(in_position=True, entry_price=100.0, qty_open=1.0, unrealized_pnl_ratio=-0.031)
+
+    decision = rule.evaluate(
+        position=position,
+        candle_ts=1_700_000_000_000,
+        market_price=96.9,
+        signal_context={"base_signal": "HOLD", "raw_signal": "HOLD", "entry_signal": "HOLD"},
+    )
+
+    assert decision.should_exit is True
+    assert decision.reason == "exit by stop loss"
+    assert decision.context["rule"] == "stop_loss"
+    assert decision.context["base_signal"] == "HOLD"
+    assert decision.context["threshold_ratio"] == 0.03
 
 
 def test_opposite_cross_reason_context_include_expected_fields() -> None:
@@ -418,22 +518,15 @@ def test_noise_band_boundary_comparisons_are_applied_as_expected() -> None:
 
 def test_exit_rule_factory_scope_is_explicit() -> None:
     rules = create_exit_rules(
-        rule_names=["opposite_cross", "max_holding_time"],
+        rule_names=["max_holding_time", "opposite_cross", "stop_loss"],
         max_holding_sec=60.0,
         min_take_profit_ratio=0.002,
         live_fee_rate_estimate=0.0004,
         small_loss_tolerance_ratio=0.001,
+        stop_loss_ratio=0.03,
     )
 
-    assert [rule.name for rule in rules] == ["opposite_cross", "max_holding_time"]
-    with pytest.raises(ValueError, match="unknown exit rule='stop_loss'"):
-        create_exit_rules(
-            rule_names=["stop_loss"],
-            max_holding_sec=60.0,
-            min_take_profit_ratio=0.002,
-            live_fee_rate_estimate=0.0004,
-            small_loss_tolerance_ratio=0.001,
-        )
+    assert [rule.name for rule in rules] == ["stop_loss", "opposite_cross", "max_holding_time"]
     with pytest.raises(ValueError, match="unknown exit rule='take_profit'"):
         create_exit_rules(
             rule_names=["take_profit"],

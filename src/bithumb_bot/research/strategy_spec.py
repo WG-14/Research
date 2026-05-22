@@ -48,7 +48,7 @@ class StrategySpec:
 
 SMA_WITH_FILTER_SPEC = StrategySpec(
     strategy_name="sma_with_filter",
-    strategy_version="sma_with_filter.research_runtime_contract.v1",
+    strategy_version="sma_with_filter.research_runtime_contract.v2",
     accepted_parameter_names=(
         "SMA_SHORT",
         "SMA_LONG",
@@ -67,6 +67,7 @@ SMA_WITH_FILTER_SPEC = StrategySpec(
         "STRATEGY_ENTRY_SLIPPAGE_BPS",
         "LIVE_FEE_RATE_ESTIMATE",
         "STRATEGY_EXIT_RULES",
+        "STRATEGY_EXIT_STOP_LOSS_RATIO",
         "STRATEGY_EXIT_MAX_HOLDING_MIN",
         "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO",
         "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO",
@@ -88,6 +89,7 @@ SMA_WITH_FILTER_SPEC = StrategySpec(
         "STRATEGY_ENTRY_SLIPPAGE_BPS",
         "LIVE_FEE_RATE_ESTIMATE",
         "STRATEGY_EXIT_RULES",
+        "STRATEGY_EXIT_STOP_LOSS_RATIO",
         "STRATEGY_EXIT_MAX_HOLDING_MIN",
         "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO",
         "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO",
@@ -113,6 +115,7 @@ SMA_WITH_FILTER_SPEC = StrategySpec(
         "STRATEGY_ENTRY_SLIPPAGE_BPS": 0.0,
         "LIVE_FEE_RATE_ESTIMATE": 0.0004,
         "STRATEGY_EXIT_RULES": "opposite_cross,max_holding_time",
+        "STRATEGY_EXIT_STOP_LOSS_RATIO": 0.0,
         "STRATEGY_EXIT_MAX_HOLDING_MIN": 0,
         "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": 0.0,
         "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": 0.0,
@@ -122,7 +125,8 @@ SMA_WITH_FILTER_SPEC = StrategySpec(
     optional_data=("top_of_book",),
     exit_policy_schema={
         "schema_version": 1,
-        "rules": ("opposite_cross", "max_holding_time"),
+        "rules": ("stop_loss", "opposite_cross", "max_holding_time"),
+        "stop_loss": {"unit": "unrealized_pnl_ratio", "disabled_value": 0},
         "max_holding_time": {"unit": "minutes", "disabled_value": 0},
         "opposite_cross": {
             "min_take_profit_ratio": "max(configured, roundtrip_fee)",
@@ -219,11 +223,17 @@ def materialized_strategy_parameters_hash(parameter_values: dict[str, Any]) -> s
 def exit_policy_from_parameters(strategy_name: str, parameter_values: dict[str, Any]) -> dict[str, Any]:
     values = materialize_strategy_parameters(strategy_name, parameter_values)
     rules = _normalize_exit_rule_names(str(values.get("STRATEGY_EXIT_RULES") or ""))
+    stop_loss_ratio = float(values.get("STRATEGY_EXIT_STOP_LOSS_RATIO") or 0.0)
     max_holding_min = int(values.get("STRATEGY_EXIT_MAX_HOLDING_MIN") or 0)
     return {
         "schema_version": 1,
         "strategy_name": strategy_name,
         "rules": list(rules),
+        "stop_loss": {
+            "enabled": "stop_loss" in rules and stop_loss_ratio > 0.0,
+            "stop_loss_ratio": stop_loss_ratio,
+            "disabled_when_zero": True,
+        },
         "opposite_cross": {
             "enabled": "opposite_cross" in rules,
             "min_take_profit_ratio": float(values.get("STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO") or 0.0),

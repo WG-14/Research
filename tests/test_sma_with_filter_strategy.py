@@ -535,6 +535,9 @@ def test_runtime_raw_sell_exit_uses_exit_channel_when_entry_filter_would_block(
     assert decision.signal == "SELL"
     assert decision.context["raw_signal"] == "SELL"
     assert decision.context["entry_filter_blocked"] is True
+    assert decision.context["raw_filter_would_block"] is True
+    assert decision.context["entry_blocked"] is False
+    assert decision.context["exit_filter_suppression_prevented"] is True
     assert "gap" in decision.context["blocked_filters"]
     assert decision.context["exit_signal"] == "SELL"
     assert decision.context["exit"]["rule"] == "opposite_cross"
@@ -596,6 +599,12 @@ def test_research_runtime_raw_sell_filter_block_equivalence(relaxed_test_order_r
     assert runtime_decision.signal == research_decision["final_signal"] == "SELL"
     assert runtime_decision.context["raw_signal"] == research_decision["raw_signal"] == "SELL"
     assert runtime_decision.context["exit_signal"] == research_decision["exit_signal"] == "SELL"
+    assert runtime_decision.context["raw_filter_would_block"] is True
+    assert runtime_decision.context["entry_blocked"] is False
+    assert runtime_decision.context["exit_filter_suppression_prevented"] is True
+    assert research_decision["raw_filter_would_block"] is True
+    assert research_decision["entry_blocked"] is False
+    assert research_decision["exit_filter_suppression_prevented"] is True
     assert runtime_decision.context["exit"]["rule"] == research_decision["exit_rule"] == "opposite_cross"
 
 

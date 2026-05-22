@@ -241,6 +241,7 @@ def _golden_manifest() -> dict[str, object]:
             "SMA_COST_EDGE_MIN_RATIO": [0.0],
             "ENTRY_EDGE_BUFFER_RATIO": [0.0],
             "STRATEGY_EXIT_RULES": ["opposite_cross,max_holding_time"],
+            "STRATEGY_EXIT_STOP_LOSS_RATIO": [0.0],
             "STRATEGY_EXIT_MAX_HOLDING_MIN": [0],
             "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": [0.0],
             "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": [0.0],

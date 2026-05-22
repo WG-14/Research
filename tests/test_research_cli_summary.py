@@ -470,6 +470,73 @@ def test_next_action_is_conservative_for_failed_reports() -> None:
     assert strategy_failed.next_action != "review_promotion_candidate"
 
 
+def test_summary_surfaces_strategy_diagnostics_and_entry_exit_next_action(capsys) -> None:
+    report = _report(
+        candidates=[
+            _candidate(
+                "candidate_001",
+                fail_reasons=["diagnostic_review_required"],
+            )
+        ],
+        gate_result="FAIL",
+    )
+    report["candidates"][0]["validation_strategy_diagnostics"] = {
+        "raw_sell_filter_blocked_while_in_position_count": 2,
+        "exit_reason_distribution": {"opposite_cross": 3, "max_holding_time": 1},
+        "p95_mae_pct": -1.5,
+        "worst_trade_mae_pct": -3.0,
+    }
+    report["candidates"][0]["final_holdout_strategy_diagnostics"] = {
+        "raw_sell_filter_blocked_while_in_position_count": 1,
+        "exit_reason_distribution": {"opposite_cross": 2},
+        "p95_mae_pct": -2.0,
+        "worst_trade_mae_pct": -4.0,
+    }
+
+    summary = build_research_run_summary(report)
+
+    assert summary.top_exit_reasons == {"opposite_cross": 5, "max_holding_time": 1}
+    assert summary.validation_raw_sell_filter_blocked_while_in_position_count == 2
+    assert summary.final_holdout_raw_sell_filter_blocked_while_in_position_count == 1
+    assert summary.validation_p95_mae_pct == -1.5
+    assert summary.final_holdout_worst_trade_mae_pct == -4.0
+    assert summary.next_action == "review_entry_exit_channel_diagnostics"
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+    output = capsys.readouterr().out
+
+    assert "strategy_diagnostics_summary=" in output
+    assert "top_exit_reasons=opposite_cross:5,max_holding_time:1" in output
+    assert "validation_raw_sell_filter_blocked_while_in_position_count=2" in output
+    assert "final_holdout_raw_sell_filter_blocked_while_in_position_count=1" in output
+    assert "validation_p95_mae_pct=-1.5" in output
+    assert "final_holdout_worst_trade_mae_pct=-4.0" in output
+    assert "next_action=review_entry_exit_channel_diagnostics" in output
+
+
+def test_summary_uses_none_for_missing_final_holdout_diagnostics(capsys) -> None:
+    report = _report(candidates=[_candidate("candidate_001")], gate_result="FAIL")
+    report["candidates"][0]["validation_strategy_diagnostics"] = {
+        "raw_sell_filter_blocked_while_in_position_count": 1,
+        "exit_reason_distribution": {"opposite_cross": 1},
+        "p95_mae_pct": -1.0,
+        "worst_trade_mae_pct": -1.5,
+    }
+
+    summary = build_research_run_summary(report)
+
+    assert summary.final_holdout_raw_sell_filter_blocked_while_in_position_count is None
+    assert summary.final_holdout_p95_mae_pct is None
+    assert summary.final_holdout_worst_trade_mae_pct is None
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+    output = capsys.readouterr().out
+
+    assert "final_holdout_raw_sell_filter_blocked_while_in_position_count=None" in output
+    assert "final_holdout_p95_mae_pct=None" in output
+    assert "final_holdout_worst_trade_mae_pct=None" in output
+
+
 def test_print_report_summary_renders_operator_diagnostics(capsys) -> None:
     report = _report(
         candidates=[

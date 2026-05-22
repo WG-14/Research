@@ -62,7 +62,7 @@ def build_replay_fingerprint(
 ) -> dict[str, object]:
     return {
         "strategy_name": str(strategy_name),
-        "strategy_version": "sma_with_filter_v1",
+        "strategy_version": "sma_with_filter_v2_entry_exit_channel_split",
         "decision_contract_version": DECISION_CONTRACT_VERSION,
         "pair": str(pair),
         "interval": str(interval),

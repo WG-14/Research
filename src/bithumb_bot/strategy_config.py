@@ -20,6 +20,7 @@ class SmaStrategyConfig:
     pair: str
     interval: str
     exit_rule_names: tuple[str, ...]
+    exit_stop_loss_ratio: float
     exit_max_holding_min: int
     exit_min_take_profit_ratio: float
     exit_small_loss_tolerance_ratio: float
@@ -62,6 +63,7 @@ def sma_strategy_config_from_settings(
         pair=str(settings.PAIR),
         interval=str(settings.INTERVAL),
         exit_rule_names=normalize_exit_rule_names(settings.STRATEGY_EXIT_RULES),
+        exit_stop_loss_ratio=float(settings.STRATEGY_EXIT_STOP_LOSS_RATIO),
         exit_max_holding_min=int(settings.STRATEGY_EXIT_MAX_HOLDING_MIN),
         exit_min_take_profit_ratio=float(settings.STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO),
         exit_small_loss_tolerance_ratio=float(settings.STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO),

@@ -491,6 +491,7 @@ class Settings:
         "false",
     )
     STRATEGY_EXIT_RULES: str = os.getenv("STRATEGY_EXIT_RULES", "opposite_cross,max_holding_time")
+    STRATEGY_EXIT_STOP_LOSS_RATIO: float = parse_float_env("STRATEGY_EXIT_STOP_LOSS_RATIO", "0")
     STRATEGY_EXIT_MAX_HOLDING_MIN: int = int(os.getenv("STRATEGY_EXIT_MAX_HOLDING_MIN", "0"))
     STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO: float = parse_float_env(
         "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO", "0"

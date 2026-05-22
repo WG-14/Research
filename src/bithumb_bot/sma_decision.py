@@ -36,6 +36,8 @@ class SmaEntryDecision:
     candidate_regime_decision: dict[str, object]
     candidate_regime_triggered: bool
     filter_blocked: bool
+    raw_filter_would_block: bool
+    entry_blocked: bool
 
     @property
     def final_signal(self) -> str:
@@ -257,7 +259,13 @@ def evaluate_sma_entry_decision_from_features(
     should_filter_entry = raw_signal == "BUY"
     entry_signal = raw_signal
     entry_reason = raw_reason
-    if should_filter_entry and (blocked_filters or market_regime_triggered or candidate_regime_triggered):
+    raw_filter_would_block = bool(
+        raw_signal in {"BUY", "SELL"}
+        and (blocked_filters or market_regime_triggered or candidate_regime_triggered)
+    )
+    entry_blocked = bool(should_filter_entry and raw_filter_would_block)
+
+    if entry_blocked:
         entry_signal = "HOLD"
         if "fee_authority_degraded" in blocked_filters:
             entry_reason = "fee_authority_degraded_live_entry_blocked"
@@ -294,4 +302,6 @@ def evaluate_sma_entry_decision_from_features(
         candidate_regime_decision=candidate_regime_decision,
         candidate_regime_triggered=bool(candidate_regime_triggered),
         filter_blocked=bool(should_filter_entry and blocked_filters),
+        raw_filter_would_block=raw_filter_would_block,
+        entry_blocked=entry_blocked,
     )

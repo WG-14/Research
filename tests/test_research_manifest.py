@@ -54,6 +54,7 @@ def _all_runtime_behavior_parameter_space() -> dict[str, list[object]]:
         "STRATEGY_ENTRY_SLIPPAGE_BPS": [0.0],
         "LIVE_FEE_RATE_ESTIMATE": [0.001],
         "STRATEGY_EXIT_RULES": ["opposite_cross,max_holding_time"],
+        "STRATEGY_EXIT_STOP_LOSS_RATIO": [0.0],
         "STRATEGY_EXIT_MAX_HOLDING_MIN": [0],
         "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": [0.0],
         "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": [0.0],
@@ -121,6 +122,15 @@ def test_missing_behavior_parameter_fails_closed_for_production_bound() -> None:
     payload["parameter_space"].pop("SMA_MARKET_REGIME_ENABLED")
 
     with pytest.raises(ManifestValidationError, match="SMA_MARKET_REGIME_ENABLED"):
+        parse_manifest(payload)
+
+
+def test_missing_stop_loss_parameter_fails_closed_for_production_bound() -> None:
+    payload = _production_manifest()
+    payload["parameter_space"] = _all_runtime_behavior_parameter_space()
+    payload["parameter_space"].pop("STRATEGY_EXIT_STOP_LOSS_RATIO")
+
+    with pytest.raises(ManifestValidationError, match="STRATEGY_EXIT_STOP_LOSS_RATIO"):
         parse_manifest(payload)
 
 

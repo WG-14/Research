@@ -527,6 +527,14 @@ def _apply_entry_exit_policy(
         entry_signal = str(entry.get("entry_signal", raw_signal)).strip().upper() or raw_signal
         filtered_entry = raw_signal == "BUY" and raw_signal != entry_signal
         entry_blocked = raw_signal == "BUY" and final_signal != raw_signal
+        raw_filter_would_block = bool(context.get("raw_filter_would_block", context.get("entry_filter_blocked", False)))
+        exit_filter_suppression_prevented = bool(
+            raw_signal == "SELL"
+            and position.in_position
+            and position_state.normalized_exposure.exit_allowed
+            and raw_filter_would_block
+            and resolved_exit_signal == "SELL"
+        )
         entry_block_reason: str | None = None
         if entry_blocked:
             if filtered_entry:
@@ -545,7 +553,9 @@ def _apply_entry_exit_policy(
         context["final_signal"] = final_signal
         context["exit_signal"] = resolved_exit_signal
         context["exit_reason_raw"] = resolved_exit_reason
+        context["raw_filter_would_block"] = raw_filter_would_block
         context["entry_blocked"] = entry_blocked
+        context["exit_filter_suppression_prevented"] = exit_filter_suppression_prevented
         context["entry_block_reason"] = entry_block_reason
         context["dust_classification"] = str(normalized_state["dust_classification"])
         context["entry_allowed"] = bool(normalized_state["entry_allowed"])
@@ -695,6 +705,7 @@ class SmaCrossStrategy:
     exit_rule_names: list[str] = field(
         default_factory=lambda: _resolve_exit_rule_names(settings.STRATEGY_EXIT_RULES)
     )
+    exit_stop_loss_ratio: float = settings.STRATEGY_EXIT_STOP_LOSS_RATIO
     exit_max_holding_min: int = settings.STRATEGY_EXIT_MAX_HOLDING_MIN
     exit_min_take_profit_ratio: float = settings.STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO
     exit_small_loss_tolerance_ratio: float = settings.STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO
@@ -715,6 +726,7 @@ class SmaCrossStrategy:
             pair=str(config.pair),
             interval=str(config.interval),
             exit_rule_names=list(config.exit_rule_names),
+            exit_stop_loss_ratio=float(config.exit_stop_loss_ratio),
             exit_max_holding_min=int(config.exit_max_holding_min),
             exit_min_take_profit_ratio=float(config.exit_min_take_profit_ratio),
             exit_small_loss_tolerance_ratio=float(config.exit_small_loss_tolerance_ratio),
@@ -815,6 +827,7 @@ class SmaCrossStrategy:
             min_take_profit_ratio=float(self.exit_min_take_profit_ratio),
             live_fee_rate_estimate=fee_rate_for_decision,
             small_loss_tolerance_ratio=float(self.exit_small_loss_tolerance_ratio),
+            stop_loss_ratio=float(self.exit_stop_loss_ratio),
         )
         base_context = {
             "ts": ts_list[-1],
@@ -908,6 +921,7 @@ class SmaWithFilterStrategy:
     exit_rule_names: list[str] = field(
         default_factory=lambda: _resolve_exit_rule_names(settings.STRATEGY_EXIT_RULES)
     )
+    exit_stop_loss_ratio: float = settings.STRATEGY_EXIT_STOP_LOSS_RATIO
     exit_max_holding_min: int = settings.STRATEGY_EXIT_MAX_HOLDING_MIN
     exit_min_take_profit_ratio: float = settings.STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO
     exit_small_loss_tolerance_ratio: float = settings.STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO
@@ -1000,10 +1014,11 @@ class SmaWithFilterStrategy:
         market_regime = entry_decision.market_regime
         vol_window = max(1, int(self.volatility_window))
         overext_lookback = max(1, int(self.overextended_lookback))
-        raw_entry_filter_blocked = bool(
+        raw_filter_would_block = bool(
             base_signal in ("BUY", "SELL")
             and (blocked_filters or market_regime_triggered or candidate_regime_triggered)
         )
+        entry_blocked_by_filter = bool(base_signal == "BUY" and raw_filter_would_block)
         should_filter_entry = base_signal == "BUY"
 
         signal_context = {
@@ -1032,6 +1047,7 @@ class SmaWithFilterStrategy:
             min_take_profit_ratio=float(self.exit_min_take_profit_ratio),
             live_fee_rate_estimate=fee_rate_for_decision,
             small_loss_tolerance_ratio=float(self.exit_small_loss_tolerance_ratio),
+            stop_loss_ratio=float(self.exit_stop_loss_ratio),
         )
 
         base_context = {
@@ -1281,7 +1297,11 @@ class SmaWithFilterStrategy:
                 },
             },
             "filter_blocked": bool(should_filter_entry and blocked_filters),
-            "entry_filter_blocked": bool(raw_entry_filter_blocked),
+            "raw_filter_would_block": bool(raw_filter_would_block),
+            "entry_blocked": bool(entry_blocked_by_filter),
+            # Legacy compatibility alias: for SELL this means filters would
+            # have blocked the raw signal if entry filters governed exits.
+            "entry_filter_blocked": bool(raw_filter_would_block),
             "market_regime_blocked": bool(market_regime_triggered),
             "candidate_regime_blocked": bool(candidate_regime_triggered),
             "decision_type": (
@@ -1311,7 +1331,9 @@ class SmaWithFilterStrategy:
                 "cost_edge_blocked": bool(should_filter_entry and edge_filter_triggered),
                 "blocked_filters": blocked_filters,
                 "filter_blocked": bool(should_filter_entry and blocked_filters),
-                "raw_filter_blocked": bool(raw_entry_filter_blocked),
+                "raw_filter_would_block": bool(raw_filter_would_block),
+                "entry_blocked": bool(entry_blocked_by_filter),
+                "raw_filter_blocked": bool(raw_filter_would_block),
             },
         }
         thresholds = {
@@ -1362,6 +1384,7 @@ def create_sma_strategy(
     pair: str | None = None,
     interval: str | None = None,
     exit_rule_names: list[str] | None = None,
+    exit_stop_loss_ratio: float | None = None,
     exit_max_holding_min: int | None = None,
     exit_min_take_profit_ratio: float | None = None,
     exit_small_loss_tolerance_ratio: float | None = None,
@@ -1382,6 +1405,11 @@ def create_sma_strategy(
             settings_config.exit_rule_names
             if exit_rule_names is None
             else normalize_exit_rule_names(exit_rule_names)
+        ),
+        exit_stop_loss_ratio=float(
+            settings_config.exit_stop_loss_ratio
+            if exit_stop_loss_ratio is None
+            else exit_stop_loss_ratio
         ),
         exit_max_holding_min=int(
             settings_config.exit_max_holding_min
@@ -1442,6 +1470,7 @@ def create_sma_with_filter_strategy(
     market_regime_enabled: bool | None = None,
     candidate_regime_policy: dict[str, object] | None = None,
     exit_rule_names: list[str] | None = None,
+    exit_stop_loss_ratio: float | None = None,
     exit_max_holding_min: int | None = None,
     exit_min_take_profit_ratio: float | None = None,
     exit_small_loss_tolerance_ratio: float | None = None,
@@ -1512,6 +1541,11 @@ def create_sma_with_filter_strategy(
             _resolve_exit_rule_names(settings.STRATEGY_EXIT_RULES)
             if exit_rule_names is None
             else [str(name).strip().lower() for name in exit_rule_names if str(name).strip()]
+        ),
+        exit_stop_loss_ratio=float(
+            settings.STRATEGY_EXIT_STOP_LOSS_RATIO
+            if exit_stop_loss_ratio is None
+            else exit_stop_loss_ratio
         ),
         exit_max_holding_min=int(
             settings.STRATEGY_EXIT_MAX_HOLDING_MIN

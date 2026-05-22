@@ -577,6 +577,20 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     )
     print(f"  candidate_gate_counts={_format_counts(summary.candidate_gate_counts)}")
     print(f"  top_fail_reasons={_format_counts(summary.top_fail_reasons)}")
+    print(f"  strategy_diagnostics_summary={_format_strategy_diagnostics_summary(summary)}")
+    print(f"  top_exit_reasons={_format_counts(summary.top_exit_reasons)}")
+    print(
+        "  validation_raw_sell_filter_blocked_while_in_position_count="
+        f"{_format_optional(summary.validation_raw_sell_filter_blocked_while_in_position_count)}"
+    )
+    print(
+        "  final_holdout_raw_sell_filter_blocked_while_in_position_count="
+        f"{_format_optional(summary.final_holdout_raw_sell_filter_blocked_while_in_position_count)}"
+    )
+    print(f"  validation_p95_mae_pct={_format_optional(summary.validation_p95_mae_pct)}")
+    print(f"  final_holdout_p95_mae_pct={_format_optional(summary.final_holdout_p95_mae_pct)}")
+    print(f"  validation_worst_trade_mae_pct={_format_optional(summary.validation_worst_trade_mae_pct)}")
+    print(f"  final_holdout_worst_trade_mae_pct={_format_optional(summary.final_holdout_worst_trade_mae_pct)}")
     print(f"  promotion_allowed={1 if summary.promotion_allowed else 0}")
     print(f"  validation_run_complete={1 if report.get('validation_run_complete') else 0}")
     print(f"  diagnostic_only={1 if report.get('diagnostic_only') else 0}")
@@ -709,6 +723,25 @@ def _print_progress_event(label: str, event: dict[str, object]) -> None:
             rendered = str(value)
         parts.append(f"{key}={rendered}")
     print(f"[{label}] " + " ".join(parts), flush=True)
+
+
+def _format_optional(value: object) -> str:
+    return "None" if value is None else str(value)
+
+
+def _format_strategy_diagnostics_summary(summary: ResearchRunSummary) -> str:
+    return (
+        "top_exit_reasons="
+        f"{_format_counts(summary.top_exit_reasons)} "
+        "validation_raw_sell_filter_blocked_while_in_position_count="
+        f"{_format_optional(summary.validation_raw_sell_filter_blocked_while_in_position_count)} "
+        "final_holdout_raw_sell_filter_blocked_while_in_position_count="
+        f"{_format_optional(summary.final_holdout_raw_sell_filter_blocked_while_in_position_count)} "
+        f"validation_p95_mae_pct={_format_optional(summary.validation_p95_mae_pct)} "
+        f"final_holdout_p95_mae_pct={_format_optional(summary.final_holdout_p95_mae_pct)} "
+        f"validation_worst_trade_mae_pct={_format_optional(summary.validation_worst_trade_mae_pct)} "
+        f"final_holdout_worst_trade_mae_pct={_format_optional(summary.final_holdout_worst_trade_mae_pct)}"
+    )
 
 
 def _print_metrics_v2_summary(report: dict[str, object]) -> None:
