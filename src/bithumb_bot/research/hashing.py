@@ -16,6 +16,7 @@ REPORT_TOP_LEVEL_HASH_EXCLUDED_FIELDS = frozenset(
         "family_trial_registry_path",
         "audit_trail_trace_manifest_path",
         "trace_manifest_path",
+        "execution_observability",
     }
 )
 REPORT_RUNTIME_ONLY_FIELDS = frozenset(
@@ -27,6 +28,7 @@ REPORT_RUNTIME_ONLY_FIELDS = frozenset(
         "audit_trail_trace_manifest_path",
         "trace_manifest_path",
         "trace_manifest_path_value",
+        "work_unit_observability",
     }
 )
 

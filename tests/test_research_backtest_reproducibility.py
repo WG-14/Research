@@ -31,6 +31,7 @@ from bithumb_bot.research.experiment_manifest import (
     legacy_research_portfolio_policy,
     parse_manifest,
 )
+from bithumb_bot.research.execution_plan import build_research_execution_plan
 from bithumb_bot.research.strategy_spec import strategy_spec_for_name
 from bithumb_bot.research.audit_trail import AuditTraceScope, AuditTrailPolicy, verify_audit_trail, write_trace_manifest
 from bithumb_bot.research.return_panel import build_candidate_return_panel
@@ -630,6 +631,182 @@ def test_same_manifest_and_dataset_produce_same_content_hash(tmp_path, monkeypat
         "audit_trace_manifest": "derived/research/deterministic_sma/trace_manifest.json",
     }
     assert _verify_report_content_hash(persisted, label="backtest_report") == persisted["content_hash"]
+
+
+def test_research_execution_policy_defaults_to_serial() -> None:
+    manifest = parse_manifest(_manifest())
+
+    assert manifest.research_run.execution.as_dict() == {
+        "mode": "serial",
+        "max_workers": 1,
+        "work_unit": "candidate_scenario",
+        "deterministic_merge_order": "scenario_index,candidate_index,split_name",
+        "resume": False,
+    }
+
+
+def test_research_execution_policy_rejects_unknown_fields() -> None:
+    payload = _manifest()
+    payload["research_run"] = {"execution": {"mode": "serial", "unsupported": True}}
+
+    with pytest.raises(ManifestValidationError, match="research_run.execution unsupported fields"):
+        parse_manifest(payload)
+
+
+def test_research_backtest_report_includes_execution_plan_and_observability(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    manifest = parse_manifest(_manifest())
+
+    report = run_research_backtest(
+        manifest=manifest,
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    assert report["execution_policy"]["mode"] == "serial"
+    assert report["execution_plan"]["candidate_count"] == 1
+    assert report["execution_plan"]["scenario_count"] == 1
+    assert report["execution_plan"]["split_count"] == 3
+    assert report["execution_plan"]["estimated_strategy_runs"] == 3
+    assert report["execution_plan"]["estimated_candles"] == 4320
+    assert report["run_environment"]["effective_max_workers"] == 1
+    stages = [item["stage"] for item in report["execution_observability"]["stage_timings"]]
+    assert "load_split" in stages
+    assert "quality_report" in stages
+    assert "candidate_evaluation" in stages
+    assert "report_write" in stages
+    work_units = report["execution_observability"]["work_units"]
+    assert len(work_units) == 1
+    assert work_units[0]["work_unit"]["candidate_index"] == 0
+    assert work_units[0]["work_unit"]["scenario_index"] == 0
+    assert work_units[0]["status"] == "completed"
+    assert "candidate_events_path" not in json.dumps(work_units[0], sort_keys=True)
+    assert "report_path" not in json.dumps(work_units[0], sort_keys=True)
+    assert "experiment_registry_path" not in json.dumps(work_units[0], sort_keys=True)
+    persisted = json.loads(Path(report["artifact_paths"]["report_path"]).read_text(encoding="utf-8"))
+    assert persisted["execution_plan"] == report["execution_plan"]
+    assert persisted["execution_observability"]["work_units"][0]["work_unit"]["work_unit_hash"]
+
+
+def test_research_execution_plan_counts_multiple_candidates_and_scenarios(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    payload = _manifest()
+    payload["parameter_space"] = {
+        "SMA_SHORT": [2, 3],
+        "SMA_LONG": [4],
+        "SMA_FILTER_GAP_MIN_RATIO": [0.0],
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": [0.0],
+    }
+    payload["cost_model"] = {"fee_rate": 0.0, "slippage_bps": [0, 1]}
+    manifest = parse_manifest(payload)
+    snapshots = {
+        split_name: validation_protocol.load_dataset_split(db_path=db_path, manifest=manifest, split_name=split_name)
+        for split_name in ("train", "validation", "final_holdout")
+    }
+    quality_reports = validation_protocol._quality_reports(db_path=db_path, snapshots=snapshots)
+
+    plan = build_research_execution_plan(
+        manifest=manifest,
+        snapshots=snapshots,
+        quality_reports=quality_reports,
+        db_path=db_path,
+        repository_version="unit",
+        created_at="2026-05-03T00:00:00+00:00",
+    ).as_dict()
+
+    assert plan["candidate_count"] == 2
+    assert plan["scenario_count"] == 2
+    assert plan["split_count"] == 3
+    assert plan["estimated_strategy_runs"] == 12
+    assert plan["deterministic_merge_order"] == "scenario_index,candidate_index,split_name"
+
+
+def test_serial_work_unit_order_is_deterministic(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["parameter_space"] = {
+        "SMA_SHORT": [2, 3],
+        "SMA_LONG": [4],
+        "SMA_FILTER_GAP_MIN_RATIO": [0.0],
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": [0.0],
+    }
+    payload["cost_model"] = {"fee_rate": 0.0, "slippage_bps": [0, 1]}
+    manifest = parse_manifest(payload)
+
+    first = run_research_backtest(
+        manifest=manifest,
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+    second = run_research_backtest(
+        manifest=manifest,
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    first_order = [
+        (item["work_unit"]["scenario_index"], item["work_unit"]["candidate_index"])
+        for item in first["execution_observability"]["work_units"]
+    ]
+    second_order = [
+        (item["work_unit"]["scenario_index"], item["work_unit"]["candidate_index"])
+        for item in second["execution_observability"]["work_units"]
+    ]
+    assert first_order == [(0, 0), (0, 1), (1, 0), (1, 1)]
+    assert second_order == first_order
+    assert first["content_hash"] == second["content_hash"]
+
+
+def test_explicit_default_execution_policy_preserves_serial_metrics(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    default_manifest = parse_manifest(_manifest())
+    explicit_payload = _manifest()
+    explicit_payload["research_run"] = {
+        "execution": {
+            "mode": "serial",
+            "max_workers": 1,
+            "work_unit": "candidate_scenario",
+            "deterministic_merge_order": "scenario_index,candidate_index,split_name",
+            "resume": False,
+        }
+    }
+    explicit_manifest = parse_manifest(explicit_payload)
+
+    default_report = run_research_backtest(
+        manifest=default_manifest,
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+    explicit_report = run_research_backtest(
+        manifest=explicit_manifest,
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    assert default_manifest.manifest_hash() == explicit_manifest.manifest_hash()
+    assert default_report["candidates"][0]["validation_metrics"] == explicit_report["candidates"][0]["validation_metrics"]
+    assert default_report["candidates"][0]["behavior_hash"] == explicit_report["candidates"][0]["behavior_hash"]
 
 
 def test_research_report_candidate_and_lineage_bind_portfolio_policy(tmp_path, monkeypatch) -> None:

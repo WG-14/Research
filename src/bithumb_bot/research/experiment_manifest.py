@@ -422,12 +422,31 @@ class ResearchHeartbeatPolicy:
 
 
 @dataclass(frozen=True)
+class ResearchExecutionPolicy:
+    mode: str = "serial"
+    max_workers: int = 1
+    work_unit: str = "candidate_scenario"
+    deterministic_merge_order: str = "scenario_index,candidate_index,split_name"
+    resume: bool = False
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "mode": self.mode,
+            "max_workers": self.max_workers,
+            "work_unit": self.work_unit,
+            "deterministic_merge_order": self.deterministic_merge_order,
+            "resume": self.resume,
+        }
+
+
+@dataclass(frozen=True)
 class ResearchRunPolicy:
     report_detail: str = "summary"
     artifact_policy: ResearchArtifactPolicy = field(default_factory=ResearchArtifactPolicy)
     audit_trail: ResearchAuditTrailPolicy = field(default_factory=ResearchAuditTrailPolicy)
     resource_limits: ResearchResourceLimits = field(default_factory=ResearchResourceLimits)
     heartbeat: ResearchHeartbeatPolicy = field(default_factory=ResearchHeartbeatPolicy)
+    execution: ResearchExecutionPolicy = field(default_factory=ResearchExecutionPolicy)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -436,6 +455,7 @@ class ResearchRunPolicy:
             "audit_trail": self.audit_trail.as_dict(),
             "resource_limits": self.resource_limits.as_dict(),
             "heartbeat": self.heartbeat.as_dict(),
+            "execution": self.execution.as_dict(),
         }
 
 
@@ -2268,7 +2288,7 @@ def _parse_research_run(value: Any) -> ResearchRunPolicy:
         return ResearchRunPolicy()
     if not isinstance(value, dict):
         raise ManifestValidationError("research_run must be an object")
-    allowed_fields = {"report_detail", "artifact_policy", "audit_trail", "resource_limits", "heartbeat"}
+    allowed_fields = {"report_detail", "artifact_policy", "audit_trail", "resource_limits", "heartbeat", "execution"}
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
         raise ManifestValidationError(f"research_run unsupported fields: {','.join(unknown)}")
@@ -2292,6 +2312,7 @@ def _parse_research_run(value: Any) -> ResearchRunPolicy:
         audit_trail=audit_trail,
         resource_limits=_parse_research_resource_limits(value.get("resource_limits")),
         heartbeat=_parse_research_heartbeat(value.get("heartbeat")),
+        execution=_parse_research_execution(value.get("execution")),
     )
 
 
@@ -2386,6 +2407,38 @@ def _parse_research_heartbeat(value: Any) -> ResearchHeartbeatPolicy:
     return ResearchHeartbeatPolicy(
         interval_s=_optional_positive_float(value.get("interval_s", 10.0), "research_run.heartbeat.interval_s"),
         bar_interval=_optional_positive_or_zero_int(value.get("bar_interval", 10000), "research_run.heartbeat.bar_interval"),
+    )
+
+
+def _parse_research_execution(value: Any) -> ResearchExecutionPolicy:
+    if value is None:
+        return ResearchExecutionPolicy()
+    if not isinstance(value, dict):
+        raise ManifestValidationError("research_run.execution must be an object")
+    allowed_fields = {"mode", "max_workers", "work_unit", "deterministic_merge_order", "resume"}
+    unknown = sorted(set(value) - allowed_fields)
+    if unknown:
+        raise ManifestValidationError(f"research_run.execution unsupported fields: {','.join(unknown)}")
+    mode = str(value.get("mode") or "serial").strip().lower()
+    if mode != "serial":
+        raise ManifestValidationError("research_run.execution.mode must be serial")
+    max_workers = _positive_int(value.get("max_workers", 1), "research_run.execution.max_workers")
+    work_unit = str(value.get("work_unit") or "candidate_scenario").strip().lower()
+    if work_unit != "candidate_scenario":
+        raise ManifestValidationError("research_run.execution.work_unit must be candidate_scenario")
+    deterministic_merge_order = str(
+        value.get("deterministic_merge_order") or "scenario_index,candidate_index,split_name"
+    ).strip()
+    if deterministic_merge_order != "scenario_index,candidate_index,split_name":
+        raise ManifestValidationError(
+            "research_run.execution.deterministic_merge_order must be scenario_index,candidate_index,split_name"
+        )
+    return ResearchExecutionPolicy(
+        mode=mode,
+        max_workers=max_workers,
+        work_unit=work_unit,
+        deterministic_merge_order=deterministic_merge_order,
+        resume=bool(value.get("resume", False)),
     )
 
 

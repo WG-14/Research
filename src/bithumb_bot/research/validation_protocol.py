@@ -44,6 +44,12 @@ from .execution_calibration import compare_calibration_to_scenario
 from .execution_model import DepthWalkExecutionModel, FixedBpsExecutionModel, StressExecutionModel, model_params_hash
 from .execution_timing import execution_reality_gate, signal_quote_coverage_summary
 from .experiment_manifest import DateRange, ExecutionScenario, ExperimentManifest
+from .execution_plan import (
+    ResearchExecutionPlan,
+    ResearchWorkUnit,
+    build_research_execution_plan,
+    build_research_work_unit,
+)
 from .final_selection import apply_final_selection_contract
 from .hashing import content_hash_payload, sha256_prefixed
 from .family_registry import (
@@ -103,6 +109,15 @@ def _emit_progress(callback: ProgressCallback | None, **payload: Any) -> None:
     if callback is None:
         return
     callback(payload)
+
+
+def _stage_timing(stage: str, started_at: float, **details: Any) -> dict[str, Any]:
+    payload = {
+        "stage": stage,
+        "wall_seconds": round(time.perf_counter() - started_at, 6),
+    }
+    payload.update(details)
+    return payload
 
 
 def _estimated_strategy_runs(
@@ -376,6 +391,8 @@ def run_research_backtest(
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    stage_timings: list[dict[str, Any]] = []
+    work_unit_observability: list[dict[str, Any]] = []
     manifest_hash = manifest.manifest_hash()
     _emit_progress(
         progress_callback,
@@ -387,10 +404,16 @@ def run_research_backtest(
     _validate_strategy_data_requirements(manifest)
     snapshots = {}
     for split_name in ("train", "validation"):
+        stage_started = time.perf_counter()
         snapshot = load_dataset_split(db_path=db_path, manifest=manifest, split_name=split_name)
         snapshots[split_name] = snapshot
+        stage_timings.append(
+            _stage_timing("load_split", stage_started, split=split_name, candles=len(snapshot.candles))
+        )
         _emit_progress(progress_callback, stage="load_split", split=split_name, candles=len(snapshot.candles))
+    stage_started = time.perf_counter()
     quality_reports = _quality_reports(db_path=db_path, snapshots=snapshots)
+    stage_timings.append(_stage_timing("quality_report", stage_started, split="train,validation"))
     for split_name, report in sorted(quality_reports.items()):
         _emit_progress(
             progress_callback,
@@ -411,10 +434,19 @@ def run_research_backtest(
         created_at=generated_at,
     )
     if manifest.dataset.split.final_holdout is not None:
+        stage_started = time.perf_counter()
         snapshots["final_holdout"] = load_dataset_split(
             db_path=db_path,
             manifest=manifest,
             split_name="final_holdout",
+        )
+        stage_timings.append(
+            _stage_timing(
+                "load_split",
+                stage_started,
+                split="final_holdout",
+                candles=len(snapshots["final_holdout"].candles),
+            )
         )
         _emit_progress(
             progress_callback,
@@ -422,10 +454,12 @@ def run_research_backtest(
             split="final_holdout",
             candles=len(snapshots["final_holdout"].candles),
         )
+        stage_started = time.perf_counter()
         quality_reports["final_holdout"] = _quality_reports(
             db_path=db_path,
             snapshots={"final_holdout": snapshots["final_holdout"]},
         )["final_holdout"]
+        stage_timings.append(_stage_timing("quality_report", stage_started, split="final_holdout"))
         report = quality_reports["final_holdout"]
         _emit_progress(
             progress_callback,
@@ -436,6 +470,24 @@ def run_research_backtest(
         )
     _require_enough_candles(snapshots.values())
 
+    execution_plan = build_research_execution_plan(
+        manifest=manifest,
+        snapshots=snapshots,
+        quality_reports=quality_reports,
+        db_path=db_path,
+        repository_version=_repository_version(),
+        created_at=generated_at,
+        include_walk_forward=False,
+    )
+    _emit_progress(
+        progress_callback,
+        stage="execution_plan",
+        execution_mode=execution_plan.payload["execution_mode"],
+        max_workers=execution_plan.payload["max_workers"],
+        work_unit_type=execution_plan.payload["work_unit_type"],
+        estimated_strategy_runs=execution_plan.payload["estimated_strategy_runs"],
+    )
+    stage_started = time.perf_counter()
     candidates = _evaluate_candidates(
         manifest=manifest,
         manager=manager,
@@ -443,8 +495,15 @@ def run_research_backtest(
         quality_reports=quality_reports,
         include_walk_forward=False,
         execution_calibration=execution_calibration,
+        execution_plan=execution_plan,
+        work_unit_observability=work_unit_observability,
         progress_callback=progress_callback,
     )
+    stage_timings.append(_stage_timing("candidate_evaluation", stage_started, candidate_count=len(candidates)))
+    execution_observability = {
+        "stage_timings": stage_timings,
+        "work_units": work_unit_observability,
+    }
     report = _report_payload(
         manifest=manifest,
         snapshots=tuple(snapshots.values()),
@@ -458,6 +517,8 @@ def run_research_backtest(
         execution_calibration=execution_calibration,
         manager=manager,
         experiment_registry_reservation=experiment_registry_reservation,
+        execution_plan=execution_plan,
+        execution_observability=execution_observability,
     )
     _emit_progress(
         progress_callback,
@@ -465,15 +526,19 @@ def run_research_backtest(
         experiment_id=manifest.experiment_id,
         candidate_count=len(candidates),
     )
+    stage_started = time.perf_counter()
     paths, content_hash = write_research_report(
         manager=manager,
         experiment_id=manifest.experiment_id,
         report_name="backtest",
         payload=report,
     )
+    stage_timings.append(_stage_timing("report_write", stage_started, candidate_count=len(candidates)))
     report["content_hash"] = content_hash
     report["artifact_refs"] = research_artifact_refs(paths, manager=manager)
     report["artifact_paths"] = research_artifact_paths(paths)
+    report["execution_observability"] = execution_observability
+    write_json_atomic(paths.report_path, report)
     _emit_progress(
         progress_callback,
         stage="complete",
@@ -610,6 +675,8 @@ def _evaluate_candidates(
     quality_reports: dict[str, DatasetQualityReport],
     include_walk_forward: bool,
     execution_calibration: dict[str, Any] | None,
+    execution_plan: ResearchExecutionPlan | None = None,
+    work_unit_observability: list[dict[str, Any]] | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> list[dict[str, Any]]:
     raw_candidates = iter_parameter_candidates(manifest.parameter_space)
@@ -687,6 +754,16 @@ def _evaluate_candidates(
         base_results: list[dict[str, Any]] = []
         for index, params in enumerate(raw_candidates):
             param_candidate_id = candidate_id(params, index)
+            work_unit = build_research_work_unit(
+                manifest=manifest,
+                snapshots=snapshots,
+                params=params,
+                candidate_index=index,
+                scenario=scenario,
+                scenario_index=scenario_index,
+                scenario_id=scenario_id,
+                manifest_hash=manifest_hash,
+            )
             _append_candidate_event(
                 manager=manager,
                 manifest=manifest,
@@ -696,6 +773,7 @@ def _evaluate_candidates(
                     "scenario_id": scenario_id,
                     "scenario_index": scenario_index,
                     "parameter_values": params,
+                    "work_unit_hash": work_unit.work_unit_hash,
                 },
             )
             try:
@@ -712,9 +790,17 @@ def _evaluate_candidates(
                     scenario_id=scenario_id,
                     manifest_hash=manifest_hash,
                     include_walk_forward=include_walk_forward,
+                    work_unit=work_unit,
+                    work_unit_observability=work_unit_observability,
                     progress_callback=progress_callback,
                 )
             except BacktestResourceLimitExceeded as exc:
+                _record_failed_work_unit(
+                    work_unit_observability=work_unit_observability,
+                    work_unit=work_unit,
+                    reason=exc.reason,
+                    resource_guard=exc.evidence,
+                )
                 base = _failed_candidate_base_result(
                     manifest=manifest,
                     candidate_index=index,
@@ -740,9 +826,20 @@ def _evaluate_candidates(
                         "scenario_id": scenario_id,
                         "reason": exc.reason,
                         "resource_guard": exc.evidence,
+                        "work_unit_hash": work_unit.work_unit_hash,
                     },
                 )
             except Exception as exc:
+                _record_failed_work_unit(
+                    work_unit_observability=work_unit_observability,
+                    work_unit=work_unit,
+                    reason="candidate_exception",
+                    resource_guard={
+                        "exception_type": type(exc).__name__,
+                        "message": str(exc),
+                        "split": str(getattr(exc, "failed_split", "unknown")),
+                    },
+                )
                 base = _failed_candidate_base_result(
                     manifest=manifest,
                     candidate_index=index,
@@ -779,6 +876,7 @@ def _evaluate_candidates(
                         "reason": "candidate_exception",
                         "exception_type": type(exc).__name__,
                         "message": str(exc),
+                        "work_unit_hash": work_unit.work_unit_hash,
                     },
                 )
             base_results.append(base)
@@ -1371,9 +1469,23 @@ def _evaluate_candidate_base_result(
     scenario_id: str,
     manifest_hash: str,
     include_walk_forward: bool,
+    work_unit: ResearchWorkUnit,
+    work_unit_observability: list[dict[str, Any]] | None,
     progress_callback: ProgressCallback | None,
 ) -> dict[str, Any]:
     param_candidate_id = candidate_id(params, index)
+    work_started = time.perf_counter()
+    work_cpu_started = time.process_time()
+    split_observability: list[dict[str, Any]] = []
+    _emit_progress(
+        progress_callback,
+        stage="work_unit_start",
+        candidate_id=param_candidate_id,
+        scenario_id=scenario_id,
+        scenario_index=scenario_index,
+        work_unit_hash=work_unit.work_unit_hash,
+        work_unit_type="candidate_scenario",
+    )
 
     def _run(split_name: str) -> BacktestRun:
         _emit_progress(
@@ -1398,7 +1510,9 @@ def _evaluate_candidate_base_result(
             progress_callback=progress_callback,
         )
         try:
-            return _invoke_strategy_runner(
+            split_started = time.perf_counter()
+            split_cpu_started = time.process_time()
+            result = _invoke_strategy_runner(
                 runner=runner,
                 dataset=snapshots[split_name],
                 parameter_values=params,
@@ -1419,7 +1533,29 @@ def _evaluate_candidate_base_result(
                 portfolio_policy=manifest.portfolio_policy,
                 context=context,
             )
+            wall_seconds = time.perf_counter() - split_started
+            cpu_seconds = time.process_time() - split_cpu_started
+            candles = len(snapshots[split_name].candles)
+            split_observability.append(
+                {
+                    "split_name": split_name,
+                    "status": "completed",
+                    "wall_seconds": round(wall_seconds, 6),
+                    "cpu_seconds": round(cpu_seconds, 6),
+                    "candles_processed": candles,
+                    "candles_per_second": round(candles / wall_seconds, 6) if wall_seconds > 0 else None,
+                }
+            )
+            return result
         except Exception as exc:
+            split_observability.append(
+                {
+                    "split_name": split_name,
+                    "status": "failed",
+                    "failure_reason": type(exc).__name__,
+                    "candles_processed": len(snapshots[split_name].candles),
+                }
+            )
             if context.audit_trace is not None:
                 audit_index = context.audit_trace.complete(status="failed")
                 if isinstance(exc, BacktestResourceLimitExceeded):
@@ -1449,6 +1585,38 @@ def _evaluate_candidate_base_result(
         )
         if include_walk_forward
         else None
+    )
+    work_wall_seconds = time.perf_counter() - work_started
+    work_cpu_seconds = time.process_time() - work_cpu_started
+    candles_processed = sum(int(item.get("candles_processed") or 0) for item in split_observability)
+    work_observability = {
+        "work_unit": work_unit.as_dict(),
+        "status": "completed",
+        "wall_seconds": round(work_wall_seconds, 6),
+        "cpu_seconds": round(work_cpu_seconds, 6),
+        "candles_processed": candles_processed,
+        "candles_per_second": round(candles_processed / work_wall_seconds, 6) if work_wall_seconds > 0 else None,
+        "split_results": split_observability,
+        "content_hash": sha256_prefixed(
+            {
+                "work_unit_hash": work_unit.work_unit_hash,
+                "status": "completed",
+                "split_names": [item.get("split_name") for item in split_observability],
+                "candles_processed": candles_processed,
+            }
+        ),
+    }
+    if work_unit_observability is not None:
+        work_unit_observability.append(work_observability)
+    _emit_progress(
+        progress_callback,
+        stage="work_unit_complete",
+        candidate_id=param_candidate_id,
+        scenario_id=scenario_id,
+        scenario_index=scenario_index,
+        work_unit_hash=work_unit.work_unit_hash,
+        wall_seconds=round(work_wall_seconds, 3),
+        candles_processed=candles_processed,
     )
     return {
         "index": index,
@@ -1496,6 +1664,32 @@ def _evaluate_candidate_base_result(
         "final_holdout_audit_trace_index": final_holdout.audit_trace_index if final_holdout else None,
         "retained_detail_summary": validation.retained_detail_summary,
     }
+
+
+def _record_failed_work_unit(
+    *,
+    work_unit_observability: list[dict[str, Any]] | None,
+    work_unit: ResearchWorkUnit,
+    reason: str,
+    resource_guard: dict[str, Any],
+) -> None:
+    if work_unit_observability is None:
+        return
+    work_unit_observability.append(
+        {
+            "work_unit": work_unit.as_dict(),
+            "status": "failed",
+            "failure_reason": reason,
+            "resource_guard": resource_guard,
+            "content_hash": sha256_prefixed(
+                {
+                    "work_unit_hash": work_unit.work_unit_hash,
+                    "status": "failed",
+                    "failure_reason": reason,
+                }
+            ),
+        }
+    )
 
 
 def _invoke_strategy_runner(
@@ -2347,6 +2541,8 @@ def _report_payload(
     execution_calibration: dict[str, Any] | None = None,
     manager: PathManager | None = None,
     experiment_registry_reservation: dict[str, Any] | None = None,
+    execution_plan: ResearchExecutionPlan | None = None,
+    execution_observability: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     dataset_hash = combined_dataset_fingerprint(snapshots)
     dataset_quality_hash = combined_dataset_quality_hash(quality_reports)
@@ -2881,6 +3077,20 @@ def _report_payload(
         "portfolio_policy_hash": portfolio_policy_hash,
         "simulation_policy_hash": simulation_policy_hash,
         "research_run": manifest.research_run.as_dict(),
+        "execution_policy": manifest.research_run.execution.as_dict(),
+        "execution_plan": execution_plan.as_dict() if execution_plan is not None else None,
+        "run_environment": (
+            execution_plan.payload.get("run_environment")
+            if execution_plan is not None
+            else {
+                "repository_version": repository_version,
+                "manifest_hash": manifest.manifest_hash(),
+                "execution_mode": manifest.research_run.execution.mode,
+                "effective_max_workers": manifest.research_run.execution.max_workers,
+                "work_unit_type": manifest.research_run.execution.work_unit,
+            }
+        ),
+        "execution_observability": execution_observability or {"stage_timings": [], "work_units": []},
         "audit_trail_policy": manifest.research_run.audit_trail.as_dict(),
         "audit_trail_status": "PASS" if manifest.research_run.audit_trail.complete_external and not audit_reasons else (
             "DISABLED" if not manifest.research_run.audit_trail.complete_external else "FAIL"
