@@ -1535,6 +1535,50 @@ def test_candidate_behavior_profile_hash_excludes_nested_runtime_provenance_arti
     assert sha256_prefixed(build_candidate_behavior_profile(changed)) == base_behavior_hash
 
 
+def test_candidate_behavior_profile_hash_excludes_top_level_runtime_provenance_artifact_fields(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["experiment_id"] = "behavior_profile_top_level_runtime_base"
+    report = run_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+    candidate = report["candidates"][0]
+    base_behavior_hash = sha256_prefixed(build_candidate_behavior_profile(candidate))
+
+    changed = json.loads(json.dumps(candidate))
+    changed.update(
+        {
+            "run_uuid": "changed",
+            "artifact_namespace": "changed",
+            "worker_hostname": "changed",
+            "attempt_id": "changed",
+            "report_path": "/tmp/changed/report.json",
+            "trace_manifest_path": "/tmp/changed/trace_manifest.json",
+            "artifact_path": "/tmp/changed/artifact.json",
+            "artifact_ref": "changed-artifact-ref",
+            "runtime_observability": {"wall_seconds": 999.0, "worker_pid": 12345},
+            "provenance_identity": {"experiment_id": "changed"},
+            "artifact_locator": {"report_path": "/tmp/changed/report.json"},
+        }
+    )
+
+    assert sha256_prefixed(build_candidate_behavior_profile(changed)) == base_behavior_hash
+
+    behavior_changed = json.loads(json.dumps(candidate))
+    behavior_changed["behavior_hash"] = "sha256:changed-behavior"
+    assert sha256_prefixed(build_candidate_behavior_profile(behavior_changed)) != base_behavior_hash
+
+
 def test_candidate_behavior_profile_hash_excludes_evaluation_policy_fields(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)

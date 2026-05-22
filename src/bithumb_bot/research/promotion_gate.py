@@ -389,7 +389,7 @@ def build_candidate_behavior_profile(candidate: dict[str, Any]) -> dict[str, Any
             for item in profile["scenario_results"]
             if isinstance(item, dict)
         ]
-    return profile
+    return _strip_candidate_behavior_runtime_fields(profile)
 
 
 def _candidate_behavior_scenario_result(result: dict[str, Any]) -> dict[str, Any]:
