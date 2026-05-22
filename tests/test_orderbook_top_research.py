@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -10,8 +11,15 @@ from bithumb_bot.db_core import ensure_db
 from bithumb_bot.orderbook_depth_store import build_orderbook_depth_snapshot, upsert_orderbook_depth_snapshot
 from bithumb_bot.orderbook_top_store import build_orderbook_top_snapshot, upsert_orderbook_top_snapshot
 from bithumb_bot.paths import PathManager
+from bithumb_bot.research import dataset_snapshot as dataset_snapshot_module
 from bithumb_bot.research.backtest_engine import empty_execution_event_summary, run_sma_backtest
-from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot, build_dataset_quality_report, load_dataset_split
+from bithumb_bot.research.dataset_snapshot import (
+    Candle,
+    DatasetSnapshot,
+    _load_top_of_book_quotes,
+    build_dataset_quality_report,
+    load_dataset_split,
+)
 from bithumb_bot.research.execution_model import StressExecutionModel
 from bithumb_bot.research.execution_timing import first_quote_after_or_equal
 from bithumb_bot.research.experiment_manifest import DateRange, ExecutionTimingPolicy, ManifestValidationError, parse_manifest
@@ -168,6 +176,241 @@ def test_top_of_book_join_uses_nearest_snapshot_with_deterministic_tie_break(tmp
     assert snapshot.top_of_book_quotes[0] is not None
     assert snapshot.top_of_book_quotes[0].ts == candle_ts - 1_000
     assert snapshot.top_of_book_quotes[0].bid_price == 99.0
+
+
+def test_load_top_of_book_quotes_bulk_join_selects_nearest_quote(tmp_path: Path) -> None:
+    db_path = tmp_path / "quotes.sqlite"
+    conn = ensure_db(str(db_path))
+    try:
+        for quote_ts, bid, ask in (
+            (900, 99.0, 100.0),
+            (1_040, 101.0, 102.0),
+        ):
+            upsert_orderbook_top_snapshot(
+                conn,
+                build_orderbook_top_snapshot(
+                    ts=quote_ts,
+                    pair="KRW-BTC",
+                    bid_price=bid,
+                    ask_price=ask,
+                    source="bithumb_public_v1_orderbook",
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    quotes = _load_top_of_book_quotes(
+        db_path=db_path,
+        market="KRW-BTC",
+        candles=(Candle(1_000, 1.0, 1.0, 1.0, 1.0, 1.0),),
+        join_tolerance_ms=150,
+        quote_source=None,
+    )
+
+    assert len(quotes) == 1
+    assert quotes[0] is not None
+    assert quotes[0].ts == 1_040
+    assert quotes[0].matched_candle_ts == 1_000
+    assert quotes[0].age_ms == 40
+
+
+def test_load_top_of_book_quotes_bulk_join_preserves_sql_tie_breaks(tmp_path: Path) -> None:
+    db_path = tmp_path / "quotes.sqlite"
+    conn = ensure_db(str(db_path))
+    try:
+        for quote_ts, source, bid, ask in (
+            (1_100, "b_source", 101.0, 102.0),
+            (900, "b_source", 99.0, 100.0),
+            (900, "a_source", 98.0, 99.0),
+        ):
+            upsert_orderbook_top_snapshot(
+                conn,
+                build_orderbook_top_snapshot(
+                    ts=quote_ts,
+                    pair="KRW-BTC",
+                    bid_price=bid,
+                    ask_price=ask,
+                    source=source,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    quotes = _load_top_of_book_quotes(
+        db_path=db_path,
+        market="KRW-BTC",
+        candles=(Candle(1_000, 1.0, 1.0, 1.0, 1.0, 1.0),),
+        join_tolerance_ms=100,
+        quote_source=None,
+    )
+
+    assert quotes[0] is not None
+    assert quotes[0].ts == 900
+    assert quotes[0].source == "a_source"
+    assert quotes[0].bid_price == 98.0
+
+
+def test_load_top_of_book_quotes_bulk_join_preserves_source_filter_and_missing_quotes(tmp_path: Path) -> None:
+    db_path = tmp_path / "quotes.sqlite"
+    conn = ensure_db(str(db_path))
+    try:
+        for source, bid, ask in (
+            ("b_source", 99.0, 100.0),
+            ("a_source", 101.0, 102.0),
+        ):
+            upsert_orderbook_top_snapshot(
+                conn,
+                build_orderbook_top_snapshot(
+                    ts=1_000,
+                    pair="KRW-BTC",
+                    bid_price=bid,
+                    ask_price=ask,
+                    source=source,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    quotes = _load_top_of_book_quotes(
+        db_path=db_path,
+        market="KRW-BTC",
+        candles=(
+            Candle(1_000, 1.0, 1.0, 1.0, 1.0, 1.0),
+            Candle(2_000, 1.0, 1.0, 1.0, 1.0, 1.0),
+        ),
+        join_tolerance_ms=100,
+        quote_source="b_source",
+    )
+
+    assert len(quotes) == 2
+    assert quotes[0] is not None
+    assert quotes[0].source == "b_source"
+    assert quotes[0].bid_price == 99.0
+    assert quotes[0].matched_candle_ts == 1_000
+    assert quotes[1] is None
+
+
+def test_load_top_of_book_quotes_missing_table_returns_aligned_none_tuple(tmp_path: Path) -> None:
+    db_path = tmp_path / "missing_table.sqlite"
+    sqlite3.connect(db_path).close()
+    candles = (
+        Candle(1_000, 1.0, 1.0, 1.0, 1.0, 1.0),
+        Candle(2_000, 1.0, 1.0, 1.0, 1.0, 1.0),
+    )
+
+    quotes = _load_top_of_book_quotes(
+        db_path=db_path,
+        market="KRW-BTC",
+        candles=candles,
+        join_tolerance_ms=100,
+        quote_source=None,
+    )
+
+    assert quotes == (None, None)
+
+
+def test_load_top_of_book_quotes_bulk_join_uses_constant_orderbook_selects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "quotes.sqlite"
+    conn = ensure_db(str(db_path))
+    try:
+        for index in range(100):
+            upsert_orderbook_top_snapshot(
+                conn,
+                build_orderbook_top_snapshot(
+                    ts=index * 1_000,
+                    pair="KRW-BTC",
+                    bid_price=99.0,
+                    ask_price=101.0,
+                    source="bithumb_public_v1_orderbook",
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    real_connect = dataset_snapshot_module.sqlite3.connect
+    query_count = {"orderbook_top_selects": 0}
+
+    class CountingConnection:
+        def __init__(self, wrapped: sqlite3.Connection) -> None:
+            self._wrapped = wrapped
+
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:
+            if "from orderbook_top_snapshots" in sql.lower():
+                query_count["orderbook_top_selects"] += 1
+            return self._wrapped.execute(sql, parameters)  # type: ignore[arg-type]
+
+        def close(self) -> None:
+            self._wrapped.close()
+
+    def counting_connect(*args: object, **kwargs: object) -> CountingConnection:
+        return CountingConnection(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(dataset_snapshot_module.sqlite3, "connect", counting_connect)
+    candles = tuple(Candle(index * 1_000, 1.0, 1.0, 1.0, 1.0, 1.0) for index in range(100))
+
+    quotes = _load_top_of_book_quotes(
+        db_path=db_path,
+        market="KRW-BTC",
+        candles=candles,
+        join_tolerance_ms=10,
+        quote_source=None,
+    )
+
+    assert len(quotes) == len(candles)
+    assert all(quote is not None for quote in quotes)
+    assert query_count["orderbook_top_selects"] == 1
+
+
+def test_load_dataset_split_top_of_book_bulk_join_alignment_quality_and_hashes(tmp_path: Path) -> None:
+    db_path = tmp_path / "quotes.sqlite"
+    _create_candle_db(db_path)
+    conn = ensure_db(str(db_path))
+    try:
+        first_ts = _ts("2023-01-01", 0)
+        second_ts = _ts("2023-01-01", 1)
+        for quote_ts, bid, ask in (
+            (first_ts + 500, 99.0, 100.0),
+            (second_ts - 500, 101.0, 102.0),
+        ):
+            upsert_orderbook_top_snapshot(
+                conn,
+                build_orderbook_top_snapshot(
+                    ts=quote_ts,
+                    pair="KRW-BTC",
+                    bid_price=bid,
+                    ask_price=ask,
+                    source="bithumb_public_v1_orderbook",
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    manifest = _manifest(top_of_book={"source": "sqlite_orderbook_top_snapshots", "join_tolerance_ms": 1_000})
+
+    first = load_dataset_split(db_path=db_path, manifest=manifest, split_name="train")
+    second = load_dataset_split(db_path=db_path, manifest=manifest, split_name="train")
+    report = build_dataset_quality_report(db_path=db_path, snapshot=first)
+
+    assert first.content_hash() == second.content_hash()
+    assert first.top_of_book_quotes[0] is not None
+    assert first.top_of_book_quotes[0].ts == first_ts + 500
+    assert first.top_of_book_quotes[0].matched_candle_ts == first.candles[0].ts
+    assert first.top_of_book_quotes[0].age_ms == 500
+    assert first.top_of_book_quotes[1] is not None
+    assert first.top_of_book_quotes[1].ts == second_ts - 500
+    assert first.top_of_book_quotes[1].matched_candle_ts == first.candles[1].ts
+    assert len(first.top_of_book_quotes) == len(first.candles)
+    assert report.payload["top_of_book_joined_count"] == 2
+    assert report.payload["top_of_book_missing_count"] == len(first.candles) - 2
+    assert report.content_hash == build_dataset_quality_report(db_path=db_path, snapshot=first).content_hash
+    json.dumps(report.payload, allow_nan=False)
 
 
 def test_quote_coverage_fields_are_deterministic_when_top_of_book_requested(tmp_path: Path) -> None:

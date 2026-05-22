@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from pathlib import Path
 from typing import Any
 
@@ -630,51 +630,74 @@ def _load_top_of_book_quotes(
         ).fetchone()
         if table is None:
             return tuple(None for _ in candles)
-        out: list[TopOfBookQuote | None] = []
-        for candle in candles:
-            params: list[object] = [
-                market,
-                candle.ts - int(join_tolerance_ms),
-                candle.ts + int(join_tolerance_ms),
-            ]
-            source_predicate = ""
-            if quote_source is not None:
-                source_predicate = "AND source=?"
-                params.append(quote_source)
-            params.append(candle.ts)
-            row = conn.execute(
-                f"""
-                SELECT ts, pair, bid_price, ask_price, spread_bps, source, observed_at_epoch_sec
-                FROM orderbook_top_snapshots
-                WHERE pair=?
-                  AND ts >= ?
-                  AND ts <= ?
-                  {source_predicate}
-                ORDER BY ABS(ts - ?) ASC, ts ASC, source ASC
-                LIMIT 1
-                """,
-                tuple(params),
-            ).fetchone()
-            if row is None:
-                out.append(None)
-                continue
-            quote_ts = int(row[0])
-            out.append(
-                TopOfBookQuote(
-                    ts=quote_ts,
-                    pair=str(row[1]),
-                    bid_price=float(row[2]),
-                    ask_price=float(row[3]),
-                    spread_bps=float(row[4]),
-                    source=str(row[5]),
-                    observed_at_epoch_sec=(None if row[6] is None else float(row[6])),
-                    matched_candle_ts=candle.ts,
-                    age_ms=abs(quote_ts - candle.ts),
-                )
-            )
-        return tuple(out)
+        tolerance = int(join_tolerance_ms)
+        start_ts = min(int(candle.ts) for candle in candles) - tolerance
+        end_ts = max(int(candle.ts) for candle in candles) + tolerance
+        params: list[object] = [market, start_ts, end_ts]
+        source_predicate = ""
+        if quote_source is not None:
+            source_predicate = "AND source=?"
+            params.append(quote_source)
+        rows = conn.execute(
+            f"""
+            SELECT ts, pair, bid_price, ask_price, spread_bps, source, observed_at_epoch_sec
+            FROM orderbook_top_snapshots
+            WHERE pair=?
+              AND ts >= ?
+              AND ts <= ?
+              {source_predicate}
+            ORDER BY ts ASC, source ASC
+            """,
+            tuple(params),
+        ).fetchall()
     finally:
         conn.close()
+    if not rows:
+        return tuple(None for _ in candles)
+    quotes = tuple(_top_of_book_quote_from_row(row) for row in rows)
+    quote_timestamps = tuple(int(quote.ts) for quote in quotes)
+    out: list[TopOfBookQuote | None] = []
+    for candle in candles:
+        candle_ts = int(candle.ts)
+        window_start = candle_ts - int(join_tolerance_ms)
+        window_end = candle_ts + int(join_tolerance_ms)
+        start_index = bisect_left(quote_timestamps, window_start)
+        end_index = bisect_right(quote_timestamps, window_end)
+        if start_index >= end_index:
+            out.append(None)
+            continue
+        selected = min(
+            (quotes[index] for index in range(start_index, end_index)),
+            key=lambda quote: (abs(int(quote.ts) - candle_ts), int(quote.ts), str(quote.source)),
+        )
+        out.append(
+            TopOfBookQuote(
+                ts=selected.ts,
+                pair=selected.pair,
+                bid_price=selected.bid_price,
+                ask_price=selected.ask_price,
+                spread_bps=selected.spread_bps,
+                source=selected.source,
+                observed_at_epoch_sec=selected.observed_at_epoch_sec,
+                matched_candle_ts=candle_ts,
+                age_ms=abs(int(selected.ts) - candle_ts),
+            )
+        )
+    return tuple(out)
+
+
+def _top_of_book_quote_from_row(row: Any) -> TopOfBookQuote:
+    return TopOfBookQuote(
+        ts=int(row[0]),
+        pair=str(row[1]),
+        bid_price=float(row[2]),
+        ask_price=float(row[3]),
+        spread_bps=float(row[4]),
+        source=str(row[5]),
+        observed_at_epoch_sec=(None if row[6] is None else float(row[6])),
+        matched_candle_ts=None,
+        age_ms=None,
+    )
 
 
 def _load_top_of_book_event_quotes(
