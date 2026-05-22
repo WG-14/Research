@@ -46,9 +46,7 @@ def sma_strategy_config_from_settings(
     short_n: int | None = None,
     long_n: int | None = None,
 ) -> SmaStrategyConfig:
-    approved_profile_selector = str(
-        runtime_contract_from_settings(settings).get("profile_selector") or ""
-    ).strip()
+    approved_profile_selector = _approved_profile_selector_from_settings()
     profile_or_candidate_path = (
         approved_profile_selector
         or str(settings.STRATEGY_CANDIDATE_PROFILE_PATH or "").strip()
@@ -74,6 +72,13 @@ def sma_strategy_config_from_settings(
         buy_fraction=float(settings.BUY_FRACTION),
         max_order_krw=float(settings.MAX_ORDER_KRW),
         candidate_regime_policy=candidate_regime_policy,
+    )
+
+
+def _approved_profile_selector_from_settings() -> str:
+    return (
+        str(settings.APPROVED_STRATEGY_PROFILE_PATH or "").strip()
+        or str(settings.STRATEGY_APPROVED_PROFILE_PATH or "").strip()
     )
 
 
