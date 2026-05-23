@@ -98,6 +98,9 @@ class DecisionExportArtifact:
     data_fingerprint: str
     dataset_content_hash: str
     db_data_fingerprint: str
+    strategy_plugin_contract: dict[str, Any]
+    strategy_plugin_contract_hash: str
+    strategy_decision_contract_version: str
 
 
 def compare_decision_equivalence(
@@ -328,6 +331,9 @@ def compare_decision_export_artifacts(
             "runtime_export_content_hash": runtime_artifact.content_hash,
             "research_export_source": research_artifact.source,
             "runtime_export_source": runtime_artifact.source,
+            "research_strategy_plugin_contract_hash": research_artifact.strategy_plugin_contract_hash,
+            "runtime_strategy_plugin_contract_hash": runtime_artifact.strategy_plugin_contract_hash,
+            "strategy_decision_contract_version": research_artifact.strategy_decision_contract_version,
             "repo_owned_export_artifacts": True,
             "legacy_or_unverified_export": False,
             "artifact_binding_validation": artifact_binding,
@@ -411,6 +417,17 @@ def load_decision_export_artifact(
         raise ValueError("decision_export_contract_version_missing")
     if payload.get("promotion_grade_export") is not True:
         raise ValueError("decision_export_not_promotion_grade")
+    plugin_contract = payload.get("strategy_plugin_contract")
+    if not isinstance(plugin_contract, dict):
+        raise ValueError("decision_export_strategy_plugin_contract_missing")
+    plugin_contract_hash = str(payload.get("strategy_plugin_contract_hash") or "").strip()
+    if not plugin_contract_hash.startswith("sha256:"):
+        raise ValueError("decision_export_strategy_plugin_contract_hash_missing")
+    if sha256_prefixed(plugin_contract) != plugin_contract_hash:
+        raise ValueError("decision_export_strategy_plugin_contract_hash_mismatch")
+    strategy_decision_contract_version = str(payload.get("strategy_decision_contract_version") or "").strip()
+    if not strategy_decision_contract_version:
+        raise ValueError("decision_export_strategy_decision_contract_version_missing")
     recorded_hash = str(payload.get(DECISION_EXPORT_HASH_FIELD) or "").strip()
     if not recorded_hash.startswith("sha256:"):
         raise ValueError("decision_export_content_hash_missing")
@@ -456,6 +473,9 @@ def load_decision_export_artifact(
         data_fingerprint=data_fingerprint,
         dataset_content_hash=dataset_hash,
         db_data_fingerprint=db_fingerprint,
+        strategy_plugin_contract=dict(plugin_contract),
+        strategy_plugin_contract_hash=plugin_contract_hash,
+        strategy_decision_contract_version=strategy_decision_contract_version,
     )
 
 
@@ -600,6 +620,8 @@ def _artifact_binding_validation_items(
             reasons.append(f"{label}_export_market_mismatch")
         if artifact.interval != str(interval or "").strip():
             reasons.append(f"{label}_export_interval_mismatch")
+        if not artifact.strategy_plugin_contract_hash:
+            reasons.append(f"{label}_export_strategy_plugin_contract_hash_missing")
         expected_data = str(data_fingerprint or "").strip()
         if expected_data and expected_data not in {artifact.dataset_content_hash, artifact.db_data_fingerprint}:
             reasons.append(f"{label}_export_data_fingerprint_mismatch")
@@ -614,6 +636,7 @@ def _artifact_binding_validation_items(
                     "interval": artifact.interval,
                     "dataset_content_hash": artifact.dataset_content_hash,
                     "db_data_fingerprint": artifact.db_data_fingerprint,
+                    "strategy_plugin_contract_hash": artifact.strategy_plugin_contract_hash,
                 }
             )
     if research_artifact.profile_content_hash != runtime_artifact.profile_content_hash:
@@ -623,6 +646,32 @@ def _artifact_binding_validation_items(
                 "reason_codes": ["export_profile_hash_pair_mismatch"],
                 "research_profile_content_hash": research_artifact.profile_content_hash,
                 "runtime_profile_content_hash": runtime_artifact.profile_content_hash,
+            }
+        )
+    if (
+        research_artifact.strategy_plugin_contract_hash
+        and runtime_artifact.strategy_plugin_contract_hash
+        and research_artifact.strategy_plugin_contract_hash != runtime_artifact.strategy_plugin_contract_hash
+    ):
+        out.append(
+            {
+                "source": "artifact_pair",
+                "reason_codes": ["export_strategy_plugin_contract_hash_pair_mismatch"],
+                "research_strategy_plugin_contract_hash": research_artifact.strategy_plugin_contract_hash,
+                "runtime_strategy_plugin_contract_hash": runtime_artifact.strategy_plugin_contract_hash,
+            }
+        )
+    if (
+        research_artifact.strategy_decision_contract_version
+        and runtime_artifact.strategy_decision_contract_version
+        and research_artifact.strategy_decision_contract_version != runtime_artifact.strategy_decision_contract_version
+    ):
+        out.append(
+            {
+                "source": "artifact_pair",
+                "reason_codes": ["export_strategy_decision_contract_version_pair_mismatch"],
+                "research_strategy_decision_contract_version": research_artifact.strategy_decision_contract_version,
+                "runtime_strategy_decision_contract_version": runtime_artifact.strategy_decision_contract_version,
             }
         )
     return out

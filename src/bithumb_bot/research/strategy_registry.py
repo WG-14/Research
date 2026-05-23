@@ -59,7 +59,15 @@ class ResearchStrategyPlugin:
             "required_data": list(self.required_data),
             "optional_data": list(self.optional_data),
             "behavior_affecting_parameter_names": list(self.spec.behavior_affecting_parameter_names),
+            "runner_module": self.runner.__module__,
+            "runner_qualname": self.runner.__qualname__,
             "runtime_replay_supported": self.runtime_replay_builder is not None,
+            "runtime_replay_builder_module": (
+                self.runtime_replay_builder.__module__ if self.runtime_replay_builder is not None else None
+            ),
+            "runtime_replay_builder_qualname": (
+                self.runtime_replay_builder.__qualname__ if self.runtime_replay_builder is not None else None
+            ),
             "decision_contract_version": self.decision_contract_version,
             "diagnostics_namespace": self.diagnostics_namespace,
         }

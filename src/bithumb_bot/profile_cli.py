@@ -43,7 +43,7 @@ from .research.experiment_manifest import load_manifest
 from .research.hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
 from .research.parameter_space import candidate_id, iter_parameter_candidates
 from .research.promotion_gate import PromotionGateError, build_candidate_profile
-from .research.strategy_registry import resolve_research_strategy, resolve_research_strategy_plugin
+from .research.strategy_registry import resolve_research_strategy_plugin
 from .research.strategy_spec import materialize_strategy_parameters
 from .strategy.market_regime import classify_sma_market_regime
 from .storage_io import write_json_atomic
@@ -451,8 +451,9 @@ def cmd_research_export_decisions(
             candidate_id_value=candidate_id_value,
             profile=profile,
         )
+        plugin = resolve_research_strategy_plugin(manifest.strategy_name)
         scenario = manifest.execution_model.scenarios[0]
-        run = resolve_research_strategy(manifest.strategy_name)(
+        run = plugin.runner(
             snapshot,
             params,
             float(scenario.fee_rate),
@@ -493,6 +494,11 @@ def cmd_research_export_decisions(
             interval=manifest.interval,
             decisions=decisions,
             promotion_grade_export=promotion_grade_export,
+            strategy_plugin_contract=plugin.contract_payload() if promotion_grade_export else None,
+            strategy_plugin_contract_hash=plugin.contract_hash() if promotion_grade_export else "",
+            strategy_decision_contract_version=(
+                plugin.decision_contract_version if promotion_grade_export else ""
+            ),
             recommended_next_action=(
                 "none"
                 if promotion_grade_export
@@ -528,9 +534,9 @@ def cmd_runtime_replay_decisions(
         profile = load_approved_profile(profile_path)
         through_ts_list = _load_through_ts_list(through_ts_list_path)
         compatibility_warnings: list[str] = []
-        if not str(profile.get("strategy_name") or "").strip():
-            compatibility_warnings.append("legacy_profile_strategy_name_missing_defaulted_to_sma_with_filter")
-        strategy_name = str(profile.get("strategy_name") or "sma_with_filter")
+        strategy_name = str(profile.get("strategy_name") or "").strip()
+        if not strategy_name:
+            raise ValueError("runtime_replay_profile_strategy_name_missing")
         plugin = resolve_research_strategy_plugin(strategy_name)
         if plugin.runtime_replay_builder is None:
             raise ValueError(f"runtime replay unsupported for research strategy: {strategy_name}")
@@ -564,13 +570,13 @@ def cmd_runtime_replay_decisions(
             decisions=decisions,
             db_data_fingerprint=db_fingerprint,
             promotion_grade_export=True,
+            strategy_plugin_contract=plugin.contract_payload(),
+            strategy_plugin_contract_hash=plugin.contract_hash(),
+            strategy_decision_contract_version=plugin.decision_contract_version,
             recommended_next_action="none",
         )
-        payload["strategy_plugin_contract"] = plugin.contract_payload()
-        payload["strategy_plugin_contract_hash"] = plugin.contract_hash()
         if compatibility_warnings:
             payload["compatibility_warnings"] = compatibility_warnings
-        payload["content_hash"] = compute_decision_export_hash(payload)
         write_json_atomic(Path(out_path).expanduser(), payload)
     except (OSError, ValueError, sqlite3.Error) as exc:
         _print_json({"ok": False, "error": str(exc), "command": "runtime-replay-decisions"})
@@ -831,6 +837,9 @@ def _decision_export_payload(
     decisions: list[dict[str, object]],
     db_data_fingerprint: str = "",
     promotion_grade_export: bool = True,
+    strategy_plugin_contract: dict[str, object] | None = None,
+    strategy_plugin_contract_hash: str = "",
+    strategy_decision_contract_version: str = "",
     recommended_next_action: str = "none",
 ) -> dict[str, object]:
     payload: dict[str, object] = {
@@ -844,6 +853,9 @@ def _decision_export_payload(
         "interval": interval,
         "decision_count": len(decisions),
         "promotion_grade_export": bool(promotion_grade_export),
+        "strategy_plugin_contract": strategy_plugin_contract,
+        "strategy_plugin_contract_hash": strategy_plugin_contract_hash,
+        "strategy_decision_contract_version": strategy_decision_contract_version,
         "recommended_next_action": recommended_next_action,
         "decisions": decisions,
         "generated_at": datetime.now(timezone.utc).isoformat(),

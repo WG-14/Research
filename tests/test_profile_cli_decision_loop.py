@@ -25,6 +25,7 @@ from bithumb_bot.research.experiment_manifest import parse_manifest
 from bithumb_bot.research.hashing import content_hash_payload, sha256_prefixed
 from bithumb_bot.research.parameter_space import candidate_id
 from bithumb_bot.research.promotion_gate import build_candidate_profile
+from bithumb_bot.research.strategy_registry import resolve_research_strategy_plugin
 from tests.test_decision_equivalence_canonical import _decision
 
 
@@ -476,12 +477,17 @@ def _write_golden_profile(tmp_path: Path, manifest_payload: dict[str, object], d
         ],
         "blocked_live_regimes": [],
     }
+    plugin = resolve_research_strategy_plugin(manifest.strategy_name)
+    candidate["strategy_plugin_contract"] = plugin.contract_payload()
+    candidate["strategy_plugin_contract_hash"] = plugin.contract_hash()
     candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
     promotion = {
         "strategy_name": manifest.strategy_name,
         "strategy_profile_id": f"{manifest.experiment_id}_{selected_candidate_id}",
         "strategy_profile_source_experiment": manifest.experiment_id,
         "strategy_profile_hash": candidate["candidate_profile_hash"],
+        "strategy_plugin_contract": candidate["strategy_plugin_contract"],
+        "strategy_plugin_contract_hash": candidate["strategy_plugin_contract_hash"],
         "candidate_id": selected_candidate_id,
         "manifest_hash": manifest.manifest_hash(),
         "dataset_snapshot_id": manifest.dataset.snapshot_id,
@@ -670,6 +676,11 @@ def test_repo_owned_export_replay_artifacts_can_pass_positive_equivalence(
     assert runtime_artifact.source == "runtime_replay"
     assert research_artifact.content_hash.startswith("sha256:")
     assert runtime_artifact.content_hash.startswith("sha256:")
+    assert research_artifact.strategy_plugin_contract["name"] == "sma_with_filter"
+    assert runtime_artifact.strategy_plugin_contract["name"] == "sma_with_filter"
+    assert research_artifact.strategy_plugin_contract_hash == runtime_artifact.strategy_plugin_contract_hash
+    assert research_artifact.strategy_decision_contract_version
+    assert runtime_artifact.strategy_decision_contract_version == research_artifact.strategy_decision_contract_version
     assert {decision["profile_content_hash"] for decision in research_artifact.decisions} == {profile_hash}
     assert {decision["profile_content_hash"] for decision in runtime_artifact.decisions} == {profile_hash}
     assert all("position_authority" in decision for decision in research_artifact.decisions)

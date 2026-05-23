@@ -34,6 +34,7 @@ from .research.strategy_spec import (
     strategy_parameter_source_map,
     strategy_spec_for_name,
 )
+from .research.strategy_registry import ResearchStrategyRegistryError, resolve_research_strategy_plugin
 from .storage_io import write_json_atomic
 
 
@@ -712,6 +713,7 @@ def validate_approved_profile(profile: dict[str, Any]) -> dict[str, Any]:
         raise ApprovedProfileError("effective_strategy_parameters_hash_mismatch")
     if not isinstance(profile.get("strategy_parameter_source_map"), dict):
         raise ApprovedProfileError("strategy_parameter_source_map_missing")
+    _validate_strategy_plugin_contract(profile)
     if not isinstance(profile.get("exit_policy"), dict):
         raise ApprovedProfileError("exit_policy_missing")
     if not str(profile.get("exit_policy_hash") or "").startswith("sha256:"):
@@ -790,6 +792,30 @@ def _candidate_regime_policy_next_action(profile: dict[str, Any]) -> str:
     return "generate_and_bind_candidate_regime_policy_equivalence_evidence"
 
 
+def _validate_strategy_plugin_contract(profile: dict[str, Any]) -> None:
+    mode = str(profile.get("profile_mode") or "").strip().lower()
+    contract = profile.get("strategy_plugin_contract")
+    contract_hash = str(profile.get("strategy_plugin_contract_hash") or "").strip()
+    legacy_allowed = mode == "paper" and bool(profile.get("legacy_compatibility_used"))
+    if contract is None and not contract_hash and legacy_allowed:
+        return
+    if not isinstance(contract, dict):
+        raise ApprovedProfileError("strategy_plugin_contract_missing")
+    if not contract_hash.startswith("sha256:"):
+        raise ApprovedProfileError("strategy_plugin_contract_hash_missing")
+    if sha256_prefixed(contract) != contract_hash:
+        raise ApprovedProfileError("strategy_plugin_contract_hash_mismatch")
+    strategy_name = str(profile.get("strategy_name") or "").strip()
+    if not strategy_name:
+        raise ApprovedProfileError("strategy_name_missing")
+    try:
+        plugin = resolve_research_strategy_plugin(strategy_name)
+    except ResearchStrategyRegistryError as exc:
+        raise ApprovedProfileError(f"strategy_plugin_unsupported:{strategy_name}") from exc
+    if plugin.contract_hash() != contract_hash:
+        raise ApprovedProfileError("strategy_plugin_contract_hash_registry_mismatch")
+
+
 def _validate_profile_candidate_regime_policy_evidence(profile: dict[str, Any]) -> None:
     expected_hash = str(profile.get("candidate_regime_policy_equivalence_evidence_hash") or "").strip()
     if not expected_hash.startswith("sha256:"):
@@ -836,11 +862,19 @@ def verify_profile_source_artifact(profile: dict[str, Any]) -> dict[str, Any]:
     actual_hash = str(promotion.get("content_hash") or "")
     if actual_hash != expected_hash:
         raise ApprovedProfileError("source_promotion_content_hash_mismatch")
+    promotion_profile = promotion.get("candidate_profile") if isinstance(promotion.get("candidate_profile"), dict) else {}
     for key in ("candidate_profile_hash", "manifest_hash", "dataset_content_hash", "strategy_name"):
         if not _values_equal(validated.get(key), promotion.get(key)):
             raise ApprovedProfileError(f"source_promotion_{key}_mismatch")
+    profile_plugin_hash = str(validated.get("strategy_plugin_contract_hash") or "").strip()
+    promotion_plugin_hash = str(promotion.get("strategy_plugin_contract_hash") or "").strip()
+    if not promotion_plugin_hash and isinstance(promotion_profile, dict):
+        promotion_plugin_hash = str(promotion_profile.get("strategy_plugin_contract_hash") or "").strip()
+    if not promotion_plugin_hash:
+        raise ApprovedProfileError("source_promotion_strategy_plugin_contract_hash_missing")
+    if profile_plugin_hash != promotion_plugin_hash:
+        raise ApprovedProfileError("source_promotion_strategy_plugin_contract_hash_mismatch")
     profile_contract = validated.get("execution_reality_contract")
-    promotion_profile = promotion.get("candidate_profile") if isinstance(promotion.get("candidate_profile"), dict) else {}
     promotion_contract = promotion.get("execution_reality_contract") or promotion_profile.get("execution_reality_contract")
     contract_mismatches = execution_contract_mismatch_reasons(
         expected=promotion_contract if isinstance(promotion_contract, dict) else None,

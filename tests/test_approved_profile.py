@@ -22,6 +22,7 @@ from bithumb_bot.approved_profile import (
     runtime_contract_from_settings,
     sha256_prefixed,
     validate_approved_profile,
+    verify_profile_source_artifact,
     verify_promotion_artifact,
     write_approved_profile_atomic,
 )
@@ -37,6 +38,7 @@ from bithumb_bot.paths import PathConfig, PathManager, PathPolicyError
 from bithumb_bot.execution_reality_contract import build_execution_reality_contract
 from bithumb_bot.execution_reality_contract import execution_capability_contract_hash, execution_contract_hash
 from bithumb_bot.research.promotion_gate import build_candidate_profile
+from bithumb_bot.research.strategy_registry import resolve_research_strategy_plugin
 from bithumb_bot.research.strategy_spec import strategy_spec_for_name
 from bithumb_bot.research.validation_pipeline import validation_run_binding_hash, validation_run_content_hash
 from bithumb_bot.storage_io import write_json_atomic
@@ -205,6 +207,9 @@ def _candidate() -> dict[str, object]:
         "allowed_live_regimes": ["uptrend_normal_vol_unknown"],
         "blocked_live_regimes": ["downtrend_normal_vol_unknown"],
     }
+    plugin = resolve_research_strategy_plugin("sma_with_filter")
+    payload["strategy_plugin_contract"] = plugin.contract_payload()
+    payload["strategy_plugin_contract_hash"] = plugin.contract_hash()
     payload["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(payload))
     return payload
 
@@ -216,6 +221,8 @@ def _promotion(**overrides) -> dict[str, object]:
         "strategy_profile_id": "exp1_candidate_001",
         "strategy_profile_source_experiment": "exp1",
         "strategy_profile_hash": candidate["candidate_profile_hash"],
+        "strategy_plugin_contract": candidate["strategy_plugin_contract"],
+        "strategy_plugin_contract_hash": candidate["strategy_plugin_contract_hash"],
         "candidate_id": candidate["parameter_candidate_id"],
         "manifest_hash": candidate["manifest_hash"],
         "dataset_snapshot_id": candidate["dataset_snapshot_id"],
@@ -990,6 +997,62 @@ def test_corrupted_profile_content_hash_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ApprovedProfileError, match="profile_content_hash_mismatch"):
         validate_approved_profile(profile)
+
+
+def test_approved_profile_validation_rejects_missing_strategy_plugin_contract_hash(tmp_path: Path) -> None:
+    promotion_path = tmp_path / "promotion.json"
+    write_json_atomic(promotion_path, _promotion())
+    profile = _profile(str(promotion_path))
+    profile.pop("strategy_plugin_contract_hash")
+    profile["profile_mode"] = "live_dry_run"
+    profile["profile_content_hash"] = compute_approved_profile_hash(profile)
+
+    with pytest.raises(ApprovedProfileError, match="strategy_plugin_contract_hash_missing"):
+        validate_approved_profile(profile)
+
+
+def test_approved_profile_validation_rejects_strategy_plugin_contract_hash_mismatch(tmp_path: Path) -> None:
+    promotion_path = tmp_path / "promotion.json"
+    write_json_atomic(promotion_path, _promotion())
+    profile = _profile(str(promotion_path))
+    contract = dict(profile["strategy_plugin_contract"])  # type: ignore[arg-type]
+    contract["runner_qualname"] = "ChangedRunner"
+    profile["strategy_plugin_contract"] = contract
+    profile["profile_content_hash"] = compute_approved_profile_hash(profile)
+
+    with pytest.raises(ApprovedProfileError, match="strategy_plugin_contract_hash_mismatch"):
+        validate_approved_profile(profile)
+
+
+def test_approved_profile_validation_rejects_strategy_plugin_registry_mismatch(tmp_path: Path) -> None:
+    promotion_path = tmp_path / "promotion.json"
+    write_json_atomic(promotion_path, _promotion())
+    profile = _profile(str(promotion_path))
+    contract = dict(profile["strategy_plugin_contract"])  # type: ignore[arg-type]
+    contract["name"] = "stale_sma_with_filter"
+    profile["strategy_plugin_contract"] = contract
+    profile["strategy_plugin_contract_hash"] = sha256_prefixed(contract)
+    profile["profile_content_hash"] = compute_approved_profile_hash(profile)
+
+    with pytest.raises(ApprovedProfileError, match="strategy_plugin_contract_hash_registry_mismatch"):
+        validate_approved_profile(profile)
+
+
+def test_profile_source_artifact_rejects_strategy_plugin_contract_hash_mismatch(tmp_path: Path) -> None:
+    promotion = _promotion()
+    promotion_path = tmp_path / "promotion.json"
+    write_json_atomic(promotion_path, promotion)
+    profile = _profile(str(promotion_path))
+    source = dict(promotion)
+    source["strategy_plugin_contract_hash"] = "sha256:other"
+    source.pop("content_hash", None)
+    source["content_hash"] = sha256_prefixed(content_hash_payload(source))
+    write_json_atomic(promotion_path, source)
+    profile["source_promotion_content_hash"] = source["content_hash"]
+    profile["profile_content_hash"] = compute_approved_profile_hash(profile)
+
+    with pytest.raises(ApprovedProfileError, match="source_promotion_strategy_plugin_contract_hash_mismatch"):
+        verify_profile_source_artifact(profile)
 
 
 def test_reserved_future_evidence_tier_fails_approved_profile_validation(tmp_path: Path) -> None:

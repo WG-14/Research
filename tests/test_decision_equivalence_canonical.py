@@ -11,7 +11,9 @@ from bithumb_bot.decision_equivalence import (
     compute_decision_export_hash,
     load_decision_export_artifact,
 )
+from bithumb_bot.research.hashing import sha256_prefixed
 from bithumb_bot.research.lot_native_simulation import LotNativeResearchPositionModel
+from bithumb_bot.research.strategy_registry import resolve_research_strategy_plugin
 from bithumb_bot.strategy.base import StrategyDecision
 
 
@@ -193,6 +195,7 @@ def test_legacy_shallow_decisions_are_diagnostic_only() -> None:
 
 
 def _export_payload(source: str, decisions: list[dict[str, object]], **overrides: object) -> dict[str, object]:
+    plugin = resolve_research_strategy_plugin("sma_with_filter")
     payload: dict[str, object] = {
         "schema_version": 1,
         "decision_contract_version": 1,
@@ -204,6 +207,9 @@ def _export_payload(source: str, decisions: list[dict[str, object]], **overrides
         "interval": "1m",
         "decision_count": len(decisions),
         "promotion_grade_export": True,
+        "strategy_plugin_contract": plugin.contract_payload(),
+        "strategy_plugin_contract_hash": plugin.contract_hash(),
+        "strategy_decision_contract_version": plugin.decision_contract_version,
         "recommended_next_action": "none",
         "decisions": decisions,
         "generated_at": "2026-05-08T00:00:00+00:00",
@@ -242,6 +248,64 @@ def test_decision_export_artifacts_can_produce_promotion_grade_report(tmp_path) 
     assert result.report["promotion_grade_comparison"] is True
     assert result.report["research_export_content_hash"].startswith("sha256:")
     assert result.report["runtime_export_content_hash"].startswith("sha256:")
+    assert result.report["research_strategy_plugin_contract_hash"].startswith("sha256:")
+    assert result.report["runtime_strategy_plugin_contract_hash"].startswith("sha256:")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    (
+        (lambda payload: payload.pop("strategy_plugin_contract"), "decision_export_strategy_plugin_contract_missing"),
+        (lambda payload: payload.pop("strategy_plugin_contract_hash"), "decision_export_strategy_plugin_contract_hash_missing"),
+        (
+            lambda payload: payload.__setitem__("strategy_plugin_contract_hash", "sha256:changed"),
+            "decision_export_strategy_plugin_contract_hash_mismatch",
+        ),
+        (
+            lambda payload: payload.pop("strategy_decision_contract_version"),
+            "decision_export_strategy_decision_contract_version_missing",
+        ),
+    ),
+)
+def test_decision_export_loader_rejects_unbound_strategy_plugin_contract(tmp_path, mutation, error) -> None:
+    path = tmp_path / "research.json"
+    payload = _export_payload("research", [_decision()])
+    mutation(payload)
+    payload["content_hash"] = compute_decision_export_hash(payload)
+    path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=error):
+        load_decision_export_artifact(path, expected_source="research")
+
+
+def test_decision_export_artifact_compare_fails_on_strategy_plugin_hash_mismatch(tmp_path) -> None:
+    research_path = tmp_path / "research.json"
+    runtime_path = tmp_path / "runtime.json"
+    research_path.write_text(
+        json.dumps(_export_payload("research", [_decision()]), sort_keys=True),
+        encoding="utf-8",
+    )
+    runtime_payload = _export_payload("runtime_replay", [_decision()])
+    runtime_contract = dict(runtime_payload["strategy_plugin_contract"])  # type: ignore[arg-type]
+    runtime_contract["runner_qualname"] = "ChangedRunner"
+    runtime_payload["strategy_plugin_contract"] = runtime_contract
+    runtime_payload["strategy_plugin_contract_hash"] = sha256_prefixed(runtime_contract)
+    runtime_payload["content_hash"] = compute_decision_export_hash(runtime_payload)
+    runtime_path.write_text(json.dumps(runtime_payload, sort_keys=True), encoding="utf-8")
+
+    result = compare_decision_export_artifacts(
+        research_artifact=load_decision_export_artifact(research_path, expected_source="research"),
+        runtime_artifact=load_decision_export_artifact(runtime_path, expected_source="runtime_replay"),
+        profile_hash="sha256:profile",
+        market="KRW-BTC",
+        interval="1m",
+        data_fingerprint="sha256:data",
+    )
+
+    assert result.ok is False
+    assert result.report["promotion_grade_comparison"] is False
+    assert result.report["outcome"] == "FAIL_EXPORT_BINDING"
+    assert "export_strategy_plugin_contract_hash_pair_mismatch" in result.report["reason_codes"]
 
 
 def test_promotion_grade_decision_without_position_authority_fails_incomplete() -> None:

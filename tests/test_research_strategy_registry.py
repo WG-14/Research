@@ -23,7 +23,12 @@ def test_research_strategy_registry_resolves_sma_with_filter() -> None:
     assert plugin.runtime_replay_builder is not None
     assert plugin.contract_payload()["diagnostics_namespace"] == "sma_with_filter"
     assert plugin.contract_payload()["runtime_replay_supported"] is True
+    assert plugin.contract_payload()["runner_module"] == "bithumb_bot.research.strategy_registry"
+    assert plugin.contract_payload()["runner_qualname"] == "_run_sma_with_filter"
+    assert plugin.contract_payload()["runtime_replay_builder_module"] == "bithumb_bot.research.strategy_registry"
+    assert plugin.contract_payload()["runtime_replay_builder_qualname"] == "_build_sma_runtime_replay_strategy"
     assert plugin.contract_hash() == resolve_research_strategy_plugin("sma_with_filter").contract_hash()
+    assert plugin.contract_hash() == plugin.contract_hash()
     requirements = research_strategy_data_requirements("sma_with_filter")
     assert requirements.required_data == ("candles",)
     assert requirements.optional_data == ("top_of_book",)
