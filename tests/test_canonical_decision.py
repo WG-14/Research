@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from bithumb_bot.canonical_decision import (
+    CANONICAL_DECISION_SCHEMA_FIELDS,
     canonical_flat_position_state_hash,
     export_research_decisions,
     runtime_decision_to_canonical_event,
@@ -61,10 +62,12 @@ def test_runtime_strategy_decision_exports_canonical_operational_fields() -> Non
         db_data_fingerprint="sha256:db",
         through_ts_ms=1_714_521_660_000,
         execution_timing_policy_hash="sha256:timing",
+        strategy_version="sma_with_filter.test",
+        strategy_decision_contract_version="research_sma_decision_contract.test",
     ).as_dict()
 
-    assert event["decision_contract_version"] == 1
-    assert event["strategy_contract_version"] == "sma_strategy_v1"
+    assert event["decision_contract_version"] == 2
+    assert event["strategy_decision_contract_version"] == "research_sma_decision_contract.test"
     assert event["raw_signal"] == "BUY"
     assert event["final_signal"] == "HOLD"
     assert event["blocked"] is True
@@ -74,6 +77,11 @@ def test_runtime_strategy_decision_exports_canonical_operational_fields() -> Non
     assert event["exit_evaluations_hash"].startswith("sha256:")
     assert event["execution_timing_policy_hash"] == "sha256:timing"
     assert event["order_rules_hash"].startswith("sha256:")
+    assert event["feature_snapshot_hash"].startswith("sha256:")
+    assert event["strategy_behavior_hash"].startswith("sha256:")
+    assert event["strategy_specific_payload"]["curr_s"] == 102.0
+    assert "curr_s" not in CANONICAL_DECISION_SCHEMA_FIELDS
+    assert "gap_ratio" not in CANONICAL_DECISION_SCHEMA_FIELDS
 
 
 def test_runtime_order_rules_hash_changes_with_rule_inputs() -> None:
@@ -165,6 +173,8 @@ def test_research_decision_export_normalizes_to_canonical_schema() -> None:
                 "candle_ts": 1_714_521_660_000,
                 "raw_signal": "BUY",
                 "final_signal": "BUY",
+                "strategy_version": "sma_with_filter.test",
+                "strategy_decision_contract_version": "research_sma_decision_contract.test",
             }
         ],
         profile_content_hash="sha256:profile",
@@ -172,7 +182,86 @@ def test_research_decision_export_normalizes_to_canonical_schema() -> None:
         execution_timing_policy_hash="sha256:timing",
     )
 
-    assert events[0]["decision_contract_version"] == 1
+    assert events[0]["decision_contract_version"] == 2
     assert events[0]["profile_content_hash"] == "sha256:profile"
     assert events[0]["dataset_content_hash"] == "sha256:data"
     assert events[0]["side"] == "BUY"
+    assert events[0]["strategy_behavior_hash"].startswith("sha256:")
+
+
+def test_non_sma_research_decision_exports_canonical_v2_without_sma_fields() -> None:
+    events = export_research_decisions(
+        [
+            {
+                "strategy_name": "buy_and_hold_baseline",
+                "strategy_version": "buy_and_hold_baseline.research_contract.v1",
+                "strategy_decision_contract_version": "research_buy_and_hold_baseline_decision_contract.v1",
+                "market": "KRW-BTC",
+                "interval": "1m",
+                "signal_timestamp": "1714521660000",
+                "candle_ts": 1_714_521_660_000,
+                "raw_signal": "BUY",
+                "final_signal": "BUY",
+                "feature_snapshot": {"candle_index": 1, "close": 100.0},
+                "strategy_diagnostics_namespace": "buy_and_hold_baseline",
+                "strategy_diagnostics": {"reason": "canary"},
+            }
+        ],
+        profile_content_hash="sha256:profile",
+        dataset_content_hash="sha256:data",
+        execution_timing_policy_hash="sha256:timing",
+    )
+
+    event = events[0]
+    assert event["decision_contract_version"] == 2
+    assert event["strategy_name"] == "buy_and_hold_baseline"
+    assert event["strategy_diagnostics_namespace"] == "buy_and_hold_baseline"
+    assert event["feature_snapshot"] == {"candle_index": 1, "close": 100.0}
+    assert "prev_s" not in event
+    assert "curr_s" not in event
+    assert "gap_ratio" not in event
+    assert "range_ratio" not in event
+
+
+def test_non_sma_runtime_like_decision_exports_canonical_v2_without_sma_fields() -> None:
+    event = runtime_decision_to_canonical_event(
+        StrategyDecision(
+            signal="HOLD",
+            reason="noop hold",
+            context={
+                "strategy": "noop_baseline",
+                "strategy_version": "noop_baseline.research_contract.v1",
+                "strategy_decision_contract_version": "research_noop_baseline_decision_contract.v1",
+                "ts": 1_714_521_660_000,
+                "raw_signal": "HOLD",
+                "final_signal": "HOLD",
+                "feature_snapshot": {"candle_index": 1},
+                "position_gate": {
+                    "entry_allowed": True,
+                    "exit_allowed": False,
+                    "dust_state": "flat",
+                    "effective_flat": True,
+                    "normalized_exposure_active": False,
+                    "open_lot_count": 0,
+                    "dust_tracking_lot_count": 0,
+                    "sellable_executable_lot_count": 0,
+                    "has_any_position_residue": False,
+                    "order_rules": {"source": "test", "min_qty": 0.0001},
+                },
+                "exit": {"evaluations": []},
+            },
+        ),
+        market="KRW-BTC",
+        interval="1m",
+        profile_content_hash="sha256:profile",
+        dataset_content_hash="sha256:data",
+        db_data_fingerprint="sha256:data",
+        execution_timing_policy_hash="sha256:timing",
+    ).as_dict()
+
+    assert event["decision_contract_version"] == 2
+    assert event["strategy_name"] == "noop_baseline"
+    assert event["strategy_behavior_hash"].startswith("sha256:")
+    assert "prev_s" not in event
+    assert "curr_s" not in event
+    assert "gap_ratio" not in event

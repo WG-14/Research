@@ -7,7 +7,11 @@ from typing import Any
 
 from .canonical_decision import (
     CANONICAL_DECISION_SCHEMA_FIELDS,
+    CANONICAL_DECISION_COMPARISON_CONTRACT_VERSION,
+    LEGACY_CANONICAL_DECISION_COMPARISON_CONTRACT_VERSION_V1,
+    LEGACY_CANONICAL_DECISION_SCHEMA_FIELDS_V1,
     is_canonical_decision,
+    is_canonical_decision_v2,
     normalize_canonical_decision,
     validate_canonical_decision_payload,
 )
@@ -16,7 +20,8 @@ from .research.hashing import content_hash_payload, sha256_prefixed
 
 
 DECISION_EQUIVALENCE_SCHEMA_VERSION = 2
-CANONICAL_COMPARISON_CONTRACT_VERSION = "canonical_decision_v1"
+CANONICAL_COMPARISON_CONTRACT_VERSION = CANONICAL_DECISION_COMPARISON_CONTRACT_VERSION
+LEGACY_CANONICAL_COMPARISON_CONTRACT_VERSION = LEGACY_CANONICAL_DECISION_COMPARISON_CONTRACT_VERSION_V1
 LEGACY_COMPARISON_CONTRACT_VERSION = "legacy_shallow_v1"
 DECISION_EQUIVALENCE_HASH_FIELD = "content_hash"
 DECISION_EQUIVALENCE_HASH_EXCLUDED_FIELDS = frozenset({DECISION_EQUIVALENCE_HASH_FIELD, "generated_at"})
@@ -35,13 +40,25 @@ LEGACY_DECISION_FIELDS = (
     "blocked",
     "block_reason",
 )
-CANONICAL_EQUIVALENCE_FIELDS = tuple(
+CANONICAL_EQUIVALENCE_FIELDS_V2 = tuple(
     field
     for field in CANONICAL_DECISION_SCHEMA_FIELDS
     if field
     not in {
         # These are artifact/provenance or source-timing diagnostics. The
         # semantic fields they derive from remain compared directly.
+        "decision_ts",
+        "db_data_fingerprint",
+        "replay_fingerprint_hash",
+        "feature_snapshot_hash",
+    }
+)
+CANONICAL_EQUIVALENCE_FIELDS = CANONICAL_EQUIVALENCE_FIELDS_V2
+LEGACY_CANONICAL_EQUIVALENCE_FIELDS_V1 = tuple(
+    field
+    for field in LEGACY_CANONICAL_DECISION_SCHEMA_FIELDS_V1
+    if field
+    not in {
         "decision_ts",
         "db_data_fingerprint",
         "feature_hash",
@@ -114,10 +131,22 @@ def compare_decision_equivalence(
     generated_at: str | None = None,
 ) -> DecisionEquivalenceResult:
     canonical_comparison = all(is_canonical_decision(item) for item in research_decisions + runtime_decisions)
-    comparison_fields = CANONICAL_EQUIVALENCE_FIELDS if canonical_comparison else LEGACY_DECISION_FIELDS
-    comparison_contract_version = (
-        CANONICAL_COMPARISON_CONTRACT_VERSION if canonical_comparison else LEGACY_COMPARISON_CONTRACT_VERSION
+    canonical_v2_comparison = canonical_comparison and all(
+        is_canonical_decision_v2(item) for item in research_decisions + runtime_decisions
     )
+    canonical_v1_comparison = canonical_comparison and not canonical_v2_comparison and all(
+        int(item.get("decision_contract_version") or 0) == 1 for item in research_decisions + runtime_decisions
+    )
+    mixed_canonical_contracts = canonical_comparison and not (canonical_v2_comparison or canonical_v1_comparison)
+    if canonical_v2_comparison:
+        comparison_fields = CANONICAL_EQUIVALENCE_FIELDS_V2
+        comparison_contract_version = CANONICAL_COMPARISON_CONTRACT_VERSION
+    elif canonical_v1_comparison:
+        comparison_fields = LEGACY_CANONICAL_EQUIVALENCE_FIELDS_V1
+        comparison_contract_version = LEGACY_CANONICAL_COMPARISON_CONTRACT_VERSION
+    else:
+        comparison_fields = LEGACY_DECISION_FIELDS
+        comparison_contract_version = LEGACY_COMPARISON_CONTRACT_VERSION
     normalized_research = [_normalize_for_comparison(item, canonical=canonical_comparison) for item in research_decisions]
     normalized_runtime = [_normalize_for_comparison(item, canonical=canonical_comparison) for item in runtime_decisions]
     canonical_validation_items = _canonical_validation_items(
@@ -200,6 +229,8 @@ def compare_decision_equivalence(
         )
     )
     reason_codes = []
+    if mixed_canonical_contracts:
+        reason_codes.append("canonical_decision_contract_version_mismatch")
     if missing_research:
         reason_codes.append("missing_research_decision")
     if missing_runtime:
@@ -250,7 +281,11 @@ def compare_decision_equivalence(
         "schema_version": DECISION_EQUIVALENCE_SCHEMA_VERSION,
         "comparison_contract_version": comparison_contract_version,
         "canonical_schema": canonical_comparison,
+        "canonical_v2_schema": canonical_v2_comparison,
         "legacy_schema": not canonical_comparison,
+        "compatibility_reason_codes": (
+            ["legacy_sma_canonical_v1_payload"] if canonical_v1_comparison else []
+        ),
         "promotion_grade_comparison": (
             canonical_complete_and_bound and outcome == "PASS_POSITIVE_EQUIVALENCE"
         ),
@@ -831,7 +866,9 @@ def _reason_for_field(field: str) -> str:
         return "decision_profile_hash_mismatch"
     if field in {"dataset_content_hash", "db_data_fingerprint"}:
         return "decision_data_fingerprint_mismatch"
-    if field in {"feature_hash", "prev_s", "prev_l", "curr_s", "curr_l", "gap_ratio", "range_ratio", "expected_edge_ratio", "required_edge_ratio"}:
+    if field == "strategy_behavior_hash":
+        return "decision_strategy_behavior_hash_mismatch"
+    if field in {"feature_snapshot_hash", "feature_hash", "prev_s", "prev_l", "curr_s", "curr_l", "gap_ratio", "range_ratio", "expected_edge_ratio", "required_edge_ratio"}:
         return "decision_feature_mismatch"
     return f"decision_{field}_mismatch"
 

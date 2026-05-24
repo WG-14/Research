@@ -37,6 +37,7 @@ from .research.strategy_spec import (
 from .research.strategy_registry import (
     ResearchStrategyRegistryError,
     resolve_research_strategy_plugin,
+    runtime_strategy_parameter_env_keys,
     runtime_strategy_parameters_from_env,
     runtime_strategy_parameters_from_settings,
 )
@@ -50,28 +51,11 @@ PROFILE_HASH_FIELD = "profile_content_hash"
 PROFILE_HASH_EXCLUDED_FIELDS = frozenset({PROFILE_HASH_FIELD, "generated_at"})
 LEGACY_PROFILE_SELECTOR_ENV = "STRATEGY_CANDIDATE_PROFILE_PATH"
 APPROVED_PROFILE_SELECTOR_ENV = "APPROVED_STRATEGY_PROFILE_PATH"
-
-STRATEGY_PARAMETER_ENV_KEYS = (
-    "SMA_SHORT",
-    "SMA_LONG",
-    "SMA_FILTER_GAP_MIN_RATIO",
-    "SMA_FILTER_VOL_WINDOW",
-    "SMA_FILTER_VOL_MIN_RANGE_RATIO",
-    "SMA_FILTER_OVEREXT_LOOKBACK",
-    "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO",
-    "SMA_MARKET_REGIME_ENABLED",
-    "SMA_COST_EDGE_ENABLED",
-    "SMA_COST_EDGE_MIN_RATIO",
-    "ENTRY_EDGE_BUFFER_RATIO",
-    "STRATEGY_MIN_EXPECTED_EDGE_RATIO",
-    "STRATEGY_ENTRY_SLIPPAGE_BPS",
-    "LIVE_FEE_RATE_ESTIMATE",
-    "STRATEGY_EXIT_RULES",
-    "STRATEGY_EXIT_STOP_LOSS_RATIO",
-    "STRATEGY_EXIT_MAX_HOLDING_MIN",
-    "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO",
-    "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO",
+SUPPORTED_DECISION_EQUIVALENCE_CONTRACTS = frozenset(
+    {"canonical_decision_v1", "canonical_decision_v2"}
 )
+
+STRATEGY_PARAMETER_ENV_KEYS = runtime_strategy_parameter_env_keys("sma_with_filter")
 COST_MODEL_ENV_KEYS = (
     "LIVE_FEE_RATE_ESTIMATE",
     "PAPER_FEE_RATE",
@@ -2027,7 +2011,10 @@ def _validate_decision_equivalence_evidence(
         raise ApprovedProfileError(f"{label}_decision_equivalence_strategy_decision_contract_version_mismatch")
     if bool(report.get("blocked_decision_equivalence")):
         raise ApprovedProfileError(f"{label}_decision_equivalence_blocked")
-    if report.get("comparison_contract_version") != "canonical_decision_v1" or report.get("canonical_schema") is not True:
+    if (
+        report.get("comparison_contract_version") not in SUPPORTED_DECISION_EQUIVALENCE_CONTRACTS
+        or report.get("canonical_schema") is not True
+    ):
         raise ApprovedProfileError(f"{label}_decision_equivalence_legacy_schema")
     if report.get("legacy_schema") is True:
         raise ApprovedProfileError(f"{label}_decision_equivalence_legacy_schema")

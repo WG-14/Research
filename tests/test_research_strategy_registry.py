@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 from dataclasses import replace
 
 import pytest
@@ -12,7 +13,9 @@ from bithumb_bot.research.strategy_registry import (
     research_strategy_data_requirements,
     resolve_research_strategy_plugin,
     resolve_research_strategy,
+    runtime_strategy_parameter_env_keys,
 )
+import bithumb_bot.research.strategy_registry as strategy_registry
 from bithumb_bot.research.strategy_spec import strategy_spec_for_name
 
 
@@ -32,6 +35,10 @@ def test_research_strategy_registry_resolves_sma_with_filter() -> None:
     assert plugin.contract_payload()["runtime_replay_builder_module"] == "bithumb_bot.research.strategy_registry"
     assert plugin.contract_payload()["runtime_replay_builder_qualname"] == "_build_sma_runtime_replay_strategy"
     assert plugin.contract_payload()["runtime_parameter_adapter_supported"] is True
+    assert plugin.contract_payload()["runtime_parameter_env_keys"] == list(
+        runtime_strategy_parameter_env_keys("sma_with_filter")
+    )
+    assert "SMA_SHORT" in runtime_strategy_parameter_env_keys("sma_with_filter")
     assert plugin.contract_payload()["runtime_parameter_from_env_module"] == "bithumb_bot.research.strategy_registry"
     assert plugin.contract_payload()["runtime_parameter_from_env_qualname"] == "_sma_runtime_parameters_from_env"
     assert (
@@ -98,6 +105,7 @@ def test_runtime_parameter_adapter_identity_is_contract_bound_and_deterministic(
         runtime_parameter_adapter=RuntimeParameterAdapter(
             from_env=alternate_from_env,
             from_settings=alternate_from_settings,
+            env_keys=("ALT_KEY",),
         ),
     )
 
@@ -111,6 +119,7 @@ def test_runtime_parameter_adapter_identity_is_contract_bound_and_deterministic(
     assert changed.contract_payload()["runtime_parameter_from_settings_qualname"].endswith(
         ".<locals>.alternate_from_settings"
     )
+    assert changed.contract_payload()["runtime_parameter_env_keys"] == ["ALT_KEY"]
     encoded = json.dumps(plugin.contract_payload(), sort_keys=True)
     assert "<function" not in encoded
     assert " object at 0x" not in encoded
@@ -121,6 +130,14 @@ def test_research_strategy_registry_rejects_unknown_strategy() -> None:
         resolve_research_strategy("profit_hunter")
     with pytest.raises(ResearchStrategyRegistryError, match="unsupported research strategy"):
         resolve_research_strategy_plugin("profit_hunter")
+
+
+def test_sma_export_normalizer_is_not_imported_from_profile_cli() -> None:
+    source = inspect.getsource(strategy_registry)
+
+    assert "from bithumb_bot.profile_cli" not in source
+    assert "_sma_promotion_grade_research_export_decisions" not in source
+    assert "sma_promotion_grade_research_export_decisions" in source
 
 
 def test_top_of_book_required_test_hook_is_private_by_name() -> None:

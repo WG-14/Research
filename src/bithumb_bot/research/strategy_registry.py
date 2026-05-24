@@ -63,6 +63,7 @@ class ResearchStrategyDataRequirements:
 class RuntimeParameterAdapter:
     from_env: RuntimeEnvParameterExtractor
     from_settings: RuntimeSettingsParameterExtractor
+    env_keys: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,11 @@ class ResearchStrategyPlugin:
                 self.runtime_replay_builder.__qualname__ if self.runtime_replay_builder is not None else None
             ),
             "runtime_parameter_adapter_supported": self.runtime_parameter_adapter is not None,
+            "runtime_parameter_env_keys": (
+                list(self.runtime_parameter_adapter.env_keys)
+                if self.runtime_parameter_adapter is not None
+                else []
+            ),
             "runtime_parameter_from_env_module": (
                 self.runtime_parameter_adapter.from_env.__module__
                 if self.runtime_parameter_adapter is not None
@@ -367,9 +373,9 @@ def _sma_research_export_normalizer(
     profile: dict[str, object],
     order_rules_hash: str,
 ) -> list[dict[str, object]]:
-    from bithumb_bot.profile_cli import _sma_promotion_grade_research_export_decisions
+    from bithumb_bot.research.decision_export_normalizers import sma_promotion_grade_research_export_decisions
 
-    return _sma_promotion_grade_research_export_decisions(
+    return sma_promotion_grade_research_export_decisions(
         raw_decisions=raw_decisions,
         snapshot=snapshot,
         params=params,
@@ -394,6 +400,13 @@ def runtime_strategy_parameters_from_settings(strategy_name: str, cfg: object) -
     parameters = plugin.runtime_parameter_adapter.from_settings(cfg)
     _assert_runtime_parameters_accepted(plugin=plugin, parameters=parameters)
     return parameters
+
+
+def runtime_strategy_parameter_env_keys(strategy_name: str) -> tuple[str, ...]:
+    plugin = resolve_research_strategy_plugin(strategy_name)
+    if plugin.runtime_parameter_adapter is None:
+        return ()
+    return tuple(plugin.runtime_parameter_adapter.env_keys)
 
 
 def _assert_runtime_parameters_accepted(
@@ -497,6 +510,27 @@ _SMA_WITH_FILTER_PLUGIN = ResearchStrategyPlugin(
     runtime_parameter_adapter=RuntimeParameterAdapter(
         from_env=_sma_runtime_parameters_from_env,
         from_settings=_sma_runtime_parameters_from_settings,
+        env_keys=(
+            "SMA_SHORT",
+            "SMA_LONG",
+            "SMA_FILTER_GAP_MIN_RATIO",
+            "SMA_FILTER_VOL_WINDOW",
+            "SMA_FILTER_VOL_MIN_RANGE_RATIO",
+            "SMA_FILTER_OVEREXT_LOOKBACK",
+            "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO",
+            "SMA_MARKET_REGIME_ENABLED",
+            "SMA_COST_EDGE_ENABLED",
+            "SMA_COST_EDGE_MIN_RATIO",
+            "ENTRY_EDGE_BUFFER_RATIO",
+            "STRATEGY_MIN_EXPECTED_EDGE_RATIO",
+            "STRATEGY_ENTRY_SLIPPAGE_BPS",
+            "LIVE_FEE_RATE_ESTIMATE",
+            "STRATEGY_EXIT_RULES",
+            "STRATEGY_EXIT_STOP_LOSS_RATIO",
+            "STRATEGY_EXIT_MAX_HOLDING_MIN",
+            "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO",
+            "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO",
+        ),
     ),
     decision_contract_version=SMA_WITH_FILTER_SPEC.decision_contract_version,
     diagnostics_namespace="sma_with_filter",

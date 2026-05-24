@@ -254,9 +254,9 @@ def test_decision_event_kernel_does_not_require_sma_features() -> None:
     assert result.trades
     assert result.trades[0]["side"] == "BUY"
     assert result.decisions[0]["feature_snapshot"] == {"candle_index": 1, "close": dataset.candles[1].close}
-    assert result.decisions[0]["curr_s"] == 0.0
-    assert result.decisions[0]["gap_ratio"] == 0.0
-    assert result.decisions[0]["feature_hash"].startswith("sha256:")
+    assert "curr_s" not in result.decisions[0]
+    assert "gap_ratio" not in result.decisions[0]
+    assert "feature_hash" not in result.decisions[0]
 
 
 def test_noop_baseline_parameter_validation_rejects_unknowns() -> None:

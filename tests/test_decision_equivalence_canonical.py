@@ -78,6 +78,44 @@ def _decision(**overrides: object) -> dict[str, object]:
     return payload
 
 
+def _decision_v2(**overrides: object) -> dict[str, object]:
+    payload = _decision(**overrides)
+    for key in (
+        "strategy_contract_version",
+        "prev_s",
+        "prev_l",
+        "curr_s",
+        "curr_l",
+        "feature_hash",
+        "gap_ratio",
+        "range_ratio",
+        "expected_edge_ratio",
+        "required_edge_ratio",
+    ):
+        payload.pop(key, None)
+    payload.update(
+        {
+            "decision_contract_version": 2,
+            "strategy_version": "sma_with_filter.research_runtime_contract.v2",
+            "strategy_decision_contract_version": "research_sma_decision_contract.v3_entry_exit_risk_exit",
+            "feature_snapshot": {"short_sma": 102.0, "long_sma": 101.0},
+            "feature_snapshot_hash": "sha256:feature_snapshot",
+            "strategy_specific_payload": {"curr_s": 102.0, "curr_l": 101.0, "gap_ratio": 0.01},
+            "strategy_diagnostics_namespace": "sma_with_filter",
+            "strategy_diagnostics": {"cross": "golden"},
+            "strategy_behavior_payload": {
+                "strategy_name": "sma_with_filter",
+                "raw_signal": payload.get("raw_signal"),
+                "final_signal": payload.get("final_signal"),
+                "strategy_specific_payload": {"curr_s": 102.0, "curr_l": 101.0, "gap_ratio": 0.01},
+            },
+            "strategy_behavior_hash": "sha256:strategy_behavior",
+        }
+    )
+    payload.update(overrides)
+    return payload
+
+
 def _compare(research: dict[str, object], runtime: dict[str, object]):
     return compare_decision_equivalence(
         research_decisions=[research],
@@ -192,6 +230,34 @@ def test_legacy_shallow_decisions_are_diagnostic_only() -> None:
     assert result.report["canonical_schema"] is False
     assert result.report["promotion_grade_comparison"] is False
     assert result.report["recommended_next_action"] == "regenerate_decisions_with_repo_owned_export_commands"
+
+
+def test_canonical_v2_comparison_uses_strategy_behavior_hash_not_sma_fields() -> None:
+    research = _decision_v2(strategy_specific_payload={"curr_s": 102.0})
+    runtime = _decision_v2(strategy_specific_payload={"curr_s": 999.0})
+
+    result = _compare(research, runtime)
+
+    assert result.ok is True
+    assert result.report["comparison_contract_version"] == "canonical_decision_v2"
+    assert result.report["canonical_v2_schema"] is True
+
+
+def test_canonical_v2_strategy_behavior_hash_mismatch_fails_with_reason() -> None:
+    result = _compare(
+        _decision_v2(),
+        _decision_v2(strategy_behavior_hash="sha256:changed"),
+    )
+
+    assert result.ok is False
+    assert "decision_strategy_behavior_hash_mismatch" in result.report["reason_codes"]
+
+
+def test_mixed_canonical_contract_versions_fail_with_reason_code() -> None:
+    result = _compare(_decision(), _decision_v2())
+
+    assert result.ok is False
+    assert "canonical_decision_contract_version_mismatch" in result.report["reason_codes"]
 
 
 def _export_payload(source: str, decisions: list[dict[str, object]], **overrides: object) -> dict[str, object]:
@@ -486,6 +552,8 @@ def test_incomplete_runtime_positive_state_missing_lot_fields_fails_closed() -> 
         db_data_fingerprint="sha256:data",
         through_ts_ms=1_714_521_660_000,
         execution_timing_policy_hash="sha256:timing",
+        strategy_version="sma_with_filter.research_runtime_contract.v2",
+        strategy_decision_contract_version="research_sma_decision_contract.v3_entry_exit_risk_exit",
     ).as_dict()
 
     result = _compare(event, event)

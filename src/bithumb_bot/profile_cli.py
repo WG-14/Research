@@ -6,8 +6,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .canonical_decision import (
-    canonical_payload_hash,
-    export_research_decisions,
     export_runtime_replay_decisions,
     order_rules_snapshot_payload,
 )
@@ -41,6 +39,10 @@ from .decision_equivalence import (
 from .research.dataset_snapshot import load_dataset_split
 from .research.experiment_manifest import load_manifest
 from .research.hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
+from .research.decision_export_normalizers import (
+    decision_export_execution_timing_policy_hash as _decision_export_execution_timing_policy_hash,
+    generic_promotion_grade_research_export_decisions as _generic_promotion_grade_research_export_decisions,
+)
 from .research.parameter_space import candidate_id, iter_parameter_candidates
 from .research.promotion_gate import PromotionGateError, build_candidate_profile
 from .research.strategy_registry import resolve_research_strategy_plugin
@@ -472,6 +474,8 @@ def cmd_research_export_decisions(
                 "dataset_content_hash": snapshot.content_hash(),
                 "db_data_fingerprint": snapshot.content_hash(),
                 "order_rules_hash": order_rules_hash,
+                "strategy_version": plugin.version,
+                "strategy_decision_contract_version": plugin.decision_contract_version,
             }
             for item in run.decisions
         ]
@@ -566,6 +570,8 @@ def cmd_runtime_replay_decisions(
                 db_data_fingerprint=db_fingerprint,
                 candle_basis="closed_candle",
                 execution_timing_policy_hash=_decision_export_execution_timing_policy_hash(),
+                strategy_version=plugin.version,
+                strategy_decision_contract_version=plugin.decision_contract_version,
             )
         finally:
             conn.close()
@@ -707,122 +713,6 @@ def _validate_research_export_profile_binding(
         except (TypeError, ValueError):
             pass
         raise ValueError(f"research_export_profile_cost_model_mismatch:{key}")
-
-
-def _decision_export_execution_timing_policy_hash() -> str:
-    return sha256_prefixed({"runtime_replay": "closed_candle_through_ts"})
-
-
-def _generic_promotion_grade_research_export_decisions(
-    *,
-    raw_decisions: list[dict[str, object]],
-    snapshot: object,
-    params: dict[str, object],
-    profile: dict[str, object],
-    order_rules_hash: str,
-) -> list[dict[str, object]]:
-    decisions = export_research_decisions(
-        raw_decisions,
-        profile_content_hash=str(profile.get("profile_content_hash") or ""),
-        dataset_content_hash=snapshot.content_hash(),  # type: ignore[attr-defined]
-        execution_timing_policy_hash=_decision_export_execution_timing_policy_hash(),
-    )
-    cost = profile.get("cost_model") if isinstance(profile.get("cost_model"), dict) else {}
-    fee_rate = str(float(cost.get("fee_rate", 0.0) or 0.0))
-    stable_fee_model = {
-        "bid_fee": fee_rate,
-        "ask_fee": fee_rate,
-        "fee_source": "chance_doc",
-        "degraded": False,
-        "degraded_reason": "none",
-    }
-    effective_params = (
-        dict(profile.get("strategy_parameters"))
-        if isinstance(profile.get("strategy_parameters"), dict)
-        else dict(params)
-    )
-    slippage_model = {
-        "exit_slippage_bps": float(cost.get("slippage_bps", 0.0) or 0.0),
-        "exit_buffer_ratio": float(effective_params.get("ENTRY_EDGE_BUFFER_RATIO", 0.0) or 0.0),
-    }
-    aligned_decisions: list[dict[str, object]] = []
-    for decision in decisions:
-        decision["candidate_profile_hash"] = str(profile.get("candidate_profile_hash") or "")
-        decision["db_data_fingerprint"] = snapshot.content_hash()  # type: ignore[attr-defined]
-        decision["candle_basis"] = "closed_candle"
-        decision["decision_ts"] = None
-        decision["fee_authority_hash"] = canonical_payload_hash(stable_fee_model)
-        decision["fee_model_hash"] = canonical_payload_hash(stable_fee_model)
-        decision["slippage_model_hash"] = canonical_payload_hash(slippage_model)
-        decision["order_rules_hash"] = order_rules_hash
-        authority = dict(decision.get("position_authority") if isinstance(decision.get("position_authority"), dict) else {})
-        if (
-            str(decision.get("final_signal") or "").upper() == "HOLD"
-            and str(authority.get("state_class") or "") == "open_exposure"
-            and not str(authority.get("unsupported_reason") or "").strip()
-        ):
-            decision["exit_reason"] = "no exit rule triggered"
-        decision["exit_evaluations_hash"] = canonical_payload_hash(())
-        authority["position_state_hash"] = str(decision.get("position_state_hash") or "")
-        authority["order_rules_hash"] = str(decision.get("order_rules_hash") or "")
-        authority["fee_authority_hash"] = str(decision.get("fee_authority_hash") or "")
-        decision["position_authority"] = authority
-        aligned_decisions.append(decision)
-    return aligned_decisions
-
-
-def _sma_promotion_grade_research_export_decisions(
-    *,
-    raw_decisions: list[dict[str, object]],
-    snapshot: object,
-    params: dict[str, object],
-    profile: dict[str, object],
-    order_rules_hash: str,
-) -> list[dict[str, object]]:
-    from .strategy.market_regime import classify_sma_market_regime
-
-    decisions = _generic_promotion_grade_research_export_decisions(
-        raw_decisions=raw_decisions,
-        snapshot=snapshot,
-        params=params,
-        profile=profile,
-        order_rules_hash=order_rules_hash,
-    )
-    effective_params = (
-        dict(profile.get("strategy_parameters"))
-        if isinstance(profile.get("strategy_parameters"), dict)
-        else dict(params)
-    )
-    candles = list(getattr(snapshot, "candles", ()) or ())
-    min_rows = max(
-        int(effective_params.get("SMA_LONG", 0) or 0) + 2,
-        int(effective_params.get("SMA_FILTER_VOL_WINDOW", 1) or 1),
-        int(effective_params.get("SMA_FILTER_OVEREXT_LOOKBACK", 1) or 1) + 1,
-    )
-    aligned_decisions: list[dict[str, object]] = []
-    for decision in decisions:
-        candle_ts = int(decision.get("candle_ts") or 0)
-        through = [candle for candle in candles if int(candle.ts) <= candle_ts]
-        if len(through) < min_rows:
-            continue
-        if through:
-            regime = classify_sma_market_regime(
-                closes=[float(candle.close) for candle in through],
-                short_sma=float(decision.get("curr_s") or 0.0),
-                long_sma=float(decision.get("curr_l") or 0.0),
-                volatility_window=max(1, int(effective_params.get("SMA_FILTER_VOL_WINDOW", 10) or 10)),
-                min_volatility_ratio=float(effective_params.get("SMA_FILTER_VOL_MIN_RANGE_RATIO", 0.0) or 0.0),
-                overextended_lookback=max(1, int(effective_params.get("SMA_FILTER_OVEREXT_LOOKBACK", 3) or 3)),
-                overextended_max_return_ratio=float(
-                    effective_params.get("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO", 0.0) or 0.0
-                ),
-                min_trend_strength_ratio=float(effective_params.get("SMA_FILTER_GAP_MIN_RATIO", 0.0) or 0.0),
-            )
-            decision["market_regime"] = regime.composite_regime
-            decision["regime_decision"] = "ON"
-            decision["regime_block_reason"] = "none"
-        aligned_decisions.append(decision)
-    return aligned_decisions
 
 
 def _candidate_regime_policy_from_approved_profile(profile: dict[str, object]) -> dict[str, object]:

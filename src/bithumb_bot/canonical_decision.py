@@ -20,9 +20,57 @@ def sha256_prefixed(payload: object) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
-CANONICAL_DECISION_CONTRACT_VERSION = 1
-STRATEGY_CONTRACT_VERSION = "sma_strategy_v1"
-CANONICAL_DECISION_SCHEMA_FIELDS = (
+CANONICAL_DECISION_CONTRACT_VERSION = 2
+LEGACY_CANONICAL_DECISION_CONTRACT_VERSION_V1 = 1
+LEGACY_STRATEGY_CONTRACT_VERSION_V1 = "sma_strategy_v1"
+CANONICAL_DECISION_COMPARISON_CONTRACT_VERSION = "canonical_decision_v2"
+LEGACY_CANONICAL_DECISION_COMPARISON_CONTRACT_VERSION_V1 = "canonical_decision_v1"
+
+COMMON_CANONICAL_DECISION_FIELDS_V2 = (
+    "decision_contract_version",
+    "strategy_name",
+    "strategy_version",
+    "strategy_decision_contract_version",
+    "profile_content_hash",
+    "candidate_profile_hash",
+    "dataset_content_hash",
+    "db_data_fingerprint",
+    "market",
+    "interval",
+    "signal_timestamp",
+    "candle_ts",
+    "through_ts_ms",
+    "candle_basis",
+    "decision_ts",
+    "raw_signal",
+    "final_signal",
+    "side",
+    "blocked",
+    "block_reason",
+    "blocked_filters",
+    "fee_authority_hash",
+    "fee_model_hash",
+    "slippage_model_hash",
+    "order_rules_hash",
+    "market_regime",
+    "regime_decision",
+    "regime_block_reason",
+    "position_state_hash",
+    "entry_allowed",
+    "exit_allowed",
+    "dust_state",
+    "effective_flat",
+    "normalized_exposure_active",
+    "exit_rule",
+    "exit_reason",
+    "exit_evaluations_hash",
+    "execution_timing_policy_hash",
+    "replay_fingerprint_hash",
+    "feature_snapshot_hash",
+    "strategy_behavior_hash",
+)
+CANONICAL_DECISION_SCHEMA_FIELDS = COMMON_CANONICAL_DECISION_FIELDS_V2
+LEGACY_CANONICAL_DECISION_SCHEMA_FIELDS_V1 = (
     "decision_contract_version",
     "strategy_contract_version",
     "strategy_name",
@@ -72,6 +120,32 @@ CANONICAL_DECISION_SCHEMA_FIELDS = (
     "replay_fingerprint_hash",
 )
 PROMOTION_REQUIRED_CANONICAL_FIELDS = (
+    "decision_contract_version",
+    "strategy_name",
+    "strategy_decision_contract_version",
+    "profile_content_hash",
+    "market",
+    "interval",
+    "candle_basis",
+    "raw_signal",
+    "final_signal",
+    "side",
+    "blocked",
+    "fee_model_hash",
+    "slippage_model_hash",
+    "order_rules_hash",
+    "position_state_hash",
+    "entry_allowed",
+    "exit_allowed",
+    "dust_state",
+    "effective_flat",
+    "normalized_exposure_active",
+    "exit_evaluations_hash",
+    "execution_timing_policy_hash",
+    "feature_snapshot_hash",
+    "strategy_behavior_hash",
+)
+LEGACY_PROMOTION_REQUIRED_CANONICAL_FIELDS_V1 = (
     "decision_contract_version",
     "strategy_contract_version",
     "strategy_name",
@@ -131,22 +205,56 @@ def canonical_payload_hash(value: object) -> str:
 
 
 def normalize_canonical_decision(payload: dict[str, Any]) -> dict[str, Any]:
-    normalized = {field: _canonical_field_value(field, payload.get(field)) for field in CANONICAL_DECISION_SCHEMA_FIELDS}
-    normalized["decision_contract_version"] = int(
-        payload.get("decision_contract_version") or CANONICAL_DECISION_CONTRACT_VERSION
+    version = int(payload.get("decision_contract_version") or CANONICAL_DECISION_CONTRACT_VERSION)
+    fields = (
+        LEGACY_CANONICAL_DECISION_SCHEMA_FIELDS_V1
+        if version < CANONICAL_DECISION_CONTRACT_VERSION
+        else COMMON_CANONICAL_DECISION_FIELDS_V2
     )
-    normalized["strategy_contract_version"] = str(
-        payload.get("strategy_contract_version") or STRATEGY_CONTRACT_VERSION
-    )
+    normalized = {field: _canonical_field_value(field, payload.get(field)) for field in fields}
+    normalized["decision_contract_version"] = version
+    if version < CANONICAL_DECISION_CONTRACT_VERSION:
+        normalized["strategy_contract_version"] = str(
+            payload.get("strategy_contract_version") or LEGACY_STRATEGY_CONTRACT_VERSION_V1
+        )
+    else:
+        normalized["strategy_version"] = str(payload.get("strategy_version") or "")
+        normalized["strategy_decision_contract_version"] = str(
+            payload.get("strategy_decision_contract_version")
+            or payload.get("strategy_contract_version")
+            or ""
+        )
     normalized["side"] = str(payload.get("side") or payload.get("final_signal") or "").strip().upper()
     normalized["raw_signal"] = str(payload.get("raw_signal") or "").strip().upper()
     normalized["final_signal"] = str(payload.get("final_signal") or normalized["side"]).strip().upper()
     normalized["blocked"] = bool(payload.get("blocked"))
     normalized["blocked_filters"] = tuple(str(item) for item in payload.get("blocked_filters") or ())
+    if version >= CANONICAL_DECISION_CONTRACT_VERSION:
+        feature_snapshot = _strategy_feature_snapshot(payload)
+        strategy_payload = _strategy_behavior_payload(payload)
+        normalized["feature_snapshot_hash"] = str(
+            payload.get("feature_snapshot_hash") or canonical_payload_hash(feature_snapshot)
+        )
+        normalized["strategy_behavior_hash"] = str(
+            payload.get("strategy_behavior_hash") or canonical_payload_hash(strategy_payload)
+        )
+        normalized["feature_snapshot"] = feature_snapshot
+        normalized["strategy_specific_payload"] = _strategy_specific_payload(payload)
+        normalized["strategy_diagnostics_namespace"] = str(
+            payload.get("strategy_diagnostics_namespace") or normalized.get("strategy_name") or ""
+        )
+        normalized["strategy_diagnostics"] = _stable_value(
+            payload.get("strategy_diagnostics") if isinstance(payload.get("strategy_diagnostics"), dict) else {}
+        )
+        normalized["strategy_behavior_payload"] = strategy_payload
     return normalized
 
 
 def is_canonical_decision(payload: dict[str, Any]) -> bool:
+    return int(payload.get("decision_contract_version") or 0) >= LEGACY_CANONICAL_DECISION_CONTRACT_VERSION_V1
+
+
+def is_canonical_decision_v2(payload: dict[str, Any]) -> bool:
     return int(payload.get("decision_contract_version") or 0) >= CANONICAL_DECISION_CONTRACT_VERSION
 
 
@@ -168,7 +276,12 @@ def validate_canonical_decision_payload(
         )
     normalized = normalize_canonical_decision(payload)
     missing: list[str] = []
-    for field in PROMOTION_REQUIRED_CANONICAL_FIELDS:
+    required_fields = (
+        LEGACY_PROMOTION_REQUIRED_CANONICAL_FIELDS_V1
+        if int(normalized.get("decision_contract_version") or 0) < CANONICAL_DECISION_CONTRACT_VERSION
+        else PROMOTION_REQUIRED_CANONICAL_FIELDS
+    )
+    for field in required_fields:
         if _canonical_required_missing(normalized.get(field)):
             missing.append(field)
     for group in PROMOTION_REQUIRED_ONE_OF_CANONICAL_FIELDS:
@@ -240,6 +353,8 @@ def runtime_decision_to_canonical_event(
     decision_ts: int | None = None,
     candle_basis: str = "runtime_closed_candle",
     execution_timing_policy_hash: str = "",
+    strategy_version: str = "",
+    strategy_decision_contract_version: str = "",
 ) -> CanonicalDecisionEvent:
     context = dict(getattr(decision, "context", {}) or {})
     final_signal = str(getattr(decision, "signal", context.get("final_signal", "HOLD")) or "HOLD").upper()
@@ -278,8 +393,14 @@ def runtime_decision_to_canonical_event(
     fee_authority_hash = canonical_payload_hash(stable_fee_model)
     payload = {
         "decision_contract_version": CANONICAL_DECISION_CONTRACT_VERSION,
-        "strategy_contract_version": STRATEGY_CONTRACT_VERSION,
         "strategy_name": str(context.get("strategy") or ""),
+        "strategy_version": strategy_version or str(context.get("strategy_version") or ""),
+        "strategy_decision_contract_version": str(
+            strategy_decision_contract_version
+            or context.get("strategy_decision_contract_version")
+            or context.get("strategy_contract_version")
+            or ""
+        ),
         "profile_content_hash": profile_content_hash or str(context.get("approved_profile_hash") or ""),
         "candidate_profile_hash": str(context.get("candidate_profile_hash") or ""),
         "dataset_content_hash": dataset_content_hash or str(context.get("dataset_content_hash") or ""),
@@ -297,15 +418,21 @@ def runtime_decision_to_canonical_event(
         "blocked": blocked,
         "block_reason": block_reason if blocked else "",
         "blocked_filters": blocked_filters,
-        "prev_s": context.get("prev_s"),
-        "prev_l": context.get("prev_l"),
-        "curr_s": context.get("curr_s"),
-        "curr_l": context.get("curr_l"),
-        "feature_hash": canonical_payload_hash(context.get("features") or {}),
-        "gap_ratio": context.get("gap_ratio"),
-        "range_ratio": _range_ratio_from_filters(filters),
-        "expected_edge_ratio": cost_edge.get("value"),
-        "required_edge_ratio": cost_edge.get("threshold"),
+        "feature_snapshot": context.get("feature_snapshot") or context.get("features") or {},
+        "strategy_specific_payload": _legacy_sma_strategy_payload(
+            {
+                "prev_s": context.get("prev_s"),
+                "prev_l": context.get("prev_l"),
+                "curr_s": context.get("curr_s"),
+                "curr_l": context.get("curr_l"),
+                "gap_ratio": context.get("gap_ratio"),
+                "range_ratio": _range_ratio_from_filters(filters),
+                "expected_edge_ratio": cost_edge.get("value"),
+                "required_edge_ratio": cost_edge.get("threshold"),
+            }
+        ),
+        "strategy_diagnostics_namespace": str(context.get("strategy") or ""),
+        "strategy_diagnostics": context.get("strategy_diagnostics") if isinstance(context.get("strategy_diagnostics"), dict) else {},
         "fee_authority_hash": fee_authority_hash,
         "fee_model_hash": fee_authority_hash,
         "slippage_model_hash": canonical_payload_hash(context.get("position_lot_interpretation_costs") or {}),
@@ -329,6 +456,16 @@ def runtime_decision_to_canonical_event(
         "execution_timing_policy_hash": execution_timing_policy_hash,
         "replay_fingerprint_hash": canonical_payload_hash(context.get("replay_fingerprint") or {}),
     }
+    payload["feature_snapshot_hash"] = canonical_payload_hash(payload["feature_snapshot"])
+    payload["strategy_behavior_payload"] = {
+        "strategy_name": payload["strategy_name"],
+        "strategy_version": payload["strategy_version"],
+        "strategy_decision_contract_version": payload["strategy_decision_contract_version"],
+        "raw_signal": raw_signal,
+        "final_signal": final_signal,
+        "strategy_specific_payload": payload["strategy_specific_payload"],
+    }
+    payload["strategy_behavior_hash"] = canonical_payload_hash(payload["strategy_behavior_payload"])
     payload["position_authority"] = runtime_position_authority_snapshot(
         position_gate=position_gate,
         order_rules_hash=order_rules_hash,
@@ -349,7 +486,19 @@ def research_decision_to_canonical_event(
 ) -> CanonicalDecisionEvent:
     payload = dict(decision)
     payload.setdefault("decision_contract_version", CANONICAL_DECISION_CONTRACT_VERSION)
-    payload.setdefault("strategy_contract_version", STRATEGY_CONTRACT_VERSION)
+    if int(payload.get("decision_contract_version") or 0) >= CANONICAL_DECISION_CONTRACT_VERSION:
+        payload.setdefault(
+            "strategy_version",
+            payload.get("strategy_spec", {}).get("strategy_version")
+            if isinstance(payload.get("strategy_spec"), dict)
+            else "",
+        )
+        payload.setdefault(
+            "strategy_decision_contract_version",
+            payload.get("strategy_decision_contract_version") or payload.get("strategy_contract_version") or "",
+        )
+    else:
+        payload.setdefault("strategy_contract_version", LEGACY_STRATEGY_CONTRACT_VERSION_V1)
     payload["profile_content_hash"] = profile_content_hash or str(payload.get("profile_content_hash") or "")
     payload["dataset_content_hash"] = dataset_content_hash or str(payload.get("dataset_content_hash") or "")
     payload["execution_timing_policy_hash"] = execution_timing_policy_hash or str(
@@ -428,6 +577,8 @@ def export_runtime_replay_decisions(
     db_data_fingerprint: str = "",
     candle_basis: str = "runtime_closed_candle",
     execution_timing_policy_hash: str = "",
+    strategy_version: str = "",
+    strategy_decision_contract_version: str = "",
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for through_ts_ms in through_ts_list:
@@ -445,6 +596,8 @@ def export_runtime_replay_decisions(
                 through_ts_ms=int(through_ts_ms),
                 candle_basis=candle_basis,
                 execution_timing_policy_hash=execution_timing_policy_hash,
+                strategy_version=strategy_version,
+                strategy_decision_contract_version=strategy_decision_contract_version,
             ).as_dict()
         )
     return events
@@ -471,6 +624,56 @@ def export_research_decisions(
 def _range_ratio_from_filters(filters: dict[str, Any]) -> object:
     volatility = filters.get("volatility") if isinstance(filters.get("volatility"), dict) else {}
     return volatility.get("value")
+
+
+def _strategy_feature_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(payload.get("feature_snapshot"), dict):
+        return _stable_value(payload["feature_snapshot"])  # type: ignore[return-value]
+    if isinstance(payload.get("features"), dict):
+        return _stable_value(payload["features"])  # type: ignore[return-value]
+    legacy = _legacy_sma_strategy_payload(payload)
+    return legacy
+
+
+def _strategy_specific_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(payload.get("strategy_specific_payload"), dict):
+        return _stable_value(payload["strategy_specific_payload"])  # type: ignore[return-value]
+    return _legacy_sma_strategy_payload(payload)
+
+
+def _strategy_behavior_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(payload.get("strategy_behavior_payload"), dict):
+        return _stable_value(payload["strategy_behavior_payload"])  # type: ignore[return-value]
+    return {
+        "strategy_name": str(payload.get("strategy_name") or ""),
+        "strategy_version": str(payload.get("strategy_version") or ""),
+        "strategy_decision_contract_version": str(
+            payload.get("strategy_decision_contract_version")
+            or payload.get("strategy_contract_version")
+            or ""
+        ),
+        "raw_signal": str(payload.get("raw_signal") or "").upper(),
+        "final_signal": str(payload.get("final_signal") or payload.get("side") or "").upper(),
+        "strategy_specific_payload": _strategy_specific_payload(payload),
+    }
+
+
+def _legacy_sma_strategy_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for field in (
+        "prev_s",
+        "prev_l",
+        "curr_s",
+        "curr_l",
+        "gap_ratio",
+        "range_ratio",
+        "expected_edge_ratio",
+        "required_edge_ratio",
+    ):
+        value = payload.get(field)
+        if value not in (None, ""):
+            out[field] = _canonical_field_value(field, value)
+    return out
 
 
 def _canonical_field_value(field: str, value: object) -> object:

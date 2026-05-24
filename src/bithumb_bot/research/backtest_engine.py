@@ -1542,8 +1542,6 @@ def _research_decision_payload(
     )
     flat_no_position = lot_native_authority.state_class == "flat_no_dust_no_position"
     position_state_hash = lot_native_authority.position_state_hash
-    generic_feature_snapshot = dict(feature_snapshot or {})
-    generic_feature_hash = canonical_payload_hash(generic_feature_snapshot)
     if lot_native_authority.unsupported_reason:
         legacy_authority = research_position_authority_snapshot(
             qty=float(qty),
@@ -1595,15 +1593,6 @@ def _research_decision_payload(
         "block_reason": str(entry_reason) if blocked else "",
         "blocked_filters": tuple(blocked_filters),
         "sellable_qty": float(sellable_qty),
-        "prev_s": 0.0,
-        "prev_l": 0.0,
-        "curr_s": 0.0,
-        "curr_l": 0.0,
-        "feature_hash": generic_feature_hash,
-        "gap_ratio": 0.0,
-        "range_ratio": 0.0,
-        "expected_edge_ratio": 0.0,
-        "required_edge_ratio": 0.0,
         "fee_authority_hash": fee_authority_hash,
         "fee_model_hash": fee_model_hash,
         "slippage_model_hash": slippage_model_hash,

@@ -202,6 +202,13 @@ def test_research_export_command_delegates_strategy_normalization() -> None:
     assert "SMA_" not in source
 
 
+def test_profile_cli_does_not_own_sma_promotion_normalizer() -> None:
+    source = inspect.getsource(profile_cli)
+
+    assert "_sma_promotion_grade_research_export_decisions" not in source
+    assert "classify_sma_market_regime" not in source
+
+
 def test_generic_promotion_grade_research_export_accepts_non_sma_decisions() -> None:
     snapshot = SimpleNamespace(
         candles=(),
@@ -225,9 +232,18 @@ def test_generic_promotion_grade_research_export_accepts_non_sma_decisions() -> 
                 "curr_l",
                 "gap_ratio",
                 "range_ratio",
+                "expected_edge_ratio",
+                "required_edge_ratio",
+                "feature_hash",
+                "decision_contract_version",
+                "strategy_contract_version",
             }
         }
     ]
+    raw_decisions[0]["strategy_version"] = "buy_and_hold_baseline.research_contract.v1"
+    raw_decisions[0]["strategy_decision_contract_version"] = "research_buy_and_hold_baseline_decision_contract.v1"
+    raw_decisions[0]["feature_snapshot"] = {"candle_index": 1}
+    raw_decisions[0]["strategy_diagnostics_namespace"] = "buy_and_hold_baseline"
 
     decisions = _generic_promotion_grade_research_export_decisions(
         raw_decisions=raw_decisions,
@@ -244,8 +260,8 @@ def test_generic_promotion_grade_research_export_accepts_non_sma_decisions() -> 
 
     assert len(decisions) == 1
     assert decisions[0]["strategy_name"] == "buy_and_hold_baseline"
-    assert decisions[0]["curr_s"] is None
-    assert decisions[0]["gap_ratio"] is None
+    assert "curr_s" not in decisions[0]
+    assert "gap_ratio" not in decisions[0]
     assert decisions[0]["order_rules_hash"] == "sha256:order-rules"
 
 
