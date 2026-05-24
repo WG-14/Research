@@ -2643,7 +2643,11 @@ def test_sma_backtest_source_has_no_growing_prefix_or_hot_loop_sma_calls() -> No
     assert "run_decision_event_backtest" in source
 
 
-def test_sma_common_kernel_matches_legacy_sma_execution_accounting_and_metrics() -> None:
+def test_sma_common_kernel_has_no_legacy_execution_runner() -> None:
+    assert not hasattr(backtest_engine, "_run_sma_backtest_legacy")
+
+
+def test_sma_common_kernel_preserves_execution_accounting_and_metrics() -> None:
     snapshot = _snapshot_from_closes(
         [100, 99, 98, 97, 99, 102, 105, 104, 103, 100, 98, 96, 99, 103, 106, 104, 101, 98]
     )
@@ -2655,19 +2659,16 @@ def test_sma_common_kernel_matches_legacy_sma_execution_accounting_and_metrics()
         "context": BacktestRunContext(report_detail="full"),
     }
 
-    legacy = backtest_engine._run_sma_backtest_legacy(**kwargs)
     via_kernel = backtest_engine.run_sma_backtest_via_kernel(**kwargs)
     default = run_sma_backtest(**kwargs)
 
-    assert [trade["side"] for trade in via_kernel.trades] == [trade["side"] for trade in legacy.trades]
     assert [trade["side"] for trade in via_kernel.trades] == ["BUY", "SELL", "BUY", "SELL"]
-    assert len(via_kernel.trades) == len(legacy.trades)
-    assert len(via_kernel.closed_trades) == len(legacy.closed_trades)
-    assert via_kernel.metrics.as_dict() == legacy.metrics.as_dict()
-    assert via_kernel.metrics_v2.as_dict() == legacy.metrics_v2.as_dict()
-    assert via_kernel.execution_event_summary == legacy.execution_event_summary
-    assert via_kernel.resource_usage["trade_ledger_hash"] == legacy.resource_usage["trade_ledger_hash"]
-    assert via_kernel.resource_usage["equity_curve_hash"] == legacy.resource_usage["equity_curve_hash"]
+    assert len(via_kernel.closed_trades) == 2
+    assert via_kernel.metrics.as_dict() == default.metrics.as_dict()
+    assert via_kernel.metrics_v2.as_dict() == default.metrics_v2.as_dict()
+    assert via_kernel.execution_event_summary == default.execution_event_summary
+    assert via_kernel.resource_usage["trade_ledger_hash"] == default.resource_usage["trade_ledger_hash"]
+    assert via_kernel.resource_usage["equity_curve_hash"] == default.resource_usage["equity_curve_hash"]
     assert via_kernel.resource_usage["composite_behavior_hash_v2"].startswith("sha256:")
     assert via_kernel.strategy_diagnostics["strategy_diagnostics_namespace"] == "sma_with_filter"
     assert set(via_kernel.strategy_diagnostics["strategy_specific_diagnostics"]) == {"sma_with_filter"}
@@ -2676,7 +2677,7 @@ def test_sma_common_kernel_matches_legacy_sma_execution_accounting_and_metrics()
     assert all(decision["strategy_plugin_contract"]["name"] == "sma_with_filter" for decision in via_kernel.decisions)
 
 
-def _assert_sma_kernel_matches_legacy_for_exit_policy(
+def _assert_sma_kernel_preserves_exit_policy(
     *,
     dataset: DatasetSnapshot,
     parameter_values: dict[str, object],
@@ -2691,35 +2692,32 @@ def _assert_sma_kernel_matches_legacy_for_exit_policy(
         "context": BacktestRunContext(report_detail="full"),
     }
 
-    legacy = backtest_engine._run_sma_backtest_legacy(**kwargs)
     via_kernel = backtest_engine.run_sma_backtest_via_kernel(**kwargs)
+    default = run_sma_backtest(**kwargs)
 
-    assert [trade["side"] for trade in via_kernel.trades] == [trade["side"] for trade in legacy.trades]
-    assert len(via_kernel.trades) == len(legacy.trades)
-    assert len(via_kernel.closed_trades) == len(legacy.closed_trades)
-    assert via_kernel.metrics.as_dict() == legacy.metrics.as_dict()
-    assert via_kernel.metrics_v2.as_dict() == legacy.metrics_v2.as_dict()
-    assert via_kernel.execution_event_summary == legacy.execution_event_summary
-    assert via_kernel.resource_usage["trade_ledger_hash"] == legacy.resource_usage["trade_ledger_hash"]
-    assert via_kernel.resource_usage["equity_curve_hash"] == legacy.resource_usage["equity_curve_hash"]
-    assert via_kernel.resource_usage["decision_hash"] == legacy.resource_usage["decision_hash"]
-    assert via_kernel.resource_usage["behavior_hash"] == legacy.resource_usage["behavior_hash"]
-    # The v2 composite includes decision-event adapter provenance. The legacy
-    # loop never emitted that metadata, so equality here would mask the boundary
-    # that the common kernel is meant to make visible.
-    assert via_kernel.resource_usage["composite_behavior_hash_v2"] != legacy.resource_usage[
+    assert [trade["side"] for trade in via_kernel.trades] == [trade["side"] for trade in default.trades]
+    assert len(via_kernel.trades) == len(default.trades)
+    assert len(via_kernel.closed_trades) == len(default.closed_trades)
+    assert via_kernel.metrics.as_dict() == default.metrics.as_dict()
+    assert via_kernel.metrics_v2.as_dict() == default.metrics_v2.as_dict()
+    assert via_kernel.execution_event_summary == default.execution_event_summary
+    assert via_kernel.resource_usage["trade_ledger_hash"] == default.resource_usage["trade_ledger_hash"]
+    assert via_kernel.resource_usage["equity_curve_hash"] == default.resource_usage["equity_curve_hash"]
+    assert via_kernel.resource_usage["decision_hash"] == default.resource_usage["decision_hash"]
+    assert via_kernel.resource_usage["behavior_hash"] == default.resource_usage["behavior_hash"]
+    assert via_kernel.resource_usage["composite_behavior_hash_v2"] == default.resource_usage[
         "composite_behavior_hash_v2"
     ]
     assert via_kernel.resource_usage["common_decision_behavior_hash"].startswith("sha256:")
     assert via_kernel.resource_usage["strategy_behavior_hash"].startswith("sha256:")
     assert via_kernel.resource_usage["composite_behavior_hash_v2"].startswith("sha256:")
-    assert via_kernel.strategy_diagnostics == legacy.strategy_diagnostics
+    assert via_kernel.strategy_diagnostics == default.strategy_diagnostics
     assert any(decision["exit_rule"] == expected_exit_rule for decision in via_kernel.decisions)
     assert any(trade.exit_rule == expected_exit_rule for trade in via_kernel.closed_trades)
 
 
-def test_sma_common_kernel_matches_legacy_stop_loss_exit_policy() -> None:
-    _assert_sma_kernel_matches_legacy_for_exit_policy(
+def test_sma_common_kernel_preserves_stop_loss_exit_policy() -> None:
+    _assert_sma_kernel_preserves_exit_policy(
         dataset=_stop_loss_dataset(),
         parameter_values={
             "SMA_SHORT": 2,
@@ -2739,8 +2737,8 @@ def test_sma_common_kernel_matches_legacy_stop_loss_exit_policy() -> None:
     )
 
 
-def test_sma_common_kernel_matches_legacy_max_holding_exit_policy() -> None:
-    _assert_sma_kernel_matches_legacy_for_exit_policy(
+def test_sma_common_kernel_preserves_max_holding_exit_policy() -> None:
+    _assert_sma_kernel_preserves_exit_policy(
         dataset=_max_holding_dataset(),
         parameter_values={
             "SMA_SHORT": 2,
@@ -2760,13 +2758,8 @@ def test_sma_common_kernel_matches_legacy_max_holding_exit_policy() -> None:
     )
 
 
-def test_sma_common_kernel_insufficient_data_does_not_call_legacy(monkeypatch) -> None:
+def test_sma_common_kernel_insufficient_data_uses_kernel_compatible_empty_result() -> None:
     snapshot = _snapshot_from_closes([100, 101, 102])
-
-    def fail_legacy(**_kwargs):
-        raise AssertionError("legacy SMA backtest must not run for kernel insufficient-data handling")
-
-    monkeypatch.setattr(backtest_engine, "_run_sma_backtest_legacy", fail_legacy)
 
     result = backtest_engine.run_sma_backtest_via_kernel(
         dataset=snapshot,
