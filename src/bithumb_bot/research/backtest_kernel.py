@@ -292,7 +292,6 @@ def _run_decision_event_backtest_impl(
         pending_sell_qty = sum(item.qty for item in pending_fills if item.side == "SELL")
         sellable_qty = max(0.0, qty - pending_sell_qty)
         event_extra = event.extra_payload if isinstance(event.extra_payload, dict) else {}
-        event_feature_snapshot = dict(event.feature_snapshot)
         regime_snapshot = dict(
             event_extra.get("regime_snapshot")
             or {"composite_regime": "strategy_neutral_not_evaluated"}
@@ -301,20 +300,6 @@ def _run_decision_event_backtest_impl(
         if accumulator.retain_full_detail():
             regime_snapshots.append(regime_snapshot)
         entry_decision = event_extra.get("entry_decision")
-        prev_s = float(event_extra.get("prev_s", 0.0) or 0.0)
-        prev_l = float(event_extra.get("prev_l", 0.0) or 0.0)
-        curr_s = float(
-            event_extra.get("curr_s", event_feature_snapshot.get("short_sma", 0.0)) or 0.0
-        )
-        curr_l = float(
-            event_extra.get("curr_l", event_feature_snapshot.get("long_sma", 0.0)) or 0.0
-        )
-        gap_ratio = float(
-            event_feature_snapshot.get("gap_ratio", event_extra.get("gap_ratio", 0.0)) or 0.0
-        )
-        range_ratio = float(
-            event_feature_snapshot.get("range_ratio", event_extra.get("range_ratio", 0.0)) or 0.0
-        )
         raw_signal = str(event.raw_signal or "HOLD").upper()
         raw_reason = str(event_extra.get("raw_reason") or event.reason)
         raw_filter_would_block = bool(event_extra.get("raw_filter_would_block", bool(event.blocked_filters)))
@@ -386,6 +371,11 @@ def _run_decision_event_backtest_impl(
                         active_exit_policy.get("opposite_cross", {}).get("small_loss_tolerance_ratio", 0.0)
                     ),
                 ):
+                    strategy_signal_context = (
+                        strategy_plugin.exit_signal_context_builder(event)
+                        if strategy_plugin.exit_signal_context_builder is not None
+                        else {}
+                    )
                     result = rule.evaluate(
                         position=position,
                         candle_ts=int(candle.ts),
@@ -395,8 +385,7 @@ def _run_decision_event_backtest_impl(
                             "base_reason": raw_reason,
                             "entry_signal": entry_signal,
                             "exit_signal": event.exit_signal or raw_signal,
-                            "curr_s": curr_s,
-                            "curr_l": curr_l,
+                            **strategy_signal_context,
                         },
                     )
                     exit_evaluations.append(
@@ -462,12 +451,7 @@ def _run_decision_event_backtest_impl(
             protective_exit_overrode_entry=protective_exit_overrode_entry,
             exit_filter_suppression_prevented=exit_filter_suppression_prevented,
             blocked_filters=list(event.blocked_filters),
-            prev_s=prev_s,
-            prev_l=prev_l,
-            curr_s=curr_s,
-            curr_l=curr_l,
-            gap_ratio=gap_ratio,
-            range_ratio=range_ratio,
+            feature_snapshot=dict(event.feature_snapshot),
             regime_snapshot=regime_snapshot,
             entry_reason=block_reason,
             market_regime_decision=market_regime_decision,
@@ -479,6 +463,8 @@ def _run_decision_event_backtest_impl(
             exit_reason=exit_reason,
             exit_evaluations=exit_evaluations,
         )
+        if strategy_plugin.decision_payload_adapter is not None:
+            decision_payload = strategy_plugin.decision_payload_adapter(decision_payload, event)
         decision_payload.update(
             {
                 "decision_event_schema_version": 1,

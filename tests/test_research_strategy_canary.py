@@ -10,6 +10,7 @@ import pytest
 from bithumb_bot.approved_profile import ApprovedProfileError, runtime_contract_from_env_values
 from bithumb_bot.paths import PathManager
 from bithumb_bot.research import backtest_kernel, validation_protocol
+from bithumb_bot.research import backtest_engine
 from bithumb_bot.research.backtest_engine import BacktestRunContext
 from bithumb_bot.research.backtest_kernel import run_decision_event_backtest
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
@@ -189,6 +190,41 @@ def test_buy_and_hold_baseline_enters_common_kernel_through_public_boundary(monk
     assert result.strategy_diagnostics["strategy_diagnostics_namespace"] == "buy_and_hold_baseline"
 
 
+def test_noop_baseline_enters_common_kernel_through_public_boundary(monkeypatch) -> None:
+    runner = resolve_research_strategy("noop_baseline")
+    calls: list[str] = []
+    original = backtest_kernel.run_decision_event_backtest
+
+    def counting_kernel(**kwargs):
+        calls.append(str(kwargs["strategy_name"]))
+        return original(**kwargs)
+
+    monkeypatch.setattr(backtest_kernel, "run_decision_event_backtest", counting_kernel)
+
+    result = runner(
+        _dataset(),
+        {"NOOP_DECISION_START_INDEX": 1},
+        0.001,
+        5.0,
+        None,
+        None,
+        None,
+        None,
+        BacktestRunContext(report_detail="full"),
+    )
+
+    assert calls == ["noop_baseline"]
+    assert result.trades == ()
+    assert result.strategy_diagnostics["strategy_diagnostics_namespace"] == "noop_baseline"
+
+
+def test_noop_baseline_has_no_custom_decision_payload_loop() -> None:
+    source = inspect.getsource(backtest_engine.run_noop_baseline_backtest)
+
+    assert "run_decision_event_backtest" in source
+    assert "_research_decision_payload(" not in source
+
+
 def test_decision_event_kernel_does_not_require_sma_features() -> None:
     dataset = _dataset()
     event = ResearchDecisionEvent(
@@ -220,6 +256,7 @@ def test_decision_event_kernel_does_not_require_sma_features() -> None:
     assert result.decisions[0]["feature_snapshot"] == {"candle_index": 1, "close": dataset.candles[1].close}
     assert result.decisions[0]["curr_s"] == 0.0
     assert result.decisions[0]["gap_ratio"] == 0.0
+    assert result.decisions[0]["feature_hash"].startswith("sha256:")
 
 
 def test_noop_baseline_parameter_validation_rejects_unknowns() -> None:

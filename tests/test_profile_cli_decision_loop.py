@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ from bithumb_bot.decision_equivalence import (
 from bithumb_bot.execution_reality_contract import build_execution_reality_contract
 from bithumb_bot.profile_cli import (
     _candidate_regime_policy_from_approved_profile,
+    _generic_promotion_grade_research_export_decisions,
     _validate_research_export_profile_binding,
     cmd_candidate_regime_policy_equivalence_evidence,
     cmd_decision_equivalence,
@@ -190,6 +192,61 @@ def test_cli_dispatch_reaches_decision_equivalence(monkeypatch) -> None:
         "interval": "1m",
         "data_fingerprint": "sha256:data",
     }
+
+
+def test_research_export_command_delegates_strategy_normalization() -> None:
+    source = inspect.getsource(profile_cli.cmd_research_export_decisions)
+
+    assert "plugin.research_export_normalizer" in source
+    assert "classify_sma_market_regime" not in source
+    assert "SMA_" not in source
+
+
+def test_generic_promotion_grade_research_export_accepts_non_sma_decisions() -> None:
+    snapshot = SimpleNamespace(
+        candles=(),
+        content_hash=lambda: "sha256:dataset",
+    )
+    raw_decisions = [
+        {
+            key: value
+            for key, value in _decision(
+                strategy_name="buy_and_hold_baseline",
+                profile_content_hash="sha256:profile",
+                candidate_profile_hash="sha256:candidate",
+                dataset_content_hash="sha256:dataset",
+                db_data_fingerprint="sha256:dataset",
+            ).items()
+            if key
+            not in {
+                "prev_s",
+                "prev_l",
+                "curr_s",
+                "curr_l",
+                "gap_ratio",
+                "range_ratio",
+            }
+        }
+    ]
+
+    decisions = _generic_promotion_grade_research_export_decisions(
+        raw_decisions=raw_decisions,
+        snapshot=snapshot,
+        params={"BUY_HOLD_BUY_INDEX": 1},
+        profile={
+            "profile_content_hash": "sha256:profile",
+            "candidate_profile_hash": "sha256:candidate",
+            "strategy_parameters": {"BUY_HOLD_BUY_INDEX": 1},
+            "cost_model": {"fee_rate": 0.0, "slippage_bps": 0.0},
+        },
+        order_rules_hash="sha256:order-rules",
+    )
+
+    assert len(decisions) == 1
+    assert decisions[0]["strategy_name"] == "buy_and_hold_baseline"
+    assert decisions[0]["curr_s"] is None
+    assert decisions[0]["gap_ratio"] is None
+    assert decisions[0]["order_rules_hash"] == "sha256:order-rules"
 
 
 def test_cli_dispatch_reaches_candidate_regime_policy_equivalence_evidence(monkeypatch) -> None:

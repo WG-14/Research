@@ -45,7 +45,6 @@ from .research.parameter_space import candidate_id, iter_parameter_candidates
 from .research.promotion_gate import PromotionGateError, build_candidate_profile
 from .research.strategy_registry import resolve_research_strategy_plugin
 from .research.strategy_spec import materialize_strategy_parameters
-from .strategy.market_regime import classify_sma_market_regime
 from .storage_io import write_json_atomic
 from .broker.order_rules import get_effective_order_rules
 
@@ -477,13 +476,22 @@ def cmd_research_export_decisions(
             for item in run.decisions
         ]
         if promotion_grade_export:
-            decisions = _promotion_grade_research_export_decisions(
-                raw_decisions=raw_decisions,
-                snapshot=snapshot,
-                params=params,
-                profile=profile or {},
-                order_rules_hash=order_rules_hash,
-            )
+            if plugin.research_export_normalizer is None:
+                decisions = _generic_promotion_grade_research_export_decisions(
+                    raw_decisions=raw_decisions,
+                    snapshot=snapshot,
+                    params=params,
+                    profile=profile or {},
+                    order_rules_hash=order_rules_hash,
+                )
+            else:
+                decisions = plugin.research_export_normalizer(
+                    raw_decisions,
+                    snapshot,
+                    params,
+                    profile or {},
+                    order_rules_hash,
+                )
         else:
             decisions = raw_decisions
         payload = _decision_export_payload(
@@ -705,7 +713,7 @@ def _decision_export_execution_timing_policy_hash() -> str:
     return sha256_prefixed({"runtime_replay": "closed_candle_through_ts"})
 
 
-def _promotion_grade_research_export_decisions(
+def _generic_promotion_grade_research_export_decisions(
     *,
     raw_decisions: list[dict[str, object]],
     snapshot: object,
@@ -737,6 +745,54 @@ def _promotion_grade_research_export_decisions(
         "exit_slippage_bps": float(cost.get("slippage_bps", 0.0) or 0.0),
         "exit_buffer_ratio": float(effective_params.get("ENTRY_EDGE_BUFFER_RATIO", 0.0) or 0.0),
     }
+    aligned_decisions: list[dict[str, object]] = []
+    for decision in decisions:
+        decision["candidate_profile_hash"] = str(profile.get("candidate_profile_hash") or "")
+        decision["db_data_fingerprint"] = snapshot.content_hash()  # type: ignore[attr-defined]
+        decision["candle_basis"] = "closed_candle"
+        decision["decision_ts"] = None
+        decision["fee_authority_hash"] = canonical_payload_hash(stable_fee_model)
+        decision["fee_model_hash"] = canonical_payload_hash(stable_fee_model)
+        decision["slippage_model_hash"] = canonical_payload_hash(slippage_model)
+        decision["order_rules_hash"] = order_rules_hash
+        authority = dict(decision.get("position_authority") if isinstance(decision.get("position_authority"), dict) else {})
+        if (
+            str(decision.get("final_signal") or "").upper() == "HOLD"
+            and str(authority.get("state_class") or "") == "open_exposure"
+            and not str(authority.get("unsupported_reason") or "").strip()
+        ):
+            decision["exit_reason"] = "no exit rule triggered"
+        decision["exit_evaluations_hash"] = canonical_payload_hash(())
+        authority["position_state_hash"] = str(decision.get("position_state_hash") or "")
+        authority["order_rules_hash"] = str(decision.get("order_rules_hash") or "")
+        authority["fee_authority_hash"] = str(decision.get("fee_authority_hash") or "")
+        decision["position_authority"] = authority
+        aligned_decisions.append(decision)
+    return aligned_decisions
+
+
+def _sma_promotion_grade_research_export_decisions(
+    *,
+    raw_decisions: list[dict[str, object]],
+    snapshot: object,
+    params: dict[str, object],
+    profile: dict[str, object],
+    order_rules_hash: str,
+) -> list[dict[str, object]]:
+    from .strategy.market_regime import classify_sma_market_regime
+
+    decisions = _generic_promotion_grade_research_export_decisions(
+        raw_decisions=raw_decisions,
+        snapshot=snapshot,
+        params=params,
+        profile=profile,
+        order_rules_hash=order_rules_hash,
+    )
+    effective_params = (
+        dict(profile.get("strategy_parameters"))
+        if isinstance(profile.get("strategy_parameters"), dict)
+        else dict(params)
+    )
     candles = list(getattr(snapshot, "candles", ()) or ())
     min_rows = max(
         int(effective_params.get("SMA_LONG", 0) or 0) + 2,
@@ -765,26 +821,6 @@ def _promotion_grade_research_export_decisions(
             decision["market_regime"] = regime.composite_regime
             decision["regime_decision"] = "ON"
             decision["regime_block_reason"] = "none"
-        decision["candidate_profile_hash"] = str(profile.get("candidate_profile_hash") or "")
-        decision["db_data_fingerprint"] = snapshot.content_hash()  # type: ignore[attr-defined]
-        decision["candle_basis"] = "closed_candle"
-        decision["decision_ts"] = None
-        decision["fee_authority_hash"] = canonical_payload_hash(stable_fee_model)
-        decision["fee_model_hash"] = canonical_payload_hash(stable_fee_model)
-        decision["slippage_model_hash"] = canonical_payload_hash(slippage_model)
-        decision["order_rules_hash"] = order_rules_hash
-        authority = dict(decision.get("position_authority") if isinstance(decision.get("position_authority"), dict) else {})
-        if (
-            str(decision.get("final_signal") or "").upper() == "HOLD"
-            and str(authority.get("state_class") or "") == "open_exposure"
-            and not str(authority.get("unsupported_reason") or "").strip()
-        ):
-            decision["exit_reason"] = "no exit rule triggered"
-        decision["exit_evaluations_hash"] = canonical_payload_hash(())
-        authority["position_state_hash"] = str(decision.get("position_state_hash") or "")
-        authority["order_rules_hash"] = str(decision.get("order_rules_hash") or "")
-        authority["fee_authority_hash"] = str(decision.get("fee_authority_hash") or "")
-        decision["position_authority"] = authority
         aligned_decisions.append(decision)
     return aligned_decisions
 

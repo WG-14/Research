@@ -615,6 +615,7 @@ class SmaWithFilterDecisionAdapter:
                         "prev_l": float(prev_long),
                         "curr_s": float(curr_short),
                         "curr_l": float(curr_long),
+                        "min_gap_ratio": float(min_gap),
                         "regime_snapshot": regime_snapshot,
                         "entry_decision": entry_decision,
                         "raw_reason": raw_reason,
@@ -781,11 +782,9 @@ def run_noop_baseline_backtest(
     portfolio_policy: PortfolioPolicy | None = None,
     context: BacktestRunContext | None = None,
 ) -> BacktestRun:
-    del execution_model
     from .strategy_registry import resolve_research_strategy_plugin
 
     strategy_plugin = resolve_research_strategy_plugin("noop_baseline")
-    strategy_spec = strategy_spec_for_name("noop_baseline")
     effective_parameters = materialize_strategy_parameters(
         "noop_baseline",
         parameter_values,
@@ -794,50 +793,9 @@ def run_noop_baseline_backtest(
     )
     start_index = max(0, int(effective_parameters.get("NOOP_DECISION_START_INDEX", 0)))
     decision_reason = str(effective_parameters.get("NOOP_DECISION_REASON") or "noop_baseline_hold")
-    active_exit_policy = exit_policy_from_parameters("noop_baseline", effective_parameters)
-    active_exit_policy_hash = exit_policy_hash(active_exit_policy)
-    candles = dataset.candles
-    run_context = context or BacktestRunContext(report_detail="full")
     timing_policy = execution_timing_policy or ExecutionTimingPolicy()
-    policy = portfolio_policy or legacy_research_portfolio_policy()
-    starting_cash = float(policy.starting_cash_krw)
-    initial_qty = float(policy.initial_position_qty)
-    accumulator = _BacktestAccumulator(
-        context=run_context,
-        total_candles=len(candles),
-        diagnostics_namespace=strategy_plugin.diagnostics_namespace,
-    )
-    dataset_content_hash = dataset.content_hash()
-    if not candles:
-        audit_trace_index = _complete_audit_trace(run_context, status="completed")
-        return BacktestRun(
-            metrics=_empty_metrics(parameter_stability_score),
-            metrics_v2=_empty_metrics_v2(starting_cash=starting_cash, initial_position_qty=initial_qty),
-            trades=(),
-            candle_count=0,
-            warnings=("not_enough_candles",),
-            execution_event_summary=empty_execution_event_summary(),
-            resource_usage=accumulator.resource_usage(candles_processed=0),
-            strategy_diagnostics=_noop_strategy_diagnostics(decision_count=0),
-            retained_detail_summary=_retained_detail_summary(accumulator, retained_regime_snapshot_count=0),
-            audit_trace_index=audit_trace_index,
-        )
-
-    decisions: list[dict[str, object]] = []
-    equity_curve: list[EquityPoint] = []
-    cash = starting_cash
-    qty = initial_qty
-    peak = starting_cash
-    max_drawdown = 0.0
-    first_ts = candle_close_ts(candles[0], interval=dataset.interval)
-    retain_initial_equity = accumulator.retain_equity_point()
-    if retain_initial_equity:
-        equity_curve.append(EquityPoint(ts=first_ts, equity=starting_cash, cash=cash, asset_qty=qty))
-    accumulator.update_equity(retained=retain_initial_equity, ts=first_ts, asset_qty=qty)
-    accumulator.record_equity_point(ts=first_ts, equity=starting_cash, cash=cash, asset_qty=qty)
-    _trace_equity_mark(run_context, ts=first_ts, equity=starting_cash, cash=cash, asset_qty=qty)
-
-    for index, candle in enumerate(candles):
+    events: list[ResearchDecisionEvent] = []
+    for index, candle in enumerate(dataset.candles):
         if index < start_index:
             continue
         mark_boundary_ts = candle_close_ts(candle, interval=dataset.interval)
@@ -847,172 +805,40 @@ def run_noop_baseline_backtest(
             "close": float(candle.close),
             "start_index": int(start_index),
         }
-        event = ResearchDecisionEvent(
-            candle_ts=int(candle.ts),
-            decision_ts=int(decision_boundary_ts),
-            strategy_name=strategy_plugin.name,
-            strategy_version=strategy_plugin.version,
-            raw_signal="HOLD",
-            final_signal="HOLD",
-            reason=decision_reason,
-            feature_snapshot=feature_snapshot,
-            strategy_diagnostics={
-                "schema_version": 1,
-                "hold_decision_count": int(accumulator.decision_count + 1),
-                "start_index": int(start_index),
-            },
-            entry_signal="HOLD",
-            exit_signal="HOLD",
-        )
-        decision_payload = _research_decision_payload(
-            dataset=dataset,
-            dataset_content_hash=dataset_content_hash,
-            parameter_values=effective_parameters,
-            strategy_name=strategy_plugin.name,
-            strategy_spec=strategy_spec.as_dict(),
-            strategy_spec_hash=strategy_spec.spec_hash(),
-            strategy_plugin_contract=strategy_plugin.contract_payload(),
-            strategy_plugin_contract_hash=strategy_plugin.contract_hash(),
-            exit_policy=active_exit_policy,
-            exit_policy_hash=active_exit_policy_hash,
-            fee_rate=fee_rate,
-            slippage_bps=slippage_bps,
-            timing_policy=timing_policy,
-            portfolio_policy=policy,
-            candle_ts=event.candle_ts,
-            decision_ts=event.decision_ts,
-            raw_signal=event.raw_signal,
-            entry_signal=event.entry_signal or event.raw_signal,
-            exit_signal=event.exit_signal or event.raw_signal,
-            final_signal=event.final_signal,
-            raw_reason=event.reason,
-            blocked=False,
-            raw_filter_would_block=False,
-            entry_blocked=False,
-            protective_exit_overrode_entry=False,
-            exit_filter_suppression_prevented=False,
-            blocked_filters=list(event.blocked_filters),
-            prev_s=0.0,
-            prev_l=0.0,
-            curr_s=0.0,
-            curr_l=0.0,
-            gap_ratio=0.0,
-            range_ratio=0.0,
-            regime_snapshot={"composite_regime": "not_evaluated"},
-            entry_reason=event.reason,
-            market_regime_decision={"regime_decision": "not_configured"},
-            market_regime_blocked=False,
-            candidate_regime_blocked=False,
-            qty=qty,
-            sellable_qty=qty,
-            exit_rule="",
-            exit_reason="",
-            exit_evaluations=[],
-        )
-        decision_payload.update(
-            {
-                "decision_event_schema_version": 1,
-                "strategy_decision_contract_version": strategy_plugin.decision_contract_version,
-                "raw_reason": event.reason,
-                "feature_snapshot": dict(event.feature_snapshot),
-                "strategy_diagnostics_namespace": strategy_plugin.diagnostics_namespace,
-                "strategy_diagnostics": dict(event.strategy_diagnostics),
-                "strategy_behavior_payload": {
-                    "strategy_name": event.strategy_name,
-                    "strategy_version": event.strategy_version,
-                    "raw_signal": event.raw_signal,
-                    "final_signal": event.final_signal,
-                    "reason": event.reason,
-                    "feature_snapshot": dict(event.feature_snapshot),
+        events.append(
+            ResearchDecisionEvent(
+                candle_ts=int(candle.ts),
+                decision_ts=int(decision_boundary_ts),
+                strategy_name=strategy_plugin.name,
+                strategy_version=strategy_plugin.version,
+                raw_signal="HOLD",
+                final_signal="HOLD",
+                reason=decision_reason,
+                feature_snapshot=feature_snapshot,
+                strategy_diagnostics={
+                    "schema_version": 1,
+                    "hold_decision_count": int(len(events) + 1),
+                    "start_index": int(start_index),
                 },
-                "execution_intent": "none",
-                "order_intent": None,
-                "exit_intent": None,
-            }
+                entry_signal="HOLD",
+                exit_signal="HOLD",
+                extra_payload={"regime_snapshot": {"composite_regime": "not_evaluated"}},
+            )
         )
-        retain_decision = accumulator.retain_decision()
-        if retain_decision:
-            decisions.append(decision_payload)
-        accumulator.update_decision(decision_payload, retained=retain_decision)
-        _trace_decision(run_context, decision_payload)
-        mark_equity = cash + qty * float(candle.close)
-        retain_equity = accumulator.retain_equity_point()
-        peak, max_drawdown = _record_equity_mark(
-            equity_curve=equity_curve,
-            ts=mark_boundary_ts,
-            cash=cash,
-            qty=qty,
-            mark_price=candle.close,
-            peak=peak,
-            max_drawdown=max_drawdown,
-            retain=retain_equity,
-        )
-        accumulator.update_equity(retained=retain_equity, ts=mark_boundary_ts, asset_qty=qty)
-        accumulator.record_equity_point(ts=mark_boundary_ts, equity=mark_equity, cash=cash, asset_qty=qty)
-        _trace_equity_mark(run_context, ts=mark_boundary_ts, equity=mark_equity, cash=cash, asset_qty=qty)
-        accumulator.maybe_emit_heartbeat(index + 1)
-        accumulator.check_limits(candles_processed=index + 1, trades=[])
+    from .backtest_kernel import run_decision_event_backtest as _run_decision_event_backtest
 
-    last = candles[-1]
-    final_equity = cash + qty * float(last.close)
-    return_pct = ((final_equity / starting_cash) - 1.0) * 100.0 if starting_cash > 0.0 else 0.0
-    position_intervals, closed_trade_records, execution_records, derived_open_cost_basis = _metrics_v2_ledgers_from_trades(
-        trades=[],
-    )
-    metrics_v2 = build_metrics_v2(
-        starting_cash=starting_cash,
-        final_cash=cash,
-        final_asset_qty=qty,
-        final_mark_price=last.close,
-        final_open_cost_basis=derived_open_cost_basis,
-        equity_curve=tuple(equity_curve),
-        position_intervals=position_intervals,
-        closed_trades=closed_trade_records,
-        execution_records=execution_records,
-        **(
-            {}
-            if accumulator.retain_full_detail()
-            else accumulator.metrics_summary_inputs(max_drawdown_pct=max_drawdown * 100.0)
-        ),
-    )
-    if not accumulator.retain_full_detail():
-        metrics_v2 = replace(
-            metrics_v2,
-            limitation_reasons=tuple(
-                sorted(set(metrics_v2.limitation_reasons) | {"bounded_detail_equity_curve_not_retained"})
-            ),
-        )
-    audit_trace_index = _complete_audit_trace(run_context, status="completed")
-    strategy_diagnostics = _noop_strategy_diagnostics(
-        decision_count=accumulator.decision_count,
-        start_index=start_index,
-    )
-    resource_usage = accumulator.resource_usage(candles_processed=max(0, len(candles) - start_index))
-    resource_usage["strategy_diagnostics"] = strategy_diagnostics
-    return BacktestRun(
-        metrics=_metrics(
-            return_pct=return_pct,
-            max_drawdown_pct=max_drawdown * 100.0,
-            closed_pnls=[],
-            fee_total=0.0,
-            slippage_total=0.0,
-            parameter_stability_score=parameter_stability_score,
-        ),
-        metrics_v2=metrics_v2,
-        trades=(),
-        candle_count=len(candles),
-        warnings=(),
-        regime_performance=(),
-        regime_coverage=(),
-        execution_event_summary=empty_execution_event_summary(),
-        decisions=tuple(decisions),
-        equity_curve=tuple(equity_curve),
-        position_intervals=position_intervals,
-        closed_trades=closed_trade_records,
-        resource_usage=resource_usage,
-        strategy_diagnostics=strategy_diagnostics,
-        retained_detail_summary=_retained_detail_summary(accumulator, retained_regime_snapshot_count=0),
-        audit_trace_index=audit_trace_index,
+    return _run_decision_event_backtest(
+        dataset=dataset,
+        strategy_name=strategy_plugin.name,
+        parameter_values=effective_parameters,
+        fee_rate=fee_rate,
+        slippage_bps=slippage_bps,
+        decision_events=tuple(events),
+        parameter_stability_score=parameter_stability_score,
+        execution_model=execution_model,
+        execution_timing_policy=timing_policy,
+        portfolio_policy=portfolio_policy,
+        context=context,
     )
 
 
@@ -1663,12 +1489,7 @@ def _research_decision_payload(
     protective_exit_overrode_entry: bool,
     exit_filter_suppression_prevented: bool,
     blocked_filters: list[str],
-    prev_s: float,
-    prev_l: float,
-    curr_s: float,
-    curr_l: float,
-    gap_ratio: float,
-    range_ratio: float,
+    feature_snapshot: dict[str, object] | None,
     regime_snapshot: dict[str, object],
     entry_reason: str,
     market_regime_decision: dict[str, object],
@@ -1721,6 +1542,8 @@ def _research_decision_payload(
     )
     flat_no_position = lot_native_authority.state_class == "flat_no_dust_no_position"
     position_state_hash = lot_native_authority.position_state_hash
+    generic_feature_snapshot = dict(feature_snapshot or {})
+    generic_feature_hash = canonical_payload_hash(generic_feature_snapshot)
     if lot_native_authority.unsupported_reason:
         legacy_authority = research_position_authority_snapshot(
             qty=float(qty),
@@ -1772,29 +1595,15 @@ def _research_decision_payload(
         "block_reason": str(entry_reason) if blocked else "",
         "blocked_filters": tuple(blocked_filters),
         "sellable_qty": float(sellable_qty),
-        "prev_s": float(prev_s),
-        "prev_l": float(prev_l),
-        "curr_s": float(curr_s),
-        "curr_l": float(curr_l),
-        "feature_hash": canonical_payload_hash(
-            {
-                "prev_s": prev_s,
-                "prev_l": prev_l,
-                "curr_s": curr_s,
-                "curr_l": curr_l,
-                "gap_ratio": gap_ratio,
-                "range_ratio": range_ratio,
-            }
-        ),
-        "gap_ratio": float(gap_ratio),
-        "range_ratio": float(range_ratio),
-        "expected_edge_ratio": float(gap_ratio),
-        "required_edge_ratio": float(
-            parameter_values.get(
-                "SMA_FILTER_GAP_MIN_RATIO",
-                parameter_values.get("strategy_min_expected_edge_ratio", 0.0),
-            )
-        ),
+        "prev_s": 0.0,
+        "prev_l": 0.0,
+        "curr_s": 0.0,
+        "curr_l": 0.0,
+        "feature_hash": generic_feature_hash,
+        "gap_ratio": 0.0,
+        "range_ratio": 0.0,
+        "expected_edge_ratio": 0.0,
+        "required_edge_ratio": 0.0,
         "fee_authority_hash": fee_authority_hash,
         "fee_model_hash": fee_model_hash,
         "slippage_model_hash": slippage_model_hash,

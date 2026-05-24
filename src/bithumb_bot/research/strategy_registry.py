@@ -34,6 +34,18 @@ ResearchStrategyRunner = Callable[
 RuntimeReplayBuilder = Callable[[dict[str, Any], dict[str, Any] | None], Any]
 RuntimeEnvParameterExtractor = Callable[[dict[str, str]], dict[str, Any]]
 RuntimeSettingsParameterExtractor = Callable[[object], dict[str, Any]]
+DecisionPayloadAdapter = Callable[[dict[str, object], Any], dict[str, object]]
+ExitSignalContextBuilder = Callable[[Any], dict[str, object]]
+ResearchExportNormalizer = Callable[
+    [
+        list[dict[str, object]],
+        object,
+        dict[str, object],
+        dict[str, object],
+        str,
+    ],
+    list[dict[str, object]],
+]
 
 
 class ResearchStrategyRegistryError(ValueError):
@@ -65,6 +77,9 @@ class ResearchStrategyPlugin:
     runtime_parameter_adapter: RuntimeParameterAdapter | None
     decision_contract_version: str
     diagnostics_namespace: str
+    decision_payload_adapter: DecisionPayloadAdapter | None = None
+    exit_signal_context_builder: ExitSignalContextBuilder | None = None
+    research_export_normalizer: ResearchExportNormalizer | None = None
 
     def contract_payload(self) -> dict[str, Any]:
         return {
@@ -106,6 +121,31 @@ class ResearchStrategyPlugin:
             ),
             "decision_contract_version": self.decision_contract_version,
             "diagnostics_namespace": self.diagnostics_namespace,
+            "decision_payload_adapter_supported": self.decision_payload_adapter is not None,
+            "decision_payload_adapter_module": (
+                self.decision_payload_adapter.__module__ if self.decision_payload_adapter is not None else None
+            ),
+            "decision_payload_adapter_qualname": (
+                self.decision_payload_adapter.__qualname__ if self.decision_payload_adapter is not None else None
+            ),
+            "exit_signal_context_builder_supported": self.exit_signal_context_builder is not None,
+            "exit_signal_context_builder_module": (
+                self.exit_signal_context_builder.__module__ if self.exit_signal_context_builder is not None else None
+            ),
+            "exit_signal_context_builder_qualname": (
+                self.exit_signal_context_builder.__qualname__
+                if self.exit_signal_context_builder is not None
+                else None
+            ),
+            "research_export_normalizer_supported": self.research_export_normalizer is not None,
+            "research_export_normalizer_module": (
+                self.research_export_normalizer.__module__ if self.research_export_normalizer is not None else None
+            ),
+            "research_export_normalizer_qualname": (
+                self.research_export_normalizer.__qualname__
+                if self.research_export_normalizer is not None
+                else None
+            ),
         }
 
     def contract_hash(self) -> str:
@@ -268,6 +308,76 @@ def _sma_runtime_parameters_from_settings(cfg: object) -> dict[str, Any]:
     }
 
 
+def _sma_decision_payload_adapter(
+    payload: dict[str, object],
+    event: Any,
+) -> dict[str, object]:
+    from bithumb_bot.canonical_decision import canonical_payload_hash
+
+    event_extra = event.extra_payload if isinstance(getattr(event, "extra_payload", None), dict) else {}
+    feature_snapshot = (
+        event.feature_snapshot if isinstance(getattr(event, "feature_snapshot", None), dict) else {}
+    )
+    prev_s = float(event_extra.get("prev_s", 0.0) or 0.0)
+    prev_l = float(event_extra.get("prev_l", 0.0) or 0.0)
+    curr_s = float(event_extra.get("curr_s", feature_snapshot.get("short_sma", 0.0)) or 0.0)
+    curr_l = float(event_extra.get("curr_l", feature_snapshot.get("long_sma", 0.0)) or 0.0)
+    gap_ratio = float(feature_snapshot.get("gap_ratio", event_extra.get("gap_ratio", 0.0)) or 0.0)
+    range_ratio = float(feature_snapshot.get("range_ratio", event_extra.get("range_ratio", 0.0)) or 0.0)
+    payload.update(
+        {
+            "prev_s": prev_s,
+            "prev_l": prev_l,
+            "curr_s": curr_s,
+            "curr_l": curr_l,
+            "gap_ratio": gap_ratio,
+            "range_ratio": range_ratio,
+            "expected_edge_ratio": gap_ratio,
+            "required_edge_ratio": float(event_extra.get("min_gap_ratio", 0.0) or 0.0),
+            "feature_hash": canonical_payload_hash(
+                {
+                    "prev_s": prev_s,
+                    "prev_l": prev_l,
+                    "curr_s": curr_s,
+                    "curr_l": curr_l,
+                    "gap_ratio": gap_ratio,
+                    "range_ratio": range_ratio,
+                }
+            ),
+        }
+    )
+    return payload
+
+
+def _sma_exit_signal_context(event: Any) -> dict[str, object]:
+    event_extra = event.extra_payload if isinstance(getattr(event, "extra_payload", None), dict) else {}
+    feature_snapshot = (
+        event.feature_snapshot if isinstance(getattr(event, "feature_snapshot", None), dict) else {}
+    )
+    return {
+        "curr_s": float(event_extra.get("curr_s", feature_snapshot.get("short_sma", 0.0)) or 0.0),
+        "curr_l": float(event_extra.get("curr_l", feature_snapshot.get("long_sma", 0.0)) or 0.0),
+    }
+
+
+def _sma_research_export_normalizer(
+    raw_decisions: list[dict[str, object]],
+    snapshot: object,
+    params: dict[str, object],
+    profile: dict[str, object],
+    order_rules_hash: str,
+) -> list[dict[str, object]]:
+    from bithumb_bot.profile_cli import _sma_promotion_grade_research_export_decisions
+
+    return _sma_promotion_grade_research_export_decisions(
+        raw_decisions=raw_decisions,
+        snapshot=snapshot,
+        params=params,
+        profile=profile,
+        order_rules_hash=order_rules_hash,
+    )
+
+
 def runtime_strategy_parameters_from_env(strategy_name: str, env: dict[str, str]) -> dict[str, Any]:
     plugin = resolve_research_strategy_plugin(strategy_name)
     if plugin.runtime_parameter_adapter is None:
@@ -390,6 +500,9 @@ _SMA_WITH_FILTER_PLUGIN = ResearchStrategyPlugin(
     ),
     decision_contract_version=SMA_WITH_FILTER_SPEC.decision_contract_version,
     diagnostics_namespace="sma_with_filter",
+    decision_payload_adapter=_sma_decision_payload_adapter,
+    exit_signal_context_builder=_sma_exit_signal_context,
+    research_export_normalizer=_sma_research_export_normalizer,
 )
 
 _NOOP_BASELINE_PLUGIN = ResearchStrategyPlugin(
