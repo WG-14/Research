@@ -2568,9 +2568,20 @@ def test_sma_decision_adapter_emits_deterministic_strategy_events() -> None:
     assert any(event.raw_signal == "SELL" for event in first)
     buy = next(event for event in first if event.raw_signal == "BUY")
     assert buy.order_intent == {"side": "BUY", "sizing": "portfolio_policy_fractional_cash"}
+    assert buy.exit_intent == {
+        "mode": "evaluate_exit_policy",
+        "base_signal": "BUY",
+        "base_reason": "sma golden cross",
+    }
     assert buy.feature_snapshot["short_sma"] > buy.feature_snapshot["long_sma"]
     assert buy.strategy_diagnostics["adapter"] == "SmaWithFilterDecisionAdapter"
     assert buy.extra_payload["adapter"] == "SmaWithFilterDecisionAdapter"
+    sell = next(event for event in first if event.raw_signal == "SELL")
+    assert sell.exit_intent == {
+        "mode": "evaluate_exit_policy",
+        "base_signal": "SELL",
+        "base_reason": "sma dead cross",
+    }
 
 
 def test_sma_backtest_consumes_sma_decision_adapter_events(monkeypatch) -> None:

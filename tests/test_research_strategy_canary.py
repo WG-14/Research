@@ -10,7 +10,8 @@ import pytest
 from bithumb_bot.approved_profile import ApprovedProfileError, runtime_contract_from_env_values
 from bithumb_bot.paths import PathManager
 from bithumb_bot.research import validation_protocol
-from bithumb_bot.research.backtest_engine import BacktestRunContext, run_decision_event_backtest
+from bithumb_bot.research.backtest_engine import BacktestRunContext
+from bithumb_bot.research.backtest_kernel import run_decision_event_backtest
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
 from bithumb_bot.research.decision_event import ResearchDecisionEvent
 from bithumb_bot.research.execution_model import ExecutionFill, ExecutionRequest, FixedBpsExecutionModel
