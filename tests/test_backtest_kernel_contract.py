@@ -58,6 +58,142 @@ def test_decision_event_backtest_kernel_executes_buy_and_updates_portfolio() -> 
     assert result.resource_usage["composite_behavior_hash_v2"].startswith("sha256:")
 
 
+def test_decision_event_backtest_kernel_executes_sell_without_sma_fields() -> None:
+    dataset = DatasetSnapshot(
+        snapshot_id="kernel_sell_contract",
+        source="unit",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="validation",
+        date_range=DateRange("2026-01-01", "2026-01-02"),
+        candles=tuple(
+            Candle(index * 60_000, 100.0 + index, 100.0 + index, 100.0 + index, 100.0 + index, 1.0)
+            for index in range(5)
+        ),
+    )
+    events = (
+        ResearchDecisionEvent(
+            candle_ts=dataset.candles[1].ts,
+            decision_ts=dataset.candles[1].ts + 60_000,
+            strategy_name="buy_and_hold_baseline",
+            strategy_version="buy_and_hold_baseline.research_contract.v1",
+            raw_signal="BUY",
+            final_signal="BUY",
+            reason="kernel_contract_buy",
+            feature_snapshot={"candle_index": 1, "close": dataset.candles[1].close},
+            strategy_diagnostics={"schema_version": 1, "emitted_buy_intent": True},
+            entry_signal="BUY",
+            order_intent={"side": "BUY"},
+        ),
+        ResearchDecisionEvent(
+            candle_ts=dataset.candles[3].ts,
+            decision_ts=dataset.candles[3].ts + 60_000,
+            strategy_name="buy_and_hold_baseline",
+            strategy_version="buy_and_hold_baseline.research_contract.v1",
+            raw_signal="SELL",
+            final_signal="SELL",
+            reason="kernel_contract_sell",
+            feature_snapshot={"candle_index": 3, "close": dataset.candles[3].close},
+            strategy_diagnostics={"schema_version": 1, "emitted_sell_intent": True},
+            entry_signal="HOLD",
+            exit_signal="SELL",
+        ),
+    )
+
+    result = run_decision_event_backtest(
+        dataset=dataset,
+        strategy_name="buy_and_hold_baseline",
+        parameter_values={"BUY_HOLD_BUY_INDEX": 1, "BUY_HOLD_DECISION_REASON": "kernel_contract_buy"},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        decision_events=events,
+        context=BacktestRunContext(report_detail="full"),
+    )
+
+    assert [trade["side"] for trade in result.trades] == ["BUY", "SELL"]
+    assert result.trades[-1]["is_portfolio_applied_trade"] is True
+    assert result.execution_event_summary["execution_attempt_count"] == 2
+    assert result.metrics_v2.cost_execution.filled_execution_count == 2
+    assert result.metrics_v2.return_risk.open_position_at_end is False
+    assert result.strategy_diagnostics["strategy_diagnostics_namespace"] == "buy_and_hold_baseline"
+    assert result.resource_usage["common_decision_behavior_hash"].startswith("sha256:")
+    assert result.resource_usage["strategy_behavior_hash"].startswith("sha256:")
+
+
+def test_decision_event_backtest_kernel_evaluates_exit_intent_without_sma_fields() -> None:
+    dataset = DatasetSnapshot(
+        snapshot_id="kernel_exit_intent_contract",
+        source="unit",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="validation",
+        date_range=DateRange("2026-01-01", "2026-01-02"),
+        candles=(
+            Candle(0, 100.0, 100.0, 100.0, 100.0, 1.0),
+            Candle(60_000, 100.0, 100.0, 100.0, 100.0, 1.0),
+            Candle(120_000, 90.0, 90.0, 90.0, 90.0, 1.0),
+            Candle(180_000, 90.0, 90.0, 90.0, 90.0, 1.0),
+        ),
+    )
+    events = (
+        ResearchDecisionEvent(
+            candle_ts=dataset.candles[0].ts,
+            decision_ts=dataset.candles[0].ts + 60_000,
+            strategy_name="sma_with_filter",
+            strategy_version="sma_with_filter.research_contract.v1",
+            raw_signal="BUY",
+            final_signal="BUY",
+            reason="kernel_contract_entry",
+            feature_snapshot={"candle_index": 0, "close": dataset.candles[0].close},
+            strategy_diagnostics={"schema_version": 1, "adapter": "manual_kernel_contract"},
+            entry_signal="BUY",
+            order_intent={"side": "BUY"},
+            exit_intent={"mode": "evaluate_exit_policy", "base_signal": "BUY"},
+        ),
+        ResearchDecisionEvent(
+            candle_ts=dataset.candles[2].ts,
+            decision_ts=dataset.candles[2].ts + 60_000,
+            strategy_name="sma_with_filter",
+            strategy_version="sma_with_filter.research_contract.v1",
+            raw_signal="HOLD",
+            final_signal="HOLD",
+            reason="kernel_contract_hold",
+            feature_snapshot={"candle_index": 2, "close": dataset.candles[2].close},
+            strategy_diagnostics={"schema_version": 1, "adapter": "manual_kernel_contract"},
+            entry_signal="HOLD",
+            exit_signal="HOLD",
+            exit_intent={"mode": "evaluate_exit_policy", "base_signal": "HOLD"},
+        ),
+    )
+
+    result = run_decision_event_backtest(
+        dataset=dataset,
+        strategy_name="sma_with_filter",
+        parameter_values={
+            "SMA_SHORT": 2,
+            "SMA_LONG": 4,
+            "STRATEGY_EXIT_RULES": "stop_loss",
+            "STRATEGY_EXIT_STOP_LOSS_RATIO": 0.05,
+            "STRATEGY_EXIT_MAX_HOLDING_MIN": 0,
+            "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": 0,
+            "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": 0,
+        },
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        decision_events=events,
+        context=BacktestRunContext(report_detail="full"),
+    )
+
+    assert [trade["side"] for trade in result.trades] == ["BUY", "SELL"]
+    assert result.decisions[-1]["raw_signal"] == "HOLD"
+    assert result.decisions[-1]["final_signal"] == "SELL"
+    assert result.decisions[-1]["exit_rule"] == "stop_loss"
+    assert result.decisions[-1]["exit_evaluations"][0]["rule"] == "stop_loss"
+    assert result.strategy_diagnostics["stop_loss_exit_count"] == 1
+    assert result.resource_usage["common_decision_behavior_hash"].startswith("sha256:")
+    assert result.resource_usage["composite_behavior_hash_v2"].startswith("sha256:")
+
+
 def test_backtest_kernel_class_preserves_decision_event_api_behavior() -> None:
     dataset = DatasetSnapshot(
         snapshot_id="kernel_class_contract",
