@@ -600,6 +600,11 @@ class SmaWithFilterDecisionAdapter:
                         if entry_signal == "BUY"
                         else None
                     ),
+                    exit_intent={
+                        "mode": "evaluate_exit_policy",
+                        "base_signal": raw_signal,
+                        "base_reason": raw_reason,
+                    },
                     extra_payload={
                         "adapter": "SmaWithFilterDecisionAdapter",
                         "index": int(index),
@@ -634,10 +639,81 @@ def run_sma_backtest(
     portfolio_policy: PortfolioPolicy | None = None,
     context: BacktestRunContext | None = None,
 ) -> BacktestRun:
-    from .strategy_registry import resolve_research_strategy_plugin
+    return run_sma_backtest_via_kernel(
+        dataset=dataset,
+        parameter_values=parameter_values,
+        fee_rate=fee_rate,
+        slippage_bps=slippage_bps,
+        parameter_stability_score=parameter_stability_score,
+        execution_model=execution_model,
+        execution_timing_policy=execution_timing_policy,
+        portfolio_policy=portfolio_policy,
+        context=context,
+    )
 
-    strategy_plugin = resolve_research_strategy_plugin("sma_with_filter")
-    strategy_spec = strategy_spec_for_name("sma_with_filter")
+
+def run_sma_backtest_via_kernel(
+    *,
+    dataset: DatasetSnapshot,
+    parameter_values: dict[str, Any],
+    fee_rate: float,
+    slippage_bps: float,
+    parameter_stability_score: float | None = None,
+    execution_model: ExecutionModel | None = None,
+    execution_timing_policy: ExecutionTimingPolicy | None = None,
+    portfolio_policy: PortfolioPolicy | None = None,
+    context: BacktestRunContext | None = None,
+) -> BacktestRun:
+    effective_parameters = _materialize_sma_backtest_parameters(
+        parameter_values=parameter_values,
+        fee_rate=fee_rate,
+        slippage_bps=slippage_bps,
+    )
+    short_n = int(effective_parameters.get("SMA_SHORT", effective_parameters.get("short_n", 0)))
+    long_n = int(effective_parameters.get("SMA_LONG", effective_parameters.get("long_n", 0)))
+    if short_n <= 0 or long_n <= 0 or short_n >= long_n:
+        raise ValueError("SMA_SHORT must be smaller than SMA_LONG")
+    if len(dataset.candles) < long_n + 2:
+        return _run_sma_backtest_legacy(
+            dataset=dataset,
+            parameter_values=parameter_values,
+            fee_rate=fee_rate,
+            slippage_bps=slippage_bps,
+            parameter_stability_score=parameter_stability_score,
+            execution_model=execution_model,
+            execution_timing_policy=execution_timing_policy,
+            portfolio_policy=portfolio_policy,
+            context=context,
+        )
+
+    timing_policy = execution_timing_policy or ExecutionTimingPolicy()
+    adapter = SmaWithFilterDecisionAdapter(
+        parameter_values=effective_parameters,
+        fee_rate=fee_rate,
+        slippage_bps=slippage_bps,
+        timing_policy=timing_policy,
+    )
+    return run_decision_event_backtest(
+        dataset=dataset,
+        strategy_name="sma_with_filter",
+        parameter_values=effective_parameters,
+        fee_rate=fee_rate,
+        slippage_bps=slippage_bps,
+        decision_events=adapter.build_events(dataset),
+        parameter_stability_score=parameter_stability_score,
+        execution_model=execution_model,
+        execution_timing_policy=timing_policy,
+        portfolio_policy=portfolio_policy,
+        context=context,
+    )
+
+
+def _materialize_sma_backtest_parameters(
+    *,
+    parameter_values: dict[str, Any],
+    fee_rate: float,
+    slippage_bps: float,
+) -> dict[str, Any]:
     effective_parameters = materialize_strategy_parameters(
         "sma_with_filter",
         parameter_values,
@@ -658,6 +734,30 @@ def run_sma_backtest(
     for key, value in legacy_disabled_filter_defaults.items():
         if key not in parameter_values:
             effective_parameters[key] = value
+    return effective_parameters
+
+
+def _run_sma_backtest_legacy(
+    *,
+    dataset: DatasetSnapshot,
+    parameter_values: dict[str, Any],
+    fee_rate: float,
+    slippage_bps: float,
+    parameter_stability_score: float | None = None,
+    execution_model: ExecutionModel | None = None,
+    execution_timing_policy: ExecutionTimingPolicy | None = None,
+    portfolio_policy: PortfolioPolicy | None = None,
+    context: BacktestRunContext | None = None,
+) -> BacktestRun:
+    from .strategy_registry import resolve_research_strategy_plugin
+
+    strategy_plugin = resolve_research_strategy_plugin("sma_with_filter")
+    strategy_spec = strategy_spec_for_name("sma_with_filter")
+    effective_parameters = _materialize_sma_backtest_parameters(
+        parameter_values=parameter_values,
+        fee_rate=fee_rate,
+        slippage_bps=slippage_bps,
+    )
     active_exit_policy = exit_policy_from_parameters("sma_with_filter", effective_parameters)
     active_exit_policy_hash = exit_policy_hash(active_exit_policy)
     short_n = int(effective_parameters.get("SMA_SHORT", effective_parameters.get("short_n", 0)))
@@ -1784,6 +1884,8 @@ def run_decision_event_backtest(
     slippage_total = 0.0
     peak = starting_cash
     max_drawdown = 0.0
+    regime_snapshots: list[dict[str, object]] = []
+    regime_coverage_accumulator = _RegimeCoverageAccumulator()
 
     first = candles[0]
     first_ts = candle_close_ts(first, interval=dataset.interval)
@@ -1883,10 +1985,127 @@ def run_decision_event_backtest(
         pending_buy_qty = sum(item.qty for item in pending_fills if item.side == "BUY")
         pending_sell_qty = sum(item.qty for item in pending_fills if item.side == "SELL")
         sellable_qty = max(0.0, qty - pending_sell_qty)
+        event_extra = event.extra_payload if isinstance(event.extra_payload, dict) else {}
+        event_feature_snapshot = dict(event.feature_snapshot)
+        regime_snapshot = dict(
+            event_extra.get("regime_snapshot")
+            or {"composite_regime": "strategy_neutral_not_evaluated"}
+        )
+        regime_coverage_accumulator.update(regime_snapshot)
+        if accumulator.retain_full_detail():
+            regime_snapshots.append(regime_snapshot)
+        entry_decision = event_extra.get("entry_decision")
+        prev_s = float(event_extra.get("prev_s", 0.0) or 0.0)
+        prev_l = float(event_extra.get("prev_l", 0.0) or 0.0)
+        curr_s = float(
+            event_extra.get("curr_s", event_feature_snapshot.get("short_sma", 0.0)) or 0.0
+        )
+        curr_l = float(
+            event_extra.get("curr_l", event_feature_snapshot.get("long_sma", 0.0)) or 0.0
+        )
+        gap_ratio = float(
+            event_feature_snapshot.get("gap_ratio", event_extra.get("gap_ratio", 0.0)) or 0.0
+        )
+        range_ratio = float(
+            event_feature_snapshot.get("range_ratio", event_extra.get("range_ratio", 0.0)) or 0.0
+        )
+        raw_signal = str(event.raw_signal or "HOLD").upper()
+        raw_reason = str(event_extra.get("raw_reason") or event.reason)
+        raw_filter_would_block = bool(event_extra.get("raw_filter_would_block", bool(event.blocked_filters)))
+        entry_filter_blocked = bool(event_extra.get("entry_filter_blocked", False))
+        entry_signal = str(event.entry_signal or raw_signal).upper()
+        market_regime_decision = (
+            dict(getattr(entry_decision, "candidate_regime_decision"))
+            if entry_decision is not None
+            and isinstance(getattr(entry_decision, "candidate_regime_decision", None), dict)
+            else {"regime_decision": "not_configured"}
+        )
+        market_regime_blocked = bool(
+            getattr(entry_decision, "market_regime_triggered", False)
+            if entry_decision is not None
+            else False
+        )
+        candidate_regime_blocked = bool(
+            getattr(entry_decision, "candidate_regime_triggered", False)
+            if entry_decision is not None
+            else False
+        )
         requested_action = str(event.final_signal or "HOLD").upper()
         action = requested_action
         blocked = False
         block_reason = event.reason
+        exit_evaluations: list[dict[str, object]] = []
+        exit_rule = str((event.exit_intent or {}).get("exit_rule") or "") if event.exit_intent else ""
+        exit_reason = str((event.exit_intent or {}).get("exit_reason") or "") if event.exit_intent else ""
+        evaluates_exit_policy = bool(
+            isinstance(event.exit_intent, dict)
+            and str(event.exit_intent.get("mode") or "") == "evaluate_exit_policy"
+        )
+        if evaluates_exit_policy:
+            action = "BUY" if requested_action == "BUY" else "HOLD"
+            if sellable_qty > 1e-12:
+                position = _ResearchPositionContext(
+                    in_position=True,
+                    entry_ts=entry_ts,
+                    entry_price=entry_price,
+                    qty_open=sellable_qty,
+                    holding_time_sec=(
+                        max(0.0, (int(candle.ts) - int(entry_ts)) / 1000.0)
+                        if entry_ts is not None
+                        else 0.0
+                    ),
+                    unrealized_pnl=(
+                        (float(candle.close) - float(entry_price)) * sellable_qty
+                        if entry_price is not None
+                        else 0.0
+                    ),
+                    unrealized_pnl_ratio=(
+                        ((float(candle.close) - float(entry_price)) / float(entry_price))
+                        if entry_price not in (None, 0.0)
+                        else 0.0
+                    ),
+                )
+                for rule in _create_exit_rules(
+                    rule_names=list(active_exit_policy["rules"]),
+                    stop_loss_ratio=float(active_exit_policy.get("stop_loss", {}).get("stop_loss_ratio", 0.0)),
+                    max_holding_sec=float(
+                        active_exit_policy.get("max_holding_time", {}).get("max_holding_min", 0.0)
+                    )
+                    * 60.0,
+                    min_take_profit_ratio=float(
+                        active_exit_policy.get("opposite_cross", {}).get("min_take_profit_ratio", 0.0)
+                    ),
+                    live_fee_rate_estimate=float(parameter_values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate),
+                    small_loss_tolerance_ratio=float(
+                        active_exit_policy.get("opposite_cross", {}).get("small_loss_tolerance_ratio", 0.0)
+                    ),
+                ):
+                    result = rule.evaluate(
+                        position=position,
+                        candle_ts=int(candle.ts),
+                        market_price=float(candle.close),
+                        signal_context={
+                            "base_signal": raw_signal,
+                            "base_reason": raw_reason,
+                            "entry_signal": entry_signal,
+                            "exit_signal": event.exit_signal or raw_signal,
+                            "curr_s": curr_s,
+                            "curr_l": curr_l,
+                        },
+                    )
+                    exit_evaluations.append(
+                        {
+                            "rule": rule.name,
+                            "triggered": bool(result.should_exit),
+                            "reason": result.reason,
+                            "context": result.context,
+                        }
+                    )
+                    if result.should_exit:
+                        action = "SELL"
+                        exit_rule = rule.name
+                        exit_reason = result.reason
+                        break
         if action == "BUY" and (qty > 1e-12 or pending_buy_qty > 1e-12):
             action = "HOLD"
             blocked = True
@@ -1897,7 +2116,18 @@ def run_decision_event_backtest(
             block_reason = "sell_blocked_no_sellable_qty"
         elif action not in {"BUY", "SELL", "HOLD"}:
             raise ValueError(f"unsupported_decision_event_final_signal:{event.final_signal}")
-        regime_snapshot = {"composite_regime": "strategy_neutral_not_evaluated"}
+        protective_exit_overrode_entry = bool(
+            raw_signal == "BUY"
+            and action == "SELL"
+            and exit_rule in {"stop_loss", "max_holding_time"}
+        )
+        entry_blocked = bool(raw_signal == "BUY" and action == "HOLD" and raw_filter_would_block)
+        exit_filter_suppression_prevented = bool(
+            raw_signal == "SELL"
+            and raw_filter_would_block
+            and sellable_qty > 1e-12
+            and bool(exit_evaluations)
+        )
         decision_payload = _research_decision_payload(
             dataset=dataset,
             dataset_content_hash=dataset_content_hash,
@@ -1915,33 +2145,33 @@ def run_decision_event_backtest(
             portfolio_policy=policy,
             candle_ts=event.candle_ts,
             decision_ts=decision_boundary_ts,
-            raw_signal=str(event.raw_signal or "HOLD").upper(),
-            entry_signal=event.entry_signal or event.raw_signal,
+            raw_signal=raw_signal,
+            entry_signal=entry_signal,
             exit_signal=event.exit_signal or event.raw_signal,
             final_signal=action,
-            raw_reason=event.reason,
-            blocked=blocked,
-            raw_filter_would_block=blocked,
-            entry_blocked=blocked and requested_action == "BUY",
-            protective_exit_overrode_entry=False,
-            exit_filter_suppression_prevented=False,
+            raw_reason=raw_reason,
+            blocked=bool(blocked or (raw_signal in {"BUY", "SELL"} and action == "HOLD")),
+            raw_filter_would_block=raw_filter_would_block,
+            entry_blocked=entry_blocked,
+            protective_exit_overrode_entry=protective_exit_overrode_entry,
+            exit_filter_suppression_prevented=exit_filter_suppression_prevented,
             blocked_filters=list(event.blocked_filters),
-            prev_s=0.0,
-            prev_l=0.0,
-            curr_s=0.0,
-            curr_l=0.0,
-            gap_ratio=0.0,
-            range_ratio=0.0,
+            prev_s=prev_s,
+            prev_l=prev_l,
+            curr_s=curr_s,
+            curr_l=curr_l,
+            gap_ratio=gap_ratio,
+            range_ratio=range_ratio,
             regime_snapshot=regime_snapshot,
             entry_reason=block_reason,
-            market_regime_decision={"regime_decision": "not_configured"},
-            market_regime_blocked=False,
-            candidate_regime_blocked=False,
+            market_regime_decision=market_regime_decision,
+            market_regime_blocked=market_regime_blocked,
+            candidate_regime_blocked=candidate_regime_blocked,
             qty=qty,
             sellable_qty=sellable_qty,
-            exit_rule=str((event.exit_intent or {}).get("exit_rule") if event.exit_intent else ""),
-            exit_reason=str((event.exit_intent or {}).get("exit_reason") if event.exit_intent else ""),
-            exit_evaluations=[],
+            exit_rule=exit_rule,
+            exit_reason=exit_reason,
+            exit_evaluations=exit_evaluations,
         )
         decision_payload.update(
             {
@@ -2075,8 +2305,8 @@ def run_decision_event_backtest(
                         exit_price=exec_price,
                         entry_regime_snapshot=entry_regime_snapshot,
                         exit_regime_snapshot=regime_snapshot,
-                        exit_rule=str((event.exit_intent or {}).get("exit_rule") if event.exit_intent else ""),
-                        exit_reason=str((event.exit_intent or {}).get("exit_reason") if event.exit_intent else ""),
+                        exit_rule=exit_rule,
+                        exit_reason=exit_reason,
                         path=open_trade_path,
                         entry_decision_hash=entry_decision_hash,
                         exit_decision_hash=str(decision_payload.get("replay_fingerprint_hash") or ""),
@@ -2193,6 +2423,12 @@ def run_decision_event_backtest(
     position_intervals, closed_trade_records, execution_records, derived_open_cost_basis = _metrics_v2_ledgers_from_trades(
         trades=trades,
     )
+    coverage = (
+        aggregate_regime_coverage(snapshots=regime_snapshots, trades=trades)
+        if accumulator.retain_full_detail()
+        else regime_coverage_accumulator.coverage(trades=trades)
+    )
+    performance = aggregate_regime_performance(trades=trades, coverage=coverage, start_cash=starting_cash)
     metrics_v2 = build_metrics_v2(
         starting_cash=starting_cash,
         final_cash=cash,
@@ -2236,8 +2472,8 @@ def run_decision_event_backtest(
         trades=tuple(trades),
         candle_count=len(candles),
         warnings=tuple(warnings),
-        regime_performance=(),
-        regime_coverage=(),
+        regime_performance=performance,
+        regime_coverage=coverage,
         execution_event_summary=execution_event_summary(trades),
         decisions=tuple(decisions),
         equity_curve=tuple(equity_curve),
@@ -2245,7 +2481,10 @@ def run_decision_event_backtest(
         closed_trades=closed_trade_records,
         resource_usage=resource_usage,
         strategy_diagnostics=strategy_diagnostics,
-        retained_detail_summary=_retained_detail_summary(accumulator, retained_regime_snapshot_count=0),
+        retained_detail_summary=_retained_detail_summary(
+            accumulator,
+            retained_regime_snapshot_count=len(regime_snapshots),
+        ),
         audit_trace_index=audit_trace_index,
     )
 

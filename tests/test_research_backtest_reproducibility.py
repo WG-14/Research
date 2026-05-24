@@ -2600,11 +2600,45 @@ def test_sma_backtest_consumes_sma_decision_adapter_events(monkeypatch) -> None:
 
 
 def test_sma_backtest_source_has_no_growing_prefix_or_hot_loop_sma_calls() -> None:
-    source = inspect.getsource(backtest_engine.run_sma_backtest)
+    source = inspect.getsource(backtest_engine.run_sma_backtest_via_kernel)
 
     assert "closes[: index + 1]" not in source
     assert "_sma(" not in source
     assert "SmaWithFilterDecisionAdapter" in source
+    assert "run_decision_event_backtest" in source
+
+
+def test_sma_common_kernel_matches_legacy_sma_execution_accounting_and_metrics() -> None:
+    snapshot = _snapshot_from_closes(
+        [100, 99, 98, 97, 99, 102, 105, 104, 103, 100, 98, 96, 99, 103, 106, 104, 101, 98]
+    )
+    kwargs = {
+        "dataset": snapshot,
+        "parameter_values": {"SMA_SHORT": 2, "SMA_LONG": 4},
+        "fee_rate": 0.0,
+        "slippage_bps": 0.0,
+        "context": BacktestRunContext(report_detail="full"),
+    }
+
+    legacy = backtest_engine._run_sma_backtest_legacy(**kwargs)
+    via_kernel = backtest_engine.run_sma_backtest_via_kernel(**kwargs)
+    default = run_sma_backtest(**kwargs)
+
+    assert [trade["side"] for trade in via_kernel.trades] == [trade["side"] for trade in legacy.trades]
+    assert [trade["side"] for trade in via_kernel.trades] == ["BUY", "SELL", "BUY", "SELL"]
+    assert len(via_kernel.trades) == len(legacy.trades)
+    assert len(via_kernel.closed_trades) == len(legacy.closed_trades)
+    assert via_kernel.metrics.as_dict() == legacy.metrics.as_dict()
+    assert via_kernel.metrics_v2.as_dict() == legacy.metrics_v2.as_dict()
+    assert via_kernel.execution_event_summary == legacy.execution_event_summary
+    assert via_kernel.resource_usage["trade_ledger_hash"] == legacy.resource_usage["trade_ledger_hash"]
+    assert via_kernel.resource_usage["equity_curve_hash"] == legacy.resource_usage["equity_curve_hash"]
+    assert via_kernel.resource_usage["composite_behavior_hash_v2"].startswith("sha256:")
+    assert via_kernel.strategy_diagnostics["strategy_diagnostics_namespace"] == "sma_with_filter"
+    assert set(via_kernel.strategy_diagnostics["strategy_specific_diagnostics"]) == {"sma_with_filter"}
+    assert default.resource_usage["trade_ledger_hash"] == via_kernel.resource_usage["trade_ledger_hash"]
+    assert any(decision["exit_rule"] == "opposite_cross" for decision in via_kernel.decisions)
+    assert all(decision["strategy_plugin_contract"]["name"] == "sma_with_filter" for decision in via_kernel.decisions)
 
 
 def test_precomputed_sma_values_match_legacy_sma() -> None:
