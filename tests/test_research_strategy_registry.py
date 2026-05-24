@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
+
 import pytest
 
 from bithumb_bot.research.strategy_registry import (
     TEST_TOP_OF_BOOK_REQUIRED_STRATEGY,
     ResearchStrategyRegistryError,
+    RuntimeParameterAdapter,
     research_strategy_data_requirements,
     resolve_research_strategy_plugin,
     resolve_research_strategy,
@@ -27,6 +31,17 @@ def test_research_strategy_registry_resolves_sma_with_filter() -> None:
     assert plugin.contract_payload()["runner_qualname"] == "_run_sma_with_filter"
     assert plugin.contract_payload()["runtime_replay_builder_module"] == "bithumb_bot.research.strategy_registry"
     assert plugin.contract_payload()["runtime_replay_builder_qualname"] == "_build_sma_runtime_replay_strategy"
+    assert plugin.contract_payload()["runtime_parameter_adapter_supported"] is True
+    assert plugin.contract_payload()["runtime_parameter_from_env_module"] == "bithumb_bot.research.strategy_registry"
+    assert plugin.contract_payload()["runtime_parameter_from_env_qualname"] == "_sma_runtime_parameters_from_env"
+    assert (
+        plugin.contract_payload()["runtime_parameter_from_settings_module"]
+        == "bithumb_bot.research.strategy_registry"
+    )
+    assert (
+        plugin.contract_payload()["runtime_parameter_from_settings_qualname"]
+        == "_sma_runtime_parameters_from_settings"
+    )
     assert plugin.contract_hash() == resolve_research_strategy_plugin("sma_with_filter").contract_hash()
     assert plugin.contract_hash() == plugin.contract_hash()
     requirements = research_strategy_data_requirements("sma_with_filter")
@@ -47,11 +62,58 @@ def test_research_strategy_registry_resolves_noop_baseline_as_independent_plugin
     assert plugin.contract_hash() != sma_plugin.contract_hash()
     assert plugin.runtime_replay_builder is None
     assert plugin.contract_payload()["runtime_replay_supported"] is False
+    assert plugin.contract_payload()["runtime_parameter_adapter_supported"] is False
+    assert plugin.contract_payload()["runtime_parameter_from_env_module"] is None
+    assert plugin.contract_payload()["runtime_parameter_from_env_qualname"] is None
+    assert plugin.contract_payload()["runtime_parameter_from_settings_module"] is None
+    assert plugin.contract_payload()["runtime_parameter_from_settings_qualname"] is None
     assert plugin.contract_payload()["diagnostics_namespace"] == "noop_baseline"
     assert plugin.contract_payload()["runner_qualname"] == "_run_noop_baseline"
     requirements = research_strategy_data_requirements("noop_baseline")
     assert requirements.required_data == ("candles",)
     assert requirements.optional_data == ()
+
+
+def test_buy_and_hold_contract_declares_no_runtime_parameter_adapter() -> None:
+    plugin = resolve_research_strategy_plugin("buy_and_hold_baseline")
+    payload = plugin.contract_payload()
+
+    assert payload["runtime_parameter_adapter_supported"] is False
+    assert payload["runtime_parameter_from_env_module"] is None
+    assert payload["runtime_parameter_from_env_qualname"] is None
+    assert payload["runtime_parameter_from_settings_module"] is None
+    assert payload["runtime_parameter_from_settings_qualname"] is None
+
+
+def test_runtime_parameter_adapter_identity_is_contract_bound_and_deterministic() -> None:
+    def alternate_from_env(_env):
+        return {"SMA_SHORT": "2", "SMA_LONG": "4"}
+
+    def alternate_from_settings(_cfg):
+        return {"SMA_SHORT": 2, "SMA_LONG": 4}
+
+    plugin = resolve_research_strategy_plugin("sma_with_filter")
+    changed = replace(
+        plugin,
+        runtime_parameter_adapter=RuntimeParameterAdapter(
+            from_env=alternate_from_env,
+            from_settings=alternate_from_settings,
+        ),
+    )
+
+    assert plugin.contract_payload() != changed.contract_payload()
+    assert plugin.contract_hash() != changed.contract_hash()
+    assert changed.contract_payload()["runtime_parameter_from_env_module"] == __name__
+    assert changed.contract_payload()["runtime_parameter_from_env_qualname"].endswith(
+        ".<locals>.alternate_from_env"
+    )
+    assert changed.contract_payload()["runtime_parameter_from_settings_module"] == __name__
+    assert changed.contract_payload()["runtime_parameter_from_settings_qualname"].endswith(
+        ".<locals>.alternate_from_settings"
+    )
+    encoded = json.dumps(plugin.contract_payload(), sort_keys=True)
+    assert "<function" not in encoded
+    assert " object at 0x" not in encoded
 
 
 def test_research_strategy_registry_rejects_unknown_strategy() -> None:

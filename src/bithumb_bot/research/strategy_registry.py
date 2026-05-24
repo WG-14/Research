@@ -83,6 +83,27 @@ class ResearchStrategyPlugin:
             "runtime_replay_builder_qualname": (
                 self.runtime_replay_builder.__qualname__ if self.runtime_replay_builder is not None else None
             ),
+            "runtime_parameter_adapter_supported": self.runtime_parameter_adapter is not None,
+            "runtime_parameter_from_env_module": (
+                self.runtime_parameter_adapter.from_env.__module__
+                if self.runtime_parameter_adapter is not None
+                else None
+            ),
+            "runtime_parameter_from_env_qualname": (
+                self.runtime_parameter_adapter.from_env.__qualname__
+                if self.runtime_parameter_adapter is not None
+                else None
+            ),
+            "runtime_parameter_from_settings_module": (
+                self.runtime_parameter_adapter.from_settings.__module__
+                if self.runtime_parameter_adapter is not None
+                else None
+            ),
+            "runtime_parameter_from_settings_qualname": (
+                self.runtime_parameter_adapter.from_settings.__qualname__
+                if self.runtime_parameter_adapter is not None
+                else None
+            ),
             "decision_contract_version": self.decision_contract_version,
             "diagnostics_namespace": self.diagnostics_namespace,
         }

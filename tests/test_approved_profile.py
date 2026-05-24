@@ -1317,6 +1317,28 @@ def test_runtime_contract_extracts_sma_parameters_through_strategy_adapter() -> 
     assert '"SMA_SHORT":' not in source
 
 
+def test_runtime_contract_exit_policy_hash_uses_extracted_strategy_parameters() -> None:
+    base = {
+        "STRATEGY_NAME": "sma_with_filter",
+        "SMA_SHORT": "2",
+        "SMA_LONG": "4",
+        "STRATEGY_EXIT_RULES": "stop_loss",
+        "STRATEGY_EXIT_STOP_LOSS_RATIO": "0.01",
+    }
+    changed = {
+        **base,
+        "STRATEGY_EXIT_STOP_LOSS_RATIO": "0.02",
+    }
+
+    runtime = runtime_contract_from_env_values(base)
+    changed_runtime = runtime_contract_from_env_values(changed)
+
+    assert runtime["exit_policy_hash"] == sha256_prefixed(runtime["exit_policy"])
+    assert runtime["exit_policy"]["stop_loss"]["stop_loss_ratio"] == 0.01
+    assert changed_runtime["exit_policy"]["stop_loss"]["stop_loss_ratio"] == 0.02
+    assert runtime["exit_policy_hash"] != changed_runtime["exit_policy_hash"]
+
+
 def test_runtime_contract_from_settings_uses_strategy_adapter() -> None:
     class Cfg:
         MODE = "paper"
@@ -1365,6 +1387,11 @@ def test_runtime_parameter_adapter_fails_closed_for_non_runtime_replay_strategie
 
     with pytest.raises(ApprovedProfileError, match="runtime_replay_unsupported_for_strategy:noop_baseline"):
         runtime_contract_from_env_values({"STRATEGY_NAME": "noop_baseline", "SMA_SHORT": "2", "SMA_LONG": "4"})
+
+
+def test_runtime_parameter_adapter_fails_closed_for_unknown_strategy() -> None:
+    with pytest.raises(ApprovedProfileError, match="runtime_strategy_unsupported:profit_hunter"):
+        runtime_contract_from_env_values({"STRATEGY_NAME": "profit_hunter", "SMA_SHORT": "2", "SMA_LONG": "4"})
 
 
 def test_strategy_parameter_env_keys_include_all_runtime_bound_behavior_params() -> None:
