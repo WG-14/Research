@@ -113,8 +113,9 @@ def _research_position_snapshot(
             in_position=True,
             entry_allowed=False,
             exit_allowed=True,
-            entry_block_reason="research_simulated_open_exposure",
-            terminal_state="research_simulated_open_exposure",
+            entry_block_reason="position_has_executable_exposure",
+            exit_block_reason="none",
+            terminal_state="open_exposure",
             entry_ts=entry_ts,
             entry_price=entry_price,
             qty_open=float(sellable_qty),
@@ -125,6 +126,8 @@ def _research_position_snapshot(
             raw_total_asset_qty=float(qty),
             open_lot_count=1,
             sellable_executable_lot_count=1,
+            dust_classification="no_dust",
+            dust_state="no_dust",
             effective_flat=False,
             has_executable_exposure=True,
             has_any_position_residue=True,
@@ -133,7 +136,11 @@ def _research_position_snapshot(
         in_position=False,
         entry_allowed=True,
         exit_allowed=False,
-        terminal_state="research_simulated_flat",
+        entry_block_reason="none",
+        exit_block_reason="no_position",
+        terminal_state="flat",
+        dust_classification="no_dust",
+        dust_state="no_dust",
     )
 
 
@@ -200,6 +207,7 @@ def _reevaluate_sma_policy_with_research_position(
         overextended_ratio=float(getattr(entry_decision, "overextended_ratio", 0.0) or 0.0),
         market_regime_snapshot=dict(event_extra.get("regime_snapshot") or {}),
         entry_decision=entry_decision,
+        through_ts_ms=int(event.candle_ts),
         previous_cross_state=previous_cross_state,
         allow_initial_cross=False,
     )
@@ -211,6 +219,11 @@ def _reevaluate_sma_policy_with_research_position(
     )
     execution_context = ExecutionConstraintSnapshot(
         fee_rate_for_decision=float(parameter_values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate),
+        fee_authority=_research_fee_authority_context(
+            pair=dataset.market,
+            fee_rate=float(parameter_values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate),
+        ),
+        order_rules=_research_order_rules_snapshot(pair=dataset.market),
     )
     return evaluate_sma_final_decision(
         market=market,
@@ -220,6 +233,25 @@ def _reevaluate_sma_policy_with_research_position(
         exit_policy_config=exit_policy_config,
         rule_sources=rule_sources,
     )
+
+
+def _research_fee_authority_context(*, pair: str, fee_rate: float) -> dict[str, object]:
+    from bithumb_bot.strategy import sma as runtime_sma
+
+    return runtime_sma._fee_authority_context(  # noqa: SLF001
+        runtime_sma._resolve_strategy_fee_authority(  # noqa: SLF001
+            pair=pair,
+            config_fallback_fee_rate=float(fee_rate),
+        )
+    )
+
+
+def _research_order_rules_snapshot(*, pair: str) -> dict[str, object]:
+    from bithumb_bot.canonical_decision import order_rules_snapshot_payload
+    from bithumb_bot.strategy import sma as runtime_sma
+
+    return order_rules_snapshot_payload(runtime_sma.get_effective_order_rules(pair), pair=pair)
+
 
 @dataclass(frozen=True)
 class BacktestKernel:

@@ -20,6 +20,54 @@ def _stable_hash(payload: dict[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def _stable_execution_constraints_payload(payload: dict[str, object]) -> dict[str, object]:
+    stable = dict(payload)
+    fee_authority = stable.get("fee_authority")
+    if isinstance(fee_authority, dict):
+        stable["fee_authority"] = {
+            key: value
+            for key, value in fee_authority.items()
+            if key not in {"retrieved_at_sec", "expires_at_sec"}
+        }
+    return stable
+
+
+def _stable_position_policy_input(payload: dict[str, object]) -> dict[str, object]:
+    keys = (
+        "in_position",
+        "entry_allowed",
+        "exit_allowed",
+        "entry_block_reason",
+        "exit_block_reason",
+        "terminal_state",
+        "dust_classification",
+        "dust_state",
+        "effective_flat",
+        "has_executable_exposure",
+        "has_any_position_residue",
+        "has_non_executable_residue",
+        "has_dust_only_remainder",
+    )
+    return {key: payload.get(key) for key in keys}
+
+
+def _stable_market_policy_input(payload: dict[str, object]) -> dict[str, object]:
+    return {
+        key: payload.get(key)
+        for key in (
+            "pair",
+            "interval",
+            "candle_ts",
+            "through_ts_ms",
+            "last_close",
+            "prev_s",
+            "prev_l",
+            "curr_s",
+            "curr_l",
+        )
+    }
+
+
 SMA_POLICY_CONTRACT_HASH = _stable_hash(
     {
         "contract": "sma_with_filter_final_decision",
@@ -315,9 +363,11 @@ def evaluate_sma_policy(
         },
     }
     policy_input = {
-        "market": trace["market"],
-        "position": trace["position"],
-        "execution_constraints": trace["execution_constraints"],
+        "market": _stable_market_policy_input(trace["market"]),  # type: ignore[arg-type]
+        "position": _stable_position_policy_input(trace["position"]),  # type: ignore[arg-type]
+        "execution_constraints": _stable_execution_constraints_payload(
+            trace["execution_constraints"]  # type: ignore[arg-type]
+        ),
         "config": {
             "strategy_name": config.strategy_name,
             "short_n": int(config.short_n),
@@ -332,11 +382,6 @@ def evaluate_sma_policy(
             "entry_edge_buffer_ratio": float(config.entry_edge_buffer_ratio),
             "cost_edge_enabled": bool(config.cost_edge_enabled),
             "cost_edge_min_ratio": float(config.cost_edge_min_ratio),
-            "market_regime_enabled": bool(config.market_regime_enabled),
-            "buy_fraction": float(config.buy_fraction),
-            "max_order_krw": float(config.max_order_krw),
-            "candidate_regime_policy": config.candidate_regime_policy,
-            "require_candidate_regime_policy": bool(config.require_candidate_regime_policy),
         },
     }
     policy_hash = _stable_hash(trace)

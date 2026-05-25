@@ -81,6 +81,48 @@ class ExecutionSubmitPlan:
         }
 
 
+EXECUTION_SUBMIT_PLAN_REQUIRED_FIELDS = frozenset(
+    {
+        "side",
+        "source",
+        "authority",
+        "final_action",
+        "qty",
+        "notional_krw",
+        "target_exposure_krw",
+        "current_effective_exposure_krw",
+        "delta_krw",
+        "submit_expected",
+        "pre_submit_proof_status",
+        "block_reason",
+        "idempotency_key",
+    }
+)
+
+
+def validate_execution_submit_plan_payload(
+    plan: dict[str, object] | None,
+    *,
+    field_name: str,
+) -> None:
+    if plan is None:
+        return
+    missing = sorted(EXECUTION_SUBMIT_PLAN_REQUIRED_FIELDS.difference(plan))
+    if missing:
+        raise ValueError(f"{field_name}_schema_missing_fields:{','.join(missing)}")
+    side = str(plan.get("side") or "").upper()
+    if side not in {"BUY", "SELL", "HOLD", "NONE"}:
+        raise ValueError(f"{field_name}_schema_invalid_side:{side or 'missing'}")
+    proof_status = str(plan.get("pre_submit_proof_status") or "")
+    if proof_status not in {"passed", "failed", "not_required"}:
+        raise ValueError(f"{field_name}_schema_invalid_pre_submit_proof_status:{proof_status}")
+    if bool(plan.get("submit_expected")) and proof_status == "failed":
+        raise ValueError(f"{field_name}_schema_submit_expected_with_failed_proof")
+    block_reason = str(plan.get("block_reason") or "")
+    if not block_reason:
+        raise ValueError(f"{field_name}_schema_missing_block_reason")
+
+
 @dataclass(frozen=True)
 class ExecutionDecisionSummary:
     raw_signal: str
@@ -103,6 +145,20 @@ class ExecutionDecisionSummary:
     target_submit_plan: dict[str, object] | None
     pre_trade_economics: dict[str, object] | None = None
     signal_flow: dict[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        validate_execution_submit_plan_payload(
+            self.residual_submit_plan,
+            field_name="residual_submit_plan",
+        )
+        validate_execution_submit_plan_payload(
+            self.buy_submit_plan,
+            field_name="buy_submit_plan",
+        )
+        validate_execution_submit_plan_payload(
+            self.target_submit_plan,
+            field_name="target_submit_plan",
+        )
 
     def as_dict(self) -> dict[str, object]:
         signal_flow = None if self.signal_flow is None else dict(self.signal_flow)

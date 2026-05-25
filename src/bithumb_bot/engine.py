@@ -21,8 +21,8 @@ from .marketdata import cmd_sync
 from .strategy import (
     SmaWithFilterStrategy,
     create_strategy,
-    decide_sma_with_filter_snapshot_from_db,
 )
+from .runtime_sma_snapshot import decide_sma_with_filter_snapshot_from_db
 from .broker.bithumb import BithumbBroker, build_broker_with_auth_diagnostics
 from .broker.base import BrokerError
 from .db_core import (

@@ -11,10 +11,12 @@ from bithumb_bot import engine as engine_module
 from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_db
 from bithumb_bot.engine import compute_signal
+from bithumb_bot.runtime_sma_snapshot import build_sma_with_filter_replay_bundle
 from bithumb_bot.research.strategy_registry import (
     ResearchStrategyRegistryError,
     resolve_research_strategy_plugin,
 )
+from bithumb_bot.strategy.sma import SmaWithFilterStrategy
 from bithumb_bot.strategy import create_strategy, list_strategies
 from bithumb_bot.strategy.base import StrategyDecision
 
@@ -119,6 +121,113 @@ def test_compute_signal_routes_sma_with_filter_through_snapshot_orchestration(
 
     assert result is not None
     assert calls == ["sma_with_filter"]
+
+
+def test_live_sma_with_filter_route_does_not_call_legacy_decide(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_db_path = settings.DB_PATH
+    old_strategy_name = settings.STRATEGY_NAME
+    old_env_db_path = os.environ.get("DB_PATH")
+
+    def _fail_legacy_decide(*args, **kwargs):
+        raise AssertionError("legacy Strategy.decide(conn) path called")
+
+    def _fail_legacy_normalized_db(*args, **kwargs):
+        raise AssertionError("legacy _decide_from_normalized_db path called")
+
+    monkeypatch.setattr(SmaWithFilterStrategy, "decide", _fail_legacy_decide)
+    monkeypatch.setattr(
+        SmaWithFilterStrategy,
+        "_decide_from_normalized_db",
+        _fail_legacy_normalized_db,
+    )
+
+    db_path = str(tmp_path / "strategy_no_legacy_decide.sqlite")
+    os.environ["DB_PATH"] = db_path
+    object.__setattr__(settings, "DB_PATH", db_path)
+    object.__setattr__(settings, "STRATEGY_NAME", "sma_with_filter")
+
+    conn = ensure_db()
+    base_ts = 1_700_000_300_000
+    try:
+        closes = [10.0 + 0.2 * idx for idx in range(40)]
+        for idx, close in enumerate(closes):
+            ts = base_ts + idx * 60_000
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO candles(ts, pair, interval, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ts, settings.PAIR, settings.INTERVAL, close, close, close, close, 1.0),
+            )
+        conn.commit()
+
+        result = compute_signal(conn, 2, 3)
+    finally:
+        conn.close()
+        object.__setattr__(settings, "DB_PATH", old_db_path)
+        object.__setattr__(settings, "STRATEGY_NAME", old_strategy_name)
+        if old_env_db_path is None:
+            os.environ.pop("DB_PATH", None)
+        else:
+            os.environ["DB_PATH"] = old_env_db_path
+
+    assert result is not None
+    assert result["strategy"] == "sma_with_filter"
+
+
+def test_runtime_replay_bundle_contains_reproducibility_material(tmp_path) -> None:
+    old_db_path = settings.DB_PATH
+    old_env_db_path = os.environ.get("DB_PATH")
+
+    db_path = str(tmp_path / "strategy_replay_bundle.sqlite")
+    os.environ["DB_PATH"] = db_path
+    object.__setattr__(settings, "DB_PATH", db_path)
+
+    conn = ensure_db()
+    base_ts = 1_700_000_400_000
+    try:
+        closes = [10.0 + 0.2 * idx for idx in range(40)]
+        for idx, close in enumerate(closes):
+            ts = base_ts + idx * 60_000
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO candles(ts, pair, interval, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ts, settings.PAIR, settings.INTERVAL, close, close, close, close, 1.0),
+            )
+        conn.commit()
+
+        strategy = create_strategy(
+            "sma_with_filter",
+            short_n=2,
+            long_n=3,
+            pair=settings.PAIR,
+            interval=settings.INTERVAL,
+        )
+        bundle = build_sma_with_filter_replay_bundle(
+            conn,
+            strategy,
+            through_ts_ms=base_ts + 39 * 60_000,
+        )
+    finally:
+        conn.close()
+        object.__setattr__(settings, "DB_PATH", old_db_path)
+        if old_env_db_path is None:
+            os.environ.pop("DB_PATH", None)
+        else:
+            os.environ["DB_PATH"] = old_env_db_path
+
+    assert bundle is not None
+    assert bundle["market_snapshot"]["candle_ts"] == base_ts + 39 * 60_000
+    assert bundle["position_snapshot"] is not None
+    assert bundle["policy_config"]["short_n"] == 2
+    assert str(bundle["policy_input_hash"]).startswith("sha256:")
+    assert str(bundle["policy_decision_hash"]).startswith("sha256:")
+    assert bundle["final_strategy_decision"]["strategy"] == "sma_with_filter"
+    assert bundle["execution_decision_summary"]["execution_engine"] in {"lot_native", "target_delta"}
 
 
 def test_compute_signal_allows_strategy_override_for_backtest_compatibility(tmp_path) -> None:
