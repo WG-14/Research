@@ -52,18 +52,26 @@ class PositionContext:
         }
 
 
-class Strategy(Protocol):
+class LegacyDbStrategy(Protocol):
+    """Deprecated DB-bound strategy facade.
+
+    This protocol is compatibility-only. Promotion-grade strategy code should
+    bind to ``StrategyPolicy`` and immutable snapshots instead of deciding from
+    a mutable SQLite connection.
+    """
+
     name: str
 
-    # Legacy compatibility facade. New strategy code should build immutable
-    # snapshots and call the strategy policy boundary instead of deciding from
-    # a mutable SQLite connection.
     def decide(
         self,
         conn: sqlite3.Connection,
         *,
         through_ts_ms: int | None = None,
     ) -> StrategyDecision | None: ...
+
+
+class Strategy(LegacyDbStrategy, Protocol):
+    """Deprecated alias for existing registry compatibility."""
 
 
 class StrategyPolicy(Protocol):

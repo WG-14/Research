@@ -32,6 +32,7 @@ class SignalExecutionRequest:
     decision_reason: str | None = None
     exit_rule_name: str | None = None
     decision_context: dict[str, object] | None = None
+    execution_decision_summary: "ExecutionDecisionSummary | None" = None
 
 
 @dataclass(frozen=True)
@@ -270,6 +271,31 @@ class ExecutionDecisionSummary:
             "actual_primary_block_layer": actual_primary_block_layer,
             "actual_primary_block_reason": actual_primary_block_reason,
         }
+
+
+def _request_execution_decision_payload(
+    request: SignalExecutionRequest,
+) -> tuple[dict[str, object] | None, str | None]:
+    raw_execution_decision = (
+        request.decision_context.get("execution_decision")
+        if isinstance(request.decision_context, dict)
+        else None
+    )
+    typed_summary = request.execution_decision_summary
+    typed_payload = typed_summary.as_dict() if typed_summary is not None else None
+
+    if raw_execution_decision is not None and not isinstance(raw_execution_decision, dict):
+        return None, "execution_decision_schema_not_object"
+    if typed_payload is not None and raw_execution_decision is not None:
+        raw_payload = dict(raw_execution_decision)
+        if typed_payload != raw_payload:
+            return None, "execution_decision_summary_context_mismatch"
+        return raw_payload, None
+    if typed_payload is not None:
+        return typed_payload, None
+    if isinstance(raw_execution_decision, dict):
+        return dict(raw_execution_decision), None
+    return None, None
 
 
 class SignalExecutionService(Protocol):
@@ -1236,20 +1262,20 @@ class LiveSignalExecutionService:
             )
             return None
         decision_context = dict(request.decision_context or {})
-        raw_execution_decision = decision_context.get("execution_decision")
-        if submit_plan_required and raw_execution_decision is None:
+        execution_decision, execution_decision_error = _request_execution_decision_payload(request)
+        if execution_decision_error is not None:
+            _log_live_submit_plan_block(
+                reason=execution_decision_error,
+                field_name="execution_decision",
+            )
+            return None
+        if submit_plan_required and execution_decision is None:
             _log_live_submit_plan_block(
                 reason="live_real_order_missing_execution_decision",
                 field_name="execution_decision",
             )
             return None
-        if raw_execution_decision is not None and not isinstance(raw_execution_decision, dict):
-            _log_live_submit_plan_block(
-                reason="execution_decision_schema_not_object",
-                field_name="execution_decision",
-            )
-            return None
-        execution_decision = dict(raw_execution_decision) if isinstance(raw_execution_decision, dict) else {}
+        execution_decision = dict(execution_decision or {})
         if (
             "target_submit_plan" in execution_decision
             and execution_decision.get("target_submit_plan") is not None

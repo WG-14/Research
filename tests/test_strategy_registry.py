@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import inspect
 import os
 import sqlite3
 
@@ -18,6 +19,7 @@ from bithumb_bot.research.strategy_registry import (
     ResearchStrategyRegistryError,
     resolve_research_strategy_plugin,
 )
+import bithumb_bot.strategy.base as strategy_base
 from bithumb_bot.strategy.sma import SmaWithFilterStrategy
 from bithumb_bot.strategy import create_strategy, list_strategies
 from bithumb_bot.strategy.base import StrategyDecision
@@ -26,6 +28,18 @@ from bithumb_bot.strategy.base import StrategyDecision
 def test_registry_default_strategy_available() -> None:
     assert "sma_cross" in list_strategies()
     assert "sma_with_filter" in list_strategies()
+
+
+def test_db_bound_strategy_protocol_is_explicitly_legacy() -> None:
+    legacy_source = inspect.getsource(strategy_base.LegacyDbStrategy)
+    strategy_source = inspect.getsource(strategy_base.Strategy)
+    policy_source = inspect.getsource(strategy_base.StrategyPolicy)
+
+    assert "Deprecated DB-bound strategy facade" in legacy_source
+    assert "compatibility-only" in legacy_source
+    assert "decide(" in legacy_source
+    assert "Deprecated alias" in strategy_source
+    assert "decide_snapshot(" in policy_source
 
 
 def test_compute_signal_uses_default_strategy_name_from_settings(tmp_path) -> None:

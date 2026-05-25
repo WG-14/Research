@@ -5,7 +5,11 @@ from collections.abc import Callable
 import pytest
 
 from bithumb_bot.config import settings
-from bithumb_bot.execution_service import LiveSignalExecutionService, SignalExecutionRequest
+from bithumb_bot.execution_service import (
+    ExecutionDecisionSummary,
+    LiveSignalExecutionService,
+    SignalExecutionRequest,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -82,6 +86,29 @@ def _valid_residual_submit_plan() -> dict[str, object]:
         "block_reason": "none",
         "idempotency_key": "residual-plan-key",
     }
+
+
+def _typed_target_execution_summary() -> ExecutionDecisionSummary:
+    return ExecutionDecisionSummary(
+        raw_signal="BUY",
+        final_signal="BUY",
+        final_action="REBALANCE_TO_TARGET",
+        submit_expected=True,
+        pre_submit_proof_status="passed",
+        block_reason="none",
+        strategy_sell_candidate=None,
+        residual_sell_candidate=None,
+        target_exposure_krw=100_000.0,
+        current_effective_exposure_krw=0.0,
+        tracked_residual_exposure_krw=None,
+        buy_delta_krw=100_000.0,
+        residual_live_sell_mode="block",
+        residual_buy_sizing_mode="block",
+        residual_submit_plan=None,
+        buy_submit_plan=None,
+        target_shadow_decision=None,
+        target_submit_plan=_valid_target_submit_plan(),
+    )
 
 
 @pytest.mark.parametrize(
@@ -193,6 +220,52 @@ def test_valid_target_plan_reaches_executor_only_for_target_delta_engine() -> No
     assert submitted == {"status": "submitted", "signal": "BUY"}
     assert len(calls) == 1
     assert calls[0]["kwargs"]["execution_submit_plan"]["source"] == "target_delta"  # type: ignore[index]
+
+
+def test_typed_execution_summary_can_supply_validated_target_submit_plan() -> None:
+    _arm_live_real_orders(engine="target_delta")
+    calls: list[dict[str, object]] = []
+    summary = _typed_target_execution_summary()
+
+    submitted = _service(calls).execute(
+        SignalExecutionRequest(
+            signal="BUY",
+            ts=123,
+            market_price=100_000_000.0,
+            decision_context={},
+            execution_decision_summary=summary,
+        )
+    )
+
+    assert submitted == {"status": "submitted", "signal": "BUY"}
+    assert len(calls) == 1
+    assert calls[0]["kwargs"]["execution_submit_plan"] == summary.target_submit_plan  # type: ignore[index]
+
+
+def test_typed_execution_summary_mismatch_with_context_fails_closed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _arm_live_real_orders(engine="target_delta")
+    calls: list[dict[str, object]] = []
+    summary = _typed_target_execution_summary()
+    mismatched = summary.as_dict()
+    target_plan = dict(mismatched["target_submit_plan"])  # type: ignore[arg-type]
+    target_plan["qty"] = 0.002
+    mismatched["target_submit_plan"] = target_plan
+
+    result = _service(calls).execute(
+        SignalExecutionRequest(
+            signal="BUY",
+            ts=123,
+            market_price=100_000_000.0,
+            decision_context={"execution_decision": mismatched},
+            execution_decision_summary=summary,
+        )
+    )
+
+    assert result is None
+    assert calls == []
+    assert "execution_decision_summary_context_mismatch" in caplog.text
 
 
 @pytest.mark.parametrize(

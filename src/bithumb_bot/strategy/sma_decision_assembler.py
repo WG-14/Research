@@ -9,6 +9,7 @@ from bithumb_bot.core.sma_policy import (
     SmaPolicyConfig,
     StrategyDecisionV2,
     _stable_hash,
+    _stable_position_terminal_state,
     evaluate_sma_policy,
 )
 
@@ -138,7 +139,7 @@ def evaluate_sma_final_decision(
             "exit_evaluations": [dict(item) for item in exit_evaluations],
             "protective_exit_overrode_entry": protective_exit_overrode_entry,
             "exit_filter_suppression_prevented": exit_filter_suppression_prevented,
-            "position_terminal_state": position.terminal_state,
+            "position_terminal_state": _stable_position_terminal_state(position.terminal_state),
             "execution_intent": execution_intent,
         }
     )

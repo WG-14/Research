@@ -32,6 +32,15 @@ def _stable_execution_constraints_payload(payload: dict[str, object]) -> dict[st
     return stable
 
 
+def _stable_position_terminal_state(value: object) -> object:
+    state = str(value or "")
+    if state == "research_simulated_flat":
+        return "flat"
+    if state == "research_simulated_open_exposure":
+        return "open_exposure"
+    return value
+
+
 def _stable_position_policy_input(payload: dict[str, object]) -> dict[str, object]:
     keys = (
         "in_position",
@@ -48,7 +57,9 @@ def _stable_position_policy_input(payload: dict[str, object]) -> dict[str, objec
         "has_non_executable_residue",
         "has_dust_only_remainder",
     )
-    return {key: payload.get(key) for key in keys}
+    stable = {key: payload.get(key) for key in keys}
+    stable["terminal_state"] = _stable_position_terminal_state(stable.get("terminal_state"))
+    return stable
 
 
 def _stable_market_policy_input(payload: dict[str, object]) -> dict[str, object]:
@@ -404,7 +415,7 @@ def evaluate_sma_policy(
                 if bool(resolved_entry_blocked) and position.entry_block_reason
                 else None
             ),
-            "position_terminal_state": position.terminal_state,
+            "position_terminal_state": _stable_position_terminal_state(position.terminal_state),
         }
     )
     return StrategyDecisionV2(

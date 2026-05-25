@@ -30,6 +30,7 @@ from bithumb_bot import engine
 from bithumb_bot import runtime_position_state_normalizer
 from bithumb_bot import runtime_sma_snapshot
 from bithumb_bot import runtime_sma_snapshot_builder as runtime_sma
+from bithumb_bot.strategy import sma as strategy_sma
 from bithumb_bot.strategy.sma import SmaWithFilterStrategy, create_sma_with_filter_strategy
 from bithumb_bot.strategy.exit_rules import ExitPolicyConfig, evaluate_sma_exit_policy
 from bithumb_bot.strategy.sma_decision_assembler import evaluate_sma_final_decision
@@ -261,6 +262,55 @@ def test_policy_hashes_ignore_transient_fee_authority_timestamps() -> None:
 
     assert second.policy_input_hash == first.policy_input_hash
     assert second.policy_decision_hash == first.policy_decision_hash
+
+
+def test_policy_hashes_normalize_research_runtime_comparable_terminal_states() -> None:
+    runtime_flat = evaluate_sma_policy(
+        market=_market_window(),
+        position=_flat_position(),
+        config=_policy_config(),
+        execution_context=ExecutionConstraintSnapshot(fee_rate_for_decision=0.0),
+    )
+    research_flat = evaluate_sma_policy(
+        market=_market_window(),
+        position=replace(_flat_position(), terminal_state="research_simulated_flat"),
+        config=_policy_config(),
+        execution_context=ExecutionConstraintSnapshot(fee_rate_for_decision=0.0),
+    )
+    runtime_open = evaluate_sma_policy(
+        market=_market_window(),
+        position=replace(_open_position(), terminal_state="open_exposure"),
+        config=_policy_config(),
+        execution_context=ExecutionConstraintSnapshot(fee_rate_for_decision=0.0),
+    )
+    research_open = evaluate_sma_policy(
+        market=_market_window(),
+        position=replace(_open_position(), terminal_state="research_simulated_open_exposure"),
+        config=_policy_config(),
+        execution_context=ExecutionConstraintSnapshot(fee_rate_for_decision=0.0),
+    )
+
+    assert research_flat.trace["position"]["terminal_state"] == "research_simulated_flat"
+    assert runtime_flat.policy_input_hash == research_flat.policy_input_hash
+    assert runtime_flat.policy_decision_hash == research_flat.policy_decision_hash
+    assert runtime_open.policy_input_hash == research_open.policy_input_hash
+    assert runtime_open.policy_decision_hash == research_open.policy_decision_hash
+
+    runtime_final = evaluate_sma_final_decision(
+        market=_market_window(),
+        position=_flat_position(),
+        config=_policy_config(),
+        execution_context=ExecutionConstraintSnapshot(fee_rate_for_decision=0.0),
+        exit_policy_config=_exit_policy_config(),
+    )
+    research_final = evaluate_sma_final_decision(
+        market=_market_window(),
+        position=replace(_flat_position(), terminal_state="research_simulated_flat"),
+        config=_policy_config(),
+        execution_context=ExecutionConstraintSnapshot(fee_rate_for_decision=0.0),
+        exit_policy_config=_exit_policy_config(),
+    )
+    assert runtime_final.policy_decision_hash == research_final.policy_decision_hash
 
 
 def test_final_sma_decision_assembler_owns_opposite_cross_sell() -> None:
@@ -679,6 +729,25 @@ def test_runtime_context_owns_sma_legacy_serialization_helpers() -> None:
     assert "legacy_strategy_decision_from_sma_final_decision(" in builder_source
     assert "_legacy_strategy_decision_from_sma_final_decision(" not in builder_source
     assert "Deprecated DB-bound compatibility facade" in strategy_module_source
+
+
+def test_strategy_sma_db_bound_shims_delegate_to_runtime_modules() -> None:
+    module_source = inspect.getsource(strategy_sma)
+    shim_sources = [
+        inspect.getsource(strategy_sma._load_signal_rows),
+        inspect.getsource(strategy_sma._closed_candle_cutoff_ts_ms),
+        inspect.getsource(strategy_sma._load_position_context),
+        inspect.getsource(strategy_sma._policy_position_snapshot),
+        inspect.getsource(strategy_sma.build_sma_with_filter_decision_from_normalized_db),
+        inspect.getsource(strategy_sma.decide_sma_with_filter_snapshot_from_db),
+        inspect.getsource(SmaWithFilterStrategy.decide),
+        inspect.getsource(SmaWithFilterStrategy._decide_from_normalized_db),
+    ]
+
+    assert "Compatibility shim" in module_source
+    for source in shim_sources:
+        assert "runtime_sma_snapshot_builder" in source
+    assert "evaluate_sma_policy(" in inspect.getsource(SmaWithFilterStrategy.decide_snapshot)
 
 
 class _CommitCountingConnection:

@@ -3194,6 +3194,7 @@ def run_loop(short_n: int, long_n: int) -> None:
             decision_exit_rule_name: str | None = None
             decision_strategy_name_for_trade: str | None = None
             decision_context_for_trade: dict[str, object] | None = None
+            execution_decision_summary_for_trade = None
             try:
                 context = dict(r)
                 decision_context_for_trade = context
@@ -3239,7 +3240,7 @@ def run_loop(short_n: int, long_n: int) -> None:
                     )
                     if isinstance(target_policy_metadata, dict):
                         readiness_payload = {**readiness_payload, **target_policy_metadata}
-                    execution_decision = build_execution_decision_summary(
+                    execution_decision_summary_for_trade = build_execution_decision_summary(
                         decision_context=context,
                         readiness_payload=readiness_payload,
                         raw_signal=raw_signal_for_target,
@@ -3247,7 +3248,8 @@ def run_loop(short_n: int, long_n: int) -> None:
                         final_reason=reason,
                         previous_target_exposure_krw=previous_target_exposure_krw,
                         strategy_performance_gate=strategy_performance_gate,
-                    ).as_dict()
+                    )
+                    execution_decision = execution_decision_summary_for_trade.as_dict()
                     context["execution_decision"] = execution_decision
                     context["final_action"] = execution_decision["final_action"]
                     context["submit_expected"] = execution_decision["submit_expected"]
@@ -3416,6 +3418,7 @@ def run_loop(short_n: int, long_n: int) -> None:
                             decision_id=decision_id,
                             decision_reason=decision_reason_for_trade,
                             exit_rule_name=decision_exit_rule_name,
+                            execution_decision_summary=execution_decision_summary_for_trade,
                             decision_context=decision_context_for_trade,
                         )
                     )

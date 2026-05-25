@@ -714,6 +714,8 @@ def test_repo_owned_export_replay_artifacts_can_pass_positive_equivalence(
     )
     monkeypatch.setattr(profile_cli, "get_effective_order_rules", lambda _market: rules)
     monkeypatch.setattr("bithumb_bot.strategy.sma.get_effective_order_rules", lambda _market: rules)
+    monkeypatch.setattr("bithumb_bot.runtime_sma_context.get_effective_order_rules", lambda _market: rules)
+    monkeypatch.setattr("bithumb_bot.runtime_sma_snapshot_builder.get_effective_order_rules", lambda _market: rules)
     old_db_path = profile_cli.settings.DB_PATH
     object.__setattr__(profile_cli.settings, "DB_PATH", str(db_path))
     try:
@@ -835,6 +837,8 @@ def test_repo_owned_export_replay_open_exposure_positive_equivalence(
     )
     monkeypatch.setattr(profile_cli, "get_effective_order_rules", lambda _market: rules)
     monkeypatch.setattr("bithumb_bot.strategy.sma.get_effective_order_rules", lambda _market: rules)
+    monkeypatch.setattr("bithumb_bot.runtime_sma_context.get_effective_order_rules", lambda _market: rules)
+    monkeypatch.setattr("bithumb_bot.runtime_sma_snapshot_builder.get_effective_order_rules", lambda _market: rules)
     old_db_path = profile_cli.settings.DB_PATH
     object.__setattr__(profile_cli.settings, "DB_PATH", str(db_path))
     try:

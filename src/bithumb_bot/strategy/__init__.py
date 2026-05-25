@@ -1,4 +1,4 @@
-from .base import PositionContext, Strategy, StrategyDecision
+from .base import LegacyDbStrategy, PositionContext, Strategy, StrategyDecision, StrategyPolicy
 from .registry import create_strategy, list_strategies, register_strategy
 from .sma import (
     SmaCrossStrategy,
@@ -14,6 +14,8 @@ register_strategy("sma_with_filter", create_sma_with_filter_strategy)
 
 __all__ = [
     "Strategy",
+    "LegacyDbStrategy",
+    "StrategyPolicy",
     "StrategyDecision",
     "PositionContext",
     "SmaCrossStrategy",
