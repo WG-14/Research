@@ -312,6 +312,13 @@ def exit_policy_from_parameters(strategy_name: str, parameter_values: dict[str, 
     strategy_rules = tuple(rule for rule in rules if rule not in set(common_rules))
     stop_loss_ratio = float(values.get("STRATEGY_EXIT_STOP_LOSS_RATIO") or 0.0)
     max_holding_min = int(values.get("STRATEGY_EXIT_MAX_HOLDING_MIN") or 0)
+    strategy_specific_exit_policy = {
+        "enabled": "opposite_cross" in rules,
+        "min_take_profit_ratio": float(values.get("STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO") or 0.0),
+        "small_loss_tolerance_ratio": float(
+            values.get("STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO") or 0.0
+        ),
+    }
     return {
         "schema_version": 1,
         "strategy_name": strategy_name,
@@ -329,13 +336,8 @@ def exit_policy_from_parameters(strategy_name: str, parameter_values: dict[str, 
                 "candle_close_stop_may_exit_later_than_real_stop",
             ],
         },
-        "opposite_cross": {
-            "enabled": "opposite_cross" in rules,
-            "min_take_profit_ratio": float(values.get("STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO") or 0.0),
-            "small_loss_tolerance_ratio": float(
-                values.get("STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO") or 0.0
-            ),
-        },
+        "opposite_cross": strategy_specific_exit_policy,
+        "strategy_specific": strategy_specific_exit_policy,
         "max_holding_time": {
             "enabled": "max_holding_time" in rules and max_holding_min > 0,
             "max_holding_min": max_holding_min,

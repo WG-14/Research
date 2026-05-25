@@ -235,6 +235,49 @@ def _reevaluate_sma_policy_with_research_position(
     )
 
 
+def _exit_policy_config_from_materialized_policy(
+    active_exit_policy: dict[str, Any],
+    *,
+    parameter_values: dict[str, Any],
+    fee_rate: float,
+) -> ExitPolicyConfig:
+    strategy_specific_policy = active_exit_policy.get("strategy_specific", {})
+    return ExitPolicyConfig(
+        rule_names=tuple(active_exit_policy.get("rules") or ()),
+        stop_loss_ratio=float(
+            active_exit_policy.get("stop_loss", {}).get("stop_loss_ratio", 0.0)
+        ),
+        max_holding_sec=float(
+            active_exit_policy.get("max_holding_time", {}).get("max_holding_min", 0.0)
+        )
+        * 60.0,
+        min_take_profit_ratio=float(
+            strategy_specific_policy.get("min_take_profit_ratio", 0.0)
+        ),
+        small_loss_tolerance_ratio=float(
+            strategy_specific_policy.get("small_loss_tolerance_ratio", 0.0)
+        ),
+        live_fee_rate_estimate=float(parameter_values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate),
+    )
+
+
+def _exit_rule_sources_for_policy(active_exit_policy: dict[str, Any]) -> dict[str, str]:
+    common_exit_rule_names = set(active_exit_policy.get("common_rules") or ())
+    strategy_exit_rule_names = set(active_exit_policy.get("strategy_rules") or ())
+    return {
+        name: _exit_rule_source(
+            rule_name=name,
+            common_exit_rule_names=common_exit_rule_names,
+            strategy_exit_rule_names=strategy_exit_rule_names,
+        )
+        for name in active_exit_policy.get("rules") or ()
+    }
+
+
+def _allows_legacy_sma_event_first_exit_policy(event: ResearchDecisionEvent) -> bool:
+    return "research_runtime_contract.v2" not in str(event.strategy_version or "")
+
+
 def _research_fee_authority_context(*, pair: str, fee_rate: float) -> dict[str, object]:
     from bithumb_bot.runtime_sma_context import (
         fee_authority_context,
@@ -251,7 +294,7 @@ def _research_fee_authority_context(*, pair: str, fee_rate: float) -> dict[str, 
 
 def _research_order_rules_snapshot(*, pair: str) -> dict[str, object]:
     from bithumb_bot.canonical_decision import order_rules_snapshot_payload
-    from bithumb_bot.broker.order_rules import get_effective_order_rules
+    from bithumb_bot.runtime_sma_context import get_effective_order_rules
 
     return order_rules_snapshot_payload(get_effective_order_rules(pair), pair=pair)
 
@@ -514,22 +557,14 @@ def _run_decision_event_backtest_impl(
             candle_ts=int(candle.ts),
             market_price=float(candle.close),
         )
-        sma_exit_policy_config = ExitPolicyConfig(
-            rule_names=tuple(active_exit_policy.get("rules") or ()),
-            stop_loss_ratio=float(
-                active_exit_policy.get("stop_loss", {}).get("stop_loss_ratio", 0.0)
-            ),
-            max_holding_sec=float(
-                active_exit_policy.get("max_holding_time", {}).get("max_holding_min", 0.0)
-            )
-            * 60.0,
-            min_take_profit_ratio=float(
-                active_exit_policy.get("opposite_cross", {}).get("min_take_profit_ratio", 0.0)
-            ),
-            small_loss_tolerance_ratio=float(
-                active_exit_policy.get("opposite_cross", {}).get("small_loss_tolerance_ratio", 0.0)
-            ),
-            live_fee_rate_estimate=float(parameter_values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate),
+        sma_exit_policy_config = _exit_policy_config_from_materialized_policy(
+            active_exit_policy,
+            parameter_values=parameter_values,
+            fee_rate=fee_rate,
+        )
+        evaluates_exit_policy = bool(
+            isinstance(event.exit_intent, dict)
+            and str(event.exit_intent.get("mode") or "") == "evaluate_exit_policy"
         )
         policy_decision = (
             _reevaluate_sma_policy_with_research_position(
@@ -541,20 +576,20 @@ def _run_decision_event_backtest_impl(
                 fee_rate=fee_rate,
                 slippage_bps=slippage_bps,
                 exit_policy_config=sma_exit_policy_config,
-                rule_sources={
-                    name: _exit_rule_source(
-                        rule_name=name,
-                        common_exit_rule_names=set(active_exit_policy.get("common_rules") or ()),
-                        strategy_exit_rule_names=set(active_exit_policy.get("strategy_rules") or ()),
-                    )
-                    for name in active_exit_policy.get("rules") or ()
-                },
+                rule_sources=_exit_rule_sources_for_policy(active_exit_policy),
             )
             if strategy_plugin.name == "sma_with_filter"
             else None
         )
         sma_policy_unsupported_reason = ""
-        if strategy_plugin.name == "sma_with_filter" and policy_decision is None:
+        if (
+            strategy_plugin.name == "sma_with_filter"
+            and policy_decision is None
+            and not (
+                evaluates_exit_policy
+                and _allows_legacy_sma_event_first_exit_policy(event)
+            )
+        ):
             sma_policy_unsupported_reason = (
                 "sma_with_filter_policy_decision_missing_not_comparable"
             )
@@ -596,10 +631,6 @@ def _run_decision_event_backtest_impl(
         exit_evaluations: list[dict[str, object]] = []
         exit_rule = str((event.exit_intent or {}).get("exit_rule") or "") if event.exit_intent else ""
         exit_reason = str((event.exit_intent or {}).get("exit_reason") or "") if event.exit_intent else ""
-        evaluates_exit_policy = bool(
-            isinstance(event.exit_intent, dict)
-            and str(event.exit_intent.get("mode") or "") == "evaluate_exit_policy"
-        )
         if (
             evaluates_exit_policy
             and not (strategy_plugin.name == "sma_with_filter" and policy_decision is not None)
@@ -650,34 +681,9 @@ def _run_decision_event_backtest_impl(
                         raw_reason=raw_reason,
                         entry_signal=entry_signal,
                         exit_signal=event.exit_signal or raw_signal,
-                        config=ExitPolicyConfig(
-                            rule_names=tuple(active_exit_policy.get("rules") or ()),
-                            stop_loss_ratio=float(
-                                active_exit_policy.get("stop_loss", {}).get("stop_loss_ratio", 0.0)
-                            ),
-                            max_holding_sec=float(
-                                active_exit_policy.get("max_holding_time", {}).get("max_holding_min", 0.0)
-                            )
-                            * 60.0,
-                            min_take_profit_ratio=float(
-                                active_exit_policy.get("opposite_cross", {}).get("min_take_profit_ratio", 0.0)
-                            ),
-                            small_loss_tolerance_ratio=float(
-                                active_exit_policy.get("opposite_cross", {}).get("small_loss_tolerance_ratio", 0.0)
-                            ),
-                            live_fee_rate_estimate=float(
-                                parameter_values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate
-                            ),
-                        ),
+                        config=sma_exit_policy_config,
                         signal_context_extra=strategy_signal_context,
-                        rule_sources={
-                            name: _exit_rule_source(
-                                rule_name=name,
-                                common_exit_rule_names=set(active_exit_policy.get("common_rules") or ()),
-                                strategy_exit_rule_names=set(active_exit_policy.get("strategy_rules") or ()),
-                            )
-                            for name in active_exit_policy.get("rules") or ()
-                        },
+                        rule_sources=_exit_rule_sources_for_policy(active_exit_policy),
                     )
                     exit_evaluations = [dict(item) for item in exit_decision.evaluations]
                     if exit_decision.triggered:
