@@ -9,6 +9,8 @@ from .canonical_decision import (
     export_runtime_replay_decisions,
     order_rules_snapshot_payload,
 )
+from .runtime_sma_snapshot import build_sma_with_filter_replay_bundle
+from .strategy import create_strategy
 from .approved_profile import (
     ApprovedProfileError,
     build_approved_profile,
@@ -604,6 +606,55 @@ def cmd_runtime_replay_decisions(
             "content_hash": payload["content_hash"],
         }
     )
+    return 0
+
+
+def cmd_replay_decision(
+    *,
+    db_path: str,
+    strategy_name: str,
+    candle_ts: int,
+    as_json: bool = False,
+) -> int:
+    try:
+        selected_strategy = str(strategy_name or "").strip().lower()
+        if selected_strategy != "sma_with_filter":
+            raise ValueError(f"replay_decision_unsupported_strategy:{selected_strategy or 'missing'}")
+        strategy = create_strategy(
+            selected_strategy,
+            short_n=int(settings.SMA_SHORT),
+            long_n=int(settings.SMA_LONG),
+            pair=str(settings.PAIR),
+            interval=str(settings.INTERVAL),
+        )
+        resolved_db_path = Path(db_path).expanduser().resolve()
+        conn = sqlite3.connect(f"file:{resolved_db_path}?mode=ro", uri=True)
+        try:
+            bundle = build_sma_with_filter_replay_bundle(
+                conn,
+                strategy,
+                through_ts_ms=int(candle_ts),
+            )
+        finally:
+            conn.close()
+        if bundle is None:
+            raise ValueError("replay_decision_no_decision_for_candle_ts")
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        _print_json({"ok": False, "error": str(exc), "command": "replay-decision"})
+        return 1
+
+    payload = {
+        "ok": True,
+        "command": "replay-decision",
+        "db": str(resolved_db_path),
+        "strategy": selected_strategy,
+        "candle_ts": int(candle_ts),
+        "bundle": bundle,
+    }
+    if as_json:
+        _print_json(payload)
+    else:
+        _print_json(payload)
     return 0
 
 

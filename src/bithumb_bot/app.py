@@ -186,6 +186,7 @@ from .profile_cli import (
     cmd_profile_generate,
     cmd_profile_promote,
     cmd_profile_verify,
+    cmd_replay_decision,
     cmd_research_export_decisions,
     cmd_runtime_replay_decisions,
 )
@@ -7783,6 +7784,16 @@ def main(argv: list[str] | None = None) -> int:
     runtime_replay_decisions.add_argument("--through-ts-list", required=True)
     runtime_replay_decisions.add_argument("--out", required=True)
 
+    replay_decision = sub.add_parser(
+        "replay-decision",
+        help="debug one runtime SMA decision at a closed-candle timestamp",
+        description="Read-only single-decision replay from SQLite; does not call live broker APIs or submit orders.",
+    )
+    replay_decision.add_argument("--db", required=True)
+    replay_decision.add_argument("--strategy", required=True)
+    replay_decision.add_argument("--candle-ts", required=True, type=int)
+    replay_decision.add_argument("--json", action="store_true")
+
     cash_drift_report = sub.add_parser(
         "cash-drift-report",
         help="audit broker cash versus local ledger and recent external cash adjustments",
@@ -8335,6 +8346,13 @@ def main(argv: list[str] | None = None) -> int:
             db_path=str(args.db),
             through_ts_list_path=str(args.through_ts_list),
             out_path=str(args.out),
+        )
+    elif args.cmd == "replay-decision":
+        return cmd_replay_decision(
+            db_path=str(args.db),
+            strategy_name=str(args.strategy),
+            candle_ts=int(args.candle_ts),
+            as_json=bool(args.json),
         )
     elif args.cmd == "cash-drift-report":
         cmd_cash_drift_report(recent_limit=max(1, int(args.recent_limit)), as_json=bool(args.json))

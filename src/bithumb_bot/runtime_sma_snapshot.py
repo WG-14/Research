@@ -20,6 +20,13 @@ SMA_RUNTIME_BOUNDARY_STAGES = {
 }
 
 
+class ReadOnlyPositionStateNormalizer:
+    """Replay/debug adapter that forbids persistence before snapshot loading."""
+
+    def normalize_and_persist(self, conn: sqlite3.Connection, **kwargs: object) -> int:
+        return 0
+
+
 def decide_sma_with_filter_snapshot_from_db(
     conn: sqlite3.Connection,
     strategy: SmaWithFilterStrategy,
@@ -55,6 +62,7 @@ def build_sma_with_filter_replay_bundle(
         conn,
         strategy,
         through_ts_ms=int(through_ts_ms),
+        normalizer=ReadOnlyPositionStateNormalizer(),
     )
     if decision is None:
         return None

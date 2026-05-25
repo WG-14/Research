@@ -146,6 +146,22 @@ def _log_live_submit_plan_block(
     )
 
 
+def _block_live_submit_plan(
+    *,
+    reason: str,
+    field_name: str,
+    source: object | None = None,
+    side: object | None = None,
+) -> None:
+    _log_live_submit_plan_block(
+        reason=reason,
+        field_name=field_name,
+        source=source,
+        side=side,
+    )
+    return None
+
+
 def _live_submit_plan_schema_valid(
     plan: dict[str, object],
     *,
@@ -1276,26 +1292,74 @@ class LiveSignalExecutionService:
             return None
         if _execution_engine() == "target_delta":
             if not target_plan:
+                _block_live_submit_plan(
+                    reason="target_delta_missing_target_submit_plan",
+                    field_name="target_submit_plan",
+                    source=execution_decision.get("source"),
+                    side=request.signal,
+                )
                 return None
             if str(target_plan.get("source")) != "target_delta":
+                _block_live_submit_plan(
+                    reason="target_delta_invalid_target_submit_plan_source",
+                    field_name="target_submit_plan",
+                    source=target_plan.get("source"),
+                    side=target_plan.get("side"),
+                )
                 return None
             if str(target_plan.get("authority")) not in {
                 "canonical_target_delta_sizing",
                 "target_position_delta",
             }:
+                _block_live_submit_plan(
+                    reason="target_delta_invalid_target_submit_plan_authority",
+                    field_name="target_submit_plan",
+                    source=target_plan.get("source"),
+                    side=target_plan.get("side"),
+                )
                 return None
             if str(target_plan.get("block_reason") or "none") != "none":
+                _block_live_submit_plan(
+                    reason="target_delta_blocked_submit_plan",
+                    field_name="target_submit_plan",
+                    source=target_plan.get("source"),
+                    side=target_plan.get("side"),
+                )
                 return None
             if not bool(target_plan.get("submit_expected")):
+                _block_live_submit_plan(
+                    reason="target_delta_submit_not_expected",
+                    field_name="target_submit_plan",
+                    source=target_plan.get("source"),
+                    side=target_plan.get("side"),
+                )
                 return None
             plan_side = str(target_plan.get("side") or "").upper()
             if plan_side not in {"BUY", "SELL"}:
+                _block_live_submit_plan(
+                    reason="target_delta_non_submittable_side",
+                    field_name="target_submit_plan",
+                    source=target_plan.get("source"),
+                    side=target_plan.get("side"),
+                )
                 return None
             try:
                 plan_qty = float(target_plan.get("qty") or 0.0)
             except (TypeError, ValueError):
+                _block_live_submit_plan(
+                    reason="target_delta_invalid_qty",
+                    field_name="target_submit_plan",
+                    source=target_plan.get("source"),
+                    side=target_plan.get("side"),
+                )
                 return None
             if plan_qty <= 0.0:
+                _block_live_submit_plan(
+                    reason="target_delta_non_positive_qty",
+                    field_name="target_submit_plan",
+                    source=target_plan.get("source"),
+                    side=target_plan.get("side"),
+                )
                 return None
             try:
                 if not _live_submit_plan_schema_valid(
@@ -1330,12 +1394,36 @@ class LiveSignalExecutionService:
             and str(residual_plan.get("source")) == "residual_inventory"
         ):
             if str(residual_plan.get("block_reason") or "none") != "none":
+                _block_live_submit_plan(
+                    reason="residual_submit_plan_blocked",
+                    field_name="residual_submit_plan",
+                    source=residual_plan.get("source"),
+                    side=residual_plan.get("side"),
+                )
                 return None
             if not bool(residual_plan.get("submit_expected")):
+                _block_live_submit_plan(
+                    reason="residual_submit_not_expected",
+                    field_name="residual_submit_plan",
+                    source=residual_plan.get("source"),
+                    side=residual_plan.get("side"),
+                )
                 return None
             if _residual_live_sell_mode() != "enabled":
+                _block_live_submit_plan(
+                    reason="residual_live_sell_mode_not_enabled",
+                    field_name="residual_submit_plan",
+                    source=residual_plan.get("source"),
+                    side=residual_plan.get("side"),
+                )
                 return None
             if bool(settings.LIVE_DRY_RUN) or not bool(settings.LIVE_REAL_ORDER_ARMED):
+                _block_live_submit_plan(
+                    reason="residual_live_real_order_not_armed",
+                    field_name="residual_submit_plan",
+                    source=residual_plan.get("source"),
+                    side=residual_plan.get("side"),
+                )
                 return None
             try:
                 if not _live_submit_plan_schema_valid(

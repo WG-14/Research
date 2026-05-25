@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import os
 import sqlite3
@@ -11,6 +12,7 @@ from bithumb_bot import engine as engine_module
 from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_db
 from bithumb_bot.engine import compute_signal
+from bithumb_bot.profile_cli import cmd_replay_decision
 from bithumb_bot.runtime_sma_snapshot import build_sma_with_filter_replay_bundle
 from bithumb_bot.research.strategy_registry import (
     ResearchStrategyRegistryError,
@@ -253,6 +255,70 @@ def test_runtime_replay_bundle_contains_reproducibility_material(tmp_path) -> No
     assert bundle["pure_policy_trace"]
     assert bundle["final_strategy_decision"]["strategy"] == "sma_with_filter"
     assert bundle["execution_decision_summary"]["execution_engine"] in {"lot_native", "target_delta"}
+
+
+def test_replay_decision_cli_outputs_single_read_only_replay_bundle(tmp_path, capsys) -> None:
+    old_db_path = settings.DB_PATH
+    old_env_db_path = os.environ.get("DB_PATH")
+
+    db_path = str(tmp_path / "single_replay_decision.sqlite")
+    os.environ["DB_PATH"] = db_path
+    object.__setattr__(settings, "DB_PATH", db_path)
+
+    conn = ensure_db()
+    base_ts = 1_700_000_500_000
+    try:
+        for idx in range(40):
+            close = 10.0 + 0.2 * idx
+            ts = base_ts + idx * 60_000
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO candles(ts, pair, interval, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ts, settings.PAIR, settings.INTERVAL, close, close, close, close, 1.0),
+            )
+        conn.commit()
+        changes_before_replay = conn.total_changes
+    finally:
+        conn.close()
+        object.__setattr__(settings, "DB_PATH", old_db_path)
+        if old_env_db_path is None:
+            os.environ.pop("DB_PATH", None)
+        else:
+            os.environ["DB_PATH"] = old_env_db_path
+
+    rc = cmd_replay_decision(
+        db_path=db_path,
+        strategy_name="sma_with_filter",
+        candle_ts=base_ts + 39 * 60_000,
+        as_json=True,
+    )
+    stdout = capsys.readouterr().out
+    out = json.loads(stdout[stdout.index('{\n  "bundle"') :])
+
+    verify_conn = sqlite3.connect(db_path)
+    try:
+        changes_after_replay = verify_conn.total_changes
+    finally:
+        verify_conn.close()
+
+    assert rc == 0
+    assert out["ok"] is True
+    assert out["command"] == "replay-decision"
+    bundle = out["bundle"]
+    assert bundle["schema_version"] == 1
+    assert bundle["boundary_stages"]["snapshot_builder"] == (
+        "runtime_sma_snapshot.decide_sma_with_filter_snapshot_from_db"
+    )
+    assert bundle["market_snapshot"]["candle_ts"] == base_ts + 39 * 60_000
+    assert str(bundle["policy_input_hash"]).startswith("sha256:")
+    assert str(bundle["policy_decision_hash"]).startswith("sha256:")
+    assert str(bundle["pure_policy_hash"]).startswith("sha256:")
+    assert bundle["final_strategy_decision"]["strategy"] == "sma_with_filter"
+    assert "execution_decision_summary" in bundle
+    assert changes_after_replay == 0
+    assert changes_before_replay > 0
 
 
 def test_compute_signal_allows_strategy_override_for_backtest_compatibility(tmp_path) -> None:
