@@ -44,8 +44,8 @@ from ..strategy_config import (
 )
 from ..utils_time import parse_interval_sec
 from .base import PositionContext, StrategyDecision
+from .exit_rules import ExitPolicyConfig, evaluate_sma_exit_policy
 from ..sma_decision import evaluate_entry_edge_filter, evaluate_sma_entry_decision
-from .exit_rules import ExitRule, create_sma_exit_rules
 
 
 # Currently implemented protective exits that can override raw BUY entry intent.
@@ -545,7 +545,7 @@ def _apply_entry_exit_policy(
     position: PositionContext,
     exposure: NormalizedExposure,
     position_state: PositionStateModel,
-    exit_rules: list[ExitRule],
+    exit_policy_config: ExitPolicyConfig,
     raw_signal: str | None = None,
     raw_reason: str | None = None,
     exit_signal: str | None = None,
@@ -671,47 +671,42 @@ def _apply_entry_exit_policy(
         )
 
     if position.in_position:
-        exit_results: list[dict[str, Any]] = []
-        for rule in exit_rules:
-            rule_result = rule.evaluate(
-                position=position,
+        exit_decision = evaluate_sma_exit_policy(
+            position=_policy_position_snapshot(position=position, exposure=exposure),
+            market=MarketWindow(
+                pair=str(base_context.get("pair") or ""),
+                interval=str(base_context.get("interval") or ""),
                 candle_ts=int(base_context["ts"]),
-                market_price=float(base_context["last_close"]),
-                signal_context={
-                    "base_signal": resolved_exit_signal,
-                    "base_reason": resolved_exit_reason,
-                    "raw_signal": resolved_raw_signal,
-                    "entry_signal": resolved_entry_signal,
-                    "exit_signal": resolved_exit_signal,
-                    "curr_s": base_context["curr_s"],
-                    "curr_l": base_context["curr_l"],
-                },
+                closes=(float(base_context["last_close"]),),
+                prev_s=float(base_context["prev_s"]),
+                prev_l=float(base_context["prev_l"]),
+                curr_s=float(base_context["curr_s"]),
+                curr_l=float(base_context["curr_l"]),
+            ),
+            raw_signal=resolved_raw_signal,
+            raw_reason=resolved_raw_reason,
+            entry_signal=resolved_entry_signal,
+            exit_signal=resolved_exit_signal,
+            config=exit_policy_config,
+        )
+        exit_results = [dict(item) for item in exit_decision.evaluations]
+        if exit_decision.triggered:
+            context = dict(base_context)
+            context["position"] = position.as_dict()
+            context["exit"] = _build_exit_decision_context(
+                exposure=exposure,
+                triggered=True,
+                reason=exit_decision.reason,
+                rule=exit_decision.rule,
+                evaluations=exit_results,
             )
-            exit_results.append(
-                {
-                    "rule": rule.name,
-                    "triggered": bool(rule_result.should_exit),
-                    "reason": rule_result.reason,
-                    "context": rule_result.context,
-                }
+            context = _annotate_decision_context(
+                context,
+                raw_signal=resolved_raw_signal,
+                final_signal="SELL",
+                final_reason=exit_decision.reason,
             )
-            if rule_result.should_exit:
-                context = dict(base_context)
-                context["position"] = position.as_dict()
-                context["exit"] = _build_exit_decision_context(
-                    exposure=exposure,
-                    triggered=True,
-                    reason=rule_result.reason,
-                    rule=rule.name,
-                    evaluations=exit_results,
-                )
-                context = _annotate_decision_context(
-                    context,
-                    raw_signal=resolved_raw_signal,
-                    final_signal="SELL",
-                    final_reason=rule_result.reason,
-                )
-                return StrategyDecision(signal="SELL", reason=rule_result.reason, context=context)
+            return StrategyDecision(signal="SELL", reason=exit_decision.reason, context=context)
 
         context = dict(base_context)
         context["position"] = position.as_dict()
@@ -878,8 +873,8 @@ class SmaCrossStrategy:
             slippage_bps=float(self.slippage_bps),
             entry_edge_buffer_ratio=float(self.entry_edge_buffer_ratio),
         )
-        exit_rules = create_sma_exit_rules(
-            rule_names=self.exit_rule_names,
+        exit_policy_config = ExitPolicyConfig(
+            rule_names=tuple(self.exit_rule_names),
             max_holding_sec=float(self.exit_max_holding_min) * 60.0,
             min_take_profit_ratio=float(self.exit_min_take_profit_ratio),
             live_fee_rate_estimate=fee_rate_for_decision,
@@ -894,6 +889,8 @@ class SmaCrossStrategy:
             "curr_l": curr_l,
             "last_close": float(closes[-1]),
             "strategy": self.name,
+            "pair": self.pair,
+            "interval": self.interval,
             "gap_ratio": gap_ratio,
             "cost_floor_ratio": float(edge_filter_details["cost_floor_ratio"]),
             "position_lot_interpretation_costs": {
@@ -950,7 +947,7 @@ class SmaCrossStrategy:
             position=position,
             exposure=exposure,
             position_state=position_state,
-            exit_rules=exit_rules,
+            exit_policy_config=exit_policy_config,
             raw_signal=base_signal,
             raw_reason=base_reason,
             exit_signal=base_signal,
@@ -1111,8 +1108,8 @@ class SmaWithFilterStrategy:
         entry_blocked_by_filter = bool(entry_decision.entry_blocked)
         should_filter_entry = base_signal == "BUY"
 
-        exit_rules = create_sma_exit_rules(
-            rule_names=self.exit_rule_names,
+        exit_policy_config = ExitPolicyConfig(
+            rule_names=tuple(self.exit_rule_names),
             max_holding_sec=float(self.exit_max_holding_min) * 60.0,
             min_take_profit_ratio=float(self.exit_min_take_profit_ratio),
             live_fee_rate_estimate=fee_rate_for_decision,
@@ -1124,6 +1121,8 @@ class SmaWithFilterStrategy:
             "ts": ts_list[-1],
             "last_close": float(closes[-1]),
             "strategy": self.name,
+            "pair": self.pair,
+            "interval": self.interval,
             "approved_profile_hash": (
                 self.candidate_regime_policy.get("strategy_profile_hash")
                 if isinstance(self.candidate_regime_policy, dict)
@@ -1441,7 +1440,7 @@ class SmaWithFilterStrategy:
             position=position,
             exposure=exposure,
             position_state=position_state,
-            exit_rules=exit_rules,
+            exit_policy_config=exit_policy_config,
             raw_signal=base_signal,
             raw_reason=base_reason,
             exit_signal=base_signal,

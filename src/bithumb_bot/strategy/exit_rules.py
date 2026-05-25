@@ -4,6 +4,8 @@ import math
 from dataclasses import dataclass
 from typing import Protocol
 
+from bithumb_bot.core.sma_policy import MarketWindow, PositionSnapshot
+
 from .base import PositionContext
 
 
@@ -12,6 +14,25 @@ class ExitRuleDecision:
     should_exit: bool
     reason: str
     context: dict[str, object]
+
+
+@dataclass(frozen=True)
+class ExitPolicyConfig:
+    rule_names: tuple[str, ...]
+    stop_loss_ratio: float
+    max_holding_sec: float
+    min_take_profit_ratio: float
+    small_loss_tolerance_ratio: float
+    live_fee_rate_estimate: float
+
+
+@dataclass(frozen=True)
+class ExitDecision:
+    triggered: bool
+    final_signal: str
+    rule: str | None
+    reason: str
+    evaluations: tuple[dict[str, object], ...]
 
 
 class ExitRule(Protocol):
@@ -257,3 +278,93 @@ def create_sma_exit_rules(
         else:
             rules.append(common_by_name[name])
     return rules
+
+
+def evaluate_sma_exit_policy(
+    *,
+    position: PositionSnapshot,
+    market: MarketWindow,
+    raw_signal: str,
+    raw_reason: str,
+    entry_signal: str,
+    exit_signal: str,
+    config: ExitPolicyConfig,
+    signal_context_extra: dict[str, object] | None = None,
+    rule_sources: dict[str, str] | None = None,
+) -> ExitDecision:
+    """Evaluate SMA exit rules from immutable strategy snapshots.
+
+    Runtime and research callers share this DB-free wrapper so exit authority
+    does not drift between orchestration paths.
+    """
+    if not position.in_position:
+        return ExitDecision(
+            triggered=False,
+            final_signal=str(entry_signal or "HOLD").upper(),
+            rule=None,
+            reason="no open position for exit policy",
+            evaluations=(),
+        )
+
+    rules = create_sma_exit_rules(
+        rule_names=list(config.rule_names),
+        max_holding_sec=float(config.max_holding_sec),
+        min_take_profit_ratio=float(config.min_take_profit_ratio),
+        live_fee_rate_estimate=float(config.live_fee_rate_estimate),
+        small_loss_tolerance_ratio=float(config.small_loss_tolerance_ratio),
+        stop_loss_ratio=float(config.stop_loss_ratio),
+    )
+    position_context = PositionContext(
+        in_position=bool(position.in_position),
+        entry_ts=position.entry_ts,
+        entry_price=position.entry_price,
+        qty_open=float(position.qty_open),
+        holding_time_sec=float(position.holding_time_sec),
+        unrealized_pnl=float(position.unrealized_pnl),
+        unrealized_pnl_ratio=float(position.unrealized_pnl_ratio),
+    )
+    signal_context: dict[str, object] = {
+        "base_signal": str(exit_signal or raw_signal or "HOLD").upper(),
+        "base_reason": str(raw_reason or ""),
+        "raw_signal": str(raw_signal or "HOLD").upper(),
+        "entry_signal": str(entry_signal or "HOLD").upper(),
+        "exit_signal": str(exit_signal or raw_signal or "HOLD").upper(),
+        "curr_s": float(market.curr_s),
+        "curr_l": float(market.curr_l),
+    }
+    if signal_context_extra:
+        signal_context.update(dict(signal_context_extra))
+
+    evaluations: list[dict[str, object]] = []
+    for rule in rules:
+        result = rule.evaluate(
+            position=position_context,
+            candle_ts=int(market.candle_ts),
+            market_price=float(market.closes[-1]) if market.closes else 0.0,
+            signal_context=signal_context,
+        )
+        evaluation = {
+            "rule": rule.name,
+            "triggered": bool(result.should_exit),
+            "reason": result.reason,
+            "context": result.context,
+        }
+        if rule_sources and rule.name in rule_sources:
+            evaluation["rule_source"] = str(rule_sources[rule.name])
+        evaluations.append(evaluation)
+        if result.should_exit:
+            return ExitDecision(
+                triggered=True,
+                final_signal="SELL",
+                rule=rule.name,
+                reason=result.reason,
+                evaluations=tuple(evaluations),
+            )
+
+    return ExitDecision(
+        triggered=False,
+        final_signal="HOLD",
+        rule=None,
+        reason="no exit rule triggered",
+        evaluations=tuple(evaluations),
+    )

@@ -565,6 +565,14 @@ class SmaWithFilterDecisionAdapter:
                     overextended_ratio=float(overextended_ratios[index]),
                     market_regime_snapshot=regime_snapshot,
                     entry_decision=precomputed_entry_decision,
+                    previous_cross_state=(
+                        "unknown"
+                        if prev_above is None
+                        else "above"
+                        if prev_above
+                        else "below"
+                    ),
+                    allow_initial_cross=False,
                 ),
                 position=PositionSnapshot(
                     in_position=False,
@@ -605,26 +613,14 @@ class SmaWithFilterDecisionAdapter:
                 ),
             )
             entry_decision = policy_decision.entry_decision
-            raw_signal = "HOLD"
-            raw_reason = "sma no crossover"
-            if prev_above is not None:
-                if not prev_above and above:
-                    raw_signal = "BUY"
-                    raw_reason = "sma golden cross"
-                elif prev_above and not above:
-                    raw_signal = "SELL"
-                    raw_reason = "sma dead cross"
-            blocked_filters = tuple(entry_decision.blocked_filters) if raw_signal in {"BUY", "SELL"} else ()
-            raw_filter_would_block = bool(
-                raw_signal in {"BUY", "SELL"}
-                and (
-                    blocked_filters
-                    or entry_decision.market_regime_triggered
-                    or entry_decision.candidate_regime_triggered
-                )
-            )
-            entry_filter_blocked = bool(raw_signal == "BUY" and raw_filter_would_block)
-            entry_signal = "HOLD" if entry_filter_blocked else raw_signal
+            raw_signal = policy_decision.raw_signal
+            raw_reason = policy_decision.raw_reason
+            blocked_filters = tuple(policy_decision.blocked_filters)
+            raw_filter_would_block = bool(policy_decision.trace.get("raw_filter_would_block"))
+            entry_filter_blocked = bool(policy_decision.trace.get("entry_blocked"))
+            entry_signal = policy_decision.entry_signal
+            final_signal = policy_decision.final_signal
+            final_reason = policy_decision.final_reason
             feature_snapshot = _feature_snapshot(
                 short_sma=curr_short,
                 long_sma=curr_long,
@@ -640,8 +636,8 @@ class SmaWithFilterDecisionAdapter:
                     strategy_name=self.strategy_name,
                     strategy_version=strategy_spec.strategy_version,
                     raw_signal=raw_signal,
-                    final_signal=entry_signal,
-                    reason=entry_decision.entry_reason if entry_filter_blocked else raw_reason,
+                    final_signal=final_signal,
+                    reason=final_reason,
                     feature_snapshot=feature_snapshot,
                     strategy_diagnostics={
                         "schema_version": 1,
@@ -649,6 +645,7 @@ class SmaWithFilterDecisionAdapter:
                         "candle_index": int(index),
                         "raw_signal": raw_signal,
                         "entry_signal": entry_signal,
+                        "final_signal": final_signal,
                         "raw_filter_would_block": raw_filter_would_block,
                         "blocked_filters": blocked_filters,
                         "market_regime_triggered": bool(entry_decision.market_regime_triggered),
@@ -660,7 +657,7 @@ class SmaWithFilterDecisionAdapter:
                     blocked_filters=blocked_filters,
                     order_intent=(
                         {"side": "BUY", "sizing": "portfolio_policy_fractional_cash"}
-                        if entry_signal == "BUY"
+                        if final_signal == "BUY"
                         else None
                     ),
                     exit_intent={

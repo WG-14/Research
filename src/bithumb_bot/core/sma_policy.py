@@ -36,6 +36,8 @@ class MarketWindow:
     overextended_ratio: float | None = None
     market_regime_snapshot: dict[str, object] | None = None
     entry_decision: SmaEntryDecision | None = None
+    previous_cross_state: str | None = None
+    allow_initial_cross: bool = True
 
 
 @dataclass(frozen=True)
@@ -193,6 +195,35 @@ def evaluate_sma_policy(
     raw_reason = entry_decision.base_reason
     entry_signal = entry_decision.entry_signal
     entry_reason = entry_decision.entry_reason
+    cross_state = str(market.previous_cross_state or "").strip().lower()
+    cross_state_overrode_entry = False
+    if cross_state in {"above", "below", "unknown"}:
+        current_above = bool(float(market.curr_s) > float(market.curr_l))
+        if cross_state == "unknown" and bool(market.allow_initial_cross):
+            resolved_raw_signal = raw_signal
+            resolved_raw_reason = raw_reason
+        elif cross_state == "unknown" and not bool(market.allow_initial_cross):
+            resolved_raw_signal = "HOLD"
+            resolved_raw_reason = "initial cross suppressed until previous cross state is known"
+        elif cross_state == "below" and current_above:
+            resolved_raw_signal = "BUY"
+            resolved_raw_reason = "sma golden cross"
+        elif cross_state == "above" and not current_above:
+            resolved_raw_signal = "SELL"
+            resolved_raw_reason = "sma dead cross"
+        else:
+            resolved_raw_signal = "HOLD"
+            resolved_raw_reason = "sma no crossover"
+        if resolved_raw_signal != raw_signal:
+            cross_state_overrode_entry = True
+        raw_signal = resolved_raw_signal
+        raw_reason = resolved_raw_reason
+        if raw_signal == "HOLD":
+            entry_signal = "HOLD"
+            entry_reason = raw_reason
+        elif raw_signal == "SELL":
+            entry_signal = "SELL"
+            entry_reason = raw_reason
     exit_signal = raw_signal
     exit_reason = raw_reason
     final_signal = entry_signal
@@ -204,6 +235,21 @@ def evaluate_sma_policy(
     elif entry_signal == "BUY" and not position.entry_allowed:
         final_signal = "HOLD"
         final_reason = position.entry_block_reason or "entry_blocked_by_position_state"
+
+    resolved_blocked_filters = (
+        ()
+        if cross_state_overrode_entry and raw_signal == "HOLD"
+        else entry_decision.blocked_filters
+    )
+    resolved_raw_filter_would_block = bool(
+        raw_signal in {"BUY", "SELL"}
+        and (
+            resolved_blocked_filters
+            or entry_decision.market_regime_triggered
+            or entry_decision.candidate_regime_triggered
+        )
+    )
+    resolved_entry_blocked = bool(raw_signal == "BUY" and resolved_raw_filter_would_block)
 
     trace: dict[str, object] = {
         "schema_version": 1,
@@ -219,6 +265,8 @@ def evaluate_sma_policy(
             "prev_l": float(market.prev_l),
             "curr_s": float(market.curr_s),
             "curr_l": float(market.curr_l),
+            "previous_cross_state": market.previous_cross_state,
+            "allow_initial_cross": bool(market.allow_initial_cross),
         },
         "raw_signal": raw_signal,
         "raw_reason": raw_reason,
@@ -228,9 +276,9 @@ def evaluate_sma_policy(
         "exit_reason": exit_reason,
         "final_signal": final_signal,
         "final_reason": final_reason,
-        "blocked_filters": list(entry_decision.blocked_filters),
-        "entry_blocked": bool(entry_decision.entry_blocked),
-        "raw_filter_would_block": bool(entry_decision.raw_filter_would_block),
+        "blocked_filters": list(resolved_blocked_filters),
+        "entry_blocked": bool(resolved_entry_blocked),
+        "raw_filter_would_block": bool(resolved_raw_filter_would_block),
         "market_regime_blocked": bool(entry_decision.market_regime_triggered),
         "candidate_regime_blocked": bool(entry_decision.candidate_regime_triggered),
         "position": asdict(position),
@@ -254,7 +302,7 @@ def evaluate_sma_policy(
         exit_reason=exit_reason,
         final_signal=final_signal,
         final_reason=final_reason,
-        blocked_filters=entry_decision.blocked_filters,
+        blocked_filters=tuple(resolved_blocked_filters),
         entry_decision=entry_decision,
         trace=trace,
         policy_hash=policy_hash,

@@ -4,7 +4,8 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from bithumb_bot.market_regime import aggregate_regime_coverage, aggregate_regime_performance
-from bithumb_bot.strategy.exit_rules import merge_exit_rules
+from bithumb_bot.core.sma_policy import MarketWindow, PositionSnapshot
+from bithumb_bot.strategy.exit_rules import ExitPolicyConfig, evaluate_sma_exit_policy, merge_exit_rules
 
 from . import backtest_engine as _engine
 from .decision_event import ResearchDecisionEvent
@@ -357,60 +358,135 @@ def _run_decision_event_backtest_impl(
                         else 0.0
                     ),
                 )
-                common_exit_rules = _create_exit_rules(
-                    rule_names=list(active_exit_policy.get("common_rules") or ()),
-                    stop_loss_ratio=float(active_exit_policy.get("stop_loss", {}).get("stop_loss_ratio", 0.0)),
-                    max_holding_sec=float(
-                        active_exit_policy.get("max_holding_time", {}).get("max_holding_min", 0.0)
-                    )
-                    * 60.0,
-                )
-                strategy_exit_rules = []
-                if strategy_plugin.exit_rule_factory is not None:
-                    strategy_exit_rules = strategy_plugin.exit_rule_factory(
-                        active_exit_policy,
-                        parameter_values,
-                        fee_rate,
-                    )
-                exit_rules = merge_exit_rules(common_exit_rules, strategy_exit_rules)
-                common_exit_rule_names = {rule.name for rule in common_exit_rules}
-                strategy_exit_rule_names = {rule.name for rule in strategy_exit_rules}
-                for rule in exit_rules:
+                if strategy_plugin.name == "sma_with_filter":
                     strategy_signal_context = (
                         strategy_plugin.exit_signal_context_builder(event)
                         if strategy_plugin.exit_signal_context_builder is not None
                         else {}
                     )
-                    result = rule.evaluate(
-                        position=position,
-                        candle_ts=int(candle.ts),
-                        market_price=float(candle.close),
-                        signal_context={
-                            "base_signal": raw_signal,
-                            "base_reason": raw_reason,
-                            "entry_signal": entry_signal,
-                            "exit_signal": event.exit_signal or raw_signal,
-                            **strategy_signal_context,
+                    exit_decision = evaluate_sma_exit_policy(
+                        position=PositionSnapshot(
+                            in_position=True,
+                            entry_allowed=False,
+                            exit_allowed=True,
+                            terminal_state="research_simulated_open_exposure",
+                            entry_ts=position.entry_ts,
+                            entry_price=position.entry_price,
+                            qty_open=float(position.qty_open),
+                            holding_time_sec=float(position.holding_time_sec),
+                            unrealized_pnl=float(position.unrealized_pnl),
+                            unrealized_pnl_ratio=float(position.unrealized_pnl_ratio),
+                            raw_qty_open=float(qty),
+                            raw_total_asset_qty=float(qty),
+                            open_lot_count=1,
+                            sellable_executable_lot_count=1,
+                            effective_flat=False,
+                            has_executable_exposure=True,
+                            has_any_position_residue=True,
+                        ),
+                        market=MarketWindow(
+                            pair=dataset.market,
+                            interval=dataset.interval,
+                            candle_ts=int(candle.ts),
+                            closes=(float(candle.close),),
+                            prev_s=float(event_extra.get("prev_s", 0.0) or 0.0),
+                            prev_l=float(event_extra.get("prev_l", 0.0) or 0.0),
+                            curr_s=float(event_extra.get("curr_s", 0.0) or 0.0),
+                            curr_l=float(event_extra.get("curr_l", 0.0) or 0.0),
+                        ),
+                        raw_signal=raw_signal,
+                        raw_reason=raw_reason,
+                        entry_signal=entry_signal,
+                        exit_signal=event.exit_signal or raw_signal,
+                        config=ExitPolicyConfig(
+                            rule_names=tuple(active_exit_policy.get("rules") or ()),
+                            stop_loss_ratio=float(
+                                active_exit_policy.get("stop_loss", {}).get("stop_loss_ratio", 0.0)
+                            ),
+                            max_holding_sec=float(
+                                active_exit_policy.get("max_holding_time", {}).get("max_holding_min", 0.0)
+                            )
+                            * 60.0,
+                            min_take_profit_ratio=float(
+                                active_exit_policy.get("opposite_cross", {}).get("min_take_profit_ratio", 0.0)
+                            ),
+                            small_loss_tolerance_ratio=float(
+                                active_exit_policy.get("opposite_cross", {}).get("small_loss_tolerance_ratio", 0.0)
+                            ),
+                            live_fee_rate_estimate=float(
+                                parameter_values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate
+                            ),
+                        ),
+                        signal_context_extra=strategy_signal_context,
+                        rule_sources={
+                            name: _exit_rule_source(
+                                rule_name=name,
+                                common_exit_rule_names=set(active_exit_policy.get("common_rules") or ()),
+                                strategy_exit_rule_names=set(active_exit_policy.get("strategy_rules") or ()),
+                            )
+                            for name in active_exit_policy.get("rules") or ()
                         },
                     )
-                    exit_evaluations.append(
-                        {
-                            "rule": rule.name,
-                            "rule_source": _exit_rule_source(
-                                rule_name=rule.name,
-                                common_exit_rule_names=common_exit_rule_names,
-                                strategy_exit_rule_names=strategy_exit_rule_names,
-                            ),
-                            "triggered": bool(result.should_exit),
-                            "reason": result.reason,
-                            "context": result.context,
-                        }
-                    )
-                    if result.should_exit:
+                    exit_evaluations = [dict(item) for item in exit_decision.evaluations]
+                    if exit_decision.triggered:
                         action = "SELL"
-                        exit_rule = rule.name
-                        exit_reason = result.reason
-                        break
+                        exit_rule = str(exit_decision.rule or "")
+                        exit_reason = exit_decision.reason
+                else:
+                    common_exit_rules = _create_exit_rules(
+                        rule_names=list(active_exit_policy.get("common_rules") or ()),
+                        stop_loss_ratio=float(active_exit_policy.get("stop_loss", {}).get("stop_loss_ratio", 0.0)),
+                        max_holding_sec=float(
+                            active_exit_policy.get("max_holding_time", {}).get("max_holding_min", 0.0)
+                        )
+                        * 60.0,
+                    )
+                    strategy_exit_rules = []
+                    if strategy_plugin.exit_rule_factory is not None:
+                        strategy_exit_rules = strategy_plugin.exit_rule_factory(
+                            active_exit_policy,
+                            parameter_values,
+                            fee_rate,
+                        )
+                    exit_rules = merge_exit_rules(common_exit_rules, strategy_exit_rules)
+                    common_exit_rule_names = {rule.name for rule in common_exit_rules}
+                    strategy_exit_rule_names = {rule.name for rule in strategy_exit_rules}
+                    for rule in exit_rules:
+                        strategy_signal_context = (
+                            strategy_plugin.exit_signal_context_builder(event)
+                            if strategy_plugin.exit_signal_context_builder is not None
+                            else {}
+                        )
+                        result = rule.evaluate(
+                            position=position,
+                            candle_ts=int(candle.ts),
+                            market_price=float(candle.close),
+                            signal_context={
+                                "base_signal": raw_signal,
+                                "base_reason": raw_reason,
+                                "entry_signal": entry_signal,
+                                "exit_signal": event.exit_signal or raw_signal,
+                                **strategy_signal_context,
+                            },
+                        )
+                        exit_evaluations.append(
+                            {
+                                "rule": rule.name,
+                                "rule_source": _exit_rule_source(
+                                    rule_name=rule.name,
+                                    common_exit_rule_names=common_exit_rule_names,
+                                    strategy_exit_rule_names=strategy_exit_rule_names,
+                                ),
+                                "triggered": bool(result.should_exit),
+                                "reason": result.reason,
+                                "context": result.context,
+                            }
+                        )
+                        if result.should_exit:
+                            action = "SELL"
+                            exit_rule = rule.name
+                            exit_reason = result.reason
+                            break
         if action == "BUY" and (qty > 1e-12 or pending_buy_qty > 1e-12):
             action = "HOLD"
             blocked = True

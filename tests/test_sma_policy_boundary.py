@@ -17,6 +17,8 @@ from bithumb_bot.research.backtest_engine import SmaWithFilterDecisionAdapter
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
 from bithumb_bot.research.experiment_manifest import DateRange, ExecutionTimingPolicy
 from bithumb_bot.strategy.sma import create_sma_with_filter_strategy
+from bithumb_bot.strategy import sma as runtime_sma
+from bithumb_bot.strategy.exit_rules import ExitPolicyConfig, evaluate_sma_exit_policy
 
 
 def _policy_config() -> SmaPolicyConfig:
@@ -220,3 +222,127 @@ def test_live_wrapper_and_research_adapter_share_policy_entry_boundary() -> None
     assert tuple(runtime_decision.context["blocked_filters"]) == research_event.blocked_filters == ()
     assert runtime_decision.context["pure_policy_hash"].startswith("sha256:")
     assert research_event.extra_payload["pure_policy_hash"].startswith("sha256:")
+
+
+def test_research_adapter_does_not_override_policy_first_cross_when_prev_above_unknown() -> None:
+    closes = [10.0, 10.0, 10.0, 11.0, 11.0]
+    events = SmaWithFilterDecisionAdapter(
+        parameter_values={
+            "SMA_SHORT": 2,
+            "SMA_LONG": 3,
+            "SMA_FILTER_GAP_MIN_RATIO": 0.0,
+            "SMA_FILTER_VOL_MIN_RANGE_RATIO": 0.0,
+            "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": 0.0,
+            "SMA_COST_EDGE_ENABLED": False,
+            "SMA_MARKET_REGIME_ENABLED": False,
+        },
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        timing_policy=ExecutionTimingPolicy(),
+    ).build_events(_dataset_from_closes(closes))
+
+    first = events[0]
+    policy_trace = first.extra_payload["pure_policy_trace"]
+    assert first.extra_payload["prev_above"] is None
+    assert policy_trace["market"]["previous_cross_state"] == "unknown"
+    assert policy_trace["market"]["allow_initial_cross"] is False
+    assert first.raw_signal == policy_trace["raw_signal"] == "HOLD"
+    assert first.entry_signal == policy_trace["entry_signal"] == "HOLD"
+    assert first.final_signal == policy_trace["final_signal"] == "HOLD"
+    assert first.reason == policy_trace["final_reason"]
+
+
+def test_policy_can_allow_initial_cross_when_configured() -> None:
+    decision = evaluate_sma_policy(
+        market=MarketWindow(
+            **{
+                **_market_window().__dict__,
+                "previous_cross_state": "unknown",
+                "allow_initial_cross": True,
+            }
+        ),
+        position=_flat_position(),
+        config=_policy_config(),
+        execution_context=ExecutionConstraintSnapshot(fee_rate_for_decision=0.0),
+    )
+
+    assert decision.raw_signal == "BUY"
+    assert decision.final_signal == "BUY"
+
+
+def test_shared_sma_exit_policy_is_deterministic_for_runtime_and_research_snapshots() -> None:
+    market = MarketWindow(
+        pair="BTC_KRW",
+        interval="1m",
+        candle_ts=1_700_000_240_000,
+        closes=(95.0,),
+        prev_s=100.0,
+        prev_l=99.0,
+        curr_s=98.0,
+        curr_l=99.0,
+    )
+    config = ExitPolicyConfig(
+        rule_names=("stop_loss", "opposite_cross", "max_holding_time"),
+        stop_loss_ratio=0.04,
+        max_holding_sec=600.0,
+        min_take_profit_ratio=0.0,
+        small_loss_tolerance_ratio=0.0,
+        live_fee_rate_estimate=0.0,
+    )
+    runtime_snapshot = PositionSnapshot(
+        in_position=True,
+        entry_allowed=False,
+        exit_allowed=True,
+        terminal_state="open_exposure",
+        entry_ts=1_700_000_000_000,
+        entry_price=100.0,
+        qty_open=1.0,
+        holding_time_sec=240.0,
+        unrealized_pnl=-5.0,
+        unrealized_pnl_ratio=-0.05,
+        open_lot_count=1,
+        sellable_executable_lot_count=1,
+        effective_flat=False,
+        has_executable_exposure=True,
+        has_any_position_residue=True,
+    )
+    research_snapshot = PositionSnapshot(
+        **{
+            **runtime_snapshot.__dict__,
+            "terminal_state": "research_simulated_open_exposure",
+        }
+    )
+
+    runtime_exit = evaluate_sma_exit_policy(
+        position=runtime_snapshot,
+        market=market,
+        raw_signal="SELL",
+        raw_reason="sma dead cross",
+        entry_signal="SELL",
+        exit_signal="SELL",
+        config=config,
+    )
+    research_exit = evaluate_sma_exit_policy(
+        position=research_snapshot,
+        market=market,
+        raw_signal="SELL",
+        raw_reason="sma dead cross",
+        entry_signal="SELL",
+        exit_signal="SELL",
+        config=config,
+    )
+
+    assert runtime_exit == research_exit
+    assert runtime_exit.final_signal == "SELL"
+    assert runtime_exit.rule == "stop_loss"
+    assert runtime_exit.reason == "exit by stop loss"
+
+
+def test_runtime_decide_db_mutation_boundary_remains_explicit_migration_gap() -> None:
+    load_position_source = inspect.getsource(runtime_sma._load_position_context)
+    decide_source = inspect.getsource(runtime_sma.SmaWithFilterStrategy.decide)
+
+    assert "mark_harmless_dust_positions" in load_position_source
+    assert "reclassify_non_executable_open_exposure" in load_position_source
+    assert "conn.commit()" in load_position_source
+    assert "_load_position_context(" in decide_source
