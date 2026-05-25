@@ -115,7 +115,7 @@ def _research_position_snapshot(
             exit_allowed=True,
             entry_block_reason="position_has_executable_exposure",
             exit_block_reason="none",
-            terminal_state="open_exposure",
+            terminal_state="research_simulated_open_exposure",
             entry_ts=entry_ts,
             entry_price=entry_price,
             qty_open=float(sellable_qty),
@@ -138,7 +138,7 @@ def _research_position_snapshot(
         exit_allowed=False,
         entry_block_reason="none",
         exit_block_reason="no_position",
-        terminal_state="flat",
+        terminal_state="research_simulated_flat",
         dust_classification="no_dust",
         dust_state="no_dust",
     )

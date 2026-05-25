@@ -333,6 +333,14 @@ def _live_real_order_performance_gate_applies() -> bool:
     )
 
 
+def _live_real_order_submit_plan_required() -> bool:
+    return bool(
+        str(getattr(settings, "MODE", "") or "").strip().lower() == "live"
+        and bool(getattr(settings, "LIVE_REAL_ORDER_ARMED", False))
+        and not bool(getattr(settings, "LIVE_DRY_RUN", True))
+    )
+
+
 def _strategy_performance_gate_payload(raw_gate: object | None) -> dict[str, object] | None:
     if raw_gate is None:
         return None
@@ -1198,6 +1206,13 @@ class LiveSignalExecutionService:
     harmless_dust_recorder: Callable[..., bool]
 
     def execute(self, request: SignalExecutionRequest) -> dict | None:
+        submit_plan_required = _live_real_order_submit_plan_required()
+        if submit_plan_required and request.decision_context is None:
+            _log_live_submit_plan_block(
+                reason="live_real_order_missing_decision_context",
+                field_name="decision_context",
+            )
+            return None
         if request.decision_context is not None and not isinstance(request.decision_context, dict):
             _log_live_submit_plan_block(
                 reason="decision_context_schema_not_object",
@@ -1206,6 +1221,12 @@ class LiveSignalExecutionService:
             return None
         decision_context = dict(request.decision_context or {})
         raw_execution_decision = decision_context.get("execution_decision")
+        if submit_plan_required and raw_execution_decision is None:
+            _log_live_submit_plan_block(
+                reason="live_real_order_missing_execution_decision",
+                field_name="execution_decision",
+            )
+            return None
         if raw_execution_decision is not None and not isinstance(raw_execution_decision, dict):
             _log_live_submit_plan_block(
                 reason="execution_decision_schema_not_object",
@@ -1351,6 +1372,14 @@ class LiveSignalExecutionService:
                 side=(target_plan or residual_plan).get("side"),
             )
             return None
+        if submit_plan_required:
+            _log_live_submit_plan_block(
+                reason="live_real_order_missing_execution_submit_plan",
+                field_name="execution_decision",
+                source=execution_decision.get("source"),
+                side=request.signal,
+            )
+            return None
         harmless_dust_preview = None
         if request.signal == "SELL":
             harmless_dust_preview = _canonical_harmless_dust_sell_preview(request.decision_context)
@@ -1379,9 +1408,8 @@ class LiveSignalExecutionService:
                     return None
             finally:
                 suppression_conn.close()
-        # Legacy lot-native live execution path. This branch is intentionally
-        # allowed only when no explicit submit plan was supplied; malformed
-        # explicit plans are blocked above and must not fall through here.
+        # Legacy lot-native compatibility path. Live real-order execution is
+        # blocked above unless a validated explicit submit plan was consumed.
         try:
             return self.executor(
                 self.broker,

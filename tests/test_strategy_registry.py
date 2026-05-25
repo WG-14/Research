@@ -207,11 +207,13 @@ def test_runtime_replay_bundle_contains_reproducibility_material(tmp_path) -> No
             pair=settings.PAIR,
             interval=settings.INTERVAL,
         )
+        changes_before_replay = conn.total_changes
         bundle = build_sma_with_filter_replay_bundle(
             conn,
             strategy,
             through_ts_ms=base_ts + 39 * 60_000,
         )
+        changes_after_replay = conn.total_changes
     finally:
         conn.close()
         object.__setattr__(settings, "DB_PATH", old_db_path)
@@ -221,11 +223,34 @@ def test_runtime_replay_bundle_contains_reproducibility_material(tmp_path) -> No
             os.environ["DB_PATH"] = old_env_db_path
 
     assert bundle is not None
+    assert {
+        "schema_version",
+        "strategy",
+        "through_ts_ms",
+        "boundary_stages",
+        "market_snapshot",
+        "position_snapshot",
+        "policy_config",
+        "execution_constraint_snapshot",
+        "policy_input_hash",
+        "policy_decision_hash",
+        "pure_policy_hash",
+        "replay_fingerprint",
+        "pure_policy_trace",
+        "final_strategy_decision",
+        "execution_decision_summary",
+    }.issubset(bundle)
+    assert changes_after_replay == changes_before_replay
     assert bundle["market_snapshot"]["candle_ts"] == base_ts + 39 * 60_000
     assert bundle["position_snapshot"] is not None
     assert bundle["policy_config"]["short_n"] == 2
     assert str(bundle["policy_input_hash"]).startswith("sha256:")
     assert str(bundle["policy_decision_hash"]).startswith("sha256:")
+    assert str(bundle["pure_policy_hash"]).startswith("sha256:")
+    assert isinstance(bundle["replay_fingerprint"], dict)
+    assert bundle["replay_fingerprint"]["strategy_name"] == "sma_with_filter"
+    assert bundle["replay_fingerprint"]["through_ts_ms"] == base_ts + 39 * 60_000
+    assert bundle["pure_policy_trace"]
     assert bundle["final_strategy_decision"]["strategy"] == "sma_with_filter"
     assert bundle["execution_decision_summary"]["execution_engine"] in {"lot_native", "target_delta"}
 

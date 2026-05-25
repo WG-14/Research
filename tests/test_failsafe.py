@@ -1522,7 +1522,7 @@ def test_residual_submit_plan_schema_failure_blocks_broker_submit_without_fallba
     assert expected_reason in caplog.text
 
 
-def test_live_legacy_signal_fallback_is_only_used_without_explicit_submit_plan() -> None:
+def test_live_real_order_missing_submit_plan_blocks_legacy_signal_fallback(caplog) -> None:
     object.__setattr__(settings, "EXECUTION_ENGINE", "lot_native")
     object.__setattr__(settings, "MODE", "live")
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
@@ -1554,15 +1554,9 @@ def test_live_legacy_signal_fallback_is_only_used_without_explicit_submit_plan()
         )
     )
 
-    assert result == {"status": "submitted"}
-    assert executor_calls == [
-        {
-            "signal": "BUY",
-            "ts": 123,
-            "market_price": 115_000_000.0,
-            "execution_submit_plan": None,
-        }
-    ]
+    assert result is None
+    assert executor_calls == []
+    assert "live_real_order_missing_execution_submit_plan" in caplog.text
 
 
 def test_valid_unconsumed_explicit_submit_plan_does_not_fall_through_to_legacy_signal(

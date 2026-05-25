@@ -7,7 +7,7 @@ from bithumb_bot.canonical_decision import (
     export_runtime_replay_decisions,
     runtime_decision_to_canonical_event,
 )
-from bithumb_bot import strategy as strategy_module
+from bithumb_bot import runtime_sma_snapshot as runtime_sma_snapshot_module
 from bithumb_bot.strategy.base import StrategyDecision
 
 
@@ -134,7 +134,7 @@ def test_runtime_replay_routes_sma_with_filter_through_snapshot_orchestration(mo
         )
 
     monkeypatch.setattr(
-        strategy_module,
+        runtime_sma_snapshot_module,
         "decide_sma_with_filter_snapshot_from_db",
         _snapshot_orchestration,
     )
