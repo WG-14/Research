@@ -7,6 +7,8 @@ from .execution_service import build_execution_decision_summary
 from .runtime_position_state_normalizer import PositionStateNormalizer
 from .runtime_sma_snapshot_builder import (
     decide_sma_with_filter_snapshot_from_db as _runtime_snapshot_from_db,
+    decide_sma_with_filter_runtime_snapshot_from_db as _runtime_typed_snapshot_from_db,
+    RuntimeSmaDecisionResult,
 )
 from .strategy.base import StrategyDecision
 from .strategy.sma import SmaWithFilterStrategy
@@ -49,6 +51,22 @@ def decide_sma_with_filter_snapshot_from_db(
     return decision
 
 
+def decide_sma_with_filter_runtime_snapshot_from_db(
+    conn: sqlite3.Connection,
+    strategy: SmaWithFilterStrategy,
+    *,
+    through_ts_ms: int | None = None,
+    normalizer: PositionStateNormalizer | None = None,
+) -> RuntimeSmaDecisionResult | None:
+    """Typed runtime boundary for SMA DB state -> snapshots -> final decision."""
+    return _runtime_typed_snapshot_from_db(
+        conn,
+        strategy,
+        through_ts_ms=through_ts_ms,
+        normalizer=normalizer,
+    )
+
+
 def build_sma_with_filter_replay_bundle(
     conn: sqlite3.Connection,
     strategy: SmaWithFilterStrategy,
@@ -58,14 +76,15 @@ def build_sma_with_filter_replay_bundle(
     previous_target_exposure_krw: float | None = None,
 ) -> dict[str, Any] | None:
     """Build structured read-only replay material for one SMA decision."""
-    decision = decide_sma_with_filter_snapshot_from_db(
+    typed_result = decide_sma_with_filter_runtime_snapshot_from_db(
         conn,
         strategy,
         through_ts_ms=int(through_ts_ms),
         normalizer=ReadOnlyPositionStateNormalizer(),
     )
-    if decision is None:
+    if typed_result is None:
         return None
+    decision = typed_result.legacy_strategy_decision()
     strategy_payload = decision.as_dict()
     context = dict(decision.context)
     execution_summary = build_execution_decision_summary(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from dataclasses import dataclass, field
 from statistics import fmean
 from typing import Any
@@ -67,6 +68,8 @@ def _closed_candle_cutoff_ts_ms(*, interval_sec: int, now_ms: int | None = None)
     """Compatibility shim; runtime_sma_snapshot_builder owns closed-candle selection."""
     from ..runtime_sma_snapshot_builder import _closed_candle_cutoff_ts_ms as _runtime_cutoff
 
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
     return _runtime_cutoff(interval_sec=interval_sec, now_ms=now_ms)
 
 

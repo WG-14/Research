@@ -22,7 +22,10 @@ from .strategy import (
     SmaWithFilterStrategy,
     create_strategy,
 )
-from .runtime_sma_snapshot import decide_sma_with_filter_snapshot_from_db
+from .runtime_sma_snapshot import (
+    decide_sma_with_filter_runtime_snapshot_from_db,
+)
+from .runtime_sma_snapshot_builder import RuntimeSmaDecisionResult
 from .broker.bithumb import BithumbBroker, build_broker_with_auth_diagnostics
 from .broker.base import BrokerError
 from .db_core import (
@@ -424,6 +427,49 @@ def compute_signal(
     through_ts_ms: int | None = None,
     strategy_name: str | None = None,
 ):
+    result = compute_strategy_decision_snapshot(
+        conn,
+        short_n,
+        long_n,
+        through_ts_ms=through_ts_ms,
+        strategy_name=strategy_name,
+    )
+    if result is None:
+        return None
+    if isinstance(result, RuntimeSmaDecisionResult):
+        payload = result.as_legacy_dict()
+        payload.setdefault("strategy", result.decision.strategy_name)
+        return payload
+    decision, strategy = result
+    payload = decision.as_dict()
+    payload.setdefault("strategy", strategy.name)
+    return payload
+
+
+def _legacy_db_strategy_fallback_allowed(*, selected_strategy_name: str) -> bool:
+    if selected_strategy_name == "sma_with_filter":
+        return False
+    live_real_order = bool(
+        str(settings.MODE).strip().lower() == "live"
+        and bool(settings.LIVE_REAL_ORDER_ARMED)
+        and not bool(settings.LIVE_DRY_RUN)
+    )
+    return not live_real_order
+
+
+def compute_strategy_decision_snapshot(
+    conn,
+    short_n: int,
+    long_n: int,
+    *,
+    through_ts_ms: int | None = None,
+    strategy_name: str | None = None,
+) -> RuntimeSmaDecisionResult | tuple[object, object] | None:
+    """Compute a strategy decision through the promotion-grade typed path when available.
+
+    The tuple return is an explicitly legacy DB-bound compatibility result for
+    paper/smoke callers. Live real-order execution must not reach that branch.
+    """
     selected_strategy_name = str(strategy_name or settings.STRATEGY_NAME).strip().lower()
     validate_live_strategy_selection(replace(settings, STRATEGY_NAME=selected_strategy_name))
     strategy = create_strategy(
@@ -434,18 +480,15 @@ def compute_signal(
         interval=settings.INTERVAL,
     )
     if selected_strategy_name == "sma_with_filter" and isinstance(strategy, SmaWithFilterStrategy):
-        decision = decide_sma_with_filter_snapshot_from_db(
+        return decide_sma_with_filter_runtime_snapshot_from_db(
             conn,
             strategy,
             through_ts_ms=through_ts_ms,
         )
-    else:
-        decision = strategy.decide(conn, through_ts_ms=through_ts_ms)
-    if decision is None:
-        return None
-    payload = decision.as_dict()
-    payload.setdefault("strategy", strategy.name)
-    return payload
+    if not _legacy_db_strategy_fallback_allowed(selected_strategy_name=selected_strategy_name):
+        raise RuntimeError(f"legacy_db_strategy_not_allowed_for_live_real_order:{selected_strategy_name}")
+    decision = strategy.decide(conn, through_ts_ms=through_ts_ms)
+    return None if decision is None else (decision, strategy)
 
 
 @dataclass(frozen=True)

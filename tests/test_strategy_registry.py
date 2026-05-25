@@ -20,7 +20,9 @@ from bithumb_bot.research.strategy_registry import (
     resolve_research_strategy_plugin,
 )
 import bithumb_bot.strategy.base as strategy_base
+import bithumb_bot.strategy.registry as strategy_registry
 from bithumb_bot.strategy.sma import SmaWithFilterStrategy
+from bithumb_bot.strategy.sma_legacy_adapter import LEGACY_DB_BOUND_STRATEGY_STATUS
 from bithumb_bot.strategy import create_strategy, list_strategies
 from bithumb_bot.strategy.base import StrategyDecision
 
@@ -40,6 +42,15 @@ def test_db_bound_strategy_protocol_is_explicitly_legacy() -> None:
     assert "decide(" in legacy_source
     assert "Deprecated alias" in strategy_source
     assert "decide_snapshot(" in policy_source
+
+
+def test_registry_factory_type_no_longer_names_db_bound_strategy_as_generic_strategy() -> None:
+    annotations = strategy_registry.create_strategy.__annotations__
+
+    assert "Strategy]" not in str(annotations.get("return"))
+    assert "LegacyDbStrategy" in str(annotations.get("return"))
+    assert "StrategyPolicy" in str(annotations.get("return"))
+    assert LEGACY_DB_BOUND_STRATEGY_STATUS.endswith("not_promotion_grade")
 
 
 def test_compute_signal_uses_default_strategy_name_from_settings(tmp_path) -> None:
@@ -91,17 +102,20 @@ def test_compute_signal_routes_sma_with_filter_through_snapshot_orchestration(
     old_env_db_path = os.environ.get("DB_PATH")
     calls: list[str] = []
 
+    original_typed_boundary = engine_module.decide_sma_with_filter_runtime_snapshot_from_db
+
     def _snapshot_orchestration(conn, strategy, *, through_ts_ms=None, normalizer=None):
         calls.append(strategy.name)
-        return StrategyDecision(
-            signal="HOLD",
-            reason="test snapshot orchestration",
-            context={"strategy": strategy.name},
+        return original_typed_boundary(
+            conn,
+            strategy,
+            through_ts_ms=through_ts_ms,
+            normalizer=normalizer,
         )
 
     monkeypatch.setattr(
         engine_module,
-        "decide_sma_with_filter_snapshot_from_db",
+        "decide_sma_with_filter_runtime_snapshot_from_db",
         _snapshot_orchestration,
     )
 
@@ -419,6 +433,27 @@ def test_live_compute_signal_rejects_plain_sma_cross_override() -> None:
         object.__setattr__(settings, "MODE", old_mode)
 
     assert "plain_sma_live_not_allowed" in str(exc.value)
+
+
+def test_live_real_order_boundary_disallows_legacy_db_strategy_fallback() -> None:
+    old_mode = settings.MODE
+    old_armed = settings.LIVE_REAL_ORDER_ARMED
+    old_dry_run = settings.LIVE_DRY_RUN
+
+    object.__setattr__(settings, "MODE", "live")
+    object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
+    object.__setattr__(settings, "LIVE_DRY_RUN", False)
+    try:
+        assert engine_module._legacy_db_strategy_fallback_allowed(
+            selected_strategy_name="sma_cross"
+        ) is False
+        assert engine_module._legacy_db_strategy_fallback_allowed(
+            selected_strategy_name="sma_with_filter"
+        ) is False
+    finally:
+        object.__setattr__(settings, "MODE", old_mode)
+        object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", old_armed)
+        object.__setattr__(settings, "LIVE_DRY_RUN", old_dry_run)
 
 
 def test_sma_cross_is_excluded_from_research_promotion_plugin_registry() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from .broker.order_rules import get_effective_order_rules
@@ -12,6 +13,7 @@ from .core.sma_policy import (
     MarketWindow,
     PositionSnapshot,
     SmaPolicyConfig,
+    StrategyDecisionV2,
 )
 from .decision_contract import build_replay_fingerprint
 from .dust import build_dust_display_context, build_position_state_model
@@ -39,6 +41,41 @@ from .runtime_sma_context import (
 from .strategy.base import PositionContext, StrategyDecision
 from .strategy.exit_rules import ExitPolicyConfig
 from .strategy.sma_decision_assembler import evaluate_sma_final_decision
+
+
+@dataclass(frozen=True)
+class RuntimeSmaDecisionResult:
+    """Typed SMA runtime decision before legacy persistence serialization."""
+
+    decision: StrategyDecisionV2
+    base_context: dict[str, Any]
+    position: PositionContext
+    exposure: object
+    position_state: object
+    candle_ts: int
+    market_price: float
+    replay_fingerprint: dict[str, object]
+
+    @property
+    def policy_hashes(self) -> dict[str, str]:
+        return {
+            "pure_policy_hash": self.decision.policy_hash,
+            "policy_contract_hash": self.decision.policy_contract_hash,
+            "policy_input_hash": self.decision.policy_input_hash,
+            "policy_decision_hash": self.decision.policy_decision_hash,
+        }
+
+    def legacy_strategy_decision(self) -> StrategyDecision:
+        return legacy_strategy_decision_from_sma_final_decision(
+            decision=self.decision,
+            base_context=dict(self.base_context),
+            position=self.position,
+            exposure=self.exposure,
+            position_state=self.position_state,
+        )
+
+    def as_legacy_dict(self) -> dict[str, Any]:
+        return self.legacy_strategy_decision().as_dict()
 
 
 def _load_signal_rows(
@@ -256,13 +293,13 @@ def _policy_position_snapshot(
     )
 
 
-def build_sma_with_filter_decision_from_normalized_db(
+def build_sma_with_filter_runtime_decision_from_normalized_db(
     conn: sqlite3.Connection,
     strategy: object,
     *,
     through_ts_ms: int | None = None,
-) -> StrategyDecision | None:
-    """Read normalized DB state and serialize the typed final decision."""
+) -> RuntimeSmaDecisionResult | None:
+    """Read normalized DB state and return the typed final SMA runtime decision."""
     from .utils_time import parse_interval_sec
 
     if int(strategy.short_n) >= int(strategy.long_n):
@@ -699,7 +736,7 @@ def build_sma_with_filter_decision_from_normalized_db(
         "market_regime_enabled": bool(strategy.market_regime_enabled),
         "candidate_regime_policy_configured": bool(candidate_regime_decision.get("regime_policy_present")),
     }
-    base_context["replay_fingerprint"] = build_replay_fingerprint(
+    replay_fingerprint = build_replay_fingerprint(
         strategy_name=strategy.name,
         pair=strategy.pair,
         interval=strategy.interval,
@@ -712,14 +749,33 @@ def build_sma_with_filter_decision_from_normalized_db(
         slippage_bps=float(strategy.slippage_bps),
         regime_version=str(market_regime.get("version") or ""),
     )
+    base_context["replay_fingerprint"] = replay_fingerprint
 
-    return legacy_strategy_decision_from_sma_final_decision(
+    return RuntimeSmaDecisionResult(
         decision=final_policy_decision,
         base_context=base_context,
         position=position,
         exposure=exposure,
         position_state=position_state,
+        candle_ts=int(ts_list[-1]),
+        market_price=float(closes[-1]),
+        replay_fingerprint=replay_fingerprint,
     )
+
+
+def build_sma_with_filter_decision_from_normalized_db(
+    conn: sqlite3.Connection,
+    strategy: object,
+    *,
+    through_ts_ms: int | None = None,
+) -> StrategyDecision | None:
+    """Compatibility serializer for legacy callers expecting StrategyDecision."""
+    result = build_sma_with_filter_runtime_decision_from_normalized_db(
+        conn,
+        strategy,
+        through_ts_ms=through_ts_ms,
+    )
+    return None if result is None else result.legacy_strategy_decision()
 
 
 def decide_sma_with_filter_snapshot_from_db(
@@ -729,7 +785,24 @@ def decide_sma_with_filter_snapshot_from_db(
     through_ts_ms: int | None = None,
     normalizer: PositionStateNormalizer | None = None,
 ) -> StrategyDecision | None:
-    """Live/runtime orchestration boundary for sma_with_filter decisions."""
+    """Compatibility serializer for legacy callers expecting StrategyDecision."""
+    result = decide_sma_with_filter_runtime_snapshot_from_db(
+        conn,
+        strategy,
+        through_ts_ms=through_ts_ms,
+        normalizer=normalizer,
+    )
+    return None if result is None else result.legacy_strategy_decision()
+
+
+def decide_sma_with_filter_runtime_snapshot_from_db(
+    conn: sqlite3.Connection,
+    strategy: object,
+    *,
+    through_ts_ms: int | None = None,
+    normalizer: PositionStateNormalizer | None = None,
+) -> RuntimeSmaDecisionResult | None:
+    """Live/runtime orchestration boundary for typed sma_with_filter decisions."""
     signal_through_ts_ms = _resolve_signal_through_ts_ms(
         interval=strategy.interval,
         through_ts_ms=through_ts_ms,
@@ -750,7 +823,7 @@ def decide_sma_with_filter_snapshot_from_db(
             slippage_bps=float(strategy.slippage_bps),
             entry_edge_buffer_ratio=float(strategy.entry_edge_buffer_ratio),
         )
-    return build_sma_with_filter_decision_from_normalized_db(
+    return build_sma_with_filter_runtime_decision_from_normalized_db(
         conn,
         strategy,
         through_ts_ms=signal_through_ts_ms,

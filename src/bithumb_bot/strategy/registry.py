@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Callable
 
-from .base import Strategy
+from .base import LegacyDbStrategy, StrategyPolicy
 
-StrategyFactory = Callable[..., Strategy]
+StrategyFactory = Callable[..., LegacyDbStrategy | StrategyPolicy]
 
 _REGISTRY: dict[str, StrategyFactory] = {}
 
@@ -16,7 +16,7 @@ def register_strategy(name: str, factory: StrategyFactory) -> None:
     _REGISTRY[key] = factory
 
 
-def create_strategy(name: str, **kwargs) -> Strategy:
+def create_strategy(name: str, **kwargs) -> LegacyDbStrategy | StrategyPolicy:
     key = str(name or "").strip().lower()
     factory = _REGISTRY.get(key)
     if factory is None:

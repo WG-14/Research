@@ -674,8 +674,8 @@ def test_runtime_decide_is_read_only_and_normalization_boundary_is_explicit() ->
     normalizer_source = inspect.getsource(
         runtime_position_state_normalizer.PositionStateNormalizer.normalize_and_persist
     )
-    builder_source = inspect.getsource(runtime_sma.build_sma_with_filter_decision_from_normalized_db)
-    orchestration_source = inspect.getsource(runtime_sma.decide_sma_with_filter_snapshot_from_db)
+    builder_source = inspect.getsource(runtime_sma.build_sma_with_filter_runtime_decision_from_normalized_db)
+    orchestration_source = inspect.getsource(runtime_sma.decide_sma_with_filter_runtime_snapshot_from_db)
     runtime_boundary_source = inspect.getsource(runtime_sma_snapshot.decide_sma_with_filter_snapshot_from_db)
     runtime_boundary_module_source = inspect.getsource(runtime_sma_snapshot)
 
@@ -690,7 +690,7 @@ def test_runtime_decide_is_read_only_and_normalization_boundary_is_explicit() ->
     assert "normalize_and_persist(" in orchestration_source
     assert "strategy.decide(" not in orchestration_source
     assert "_decide_from_normalized_db(" not in orchestration_source
-    assert "build_sma_with_filter_decision_from_normalized_db(" in orchestration_source
+    assert "build_sma_with_filter_runtime_decision_from_normalized_db(" in orchestration_source
     assert "_runtime_snapshot_from_db(" in runtime_boundary_source
     assert "decide_sma_with_filter_snapshot_from_db as _strategy_snapshot_from_db" not in runtime_boundary_module_source
 
@@ -722,7 +722,7 @@ def test_runtime_snapshot_builder_does_not_import_private_strategy_sma_helpers()
 
 
 def test_runtime_context_owns_sma_legacy_serialization_helpers() -> None:
-    builder_source = inspect.getsource(runtime_sma.build_sma_with_filter_decision_from_normalized_db)
+    builder_source = inspect.getsource(runtime_sma.RuntimeSmaDecisionResult.legacy_strategy_decision)
     strategy_module_source = inspect.getsource(SmaWithFilterStrategy)
 
     assert "runtime_sma_context" in inspect.getsource(runtime_sma)
@@ -989,7 +989,7 @@ def test_replay_bundle_uses_read_only_noop_normalizer(monkeypatch) -> None:
 def test_compute_signal_uses_direct_sma_with_filter_snapshot_path(monkeypatch) -> None:
     conn = _build_candle_db([10.0] * 11 + [11.0])
     events: list[str] = []
-    original_builder = runtime_sma.build_sma_with_filter_decision_from_normalized_db
+    original_builder = runtime_sma.build_sma_with_filter_runtime_decision_from_normalized_db
     old_pair = engine.settings.PAIR
     old_interval = engine.settings.INTERVAL
 
@@ -1009,7 +1009,7 @@ def test_compute_signal_uses_direct_sma_with_filter_snapshot_path(monkeypatch) -
         "_decide_from_normalized_db",
         _raise_legacy_normalized_db_decide,
     )
-    monkeypatch.setattr(runtime_sma, "build_sma_with_filter_decision_from_normalized_db", _builder)
+    monkeypatch.setattr(runtime_sma, "build_sma_with_filter_runtime_decision_from_normalized_db", _builder)
 
     try:
         object.__setattr__(engine.settings, "PAIR", "BTC_KRW")
@@ -1026,10 +1026,50 @@ def test_compute_signal_uses_direct_sma_with_filter_snapshot_path(monkeypatch) -
     assert events == ["builder"]
 
 
+def test_typed_runtime_sma_result_preserves_policy_hashes_until_legacy_serialization() -> None:
+    conn = _build_candle_db([10.0] * 11 + [11.0])
+    strategy = create_sma_with_filter_strategy(
+        short_n=2,
+        long_n=3,
+        pair="BTC_KRW",
+        interval="1m",
+        min_gap_ratio=0.0,
+        volatility_window=3,
+        min_volatility_ratio=0.0,
+        overextended_lookback=1,
+        overextended_max_return_ratio=0.0,
+        slippage_bps=0.0,
+        live_fee_rate_estimate=0.0,
+        entry_edge_buffer_ratio=0.0,
+        cost_edge_enabled=False,
+        market_regime_enabled=False,
+        candidate_regime_policy=_allowing_policy(),
+    )
+
+    try:
+        result = runtime_sma.decide_sma_with_filter_runtime_snapshot_from_db(
+            conn,
+            strategy,
+            through_ts_ms=1_700_000_000_000 + 11 * 60_000,
+        )
+    finally:
+        conn.close()
+
+    assert result is not None
+    original_policy_decision_hash = result.decision.policy_decision_hash
+    result.base_context["policy_decision_hash"] = "sha256:mutated_legacy_context"
+    legacy_payload = result.as_legacy_dict()
+
+    assert result.decision.policy_decision_hash == original_policy_decision_hash
+    assert result.policy_hashes["policy_decision_hash"] == original_policy_decision_hash
+    assert legacy_payload["policy_decision_hash"] == original_policy_decision_hash
+    assert legacy_payload["pure_policy_trace"]["policy_decision_hash"] == original_policy_decision_hash
+
+
 def test_runtime_replay_export_uses_direct_sma_with_filter_snapshot_path(monkeypatch) -> None:
     conn = _build_candle_db([10.0] * 11 + [11.0])
     events: list[str] = []
-    original_builder = runtime_sma.build_sma_with_filter_decision_from_normalized_db
+    original_builder = runtime_sma.build_sma_with_filter_runtime_decision_from_normalized_db
     strategy = create_sma_with_filter_strategy(
         short_n=2,
         long_n=3,
@@ -1064,7 +1104,7 @@ def test_runtime_replay_export_uses_direct_sma_with_filter_snapshot_path(monkeyp
         "_decide_from_normalized_db",
         _raise_legacy_normalized_db_decide,
     )
-    monkeypatch.setattr(runtime_sma, "build_sma_with_filter_decision_from_normalized_db", _builder)
+    monkeypatch.setattr(runtime_sma, "build_sma_with_filter_runtime_decision_from_normalized_db", _builder)
 
     try:
         events_out = export_runtime_replay_decisions(
