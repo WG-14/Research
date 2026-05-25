@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import inspect
 import sqlite3
+from dataclasses import replace
 
 from bithumb_bot.core import sma_policy
 from bithumb_bot.core.sma_policy import (
@@ -17,7 +18,14 @@ from bithumb_bot.research.backtest_engine import SmaWithFilterDecisionAdapter
 from bithumb_bot.research.backtest_engine import run_sma_backtest
 from bithumb_bot.research import backtest_kernel
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
-from bithumb_bot.research.experiment_manifest import DateRange, ExecutionTimingPolicy
+from bithumb_bot.research.decision_event import ResearchDecisionEvent
+from bithumb_bot.research.experiment_manifest import (
+    DateRange,
+    ExecutionTimingPolicy,
+    PortfolioPolicy,
+    PositionSizingPolicy,
+)
+from bithumb_bot import engine
 from bithumb_bot.strategy.sma import create_sma_with_filter_strategy
 from bithumb_bot.strategy import sma as runtime_sma
 from bithumb_bot.strategy.exit_rules import ExitPolicyConfig, evaluate_sma_exit_policy
@@ -573,6 +581,7 @@ def test_runtime_decide_is_read_only_and_normalization_boundary_is_explicit() ->
     load_position_source = inspect.getsource(runtime_sma._load_position_context)
     normalizer_source = inspect.getsource(runtime_sma.PositionStateNormalizer.normalize_and_persist)
     decide_source = inspect.getsource(runtime_sma.SmaWithFilterStrategy.decide)
+    normalized_db_source = inspect.getsource(runtime_sma.SmaWithFilterStrategy._decide_from_normalized_db)
     orchestration_source = inspect.getsource(runtime_sma.decide_sma_with_filter_snapshot_from_db)
 
     assert "mark_harmless_dust_positions" not in load_position_source
@@ -582,9 +591,10 @@ def test_runtime_decide_is_read_only_and_normalization_boundary_is_explicit() ->
     assert "reclassify_non_executable_open_exposure" in normalizer_source
     assert "conn.commit()" in normalizer_source
     assert "normalize_and_persist(" not in decide_source
-    assert "_load_position_context(" in decide_source
+    assert "_load_position_context(" in normalized_db_source
     assert "normalize_and_persist(" in orchestration_source
-    assert "strategy.decide(" in orchestration_source
+    assert "strategy.decide(" not in orchestration_source
+    assert "_decide_from_normalized_db(" in orchestration_source
 
 
 class _CommitCountingConnection:
@@ -721,6 +731,80 @@ def test_snapshot_orchestration_normalizes_before_policy_evaluation(monkeypatch)
     assert events == ["normalize", "policy"]
 
 
+def test_snapshot_orchestration_does_not_call_legacy_decide_facade(monkeypatch) -> None:
+    conn = _build_candle_db([10.0, 10.0, 10.0, 10.0, 11.0])
+    strategy = create_sma_with_filter_strategy(
+        short_n=2,
+        long_n=3,
+        pair="BTC_KRW",
+        interval="1m",
+        min_gap_ratio=0.0,
+        volatility_window=3,
+        min_volatility_ratio=0.0,
+        overextended_lookback=1,
+        overextended_max_return_ratio=0.0,
+        slippage_bps=0.0,
+        live_fee_rate_estimate=0.0,
+        entry_edge_buffer_ratio=0.0,
+        cost_edge_enabled=False,
+        market_regime_enabled=False,
+        candidate_regime_policy=_allowing_policy(),
+    )
+
+    def _raise_legacy_decide(*args, **kwargs):
+        raise AssertionError("legacy decide facade was called")
+
+    monkeypatch.setattr(runtime_sma.SmaWithFilterStrategy, "decide", _raise_legacy_decide)
+
+    class _Normalizer:
+        def normalize_and_persist(self, conn, **kwargs):
+            return 0
+
+    try:
+        decision = runtime_sma.decide_sma_with_filter_snapshot_from_db(
+            conn,
+            strategy,
+            normalizer=_Normalizer(),
+        )
+    finally:
+        conn.close()
+
+    assert decision is not None
+    assert decision.context["policy_decision_hash"].startswith("sha256:")
+
+
+def test_compute_signal_uses_direct_sma_with_filter_snapshot_path(monkeypatch) -> None:
+    conn = _build_candle_db([10.0] * 11 + [11.0])
+    events: list[str] = []
+    original_decide_snapshot = runtime_sma.SmaWithFilterStrategy.decide_snapshot
+    old_pair = engine.settings.PAIR
+    old_interval = engine.settings.INTERVAL
+
+    def _raise_legacy_decide(*args, **kwargs):
+        raise AssertionError("legacy decide facade was called")
+
+    def _decide_snapshot(self, **kwargs):
+        events.append("policy")
+        return original_decide_snapshot(self, **kwargs)
+
+    monkeypatch.setattr(runtime_sma.SmaWithFilterStrategy, "decide", _raise_legacy_decide)
+    monkeypatch.setattr(runtime_sma.SmaWithFilterStrategy, "decide_snapshot", _decide_snapshot)
+
+    try:
+        object.__setattr__(engine.settings, "PAIR", "BTC_KRW")
+        object.__setattr__(engine.settings, "INTERVAL", "1m")
+        payload = engine.compute_signal(conn, 2, 3, strategy_name="sma_with_filter")
+    finally:
+        object.__setattr__(engine.settings, "PAIR", old_pair)
+        object.__setattr__(engine.settings, "INTERVAL", old_interval)
+        conn.close()
+
+    assert payload is not None
+    assert payload["strategy"] == "sma_with_filter"
+    assert payload["policy_decision_hash"].startswith("sha256:")
+    assert events == ["policy"]
+
+
 def test_research_kernel_reevaluates_policy_with_flat_simulated_position() -> None:
     result = run_sma_backtest(
         dataset=_dataset_from_closes([10.0, 10.0, 10.0, 10.0, 11.0]),
@@ -740,8 +824,197 @@ def test_research_kernel_reevaluates_policy_with_flat_simulated_position() -> No
     assert result.decisions
     decision = result.decisions[-1]
     assert decision["research_policy_recomputed_with_simulated_position"] is True
+    assert decision["research_policy_comparable"] is True
     assert decision["research_policy_position_terminal_state"] == "research_simulated_flat"
     assert decision["pure_policy_trace"]["position"]["terminal_state"] == "research_simulated_flat"
+    assert decision["final_signal"] == decision["pure_policy_trace"]["final_signal"] == "BUY"
+
+
+def test_research_kernel_missing_sma_policy_metadata_fails_closed_not_comparable() -> None:
+    dataset = _dataset_from_closes([10.0, 10.0, 10.0, 10.0, 11.0])
+    event = ResearchDecisionEvent(
+        candle_ts=dataset.candles[-1].ts,
+        decision_ts=dataset.candles[-1].ts + 60_000,
+        strategy_name="sma_with_filter",
+        strategy_version="sma_with_filter.research_runtime_contract.v2",
+        raw_signal="BUY",
+        final_signal="BUY",
+        reason="event-first buy must not be authoritative",
+        feature_snapshot={},
+        strategy_diagnostics={},
+        entry_signal="BUY",
+        exit_signal="BUY",
+        exit_intent={"mode": "evaluate_exit_policy"},
+        extra_payload={},
+    )
+
+    result = backtest_kernel.run_decision_event_backtest(
+        dataset=dataset,
+        strategy_name="sma_with_filter",
+        parameter_values={
+            "SMA_SHORT": 2,
+            "SMA_LONG": 3,
+            "SMA_FILTER_GAP_MIN_RATIO": 0.0,
+            "SMA_FILTER_VOL_MIN_RANGE_RATIO": 0.0,
+            "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": 0.0,
+            "SMA_COST_EDGE_ENABLED": False,
+            "SMA_MARKET_REGIME_ENABLED": False,
+        },
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        decision_events=(event,),
+    )
+
+    assert result.decisions
+    decision = result.decisions[-1]
+    assert decision["final_signal"] == "HOLD"
+    assert decision["blocked"] is True
+    assert decision["entry_reason"] == "sma_with_filter_policy_decision_missing_not_comparable"
+    assert decision["research_policy_recomputed_with_simulated_position"] is False
+    assert decision["research_policy_unsupported"] is True
+    assert decision["research_policy_comparable"] is False
+    assert decision["research_policy_unsupported_reason"] == (
+        "sma_with_filter_policy_decision_missing_not_comparable"
+    )
+
+
+def test_research_kernel_open_position_exit_fields_come_from_policy_decision() -> None:
+    dataset = _dataset_from_closes([12.0, 12.0, 12.0, 12.0, 11.0])
+    events = SmaWithFilterDecisionAdapter(
+        parameter_values={
+            "SMA_SHORT": 2,
+            "SMA_LONG": 3,
+            "SMA_FILTER_GAP_MIN_RATIO": 0.0,
+            "SMA_FILTER_VOL_MIN_RANGE_RATIO": 0.0,
+            "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": 0.0,
+            "SMA_COST_EDGE_ENABLED": False,
+            "SMA_MARKET_REGIME_ENABLED": False,
+        },
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        timing_policy=ExecutionTimingPolicy(),
+    ).build_events(dataset)
+    event = replace(
+        events[-1],
+        extra_payload={**events[-1].extra_payload, "prev_above": True},
+    )
+
+    result = backtest_kernel.run_decision_event_backtest(
+        dataset=dataset,
+        strategy_name="sma_with_filter",
+        parameter_values={
+            "SMA_SHORT": 2,
+            "SMA_LONG": 3,
+            "SMA_FILTER_GAP_MIN_RATIO": 0.0,
+            "SMA_FILTER_VOL_MIN_RANGE_RATIO": 0.0,
+            "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": 0.0,
+            "SMA_COST_EDGE_ENABLED": False,
+            "SMA_MARKET_REGIME_ENABLED": False,
+        },
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        decision_events=(event,),
+        portfolio_policy=PortfolioPolicy(
+            schema_version=1,
+            starting_cash_krw=1_000_000.0,
+            quote_currency="KRW",
+            initial_position_qty=1.0,
+            cash_interest_policy="zero",
+            position_sizing=PositionSizingPolicy(
+                type="fractional_cash",
+                buy_fraction=0.99,
+                sell_policy="sell_all_available_position",
+                cash_buffer_policy="retain_1_percent_before_fees",
+            ),
+            source="unit_test",
+        ),
+    )
+
+    assert result.decisions
+    decision = result.decisions[-1]
+    assert decision["research_policy_recomputed_with_simulated_position"] is True
+    assert decision["final_signal"] == decision["pure_policy_trace"]["final_signal"]
+    assert decision["exit_rule"] == decision["pure_policy_trace"]["exit_rule"] == "opposite_cross"
+    assert decision["exit_filter_suppression_prevented"] == (
+        decision["pure_policy_trace"]["exit_filter_suppression_prevented"]
+    )
+
+
+def test_research_pending_fill_snapshot_is_not_comparable_or_flat() -> None:
+    snapshot = backtest_kernel._research_position_snapshot(
+        qty=1.0,
+        sellable_qty=1.0,
+        pending_buy_qty=0.0,
+        pending_sell_qty=1.0,
+        entry_ts=1_700_000_000_000,
+        entry_price=10.0,
+        candle_ts=1_700_000_240_000,
+        market_price=11.0,
+    )
+
+    assert snapshot.terminal_state == "research_pending_fill_not_policy_comparable"
+    assert snapshot.entry_allowed is False
+    assert snapshot.exit_allowed is False
+    assert snapshot.effective_flat is True
+    assert snapshot.entry_block_reason == "research_pending_fill_not_policy_comparable"
+    assert snapshot.exit_block_reason == "research_pending_fill_not_policy_comparable"
+
+
+def test_final_sma_decision_unsupported_states_fail_closed_not_flat() -> None:
+    unsupported = (
+        _open_position(
+            exit_allowed=False,
+            exit_block_reason="reserved_exit_pending",
+            terminal_state="reserved_exit_pending",
+            reserved_exit_lot_count=1,
+            sellable_executable_lot_count=0,
+        ),
+        _open_position(
+            exit_allowed=False,
+            exit_block_reason="no_executable_exit_lot",
+            terminal_state="non_executable_position",
+            open_lot_count=0,
+            sellable_executable_lot_count=0,
+            has_executable_exposure=False,
+            has_non_executable_residue=True,
+        ),
+        PositionSnapshot(
+            in_position=False,
+            entry_allowed=False,
+            exit_allowed=False,
+            entry_block_reason="authority_missing_recovery_required",
+            exit_block_reason="authority_missing_recovery_required",
+            terminal_state="authority_gap",
+            has_any_position_residue=True,
+        ),
+        PositionSnapshot(
+            in_position=False,
+            entry_allowed=False,
+            exit_allowed=False,
+            entry_block_reason="recovery_required_present",
+            exit_block_reason="recovery_required_present",
+            terminal_state="recovery_required",
+            has_any_position_residue=True,
+        ),
+    )
+
+    for position in unsupported:
+        decision = evaluate_sma_final_decision(
+            market=_market_window(),
+            position=position,
+            config=_policy_config(),
+            execution_context=ExecutionConstraintSnapshot(fee_rate_for_decision=0.0),
+            exit_policy_config=_exit_policy_config(),
+        )
+
+        assert decision.final_signal == "HOLD"
+        assert decision.position_snapshot.terminal_state == position.terminal_state
+        assert decision.final_reason in {
+            position.entry_block_reason,
+            position.exit_block_reason,
+            "position held: no exit rule triggered",
+        }
+        assert decision.position_snapshot.terminal_state != "flat"
 
 
 def test_research_adapter_placeholder_is_not_full_position_equivalence() -> None:

@@ -470,6 +470,9 @@ class SmaWithFilterDecisionAdapter:
     strategy_name: str = "sma_with_filter"
 
     def build_events(self, dataset: DatasetSnapshot) -> tuple[ResearchDecisionEvent, ...]:
+        # Compatibility serialization layer only. The backtest kernel must
+        # re-evaluate sma_with_filter through StrategyDecisionV2 with the
+        # simulated position before treating final action fields as authority.
         short_n = int(self.parameter_values.get("SMA_SHORT", self.parameter_values.get("short_n", 0)))
         long_n = int(self.parameter_values.get("SMA_LONG", self.parameter_values.get("long_n", 0)))
         if short_n <= 0 or long_n <= 0 or short_n >= long_n:

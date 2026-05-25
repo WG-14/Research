@@ -518,6 +518,11 @@ def _run_decision_event_backtest_impl(
             if strategy_plugin.name == "sma_with_filter"
             else None
         )
+        sma_policy_unsupported_reason = ""
+        if strategy_plugin.name == "sma_with_filter" and policy_decision is None:
+            sma_policy_unsupported_reason = (
+                "sma_with_filter_policy_decision_missing_not_comparable"
+            )
         if policy_decision is not None:
             entry_decision = policy_decision.entry_decision
             raw_signal = str(policy_decision.raw_signal or "HOLD").upper()
@@ -544,9 +549,15 @@ def _run_decision_event_backtest_impl(
         requested_action = str(event.final_signal or "HOLD").upper()
         if policy_decision is not None:
             requested_action = str(policy_decision.final_signal or "HOLD").upper()
+        elif sma_policy_unsupported_reason:
+            requested_action = "HOLD"
         action = requested_action
-        blocked = False
-        block_reason = str(policy_decision.final_reason) if policy_decision is not None else event.reason
+        blocked = bool(sma_policy_unsupported_reason)
+        block_reason = (
+            str(policy_decision.final_reason)
+            if policy_decision is not None
+            else sma_policy_unsupported_reason or event.reason
+        )
         exit_evaluations: list[dict[str, object]] = []
         exit_rule = str((event.exit_intent or {}).get("exit_rule") or "") if event.exit_intent else ""
         exit_reason = str((event.exit_intent or {}).get("exit_reason") or "") if event.exit_intent else ""
@@ -554,8 +565,10 @@ def _run_decision_event_backtest_impl(
             isinstance(event.exit_intent, dict)
             and str(event.exit_intent.get("mode") or "") == "evaluate_exit_policy"
         )
-        if evaluates_exit_policy and not (
-            strategy_plugin.name == "sma_with_filter" and policy_decision is not None
+        if (
+            evaluates_exit_policy
+            and not (strategy_plugin.name == "sma_with_filter" and policy_decision is not None)
+            and not sma_policy_unsupported_reason
         ):
             action = "BUY" if requested_action == "BUY" else "HOLD"
             if sellable_qty > 1e-12:
@@ -710,6 +723,10 @@ def _run_decision_event_backtest_impl(
             exit_filter_suppression_prevented = bool(
                 policy_decision.exit_filter_suppression_prevented
             )
+        elif sma_policy_unsupported_reason:
+            protective_exit_overrode_entry = False
+            entry_blocked = False
+            exit_filter_suppression_prevented = False
         else:
             protective_exit_overrode_entry = bool(
                 raw_signal == "BUY"
@@ -787,6 +804,9 @@ def _run_decision_event_backtest_impl(
                 "exit_intent": dict(event.exit_intent) if event.exit_intent is not None else None,
                 "research_policy_position_terminal_state": policy_position.terminal_state,
                 "research_policy_recomputed_with_simulated_position": policy_decision is not None,
+                "research_policy_unsupported": bool(sma_policy_unsupported_reason),
+                "research_policy_unsupported_reason": sma_policy_unsupported_reason,
+                "research_policy_comparable": not bool(sma_policy_unsupported_reason),
             }
         )
         if policy_decision is not None:

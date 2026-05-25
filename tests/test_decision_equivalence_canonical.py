@@ -4,7 +4,13 @@ import json
 
 import pytest
 
-from bithumb_bot.canonical_decision import EMPTY_ORDER_RULES_HASH, runtime_decision_to_canonical_event, validate_canonical_decision_payload
+from bithumb_bot.canonical_decision import (
+    EMPTY_ORDER_RULES_HASH,
+    PROMOTION_REQUIRED_CANONICAL_FIELDS,
+    research_decision_to_canonical_event,
+    runtime_decision_to_canonical_event,
+    validate_canonical_decision_payload,
+)
 from bithumb_bot.decision_equivalence import (
     compare_decision_export_artifacts,
     compare_decision_equivalence,
@@ -282,6 +288,80 @@ def test_canonical_v2_policy_hash_mismatches_have_explicit_reasons(
 
     assert result.ok is False
     assert reason in result.report["reason_codes"]
+
+
+def test_policy_hashes_are_canonical_diagnostics_not_promotion_required() -> None:
+    assert "policy_contract_hash" not in PROMOTION_REQUIRED_CANONICAL_FIELDS
+    assert "policy_input_hash" not in PROMOTION_REQUIRED_CANONICAL_FIELDS
+    assert "policy_decision_hash" not in PROMOTION_REQUIRED_CANONICAL_FIELDS
+
+
+def test_runtime_canonical_export_includes_policy_hashes_from_context() -> None:
+    event = runtime_decision_to_canonical_event(
+        StrategyDecision(
+            signal="BUY",
+            reason="sma golden cross",
+            context={
+                "strategy": "sma_with_filter",
+                "ts": 1_714_521_660_000,
+                "raw_signal": "BUY",
+                "final_signal": "BUY",
+                "policy_contract_hash": "sha256:contract",
+                "policy_input_hash": "sha256:input",
+                "policy_decision_hash": "sha256:decision",
+                "prev_s": 100.0,
+                "prev_l": 101.0,
+                "curr_s": 102.0,
+                "curr_l": 101.0,
+                "gap_ratio": 0.01,
+                "fee_authority": {"fee_source": "test", "degraded": False},
+                "order_rules": {"source": "test", "min_qty": 0.0001},
+                "position_gate": {
+                    "terminal_state": "flat",
+                    "entry_allowed": True,
+                    "exit_allowed": False,
+                    "effective_flat": True,
+                    "normalized_exposure_active": False,
+                    "dust_state": "flat",
+                    "raw_total_asset_qty": 0.0,
+                    "open_lot_count": 0,
+                    "dust_tracking_lot_count": 0,
+                    "reserved_exit_lot_count": 0,
+                    "sellable_executable_lot_count": 0,
+                },
+            },
+        ),
+        market="KRW-BTC",
+        interval="1m",
+        profile_content_hash="sha256:profile",
+        dataset_content_hash="sha256:data",
+        db_data_fingerprint="sha256:data",
+        through_ts_ms=1_714_521_660_000,
+        execution_timing_policy_hash="sha256:timing",
+        strategy_version="sma_with_filter.research_runtime_contract.v2",
+        strategy_decision_contract_version="research_sma_decision_contract.v3_entry_exit_risk_exit",
+    ).as_dict()
+
+    assert event["policy_contract_hash"] == "sha256:contract"
+    assert event["policy_input_hash"] == "sha256:input"
+    assert event["policy_decision_hash"] == "sha256:decision"
+
+
+def test_research_canonical_export_includes_policy_hashes() -> None:
+    event = research_decision_to_canonical_event(
+        _decision_v2(
+            policy_contract_hash="sha256:contract",
+            policy_input_hash="sha256:input",
+            policy_decision_hash="sha256:decision",
+        ),
+        profile_content_hash="sha256:profile",
+        dataset_content_hash="sha256:data",
+        execution_timing_policy_hash="sha256:timing",
+    ).as_dict()
+
+    assert event["policy_contract_hash"] == "sha256:contract"
+    assert event["policy_input_hash"] == "sha256:input"
+    assert event["policy_decision_hash"] == "sha256:decision"
 
 
 def test_mixed_canonical_contract_versions_fail_with_reason_code() -> None:

@@ -1144,6 +1144,15 @@ class SmaWithFilterStrategy:
         # Deprecated DB-bound compatibility facade. Runtime orchestration must
         # call PositionStateNormalizer explicitly before entering this read-only
         # snapshot path.
+        return self._decide_from_normalized_db(conn, through_ts_ms=through_ts_ms)
+
+    def _decide_from_normalized_db(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        through_ts_ms: int | None = None,
+    ) -> StrategyDecision | None:
+        """Read normalized DB state and serialize the typed final decision."""
         if self.short_n >= self.long_n:
             raise ValueError("short는 long보다 작아야 해. 예: short=7 long=30")
 
@@ -1642,7 +1651,7 @@ def decide_sma_with_filter_snapshot_from_db(
             slippage_bps=float(strategy.slippage_bps),
             entry_edge_buffer_ratio=float(strategy.entry_edge_buffer_ratio),
         )
-    return strategy.decide(conn, through_ts_ms=signal_through_ts_ms)
+    return strategy._decide_from_normalized_db(conn, through_ts_ms=signal_through_ts_ms)
 
 
 def _resolve_signal_through_ts_ms(*, interval: str, through_ts_ms: int | None) -> int | None:
