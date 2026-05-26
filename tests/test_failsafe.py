@@ -15,6 +15,7 @@ from bithumb_bot.db_core import ensure_db
 from bithumb_bot.engine import get_health_status, run_loop
 from bithumb_bot.execution_service import (
     ExecutionDecisionSummary,
+    ExecutionSubmitPlan,
     LiveSignalExecutionService,
     SignalExecutionRequest,
     build_signal_execution_service,
@@ -1403,6 +1404,24 @@ def _valid_residual_submit_plan() -> dict[str, object]:
     }
 
 
+def _typed_plan(payload: dict[str, object]) -> ExecutionSubmitPlan:
+    return ExecutionSubmitPlan(
+        side=str(payload["side"]),
+        source=str(payload["source"]),
+        authority=str(payload["authority"]),
+        final_action=str(payload["final_action"]),
+        qty=payload["qty"],  # type: ignore[arg-type]
+        notional_krw=payload["notional_krw"],  # type: ignore[arg-type]
+        target_exposure_krw=payload["target_exposure_krw"],  # type: ignore[arg-type]
+        current_effective_exposure_krw=payload["current_effective_exposure_krw"],  # type: ignore[arg-type]
+        delta_krw=payload["delta_krw"],  # type: ignore[arg-type]
+        submit_expected=bool(payload["submit_expected"]),
+        pre_submit_proof_status=str(payload["pre_submit_proof_status"]),
+        block_reason=str(payload["block_reason"]),
+        idempotency_key=payload["idempotency_key"],  # type: ignore[arg-type]
+    )
+
+
 def _typed_target_execution_summary() -> ExecutionDecisionSummary:
     return ExecutionDecisionSummary(
         raw_signal="BUY",
@@ -1422,7 +1441,7 @@ def _typed_target_execution_summary() -> ExecutionDecisionSummary:
         residual_submit_plan=None,
         buy_submit_plan=None,
         target_shadow_decision=None,
-        target_submit_plan=_valid_target_submit_plan(),
+        target_submit_plan=_typed_plan(_valid_target_submit_plan()),
     )
 
 
@@ -2098,6 +2117,7 @@ def test_residual_enabled_executor_typeerror_fails_closed_without_retry() -> Non
             ts=123,
             market_price=115_679_000.0,
             decision_context={"execution_decision": decision.as_dict()},
+            execution_decision_summary=decision,
         )
     )
 

@@ -89,6 +89,24 @@ def _valid_residual_submit_plan() -> dict[str, object]:
     }
 
 
+def _typed_plan(payload: dict[str, object]) -> ExecutionSubmitPlan:
+    return ExecutionSubmitPlan(
+        side=str(payload["side"]),
+        source=str(payload["source"]),
+        authority=str(payload["authority"]),
+        final_action=str(payload["final_action"]),
+        qty=payload["qty"],  # type: ignore[arg-type]
+        notional_krw=payload["notional_krw"],  # type: ignore[arg-type]
+        target_exposure_krw=payload["target_exposure_krw"],  # type: ignore[arg-type]
+        current_effective_exposure_krw=payload["current_effective_exposure_krw"],  # type: ignore[arg-type]
+        delta_krw=payload["delta_krw"],  # type: ignore[arg-type]
+        submit_expected=bool(payload["submit_expected"]),
+        pre_submit_proof_status=str(payload["pre_submit_proof_status"]),
+        block_reason=str(payload["block_reason"]),
+        idempotency_key=payload["idempotency_key"],  # type: ignore[arg-type]
+    )
+
+
 def _typed_target_execution_summary() -> ExecutionDecisionSummary:
     return ExecutionDecisionSummary(
         raw_signal="BUY",
@@ -108,7 +126,7 @@ def _typed_target_execution_summary() -> ExecutionDecisionSummary:
         residual_submit_plan=None,
         buy_submit_plan=None,
         target_shadow_decision=None,
-        target_submit_plan=_valid_target_submit_plan(),
+        target_submit_plan=_typed_plan(_valid_target_submit_plan()),
     )
 
 
@@ -128,7 +146,7 @@ def _typed_residual_execution_summary() -> ExecutionDecisionSummary:
         buy_delta_krw=None,
         residual_live_sell_mode="enabled",
         residual_buy_sizing_mode="block",
-        residual_submit_plan=_valid_residual_submit_plan(),
+        residual_submit_plan=_typed_plan(_valid_residual_submit_plan()),
         buy_submit_plan=None,
         target_shadow_decision=None,
         target_submit_plan=None,
@@ -305,7 +323,7 @@ def test_typed_execution_summary_can_supply_validated_target_submit_plan() -> No
 
     assert submitted == {"status": "submitted", "signal": "BUY"}
     assert len(calls) == 1
-    assert calls[0]["kwargs"]["execution_submit_plan"] == summary.target_submit_plan  # type: ignore[index]
+    assert calls[0]["kwargs"]["execution_submit_plan"] == summary.target_submit_plan.as_dict()  # type: ignore[index,union-attr]
 
 
 def test_typed_execution_summary_mismatch_with_context_fails_closed(
@@ -447,6 +465,47 @@ def test_live_real_order_blocks_typed_summary_without_submit_plan(
         buy_submit_plan=None,
         target_shadow_decision=None,
         target_submit_plan=None,
+    )
+
+    result = _service(calls).execute(
+        SignalExecutionRequest(
+            signal="BUY",
+            ts=123,
+            market_price=100_000_000.0,
+            decision_context={},
+            execution_decision_summary=summary,
+        )
+    )
+
+    assert result is None
+    assert calls == []
+    assert "live_real_order_missing_typed_submit_plan" in caplog.text
+
+
+def test_live_real_order_blocks_summary_with_dict_only_submit_plan(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _arm_live_real_orders(engine="target_delta")
+    calls: list[dict[str, object]] = []
+    summary = ExecutionDecisionSummary(
+        raw_signal="BUY",
+        final_signal="BUY",
+        final_action="REBALANCE_TO_TARGET",
+        submit_expected=True,
+        pre_submit_proof_status="passed",
+        block_reason="none",
+        strategy_sell_candidate=None,
+        residual_sell_candidate=None,
+        target_exposure_krw=100_000.0,
+        current_effective_exposure_krw=0.0,
+        tracked_residual_exposure_krw=None,
+        buy_delta_krw=100_000.0,
+        residual_live_sell_mode="block",
+        residual_buy_sizing_mode="block",
+        residual_submit_plan=None,
+        buy_submit_plan=None,
+        target_shadow_decision=None,
+        target_submit_plan=_valid_target_submit_plan(),
     )
 
     result = _service(calls).execute(

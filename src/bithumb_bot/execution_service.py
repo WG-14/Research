@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Callable, Protocol
 
 from . import runtime_state
@@ -67,9 +67,10 @@ class ExecutionSubmitPlan:
     pre_submit_proof_status: str
     block_reason: str
     idempotency_key: str | None
+    extra_payload: dict[str, object] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        payload = {
             "side": self.side,
             "source": self.source,
             "authority": self.authority,
@@ -84,6 +85,8 @@ class ExecutionSubmitPlan:
             "block_reason": self.block_reason,
             "idempotency_key": self.idempotency_key,
         }
+        payload.update(dict(self.extra_payload))
+        return payload
 
     def as_final_payload(self, *, extra: dict[str, object] | None = None) -> dict[str, object]:
         payload = self.as_dict()
@@ -91,6 +94,15 @@ class ExecutionSubmitPlan:
             payload.update(extra)
         validate_execution_submit_plan_payload(payload, field_name="execution_submit_plan")
         return payload
+
+    def __getitem__(self, key: str) -> object:
+        return self.as_dict()[key]
+
+    def get(self, key: str, default: object = None) -> object:
+        return self.as_dict().get(key, default)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self.as_dict()
 
 
 EXECUTION_SUBMIT_PLAN_REQUIRED_FIELDS = frozenset(
@@ -204,24 +216,24 @@ class ExecutionDecisionSummary:
     buy_delta_krw: float | None
     residual_live_sell_mode: str
     residual_buy_sizing_mode: str
-    residual_submit_plan: dict[str, object] | None
-    buy_submit_plan: dict[str, object] | None
+    residual_submit_plan: ExecutionSubmitPlan | dict[str, object] | None
+    buy_submit_plan: ExecutionSubmitPlan | dict[str, object] | None
     target_shadow_decision: dict[str, object] | None
-    target_submit_plan: dict[str, object] | None
+    target_submit_plan: ExecutionSubmitPlan | dict[str, object] | None
     pre_trade_economics: dict[str, object] | None = None
     signal_flow: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         validate_execution_submit_plan_payload(
-            self.residual_submit_plan,
+            _submit_plan_payload(self.residual_submit_plan),
             field_name="residual_submit_plan",
         )
         validate_execution_submit_plan_payload(
-            self.buy_submit_plan,
+            _submit_plan_payload(self.buy_submit_plan),
             field_name="buy_submit_plan",
         )
         validate_execution_submit_plan_payload(
-            self.target_submit_plan,
+            _submit_plan_payload(self.target_submit_plan),
             field_name="target_submit_plan",
         )
 
@@ -262,14 +274,14 @@ class ExecutionDecisionSummary:
             "residual_live_sell_mode": self.residual_live_sell_mode,
             "residual_buy_sizing_mode": self.residual_buy_sizing_mode,
             "residual_submit_plan": (
-                None if self.residual_submit_plan is None else dict(self.residual_submit_plan)
+                None if self.residual_submit_plan is None else _submit_plan_payload(self.residual_submit_plan)
             ),
-            "buy_submit_plan": None if self.buy_submit_plan is None else dict(self.buy_submit_plan),
+            "buy_submit_plan": None if self.buy_submit_plan is None else _submit_plan_payload(self.buy_submit_plan),
             "target_shadow_decision": (
                 None if self.target_shadow_decision is None else dict(self.target_shadow_decision)
             ),
             "target_submit_plan": (
-                None if self.target_submit_plan is None else dict(self.target_submit_plan)
+                None if self.target_submit_plan is None else _submit_plan_payload(self.target_submit_plan)
             ),
             "pre_trade_economics": (
                 None if self.pre_trade_economics is None else dict(self.pre_trade_economics)
@@ -278,6 +290,48 @@ class ExecutionDecisionSummary:
             "actual_primary_block_layer": actual_primary_block_layer,
             "actual_primary_block_reason": actual_primary_block_reason,
         }
+
+
+def _submit_plan_payload(
+    plan: ExecutionSubmitPlan | dict[str, object] | None,
+) -> dict[str, object] | None:
+    if plan is None:
+        return None
+    if isinstance(plan, ExecutionSubmitPlan):
+        return plan.as_dict()
+    return dict(plan)
+
+
+def _typed_submit_plan(
+    plan: ExecutionSubmitPlan | dict[str, object] | None,
+) -> ExecutionSubmitPlan | None:
+    return plan if isinstance(plan, ExecutionSubmitPlan) else None
+
+
+def _with_submit_plan_extra(
+    plan: ExecutionSubmitPlan,
+    extra: dict[str, object],
+) -> ExecutionSubmitPlan:
+    merged = dict(plan.extra_payload)
+    merged.update(extra)
+    return replace(plan, extra_payload=merged)
+
+
+def _live_real_order_typed_submit_plan_error(
+    summary: ExecutionDecisionSummary,
+) -> str | None:
+    target_plan = _typed_submit_plan(summary.target_submit_plan)
+    residual_plan = _typed_submit_plan(summary.residual_submit_plan)
+    buy_plan = _typed_submit_plan(summary.buy_submit_plan)
+    if target_plan is None and summary.target_submit_plan is not None:
+        return "live_real_order_missing_typed_submit_plan"
+    if residual_plan is None and summary.residual_submit_plan is not None:
+        return "live_real_order_missing_typed_submit_plan"
+    if buy_plan is None and summary.buy_submit_plan is not None:
+        return "live_real_order_missing_typed_submit_plan"
+    if target_plan is None and residual_plan is None and buy_plan is None:
+        return "live_real_order_missing_typed_submit_plan"
+    return None
 
 
 def _request_execution_decision_payload(
@@ -403,6 +457,9 @@ def require_typed_execution_decision_summary_for_live_real_order(
         return None, "live_real_order_missing_typed_execution_summary"
     if not isinstance(request.execution_decision_summary, ExecutionDecisionSummary):
         return None, "live_real_order_invalid_typed_execution_summary"
+    submit_plan_error = _live_real_order_typed_submit_plan_error(request.execution_decision_summary)
+    if submit_plan_error is not None:
+        return None, submit_plan_error
     return request.execution_decision_summary, None
 
 
@@ -779,10 +836,10 @@ def build_execution_decision_summary(
 
     residual_live_sell_mode = _residual_live_sell_mode()
     residual_buy_sizing_mode = _residual_buy_sizing_mode()
-    residual_submit_plan: dict[str, object] | None = None
-    buy_submit_plan: dict[str, object] | None = None
+    residual_submit_plan: ExecutionSubmitPlan | None = None
+    buy_submit_plan: ExecutionSubmitPlan | None = None
     target_shadow_decision: dict[str, object] | None = None
-    target_submit_plan: dict[str, object] | None = None
+    target_submit_plan: ExecutionSubmitPlan | None = None
     pre_trade_economics: dict[str, object] | None = None
     execution_engine = _execution_engine()
 
@@ -959,14 +1016,15 @@ def build_execution_decision_summary(
                         ),
                         idempotency_key=target_plan.idempotency_key,
                     )
-            target_submit_plan = target_plan.as_final_payload(extra=target_plan_extra)
+            target_submit_plan = _with_submit_plan_extra(target_plan, target_plan_extra)
 
     if execution_engine == "target_delta":
         if target_submit_plan is not None:
-            action = str(target_submit_plan["final_action"])
-            submit_expected = bool(target_submit_plan["submit_expected"])
-            proof_status = str(target_submit_plan["pre_submit_proof_status"])
-            block_reason = str(target_submit_plan["block_reason"])
+            target_submit_payload = target_submit_plan.as_dict()
+            action = str(target_submit_payload["final_action"])
+            submit_expected = bool(target_submit_payload["submit_expected"])
+            proof_status = str(target_submit_payload["pre_submit_proof_status"])
+            block_reason = str(target_submit_payload["block_reason"])
         else:
             action = "BLOCK_TARGET_DELTA"
             submit_expected = False
@@ -979,7 +1037,7 @@ def build_execution_decision_summary(
             contract_payload,
             final_action=action,
             extra_block_reasons=_execution_contract_reasons(
-                target_or_buy_plan=target_submit_plan,
+                target_or_buy_plan=_submit_plan_payload(target_submit_plan),
                 pre_trade_economics=pre_trade_economics,
             ),
         )
@@ -1075,15 +1133,14 @@ def build_execution_decision_summary(
                 pre_submit_proof_status=proof_status,
                 block_reason=block_reason,
                 idempotency_key=None,
-            ).as_dict()
+            )
             pre_trade_economics = _build_buy_pre_trade_economics(
                 decision_context=payload,
-                plan=buy_submit_plan,
+                plan=buy_submit_plan.as_dict(),
                 side="BUY",
                 source="buy_submit_plan",
             )
             if pre_trade_economics is not None:
-                buy_submit_plan["pre_trade_economics"] = pre_trade_economics
                 if bool(pre_trade_economics.get("blocking_enabled")) and not bool(
                     pre_trade_economics.get("meaningful_edge")
                 ):
@@ -1091,10 +1148,17 @@ def build_execution_decision_summary(
                     submit_expected = False
                     proof_status = "failed"
                     block_reason = str(pre_trade_economics.get("reason") or "net_edge_below_minimum")
-                    buy_submit_plan["final_action"] = action
-                    buy_submit_plan["submit_expected"] = False
-                    buy_submit_plan["pre_submit_proof_status"] = proof_status
-                    buy_submit_plan["block_reason"] = block_reason
+                    buy_submit_plan = replace(
+                        buy_submit_plan,
+                        final_action=action,
+                        submit_expected=False,
+                        pre_submit_proof_status=proof_status,
+                        block_reason=block_reason,
+                    )
+                buy_submit_plan = _with_submit_plan_extra(
+                    buy_submit_plan,
+                    {"pre_trade_economics": pre_trade_economics},
+                )
     elif raw == "SELL":
         if strategy_candidate is not None and final == "SELL":
             action = "EXIT_STRATEGY_POSITION"
@@ -1134,6 +1198,18 @@ def build_execution_decision_summary(
                 intent_type="residual_close",
                 qty=float(residual_candidate.qty),
             )
+            residual_plan_extra = {
+                "intent_type": "residual_close",
+                "strategy_context": "residual_inventory_policy",
+                "would_submit_pipeline": "standard",
+                "would_intent_key": residual_intent_key,
+                "would_client_order_id_shape": "live_<ts>_sell_<submit_attempt_id>",
+                "would_order_type": "market",
+                "would_source": "residual_inventory",
+                "would_authority": "residual_inventory_policy",
+                "would_submit_side": "SELL",
+                "would_submit_qty": float(residual_candidate.qty),
+            }
             residual_submit_plan = ExecutionSubmitPlan(
                 side="SELL",
                 source="residual_inventory",
@@ -1148,20 +1224,7 @@ def build_execution_decision_summary(
                 pre_submit_proof_status=proof_status,
                 block_reason=block_reason,
                 idempotency_key=residual_intent_key,
-            ).as_dict()
-            residual_submit_plan.update(
-                {
-                    "intent_type": "residual_close",
-                    "strategy_context": "residual_inventory_policy",
-                    "would_submit_pipeline": "standard",
-                    "would_intent_key": residual_intent_key,
-                    "would_client_order_id_shape": "live_<ts>_sell_<submit_attempt_id>",
-                    "would_order_type": "market",
-                    "would_source": "residual_inventory",
-                    "would_authority": "residual_inventory_policy",
-                    "would_submit_side": "SELL",
-                    "would_submit_qty": float(residual_candidate.qty),
-                }
+                extra_payload=residual_plan_extra,
             )
         elif str(payload.get("residual_inventory_state") or "") == "RESIDUAL_INVENTORY_UNRESOLVED":
             action = "BLOCK_UNRESOLVED_RESIDUAL"
@@ -1196,7 +1259,7 @@ def build_execution_decision_summary(
         contract_payload,
         final_action=action,
         extra_block_reasons=_execution_contract_reasons(
-            target_or_buy_plan=target_submit_plan or buy_submit_plan,
+            target_or_buy_plan=_submit_plan_payload(target_submit_plan or buy_submit_plan),
             pre_trade_economics=pre_trade_economics,
         ),
     )
