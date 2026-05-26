@@ -1,6 +1,7 @@
 import os
 import argparse
 import sqlite3
+import sys
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from time import monotonic

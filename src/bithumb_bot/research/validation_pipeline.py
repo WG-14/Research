@@ -307,6 +307,11 @@ def verify_validation_run_payload(
     if smoke_reasons:
         reasons.extend(f"validation_run_{reason}" for reason in smoke_reasons)
         reasons.append("regenerate_via_research_validate")
+    if payload.get("compatibility_fallback") is True or payload.get(
+        "research_compatibility_execution_fallback"
+    ) is True:
+        reasons.append("validation_run_compatibility_fallback_not_promotion_grade")
+        reasons.append("regenerate_via_research_validate")
     if int(payload.get("validation_run_schema_version") or 0) != VALIDATION_RUN_SCHEMA_VERSION:
         reasons.append("validation_run_schema_version_mismatch")
     reasons.extend(verify_validation_run_binding(payload, expected_binding_hash=None))

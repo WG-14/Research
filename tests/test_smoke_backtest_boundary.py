@@ -27,3 +27,18 @@ def test_root_backtest_default_refuses_to_run_smoke_backtest(capsys) -> None:
     assert "evidence_scope=smoke_only_not_manifest_backed" in captured.err
     assert "standalone_backtest_not_full_validation=true" in captured.err
     assert "uv run bithumb-bot research-validate --manifest <path>" in captured.err
+
+
+def test_root_backtest_diagnostic_opt_in_runs_real_wrapper_path(monkeypatch, capsys) -> None:
+    candles = [(index * 60_000, float(100 + index)) for index in range(20)]
+    monkeypatch.setattr(smoke_backtest, "load_candles", lambda limit: candles)
+
+    assert backtest.main(["--diagnostic-smoke-only", "--short", "2", "--long", "4"]) == 0
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+
+    assert "diagnostic_only=true" in output
+    assert "non_promotable=true" in output
+    assert "promotion_grade=false" in output
+    assert "evidence_scope=smoke_only_not_manifest_backed" in output
+    assert "standalone_backtest_not_full_validation=true" in output

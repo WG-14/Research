@@ -100,9 +100,16 @@ def execution_submit_plan_to_research_request(
     side = str(submit_plan.side or "").upper()
     if side == "BUY":
         requested_notional = _positive_float_or_none(submit_plan.notional_krw)
-        requested_qty = _positive_float_or_none(submit_plan.qty)
-        if requested_notional is None or requested_qty is None:
+        if requested_notional is None:
             raise ValueError("research_buy_submit_plan_missing_size")
+        if submit_plan.qty is None:
+            if reference_price <= 0.0:
+                raise ValueError("research_buy_submit_plan_missing_size")
+            requested_qty = requested_notional / float(reference_price)
+        else:
+            requested_qty = _positive_float_or_none(submit_plan.qty)
+            if requested_qty is None:
+                raise ValueError("research_buy_submit_plan_missing_size")
     elif side == "SELL":
         requested_qty = _positive_float_or_none(submit_plan.qty)
         requested_notional = _positive_float_or_none(submit_plan.notional_krw)

@@ -347,6 +347,43 @@ def test_promotion_artifact_rejects_smoke_backtest_markers() -> None:
         verify_promotion_artifact(promotion)
 
 
+def test_promotion_artifact_rejects_nested_candidate_profile_smoke_markers() -> None:
+    promotion = _promotion()
+    candidate_profile = dict(promotion["candidate_profile"])  # type: ignore[arg-type]
+    candidate_profile.update(
+        {
+            "diagnostic_only": True,
+            "non_promotable": True,
+            "promotion_grade": False,
+            "evidence_scope": "smoke_only_not_manifest_backed",
+            "standalone_backtest_not_full_validation": True,
+        }
+    )
+    promotion["candidate_profile"] = candidate_profile
+    promotion["content_hash"] = sha256_prefixed(
+        content_hash_payload({k: v for k, v in promotion.items() if k != "content_hash"})
+    )
+
+    with pytest.raises(ApprovedProfileError, match="candidate_profile_smoke_evidence_not_promotable"):
+        verify_promotion_artifact(promotion)
+
+
+def test_promotion_artifact_rejects_nested_candidate_profile_compatibility_fallback() -> None:
+    promotion = _promotion()
+    candidate_profile = dict(promotion["candidate_profile"])  # type: ignore[arg-type]
+    candidate_profile["research_compatibility_execution_fallback"] = True
+    promotion["candidate_profile"] = candidate_profile
+    promotion["content_hash"] = sha256_prefixed(
+        content_hash_payload({k: v for k, v in promotion.items() if k != "content_hash"})
+    )
+
+    with pytest.raises(
+        ApprovedProfileError,
+        match="candidate_profile_compatibility_fallback_not_promotion_grade",
+    ):
+        verify_promotion_artifact(promotion)
+
+
 def test_profile_generate_refuses_validation_run_required_without_hash(tmp_path: Path) -> None:
     promotion = _promotion(
         validation_run_required=True,

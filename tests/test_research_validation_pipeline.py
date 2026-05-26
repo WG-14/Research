@@ -274,6 +274,44 @@ def test_validation_run_verification_rejects_smoke_only_artifact_markers(tmp_pat
     assert "regenerate_via_research_validate" in reasons
 
 
+def test_validation_run_verification_rejects_compatibility_fallback_markers(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch)
+    payload = {
+        "validation_run_schema_version": 1,
+        "validation_run_id": "sha256:test",
+        "experiment_id": "validation_exp",
+        "manifest_path": "/tmp/manifest.json",
+        "manifest_hash": "sha256:manifest",
+        "repository_version": "test",
+        "deployment_tier": "paper_candidate",
+        "mode": "strict",
+        "command_args_hash": "sha256:args",
+        "required_stage_names": ["readiness"],
+        "stages": [
+            {"name": "readiness", "required": True, "status": "PASS", "started_at": None, "completed_at": None, "input_hashes": {}, "output_hashes": {}, "artifact_paths": {}, "artifact_hashes": {}, "reasons": []}
+        ],
+        "selected_candidate_id": "candidate_001",
+        "backtest_report_hash": "sha256:backtest",
+        "walk_forward_report_hash": None,
+        "promotion_artifact_hash": "sha256:promotion",
+        "reproduce_ok": True,
+        "promotion_allowed": True,
+        "end_to_end_validation_result": "PASS",
+        "fail_closed_reasons": [],
+        "validation_run_path": str((manager.data_dir() / "reports" / "research" / "validation_exp" / "validation_run.json").resolve()),
+        "compatibility_fallback": True,
+        "research_compatibility_execution_fallback": True,
+        "generated_at": None,
+    }
+    payload["validation_run_binding_hash"] = pipeline.validation_run_binding_hash(payload)
+    payload["content_hash"] = pipeline.validation_run_content_hash(payload)
+
+    reasons = pipeline.verify_validation_run_payload(payload)
+
+    assert "validation_run_compatibility_fallback_not_promotion_grade" in reasons
+    assert "regenerate_via_research_validate" in reasons
+
+
 def test_research_validate_success_binds_promotion_to_validation_run(tmp_path, monkeypatch):
     manager = _manager(tmp_path, monkeypatch)
     manifest = _manifest(walk_forward_required=True)
