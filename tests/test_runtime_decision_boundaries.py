@@ -7,13 +7,24 @@ from pathlib import Path
 import pytest
 
 from bithumb_bot.config import settings
+from bithumb_bot.core.sma_policy import PositionSnapshot, StrategyDecisionV2
 from bithumb_bot.db_core import ensure_schema
-from bithumb_bot.execution_service import validate_execution_submit_plan_payload
+from bithumb_bot.decision_envelope import DecisionEnvelope
+from bithumb_bot.execution_service import (
+    build_execution_decision_summary,
+    validate_execution_submit_plan_payload,
+)
+from bithumb_bot.run_loop_execution_planner import ExecutionPlanner
 from bithumb_bot.research.backtest_kernel import run_decision_event_backtest
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
 from bithumb_bot.research.decision_event import ResearchDecisionEvent
 from bithumb_bot.research.experiment_manifest import DateRange
+from bithumb_bot.runtime_sma_snapshot_builder import (
+    RuntimeSmaDecisionResult,
+    RuntimeSmaPolicyHashes,
+)
 from bithumb_bot.runtime_sma_snapshot_builder import build_sma_with_filter_decision_from_normalized_db
+from bithumb_bot.strategy.base import PositionContext
 from bithumb_bot.strategy.sma import create_sma_with_filter_strategy
 
 
@@ -35,6 +46,70 @@ def _insert_candles(conn: sqlite3.Connection, *, pair: str, interval: str, base_
             """,
             (base_ts + idx * 60_000, pair, interval, close, close, close, close, 1.0),
         )
+
+
+def _typed_decision(*, final_signal: str = "HOLD", final_reason: str = "unit hold") -> StrategyDecisionV2:
+    return StrategyDecisionV2(
+        strategy_name="sma_with_filter",
+        raw_signal=final_signal,
+        raw_reason=final_reason,
+        entry_signal=final_signal,
+        entry_reason=final_reason,
+        exit_signal=final_signal,
+        exit_reason=final_reason,
+        final_signal=final_signal,
+        final_reason=final_reason,
+        blocked_filters=(),
+        entry_blocked=False,
+        entry_block_reason=None,
+        exit_rule=None,
+        exit_evaluations=(),
+        protective_exit_overrode_entry=False,
+        exit_filter_suppression_prevented=False,
+        position_snapshot=PositionSnapshot(in_position=False, entry_allowed=True, exit_allowed=False),
+        execution_intent=None,
+        entry_decision=object(),  # type: ignore[arg-type]
+        trace={"final_signal": final_signal, "final_reason": final_reason},
+        policy_hash="sha256:pure",
+        policy_contract_hash="sha256:contract",
+        policy_input_hash="sha256:input",
+        policy_decision_hash="sha256:decision",
+    )
+
+
+def _runtime_result() -> RuntimeSmaDecisionResult:
+    return RuntimeSmaDecisionResult(
+        decision=_typed_decision(),
+        base_context={
+            "market_price": 10.0,
+            "last_close": 10.0,
+            "position_state": {"normalized_exposure": {"sellable_executable_lot_count": 0}},
+        },
+        position=PositionContext(in_position=False),
+        exposure=object(),
+        position_state=object(),
+        candle_ts=1_700_003_000_000,
+        market_price=10.0,
+        replay_fingerprint={"schema_version": 1, "candle_ts": 1_700_003_000_000},
+        boundary={"decision_boundary_phase": "post_normalization_decision"},
+    )
+
+
+class _Readiness:
+    def as_dict(self) -> dict[str, object]:
+        return {}
+
+
+def _planner() -> ExecutionPlanner:
+    return ExecutionPlanner(
+        readiness_snapshot_builder=lambda _conn: _Readiness(),
+        summary_builder=build_execution_decision_summary,
+        target_state_resolver=lambda _conn, **_kwargs: {
+            "previous_target_exposure_krw": None,
+            "target_policy_metadata": {},
+            "target_state": None,
+        },
+    )
 
 
 def test_pure_sma_policy_has_no_runtime_imports_or_side_effect_dependencies() -> None:
@@ -117,6 +192,81 @@ def test_execution_submit_plan_contract_detects_missing_or_inconsistent_fields()
     inconsistent["pre_submit_proof_status"] = "failed"
     with pytest.raises(ValueError, match="buy_submit_plan_schema_submit_expected_with_failed_proof"):
         validate_execution_submit_plan_payload(inconsistent, field_name="buy_submit_plan")
+
+
+def test_runtime_result_decision_envelope_preserves_typed_observability() -> None:
+    result = _runtime_result()
+    envelope = DecisionEnvelope.from_runtime_result(result)
+    context = envelope.as_persistence_context()
+
+    assert envelope.strategy_decision.final_signal == "HOLD"
+    assert envelope.strategy_decision.final_reason == "unit hold"
+    assert isinstance(envelope.policy_hashes, RuntimeSmaPolicyHashes)
+    assert context["policy_contract_hash"] == "sha256:contract"
+    assert context["policy_input_hash"] == "sha256:input"
+    assert context["policy_decision_hash"] == "sha256:decision"
+    assert context["pure_policy_hash"] == "sha256:pure"
+    assert context["replay_fingerprint"] == {
+        "schema_version": 1,
+        "candle_ts": 1_700_003_000_000,
+    }
+    assert context["boundary"] == {
+        "decision_boundary_phase": "post_normalization_decision",
+    }
+    assert context["decision_authority_source"] == "DecisionEnvelope.strategy_decision"
+    assert context["persistence_context_authoritative"] == 0
+
+
+def test_execution_planner_plan_envelope_matches_legacy_context_summary_semantics() -> None:
+    result = _runtime_result()
+    envelope = DecisionEnvelope.from_runtime_result(result)
+    planner = _planner()
+
+    bundle = planner.plan_envelope(None, envelope, updated_ts=1_700_003_060_000)
+    legacy = planner.plan_strategy_decision(
+        None,
+        decision_context=envelope.as_persistence_context(),
+        signal=result.decision.final_signal,
+        reason=result.decision.final_reason,
+        updated_ts=1_700_003_060_000,
+    )
+
+    assert bundle.summary is not None
+    assert legacy.execution_decision_summary is not None
+    assert bundle.summary.as_dict() == legacy.execution_decision_summary.as_dict()
+    assert bundle.persistence_context["execution_decision"] == legacy.context["execution_decision"]
+    assert bundle.persistence_context["execution_plan_bundle_present"] is True
+    assert bundle.persistence_context["persistence_context_authoritative"] == 0
+
+
+def test_mutating_persistence_context_does_not_change_typed_submit_authority() -> None:
+    decision = _typed_decision(final_signal="BUY", final_reason="unit buy")
+    envelope = DecisionEnvelope(
+        strategy_decision=decision,
+        candle_ts=1_700_003_000_000,
+        market_price=10.0,
+        base_context={
+            "market_price": 10.0,
+            "last_close": 10.0,
+            "total_effective_exposure_notional_krw": 0.0,
+        },
+        policy_hashes=None,
+        replay_fingerprint={"schema_version": 1},
+        boundary={},
+    )
+    planner = _planner()
+
+    bundle = planner.plan_envelope(None, envelope, updated_ts=1_700_003_060_000)
+    assert bundle.summary is not None
+    before = bundle.summary.as_dict()
+
+    persistence = dict(bundle.persistence_context)
+    persistence["final_signal"] = "SELL"
+    persistence.pop("policy_decision_hash", None)
+
+    assert bundle.summary.as_dict() == before
+    assert bundle.summary.final_signal == "BUY"
+    assert bundle.summary.typed_buy_submit_plan() is not None
 
 
 def test_research_kernel_marks_missing_sma_policy_metadata_non_comparable() -> None:

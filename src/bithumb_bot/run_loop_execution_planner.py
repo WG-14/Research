@@ -5,8 +5,13 @@ from typing import Callable
 
 from .config import settings
 from .db_core import load_target_position_state, upsert_target_position_state
+from .decision_envelope import DecisionEnvelope
 from .execution_order_rules import resolve_execution_order_rules
-from .execution_service import ExecutionDecisionSummary, build_execution_decision_summary
+from .execution_service import (
+    ExecutionDecisionSummary,
+    ExecutionSubmitPlan,
+    build_execution_decision_summary,
+)
 from .runtime_readiness import compute_runtime_readiness_snapshot
 from .strategy_performance import evaluate_strategy_performance_gate
 from .target_position import (
@@ -50,6 +55,16 @@ class ExecutionPlanningResult:
     context: dict[str, object]
     execution_decision: dict[str, object]
     execution_decision_summary: ExecutionDecisionSummary | None
+    readiness_payload: dict[str, object]
+    target_policy_metadata: dict[str, object]
+    planning_error: str | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionPlanBundle:
+    summary: ExecutionDecisionSummary | None
+    submit_plan: ExecutionSubmitPlan | None
+    persistence_context: dict[str, object]
     readiness_payload: dict[str, object]
     target_policy_metadata: dict[str, object]
     planning_error: str | None = None
@@ -177,6 +192,44 @@ class ExecutionPlanner:
     target_state_resolver: Callable[..., dict[str, object]] = resolve_target_position_state_for_run_loop
     persistence_context_builder: Callable[..., dict[str, object]] = prepare_strategy_decision_persistence_context
 
+    def plan_envelope(
+        self,
+        conn,
+        envelope: DecisionEnvelope,
+        *,
+        updated_ts: int,
+    ) -> ExecutionPlanBundle:
+        decision = envelope.strategy_decision
+        persistence_context = envelope.as_persistence_context()
+        planning = self._plan_context(
+            conn,
+            decision_context=persistence_context,
+            signal=str(decision.final_signal),
+            reason=str(decision.final_reason),
+            raw_signal=str(decision.raw_signal),
+            updated_ts=int(updated_ts),
+        )
+        submit_plan = _primary_submit_plan(planning.execution_decision_summary)
+        context = dict(planning.context)
+        context.update(
+            {
+                "decision_authority_source": "DecisionEnvelope.strategy_decision",
+                "decision_envelope_present": True,
+                "execution_plan_bundle_present": True,
+                "submit_plan_source": None if submit_plan is None else submit_plan.source,
+                "submit_plan_authority": None if submit_plan is None else submit_plan.authority,
+                "persistence_context_authoritative": 0,
+            }
+        )
+        return ExecutionPlanBundle(
+            summary=planning.execution_decision_summary,
+            submit_plan=submit_plan,
+            persistence_context=context,
+            readiness_payload=planning.readiness_payload,
+            target_policy_metadata=planning.target_policy_metadata,
+            planning_error=planning.planning_error,
+        )
+
     def plan_strategy_decision(
         self,
         conn,
@@ -184,6 +237,25 @@ class ExecutionPlanner:
         decision_context: dict[str, object],
         signal: str,
         reason: str,
+        updated_ts: int,
+    ) -> ExecutionPlanningResult:
+        return self._plan_context(
+            conn,
+            decision_context=decision_context,
+            signal=signal,
+            reason=reason,
+            raw_signal=None,
+            updated_ts=updated_ts,
+        )
+
+    def _plan_context(
+        self,
+        conn,
+        *,
+        decision_context: dict[str, object],
+        signal: str,
+        reason: str,
+        raw_signal: str | None,
         updated_ts: int,
     ) -> ExecutionPlanningResult:
         context = dict(decision_context)
@@ -197,7 +269,7 @@ class ExecutionPlanner:
                     pair=str(settings.PAIR),
                 )
             raw_signal_for_target = str(
-                context.get("raw_signal") or context.get("base_signal") or signal
+                raw_signal or context.get("raw_signal") or context.get("base_signal") or signal
             )
             reference_price = context.get("market_price", context.get("last_close", context.get("close")))
             target_resolution = self.target_state_resolver(
@@ -253,3 +325,15 @@ class ExecutionPlanner:
                 target_policy_metadata={},
                 planning_error=f"{type(exc).__name__}: {exc}",
             )
+
+
+def _primary_submit_plan(
+    summary: ExecutionDecisionSummary | None,
+) -> ExecutionSubmitPlan | None:
+    if summary is None:
+        return None
+    return (
+        summary.typed_target_submit_plan()
+        or summary.typed_residual_submit_plan()
+        or summary.typed_buy_submit_plan()
+    )

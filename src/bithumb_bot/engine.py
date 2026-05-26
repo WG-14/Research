@@ -44,6 +44,7 @@ from .db_core import (
     upsert_target_position_state,
 )
 from .db_core import record_strategy_decision
+from .decision_envelope import DecisionEnvelope
 from .external_position_repair import build_external_position_accounting_repair_preview
 from .fee_gap_repair import build_fee_gap_accounting_repair_preview
 from .lifecycle import summarize_position_lots, summarize_reserved_exit_qty
@@ -3497,34 +3498,50 @@ def run_loop(short_n: int, long_n: int) -> None:
             execution_decision_summary_for_trade = None
             try:
                 if typed_runtime_decision is not None:
-                    context = typed_runtime_decision.legacy_strategy_decision().context
-                    context = dict(context)
-                    context["strategy"] = typed_runtime_decision.decision.strategy_name
-                    context["signal"] = typed_runtime_decision.decision.final_signal
-                    context["reason"] = typed_runtime_decision.decision.final_reason
+                    decision_envelope = DecisionEnvelope.from_runtime_result(
+                        typed_runtime_decision
+                    )
+                    strategy_name = typed_runtime_decision.decision.strategy_name
+                    signal = typed_runtime_decision.decision.final_signal
+                    reason = typed_runtime_decision.decision.final_reason
+                    planning_bundle = ExecutionPlanner(
+                        readiness_snapshot_builder=compute_runtime_readiness_snapshot,
+                        performance_gate_evaluator=evaluate_strategy_performance_gate,
+                        summary_builder=build_execution_decision_summary,
+                        target_state_resolver=_resolve_target_position_state_for_run_loop,
+                        persistence_context_builder=prepare_strategy_decision_persistence_context,
+                    ).plan_envelope(
+                        conn,
+                        decision_envelope,
+                        updated_ts=int(now * 1000),
+                    )
+                    context = planning_bundle.persistence_context
+                    decision_context_for_trade = context
+                    execution_decision_summary_for_trade = planning_bundle.summary
+                    execution_decision = dict(context["execution_decision"])  # type: ignore[arg-type]
                 else:
                     context = dict(r)
-                decision_context_for_trade = context
-                strategy_name = str(context.pop("strategy", settings.STRATEGY_NAME))
-                signal = str(context.pop("signal", "HOLD"))
-                reason = str(context.pop("reason", ""))
-                planning = ExecutionPlanner(
-                    readiness_snapshot_builder=compute_runtime_readiness_snapshot,
-                    performance_gate_evaluator=evaluate_strategy_performance_gate,
-                    summary_builder=build_execution_decision_summary,
-                    target_state_resolver=_resolve_target_position_state_for_run_loop,
-                    persistence_context_builder=prepare_strategy_decision_persistence_context,
-                ).plan_strategy_decision(
-                    conn,
-                    decision_context=context,
-                    signal=signal,
-                    reason=reason,
-                    updated_ts=int(now * 1000),
-                )
-                context = planning.context
-                decision_context_for_trade = context
-                execution_decision_summary_for_trade = planning.execution_decision_summary
-                execution_decision = planning.execution_decision
+                    decision_context_for_trade = context
+                    strategy_name = str(context.pop("strategy", settings.STRATEGY_NAME))
+                    signal = str(context.pop("signal", "HOLD"))
+                    reason = str(context.pop("reason", ""))
+                    planning = ExecutionPlanner(
+                        readiness_snapshot_builder=compute_runtime_readiness_snapshot,
+                        performance_gate_evaluator=evaluate_strategy_performance_gate,
+                        summary_builder=build_execution_decision_summary,
+                        target_state_resolver=_resolve_target_position_state_for_run_loop,
+                        persistence_context_builder=prepare_strategy_decision_persistence_context,
+                    ).plan_strategy_decision(
+                        conn,
+                        decision_context=context,
+                        signal=signal,
+                        reason=reason,
+                        updated_ts=int(now * 1000),
+                    )
+                    context = planning.context
+                    decision_context_for_trade = context
+                    execution_decision_summary_for_trade = planning.execution_decision_summary
+                    execution_decision = planning.execution_decision
                 exit_ctx = context.get("exit")
                 if isinstance(exit_ctx, dict):
                     raw_rule = exit_ctx.get("rule")
@@ -3554,6 +3571,16 @@ def run_loop(short_n: int, long_n: int) -> None:
                     pre_submit_proof_status=str(context.get("pre_submit_proof_status") or "-"),
                     execution_block_reason=str(context.get("execution_block_reason") or "-"),
                     residual_inventory_state=str(context.get("residual_inventory_state") or "-"),
+                    decision_authority_source=str(context.get("decision_authority_source") or "legacy_context"),
+                    decision_envelope_present=1 if bool(context.get("decision_envelope_present")) else 0,
+                    execution_plan_bundle_present=1 if bool(context.get("execution_plan_bundle_present")) else 0,
+                    submit_plan_source=str(context.get("submit_plan_source") or "-"),
+                    submit_plan_authority=str(context.get("submit_plan_authority") or "-"),
+                    persistence_context_authoritative=int(context.get("persistence_context_authoritative") or 0),
+                    policy_contract_hash=str(context.get("policy_contract_hash") or "-"),
+                    policy_input_hash=str(context.get("policy_input_hash") or "-"),
+                    policy_decision_hash=str(context.get("policy_decision_hash") or "-"),
+                    replay_fingerprint_hash=str(context.get("replay_fingerprint_hash") or "-"),
                     execution_engine=str(context.get("execution_decision", {}).get("execution_engine") if isinstance(context.get("execution_decision"), dict) else "-"),
                     target_engine_mode=str(context.get("target_engine_mode") or "-"),
                     target_previous_exposure_krw=str(context.get("target_previous_exposure_krw") or "-"),
