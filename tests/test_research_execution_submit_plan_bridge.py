@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from bithumb_bot.core.sma_policy import EntryExecutionIntent, PositionSnapshot, StrategyDecisionV2
-from bithumb_bot.execution_service import ExecutionSubmitPlan
+from bithumb_bot.execution_service import ExecutionDecisionSummary, ExecutionSubmitPlan, SignalExecutionRequest
 from bithumb_bot.research.backtest_kernel import (
     ResearchVirtualExecutionService,
     _execution_plan_evidence,
@@ -83,6 +83,29 @@ def _request(plan: ExecutionSubmitPlan):
         fee_rate=0.001,
         timing_fields={"submit_ts_assumption": 201},
         depth_fields={"depth_available": False},
+    )
+
+
+def _summary(plan: ExecutionSubmitPlan) -> ExecutionDecisionSummary:
+    return ExecutionDecisionSummary(
+        raw_signal=plan.side,
+        final_signal=plan.side,
+        final_action=plan.final_action,
+        submit_expected=plan.submit_expected,
+        pre_submit_proof_status=plan.pre_submit_proof_status,
+        block_reason=plan.block_reason,
+        strategy_sell_candidate=None,
+        residual_sell_candidate=None,
+        target_exposure_krw=plan.target_exposure_krw,
+        current_effective_exposure_krw=plan.current_effective_exposure_krw,
+        tracked_residual_exposure_krw=None,
+        buy_delta_krw=plan.delta_krw,
+        residual_live_sell_mode="block",
+        residual_buy_sizing_mode="block",
+        residual_submit_plan=None,
+        buy_submit_plan=plan if plan.side == "BUY" else None,
+        target_shadow_decision=None,
+        target_submit_plan=plan if plan.side == "SELL" else None,
     )
 
 
@@ -215,6 +238,8 @@ def test_research_compatibility_fallback_evidence_is_not_promotion_grade() -> No
     assert evidence["compatibility_fallback"] is True
     assert evidence["research_compatibility_execution_fallback"] is True
     assert evidence["promotion_grade"] is False
+    assert evidence["execution_scope"] == "submit_plan_admission_only"
+    assert evidence["scope_badge"] == "SUBMIT_PLAN_EQUIVALENCE_ONLY"
     assert evidence["recommended_next_action"] == "regenerate_research_decisions_with_typed_execution_submit_plan"
 
 
@@ -255,6 +280,47 @@ def test_research_virtual_execution_service_public_input_is_submit_plan() -> Non
     assert fill is not None
     assert fill.side == "BUY"
     assert fill.requested_notional == 12_000.0
+
+
+def test_research_virtual_execution_service_execute_accepts_typed_signal_request_boundary() -> None:
+    service = ResearchVirtualExecutionService(
+        execution_model=FixedBpsExecutionModel(fee_rate=0.001, slippage_bps=0.0),
+        fee_rate=0.001,
+    )
+    plan = _plan(side="BUY", qty=None, notional_krw=12_000.0)
+
+    fill = service.execute(
+        SignalExecutionRequest(
+            signal="BUY",
+            ts=100,
+            market_price=10.0,
+            execution_decision_summary=_summary(plan),
+        ),
+        signal_ts=100,
+        decision_ts=200,
+        timing_fields={"submit_ts_assumption": 201},
+        depth_fields={"depth_available": False},
+    )
+
+    assert fill is not None
+    assert fill.side == "BUY"
+    assert fill.requested_notional == 12_000.0
+
+
+def test_research_virtual_execution_service_execute_rejects_missing_typed_plan() -> None:
+    service = ResearchVirtualExecutionService(
+        execution_model=FixedBpsExecutionModel(fee_rate=0.001, slippage_bps=0.0),
+        fee_rate=0.001,
+    )
+
+    with pytest.raises(ValueError, match="research_missing_typed_submit_plan"):
+        service.execute(
+            SignalExecutionRequest(signal="BUY", ts=100, market_price=10.0),
+            signal_ts=100,
+            decision_ts=200,
+            timing_fields={},
+            depth_fields={},
+        )
 
 
 def test_research_virtual_execution_service_rejects_forged_dict_submit_plan() -> None:

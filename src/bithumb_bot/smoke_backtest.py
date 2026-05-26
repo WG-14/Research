@@ -167,6 +167,7 @@ def backtest(short_n: int, long_n: int, entry: str):
     ret = (final_equity / START_CASH_KRW - 1.0) * 100.0
 
     return {
+        "scope_badge": "DIAGNOSTIC_ONLY",
         "diagnostic_only": True,
         "non_promotable": True,
         "promotion_grade": False,

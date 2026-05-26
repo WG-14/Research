@@ -2798,6 +2798,20 @@ def test_profile_promote_fails_when_decision_equivalence_mismatch_count_nonzero(
                     "positive_equivalence_state_classes": ["flat_no_dust_no_position"],
                     "unsupported_state_classes": [],
                     "promotion_claim": "positive_decision_equivalence_for_explicitly_modeled_state_classes_only",
+                    "full_lifecycle_equivalence_supported": True,
+                    "signal_equivalence_supported": True,
+                    "position_lifecycle_equivalence_supported": False,
+                    "fail_closed_unmodeled_state_count": 0,
+                }
+            },
+            "paper_validation_evidence_decision_equivalence_full_lifecycle_equivalence_evidence_missing",
+        ),
+        (
+            {
+                "claims_scope": {
+                    "positive_equivalence_state_classes": ["flat_no_dust_no_position"],
+                    "unsupported_state_classes": [],
+                    "promotion_claim": "positive_decision_equivalence_for_explicitly_modeled_state_classes_only",
                     "full_lifecycle_equivalence_supported": False,
                     "signal_equivalence_supported": True,
                     "position_lifecycle_equivalence_supported": True,

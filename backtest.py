@@ -28,6 +28,31 @@ ROOT_BACKTEST_REFUSAL = {
 }
 
 
+def root_backtest_refusal_lines() -> tuple[str, ...]:
+    payload = ROOT_BACKTEST_REFUSAL
+    return (
+        f"[SMOKE-BACKTEST REFUSED] {SMOKE_BACKTEST_WARNING}",
+        " ".join(
+            (
+                f"diagnostic_only={str(payload['diagnostic_only']).lower()}",
+                f"non_promotable={str(payload['non_promotable']).lower()}",
+                f"promotion_grade={str(payload['promotion_grade']).lower()}",
+                f"evidence_scope={payload['evidence_scope']}",
+                "standalone_backtest_not_full_validation="
+                f"{str(payload['standalone_backtest_not_full_validation']).lower()}",
+            )
+        ),
+        " ".join(
+            (
+                f"reason_code={payload['reason_code']}",
+                f"operator_next_action={payload['operator_next_action']}",
+                f"promotion_command='{payload['promotion_command']}'",
+                f"diagnostic_command='{payload['diagnostic_command']}'",
+            )
+        ),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -42,20 +67,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args, remaining = parser.parse_known_args(argv)
     if not args.diagnostic_smoke_only:
-        print(f"[SMOKE-BACKTEST REFUSED] {SMOKE_BACKTEST_WARNING}", file=sys.stderr)
-        print(
-            "diagnostic_only=true non_promotable=true promotion_grade=false "
-            "evidence_scope=smoke_only_not_manifest_backed "
-            "standalone_backtest_not_full_validation=true",
-            file=sys.stderr,
-        )
-        print(
-            "reason_code=standalone_backtest_not_full_validation "
-            "operator_next_action=use_manifest_backed_research_validation "
-            "promotion_command='uv run bithumb-bot research-validate --manifest <path>' "
-            "diagnostic_command='uv run bithumb-bot research-backtest --manifest <path>'",
-            file=sys.stderr,
-        )
+        for line in root_backtest_refusal_lines():
+            print(line, file=sys.stderr)
         return 2
     from bithumb_bot.smoke_backtest import main as smoke_main
 

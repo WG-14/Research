@@ -2106,6 +2106,19 @@ def _validate_decision_equivalence_evidence(
             "positive_decision_equivalence_for_explicitly_modeled_state_classes_only"
         ):
             raise ApprovedProfileError(f"{label}_decision_equivalence_scope_claim_missing")
+    else:
+        execution_scope = report.get("execution_equivalence")
+        execution_scope = execution_scope if isinstance(execution_scope, dict) else {}
+        lifecycle_evidence_ok = bool(
+            execution_scope.get("simulated_fill_equivalence_supported")
+            and execution_scope.get("live_submit_equivalence_supported")
+            and execution_scope.get("accounting_replay_equivalence_supported")
+            and execution_scope.get("position_lifecycle_equivalence_supported")
+        )
+        if not lifecycle_evidence_ok:
+            raise ApprovedProfileError(
+                f"{label}_decision_equivalence_full_lifecycle_equivalence_evidence_missing"
+            )
     if claims_scope.get("signal_equivalence_supported") is not True:
         raise ApprovedProfileError(f"{label}_decision_equivalence_signal_scope_not_supported")
     if claims_scope.get("position_lifecycle_equivalence_supported") is True and (

@@ -11,6 +11,7 @@ def test_root_backtest_output_is_diagnostic_only_and_non_promotable(monkeypatch)
     result = smoke_backtest.backtest(short_n=2, long_n=4, entry="cross")
 
     assert result["diagnostic_only"] is True
+    assert result["scope_badge"] == "DIAGNOSTIC_ONLY"
     assert result["non_promotable"] is True
     assert result["promotion_grade"] is False
     assert result["evidence_scope"] == "smoke_only_not_manifest_backed"
@@ -26,7 +27,22 @@ def test_root_backtest_default_refuses_to_run_smoke_backtest(capsys) -> None:
     assert "promotion_grade=false" in captured.err
     assert "evidence_scope=smoke_only_not_manifest_backed" in captured.err
     assert "standalone_backtest_not_full_validation=true" in captured.err
+    assert "reason_code=standalone_backtest_not_full_validation" in captured.err
+    assert "operator_next_action=use_manifest_backed_research_validation" in captured.err
     assert "uv run bithumb-bot research-validate --manifest <path>" in captured.err
+
+
+def test_root_backtest_refusal_lines_are_generated_from_shared_payload() -> None:
+    payload = backtest.ROOT_BACKTEST_REFUSAL
+    lines = "\n".join(backtest.root_backtest_refusal_lines())
+
+    assert f"diagnostic_only={str(payload['diagnostic_only']).lower()}" in lines
+    assert f"non_promotable={str(payload['non_promotable']).lower()}" in lines
+    assert f"promotion_grade={str(payload['promotion_grade']).lower()}" in lines
+    assert f"evidence_scope={payload['evidence_scope']}" in lines
+    assert f"reason_code={payload['reason_code']}" in lines
+    assert f"operator_next_action={payload['operator_next_action']}" in lines
+    assert str(payload["promotion_command"]) in lines
 
 
 def test_root_backtest_diagnostic_opt_in_runs_real_wrapper_path(monkeypatch, capsys) -> None:

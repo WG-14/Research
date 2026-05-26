@@ -417,7 +417,12 @@ def test_execution_equivalence_report_does_not_overclaim_lifecycle_scope() -> No
     assert execution["full_lifecycle_equivalence_supported"] is False
     assert "execution_lifecycle_scope_not_supported" in execution["unsupported_lifecycle_reasons"]
     assert "fill_equivalence_evidence_missing" in execution["unsupported_lifecycle_reasons"]
+    assert "live_submit_equivalence_evidence_missing" in execution["unsupported_lifecycle_reasons"]
     assert "accounting_replay_equivalence_missing" in execution["unsupported_lifecycle_reasons"]
+    assert "position_lifecycle_equivalence_evidence_missing" in execution["unsupported_lifecycle_reasons"]
+    assert report["scope_badge"] == "SUBMIT_PLAN_EQUIVALENCE_ONLY"
+    assert execution["scope_badge"] == "SUBMIT_PLAN_EQUIVALENCE_ONLY"
+    assert execution["full_lifecycle_scope_badge"] == "FULL_LIFECYCLE_EQUIVALENCE_UNSUPPORTED"
 
 
 def test_promotion_grade_gate_rejects_full_lifecycle_claim_without_lifecycle_evidence() -> None:
@@ -429,7 +434,7 @@ def test_promotion_grade_gate_rejects_full_lifecycle_claim_without_lifecycle_evi
 
     reasons = promotion_grade_decision_equivalence_fail_reasons(report)
 
-    assert "decision_equivalence_full_lifecycle_claim_without_evidence" in reasons
+    assert "decision_equivalence_full_lifecycle_equivalence_evidence_missing" in reasons
 
 
 def test_policy_hashes_are_canonical_diagnostics_not_promotion_required() -> None:
@@ -1052,6 +1057,12 @@ def test_state_coverage_matrix_fixtures_classify_expected_outcomes(
     assert result.report["outcome"] == expected_outcome
     assert result.ok is (expected_outcome == "PASS_POSITIVE_EQUIVALENCE")
     assert state_class in result.report["state_coverage_matrix"]
+    if state_class != "flat_no_dust_no_position":
+        entry = result.report["state_coverage_matrix"][state_class]
+        assert entry["fail_closed_expected"] is True
+        assert entry["positive_equivalence_supported"] is False
+        assert state_class in result.report["claims_scope"]["unsupported_state_classes"]
+        assert result.report["outcome"] != "PASS_POSITIVE_EQUIVALENCE"
 
 
 def _fixture_dust_state(*, fixture_name: str, state_class: str) -> str:

@@ -15,6 +15,7 @@ from bithumb_bot.execution_service import (
     ExecutionReadinessPlanningInput,
     ExecutionDecisionSummary,
     ExecutionSubmitPlan,
+    SignalExecutionRequest,
     ExecutionTargetPlanningInput,
     TypedExecutionPlanningInput,
     build_typed_execution_decision_summary,
@@ -138,6 +139,57 @@ class ResearchVirtualExecutionService:
 
     execution_model: ExecutionModel
     fee_rate: float
+
+    def execute(
+        self,
+        request: SignalExecutionRequest,
+        *,
+        signal_ts: int,
+        decision_ts: int,
+        timing_fields: dict[str, object],
+        depth_fields: dict[str, object],
+    ) -> ExecutionFill | None:
+        if not isinstance(request, SignalExecutionRequest):
+            raise ValueError("research_signal_execution_request_not_typed")
+        submit_plan = self._typed_submit_plan_from_request(request)
+        if submit_plan is None:
+            raise ValueError("research_missing_typed_submit_plan")
+        return self.simulate_submit_plan(
+            submit_plan=submit_plan,
+            signal_ts=signal_ts,
+            decision_ts=decision_ts,
+            reference_price=float(request.market_price),
+            timing_fields=timing_fields,
+            depth_fields=depth_fields,
+        )
+
+    def _typed_submit_plan_from_request(
+        self,
+        request: SignalExecutionRequest,
+    ) -> ExecutionSubmitPlan | None:
+        bundle = request.execution_plan_bundle
+        bundle_plan = getattr(bundle, "submit_plan", None) if bundle is not None else None
+        if bundle is not None and bundle_plan is not None and not isinstance(bundle_plan, ExecutionSubmitPlan):
+            raise ValueError("research_dict_only_submit_plan_not_authority")
+        if isinstance(bundle_plan, ExecutionSubmitPlan):
+            return bundle_plan
+        summary = request.execution_decision_summary or getattr(bundle, "summary", None)
+        if summary is None:
+            return None
+        if not isinstance(summary, ExecutionDecisionSummary):
+            raise ValueError("research_execution_summary_not_typed")
+        for field_name, candidate in (
+            ("target_submit_plan", summary.target_submit_plan),
+            ("residual_submit_plan", summary.residual_submit_plan),
+            ("buy_submit_plan", summary.buy_submit_plan),
+        ):
+            if candidate is not None and not isinstance(candidate, ExecutionSubmitPlan):
+                raise ValueError(f"research_dict_only_submit_plan_not_authority:{field_name}")
+        return (
+            summary.typed_target_submit_plan()
+            or summary.typed_residual_submit_plan()
+            or summary.typed_buy_submit_plan()
+        )
 
     def simulate_submit_plan(
         self,
@@ -399,6 +451,8 @@ def _execution_plan_evidence(
             "submit_plan_source": "none",
             "submit_plan_authority": "none",
             "execution_engine": "none",
+            "execution_scope": "submit_plan_admission_only",
+            "scope_badge": "SUBMIT_PLAN_EQUIVALENCE_ONLY",
             "execution_plan_bundle_present": plan_bundle is not None,
             "execution_plan_status": "" if plan_bundle is None else plan_bundle.status,
             "execution_plan_reason_code": "" if plan_bundle is None else plan_bundle.reason_code,
@@ -438,6 +492,8 @@ def _execution_plan_evidence(
         "submit_plan_source": submit_plan.source,
         "submit_plan_authority": submit_plan.authority,
         "execution_engine": execution_engine,
+        "execution_scope": "submit_plan_admission_only",
+        "scope_badge": "SUBMIT_PLAN_EQUIVALENCE_ONLY",
         "execution_plan_bundle_present": True,
         "execution_plan_status": "PLANNED" if submit_plan.submit_expected else "BLOCKED",
         "execution_plan_reason_code": "none" if submit_plan.submit_expected else submit_plan.block_reason,
