@@ -37,6 +37,7 @@ from .decision_equivalence import (
     compute_decision_export_hash,
     load_decision_export_artifact,
     load_decision_list,
+    promotion_grade_decision_equivalence_fail_reasons,
 )
 from .research.dataset_snapshot import load_dataset_split
 from .research.experiment_manifest import load_manifest
@@ -336,6 +337,20 @@ def cmd_decision_equivalence(
     except (OSError, ValueError) as exc:
         _print_json({"ok": False, "error": str(exc), "command": "decision-equivalence"})
         return 1
+    gate_reasons = promotion_grade_decision_equivalence_fail_reasons(result.report)
+    if gate_reasons:
+        report = dict(result.report)
+        reason_codes = sorted(set(list(report.get("reason_codes") or ()) + list(gate_reasons)))
+        report.update(
+            {
+                "ok": False,
+                "promotion_grade_comparison": False,
+                "promotion_gate_reason_codes": list(gate_reasons),
+                "reason_codes": reason_codes,
+            }
+        )
+        report["content_hash"] = compute_decision_equivalence_hash(report)
+        result = type(result)(report=report)
     _print_json({"command": "decision-equivalence", **result.report})
     return 0 if result.ok else 1
 

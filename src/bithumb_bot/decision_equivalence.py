@@ -420,6 +420,75 @@ def compute_decision_equivalence_hash(report: dict[str, Any]) -> str:
     return sha256_prefixed(content_hash_payload(payload))
 
 
+PROMOTION_GRADE_DECISION_EQUIVALENCE_REQUIRED_TRUE_FIELDS = (
+    "ok",
+    "promotion_grade_comparison",
+    "canonical_schema",
+    "canonical_v2_schema",
+    "repo_owned_export_artifacts",
+)
+
+
+def promotion_grade_decision_equivalence_fail_reasons(report: dict[str, Any]) -> tuple[str, ...]:
+    """Return fail-closed reasons when a report is not promotion-grade v2 evidence."""
+    reasons: list[str] = []
+    for field in PROMOTION_GRADE_DECISION_EQUIVALENCE_REQUIRED_TRUE_FIELDS:
+        if report.get(field) is not True:
+            reasons.append(f"decision_equivalence_{field}_not_true")
+    if report.get("outcome") != "PASS_POSITIVE_EQUIVALENCE":
+        reasons.append("decision_equivalence_outcome_not_positive")
+    if report.get("legacy_schema") is True:
+        reasons.append("decision_equivalence_legacy_schema")
+    if report.get("legacy_or_unverified_export") is True:
+        reasons.append("decision_equivalence_unverified_export")
+    for field in (
+        "execution_submit_plan_hash",
+        "submit_plan_source",
+        "submit_plan_authority",
+        "execution_engine",
+    ):
+        if any(field in missing for missing in _missing_canonical_fields(report)):
+            reasons.append(f"decision_equivalence_missing_{field}")
+    if int(report.get("canonical_incomplete_decision_count") or 0) > 0:
+        reasons.append("decision_equivalence_incomplete_canonical")
+    if int(report.get("canonical_missing_field_count") or 0) > 0:
+        reasons.append("decision_equivalence_missing_canonical_fields")
+    if report.get("binding_validation"):
+        reasons.append("decision_equivalence_binding_validation_nonempty")
+    if report.get("artifact_binding_validation"):
+        reasons.append("decision_equivalence_artifact_binding_validation_nonempty")
+    if report.get("reason_codes"):
+        reasons.append("decision_equivalence_reason_codes_nonempty")
+    claims_scope = report.get("claims_scope")
+    if not isinstance(claims_scope, dict):
+        reasons.append("decision_equivalence_claims_scope_missing")
+    else:
+        if claims_scope.get("signal_equivalence_supported") is not True:
+            reasons.append("decision_equivalence_signal_scope_not_supported")
+        if claims_scope.get("unsupported_state_classes"):
+            reasons.append("decision_equivalence_unsupported_state_present")
+        if int(claims_scope.get("fail_closed_unmodeled_state_count") or 0) > 0:
+            reasons.append("decision_equivalence_unmodeled_state_present")
+    return tuple(sorted(set(reasons)))
+
+
+def require_promotion_grade_decision_equivalence(report: dict[str, Any]) -> None:
+    reasons = promotion_grade_decision_equivalence_fail_reasons(report)
+    if reasons:
+        raise ValueError("decision_equivalence_not_promotion_grade:" + ",".join(reasons))
+
+
+def _missing_canonical_fields(report: dict[str, Any]) -> tuple[str, ...]:
+    missing_by_decision = report.get("canonical_missing_fields_by_decision")
+    if not isinstance(missing_by_decision, dict):
+        return ()
+    missing: list[str] = []
+    for fields in missing_by_decision.values():
+        if isinstance(fields, list | tuple):
+            missing.extend(str(field) for field in fields)
+    return tuple(missing)
+
+
 def load_decision_list(path: str | Path) -> list[dict[str, Any]]:
     with Path(path).expanduser().open("r", encoding="utf-8") as handle:
         payload = json.load(handle)

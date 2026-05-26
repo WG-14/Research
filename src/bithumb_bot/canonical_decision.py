@@ -486,49 +486,65 @@ def runtime_decision_to_canonical_event(
         else {}
     )
     primary_submit_plan = _primary_execution_submit_plan(execution_decision)
+    if execution_decision:
+        execution_summary_hash = canonical_payload_hash(execution_decision)
+        execution_submit_plan_hash = (
+            canonical_payload_hash(primary_submit_plan) if primary_submit_plan else ""
+        )
+        final_action = str(context.get("final_action") or execution_decision.get("final_action") or "")
+        pre_submit_proof_status = str(
+            context.get("pre_submit_proof_status")
+            or execution_decision.get("pre_submit_proof_status")
+            or ""
+        )
+        execution_block_reason = str(
+            context.get("execution_block_reason")
+            or execution_decision.get("block_reason")
+            or ""
+        )
+        submit_plan_source = str(context.get("submit_plan_source") or primary_submit_plan.get("source") or "")
+        submit_plan_authority = str(
+            context.get("submit_plan_authority") or primary_submit_plan.get("authority") or ""
+        )
+        execution_engine = str(execution_decision.get("execution_engine") or context.get("execution_engine") or "")
+    else:
+        execution_block_reason = block_reason or "none"
+        if (
+            final_signal == "HOLD"
+            and comparison_position_state.get("comparison_state") == "open_exposure"
+            and not str(exit_context.get("rule") or "").strip()
+        ):
+            execution_block_reason = "position held: no exit rule triggered"
+        final_action = "HOLD" if execution_block_reason == "none" else "BLOCK_RESEARCH_NO_SUBMIT"
+        no_submit_summary = {
+            "final_action": final_action,
+            "submit_expected": False,
+            "pre_submit_proof_status": "not_required",
+            "block_reason": execution_block_reason,
+            "primary_submit_plan": None,
+            "execution_engine": "none",
+        }
+        execution_summary_hash = canonical_payload_hash(no_submit_summary)
+        execution_submit_plan_hash = canonical_payload_hash(None)
+        pre_submit_proof_status = "not_required"
+        submit_plan_source = "none"
+        submit_plan_authority = "none"
+        execution_engine = "none"
     payload.update(
         {
-            "execution_summary_hash": (
-                canonical_payload_hash(execution_decision) if execution_decision else ""
-            ),
-            "execution_submit_plan_hash": (
-                canonical_payload_hash(primary_submit_plan) if primary_submit_plan else ""
-            ),
-            "final_action": str(
-                context.get("final_action")
-                or execution_decision.get("final_action")
-                or ""
-            ),
+            "execution_summary_hash": execution_summary_hash,
+            "execution_submit_plan_hash": execution_submit_plan_hash,
+            "final_action": final_action,
             "submit_expected": bool(
                 context.get("submit_expected")
                 if "submit_expected" in context
                 else execution_decision.get("submit_expected")
             ),
-            "pre_submit_proof_status": str(
-                context.get("pre_submit_proof_status")
-                or execution_decision.get("pre_submit_proof_status")
-                or ""
-            ),
-            "execution_block_reason": str(
-                context.get("execution_block_reason")
-                or execution_decision.get("block_reason")
-                or ""
-            ),
-            "submit_plan_source": str(
-                context.get("submit_plan_source")
-                or primary_submit_plan.get("source")
-                or ""
-            ),
-            "submit_plan_authority": str(
-                context.get("submit_plan_authority")
-                or primary_submit_plan.get("authority")
-                or ""
-            ),
-            "execution_engine": str(
-                execution_decision.get("execution_engine")
-                or context.get("execution_engine")
-                or ""
-            ),
+            "pre_submit_proof_status": pre_submit_proof_status,
+            "execution_block_reason": execution_block_reason,
+            "submit_plan_source": submit_plan_source,
+            "submit_plan_authority": submit_plan_authority,
+            "execution_engine": execution_engine,
         }
     )
     payload["feature_snapshot_hash"] = canonical_payload_hash(payload["feature_snapshot"])

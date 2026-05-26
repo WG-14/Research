@@ -16,6 +16,8 @@ from bithumb_bot.decision_equivalence import (
     compare_decision_equivalence,
     compute_decision_export_hash,
     load_decision_export_artifact,
+    promotion_grade_decision_equivalence_fail_reasons,
+    require_promotion_grade_decision_equivalence,
 )
 from bithumb_bot.research.hashing import sha256_prefixed
 from bithumb_bot.research.lot_native_simulation import LotNativeResearchPositionModel
@@ -347,6 +349,42 @@ def test_signal_match_but_execution_submit_plan_mismatch_fails_execution_equival
     assert "execution_submit_plan_hash_mismatch" in result.report["reason_codes"]
     assert result.report["claims_scope"]["execution_plan_equivalence_supported"] is True
     assert result.report["claims_scope"]["full_lifecycle_equivalence_supported"] is False
+
+
+def test_promotion_grade_equivalence_gate_accepts_positive_canonical_v2_export_report() -> None:
+    report = dict(_compare(_decision_v2(), _decision_v2()).report)
+    report["repo_owned_export_artifacts"] = True
+
+    require_promotion_grade_decision_equivalence(report)
+    assert promotion_grade_decision_equivalence_fail_reasons(report) == ()
+
+
+def test_promotion_grade_equivalence_gate_rejects_execution_plan_drift() -> None:
+    report = _compare(
+        _decision_v2(execution_submit_plan_hash="sha256:research_plan"),
+        _decision_v2(execution_submit_plan_hash="sha256:runtime_plan"),
+    ).report
+
+    reasons = promotion_grade_decision_equivalence_fail_reasons(report)
+
+    assert "decision_equivalence_ok_not_true" in reasons
+    assert "decision_equivalence_outcome_not_positive" in reasons
+    assert "decision_equivalence_reason_codes_nonempty" in reasons
+    with pytest.raises(ValueError, match="decision_equivalence_not_promotion_grade"):
+        require_promotion_grade_decision_equivalence(report)
+
+
+def test_promotion_grade_equivalence_gate_rejects_missing_execution_plan_binding() -> None:
+    research = _decision_v2()
+    runtime = _decision_v2()
+    research.pop("execution_submit_plan_hash")
+    runtime.pop("execution_submit_plan_hash")
+    report = _compare(research, runtime).report
+
+    reasons = promotion_grade_decision_equivalence_fail_reasons(report)
+
+    assert "decision_equivalence_missing_execution_submit_plan_hash" in reasons
+    assert "decision_equivalence_incomplete_canonical" in reasons
 
 
 def test_policy_hashes_are_canonical_diagnostics_not_promotion_required() -> None:

@@ -115,6 +115,20 @@ def test_submit_not_expected_produces_no_research_fill_request() -> None:
     assert request is None
 
 
+def test_blocked_submit_plan_produces_no_research_fill_request() -> None:
+    request = _request(
+        _plan(
+            side="BUY",
+            qty=1.0,
+            notional_krw=10_000.0,
+            submit_expected=True,
+            block_reason="strategy_performance_gate_blocked",
+        )
+    )
+
+    assert request is None
+
+
 def test_research_backtest_bundle_blocks_zero_size_before_request() -> None:
     bundle = _research_execution_plan_bundle(
         side="BUY",
@@ -123,12 +137,15 @@ def test_research_backtest_bundle_blocks_zero_size_before_request() -> None:
         sellable_qty=0.0,
         reference_price=10.0,
         policy_decision=None,
+        candle_ts=123,
+        allow_compatibility_fallback=True,
     )
 
     assert bundle.status == "BLOCKED"
     assert bundle.reason_code == "research_zero_buy_notional"
     assert bundle.submit_plan is not None
     assert bundle.submit_plan.submit_expected is False
+    assert bundle.compatibility_fallback is True
     assert execution_submit_plan_to_research_request(
         submit_plan=bundle.submit_plan,
         signal_ts=100,
@@ -148,12 +165,30 @@ def test_research_backtest_bundle_blocks_hold_without_submit_plan() -> None:
         sellable_qty=0.0,
         reference_price=10.0,
         policy_decision=None,
+        candle_ts=123,
         block_reason="strategy_hold",
     )
 
     assert bundle.status == "BLOCKED"
     assert bundle.reason_code == "strategy_hold"
     assert bundle.submit_plan is None
+
+
+def test_research_compatibility_submit_plan_is_disabled_without_explicit_flag() -> None:
+    bundle = _research_execution_plan_bundle(
+        side="BUY",
+        cash=1_000_000.0,
+        buy_fraction=1.0,
+        sellable_qty=0.0,
+        reference_price=10.0,
+        policy_decision=None,
+        candle_ts=123,
+    )
+
+    assert bundle.status == "BLOCKED"
+    assert bundle.reason_code == "research_compatibility_submit_plan_disabled"
+    assert bundle.submit_plan is None
+    assert bundle.compatibility_fallback is False
 
 
 def test_malformed_submit_plan_fails_closed_before_research_request() -> None:
@@ -187,6 +222,7 @@ def test_research_buy_bundle_uses_typed_execution_planner_summary() -> None:
         sellable_qty=0.0,
         reference_price=10.0,
         policy_decision=_typed_decision(final_signal="BUY"),
+        candle_ts=987654321,
     )
 
     assert bundle.summary is not None
@@ -195,6 +231,7 @@ def test_research_buy_bundle_uses_typed_execution_planner_summary() -> None:
     assert bundle.submit_plan.notional_krw == 100_000.0
     assert bundle.submit_plan.notional_krw != 500_000.0 * 0.99
     assert bundle.authority == bundle.submit_plan.authority
+    assert bundle.compatibility_fallback is False
 
 
 def test_research_typed_hold_blocks_without_fill_request() -> None:
@@ -205,6 +242,7 @@ def test_research_typed_hold_blocks_without_fill_request() -> None:
         sellable_qty=0.0,
         reference_price=10.0,
         policy_decision=_typed_decision(raw_signal="BUY", final_signal="HOLD"),
+        candle_ts=123,
     )
 
     assert bundle.summary is not None
@@ -219,3 +257,22 @@ def test_research_typed_hold_blocks_without_fill_request() -> None:
         timing_fields={},
         depth_fields={},
     ) is None
+
+
+def test_research_typed_missing_submit_plan_does_not_fall_back_to_compatibility_sizing() -> None:
+    bundle = _research_execution_plan_bundle(
+        side="SELL",
+        cash=500_000.0,
+        buy_fraction=1.0,
+        sellable_qty=0.25,
+        reference_price=10.0,
+        policy_decision=_typed_decision(raw_signal="SELL", final_signal="SELL"),
+        candle_ts=123,
+        allow_compatibility_fallback=True,
+    )
+
+    assert bundle.status == "BLOCKED"
+    assert bundle.summary is not None
+    assert bundle.submit_plan is None
+    assert bundle.reason_code != "none"
+    assert bundle.compatibility_fallback is False

@@ -92,8 +92,11 @@ def execution_submit_plan_to_research_request(
     validate_execution_submit_plan_payload(payload, field_name="research_submit_plan")
     if not bool(submit_plan.submit_expected):
         return None
-    if str(submit_plan.block_reason or "none") != "none":
-        raise ValueError("research_submit_plan_blocked")
+    if str(submit_plan.block_reason or "none") not in {
+        "none",
+        "residual_buy_sizing_mode_telemetry",
+    }:
+        return None
     side = str(submit_plan.side or "").upper()
     if side == "BUY":
         requested_notional = _positive_float_or_none(submit_plan.notional_krw)
@@ -137,6 +140,7 @@ class ResearchExecutionPlanBundle:
     status: str
     reason_code: str
     summary: ExecutionDecisionSummary | None = None
+    compatibility_fallback: bool = False
 
     @property
     def submit_expected(self) -> bool:
@@ -152,6 +156,7 @@ def _research_execution_submit_plan(
     reference_price: float,
     policy_decision: StrategyDecisionV2 | None,
 ) -> ExecutionSubmitPlan:
+    """Compatibility-only adapter for legacy research strategies without typed plans."""
     normalized_side = str(side or "").upper()
     execution_intent = (
         policy_decision.execution_intent
@@ -223,6 +228,8 @@ def _research_execution_plan_bundle(
     sellable_qty: float,
     reference_price: float,
     policy_decision: StrategyDecisionV2 | None,
+    candle_ts: int,
+    allow_compatibility_fallback: bool = False,
     block_reason: str = "",
 ) -> ResearchExecutionPlanBundle:
     normalized_side = str(side or "HOLD").upper()
@@ -240,7 +247,7 @@ def _research_execution_plan_bundle(
         summary = build_typed_execution_decision_summary(
             typed_input=TypedExecutionPlanningInput(
                 strategy_decision=policy_decision,
-                candle_ts=0,
+                candle_ts=int(candle_ts),
                 market_price=float(reference_price),
                 readiness=ExecutionReadinessPlanningInput.from_payload(
                     {
@@ -259,24 +266,33 @@ def _research_execution_plan_bundle(
             or summary.typed_residual_submit_plan()
             or summary.typed_buy_submit_plan()
         )
-        if submit_plan is not None or normalized_side == "BUY":
-            return ResearchExecutionPlanBundle(
-                submit_plan=submit_plan,
-                summary=summary,
-                source="research_backtest" if submit_plan is None else submit_plan.source,
-                authority=(
-                    "typed_execution_planner"
-                    if submit_plan is None
-                    else submit_plan.authority
-                ),
-                execution_engine="research_virtual",
-                status="PLANNED" if submit_plan is not None and submit_plan.submit_expected else "BLOCKED",
-                reason_code=(
-                    "none"
-                    if submit_plan is not None and submit_plan.submit_expected
-                    else summary.block_reason
-                ),
-            )
+        return ResearchExecutionPlanBundle(
+            submit_plan=submit_plan,
+            summary=summary,
+            source="typed_execution_planner" if submit_plan is None else submit_plan.source,
+            authority=(
+                "typed_execution_planner"
+                if submit_plan is None
+                else submit_plan.authority
+            ),
+            execution_engine="research_virtual",
+            status="PLANNED" if submit_plan is not None and submit_plan.submit_expected else "BLOCKED",
+            reason_code=(
+                "none"
+                if submit_plan is not None and submit_plan.submit_expected
+                else summary.block_reason or "research_typed_submit_plan_missing"
+            ),
+        )
+    if not allow_compatibility_fallback:
+        return ResearchExecutionPlanBundle(
+            submit_plan=None,
+            summary=None,
+            source="research_backtest",
+            authority="typed_execution_planner_required",
+            execution_engine="research_virtual",
+            status="BLOCKED",
+            reason_code=block_reason or "research_compatibility_submit_plan_disabled",
+        )
     submit_plan = _research_execution_submit_plan(
         side=normalized_side,
         cash=cash,
@@ -293,6 +309,7 @@ def _research_execution_plan_bundle(
         execution_engine="research_virtual",
         status="PLANNED" if submit_plan.submit_expected else "BLOCKED",
         reason_code="none" if submit_plan.submit_expected else submit_plan.block_reason,
+        compatibility_fallback=True,
     )
 
 
@@ -301,19 +318,34 @@ def _execution_plan_evidence(
 ) -> dict[str, object]:
     submit_plan = None if plan_bundle is None else plan_bundle.submit_plan
     if submit_plan is None:
-        return {
-            "execution_summary_hash": "",
-            "execution_submit_plan_hash": "",
-            "final_action": "",
+        from bithumb_bot.canonical_decision import canonical_payload_hash
+
+        reason_code = "" if plan_bundle is None else plan_bundle.reason_code
+        final_action = "HOLD" if reason_code in {"", "research_no_submit_signal"} else "BLOCK_RESEARCH_NO_SUBMIT"
+        summary_payload = {
+            "final_action": final_action,
             "submit_expected": False,
-            "pre_submit_proof_status": "",
-            "execution_block_reason": "",
-            "submit_plan_source": "",
-            "submit_plan_authority": "",
-            "execution_engine": "research_virtual",
+            "pre_submit_proof_status": "not_required",
+            "block_reason": reason_code or "none",
+            "primary_submit_plan": None,
+            "execution_engine": "none",
+        }
+        return {
+            "execution_summary_hash": canonical_payload_hash(summary_payload),
+            "execution_submit_plan_hash": canonical_payload_hash(None),
+            "final_action": final_action,
+            "submit_expected": False,
+            "pre_submit_proof_status": "not_required",
+            "execution_block_reason": reason_code or "none",
+            "submit_plan_source": "none",
+            "submit_plan_authority": "none",
+            "execution_engine": "none",
             "execution_plan_bundle_present": plan_bundle is not None,
             "execution_plan_status": "" if plan_bundle is None else plan_bundle.status,
             "execution_plan_reason_code": "" if plan_bundle is None else plan_bundle.reason_code,
+            "research_compatibility_execution_fallback": (
+                False if plan_bundle is None else bool(plan_bundle.compatibility_fallback)
+            ),
         }
     from bithumb_bot.canonical_decision import canonical_payload_hash
 
@@ -339,6 +371,7 @@ def _execution_plan_evidence(
         "execution_plan_bundle_present": True,
         "execution_plan_status": "PLANNED" if submit_plan.submit_expected else "BLOCKED",
         "execution_plan_reason_code": "none" if submit_plan.submit_expected else submit_plan.block_reason,
+        "research_compatibility_execution_fallback": bool(plan_bundle.compatibility_fallback),
     }
 
 
@@ -425,6 +458,7 @@ def _sma_policy_config_from_research_parameters(
     parameter_values: dict[str, Any],
     fee_rate: float,
     slippage_bps: float,
+    default_buy_fraction: float = 0.0,
 ) -> SmaPolicyConfig:
     return SmaPolicyConfig(
         strategy_name=strategy_name,
@@ -443,7 +477,7 @@ def _sma_policy_config_from_research_parameters(
         cost_edge_enabled=bool(parameter_values.get("SMA_COST_EDGE_ENABLED", True)),
         cost_edge_min_ratio=float(parameter_values.get("SMA_COST_EDGE_MIN_RATIO") or 0.0),
         market_regime_enabled=bool(parameter_values.get("SMA_MARKET_REGIME_ENABLED", True)),
-        buy_fraction=float(parameter_values.get("BUY_FRACTION") or 0.0),
+        buy_fraction=float(parameter_values.get("BUY_FRACTION") or default_buy_fraction or 0.0),
         max_order_krw=float(parameter_values.get("MAX_ORDER_KRW") or 0.0),
         candidate_regime_policy=None,
     )
@@ -459,6 +493,7 @@ def _reevaluate_sma_policy_with_research_position(
     fee_rate: float,
     slippage_bps: float,
     exit_policy_config: ExitPolicyConfig,
+    buy_fraction: float = 0.0,
     rule_sources: dict[str, str] | None = None,
 ) -> StrategyDecisionV2 | None:
     event_extra = event.extra_payload if isinstance(event.extra_payload, dict) else {}
@@ -491,6 +526,7 @@ def _reevaluate_sma_policy_with_research_position(
         parameter_values=parameter_values,
         fee_rate=fee_rate,
         slippage_bps=slippage_bps,
+        default_buy_fraction=buy_fraction,
     )
     execution_context = ExecutionConstraintSnapshot(
         fee_rate_for_decision=float(parameter_values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate),
@@ -850,6 +886,7 @@ def _run_decision_event_backtest_impl(
                 parameter_values=parameter_values,
                 fee_rate=fee_rate,
                 slippage_bps=slippage_bps,
+                buy_fraction=float(buy_fraction),
                 exit_policy_config=sma_exit_policy_config,
                 rule_sources=_exit_rule_sources_for_policy(active_exit_policy),
             )
@@ -1037,6 +1074,15 @@ def _run_decision_event_backtest_impl(
             sellable_qty=float(sellable_qty),
             reference_price=float(candle.close),
             policy_decision=policy_decision,
+            candle_ts=int(candle.ts),
+            allow_compatibility_fallback=bool(
+                policy_decision is None
+                and not sma_policy_unsupported_reason
+                and (
+                    strategy_plugin.name != "sma_with_filter"
+                    or _allows_legacy_sma_event_first_exit_policy(event)
+                )
+            ),
             block_reason=block_reason,
         )
         submit_plan = execution_plan_bundle.submit_plan
