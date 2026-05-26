@@ -476,6 +476,69 @@ def normalize_position_state_before_strategy_decision(
     )
 
 
+def normalize_position_state_for_runtime_decision(
+    conn,
+    strategy: SmaWithFilterStrategy,
+    *,
+    through_ts_ms: int | None = None,
+    normalizer: PositionStateNormalizer | None = None,
+) -> dict[str, object]:
+    """Explicit mutable pre-decision phase for runtime strategy decisions."""
+    updated_count = normalize_position_state_before_strategy_decision(
+        conn,
+        strategy,
+        through_ts_ms=through_ts_ms,
+        normalizer=normalizer,
+    )
+    return {
+        "normalization_boundary": "engine.normalize_position_state_before_strategy_decision",
+        "normalization_updated_count": int(updated_count),
+        "decision_boundary_phase": "pre_decision_normalization_complete",
+    }
+
+
+def build_read_only_strategy_decision_snapshot(
+    conn,
+    strategy: SmaWithFilterStrategy,
+    *,
+    through_ts_ms: int | None = None,
+    boundary_telemetry: dict[str, object] | None = None,
+) -> RuntimeSmaDecisionResult | None:
+    """Post-normalization read-only decision phase.
+
+    This function assumes any mutable position normalization has already
+    completed. It must not call the normalizer or any legacy DB-bound strategy
+    ``decide(conn)`` method.
+    """
+    result = decide_sma_with_filter_runtime_snapshot_from_db(
+        conn,
+        strategy,
+        through_ts_ms=through_ts_ms,
+    )
+    if result is not None and boundary_telemetry:
+        boundary = {**dict(result.boundary), **dict(boundary_telemetry)}
+        boundary["decision_boundary_phase"] = "post_normalization_decision"
+        result.base_context.update(boundary)
+        object.__setattr__(result, "boundary", boundary)
+    return result
+
+
+def compute_strategy_decision_after_normalization(
+    conn,
+    strategy: SmaWithFilterStrategy,
+    *,
+    through_ts_ms: int | None = None,
+    boundary_telemetry: dict[str, object] | None = None,
+) -> RuntimeSmaDecisionResult | None:
+    """Decision-only helper for callers that already ran normalization."""
+    return build_read_only_strategy_decision_snapshot(
+        conn,
+        strategy,
+        through_ts_ms=through_ts_ms,
+        boundary_telemetry=boundary_telemetry,
+    )
+
+
 @dataclass(frozen=True)
 class DecisionRunner:
     """Small orchestration seam for runtime strategy decisions.
@@ -546,15 +609,16 @@ def _compute_strategy_decision_snapshot_impl(
         )
         if not isinstance(strategy, SmaWithFilterStrategy):
             raise RuntimeError(f"strategy_policy_invalid:{selected_strategy_name}")
-        normalize_position_state_before_strategy_decision(
+        boundary_telemetry = normalize_position_state_for_runtime_decision(
             conn,
             strategy,
             through_ts_ms=through_ts_ms,
         )
-        return decide_sma_with_filter_runtime_snapshot_from_db(
+        return compute_strategy_decision_after_normalization(
             conn,
             strategy,
             through_ts_ms=through_ts_ms,
+            boundary_telemetry=boundary_telemetry,
         )
     if not _legacy_db_strategy_fallback_allowed(selected_strategy_name=selected_strategy_name):
         raise RuntimeError(f"legacy_db_strategy_not_allowed_for_live:{selected_strategy_name}")

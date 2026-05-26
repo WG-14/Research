@@ -1,3 +1,11 @@
+"""Strategy registry facade.
+
+Promotion-grade runtime strategies are exposed through ``StrategyPolicy`` and
+``create_strategy_policy``. DB-bound ``SmaCrossStrategy`` and
+``LegacySmaWithFilterDbAdapter`` exports remain compatibility-only and must not
+be used as live promotion-grade decision boundaries.
+"""
+
 from .base import LegacyDbStrategy, PositionContext, StrategyDecision, StrategyPolicy
 from .registry import (
     create_legacy_strategy,

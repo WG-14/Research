@@ -6,6 +6,8 @@ import sqlite3
 import textwrap
 from dataclasses import replace
 
+import pytest
+
 from bithumb_bot.core import sma_policy
 from bithumb_bot.core.sma_policy import (
     EntryExecutionIntent,
@@ -33,7 +35,11 @@ from bithumb_bot import runtime_position_state_normalizer
 from bithumb_bot import runtime_sma_snapshot
 from bithumb_bot import runtime_sma_snapshot_builder as runtime_sma
 from bithumb_bot.strategy import sma as strategy_sma
-from bithumb_bot.strategy.sma import SmaWithFilterStrategy, create_sma_with_filter_strategy
+from bithumb_bot.strategy.sma import (
+    SmaCrossStrategy,
+    SmaWithFilterStrategy,
+    create_sma_with_filter_strategy,
+)
 from bithumb_bot.strategy.exit_rules import ExitPolicyConfig, evaluate_sma_exit_policy
 from bithumb_bot.strategy.sma_decision_assembler import evaluate_sma_final_decision
 
@@ -776,6 +782,9 @@ def test_runtime_decide_is_read_only_and_normalization_boundary_is_explicit() ->
         runtime_position_state_normalizer.PositionStateNormalizer.normalize_and_persist
     )
     builder_source = inspect.getsource(runtime_sma.build_sma_with_filter_runtime_decision_from_normalized_db)
+    builder_impl_source = inspect.getsource(
+        runtime_sma._build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl
+    )
     orchestration_source = inspect.getsource(runtime_sma.decide_sma_with_filter_runtime_snapshot_from_db)
     engine_normalization_source = inspect.getsource(engine.normalize_position_state_before_strategy_decision)
     runtime_boundary_source = inspect.getsource(runtime_sma_snapshot.decide_sma_with_filter_snapshot_from_db)
@@ -787,8 +796,9 @@ def test_runtime_decide_is_read_only_and_normalization_boundary_is_explicit() ->
     assert "mark_harmless_dust_positions" in normalizer_source
     assert "reclassify_non_executable_open_exposure" in normalizer_source
     assert "conn.commit()" in normalizer_source
-    assert "_load_position_context(" in builder_source
-    assert "evaluate_sma_final_decision(" in builder_source
+    assert "readonly_decision_context(" in builder_source
+    assert "_load_position_context(" in builder_impl_source
+    assert "evaluate_sma_final_decision(" in builder_impl_source
     assert "normalize_and_persist(" not in orchestration_source
     assert "normalize_and_persist(" in engine_normalization_source
     assert "strategy.decide(" not in orchestration_source
@@ -905,6 +915,37 @@ def test_post_normalization_decision_path_does_not_commit(monkeypatch) -> None:
     assert wrapped.commit_count == 0
 
 
+def test_sma_cross_decide_does_not_run_position_normalizer_or_commit(monkeypatch) -> None:
+    closes = [10.0, 10.0, 10.0, 10.0, 11.0]
+    wrapped = _CommitCountingConnection(_build_candle_db(closes))
+
+    def _raise_mutating_normalizer(*args, **kwargs):
+        raise AssertionError("SmaCrossStrategy.decide must not normalize mutable position state")
+
+    monkeypatch.setattr(
+        runtime_position_state_normalizer.PositionStateNormalizer,
+        "normalize_and_persist",
+        _raise_mutating_normalizer,
+    )
+
+    try:
+        decision = SmaCrossStrategy(
+            short_n=2,
+            long_n=3,
+            pair="BTC_KRW",
+            interval="1m",
+            slippage_bps=0.0,
+            live_fee_rate_estimate=0.0,
+            entry_edge_buffer_ratio=0.0,
+            strategy_min_expected_edge_ratio=0.0,
+        ).decide(wrapped, through_ts_ms=1_700_000_240_000)
+    finally:
+        wrapped.close()
+
+    assert decision is not None
+    assert wrapped.commit_count == 0
+
+
 def test_runtime_snapshot_builder_after_normalization_is_read_only() -> None:
     closes = [10.0] * 11 + [11.0]
     conn = _build_candle_db(closes)
@@ -951,6 +992,56 @@ def test_runtime_snapshot_builder_after_normalization_is_read_only() -> None:
     assert result.decision.policy_hash.startswith("sha256:")
     assert result.replay_fingerprint["strategy_name"] == "sma_with_filter"
     assert result.replay_fingerprint["through_ts_ms"] == 1_700_000_000_000 + 11 * 60_000
+    assert result.boundary["normalization_boundary"] == (
+        "engine.normalize_position_state_before_strategy_decision"
+    )
+    assert result.boundary["normalization_updated_count"] is None
+    assert result.boundary["decision_boundary_phase"] == "post_normalization_decision"
+    assert isinstance(result.boundary["post_normalization_read_only_guard"], dict)
+    assert result.boundary["post_decision_total_changes_delta"] == 0
+    assert result.runtime_decision_context.as_dict()["boundary"] == result.boundary
+
+
+def test_post_normalization_read_only_guard_rejects_mutation(monkeypatch) -> None:
+    conn = _build_candle_db([10.0] * 11 + [11.0])
+    strategy = create_sma_with_filter_strategy(
+        short_n=2,
+        long_n=3,
+        pair="BTC_KRW",
+        interval="1m",
+        min_gap_ratio=0.0,
+        volatility_window=3,
+        min_volatility_ratio=0.0,
+        overextended_lookback=1,
+        overextended_max_return_ratio=0.0,
+        slippage_bps=0.0,
+        live_fee_rate_estimate=0.0,
+        entry_edge_buffer_ratio=0.0,
+        cost_edge_enabled=False,
+        market_regime_enabled=False,
+        candidate_regime_policy=_allowing_policy(),
+    )
+    original_load_signal_rows = runtime_sma._load_signal_rows
+
+    def _mutating_signal_rows(*args, **kwargs):
+        conn.execute(
+            "INSERT INTO candles(ts, pair, interval, close) VALUES (?, ?, ?, ?)",
+            (1_800_000_000_000, "BTC_KRW", "1m", 99.0),
+        )
+        return original_load_signal_rows(*args, **kwargs)
+
+    monkeypatch.setattr(runtime_sma, "_load_signal_rows", _mutating_signal_rows)
+
+    try:
+        with pytest.raises(RuntimeError, match="post_normalization_decision_readonly_violation"):
+            runtime_sma.build_sma_with_filter_runtime_decision_from_normalized_db(
+                conn,
+                strategy,
+                through_ts_ms=1_700_000_000_000 + 11 * 60_000,
+            )
+    finally:
+        conn.close()
+
 
 
 def test_load_position_context_does_not_commit() -> None:
@@ -1032,6 +1123,7 @@ def test_position_normalizer_is_the_only_runtime_decision_mutation_boundary() ->
             runtime_sma._load_signal_rows,
             runtime_sma._load_position_context,
             runtime_sma._policy_position_snapshot,
+            runtime_sma._build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl,
             runtime_sma.build_sma_with_filter_runtime_decision_from_normalized_db,
             runtime_sma_snapshot.build_sma_with_filter_replay_bundle,
         )
@@ -1231,6 +1323,11 @@ def test_replay_bundle_uses_read_only_normalized_builder(monkeypatch) -> None:
     assert bundle["code_provenance"]["source"] in {"git", "unavailable"}
     assert bundle["final_typed_strategy_decision"]["policy_input_hash"] == bundle["policy_input_hash"]
     assert bundle["execution_decision_summary"]["final_signal"] == bundle["final_typed_strategy_decision"]["final_signal"]
+    assert bundle["normalization_boundary"] == "engine.normalize_position_state_before_strategy_decision"
+    assert bundle["normalization_updated_count"] is None
+    assert bundle["decision_boundary_phase"] == "post_normalization_decision"
+    assert isinstance(bundle["post_normalization_read_only_guard"], dict)
+    assert bundle["post_decision_total_changes_delta"] == 0
 
 
 def test_replay_decision_uses_read_only_normalizer_and_does_not_mutate_db(monkeypatch) -> None:

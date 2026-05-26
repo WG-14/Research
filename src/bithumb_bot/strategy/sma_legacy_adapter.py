@@ -28,7 +28,7 @@ from ..strategy_config import (
     normalize_exit_rule_names,
     sma_strategy_config_from_settings,
 )
-from ..runtime_position_state_normalizer import PositionStateNormalizer, load_last_reconcile_metadata
+from ..runtime_position_state_normalizer import load_last_reconcile_metadata
 from .. import runtime_sma_context
 from ..utils_time import parse_interval_sec
 from .base import PositionContext, StrategyDecision
@@ -629,13 +629,6 @@ class SmaCrossStrategy:
             "curr_s": curr_s,
             "curr_l": curr_l,
         }
-        PositionStateNormalizer().normalize_and_persist(
-            conn,
-            pair=self.pair,
-            market_price=float(closes[-1]),
-            slippage_bps=float(self.slippage_bps),
-            entry_edge_buffer_ratio=float(self.entry_edge_buffer_ratio),
-        )
         position, exposure, position_state, order_rules_snapshot = _load_position_context(
             conn,
             pair=self.pair,

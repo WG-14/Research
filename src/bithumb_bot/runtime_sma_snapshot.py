@@ -131,12 +131,14 @@ def decide_sma_with_filter_runtime_snapshot_from_db(
     strategy: SmaWithFilterStrategy,
     *,
     through_ts_ms: int | None = None,
+    boundary_telemetry: dict[str, object] | None = None,
 ) -> RuntimeSmaDecisionResult | None:
     """Typed read-only runtime boundary for SMA DB state -> snapshots -> final decision."""
     return _runtime_typed_snapshot_from_db(
         conn,
         strategy,
         through_ts_ms=through_ts_ms,
+        boundary_telemetry=boundary_telemetry,
     )
 
 
@@ -184,6 +186,12 @@ def build_sma_with_filter_replay_bundle(
         "strategy": strategy.name,
         "through_ts_ms": int(through_ts_ms),
         "boundary_stages": dict(SMA_RUNTIME_BOUNDARY_STAGES),
+        "boundary": context.get("boundary"),
+        "normalization_boundary": context.get("normalization_boundary"),
+        "normalization_updated_count": context.get("normalization_updated_count"),
+        "post_normalization_read_only_guard": context.get("post_normalization_read_only_guard"),
+        "post_decision_total_changes_delta": context.get("post_decision_total_changes_delta"),
+        "decision_boundary_phase": context.get("decision_boundary_phase"),
         "code_provenance": _code_provenance(),
         "market_snapshot": {
             "pair": context.get("pair"),

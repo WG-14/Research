@@ -24,6 +24,7 @@ from .lifecycle import (
     summarize_position_lots,
     summarize_reserved_exit_qty,
 )
+from .runtime_readonly_guard import readonly_decision_context
 from .runtime_position_state_normalizer import (
     load_last_reconcile_metadata,
 )
@@ -87,6 +88,7 @@ class RuntimeSmaDecisionContext:
     entry_block_reason: str
     execution_intent: dict[str, object] | None
     replay_fingerprint: dict[str, object]
+    boundary: dict[str, object]
 
     @classmethod
     def from_decision(
@@ -94,6 +96,7 @@ class RuntimeSmaDecisionContext:
         *,
         decision: StrategyDecisionV2,
         replay_fingerprint: dict[str, object],
+        boundary: dict[str, object] | None = None,
     ) -> "RuntimeSmaDecisionContext":
         trace = decision.as_trace()
         raw_intent = trace.get("execution_intent")
@@ -110,6 +113,7 @@ class RuntimeSmaDecisionContext:
             entry_block_reason=str(decision.entry_block_reason or ""),
             execution_intent=dict(raw_intent) if isinstance(raw_intent, dict) else None,
             replay_fingerprint=dict(replay_fingerprint),
+            boundary=dict(boundary or {}),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -128,6 +132,7 @@ class RuntimeSmaDecisionContext:
                 None if self.execution_intent is None else deepcopy(self.execution_intent)
             ),
             "replay_fingerprint": deepcopy(self.replay_fingerprint),
+            "boundary": deepcopy(self.boundary),
         }
 
 
@@ -143,6 +148,7 @@ class RuntimeSmaDecisionResult:
     candle_ts: int
     market_price: float
     replay_fingerprint: dict[str, object]
+    boundary: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         # ``base_context`` is legacy serialization material. Keep a private copy
@@ -150,6 +156,7 @@ class RuntimeSmaDecisionResult:
         # construction and accidentally alter this result's compatibility payload.
         object.__setattr__(self, "base_context", dict(self.base_context))
         object.__setattr__(self, "replay_fingerprint", dict(self.replay_fingerprint))
+        object.__setattr__(self, "boundary", dict(self.boundary or {}))
 
     @property
     def policy_hashes(self) -> RuntimeSmaPolicyHashes:
@@ -169,6 +176,7 @@ class RuntimeSmaDecisionResult:
         return RuntimeSmaDecisionContext.from_decision(
             decision=self.decision,
             replay_fingerprint=self.replay_fingerprint,
+            boundary=self.boundary,
         )
 
     @property
@@ -186,6 +194,7 @@ class RuntimeSmaDecisionResult:
             "exit_evaluations": [dict(item) for item in self.decision.exit_evaluations],
             "execution_intent": context["execution_intent"],
             "replay_fingerprint": context["replay_fingerprint"],
+            "boundary": context["boundary"],
         }
 
     def _authoritative_policy_context(self) -> dict[str, object]:
@@ -195,6 +204,7 @@ class RuntimeSmaDecisionResult:
             "policy_input_hash": self.decision.policy_input_hash,
             "policy_decision_hash": self.decision.policy_decision_hash,
             "pure_policy_trace": self.decision.as_trace(),
+            "boundary": deepcopy(self.boundary),
         }
 
     def legacy_strategy_decision(self) -> StrategyDecision:
@@ -427,11 +437,12 @@ def _policy_position_snapshot(
     )
 
 
-def build_sma_with_filter_runtime_decision_from_normalized_db(
+def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
     conn: sqlite3.Connection,
     strategy: object,
     *,
     through_ts_ms: int | None = None,
+    boundary_telemetry: dict[str, object] | None = None,
 ) -> RuntimeSmaDecisionResult | None:
     """Read normalized DB state and return the typed final SMA runtime decision.
 
@@ -891,6 +902,15 @@ def build_sma_with_filter_runtime_decision_from_normalized_db(
         regime_version=str(market_regime.get("version") or ""),
     )
     base_context["replay_fingerprint"] = replay_fingerprint
+    boundary = {
+        "normalization_boundary": "engine.normalize_position_state_before_strategy_decision",
+        "normalization_updated_count": None,
+        "post_normalization_read_only_guard": None,
+        "post_decision_total_changes_delta": None,
+        "decision_boundary_phase": "post_normalization_decision",
+        **dict(boundary_telemetry or {}),
+    }
+    base_context.update(boundary)
 
     return RuntimeSmaDecisionResult(
         decision=final_policy_decision,
@@ -901,7 +921,42 @@ def build_sma_with_filter_runtime_decision_from_normalized_db(
         candle_ts=int(ts_list[-1]),
         market_price=float(closes[-1]),
         replay_fingerprint=replay_fingerprint,
+        boundary=boundary,
     )
+
+
+def build_sma_with_filter_runtime_decision_from_normalized_db(
+    conn: sqlite3.Connection,
+    strategy: object,
+    *,
+    through_ts_ms: int | None = None,
+    boundary_telemetry: dict[str, object] | None = None,
+) -> RuntimeSmaDecisionResult | None:
+    """Guarded post-normalization read-only SMA runtime decision phase."""
+    phase = "post_normalization_decision"
+    with readonly_decision_context(conn, phase=phase) as guard:
+        result = _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
+            conn,
+            strategy,
+            through_ts_ms=through_ts_ms,
+            boundary_telemetry={
+                "normalization_boundary": "engine.normalize_position_state_before_strategy_decision",
+                "normalization_updated_count": None,
+                "decision_boundary_phase": phase,
+                **dict(boundary_telemetry or {}),
+            },
+        )
+    if result is None:
+        return None
+    guard_report = guard.report.as_dict()
+    boundary = {
+        **dict(result.boundary),
+        "post_normalization_read_only_guard": guard_report,
+        "post_decision_total_changes_delta": guard_report["total_changes_delta"],
+    }
+    result.base_context.update(boundary)
+    object.__setattr__(result, "boundary", boundary)
+    return result
 
 
 def build_sma_with_filter_decision_from_normalized_db(
@@ -939,6 +994,7 @@ def decide_sma_with_filter_runtime_snapshot_from_db(
     strategy: object,
     *,
     through_ts_ms: int | None = None,
+    boundary_telemetry: dict[str, object] | None = None,
 ) -> RuntimeSmaDecisionResult | None:
     """Read normalized DB state and return a typed sma_with_filter decision.
 
@@ -951,11 +1007,16 @@ def decide_sma_with_filter_runtime_snapshot_from_db(
     )
     if signal_through_ts_ms is None:
         return None
-    return build_sma_with_filter_runtime_decision_from_normalized_db(
+    result = build_sma_with_filter_runtime_decision_from_normalized_db(
         conn,
         strategy,
         through_ts_ms=signal_through_ts_ms,
     )
+    if result is not None and boundary_telemetry:
+        boundary = {**dict(result.boundary), **dict(boundary_telemetry)}
+        result.base_context.update(boundary)
+        object.__setattr__(result, "boundary", boundary)
+    return result
 
 
 def _resolve_signal_through_ts_ms(*, interval: str, through_ts_ms: int | None) -> int | None:
