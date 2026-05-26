@@ -76,12 +76,40 @@ class ExecutionPlanBundle:
     planning_error: str | None = None
     status: "ExecutionPlanStatus | None" = None
 
+    def as_dict(self) -> dict[str, object]:
+        submit_plan = None if self.submit_plan is None else self.submit_plan.as_dict()
+        summary = None if self.summary is None else self.summary.as_dict()
+        status = None if self.status is None else self.status.as_dict()
+        return {
+            "schema_version": 1,
+            "authority_label": "ExecutionPlanBundle",
+            "summary_authority": "ExecutionDecisionSummary" if self.summary is not None else "missing",
+            "submit_plan_authority": "ExecutionSubmitPlan" if self.submit_plan is not None else "none",
+            "summary": summary,
+            "primary_submit_plan": submit_plan,
+            "status": status,
+            "planning_error": self.planning_error,
+            "readiness_payload_hash": sha256_prefixed(self.readiness_payload),
+            "target_policy_metadata": dict(self.target_policy_metadata),
+            "target_policy_metadata_hash": sha256_prefixed(self.target_policy_metadata),
+        }
+
+    def content_hash(self) -> str:
+        return sha256_prefixed(self.as_dict())
+
 
 @dataclass(frozen=True)
 class ExecutionPlanStatus:
     status: str
     reason_code: str
     reason: str
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "reason_code": self.reason_code,
+            "reason": self.reason,
+        }
 
 
 @dataclass(frozen=True)
@@ -319,7 +347,7 @@ class ExecutionPlanner:
                 "persistence_context_authoritative": 0,
             }
         )
-        return ExecutionPlanBundle(
+        bundle = ExecutionPlanBundle(
             summary=planning.execution_decision_summary,
             submit_plan=submit_plan,
             persistence_context=context,
@@ -328,6 +356,9 @@ class ExecutionPlanner:
             planning_error=planning.planning_error,
             status=_plan_status(planning),
         )
+        context["execution_plan_bundle"] = bundle.as_dict()
+        context["execution_plan_bundle_hash"] = bundle.content_hash()
+        return bundle
 
     def _planning_context_from_envelope_input(
         self,

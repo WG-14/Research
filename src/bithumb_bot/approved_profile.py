@@ -302,6 +302,13 @@ def verify_promotion_artifact(payload: dict[str, Any]) -> dict[str, Any]:
     profile = payload.get("candidate_profile")
     if not isinstance(profile, dict):
         raise ApprovedProfileError("promotion_candidate_profile_missing")
+    for source_name, source in (("promotion", payload), ("candidate_profile", profile)):
+        if source.get("compatibility_fallback") is True or source.get(
+            "research_compatibility_execution_fallback"
+        ) is True:
+            raise ApprovedProfileError(f"{source_name}_compatibility_fallback_not_promotion_grade")
+        if source.get("promotion_grade") is False:
+            raise ApprovedProfileError(f"{source_name}_promotion_grade_false")
     expected_profile_hash = payload.get("candidate_profile_hash") or payload.get("verified_candidate_profile_hash")
     if sha256_prefixed(profile) != expected_profile_hash:
         raise ApprovedProfileError("promotion_candidate_profile_hash_mismatch")

@@ -270,6 +270,13 @@ def compare_decision_equivalence(
         missing_research=missing_research,
         missing_runtime=missing_runtime,
     )
+    execution_equivalence = _execution_equivalence_report(
+        normalized_research=normalized_research,
+        normalized_runtime=normalized_runtime,
+        mismatch_items=mismatch_items,
+        missing_research=missing_research,
+        missing_runtime=missing_runtime,
+    )
     outcome = _equivalence_outcome(
         reason_codes=reason_code_set,
         canonical_incomplete_decision_count=canonical_incomplete_decision_count,
@@ -316,6 +323,7 @@ def compare_decision_equivalence(
         "actual_semantic_drift_count": drift_counts["actual_semantic_drift_count"],
         "lifecycle_unmodeled_mismatch_count": drift_counts["lifecycle_unmodeled_mismatch_count"],
         "claims_scope": _claims_scope(state_coverage_matrix=state_coverage_matrix),
+        "execution_equivalence": execution_equivalence,
         "state_coverage_matrix": state_coverage_matrix,
         "recommended_next_action": _recommended_next_action(
             outcome=outcome,
@@ -1118,6 +1126,83 @@ def _claims_scope(*, state_coverage_matrix: dict[str, dict[str, object]]) -> dic
             "fail_closed_unmodeled_state_is_not_full_lifecycle_equivalence_evidence",
         ],
     }
+
+
+def _execution_equivalence_report(
+    *,
+    normalized_research: list[dict[str, Any]],
+    normalized_runtime: list[dict[str, Any]],
+    mismatch_items: list[dict[str, object]],
+    missing_research: list[str],
+    missing_runtime: list[str],
+) -> dict[str, object]:
+    field_mismatches: dict[str, list[dict[str, object]]] = {}
+    for item in mismatch_items:
+        if item.get("diagnostic_only"):
+            continue
+        for field in item.get("fields") or ():
+            if isinstance(field, dict):
+                field_mismatches.setdefault(str(field.get("field") or ""), []).append(field)
+    submit_plan_missing = [
+        _decision_key(item)
+        for item in normalized_research + normalized_runtime
+        if _execution_required_missing(item.get("execution_submit_plan_hash"))
+    ]
+    summary_missing = [
+        _decision_key(item)
+        for item in normalized_research + normalized_runtime
+        if _execution_required_missing(item.get("execution_summary_hash"))
+    ]
+    final_action_mismatch = field_mismatches.get("final_action", [])
+    submit_plan_mismatch = field_mismatches.get("execution_submit_plan_hash", [])
+    signal_mismatch = field_mismatches.get("final_signal", []) + field_mismatches.get("side", [])
+    fail_reasons: list[str] = []
+    if missing_research or missing_runtime:
+        fail_reasons.append("execution_decision_pair_missing")
+    if signal_mismatch:
+        fail_reasons.append("signal_equivalence_mismatch")
+    if final_action_mismatch:
+        fail_reasons.append("final_action_equivalence_mismatch")
+    if summary_missing:
+        fail_reasons.append("execution_summary_evidence_missing")
+    if submit_plan_missing:
+        fail_reasons.append("execution_submit_plan_evidence_missing")
+    if submit_plan_mismatch:
+        fail_reasons.append("execution_submit_plan_hash_mismatch")
+    supported_scope_ok = not fail_reasons
+    return {
+        "schema_version": 1,
+        "claim_scope": "submit_plan_equivalence_only",
+        "ok": supported_scope_ok,
+        "signal_equivalence_supported": True,
+        "signal_equivalence_ok": not signal_mismatch and not missing_research and not missing_runtime,
+        "final_action_equivalence_supported": True,
+        "final_action_equivalence_ok": not final_action_mismatch and not missing_research and not missing_runtime,
+        "submit_plan_equivalence_supported": True,
+        "submit_plan_equivalence_ok": not submit_plan_mismatch and not submit_plan_missing,
+        "simulated_fill_equivalence_supported": False,
+        "live_submit_equivalence_supported": False,
+        "accounting_replay_equivalence_supported": False,
+        "full_lifecycle_equivalence_supported": False,
+        "fail_reasons": sorted(set(fail_reasons)),
+        "unsupported_lifecycle_reasons": [
+            "execution_lifecycle_scope_not_supported",
+            "fill_equivalence_evidence_missing",
+            "accounting_replay_equivalence_missing",
+        ],
+        "missing_execution_submit_plan_evidence": submit_plan_missing,
+        "missing_execution_summary_evidence": summary_missing,
+        "submit_plan_mismatches": submit_plan_mismatch,
+        "final_action_mismatches": final_action_mismatch,
+    }
+
+
+def _execution_required_missing(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    return False
 
 
 def _drift_counts(

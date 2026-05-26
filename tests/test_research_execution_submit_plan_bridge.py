@@ -142,6 +142,7 @@ def test_research_backtest_bundle_blocks_zero_size_before_request() -> None:
         policy_decision=None,
         candle_ts=123,
         allow_compatibility_fallback=True,
+        promotion_grade_required=False,
     )
 
     assert bundle.status == "BLOCKED"
@@ -206,6 +207,7 @@ def test_research_compatibility_fallback_evidence_is_not_promotion_grade() -> No
         policy_decision=None,
         candle_ts=123,
         allow_compatibility_fallback=True,
+        promotion_grade_required=False,
     )
 
     evidence = _execution_plan_evidence(bundle)
@@ -214,6 +216,25 @@ def test_research_compatibility_fallback_evidence_is_not_promotion_grade() -> No
     assert evidence["research_compatibility_execution_fallback"] is True
     assert evidence["promotion_grade"] is False
     assert evidence["recommended_next_action"] == "regenerate_research_decisions_with_typed_execution_submit_plan"
+
+
+def test_research_compatibility_fallback_is_blocked_for_promotion_grade() -> None:
+    bundle = _research_execution_plan_bundle(
+        side="BUY",
+        cash=1_000_000.0,
+        buy_fraction=1.0,
+        sellable_qty=0.0,
+        reference_price=10.0,
+        policy_decision=None,
+        candle_ts=123,
+        allow_compatibility_fallback=True,
+    )
+
+    assert bundle.status == "BLOCKED"
+    assert bundle.reason_code == "promotion_requires_typed_execution_submit_plan"
+    assert bundle.submit_plan is None
+    assert bundle.compatibility_fallback is False
+    assert bundle.promotion_grade is False
 
 
 def test_research_virtual_execution_service_public_input_is_submit_plan() -> None:

@@ -77,8 +77,11 @@ class SignalExecutionRequest:
     decision_id: int | None = None
     decision_reason: str | None = None
     exit_rule_name: str | None = None
+    # Compatibility-only aliases. These dicts are non-authoritative
+    # observability material and must not be used as live submit authority.
     decision_context: dict[str, object] | None = None
     observability_context: dict[str, object] | None = None
+    observability_payload: dict[str, object] | None = None
     execution_decision_summary: "ExecutionDecisionSummary | None" = None
     execution_plan_bundle: object | None = None
 
@@ -254,6 +257,25 @@ class ExecutionSubmitPlan:
         return key in self.as_dict()
 
 
+EXECUTION_SUBMIT_PLAN_VALID_SOURCES = frozenset(
+    {
+        "target_delta",
+        "strategy_position",
+        "residual_inventory",
+        "research_backtest",
+    }
+)
+EXECUTION_SUBMIT_PLAN_VALID_AUTHORITIES = frozenset(
+    {
+        "canonical_target_delta_sizing",
+        "configured_strategy_order_size",
+        "residual_inventory_policy",
+        "residual_inventory_delta",
+        "strategy_execution_intent",
+        "research_compatibility_execution_intent",
+        "target_position_delta",
+    }
+)
 EXECUTION_SUBMIT_PLAN_REQUIRED_FIELDS = frozenset(
     {
         "side",
@@ -286,6 +308,12 @@ def validate_execution_submit_plan_payload(
     side = str(plan.get("side") or "").upper()
     if side not in {"BUY", "SELL", "HOLD", "NONE"}:
         raise ValueError(f"{field_name}_schema_invalid_side:{side or 'missing'}")
+    source = str(plan.get("source") or "").strip()
+    if source not in EXECUTION_SUBMIT_PLAN_VALID_SOURCES:
+        raise ValueError(f"{field_name}_schema_invalid_source:{source or 'missing'}")
+    authority = str(plan.get("authority") or "").strip()
+    if authority not in EXECUTION_SUBMIT_PLAN_VALID_AUTHORITIES:
+        raise ValueError(f"{field_name}_schema_invalid_authority:{authority or 'missing'}")
     proof_status = str(plan.get("pre_submit_proof_status") or "")
     if proof_status not in {"passed", "failed", "not_required"}:
         raise ValueError(f"{field_name}_schema_invalid_pre_submit_proof_status:{proof_status}")
@@ -500,11 +528,7 @@ def _live_real_order_typed_submit_plan_error(
 def _request_execution_decision_payload(
     request: SignalExecutionRequest,
 ) -> tuple[dict[str, object] | None, str | None]:
-    observability_context = (
-        request.observability_context
-        if request.observability_context is not None
-        else request.decision_context
-    )
+    observability_context = _request_observability_payload(request)
     raw_execution_decision = (
         observability_context.get("execution_decision")
         if isinstance(observability_context, dict)
@@ -527,8 +551,20 @@ def _request_execution_decision_payload(
     if typed_payload is not None:
         return typed_payload, None
     if isinstance(raw_execution_decision, dict):
+        if _live_real_order_submit_plan_required():
+            return None, "live_real_order_dict_only_execution_decision_not_authority"
         return dict(raw_execution_decision), None
     return None, None
+
+
+def _request_observability_payload(request: SignalExecutionRequest) -> dict[str, object] | None:
+    return (
+        request.observability_payload
+        if request.observability_payload is not None
+        else request.observability_context
+        if request.observability_context is not None
+        else request.decision_context
+    )
 
 
 class SignalExecutionService(Protocol):
@@ -1531,11 +1567,7 @@ class LiveSignalExecutionService:
 
     def execute(self, request: SignalExecutionRequest) -> dict | None:
         submit_plan_required = _live_real_order_submit_plan_required()
-        observability_context = (
-            request.observability_context
-            if request.observability_context is not None
-            else request.decision_context
-        )
+        observability_context = _request_observability_payload(request)
         if observability_context is not None and not isinstance(observability_context, dict):
             _log_live_submit_plan_block(
                 reason="observability_context_schema_not_object",
@@ -1615,12 +1647,20 @@ class LiveSignalExecutionService:
             typed_target_plan = typed_summary.typed_target_submit_plan()
             typed_residual_plan = typed_summary.typed_residual_submit_plan()
             typed_buy_plan = typed_summary.typed_buy_submit_plan()
-            if typed_target_plan is not None:
-                target_plan = typed_target_plan.as_final_payload()
-            if typed_residual_plan is not None:
-                residual_plan = typed_residual_plan.as_final_payload()
-            if typed_buy_plan is not None:
-                buy_plan = typed_buy_plan.as_final_payload()
+            try:
+                if typed_target_plan is not None:
+                    target_plan = typed_target_plan.as_final_payload()
+                if typed_residual_plan is not None:
+                    residual_plan = typed_residual_plan.as_final_payload()
+                if typed_buy_plan is not None:
+                    buy_plan = typed_buy_plan.as_final_payload()
+            except ValueError as exc:
+                _log_live_submit_plan_block(
+                    reason=str(exc),
+                    field_name="execution_submit_plan",
+                    side=request.signal,
+                )
+                return None
         if submit_plan_required and not target_plan and not residual_plan and not buy_plan:
             _log_live_submit_plan_block(
                 reason="live_real_order_missing_typed_submit_plan",

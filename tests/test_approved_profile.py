@@ -320,6 +320,20 @@ def test_promotion_or_profile_refuses_pending_validation_run_promotion(tmp_path:
         verify_promotion_artifact(promotion)
 
 
+def test_promotion_artifact_rejects_research_compatibility_fallback_marker() -> None:
+    promotion = _promotion(compatibility_fallback=True)
+
+    with pytest.raises(ApprovedProfileError, match="promotion_compatibility_fallback_not_promotion_grade"):
+        verify_promotion_artifact(promotion)
+
+
+def test_promotion_artifact_rejects_promotion_grade_false_marker() -> None:
+    promotion = _promotion(promotion_grade=False)
+
+    with pytest.raises(ApprovedProfileError, match="promotion_promotion_grade_false"):
+        verify_promotion_artifact(promotion)
+
+
 def test_profile_generate_refuses_validation_run_required_without_hash(tmp_path: Path) -> None:
     promotion = _promotion(
         validation_run_required=True,

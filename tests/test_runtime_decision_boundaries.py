@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from bithumb_bot.config import settings
+from bithumb_bot import engine
 from bithumb_bot.core.sma_policy import PositionSnapshot, StrategyDecisionV2
 from bithumb_bot.db_core import ensure_schema
 from bithumb_bot.decision_envelope import DecisionEnvelope
@@ -295,6 +296,91 @@ def test_legacy_plan_strategy_decision_fails_closed_for_live_real_order_even_whe
     assert planning.execution_decision_summary is None
     assert planning.planning_error == "legacy_context_planning_live_real_order_disabled"
     assert planning.context["submit_expected"] is False
+
+
+def test_sma_with_filter_live_runtime_requires_typed_handoff() -> None:
+    original = {
+        "MODE": settings.MODE,
+        "APPROVED_STRATEGY_PROFILE_PATH": settings.APPROVED_STRATEGY_PROFILE_PATH,
+    }
+    try:
+        object.__setattr__(settings, "MODE", "live")
+        object.__setattr__(settings, "APPROVED_STRATEGY_PROFILE_PATH", "")
+
+        assert engine._promotion_grade_typed_runtime_decision_required(
+            selected_strategy_name="sma_with_filter"
+        ) is True
+        assert engine._promotion_grade_typed_runtime_decision_required(
+            selected_strategy_name="sma_cross"
+        ) is False
+    finally:
+        for key, value in original.items():
+            object.__setattr__(settings, key, value)
+
+
+def test_sma_with_filter_live_dict_handoff_from_monkey_patch_fails_closed() -> None:
+    original = {
+        "MODE": settings.MODE,
+        "LIVE_DRY_RUN": settings.LIVE_DRY_RUN,
+        "LIVE_REAL_ORDER_ARMED": settings.LIVE_REAL_ORDER_ARMED,
+        "APPROVED_STRATEGY_PROFILE_PATH": settings.APPROVED_STRATEGY_PROFILE_PATH,
+    }
+    try:
+        object.__setattr__(settings, "MODE", "live")
+        object.__setattr__(settings, "LIVE_DRY_RUN", False)
+        object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
+        object.__setattr__(settings, "APPROVED_STRATEGY_PROFILE_PATH", "")
+
+        reason = engine._typed_runtime_handoff_failure_reason(
+            {"signal": "BUY", "reason": "legacy monkey patch"},
+            selected_strategy_name="sma_with_filter",
+        )
+    finally:
+        for key, value in original.items():
+            object.__setattr__(settings, key, value)
+
+    assert reason == "typed_runtime_decision_required"
+
+
+def test_sma_with_filter_paper_dict_handoff_is_only_non_promotion_compatible() -> None:
+    original = {
+        "MODE": settings.MODE,
+        "LIVE_DRY_RUN": settings.LIVE_DRY_RUN,
+        "LIVE_REAL_ORDER_ARMED": settings.LIVE_REAL_ORDER_ARMED,
+        "APPROVED_STRATEGY_PROFILE_PATH": settings.APPROVED_STRATEGY_PROFILE_PATH,
+    }
+    try:
+        object.__setattr__(settings, "MODE", "paper")
+        object.__setattr__(settings, "LIVE_DRY_RUN", False)
+        object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", False)
+        object.__setattr__(settings, "APPROVED_STRATEGY_PROFILE_PATH", "")
+
+        reason = engine._typed_runtime_handoff_failure_reason(
+            {"signal": "BUY", "reason": "legacy paper diagnostic"},
+            selected_strategy_name="sma_with_filter",
+        )
+    finally:
+        for key, value in original.items():
+            object.__setattr__(settings, key, value)
+
+    assert reason is None
+
+
+def test_sma_with_filter_approved_profile_runtime_requires_typed_handoff() -> None:
+    original = {
+        "MODE": settings.MODE,
+        "APPROVED_STRATEGY_PROFILE_PATH": settings.APPROVED_STRATEGY_PROFILE_PATH,
+    }
+    try:
+        object.__setattr__(settings, "MODE", "paper")
+        object.__setattr__(settings, "APPROVED_STRATEGY_PROFILE_PATH", "/tmp/profile.json")
+
+        assert engine._promotion_grade_typed_runtime_decision_required(
+            selected_strategy_name="sma_with_filter"
+        ) is True
+    finally:
+        for key, value in original.items():
+            object.__setattr__(settings, key, value)
 
 
 def test_mutating_persistence_context_does_not_change_typed_submit_authority() -> None:

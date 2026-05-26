@@ -353,6 +353,9 @@ def test_signal_match_but_execution_submit_plan_mismatch_fails_execution_equival
     assert "execution_submit_plan_hash_mismatch" in result.report["reason_codes"]
     assert result.report["claims_scope"]["execution_plan_equivalence_supported"] is True
     assert result.report["claims_scope"]["full_lifecycle_equivalence_supported"] is False
+    assert result.report["execution_equivalence"]["claim_scope"] == "submit_plan_equivalence_only"
+    assert result.report["execution_equivalence"]["submit_plan_equivalence_ok"] is False
+    assert "execution_submit_plan_hash_mismatch" in result.report["execution_equivalence"]["fail_reasons"]
 
 
 def test_promotion_grade_equivalence_gate_accepts_positive_canonical_v2_export_report() -> None:
@@ -389,6 +392,24 @@ def test_promotion_grade_equivalence_gate_rejects_missing_execution_plan_binding
 
     assert "decision_equivalence_missing_execution_submit_plan_hash" in reasons
     assert "decision_equivalence_incomplete_canonical" in reasons
+    assert report["execution_equivalence"]["submit_plan_equivalence_ok"] is False
+    assert "execution_submit_plan_evidence_missing" in report["execution_equivalence"]["fail_reasons"]
+
+
+def test_execution_equivalence_report_does_not_overclaim_lifecycle_scope() -> None:
+    report = _compare(_decision_v2(), _decision_v2()).report
+
+    execution = report["execution_equivalence"]
+    assert execution["ok"] is True
+    assert execution["submit_plan_equivalence_supported"] is True
+    assert execution["submit_plan_equivalence_ok"] is True
+    assert execution["simulated_fill_equivalence_supported"] is False
+    assert execution["live_submit_equivalence_supported"] is False
+    assert execution["accounting_replay_equivalence_supported"] is False
+    assert execution["full_lifecycle_equivalence_supported"] is False
+    assert "execution_lifecycle_scope_not_supported" in execution["unsupported_lifecycle_reasons"]
+    assert "fill_equivalence_evidence_missing" in execution["unsupported_lifecycle_reasons"]
+    assert "accounting_replay_equivalence_missing" in execution["unsupported_lifecycle_reasons"]
 
 
 def test_policy_hashes_are_canonical_diagnostics_not_promotion_required() -> None:

@@ -265,6 +265,7 @@ def _research_execution_plan_bundle(
     policy_decision: StrategyDecisionV2 | None,
     candle_ts: int,
     allow_compatibility_fallback: bool = False,
+    promotion_grade_required: bool = True,
     block_reason: str = "",
 ) -> ResearchExecutionPlanBundle:
     normalized_side = str(side or "HOLD").upper()
@@ -327,6 +328,18 @@ def _research_execution_plan_bundle(
             execution_engine="research_virtual",
             status="BLOCKED",
             reason_code=block_reason or "research_compatibility_submit_plan_disabled",
+        )
+    if promotion_grade_required:
+        return ResearchExecutionPlanBundle(
+            submit_plan=None,
+            summary=None,
+            source="research_backtest",
+            authority="typed_execution_planner_required",
+            execution_engine="research_virtual",
+            status="BLOCKED",
+            reason_code=block_reason or "promotion_requires_typed_execution_submit_plan",
+            promotion_grade=False,
+            recommended_next_action="regenerate_research_decisions_with_typed_execution_submit_plan",
         )
     submit_plan = _research_execution_submit_plan(
         side=normalized_side,
@@ -1134,6 +1147,7 @@ def _run_decision_event_backtest_impl(
                     or _allows_legacy_sma_event_first_exit_policy(event)
                 )
             ),
+            promotion_grade_required=True,
             block_reason=block_reason,
         )
         submit_plan = execution_plan_bundle.submit_plan

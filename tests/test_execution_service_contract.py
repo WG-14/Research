@@ -436,11 +436,11 @@ def test_lot_native_typed_buy_submit_plan_reaches_executor() -> None:
     [
         (
             lambda plan: plan.update({"source": "legacy_context"}),
-            "buy_submit_plan_invalid_source",
+            "execution_submit_plan_schema_invalid_source",
         ),
         (
             lambda plan: plan.update({"authority": "legacy_qty"}),
-            "buy_submit_plan_invalid_authority",
+            "execution_submit_plan_schema_invalid_authority",
         ),
         (
             lambda plan: plan.update({"block_reason": "entry_filter_blocked", "submit_expected": False}),
@@ -469,7 +469,13 @@ def test_lot_native_typed_buy_submit_plan_invalid_cases_fail_closed(
     calls: list[dict[str, object]] = []
     plan = _valid_buy_submit_plan()
     mutate(plan)
-    summary = _typed_buy_execution_summary(plan=plan)
+    if expected_reason in {"execution_submit_plan_schema_invalid_source", "execution_submit_plan_schema_invalid_authority"}:
+        construction_reason = expected_reason.replace("execution_submit_plan_", "buy_submit_plan_")
+        with pytest.raises(ValueError, match=construction_reason):
+            _typed_buy_execution_summary(plan=plan)
+        summary = _forged_summary_with_raw_plan(field_name="buy_submit_plan", plan=_typed_plan(plan))  # type: ignore[arg-type]
+    else:
+        summary = _typed_buy_execution_summary(plan=plan)
 
     result = _service(calls).execute(
         SignalExecutionRequest(
@@ -571,6 +577,32 @@ def test_typed_execution_summary_mismatch_with_context_fails_closed(
             ts=123,
             market_price=100_000_000.0,
             decision_context={"execution_decision": mismatched},
+            execution_decision_summary=summary,
+        )
+    )
+
+    assert result is None
+    assert calls == []
+    assert "execution_decision_summary_context_mismatch" in caplog.text
+
+
+def test_observability_payload_is_non_authoritative_and_checked_for_tampering(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _arm_live_real_orders(engine="lot_native")
+    calls: list[dict[str, object]] = []
+    summary = _typed_buy_execution_summary()
+    tampered = summary.as_dict()
+    buy_plan = dict(tampered["buy_submit_plan"])  # type: ignore[arg-type]
+    buy_plan["source"] = "legacy_context"
+    tampered["buy_submit_plan"] = buy_plan
+
+    result = _service(calls).execute(
+        SignalExecutionRequest(
+            signal="BUY",
+            ts=123,
+            market_price=100_000_000.0,
+            observability_payload={"execution_decision": tampered},
             execution_decision_summary=summary,
         )
     )

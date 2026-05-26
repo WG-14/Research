@@ -436,6 +436,31 @@ def compute_signal_runtime_handoff(
 _ORIGINAL_COMPUTE_SIGNAL = compute_signal
 
 
+def _promotion_grade_typed_runtime_decision_required(*, selected_strategy_name: str) -> bool:
+    if str(selected_strategy_name or "").strip().lower() != "sma_with_filter":
+        return False
+    mode = str(settings.MODE or "").strip().lower()
+    if mode == "live":
+        return True
+    if str(getattr(settings, "APPROVED_STRATEGY_PROFILE_PATH", "") or "").strip():
+        return True
+    return False
+
+
+def _typed_runtime_handoff_failure_reason(
+    signal_handoff: object,
+    *,
+    selected_strategy_name: str,
+) -> str | None:
+    if not _promotion_grade_typed_runtime_decision_required(
+        selected_strategy_name=selected_strategy_name
+    ):
+        return None
+    if isinstance(signal_handoff, RuntimeSmaDecisionResult):
+        return None
+    return "typed_runtime_decision_required"
+
+
 def _legacy_db_strategy_fallback_allowed(*, selected_strategy_name: str) -> bool:
     if selected_strategy_name == "sma_with_filter":
         return False
@@ -699,7 +724,7 @@ def build_signal_execution_request(
         decision_reason=decision_reason,
         exit_rule_name=exit_rule_name,
         execution_decision_summary=execution_decision_summary,
-        observability_context=decision_context,
+        observability_payload=decision_context,
         execution_plan_bundle=execution_plan_bundle,
     )
 
@@ -3476,6 +3501,22 @@ def run_loop(short_n: int, long_n: int) -> None:
                     "curr_l": typed_runtime_decision.base_context.get("curr_l"),
                 }
             else:
+                typed_runtime_failure_reason = _typed_runtime_handoff_failure_reason(
+                    signal_handoff,
+                    selected_strategy_name=str(settings.STRATEGY_NAME),
+                )
+                if typed_runtime_failure_reason is not None:
+                    _log_loop_event(
+                        logging.WARNING,
+                        "[ORDER_SKIP] typed runtime decision required",
+                        symbol=settings.PAIR,
+                        interval=settings.INTERVAL,
+                        candle_ts=closed_candle_ts_ms,
+                        reason=typed_runtime_failure_reason,
+                        strategy=str(settings.STRATEGY_NAME),
+                        handoff_type=type(signal_handoff).__name__,
+                    )
+                    continue
                 r = signal_handoff
 
             _log_loop_event(
