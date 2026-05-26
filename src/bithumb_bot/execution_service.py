@@ -84,6 +84,7 @@ class SignalExecutionRequest:
     observability_payload: dict[str, object] | None = None
     execution_decision_summary: "ExecutionDecisionSummary | None" = None
     execution_plan_bundle: object | None = None
+    research_execution_context: object | None = None
 
 
 @dataclass(frozen=True)

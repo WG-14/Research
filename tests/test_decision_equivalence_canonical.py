@@ -19,6 +19,15 @@ from bithumb_bot.decision_equivalence import (
     promotion_grade_decision_equivalence_fail_reasons,
     require_promotion_grade_decision_equivalence,
 )
+from bithumb_bot.lifecycle_evidence import (
+    AccountingReplayEvidence,
+    CanonicalLifecycleEvidenceBundle,
+    LiveSubmitResponseEvidence,
+    PaperSubmitFillEvidence,
+    PositionLifecycleSnapshotEvidence,
+    ResearchSimulatedFillEvidence,
+    validate_lifecycle_evidence_scope,
+)
 from bithumb_bot.research.hashing import sha256_prefixed
 from bithumb_bot.research.lot_native_simulation import LotNativeResearchPositionModel
 from bithumb_bot.research.strategy_registry import resolve_research_strategy_plugin
@@ -141,6 +150,72 @@ def _compare(research: dict[str, object], runtime: dict[str, object]):
         market="KRW-BTC",
         interval="1m",
         data_fingerprint="sha256:data",
+    )
+
+
+def _complete_lifecycle_evidence() -> CanonicalLifecycleEvidenceBundle:
+    return CanonicalLifecycleEvidenceBundle(
+        research_simulated_fills=(
+            ResearchSimulatedFillEvidence(
+                comparison_key="decision-1",
+                signal_ts=1,
+                decision_ts=2,
+                side="BUY",
+                requested_qty=1.0,
+                requested_notional=100.0,
+                filled_qty=1.0,
+                filled_notional=100.0,
+                avg_fill_price=100.0,
+                fill_status="filled",
+                model_hash="sha256:model",
+            ),
+        ),
+        paper_submit_fills=(
+            PaperSubmitFillEvidence(
+                comparison_key="decision-1",
+                client_order_id="client-1",
+                exchange_order_id="paper-1",
+                side="BUY",
+                requested_qty=1.0,
+                requested_notional=100.0,
+                filled_qty=1.0,
+                filled_notional=100.0,
+                submit_hash="sha256:paper-submit",
+                fill_hash="sha256:paper-fill",
+            ),
+        ),
+        live_submit_responses=(
+            LiveSubmitResponseEvidence(
+                comparison_key="decision-1",
+                client_order_id="client-1",
+                exchange_order_id="live-1",
+                side="BUY",
+                accepted=True,
+                submit_request_hash="sha256:live-request",
+                response_hash="sha256:live-response",
+            ),
+        ),
+        accounting_replays=(
+            AccountingReplayEvidence(
+                comparison_key="decision-1",
+                replay_id="replay-1",
+                replay_status="matched",
+                ledger_hash="sha256:ledger",
+                position_hash="sha256:position",
+                realized_pnl_hash="sha256:pnl",
+            ),
+        ),
+        position_lifecycle_snapshots=(
+            PositionLifecycleSnapshotEvidence(
+                comparison_key="decision-1",
+                snapshot_ts=3,
+                lifecycle_state="open_exposure",
+                position_state_hash="sha256:position",
+                open_lot_count=1,
+                sellable_lot_count=1,
+                dust_lot_count=0,
+            ),
+        ),
     )
 
 
@@ -423,6 +498,73 @@ def test_execution_equivalence_report_does_not_overclaim_lifecycle_scope() -> No
     assert report["scope_badge"] == "SUBMIT_PLAN_EQUIVALENCE_ONLY"
     assert execution["scope_badge"] == "SUBMIT_PLAN_EQUIVALENCE_ONLY"
     assert execution["full_lifecycle_scope_badge"] == "FULL_LIFECYCLE_EQUIVALENCE_UNSUPPORTED"
+
+
+def test_dict_only_lifecycle_evidence_is_rejected_and_stays_submit_plan_scoped() -> None:
+    report = compare_decision_equivalence(
+        research_decisions=[_decision_v2()],
+        runtime_decisions=[_decision_v2()],
+        profile_hash="sha256:profile",
+        market="KRW-BTC",
+        interval="1m",
+        data_fingerprint="sha256:data",
+        lifecycle_evidence={
+            "research_simulated_fills": [{"semantic_hash": "sha256:forged"}],
+            "full_lifecycle_equivalence_supported": True,
+        },
+    ).report
+
+    assert report["claim_scope"] == "submit_plan_equivalence_only"
+    assert report["full_lifecycle_equivalence_supported"] is False
+    assert "lifecycle_evidence_not_typed" in report["unsupported_lifecycle_reasons"]
+    assert report["execution_equivalence"]["full_lifecycle_equivalence_supported"] is False
+
+
+def test_partial_typed_lifecycle_evidence_does_not_upgrade_to_full_lifecycle() -> None:
+    partial = CanonicalLifecycleEvidenceBundle(
+        research_simulated_fills=_complete_lifecycle_evidence().research_simulated_fills,
+    )
+
+    validation = validate_lifecycle_evidence_scope(partial)
+    report = compare_decision_equivalence(
+        research_decisions=[_decision_v2()],
+        runtime_decisions=[_decision_v2()],
+        profile_hash="sha256:profile",
+        market="KRW-BTC",
+        interval="1m",
+        data_fingerprint="sha256:data",
+        lifecycle_evidence=partial,
+    ).report
+
+    assert validation.simulated_fill_equivalence_supported is True
+    assert validation.full_lifecycle_equivalence_supported is False
+    assert report["simulated_fill_equivalence_supported"] is True
+    assert report["full_lifecycle_equivalence_supported"] is False
+    assert report["claim_scope"] == "submit_plan_equivalence_only"
+    assert "live_submit_equivalence_evidence_missing" in report["unsupported_lifecycle_reasons"]
+
+
+def test_complete_typed_hash_bound_lifecycle_evidence_can_enable_stronger_claim_scope() -> None:
+    evidence = _complete_lifecycle_evidence()
+
+    validation = validate_lifecycle_evidence_scope(evidence)
+    report = compare_decision_equivalence(
+        research_decisions=[_decision_v2()],
+        runtime_decisions=[_decision_v2()],
+        profile_hash="sha256:profile",
+        market="KRW-BTC",
+        interval="1m",
+        data_fingerprint="sha256:data",
+        lifecycle_evidence=evidence,
+    ).report
+
+    assert validation.full_lifecycle_equivalence_supported is True
+    assert report["claim_scope"] == "full_lifecycle_equivalence"
+    assert report["scope_badge"] == "FULL_LIFECYCLE_EQUIVALENCE"
+    assert report["full_lifecycle_equivalence_supported"] is True
+    assert report["execution_equivalence"]["full_lifecycle_equivalence_supported"] is True
+    assert report["claims_scope"]["paper_submit_fill_equivalence_supported"] is True
+    assert report["unsupported_lifecycle_reasons"] == []
 
 
 def test_promotion_grade_gate_rejects_full_lifecycle_claim_without_lifecycle_evidence() -> None:

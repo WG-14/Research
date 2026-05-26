@@ -5,6 +5,7 @@ import pytest
 from bithumb_bot.core.sma_policy import EntryExecutionIntent, PositionSnapshot, StrategyDecisionV2
 from bithumb_bot.execution_service import ExecutionDecisionSummary, ExecutionSubmitPlan, SignalExecutionRequest
 from bithumb_bot.research.backtest_kernel import (
+    ResearchExecutionContext,
     ResearchVirtualExecutionService,
     _execution_plan_evidence,
     _research_execution_plan_bundle,
@@ -77,10 +78,16 @@ def _plan(
 def _request(plan: ExecutionSubmitPlan):
     return execution_submit_plan_to_research_request(
         submit_plan=plan,
-        signal_ts=100,
-        decision_ts=200,
+        context=_context(),
         reference_price=10.0,
         fee_rate=0.001,
+    )
+
+
+def _context() -> ResearchExecutionContext:
+    return ResearchExecutionContext(
+        signal_ts=100,
+        decision_ts=200,
         timing_fields={"submit_ts_assumption": 201},
         depth_fields={"depth_available": False},
     )
@@ -177,12 +184,9 @@ def test_research_backtest_bundle_blocks_zero_size_before_request() -> None:
     assert bundle.recommended_next_action == "regenerate_research_decisions_with_typed_execution_submit_plan"
     assert execution_submit_plan_to_research_request(
         submit_plan=bundle.submit_plan,
-        signal_ts=100,
-        decision_ts=200,
+        context=_context(),
         reference_price=10.0,
         fee_rate=0.001,
-        timing_fields={},
-        depth_fields={},
     ) is None
 
 
@@ -276,11 +280,8 @@ def test_research_virtual_execution_service_public_input_is_submit_plan() -> Non
 
     fill = service.simulate_submit_plan(
         submit_plan=_plan(side="BUY", qty=None, notional_krw=12_000.0),
-        signal_ts=100,
-        decision_ts=200,
+        context=_context(),
         reference_price=10.0,
-        timing_fields={"submit_ts_assumption": 201},
-        depth_fields={"depth_available": False},
     )
 
     assert fill is not None
@@ -301,16 +302,37 @@ def test_research_virtual_execution_service_execute_accepts_typed_signal_request
             ts=100,
             market_price=10.0,
             execution_decision_summary=_summary(plan),
+            research_execution_context=_context(),
         ),
-        signal_ts=100,
-        decision_ts=200,
-        timing_fields={"submit_ts_assumption": 201},
-        depth_fields={"depth_available": False},
     )
 
     assert fill is not None
     assert fill.side == "BUY"
     assert fill.requested_notional == 12_000.0
+
+
+def test_research_virtual_execution_service_execute_rejects_untyped_research_context() -> None:
+    service = ResearchVirtualExecutionService(
+        execution_model=FixedBpsExecutionModel(fee_rate=0.001, slippage_bps=0.0),
+        fee_rate=0.001,
+    )
+    plan = _plan(side="BUY", qty=None, notional_krw=12_000.0)
+
+    with pytest.raises(ValueError, match="research_execution_context_not_typed"):
+        service.execute(
+            SignalExecutionRequest(
+                signal="BUY",
+                ts=100,
+                market_price=10.0,
+                execution_decision_summary=_summary(plan),
+                research_execution_context={
+                    "signal_ts": 100,
+                    "decision_ts": 200,
+                    "timing_fields": {},
+                    "depth_fields": {},
+                },
+            ),
+        )
 
 
 def test_research_virtual_execution_service_execute_rejects_missing_typed_plan() -> None:
@@ -321,11 +343,12 @@ def test_research_virtual_execution_service_execute_rejects_missing_typed_plan()
 
     with pytest.raises(ValueError, match="research_missing_typed_submit_plan"):
         service.execute(
-            SignalExecutionRequest(signal="BUY", ts=100, market_price=10.0),
-            signal_ts=100,
-            decision_ts=200,
-            timing_fields={},
-            depth_fields={},
+            SignalExecutionRequest(
+                signal="BUY",
+                ts=100,
+                market_price=10.0,
+                research_execution_context=_context(),
+            ),
         )
 
 
@@ -338,11 +361,8 @@ def test_research_virtual_execution_service_rejects_forged_dict_submit_plan() ->
     with pytest.raises(ValueError, match="research_submit_plan_not_typed"):
         service.simulate_submit_plan(
             submit_plan={"side": "BUY"},  # type: ignore[arg-type]
-            signal_ts=100,
-            decision_ts=200,
+            context=_context(),
             reference_price=10.0,
-            timing_fields={},
-            depth_fields={},
         )
 
 
@@ -383,11 +403,8 @@ def test_research_virtual_execution_service_execute_rejects_forged_dict_submit_p
                 ts=100,
                 market_price=10.0,
                 execution_decision_summary=summary,
+                research_execution_context=_context(),
             ),
-            signal_ts=100,
-            decision_ts=200,
-            timing_fields={},
-            depth_fields={},
         )
 
 
@@ -405,11 +422,8 @@ def test_research_virtual_execution_service_blocked_plan_creates_no_fill() -> No
             submit_expected=False,
             block_reason="research_zero_buy_notional",
         ),
-        signal_ts=100,
-        decision_ts=200,
+        context=_context(),
         reference_price=10.0,
-        timing_fields={},
-        depth_fields={},
     )
 
     assert fill is None
@@ -434,11 +448,8 @@ def test_research_virtual_execution_service_execute_blocked_plan_creates_no_fill
             ts=100,
             market_price=10.0,
             execution_decision_summary=_summary(plan),
+            research_execution_context=_context(),
         ),
-        signal_ts=100,
-        decision_ts=200,
-        timing_fields={},
-        depth_fields={},
     )
 
     assert fill is None
@@ -448,12 +459,9 @@ def test_malformed_submit_plan_fails_closed_before_research_request() -> None:
     with pytest.raises(ValueError, match="research_submit_plan_not_typed"):
         execution_submit_plan_to_research_request(
             submit_plan={"side": "BUY"},  # type: ignore[arg-type]
-            signal_ts=100,
-            decision_ts=200,
+            context=_context(),
             reference_price=10.0,
             fee_rate=0.001,
-            timing_fields={},
-            depth_fields={},
         )
 
 
@@ -503,12 +511,9 @@ def test_research_typed_hold_blocks_without_fill_request() -> None:
     assert bundle.submit_plan.submit_expected is False
     assert execution_submit_plan_to_research_request(
         submit_plan=bundle.submit_plan,
-        signal_ts=100,
-        decision_ts=200,
+        context=_context(),
         reference_price=10.0,
         fee_rate=0.001,
-        timing_fields={},
-        depth_fields={},
     ) is None
 
 

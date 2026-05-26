@@ -13,7 +13,7 @@ from bithumb_bot.execution_service import (
     PaperSignalExecutionService,
     SignalExecutionRequest,
 )
-from bithumb_bot.research.backtest_kernel import ResearchVirtualExecutionService
+from bithumb_bot.research.backtest_kernel import ResearchExecutionContext, ResearchVirtualExecutionService
 from bithumb_bot.research.execution_model import FixedBpsExecutionModel
 
 
@@ -1013,11 +1013,13 @@ def _research_admission(plan: ExecutionSubmitPlan | object) -> str:
     try:
         fill = service.simulate_submit_plan(
             submit_plan=plan,  # type: ignore[arg-type]
-            signal_ts=1,
-            decision_ts=2,
+            context=ResearchExecutionContext(
+                signal_ts=1,
+                decision_ts=2,
+                timing_fields={},
+                depth_fields={},
+            ),
             reference_price=100_000_000.0,
-            timing_fields={},
-            depth_fields={},
         )
     except ValueError:
         return "blocked"

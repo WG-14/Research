@@ -17,6 +17,10 @@ from .canonical_decision import (
 )
 from .position_authority import classify_decision_position_state, position_authority_supports_positive_equivalence
 from .evidence_safety import smoke_only_evidence_rejection_reasons
+from .lifecycle_evidence import (
+    CanonicalLifecycleEvidenceBundle,
+    validate_lifecycle_evidence_scope,
+)
 from .research.hashing import content_hash_payload, sha256_prefixed
 
 
@@ -132,6 +136,7 @@ def compare_decision_equivalence(
     market: str,
     interval: str,
     data_fingerprint: str,
+    lifecycle_evidence: CanonicalLifecycleEvidenceBundle | dict[str, Any] | None = None,
     generated_at: str | None = None,
 ) -> DecisionEquivalenceResult:
     canonical_comparison = all(is_canonical_decision(item) for item in research_decisions + runtime_decisions)
@@ -277,6 +282,7 @@ def compare_decision_equivalence(
         mismatch_items=mismatch_items,
         missing_research=missing_research,
         missing_runtime=missing_runtime,
+        lifecycle_evidence=lifecycle_evidence,
     )
     outcome = _equivalence_outcome(
         reason_codes=reason_code_set,
@@ -324,14 +330,18 @@ def compare_decision_equivalence(
         "actual_semantic_drift_count": drift_counts["actual_semantic_drift_count"],
         "lifecycle_unmodeled_mismatch_count": drift_counts["lifecycle_unmodeled_mismatch_count"],
         "claim_scope": execution_equivalence["claim_scope"],
-        "scope_badge": "SUBMIT_PLAN_EQUIVALENCE_ONLY",
+        "scope_badge": execution_equivalence["scope_badge"],
         "submit_plan_equivalence_supported": execution_equivalence["submit_plan_equivalence_supported"],
         "full_lifecycle_equivalence_supported": execution_equivalence["full_lifecycle_equivalence_supported"],
         "simulated_fill_equivalence_supported": execution_equivalence["simulated_fill_equivalence_supported"],
+        "paper_submit_fill_equivalence_supported": execution_equivalence["paper_submit_fill_equivalence_supported"],
         "live_submit_equivalence_supported": execution_equivalence["live_submit_equivalence_supported"],
         "accounting_replay_equivalence_supported": execution_equivalence["accounting_replay_equivalence_supported"],
         "unsupported_lifecycle_reasons": execution_equivalence["unsupported_lifecycle_reasons"],
-        "claims_scope": _claims_scope(state_coverage_matrix=state_coverage_matrix),
+        "claims_scope": _claims_scope(
+            state_coverage_matrix=state_coverage_matrix,
+            lifecycle_evidence=lifecycle_evidence,
+        ),
         "execution_equivalence": execution_equivalence,
         "state_coverage_matrix": state_coverage_matrix,
         "recommended_next_action": _recommended_next_action(
@@ -354,6 +364,7 @@ def compare_decision_export_artifacts(
     market: str,
     interval: str,
     data_fingerprint: str,
+    lifecycle_evidence: CanonicalLifecycleEvidenceBundle | dict[str, Any] | None = None,
     generated_at: str | None = None,
 ) -> DecisionEquivalenceResult:
     result = compare_decision_equivalence(
@@ -363,6 +374,7 @@ def compare_decision_export_artifacts(
         market=market,
         interval=interval,
         data_fingerprint=data_fingerprint,
+        lifecycle_evidence=lifecycle_evidence,
         generated_at=generated_at,
     )
     report = dict(result.report)
@@ -488,6 +500,7 @@ def promotion_grade_decision_equivalence_fail_reasons(report: dict[str, Any]) ->
             execution_scope = execution_equivalence if isinstance(execution_equivalence, dict) else {}
             lifecycle_evidence_ok = bool(
                 execution_scope.get("simulated_fill_equivalence_supported")
+                and execution_scope.get("paper_submit_fill_equivalence_supported")
                 and execution_scope.get("live_submit_equivalence_supported")
                 and execution_scope.get("accounting_replay_equivalence_supported")
                 and execution_scope.get("position_lifecycle_equivalence_supported")
@@ -1114,7 +1127,11 @@ def _dust_operability_state(dust_detail: str) -> str:
     return "dust_only_unmodeled"
 
 
-def _claims_scope(*, state_coverage_matrix: dict[str, dict[str, object]]) -> dict[str, object]:
+def _claims_scope(
+    *,
+    state_coverage_matrix: dict[str, dict[str, object]],
+    lifecycle_evidence: CanonicalLifecycleEvidenceBundle | dict[str, Any] | None,
+) -> dict[str, object]:
     positive_classes = [
         state
         for state, entry in state_coverage_matrix.items()
@@ -1132,28 +1149,36 @@ def _claims_scope(*, state_coverage_matrix: dict[str, dict[str, object]]) -> dic
         for state, entry in state_coverage_matrix.items()
         if bool(entry.get("fail_closed_expected"))
     )
+    lifecycle_validation = validate_lifecycle_evidence_scope(lifecycle_evidence)
+    lifecycle_scope = lifecycle_validation.as_dict()
+    claim_scope = (
+        "full_lifecycle_equivalence"
+        if lifecycle_validation.full_lifecycle_equivalence_supported
+        else "submit_plan_equivalence_only"
+    )
+    scope_badge = (
+        "FULL_LIFECYCLE_EQUIVALENCE"
+        if lifecycle_validation.full_lifecycle_equivalence_supported
+        else "SUBMIT_PLAN_EQUIVALENCE_ONLY"
+    )
     return {
-        "claim_scope": "submit_plan_equivalence_only",
-        "scope_badge": "SUBMIT_PLAN_EQUIVALENCE_ONLY",
+        "claim_scope": claim_scope,
+        "scope_badge": scope_badge,
         "positive_equivalence_state_classes": positive_classes,
         "unsupported_state_classes": unsupported_classes,
         "promotion_claim": "positive_decision_equivalence_for_explicitly_modeled_state_classes_only",
-        "full_lifecycle_equivalence_supported": False,
+        "full_lifecycle_equivalence_supported": lifecycle_validation.full_lifecycle_equivalence_supported,
         "submit_plan_equivalence_supported": True,
-        "simulated_fill_equivalence_supported": False,
-        "live_submit_equivalence_supported": False,
-        "accounting_replay_equivalence_supported": False,
+        "simulated_fill_equivalence_supported": lifecycle_validation.simulated_fill_equivalence_supported,
+        "paper_submit_fill_equivalence_supported": lifecycle_validation.paper_submit_fill_equivalence_supported,
+        "live_submit_equivalence_supported": lifecycle_validation.live_submit_equivalence_supported,
+        "accounting_replay_equivalence_supported": lifecycle_validation.accounting_replay_equivalence_supported,
         "signal_equivalence_supported": bool(positive_classes),
         "execution_plan_equivalence_supported": True,
-        "position_lifecycle_equivalence_supported": False,
+        "position_lifecycle_equivalence_supported": lifecycle_validation.position_lifecycle_equivalence_supported,
         "fail_closed_unmodeled_state_count": fail_closed_count,
-        "unsupported_lifecycle_reasons": [
-            "execution_lifecycle_scope_not_supported",
-            "fill_equivalence_evidence_missing",
-            "live_submit_equivalence_evidence_missing",
-            "accounting_replay_equivalence_missing",
-            "position_lifecycle_equivalence_evidence_missing",
-        ],
+        "unsupported_lifecycle_reasons": list(lifecycle_validation.reason_codes),
+        "lifecycle_evidence_validation": lifecycle_scope,
         "limitations": [
             "research_position_model_cash_qty_simulation_v1_is_not_lot_native_authority",
             "non_flat_dust_reserved_exit_residue_and_recovery_states_fail_closed_until_explicitly_modeled",
@@ -1169,6 +1194,7 @@ def _execution_equivalence_report(
     mismatch_items: list[dict[str, object]],
     missing_research: list[str],
     missing_runtime: list[str],
+    lifecycle_evidence: CanonicalLifecycleEvidenceBundle | dict[str, Any] | None,
 ) -> dict[str, object]:
     field_mismatches: dict[str, list[dict[str, object]]] = {}
     for item in mismatch_items:
@@ -1204,10 +1230,21 @@ def _execution_equivalence_report(
     if submit_plan_mismatch:
         fail_reasons.append("execution_submit_plan_hash_mismatch")
     supported_scope_ok = not fail_reasons
+    lifecycle_validation = validate_lifecycle_evidence_scope(lifecycle_evidence)
+    claim_scope = (
+        "full_lifecycle_equivalence"
+        if lifecycle_validation.full_lifecycle_equivalence_supported
+        else "submit_plan_equivalence_only"
+    )
+    scope_badge = (
+        "FULL_LIFECYCLE_EQUIVALENCE"
+        if lifecycle_validation.full_lifecycle_equivalence_supported
+        else "SUBMIT_PLAN_EQUIVALENCE_ONLY"
+    )
     return {
         "schema_version": 1,
-        "claim_scope": "submit_plan_equivalence_only",
-        "scope_badge": "SUBMIT_PLAN_EQUIVALENCE_ONLY",
+        "claim_scope": claim_scope,
+        "scope_badge": scope_badge,
         "ok": supported_scope_ok,
         "signal_equivalence_supported": True,
         "signal_equivalence_ok": not signal_mismatch and not missing_research and not missing_runtime,
@@ -1215,20 +1252,20 @@ def _execution_equivalence_report(
         "final_action_equivalence_ok": not final_action_mismatch and not missing_research and not missing_runtime,
         "submit_plan_equivalence_supported": True,
         "submit_plan_equivalence_ok": not submit_plan_mismatch and not submit_plan_missing,
-        "simulated_fill_equivalence_supported": False,
-        "live_submit_equivalence_supported": False,
-        "accounting_replay_equivalence_supported": False,
-        "position_lifecycle_equivalence_supported": False,
-        "full_lifecycle_equivalence_supported": False,
-        "full_lifecycle_scope_badge": "FULL_LIFECYCLE_EQUIVALENCE_UNSUPPORTED",
+        "simulated_fill_equivalence_supported": lifecycle_validation.simulated_fill_equivalence_supported,
+        "paper_submit_fill_equivalence_supported": lifecycle_validation.paper_submit_fill_equivalence_supported,
+        "live_submit_equivalence_supported": lifecycle_validation.live_submit_equivalence_supported,
+        "accounting_replay_equivalence_supported": lifecycle_validation.accounting_replay_equivalence_supported,
+        "position_lifecycle_equivalence_supported": lifecycle_validation.position_lifecycle_equivalence_supported,
+        "full_lifecycle_equivalence_supported": lifecycle_validation.full_lifecycle_equivalence_supported,
+        "full_lifecycle_scope_badge": (
+            "FULL_LIFECYCLE_EQUIVALENCE_SUPPORTED"
+            if lifecycle_validation.full_lifecycle_equivalence_supported
+            else "FULL_LIFECYCLE_EQUIVALENCE_UNSUPPORTED"
+        ),
         "fail_reasons": sorted(set(fail_reasons)),
-        "unsupported_lifecycle_reasons": [
-            "execution_lifecycle_scope_not_supported",
-            "fill_equivalence_evidence_missing",
-            "live_submit_equivalence_evidence_missing",
-            "accounting_replay_equivalence_missing",
-            "position_lifecycle_equivalence_evidence_missing",
-        ],
+        "unsupported_lifecycle_reasons": list(lifecycle_validation.reason_codes),
+        "lifecycle_evidence_validation": lifecycle_validation.as_dict(),
         "missing_execution_submit_plan_evidence": submit_plan_missing,
         "missing_execution_summary_evidence": summary_missing,
         "submit_plan_mismatches": submit_plan_mismatch,

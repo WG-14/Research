@@ -77,18 +77,30 @@ empty_execution_event_summary = _engine.empty_execution_event_summary
 execution_event_summary = _engine.execution_event_summary
 
 
+@dataclass(frozen=True)
+class ResearchExecutionContext:
+    signal_ts: int
+    decision_ts: int
+    timing_fields: dict[str, object]
+    depth_fields: dict[str, object]
+
+    def execution_request_fields(self) -> dict[str, object]:
+        fields = dict(self.timing_fields)
+        fields.update(dict(self.depth_fields))
+        return fields
+
+
 def execution_submit_plan_to_research_request(
     *,
     submit_plan: ExecutionSubmitPlan,
-    signal_ts: int,
-    decision_ts: int,
+    context: ResearchExecutionContext,
     reference_price: float,
     fee_rate: float,
-    timing_fields: dict[str, object],
-    depth_fields: dict[str, object],
 ) -> ExecutionRequest | None:
     if not isinstance(submit_plan, ExecutionSubmitPlan):
         raise ValueError("research_submit_plan_not_typed")
+    if not isinstance(context, ResearchExecutionContext):
+        raise ValueError("research_execution_context_not_typed")
     payload = submit_plan.as_dict()
     validate_execution_submit_plan_payload(payload, field_name="research_submit_plan")
     if not bool(submit_plan.submit_expected):
@@ -121,15 +133,14 @@ def execution_submit_plan_to_research_request(
     else:
         raise ValueError(f"research_submit_plan_unsupported_side:{side or 'missing'}")
     return ExecutionRequest(
-        signal_ts=int(signal_ts),
-        decision_ts=int(decision_ts),
+        signal_ts=int(context.signal_ts),
+        decision_ts=int(context.decision_ts),
         side=side,
         reference_price=float(reference_price),
         requested_qty=requested_qty,
         requested_notional=requested_notional,
         fee_rate=float(fee_rate),
-        **timing_fields,
-        **depth_fields,
+        **context.execution_request_fields(),
     )
 
 
@@ -143,24 +154,19 @@ class ResearchVirtualExecutionService:
     def execute(
         self,
         request: SignalExecutionRequest,
-        *,
-        signal_ts: int,
-        decision_ts: int,
-        timing_fields: dict[str, object],
-        depth_fields: dict[str, object],
     ) -> ExecutionFill | None:
         if not isinstance(request, SignalExecutionRequest):
             raise ValueError("research_signal_execution_request_not_typed")
+        context = request.research_execution_context
+        if not isinstance(context, ResearchExecutionContext):
+            raise ValueError("research_execution_context_not_typed")
         submit_plan = self._typed_submit_plan_from_request(request)
         if submit_plan is None:
             raise ValueError("research_missing_typed_submit_plan")
         return self.simulate_submit_plan(
             submit_plan=submit_plan,
-            signal_ts=signal_ts,
-            decision_ts=decision_ts,
+            context=context,
             reference_price=float(request.market_price),
-            timing_fields=timing_fields,
-            depth_fields=depth_fields,
         )
 
     def _typed_submit_plan_from_request(
@@ -195,22 +201,16 @@ class ResearchVirtualExecutionService:
         self,
         *,
         submit_plan: ExecutionSubmitPlan,
-        signal_ts: int,
-        decision_ts: int,
+        context: ResearchExecutionContext,
         reference_price: float,
-        timing_fields: dict[str, object],
-        depth_fields: dict[str, object],
     ) -> ExecutionFill | None:
         if not isinstance(submit_plan, ExecutionSubmitPlan):
             raise ValueError("research_submit_plan_not_typed")
         request = execution_submit_plan_to_research_request(
             submit_plan=submit_plan,
-            signal_ts=signal_ts,
-            decision_ts=decision_ts,
+            context=context,
             reference_price=reference_price,
             fee_rate=float(self.fee_rate),
-            timing_fields=timing_fields,
-            depth_fields=depth_fields,
         )
         if request is None:
             return None
@@ -1387,6 +1387,12 @@ def _run_decision_event_backtest_impl(
                 model=model,
                 timing_policy=timing_policy,
             )
+            research_execution_context = ResearchExecutionContext(
+                signal_ts=signal.signal_candle_start_ts,
+                decision_ts=signal.decision_ts,
+                timing_fields=timing_fields,
+                depth_fields=depth_fields,
+            )
             if reference.fill_reference_price is None:
                 fill = _failed_fill(
                     model=model,
@@ -1409,11 +1415,8 @@ def _run_decision_event_backtest_impl(
                             decision_reason=block_reason,
                             execution_decision_summary=execution_plan_bundle.summary,
                             execution_plan_bundle=execution_plan_bundle,
+                            research_execution_context=research_execution_context,
                         ),
-                        signal_ts=signal.signal_candle_start_ts,
-                        decision_ts=signal.decision_ts,
-                        timing_fields=timing_fields,
-                        depth_fields=depth_fields,
                     )
                 except ValueError as exc:
                     warnings.append(f"research_typed_execution_service_failed:{exc}")

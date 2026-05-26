@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import backtest
 from bithumb_bot.approved_profile import ApprovedProfileError, verify_promotion_artifact
+from bithumb_bot.execution_service import build_execution_decision_summary
 from bithumb_bot import smoke_backtest
 from bithumb_bot.research.hashing import content_hash_payload, sha256_prefixed
 from bithumb_bot.research.promotion_gate import validate_backtest_candidate_for_promotion
@@ -91,3 +94,38 @@ def test_direct_smoke_artifact_is_rejected_by_promotion_artifact_verifier(monkey
 
     with pytest.raises(ApprovedProfileError, match="promotion_smoke_evidence_not_promotable"):
         verify_promotion_artifact(promotion)
+
+
+def test_promotion_and_live_paths_do_not_import_legacy_or_smoke_boundaries() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    forbidden = (
+        "SmaCrossStrategy",
+        "LegacySmaWithFilterDbAdapter",
+        "smoke_backtest",
+        "import backtest",
+    )
+    checked_paths = (
+        "src/bithumb_bot/approved_profile.py",
+        "src/bithumb_bot/research/promotion_gate.py",
+        "src/bithumb_bot/run_loop_execution_planner.py",
+        "src/bithumb_bot/decision_envelope.py",
+        "src/bithumb_bot/broker/live.py",
+    )
+
+    for relative_path in checked_paths:
+        source = (repo / relative_path).read_text(encoding="utf-8")
+        for marker in forbidden:
+            assert marker not in source, f"{relative_path} imports or names {marker}"
+
+
+def test_legacy_execution_decision_summary_wrapper_is_non_promotion_grade() -> None:
+    summary = build_execution_decision_summary(
+        decision_context={"signal": "BUY", "cash_available": 100_000.0},
+        raw_signal="BUY",
+        final_signal="BUY",
+    )
+    payload = summary.as_dict()
+
+    assert payload.get("promotion_grade") is not True
+    assert payload.get("execution_submit_plan_hash") is None
+    assert payload.get("submit_plan_authority") is None

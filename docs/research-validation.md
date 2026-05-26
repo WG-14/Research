@@ -389,6 +389,8 @@ Decision-equivalence evidence is scoped evidence, not a blanket lifecycle proof.
 
 Reports must therefore expose `claims_scope`, `state_coverage_matrix`, and `outcome`. The `lot_native_simulation_v1` surface is partial, not full lifecycle equivalence. Dust-only, reserved-exit-pending without repo-owned fixture evidence, non-executable residue, recovery-blocked, and any unsupported or ambiguous lifecycle state still fails closed with `FAIL_CLOSED_UNMODELED_STATE` / `research_model_lacks_lot_native_authority` or a more specific unsupported reason. `FAIL_CLOSED_UNMODELED_STATE` is safe behavior, but it is not profile-transition evidence and is not evidence of full lifecycle equivalence.
 
+Full lifecycle equivalence remains unsupported unless canonical lifecycle evidence is present for research simulated fill events, paper submit/fill events, live submit responses, accounting replay outputs, and position lifecycle snapshots. Those evidence classes must be typed, schema-valid, and hash-bound; dict-shaped or partial lifecycle payloads remain diagnostic only and must not upgrade a submit-plan-only report.
+
 Operators should read report outcomes as follows:
 
 - `PASS_POSITIVE_EQUIVALENCE`: positive equivalence only for explicitly modeled supported state classes.
@@ -397,7 +399,7 @@ Operators should read report outcomes as follows:
 - `FAIL_INCOMPLETE_CANONICAL_PAYLOAD`: regenerate canonical exports with required fields.
 - `FAIL_EXPORT_BINDING`: regenerate repo-owned, profile-bound decision exports.
 
-Profile transitions accept only scope-aware positive reports: `outcome=PASS_POSITIVE_EQUIVALENCE`, `ok=true`, `promotion_grade_comparison=true`, non-empty `claims_scope.positive_equivalence_state_classes`, empty `claims_scope.unsupported_state_classes`, `claims_scope.fail_closed_unmodeled_state_count=0`, and a `state_coverage_matrix` covering the declared state classes. Full lifecycle equivalence is not proven unless `claims_scope.full_lifecycle_equivalence_supported=true`; the current implementation still claims only explicitly modeled state equivalence.
+Profile transitions accept only scope-aware positive reports: `outcome=PASS_POSITIVE_EQUIVALENCE`, `ok=true`, `promotion_grade_comparison=true`, non-empty `claims_scope.positive_equivalence_state_classes`, empty `claims_scope.unsupported_state_classes`, `claims_scope.fail_closed_unmodeled_state_count=0`, and a `state_coverage_matrix` covering the declared state classes. Full lifecycle equivalence is not proven unless `claims_scope.full_lifecycle_equivalence_supported=true` and all lifecycle evidence classes above are present. Reports that remain `SUBMIT_PLAN_EQUIVALENCE_ONLY` require operator follow-up: keep them out of lifecycle-equivalence claims and add typed lifecycle evidence fixtures before promotion language is strengthened.
 
 ## Commands
 
