@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from dataclasses import asdict
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Any
 
 from .position_authority import (
@@ -376,6 +378,8 @@ def runtime_decision_to_canonical_event(
     execution_timing_policy_hash: str = "",
     strategy_version: str = "",
     strategy_decision_contract_version: str = "",
+    execution_plan_bundle: ExecutionPlanBundle | None = None,
+    runtime_replay_planning_error: str = "",
 ) -> CanonicalDecisionEvent:
     context = dict(getattr(decision, "context", {}) or {})
     final_signal = str(getattr(decision, "signal", context.get("final_signal", "HOLD")) or "HOLD").upper()
@@ -480,73 +484,29 @@ def runtime_decision_to_canonical_event(
         "policy_decision_hash": str(context.get("policy_decision_hash") or ""),
         "replay_fingerprint_hash": canonical_payload_hash(context.get("replay_fingerprint") or {}),
     }
-    execution_decision = (
-        context.get("execution_decision")
-        if isinstance(context.get("execution_decision"), dict)
-        else {}
+    execution_evidence = _runtime_execution_plan_evidence(
+        execution_plan_bundle=execution_plan_bundle,
+        context=context,
+        final_signal=final_signal,
+        block_reason=block_reason,
+        comparison_position_state=comparison_position_state,
+        exit_context=exit_context,
+        runtime_replay_planning_error=runtime_replay_planning_error,
     )
-    primary_submit_plan = _primary_execution_submit_plan(execution_decision)
-    if execution_decision:
-        execution_summary_hash = canonical_payload_hash(execution_decision)
-        execution_submit_plan_hash = (
-            canonical_payload_hash(primary_submit_plan) if primary_submit_plan else ""
-        )
-        final_action = str(context.get("final_action") or execution_decision.get("final_action") or "")
-        pre_submit_proof_status = str(
-            context.get("pre_submit_proof_status")
-            or execution_decision.get("pre_submit_proof_status")
-            or ""
-        )
-        execution_block_reason = str(
-            context.get("execution_block_reason")
-            or execution_decision.get("block_reason")
-            or ""
-        )
-        submit_plan_source = str(context.get("submit_plan_source") or primary_submit_plan.get("source") or "")
-        submit_plan_authority = str(
-            context.get("submit_plan_authority") or primary_submit_plan.get("authority") or ""
-        )
-        execution_engine = str(execution_decision.get("execution_engine") or context.get("execution_engine") or "")
-    else:
-        execution_block_reason = block_reason or "none"
-        if (
-            final_signal == "HOLD"
-            and comparison_position_state.get("comparison_state") == "open_exposure"
-            and not str(exit_context.get("rule") or "").strip()
-        ):
-            execution_block_reason = "position held: no exit rule triggered"
-        final_action = "HOLD" if execution_block_reason == "none" else "BLOCK_RESEARCH_NO_SUBMIT"
-        no_submit_summary = {
-            "final_action": final_action,
-            "submit_expected": False,
-            "pre_submit_proof_status": "not_required",
-            "block_reason": execution_block_reason,
-            "primary_submit_plan": None,
-            "execution_engine": "none",
-        }
-        execution_summary_hash = canonical_payload_hash(no_submit_summary)
-        execution_submit_plan_hash = canonical_payload_hash(None)
-        pre_submit_proof_status = "not_required"
-        submit_plan_source = "none"
-        submit_plan_authority = "none"
-        execution_engine = "none"
     payload.update(
         {
-            "execution_summary_hash": execution_summary_hash,
-            "execution_submit_plan_hash": execution_submit_plan_hash,
-            "final_action": final_action,
-            "submit_expected": bool(
-                context.get("submit_expected")
-                if "submit_expected" in context
-                else execution_decision.get("submit_expected")
-            ),
-            "pre_submit_proof_status": pre_submit_proof_status,
-            "execution_block_reason": execution_block_reason,
-            "submit_plan_source": submit_plan_source,
-            "submit_plan_authority": submit_plan_authority,
-            "execution_engine": execution_engine,
+            "execution_summary_hash": execution_evidence["execution_summary_hash"],
+            "execution_submit_plan_hash": execution_evidence["execution_submit_plan_hash"],
+            "final_action": execution_evidence["final_action"],
+            "submit_expected": bool(execution_evidence["submit_expected"]),
+            "pre_submit_proof_status": execution_evidence["pre_submit_proof_status"],
+            "execution_block_reason": execution_evidence["execution_block_reason"],
+            "submit_plan_source": execution_evidence["submit_plan_source"],
+            "submit_plan_authority": execution_evidence["submit_plan_authority"],
+            "execution_engine": execution_evidence["execution_engine"],
         }
     )
+    payload.update(execution_evidence["observability"])
     payload["feature_snapshot_hash"] = canonical_payload_hash(payload["feature_snapshot"])
     payload["strategy_behavior_payload"] = {
         "strategy_name": payload["strategy_name"],
@@ -565,6 +525,17 @@ def runtime_decision_to_canonical_event(
     ).as_dict()
     normalized = normalize_canonical_decision(payload)
     normalized["position_authority"] = payload["position_authority"]
+    for key in (
+        "decision_authority_source",
+        "decision_envelope_present",
+        "execution_plan_bundle_present",
+        "persistence_context_authoritative",
+        "runtime_replay_planning_error",
+        "execution_plan_status",
+        "execution_plan_reason_code",
+    ):
+        if key in payload:
+            normalized[key] = payload[key]
     return CanonicalDecisionEvent(normalized)
 
 
@@ -668,6 +639,292 @@ def _unsupported_position_reason(position_gate: dict[str, Any]) -> str:
     return "research_runtime_state_not_comparable"
 
 
+@dataclass(frozen=True)
+class _ReplayReadiness:
+    payload: dict[str, object]
+
+    def as_dict(self) -> dict[str, object]:
+        return dict(self.payload)
+
+
+def _runtime_execution_plan_evidence(
+    *,
+    execution_plan_bundle: Any | None,
+    context: dict[str, Any],
+    final_signal: str,
+    block_reason: str,
+    comparison_position_state: dict[str, Any],
+    exit_context: dict[str, Any],
+    runtime_replay_planning_error: str = "",
+) -> dict[str, object]:
+    if execution_plan_bundle is not None and execution_plan_bundle.summary is not None:
+        submit_plan = execution_plan_bundle.submit_plan
+        submit_plan_payload = None if submit_plan is None else submit_plan.as_dict()
+        summary_payload = execution_plan_bundle.summary.as_dict()
+        execution_engine = str(summary_payload.get("execution_engine") or "")
+        if submit_plan is None:
+            return {
+                "execution_summary_hash": canonical_payload_hash(summary_payload),
+                "execution_submit_plan_hash": canonical_payload_hash(None),
+                "final_action": str(summary_payload.get("final_action") or ""),
+                "submit_expected": bool(summary_payload.get("submit_expected")),
+                "pre_submit_proof_status": str(summary_payload.get("pre_submit_proof_status") or ""),
+                "execution_block_reason": str(summary_payload.get("block_reason") or ""),
+                "submit_plan_source": "typed_execution_planner",
+                "submit_plan_authority": "typed_execution_planner",
+                "execution_engine": execution_engine,
+                "observability": _runtime_execution_observability(
+                    execution_plan_bundle=execution_plan_bundle,
+                    runtime_replay_planning_error=runtime_replay_planning_error,
+                ),
+            }
+        canonical_summary_payload = {
+            "final_action": submit_plan.final_action,
+            "submit_expected": bool(submit_plan.submit_expected),
+            "pre_submit_proof_status": submit_plan.pre_submit_proof_status,
+            "block_reason": submit_plan.block_reason,
+            "primary_submit_plan": submit_plan_payload,
+            "execution_engine": execution_engine,
+        }
+        return {
+            "execution_summary_hash": canonical_payload_hash(canonical_summary_payload),
+            "execution_submit_plan_hash": canonical_payload_hash(submit_plan_payload),
+            "final_action": submit_plan.final_action,
+            "submit_expected": bool(submit_plan.submit_expected),
+            "pre_submit_proof_status": submit_plan.pre_submit_proof_status,
+            "execution_block_reason": submit_plan.block_reason,
+            "submit_plan_source": submit_plan.source,
+            "submit_plan_authority": submit_plan.authority,
+            "execution_engine": execution_engine,
+            "observability": _runtime_execution_observability(
+                execution_plan_bundle=execution_plan_bundle,
+                runtime_replay_planning_error=runtime_replay_planning_error,
+            ),
+        }
+
+    execution_decision = (
+        context.get("execution_decision")
+        if isinstance(context.get("execution_decision"), dict)
+        else {}
+    )
+    primary_submit_plan = _primary_execution_submit_plan(execution_decision)
+    if execution_decision and final_signal not in {"BUY", "SELL"}:
+        return {
+            "execution_summary_hash": canonical_payload_hash(execution_decision),
+            "execution_submit_plan_hash": (
+                canonical_payload_hash(primary_submit_plan) if primary_submit_plan else ""
+            ),
+            "final_action": str(context.get("final_action") or execution_decision.get("final_action") or ""),
+            "submit_expected": bool(
+                context.get("submit_expected")
+                if "submit_expected" in context
+                else execution_decision.get("submit_expected")
+            ),
+            "pre_submit_proof_status": str(
+                context.get("pre_submit_proof_status")
+                or execution_decision.get("pre_submit_proof_status")
+                or ""
+            ),
+            "execution_block_reason": str(
+                context.get("execution_block_reason")
+                or execution_decision.get("block_reason")
+                or ""
+            ),
+            "submit_plan_source": str(context.get("submit_plan_source") or primary_submit_plan.get("source") or ""),
+            "submit_plan_authority": str(
+                context.get("submit_plan_authority") or primary_submit_plan.get("authority") or ""
+            ),
+            "execution_engine": str(execution_decision.get("execution_engine") or context.get("execution_engine") or ""),
+            "observability": {
+                "decision_authority_source": context.get("decision_authority_source", ""),
+                "decision_envelope_present": bool(context.get("decision_envelope_present")),
+                "execution_plan_bundle_present": bool(context.get("execution_plan_bundle_present")),
+                "persistence_context_authoritative": int(context.get("persistence_context_authoritative") or 0),
+                "runtime_replay_planning_error": runtime_replay_planning_error,
+            },
+        }
+
+    execution_block_reason = block_reason or "none"
+    pre_submit_proof_status = "not_required"
+    final_action = "HOLD" if execution_block_reason == "none" else "BLOCK_RESEARCH_NO_SUBMIT"
+    if final_signal in {"BUY", "SELL"}:
+        execution_block_reason = runtime_replay_planning_error or "runtime_replay_execution_readiness_unavailable"
+        final_action = "BLOCK_RUNTIME_REPLAY_EXECUTION"
+        pre_submit_proof_status = "failed"
+    elif (
+        final_signal == "HOLD"
+        and comparison_position_state.get("comparison_state") == "open_exposure"
+        and not str(exit_context.get("rule") or "").strip()
+    ):
+        execution_block_reason = "position held: no exit rule triggered"
+        final_action = "BLOCK_RESEARCH_NO_SUBMIT"
+    no_submit_summary = {
+        "final_action": final_action,
+        "submit_expected": False,
+        "pre_submit_proof_status": pre_submit_proof_status,
+        "block_reason": execution_block_reason,
+        "primary_submit_plan": None,
+        "execution_engine": "none",
+    }
+    return {
+        "execution_summary_hash": canonical_payload_hash(no_submit_summary),
+        "execution_submit_plan_hash": canonical_payload_hash(None),
+        "final_action": final_action,
+        "submit_expected": False,
+        "pre_submit_proof_status": pre_submit_proof_status,
+        "execution_block_reason": execution_block_reason,
+        "submit_plan_source": "none",
+        "submit_plan_authority": "none",
+        "execution_engine": "none",
+        "observability": {
+            "decision_authority_source": context.get("decision_authority_source", ""),
+            "decision_envelope_present": bool(context.get("decision_envelope_present")),
+            "execution_plan_bundle_present": False,
+            "persistence_context_authoritative": int(context.get("persistence_context_authoritative") or 0),
+            "runtime_replay_planning_error": runtime_replay_planning_error,
+            "execution_plan_status": "ERROR" if runtime_replay_planning_error else "",
+            "execution_plan_reason_code": execution_block_reason if final_signal in {"BUY", "SELL"} else "",
+        },
+    }
+
+
+def _runtime_execution_observability(
+    *,
+    execution_plan_bundle: Any,
+    runtime_replay_planning_error: str,
+) -> dict[str, object]:
+    status = execution_plan_bundle.status
+    return {
+        "decision_authority_source": execution_plan_bundle.persistence_context.get(
+            "decision_authority_source", ""
+        ),
+        "decision_envelope_present": bool(
+            execution_plan_bundle.persistence_context.get("decision_envelope_present")
+        ),
+        "execution_plan_bundle_present": True,
+        "persistence_context_authoritative": int(
+            execution_plan_bundle.persistence_context.get("persistence_context_authoritative") or 0
+        ),
+        "runtime_replay_planning_error": runtime_replay_planning_error
+        or str(execution_plan_bundle.planning_error or ""),
+        "execution_plan_status": "" if status is None else status.status,
+        "execution_plan_reason_code": "" if status is None else status.reason_code,
+    }
+
+
+def _runtime_replay_readiness_payload(
+    conn: sqlite3.Connection,
+    result: Any,
+) -> dict[str, object]:
+    position = result.decision.position_snapshot
+    cash_available: float | None = None
+    try:
+        row = conn.execute("SELECT cash_available FROM portfolio WHERE id=1").fetchone()
+        if row is not None:
+            cash_available = float(row["cash_available"] if "cash_available" in row.keys() else row[0])
+    except (sqlite3.Error, TypeError, ValueError, KeyError, AttributeError):
+        cash_available = None
+    payload: dict[str, object] = {
+        "residual_inventory_policy_allows_run": True,
+        "residual_inventory_policy_allows_buy": True,
+        "residual_inventory_policy_allows_sell": True,
+        "residual_inventory_state": "NONE",
+        "pair": str(result.base_context.get("pair") or ""),
+        "unresolved_open_order_count": 0,
+        "submit_unknown_count": 0,
+        "open_order_count": 0,
+        "recovery_required_count": 0,
+        "accounting_projection_ok": True,
+        "idempotency_scope": "runtime_replay_read_only",
+        "total_effective_exposure_qty": float(position.qty_open),
+        "total_effective_exposure_notional_krw": (
+            max(0.0, float(position.qty_open) * float(result.market_price))
+            if bool(position.has_executable_exposure)
+            else 0.0
+        ),
+    }
+    if cash_available is not None:
+        payload["cash_available"] = cash_available
+    if bool(position.has_executable_exposure):
+        payload["residual_sell_candidate"] = {
+            "qty": float(position.qty_open),
+            "notional": max(0.0, float(position.qty_open) * float(result.market_price)),
+            "source": "runtime_replay_position_snapshot",
+            "classes": ["OPEN_EXPOSURE"],
+            "exchange_sellable": bool(position.exit_allowed),
+            "allowed_by_policy": bool(position.exit_allowed),
+            "requires_final_pre_submit_proof": False,
+        }
+    return payload
+
+
+def _runtime_replay_target_state_resolver(
+    conn: sqlite3.Connection,
+    *,
+    readiness_payload: dict[str, object],
+    reference_price: float | None,
+    raw_signal: str,
+    updated_ts: int,
+) -> dict[str, object]:
+    previous_exposure: float | None = None
+    try:
+        row = conn.execute(
+            "SELECT target_exposure_krw FROM target_position_state WHERE pair=?",
+            (str(readiness_payload.get("pair") or ""),),
+        ).fetchone()
+        if row is not None:
+            previous_exposure = float(row[0])
+    except (sqlite3.Error, TypeError, ValueError):
+        previous_exposure = None
+    return {
+        "previous_target_exposure_krw": previous_exposure,
+        "target_policy_metadata": {
+            "target_policy_action": "runtime_replay_read_only",
+            "target_origin": "runtime_replay",
+            "target_strategy_signal_source": str(raw_signal or "HOLD").upper(),
+        },
+        "target_state": None,
+    }
+
+
+def build_runtime_replay_execution_plan_bundle(
+    conn: sqlite3.Connection,
+    result: Any,
+    *,
+    readiness_payload: dict[str, object] | None = None,
+    readiness_payload_builder: Any = _runtime_replay_readiness_payload,
+) -> Any:
+    from .decision_envelope import DecisionEnvelope
+    from .run_loop_execution_planner import ExecutionPlanBundle, ExecutionPlanner, ExecutionPlanStatus
+
+    envelope = DecisionEnvelope.from_runtime_result(result)
+    if readiness_payload is None:
+        if readiness_payload_builder is None:
+            return ExecutionPlanBundle(
+                summary=None,
+                submit_plan=None,
+                persistence_context={
+                    **envelope.as_persistence_context(),
+                    "execution_plan_bundle_present": False,
+                    "execution_block_reason": "runtime_replay_execution_readiness_unavailable",
+                },
+                readiness_payload={},
+                target_policy_metadata={},
+                planning_error="runtime_replay_execution_readiness_unavailable",
+                status=ExecutionPlanStatus(
+                    status="ERROR",
+                    reason_code="runtime_replay_execution_readiness_unavailable",
+                    reason="runtime replay readiness payload was not supplied or modeled",
+                ),
+            )
+        readiness_payload = dict(readiness_payload_builder(conn, result))
+    planner = ExecutionPlanner(
+        readiness_snapshot_builder=lambda _conn: _ReplayReadiness(dict(readiness_payload or {})),
+        target_state_resolver=_runtime_replay_target_state_resolver,
+    )
+    return planner.plan_envelope(conn, envelope, updated_ts=int(result.candle_ts))
+
+
 def export_runtime_replay_decisions(
     *,
     conn: Any,
@@ -682,19 +939,40 @@ def export_runtime_replay_decisions(
     execution_timing_policy_hash: str = "",
     strategy_version: str = "",
     strategy_decision_contract_version: str = "",
+    replay_readiness_builder: Any = _runtime_replay_readiness_payload,
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for through_ts_ms in through_ts_list:
         if str(getattr(strategy, "name", "")).strip().lower() == "sma_with_filter":
-            from bithumb_bot.runtime_sma_snapshot import decide_sma_with_filter_snapshot_from_db
+            from bithumb_bot.runtime_sma_snapshot import decide_sma_with_filter_runtime_snapshot_from_db
 
-            decision = decide_sma_with_filter_snapshot_from_db(
+            runtime_result = decide_sma_with_filter_runtime_snapshot_from_db(
                 conn,
                 strategy,
                 through_ts_ms=int(through_ts_ms),
             )
+            if runtime_result is None:
+                continue
+            execution_plan_bundle = build_runtime_replay_execution_plan_bundle(
+                conn,
+                runtime_result,
+                readiness_payload_builder=replay_readiness_builder,
+            )
+            decision = runtime_result.legacy_strategy_decision()
+            replay_signal_candidates = {
+                str(runtime_result.decision.raw_signal or "").upper(),
+                str(runtime_result.decision.final_signal or "").upper(),
+            }
+            if execution_plan_bundle.persistence_context and replay_signal_candidates & {"BUY", "SELL"}:
+                decision = replace(decision, context=dict(execution_plan_bundle.persistence_context))
+                runtime_replay_planning_error = str(execution_plan_bundle.planning_error or "")
+            else:
+                execution_plan_bundle = None
+                runtime_replay_planning_error = ""
         else:
             decision = strategy.decide(conn, through_ts_ms=int(through_ts_ms))
+            execution_plan_bundle = None
+            runtime_replay_planning_error = ""
         if decision is None:
             continue
         events.append(
@@ -710,6 +988,8 @@ def export_runtime_replay_decisions(
                 execution_timing_policy_hash=execution_timing_policy_hash,
                 strategy_version=strategy_version,
                 strategy_decision_contract_version=strategy_decision_contract_version,
+                execution_plan_bundle=execution_plan_bundle,
+                runtime_replay_planning_error=runtime_replay_planning_error,
             ).as_dict()
         )
     return events

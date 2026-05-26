@@ -350,13 +350,19 @@ def _execution_plan_evidence(
     from bithumb_bot.canonical_decision import canonical_payload_hash
 
     plan_payload = submit_plan.as_dict()
+    summary_payload_for_engine = None if plan_bundle.summary is None else plan_bundle.summary.as_dict()
+    execution_engine = str(
+        (summary_payload_for_engine or {}).get("execution_engine")
+        or plan_bundle.execution_engine
+        or "research_virtual"
+    )
     summary_payload = {
         "final_action": submit_plan.final_action,
         "submit_expected": bool(submit_plan.submit_expected),
         "pre_submit_proof_status": submit_plan.pre_submit_proof_status,
         "block_reason": submit_plan.block_reason,
         "primary_submit_plan": plan_payload,
-        "execution_engine": "research_virtual",
+        "execution_engine": execution_engine,
     }
     return {
         "execution_summary_hash": canonical_payload_hash(summary_payload),
@@ -367,7 +373,7 @@ def _execution_plan_evidence(
         "execution_block_reason": submit_plan.block_reason,
         "submit_plan_source": submit_plan.source,
         "submit_plan_authority": submit_plan.authority,
-        "execution_engine": "research_virtual",
+        "execution_engine": execution_engine,
         "execution_plan_bundle_present": True,
         "execution_plan_status": "PLANNED" if submit_plan.submit_expected else "BLOCKED",
         "execution_plan_reason_code": "none" if submit_plan.submit_expected else submit_plan.block_reason,
