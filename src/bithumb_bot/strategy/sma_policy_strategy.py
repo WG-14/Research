@@ -12,6 +12,8 @@ from ..core.sma_policy import (
     evaluate_sma_policy,
 )
 from ..strategy_config import normalize_exit_rule_names, sma_strategy_config_from_settings
+from .exit_rules import ExitPolicyConfig
+from .sma_decision_assembler import evaluate_sma_final_decision
 
 
 @dataclass(frozen=True)
@@ -51,7 +53,7 @@ class SmaWithFilterStrategy:
 
     name: str = "sma_with_filter"
 
-    def decide_snapshot(
+    def decide_entry_snapshot(
         self,
         *,
         market: MarketWindow,
@@ -64,6 +66,32 @@ class SmaWithFilterStrategy:
             position=position,
             config=config,
             execution_context=execution_context,
+        )
+
+    def decide_snapshot(
+        self,
+        *,
+        market: MarketWindow,
+        position: PositionSnapshot,
+        config: SmaPolicyConfig,
+        execution_context: ExecutionConstraintSnapshot,
+    ) -> StrategyDecisionV2:
+        return evaluate_sma_final_decision(
+            market=market,
+            position=position,
+            config=config,
+            execution_context=execution_context,
+            exit_policy_config=self.exit_policy_config(),
+        )
+
+    def exit_policy_config(self) -> ExitPolicyConfig:
+        return ExitPolicyConfig(
+            rule_names=tuple(self.exit_rule_names),
+            stop_loss_ratio=float(self.exit_stop_loss_ratio),
+            max_holding_sec=float(self.exit_max_holding_min) * 60.0,
+            min_take_profit_ratio=float(self.exit_min_take_profit_ratio),
+            small_loss_tolerance_ratio=float(self.exit_small_loss_tolerance_ratio),
+            live_fee_rate_estimate=float(self.live_fee_rate_estimate),
         )
 
 

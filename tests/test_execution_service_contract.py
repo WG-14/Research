@@ -356,6 +356,48 @@ def test_typed_execution_summary_can_supply_validated_target_submit_plan() -> No
     assert calls[0]["kwargs"]["execution_submit_plan"] == summary.target_submit_plan.as_dict()  # type: ignore[index,union-attr]
 
 
+def test_target_delta_live_real_order_requires_passed_target_pre_submit_proof(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _arm_live_real_orders(engine="target_delta")
+    calls: list[dict[str, object]] = []
+    plan = _typed_plan({**_valid_target_submit_plan(), "pre_submit_proof_status": "not_required"})
+    summary = ExecutionDecisionSummary(
+        raw_signal="BUY",
+        final_signal="BUY",
+        final_action="REBALANCE_TO_TARGET",
+        submit_expected=True,
+        pre_submit_proof_status="not_required",
+        block_reason="none",
+        strategy_sell_candidate=None,
+        residual_sell_candidate=None,
+        target_exposure_krw=100_000.0,
+        current_effective_exposure_krw=0.0,
+        tracked_residual_exposure_krw=None,
+        buy_delta_krw=100_000.0,
+        residual_live_sell_mode="block",
+        residual_buy_sizing_mode="block",
+        residual_submit_plan=None,
+        buy_submit_plan=None,
+        target_shadow_decision=None,
+        target_submit_plan=plan,
+    )
+
+    result = _service(calls).execute(
+        SignalExecutionRequest(
+            signal="BUY",
+            ts=123,
+            market_price=100_000_000.0,
+            decision_context={},
+            execution_decision_summary=summary,
+        )
+    )
+
+    assert result is None
+    assert calls == []
+    assert "target_delta_pre_submit_proof_not_passed" in caplog.text
+
+
 def test_typed_execution_summary_mismatch_with_context_fails_closed(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

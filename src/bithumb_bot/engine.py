@@ -3640,6 +3640,15 @@ def run_loop(short_n: int, long_n: int) -> None:
             submit_expectation = resolve_typed_execution_submit_expectation(
                 execution_decision_summary_for_trade
             )
+            if execution_decision_summary_for_trade is None:
+                _log_loop_event(
+                    logging.WARNING,
+                    "[ORDER_SKIP] typed execution decision summary missing",
+                    signal=str(r["signal"]),
+                    candle_ts=r["ts"],
+                    reason="execution_planning_failed_closed",
+                )
+                continue
             target_delta_submit = bool(
                 str(getattr(settings, "EXECUTION_ENGINE", "lot_native") or "lot_native").strip().lower()
                 == "target_delta"

@@ -71,7 +71,12 @@ class LegacyDbStrategy(Protocol):
 
 
 class StrategyPolicy(Protocol):
-    """Promotion-grade snapshot strategy interface."""
+    """Promotion-grade snapshot strategy interface for final decisions.
+
+    ``decide_snapshot`` returns the final strategy decision that execution
+    planning may consume. Entry-only policy evaluation must use a strategy
+    specific entry helper and must not be treated as executable authority.
+    """
 
     name: str
 

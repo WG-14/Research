@@ -102,8 +102,10 @@ def test_run_loop_execution_planner_failure_returns_block_recovery_payload() -> 
     )
 
     assert result.execution_decision_summary is None
-    assert result.execution_decision["final_action"] == "BLOCK_RECOVERY"
-    assert result.execution_decision["submit_expected"] is False
-    assert result.execution_decision["pre_submit_proof_status"] == "failed"
-    assert result.execution_decision["block_reason"] == "execution_decision_unavailable:RuntimeError"
+    assert result.execution_decision == {}
     assert result.context["execution_decision"] == result.execution_decision
+    assert result.context["final_action"] == "BLOCK_RECOVERY"
+    assert result.context["submit_expected"] is False
+    assert result.context["pre_submit_proof_status"] == "failed"
+    assert result.context["execution_block_reason"] == "execution_decision_unavailable:RuntimeError"
+    assert result.context["execution_decision_authoritative"] == 0

@@ -13,6 +13,7 @@ from .execution_service import (
     ExecutionSubmitPlan,
     build_execution_decision_summary,
 )
+from .core.sma_policy import StrategyDecisionV2
 from .runtime_readiness import compute_runtime_readiness_snapshot
 from .strategy_performance import evaluate_strategy_performance_gate
 from .target_position import (
@@ -81,12 +82,39 @@ class ExecutionPlanStatus:
 
 @dataclass(frozen=True)
 class ExecutionPlanningInput:
-    strategy_decision: object
+    strategy_decision: StrategyDecisionV2
     candle_ts: int
     market_price: float
     base_observability_context: Mapping[str, object]
     replay_fingerprint: Mapping[str, object]
     boundary: Mapping[str, object]
+    policy_hashes: Mapping[str, object]
+
+    @classmethod
+    def from_envelope(cls, envelope: DecisionEnvelope) -> "ExecutionPlanningInput":
+        return cls(
+            strategy_decision=envelope.strategy_decision,
+            candle_ts=envelope.candle_ts,
+            market_price=envelope.market_price,
+            base_observability_context=envelope.base_context,
+            replay_fingerprint=envelope.replay_fingerprint,
+            boundary=envelope.boundary,
+            policy_hashes=(
+                envelope.policy_hashes.as_dict() if envelope.policy_hashes is not None else {}
+            ),
+        )
+
+    @property
+    def raw_signal(self) -> str:
+        return str(self.strategy_decision.raw_signal or "HOLD").upper()
+
+    @property
+    def final_signal(self) -> str:
+        return str(self.strategy_decision.final_signal or "HOLD").upper()
+
+    @property
+    def final_reason(self) -> str:
+        return str(self.strategy_decision.final_reason or "")
 
 
 def run_loop_uses_target_delta() -> bool:
@@ -218,25 +246,10 @@ class ExecutionPlanner:
         *,
         updated_ts: int,
     ) -> ExecutionPlanBundle:
-        planning_input = ExecutionPlanningInput(
-            strategy_decision=envelope.strategy_decision,
-            candle_ts=envelope.candle_ts,
-            market_price=envelope.market_price,
-            base_observability_context=envelope.base_context,
-            replay_fingerprint=envelope.replay_fingerprint,
-            boundary=envelope.boundary,
-        )
-        decision = envelope.strategy_decision
-        planning_context = self._planning_context_from_envelope_input(
-            planning_input,
-            policy_hashes=envelope.policy_hashes.as_dict() if envelope.policy_hashes is not None else {},
-        )
-        planning = self._plan_context(
+        planning_input = ExecutionPlanningInput.from_envelope(envelope)
+        planning = self._plan_typed_input(
             conn,
-            decision_context=planning_context,
-            signal=str(decision.final_signal),
-            reason=str(decision.final_reason),
-            raw_signal=str(decision.raw_signal),
+            planning_input=planning_input,
             updated_ts=int(updated_ts),
         )
         submit_plan = _primary_submit_plan(planning.execution_decision_summary)
@@ -264,8 +277,6 @@ class ExecutionPlanner:
     def _planning_context_from_envelope_input(
         self,
         planning_input: ExecutionPlanningInput,
-        *,
-        policy_hashes: dict[str, str],
     ) -> dict[str, object]:
         decision = planning_input.strategy_decision
         context = _thaw_mapping(planning_input.base_observability_context)
@@ -296,11 +307,29 @@ class ExecutionPlanner:
                 "persistence_context_authoritative": 0,
             }
         )
-        context.update(policy_hashes)
+        context.update(dict(planning_input.policy_hashes))
         execution_intent = getattr(decision, "execution_intent", None)
         if execution_intent is not None and hasattr(execution_intent, "as_dict"):
             context["execution_intent"] = execution_intent.as_dict()
         return context
+
+    def _plan_typed_input(
+        self,
+        conn,
+        *,
+        planning_input: ExecutionPlanningInput,
+        updated_ts: int,
+    ) -> ExecutionPlanningResult:
+        context = self._planning_context_from_envelope_input(planning_input)
+        return self._plan_context(
+            conn,
+            decision_context=context,
+            signal=planning_input.final_signal,
+            reason=planning_input.final_reason,
+            raw_signal=planning_input.raw_signal,
+            updated_ts=updated_ts,
+            typed_planning_input=planning_input,
+        )
 
     def plan_strategy_decision(
         self,
@@ -329,6 +358,7 @@ class ExecutionPlanner:
         reason: str,
         raw_signal: str | None,
         updated_ts: int,
+        typed_planning_input: ExecutionPlanningInput | None = None,
     ) -> ExecutionPlanningResult:
         context = dict(decision_context)
         try:
@@ -354,12 +384,27 @@ class ExecutionPlanner:
             previous_target_exposure_krw = target_resolution.get("previous_target_exposure_krw")
             target_policy_metadata = dict(target_resolution.get("target_policy_metadata", {}))
             readiness_payload = {**readiness_payload, **target_policy_metadata}
+            summary_context = dict(context)
+            if typed_planning_input is not None:
+                summary_context = self._planning_context_from_envelope_input(typed_planning_input)
             execution_decision_summary = self.summary_builder(
-                decision_context=context,
+                decision_context=summary_context,
                 readiness_payload=readiness_payload,
-                raw_signal=raw_signal_for_target,
-                final_signal=signal,
-                final_reason=reason,
+                raw_signal=(
+                    typed_planning_input.raw_signal
+                    if typed_planning_input is not None
+                    else raw_signal_for_target
+                ),
+                final_signal=(
+                    typed_planning_input.final_signal
+                    if typed_planning_input is not None
+                    else signal
+                ),
+                final_reason=(
+                    typed_planning_input.final_reason
+                    if typed_planning_input is not None
+                    else reason
+                ),
                 previous_target_exposure_krw=(
                     None
                     if previous_target_exposure_krw is None
@@ -368,7 +413,7 @@ class ExecutionPlanner:
                 strategy_performance_gate=strategy_performance_gate,
             )
             context = self.persistence_context_builder(
-                decision_context=context,
+                decision_context=summary_context,
                 execution_decision_summary=execution_decision_summary,
                 readiness_payload=readiness_payload,
                 target_policy_metadata=target_policy_metadata,
@@ -382,13 +427,13 @@ class ExecutionPlanner:
                 target_policy_metadata=target_policy_metadata,
             )
         except Exception as exc:
-            execution_decision = {
-                "final_action": "BLOCK_RECOVERY",
-                "submit_expected": False,
-                "pre_submit_proof_status": "failed",
-                "block_reason": f"execution_decision_unavailable:{type(exc).__name__}",
-            }
+            execution_decision = {}
             context["execution_decision"] = execution_decision
+            context["final_action"] = "BLOCK_RECOVERY"
+            context["submit_expected"] = False
+            context["pre_submit_proof_status"] = "failed"
+            context["execution_block_reason"] = f"execution_decision_unavailable:{type(exc).__name__}"
+            context["execution_decision_authoritative"] = 0
             return ExecutionPlanningResult(
                 context=context,
                 execution_decision=execution_decision,

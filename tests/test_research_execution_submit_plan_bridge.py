@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 
 from bithumb_bot.execution_service import ExecutionSubmitPlan
-from bithumb_bot.research.backtest_kernel import execution_submit_plan_to_research_request
+from bithumb_bot.research.backtest_kernel import (
+    _research_execution_plan_bundle,
+    execution_submit_plan_to_research_request,
+)
 
 
 def _plan(
@@ -73,6 +76,47 @@ def test_submit_not_expected_produces_no_research_fill_request() -> None:
     )
 
     assert request is None
+
+
+def test_research_backtest_bundle_blocks_zero_size_before_request() -> None:
+    bundle = _research_execution_plan_bundle(
+        side="BUY",
+        cash=0.0,
+        buy_fraction=1.0,
+        sellable_qty=0.0,
+        reference_price=10.0,
+        policy_decision=None,
+    )
+
+    assert bundle.status == "BLOCKED"
+    assert bundle.reason_code == "research_zero_buy_notional"
+    assert bundle.submit_plan is not None
+    assert bundle.submit_plan.submit_expected is False
+    assert execution_submit_plan_to_research_request(
+        submit_plan=bundle.submit_plan,
+        signal_ts=100,
+        decision_ts=200,
+        reference_price=10.0,
+        fee_rate=0.001,
+        timing_fields={},
+        depth_fields={},
+    ) is None
+
+
+def test_research_backtest_bundle_blocks_hold_without_submit_plan() -> None:
+    bundle = _research_execution_plan_bundle(
+        side="HOLD",
+        cash=1_000_000.0,
+        buy_fraction=1.0,
+        sellable_qty=0.0,
+        reference_price=10.0,
+        policy_decision=None,
+        block_reason="strategy_hold",
+    )
+
+    assert bundle.status == "BLOCKED"
+    assert bundle.reason_code == "strategy_hold"
+    assert bundle.submit_plan is None
 
 
 def test_malformed_submit_plan_fails_closed_before_research_request() -> None:

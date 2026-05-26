@@ -1471,6 +1471,14 @@ class LiveSignalExecutionService:
                     side=target_plan.get("side"),
                 )
                 return None
+            if str(target_plan.get("pre_submit_proof_status") or "") != "passed":
+                _block_live_submit_plan(
+                    reason="target_delta_pre_submit_proof_not_passed",
+                    field_name="target_submit_plan",
+                    source=target_plan.get("source"),
+                    side=target_plan.get("side"),
+                )
+                return None
             if not bool(target_plan.get("submit_expected")):
                 _block_live_submit_plan(
                     reason="target_delta_submit_not_expected",

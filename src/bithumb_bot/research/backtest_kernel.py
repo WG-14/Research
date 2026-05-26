@@ -123,6 +123,20 @@ def _positive_float_or_none(value: object) -> float | None:
     return parsed if parsed > 0.0 else None
 
 
+@dataclass(frozen=True)
+class ResearchExecutionPlanBundle:
+    submit_plan: ExecutionSubmitPlan | None
+    source: str
+    authority: str
+    execution_engine: str
+    status: str
+    reason_code: str
+
+    @property
+    def submit_expected(self) -> bool:
+        return bool(self.submit_plan is not None and self.submit_plan.submit_expected)
+
+
 def _research_execution_submit_plan(
     *,
     side: str,
@@ -195,9 +209,48 @@ def _research_execution_submit_plan(
     raise ValueError(f"research_submit_plan_unsupported_side:{normalized_side or 'missing'}")
 
 
+def _research_execution_plan_bundle(
+    *,
+    side: str,
+    cash: float,
+    buy_fraction: float,
+    sellable_qty: float,
+    reference_price: float,
+    policy_decision: StrategyDecisionV2 | None,
+    block_reason: str = "",
+) -> ResearchExecutionPlanBundle:
+    normalized_side = str(side or "HOLD").upper()
+    if normalized_side not in {"BUY", "SELL"}:
+        return ResearchExecutionPlanBundle(
+            submit_plan=None,
+            source="research_backtest",
+            authority="research_virtual_execution_planner",
+            execution_engine="research_virtual",
+            status="BLOCKED",
+            reason_code=block_reason or "research_no_submit_signal",
+        )
+    submit_plan = _research_execution_submit_plan(
+        side=normalized_side,
+        cash=cash,
+        buy_fraction=buy_fraction,
+        sellable_qty=sellable_qty,
+        reference_price=reference_price,
+        policy_decision=policy_decision,
+    )
+    return ResearchExecutionPlanBundle(
+        submit_plan=submit_plan,
+        source=submit_plan.source,
+        authority=submit_plan.authority,
+        execution_engine="research_virtual",
+        status="PLANNED" if submit_plan.submit_expected else "BLOCKED",
+        reason_code="none" if submit_plan.submit_expected else submit_plan.block_reason,
+    )
+
+
 def _execution_plan_evidence(
-    submit_plan: ExecutionSubmitPlan | None,
+    plan_bundle: ResearchExecutionPlanBundle | None,
 ) -> dict[str, object]:
+    submit_plan = None if plan_bundle is None else plan_bundle.submit_plan
     if submit_plan is None:
         return {
             "execution_summary_hash": "",
@@ -209,6 +262,9 @@ def _execution_plan_evidence(
             "submit_plan_source": "",
             "submit_plan_authority": "",
             "execution_engine": "research_virtual",
+            "execution_plan_bundle_present": plan_bundle is not None,
+            "execution_plan_status": "" if plan_bundle is None else plan_bundle.status,
+            "execution_plan_reason_code": "" if plan_bundle is None else plan_bundle.reason_code,
         }
     from bithumb_bot.canonical_decision import canonical_payload_hash
 
@@ -231,6 +287,9 @@ def _execution_plan_evidence(
         "submit_plan_source": submit_plan.source,
         "submit_plan_authority": submit_plan.authority,
         "execution_engine": "research_virtual",
+        "execution_plan_bundle_present": True,
+        "execution_plan_status": "PLANNED" if submit_plan.submit_expected else "BLOCKED",
+        "execution_plan_reason_code": "none" if submit_plan.submit_expected else submit_plan.block_reason,
     }
 
 
@@ -922,18 +981,16 @@ def _run_decision_event_backtest_impl(
             block_reason = "sell_blocked_no_sellable_qty"
         elif action not in {"BUY", "SELL", "HOLD"}:
             raise ValueError(f"unsupported_decision_event_final_signal:{event.final_signal}")
-        submit_plan = (
-            _research_execution_submit_plan(
-                side=action,
-                cash=float(cash),
-                buy_fraction=float(buy_fraction),
-                sellable_qty=float(sellable_qty),
-                reference_price=float(candle.close),
-                policy_decision=policy_decision,
-            )
-            if action in {"BUY", "SELL"}
-            else None
+        execution_plan_bundle = _research_execution_plan_bundle(
+            side=action,
+            cash=float(cash),
+            buy_fraction=float(buy_fraction),
+            sellable_qty=float(sellable_qty),
+            reference_price=float(candle.close),
+            policy_decision=policy_decision,
+            block_reason=block_reason,
         )
+        submit_plan = execution_plan_bundle.submit_plan
         if policy_decision is not None:
             exit_evaluations = [dict(item) for item in policy_decision.exit_evaluations]
             exit_rule = str(policy_decision.exit_rule or "")
@@ -1027,7 +1084,7 @@ def _run_decision_event_backtest_impl(
                 "research_policy_unsupported": bool(sma_policy_unsupported_reason),
                 "research_policy_unsupported_reason": sma_policy_unsupported_reason,
                 "research_policy_comparable": not bool(sma_policy_unsupported_reason),
-                **_execution_plan_evidence(submit_plan),
+                **_execution_plan_evidence(execution_plan_bundle),
             }
         )
         if policy_decision is not None:
@@ -1064,6 +1121,9 @@ def _run_decision_event_backtest_impl(
         _trace_decision(run_context, decision_payload)
 
         if action in {"BUY", "SELL"}:
+            if submit_plan is None:
+                warnings.append("research_submit_plan_missing")
+                continue
             side = action
             signal = build_signal_event(
                 candle=candle,
@@ -1081,7 +1141,7 @@ def _run_decision_event_backtest_impl(
                 model_latency_ms=_model_latency_ms(model),
             )
             request = execution_submit_plan_to_research_request(
-                submit_plan=submit_plan,  # type: ignore[arg-type]
+                submit_plan=submit_plan,
                 signal_ts=signal.signal_candle_start_ts,
                 decision_ts=signal.decision_ts,
                 reference_price=float(reference.fill_reference_price or signal.signal_reference_price),

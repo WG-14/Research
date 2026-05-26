@@ -442,6 +442,46 @@ def test_snapshot_strategy_policy_decides_without_sqlite() -> None:
     assert decision.policy_hash.startswith("sha256:")
 
 
+def test_sma_strategy_snapshot_api_returns_final_decision_with_exit_policy() -> None:
+    strategy = create_sma_with_filter_strategy(
+        short_n=2,
+        long_n=3,
+        pair="BTC_KRW",
+        interval="1m",
+        min_gap_ratio=0.0,
+        volatility_window=3,
+        min_volatility_ratio=0.0,
+        overextended_lookback=1,
+        overextended_max_return_ratio=0.0,
+        slippage_bps=0.0,
+        live_fee_rate_estimate=0.0,
+        entry_edge_buffer_ratio=0.0,
+        cost_edge_enabled=False,
+        market_regime_enabled=False,
+        exit_rule_names=["stop_loss"],
+        exit_stop_loss_ratio=0.05,
+    )
+
+    entry_only = strategy.decide_entry_snapshot(
+        market=_market_window(),
+        position=_open_position(unrealized_pnl=-1.0, unrealized_pnl_ratio=-0.1),
+        config=_policy_config(),
+        execution_context=ExecutionConstraintSnapshot(fee_rate_for_decision=0.0),
+    )
+    final = strategy.decide_snapshot(
+        market=_market_window(),
+        position=_open_position(unrealized_pnl=-1.0, unrealized_pnl_ratio=-0.1),
+        config=_policy_config(),
+        execution_context=ExecutionConstraintSnapshot(fee_rate_for_decision=0.0),
+    )
+
+    assert entry_only.raw_signal == "BUY"
+    assert final.final_signal == "SELL"
+    assert final.exit_rule == "stop_loss"
+    assert final.execution_intent is not None
+    assert final.execution_intent.side == "SELL"
+
+
 def _build_candle_db(closes: list[float]) -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.execute(
@@ -863,7 +903,8 @@ def test_strategy_sma_is_compatibility_facade_not_implementation_authority() -> 
     assert "class SmaWithFilterStrategy" not in module_source
     assert "class SmaCrossStrategy" not in module_source
     assert SmaWithFilterStrategy.__module__ == "bithumb_bot.strategy.sma_policy_strategy"
-    assert "evaluate_sma_policy(" in inspect.getsource(SmaWithFilterStrategy.decide_snapshot)
+    assert "evaluate_sma_final_decision(" in inspect.getsource(SmaWithFilterStrategy.decide_snapshot)
+    assert "evaluate_sma_policy(" in inspect.getsource(SmaWithFilterStrategy.decide_entry_snapshot)
 
 
 class _CommitCountingConnection:

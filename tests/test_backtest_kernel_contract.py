@@ -55,6 +55,10 @@ def test_decision_event_backtest_kernel_executes_buy_and_updates_portfolio() -> 
     assert result.trades[0]["is_portfolio_applied_trade"] is True
     assert result.trades[0]["cash"] < 1_000_000.0
     assert result.trades[0]["asset_qty"] > 0.0
+    assert result.decisions[0]["execution_plan_bundle_present"] is True
+    assert result.decisions[0]["execution_plan_status"] == "PLANNED"
+    assert result.decisions[0]["submit_plan_source"] == "research_backtest"
+    assert result.decisions[0]["execution_submit_plan_hash"].startswith("sha256:")
     assert result.execution_event_summary is not None
     assert result.execution_event_summary["execution_attempt_count"] == 1
     assert result.metrics_v2 is not None
@@ -117,6 +121,8 @@ def test_decision_event_backtest_kernel_executes_sell_without_sma_fields() -> No
     )
 
     assert [trade["side"] for trade in result.trades] == ["BUY", "SELL"]
+    assert all(decision["execution_plan_bundle_present"] for decision in result.decisions)
+    assert [decision["execution_plan_status"] for decision in result.decisions] == ["PLANNED", "PLANNED"]
     assert result.trades[-1]["is_portfolio_applied_trade"] is True
     assert result.execution_event_summary["execution_attempt_count"] == 2
     assert result.metrics_v2.cost_execution.filled_execution_count == 2

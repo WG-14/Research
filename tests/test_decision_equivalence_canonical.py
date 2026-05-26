@@ -104,6 +104,15 @@ def _decision_v2(**overrides: object) -> dict[str, object]:
             "decision_contract_version": 2,
             "strategy_version": "sma_with_filter.research_runtime_contract.v2",
             "strategy_decision_contract_version": "research_sma_decision_contract.v3_entry_exit_risk_exit",
+            "execution_summary_hash": "sha256:summary",
+            "execution_submit_plan_hash": "sha256:plan",
+            "final_action": "ENTER_STRATEGY_POSITION",
+            "submit_expected": True,
+            "pre_submit_proof_status": "not_required",
+            "execution_block_reason": "none",
+            "submit_plan_source": "research_backtest",
+            "submit_plan_authority": "strategy_execution_intent",
+            "execution_engine": "research_virtual",
             "feature_snapshot": {"short_sma": 102.0, "long_sma": 101.0},
             "feature_snapshot_hash": "sha256:feature_snapshot",
             "strategy_specific_payload": {"curr_s": 102.0, "curr_l": 101.0, "gap_ratio": 0.01},
@@ -346,6 +355,34 @@ def test_policy_hashes_are_canonical_diagnostics_not_promotion_required() -> Non
     assert "policy_decision_hash" not in PROMOTION_REQUIRED_CANONICAL_FIELDS
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "execution_summary_hash",
+        "execution_submit_plan_hash",
+        "final_action",
+        "submit_expected",
+        "pre_submit_proof_status",
+        "execution_block_reason",
+        "submit_plan_source",
+        "submit_plan_authority",
+        "execution_engine",
+    ],
+)
+def test_promotion_canonical_validation_requires_execution_fields(field: str) -> None:
+    payload = _decision_v2()
+    payload.pop(field, None)
+
+    validation = validate_canonical_decision_payload(payload)
+    result = _compare(payload, payload)
+
+    assert field in PROMOTION_REQUIRED_CANONICAL_FIELDS
+    assert validation.promotion_grade is False
+    assert field in validation.missing_fields
+    assert result.ok is False
+    assert result.report["outcome"] == "FAIL_INCOMPLETE_CANONICAL_PAYLOAD"
+
+
 def test_runtime_canonical_export_includes_policy_hashes_from_context() -> None:
     event = runtime_decision_to_canonical_event(
         StrategyDecision(
@@ -359,6 +396,28 @@ def test_runtime_canonical_export_includes_policy_hashes_from_context() -> None:
                 "policy_contract_hash": "sha256:contract",
                 "policy_input_hash": "sha256:input",
                 "policy_decision_hash": "sha256:decision",
+                "execution_decision": {
+                    "execution_engine": "research_virtual",
+                    "final_action": "STRATEGY_HOLD",
+                    "submit_expected": False,
+                    "pre_submit_proof_status": "not_required",
+                    "block_reason": "position held: no exit rule triggered",
+                    "buy_submit_plan": {
+                        "side": "HOLD",
+                        "source": "runtime_replay",
+                        "authority": "typed_execution_summary",
+                        "final_action": "STRATEGY_HOLD",
+                        "qty": None,
+                        "notional_krw": None,
+                        "target_exposure_krw": None,
+                        "current_effective_exposure_krw": None,
+                        "delta_krw": None,
+                        "submit_expected": False,
+                        "pre_submit_proof_status": "not_required",
+                        "block_reason": "position held: no exit rule triggered",
+                        "idempotency_key": None,
+                    },
+                },
                 "prev_s": 100.0,
                 "prev_l": 101.0,
                 "curr_s": 102.0,
@@ -677,6 +736,28 @@ def test_incomplete_runtime_positive_state_missing_lot_fields_fails_closed() -> 
                 "policy_contract_hash": "sha256:contract",
                 "policy_input_hash": "sha256:input",
                 "policy_decision_hash": "sha256:decision",
+                "execution_decision": {
+                    "execution_engine": "research_virtual",
+                    "final_action": "STRATEGY_HOLD",
+                    "submit_expected": False,
+                    "pre_submit_proof_status": "not_required",
+                    "block_reason": "position held: no exit rule triggered",
+                    "buy_submit_plan": {
+                        "side": "HOLD",
+                        "source": "runtime_replay",
+                        "authority": "typed_execution_summary",
+                        "final_action": "STRATEGY_HOLD",
+                        "qty": None,
+                        "notional_krw": None,
+                        "target_exposure_krw": None,
+                        "current_effective_exposure_krw": None,
+                        "delta_krw": None,
+                        "submit_expected": False,
+                        "pre_submit_proof_status": "not_required",
+                        "block_reason": "position held: no exit rule triggered",
+                        "idempotency_key": None,
+                    },
+                },
                 "prev_s": 100.0,
                 "prev_l": 101.0,
                 "curr_s": 102.0,
