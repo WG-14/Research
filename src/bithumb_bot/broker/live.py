@@ -2389,6 +2389,42 @@ def _target_delta_submit_plan(
     }
 
 
+def _lot_native_buy_submit_plan(
+    execution_submit_plan: dict[str, object] | None,
+) -> dict[str, object] | None:
+    if not isinstance(execution_submit_plan, dict):
+        return None
+    if str(execution_submit_plan.get("source") or "") != "strategy_position":
+        return None
+    if str(execution_submit_plan.get("authority") or "") not in {
+        "configured_strategy_order_size",
+        "residual_inventory_delta",
+    }:
+        return None
+    if str(execution_submit_plan.get("side") or "").upper() != "BUY":
+        return None
+    try:
+        plan_qty = float(execution_submit_plan.get("qty") or 0.0)
+        plan_notional = float(execution_submit_plan.get("notional_krw") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if plan_qty <= POSITION_EPSILON or plan_notional <= 0.0:
+        return None
+    if str(execution_submit_plan.get("block_reason") or "none") != "none":
+        return None
+    if not bool(execution_submit_plan.get("submit_expected")):
+        return None
+    proof_status = str(execution_submit_plan.get("pre_submit_proof_status") or "")
+    if proof_status not in {"passed", "not_required"}:
+        return None
+    return {
+        **execution_submit_plan,
+        "side": "BUY",
+        "qty": plan_qty,
+        "notional_krw": plan_notional,
+    }
+
+
 def _live_real_order_performance_gate_applies() -> bool:
     return bool(
         str(settings.MODE).strip().lower() == "live"
@@ -2620,6 +2656,110 @@ def _determine_live_execution_intent(
                 else None
             ),
         )
+
+    if signal == "BUY":
+        buy_plan = _lot_native_buy_submit_plan(execution_submit_plan)
+        if buy_plan is not None:
+            plan_qty = float(buy_plan["qty"])
+            plan_notional = float(buy_plan["notional_krw"])
+            if _live_real_order_performance_gate_applies():
+                if _record_strategy_performance_gate_block(
+                    conn=conn,
+                    decision_observability=decision_observability,
+                    strategy_name=strategy_name,
+                    authority_source=str(buy_plan.get("authority") or "configured_strategy_order_size"),
+                ):
+                    return None
+            guardrail_qty = 0.0 if bool(decision_observability["entry_allowed"]) else float(
+                normalized_exposure.open_exposure_qty
+                if bool(decision_observability.get("has_executable_exposure"))
+                else position_state.portfolio_qty
+            )
+            blocked, guardrail_reason = evaluate_buy_guardrails(
+                conn=conn,
+                ts_ms=ts,
+                cash=position_state.cash,
+                qty=guardrail_qty,
+                price=market_price,
+                broker=broker,
+                mark_price_source="live_market_reference",
+                evaluation_origin="buy_guardrails",
+            )
+            if blocked:
+                RUN_LOG.info(
+                    format_log_kv(
+                        "[ORDER_SKIP] buy guardrails",
+                        base_signal=decision_observability["base_signal"],
+                        final_signal=decision_observability["final_signal"],
+                        signal=signal,
+                        side="BUY",
+                        reason=guardrail_reason or "blocked",
+                        entry_allowed=1 if bool(decision_observability["entry_allowed"]) else 0,
+                        effective_flat=1 if bool(decision_observability["effective_flat"]) else 0,
+                        normalized_exposure_active=1 if bool(decision_observability["normalized_exposure_active"]) else 0,
+                        normalized_exposure_qty=float(decision_observability["normalized_exposure_qty"]),
+                        raw_qty_open=float(decision_observability["raw_qty_open"]),
+                        entry_allowed_truth_source=decision_observability["entry_allowed_truth_source"],
+                        execution_submit_plan_source=str(buy_plan.get("source") or "strategy_position"),
+                        execution_submit_plan_authority=str(buy_plan.get("authority") or "-"),
+                    )
+                )
+                return None
+            plan_sizing = SimpleNamespace(
+                allowed=True,
+                block_reason="none",
+                decision_reason_code=str(buy_plan.get("final_action") or "ENTER_STRATEGY_POSITION"),
+                budget_krw=plan_notional,
+                requested_qty=plan_qty,
+                exchange_constrained_qty=plan_qty,
+                lifecycle_executable_qty=plan_qty,
+                executable_qty=plan_qty,
+                rejected_qty_remainder=0.0,
+                unused_budget_krw=0.0,
+                internal_lot_size=0.0,
+                intended_lot_count=0,
+                executable_lot_count=0,
+                qty_source=str(buy_plan.get("authority") or "configured_strategy_order_size"),
+                effective_min_trade_qty=float(position_state.effective_rules.min_qty),
+                min_qty=float(position_state.effective_rules.min_qty),
+                qty_step=float(position_state.effective_rules.qty_step),
+                min_notional_krw=float(position_state.effective_rules.min_notional_krw),
+                non_executable_reason="executable",
+            )
+            decision_observability.update(
+                {
+                    "execution_engine": "lot_native",
+                    "execution_submit_plan_source": "strategy_position",
+                    "execution_submit_plan_authority": str(
+                        buy_plan.get("authority") or "configured_strategy_order_size"
+                    ),
+                    "submit_qty_source": str(
+                        buy_plan.get("authority") or "configured_strategy_order_size"
+                    ),
+                    "submit_qty_source_truth_source": "ExecutionSubmitPlan.buy_submit_plan",
+                    "buy_submit_plan_notional_krw": plan_notional,
+                    "buy_submit_plan_qty": plan_qty,
+                    "buy_submit_plan_delta_krw": buy_plan.get("delta_krw"),
+                }
+            )
+            return _LiveExecutionIntent(
+                side="BUY",
+                order_qty=plan_qty,
+                submit_qty_source=str(buy_plan.get("authority") or "configured_strategy_order_size"),
+                harmless_dust_checked=False,
+                entry_sizing=plan_sizing,
+                exit_sizing=None,
+                canonical_sell=None,
+                diagnostic_sell_qty=None,
+                intent_type="strategy_entry",
+                strategy_context="strategy_position",
+                use_qty_intent_key=True,
+                idempotency_key=(
+                    str(buy_plan.get("idempotency_key"))
+                    if buy_plan.get("idempotency_key") is not None
+                    else None
+                ),
+            )
 
     if signal == "BUY" and normalized_exposure.effective_flat:
         if (

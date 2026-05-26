@@ -196,3 +196,125 @@ def test_plan_envelope_uses_typed_decision_over_conflicting_base_context() -> No
     assert result.persistence_context["decision_authority_source"] == "DecisionEnvelope.strategy_decision"
     assert result.persistence_context["persistence_context_authoritative"] == 0
     assert result.persistence_context["execution_plan_bundle_present"] is True
+
+
+def test_plan_envelope_freezes_mutable_base_context_before_planning() -> None:
+    seen: dict[str, object] = {}
+
+    def _summary_builder(**kwargs) -> ExecutionDecisionSummary:
+        typed_input = kwargs["typed_input"]
+        assert isinstance(typed_input, TypedExecutionPlanningInput)
+        seen["final_signal"] = typed_input.strategy_decision.final_signal
+        seen["observed_context_signal"] = typed_input.observability_context["signal"]
+        return _summary()
+
+    base_context: dict[str, object] = {"signal": "SELL", "nested": {"authority": "legacy"}}
+    envelope = DecisionEnvelope(
+        strategy_decision=_typed_decision(final_signal="BUY"),
+        candle_ts=123,
+        market_price=10.0,
+        base_context=base_context,
+        policy_hashes=None,
+        replay_fingerprint={"candle_ts": 123},
+        boundary={"phase": "test"},
+    )
+    base_context["signal"] = "HOLD"
+    base_context["nested"] = {"authority": "mutated"}
+    planner = ExecutionPlanner(
+        readiness_snapshot_builder=lambda _conn: _Readiness({"cash_available": 1_000_000.0}),
+        target_state_resolver=lambda *_args, **_kwargs: {
+            "previous_target_exposure_krw": 0.0,
+            "target_policy_metadata": {},
+        },
+        summary_builder=_summary_builder,
+    )
+
+    result = planner.plan_envelope(object(), envelope, updated_ts=456)
+
+    assert result.planning_error is None
+    assert seen == {"final_signal": "BUY", "observed_context_signal": "BUY"}
+    assert result.persistence_context["signal"] == "BUY"
+    assert result.persistence_context["nested"] == {"authority": "legacy"}
+
+
+def test_plan_envelope_submit_plan_is_selected_from_typed_summary_not_persistence_context() -> None:
+    target_plan = ExecutionSubmitPlan(
+        side="BUY",
+        source="target_delta",
+        authority="canonical_target_delta_sizing",
+        final_action="REBALANCE_TO_TARGET",
+        qty=0.001,
+        notional_krw=100_000.0,
+        target_exposure_krw=100_000.0,
+        current_effective_exposure_krw=0.0,
+        delta_krw=100_000.0,
+        submit_expected=True,
+        pre_submit_proof_status="passed",
+        block_reason="none",
+        idempotency_key="target-plan-key",
+    )
+
+    def _persistence_context_builder(**kwargs) -> dict[str, object]:
+        context = dict(kwargs["decision_context"])
+        context["execution_decision"] = {
+            "target_submit_plan": {
+                **target_plan.as_dict(),
+                "source": "legacy_context",
+                "qty": 999.0,
+            }
+        }
+        context["final_action"] = "LEGACY_MUTATION"
+        context["submit_expected"] = False
+        context["pre_submit_proof_status"] = "failed"
+        context["execution_block_reason"] = "legacy_context_mutation"
+        return context
+
+    planner = ExecutionPlanner(
+        readiness_snapshot_builder=lambda _conn: _Readiness({"cash_available": 1_000_000.0}),
+        target_state_resolver=lambda *_args, **_kwargs: {
+            "previous_target_exposure_krw": 0.0,
+            "target_policy_metadata": {},
+        },
+        summary_builder=lambda **_kwargs: _summary(target_plan=target_plan),
+        persistence_context_builder=_persistence_context_builder,
+    )
+    envelope = DecisionEnvelope(
+        strategy_decision=_typed_decision(final_signal="BUY"),
+        candle_ts=123,
+        market_price=10.0,
+        base_context={},
+        policy_hashes=None,
+        replay_fingerprint={"candle_ts": 123},
+        boundary={"phase": "test"},
+    )
+
+    result = planner.plan_envelope(object(), envelope, updated_ts=456)
+
+    assert result.submit_plan is target_plan
+    assert result.submit_plan.source == "target_delta"
+    assert result.submit_plan.qty == 0.001
+    assert result.persistence_context["execution_decision"]["target_submit_plan"]["source"] == "legacy_context"  # type: ignore[index]
+
+
+def test_plan_envelope_planning_error_returns_fail_closed_bundle_status() -> None:
+    planner = ExecutionPlanner(
+        readiness_snapshot_builder=lambda _conn: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    envelope = DecisionEnvelope(
+        strategy_decision=_typed_decision(final_signal="BUY"),
+        candle_ts=123,
+        market_price=10.0,
+        base_context={},
+        policy_hashes=None,
+        replay_fingerprint={"candle_ts": 123},
+        boundary={"phase": "test"},
+    )
+
+    result = planner.plan_envelope(object(), envelope, updated_ts=456)
+
+    assert result.summary is None
+    assert result.submit_plan is None
+    assert result.planning_error == "RuntimeError: boom"
+    assert result.status is not None
+    assert result.status.status == "ERROR"
+    assert result.status.reason_code == "execution_planning_error"

@@ -1569,6 +1569,16 @@ class LiveSignalExecutionService:
                 field_name="residual_submit_plan",
             )
             return None
+        if (
+            "buy_submit_plan" in execution_decision
+            and execution_decision.get("buy_submit_plan") is not None
+            and not isinstance(execution_decision.get("buy_submit_plan"), dict)
+        ):
+            _log_live_submit_plan_block(
+                reason="buy_submit_plan_schema_not_object",
+                field_name="buy_submit_plan",
+            )
+            return None
         residual_plan = (
             dict(execution_decision.get("residual_submit_plan"))
             if isinstance(execution_decision.get("residual_submit_plan"), dict)
@@ -1579,7 +1589,12 @@ class LiveSignalExecutionService:
             if isinstance(execution_decision.get("target_submit_plan"), dict)
             else {}
         )
-        if submit_plan_required and not target_plan and not residual_plan:
+        buy_plan = (
+            dict(execution_decision.get("buy_submit_plan"))
+            if isinstance(execution_decision.get("buy_submit_plan"), dict)
+            else {}
+        )
+        if submit_plan_required and not target_plan and not residual_plan and not buy_plan:
             _log_live_submit_plan_block(
                 reason="live_real_order_missing_typed_submit_plan",
                 field_name="execution_decision",
@@ -1595,6 +1610,11 @@ class LiveSignalExecutionService:
         if residual_plan and not _live_submit_plan_schema_valid(
             residual_plan,
             field_name="residual_submit_plan",
+        ):
+            return None
+        if buy_plan and not _live_submit_plan_schema_valid(
+            buy_plan,
+            field_name="buy_submit_plan",
         ):
             return None
         if _execution_engine() == "target_delta":
@@ -1703,6 +1723,104 @@ class LiveSignalExecutionService:
                     "source": "target_delta",
                     "authority": "target_position_delta",
                 }
+        if request.signal == "BUY" and buy_plan:
+            if str(buy_plan.get("source")) != "strategy_position":
+                _block_live_submit_plan(
+                    reason="buy_submit_plan_invalid_source",
+                    field_name="buy_submit_plan",
+                    source=buy_plan.get("source"),
+                    side=buy_plan.get("side"),
+                )
+                return None
+            if str(buy_plan.get("authority")) not in {
+                "configured_strategy_order_size",
+                "residual_inventory_delta",
+            }:
+                _block_live_submit_plan(
+                    reason="buy_submit_plan_invalid_authority",
+                    field_name="buy_submit_plan",
+                    source=buy_plan.get("source"),
+                    side=buy_plan.get("side"),
+                )
+                return None
+            if str(buy_plan.get("side") or "").upper() != "BUY":
+                _block_live_submit_plan(
+                    reason="buy_submit_plan_non_buy_side",
+                    field_name="buy_submit_plan",
+                    source=buy_plan.get("source"),
+                    side=buy_plan.get("side"),
+                )
+                return None
+            if str(buy_plan.get("block_reason") or "none") != "none":
+                _block_live_submit_plan(
+                    reason="buy_submit_plan_blocked",
+                    field_name="buy_submit_plan",
+                    source=buy_plan.get("source"),
+                    side=buy_plan.get("side"),
+                )
+                return None
+            if str(buy_plan.get("pre_submit_proof_status") or "") not in {"passed", "not_required"}:
+                _block_live_submit_plan(
+                    reason="buy_submit_plan_pre_submit_proof_not_compatible",
+                    field_name="buy_submit_plan",
+                    source=buy_plan.get("source"),
+                    side=buy_plan.get("side"),
+                )
+                return None
+            if not bool(buy_plan.get("submit_expected")):
+                _block_live_submit_plan(
+                    reason="buy_submit_plan_submit_not_expected",
+                    field_name="buy_submit_plan",
+                    source=buy_plan.get("source"),
+                    side=buy_plan.get("side"),
+                )
+                return None
+            try:
+                plan_qty = float(buy_plan.get("qty") or 0.0)
+                plan_notional = float(buy_plan.get("notional_krw") or 0.0)
+            except (TypeError, ValueError):
+                _block_live_submit_plan(
+                    reason="buy_submit_plan_invalid_size",
+                    field_name="buy_submit_plan",
+                    source=buy_plan.get("source"),
+                    side=buy_plan.get("side"),
+                )
+                return None
+            if plan_qty <= 0.0 or plan_notional <= 0.0:
+                _block_live_submit_plan(
+                    reason="buy_submit_plan_non_positive_size",
+                    field_name="buy_submit_plan",
+                    source=buy_plan.get("source"),
+                    side=buy_plan.get("side"),
+                )
+                return None
+            try:
+                if not _live_submit_plan_schema_valid(
+                    buy_plan,
+                    field_name="buy_submit_plan",
+                ):
+                    return None
+                return self.executor(
+                    self.broker,
+                    "BUY",
+                    request.ts,
+                    request.market_price,
+                    strategy_name=request.strategy_name,
+                    decision_id=request.decision_id,
+                    decision_reason=request.decision_reason,
+                    exit_rule_name=request.exit_rule_name,
+                    execution_submit_plan=buy_plan,
+                )
+            except TypeError as exc:
+                if "unexpected keyword argument" not in str(exc):
+                    raise
+                return {
+                    "status": "blocked",
+                    "reason": "executor_missing_execution_submit_plan_support",
+                    "side": "BUY",
+                    "source": "strategy_position",
+                    "authority": str(buy_plan.get("authority") or "configured_strategy_order_size"),
+                }
         if (
             request.signal == "SELL"
             and residual_plan
@@ -1767,12 +1885,12 @@ class LiveSignalExecutionService:
                     "source": "residual_inventory",
                     "authority": "residual_inventory_policy",
                 }
-        if target_plan or residual_plan:
+        if target_plan or residual_plan or buy_plan:
             _log_live_submit_plan_block(
                 reason="explicit_submit_plan_not_consumed",
                 field_name="execution_decision",
-                source=(target_plan or residual_plan).get("source"),
-                side=(target_plan or residual_plan).get("side"),
+                source=(target_plan or residual_plan or buy_plan).get("source"),
+                side=(target_plan or residual_plan or buy_plan).get("side"),
             )
             return None
         if submit_plan_required:

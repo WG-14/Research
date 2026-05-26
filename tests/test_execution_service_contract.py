@@ -5,6 +5,7 @@ from collections.abc import Callable
 import pytest
 
 from bithumb_bot.config import settings
+from bithumb_bot.broker import live as live_broker
 from bithumb_bot.execution_service import (
     ExecutionDecisionSummary,
     ExecutionSubmitPlan,
@@ -89,6 +90,24 @@ def _valid_residual_submit_plan() -> dict[str, object]:
     }
 
 
+def _valid_buy_submit_plan() -> dict[str, object]:
+    return {
+        "side": "BUY",
+        "source": "strategy_position",
+        "authority": "configured_strategy_order_size",
+        "final_action": "ENTER_STRATEGY_POSITION",
+        "qty": 0.001,
+        "notional_krw": 100_000.0,
+        "target_exposure_krw": 100_000.0,
+        "current_effective_exposure_krw": 0.0,
+        "delta_krw": 100_000.0,
+        "submit_expected": True,
+        "pre_submit_proof_status": "not_required",
+        "block_reason": "none",
+        "idempotency_key": "buy-plan-key",
+    }
+
+
 def _typed_plan(payload: dict[str, object]) -> ExecutionSubmitPlan:
     return ExecutionSubmitPlan(
         side=str(payload["side"]),
@@ -127,6 +146,42 @@ def _typed_target_execution_summary() -> ExecutionDecisionSummary:
         buy_submit_plan=None,
         target_shadow_decision=None,
         target_submit_plan=_typed_plan(_valid_target_submit_plan()),
+    )
+
+
+def _typed_buy_execution_summary(
+    *,
+    plan: dict[str, object] | None = None,
+    submit_expected: bool | None = None,
+    proof_status: str | None = None,
+    block_reason: str | None = None,
+) -> ExecutionDecisionSummary:
+    payload = _valid_buy_submit_plan() if plan is None else dict(plan)
+    if submit_expected is not None:
+        payload["submit_expected"] = submit_expected
+    if proof_status is not None:
+        payload["pre_submit_proof_status"] = proof_status
+    if block_reason is not None:
+        payload["block_reason"] = block_reason
+    return ExecutionDecisionSummary(
+        raw_signal="BUY",
+        final_signal="BUY",
+        final_action=str(payload["final_action"]),
+        submit_expected=bool(payload["submit_expected"]),
+        pre_submit_proof_status=str(payload["pre_submit_proof_status"]),
+        block_reason=str(payload["block_reason"]),
+        strategy_sell_candidate=None,
+        residual_sell_candidate=None,
+        target_exposure_krw=100_000.0,
+        current_effective_exposure_krw=0.0,
+        tracked_residual_exposure_krw=None,
+        buy_delta_krw=100_000.0,
+        residual_live_sell_mode="block",
+        residual_buy_sizing_mode="block",
+        residual_submit_plan=None,
+        buy_submit_plan=_typed_plan(payload),
+        target_shadow_decision=None,
+        target_submit_plan=None,
     )
 
 
@@ -354,6 +409,107 @@ def test_typed_execution_summary_can_supply_validated_target_submit_plan() -> No
     assert submitted == {"status": "submitted", "signal": "BUY"}
     assert len(calls) == 1
     assert calls[0]["kwargs"]["execution_submit_plan"] == summary.target_submit_plan.as_dict()  # type: ignore[index,union-attr]
+
+
+def test_lot_native_typed_buy_submit_plan_reaches_executor() -> None:
+    _arm_live_real_orders(engine="lot_native")
+    calls: list[dict[str, object]] = []
+    summary = _typed_buy_execution_summary()
+
+    submitted = _service(calls).execute(
+        SignalExecutionRequest(
+            signal="BUY",
+            ts=123,
+            market_price=100_000_000.0,
+            decision_context={},
+            execution_decision_summary=summary,
+        )
+    )
+
+    assert submitted == {"status": "submitted", "signal": "BUY"}
+    assert len(calls) == 1
+    assert calls[0]["kwargs"]["execution_submit_plan"] == summary.buy_submit_plan.as_dict()  # type: ignore[index,union-attr]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_reason"),
+    [
+        (
+            lambda plan: plan.update({"source": "legacy_context"}),
+            "buy_submit_plan_invalid_source",
+        ),
+        (
+            lambda plan: plan.update({"authority": "legacy_qty"}),
+            "buy_submit_plan_invalid_authority",
+        ),
+        (
+            lambda plan: plan.update({"block_reason": "entry_filter_blocked", "submit_expected": False}),
+            "buy_submit_plan_blocked",
+        ),
+        (
+            lambda plan: plan.update({"pre_submit_proof_status": "failed", "submit_expected": False}),
+            "buy_submit_plan_pre_submit_proof_not_compatible",
+        ),
+        (
+            lambda plan: plan.update({"qty": 0.0}),
+            "buy_submit_plan_non_positive_size",
+        ),
+        (
+            lambda plan: plan.update({"notional_krw": 0.0}),
+            "buy_submit_plan_non_positive_size",
+        ),
+    ],
+)
+def test_lot_native_typed_buy_submit_plan_invalid_cases_fail_closed(
+    caplog: pytest.LogCaptureFixture,
+    mutate: Callable[[dict[str, object]], object],
+    expected_reason: str,
+) -> None:
+    _arm_live_real_orders(engine="lot_native")
+    calls: list[dict[str, object]] = []
+    plan = _valid_buy_submit_plan()
+    mutate(plan)
+    summary = _typed_buy_execution_summary(plan=plan)
+
+    result = _service(calls).execute(
+        SignalExecutionRequest(
+            signal="BUY",
+            ts=123,
+            market_price=100_000_000.0,
+            decision_context={},
+            execution_decision_summary=summary,
+        )
+    )
+
+    assert result is None
+    assert calls == []
+    assert expected_reason in caplog.text
+
+
+def test_lot_native_typed_buy_submit_plan_mismatch_with_context_fails_closed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _arm_live_real_orders(engine="lot_native")
+    calls: list[dict[str, object]] = []
+    summary = _typed_buy_execution_summary()
+    mismatched = summary.as_dict()
+    buy_plan = dict(mismatched["buy_submit_plan"])  # type: ignore[arg-type]
+    buy_plan["notional_krw"] = 200_000.0
+    mismatched["buy_submit_plan"] = buy_plan
+
+    result = _service(calls).execute(
+        SignalExecutionRequest(
+            signal="BUY",
+            ts=123,
+            market_price=100_000_000.0,
+            decision_context={"execution_decision": mismatched},
+            execution_decision_summary=summary,
+        )
+    )
+
+    assert result is None
+    assert calls == []
+    assert "execution_decision_summary_context_mismatch" in caplog.text
 
 
 def test_target_delta_live_real_order_requires_passed_target_pre_submit_proof(
@@ -605,6 +761,52 @@ def test_live_real_order_blocks_summary_with_dict_only_residual_submit_plan(
     assert "live_real_order_missing_typed_submit_plan:residual_submit_plan" in caplog.text
 
 
+def test_live_real_order_blocks_summary_with_dict_only_buy_submit_plan(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _arm_live_real_orders(engine="lot_native")
+    calls: list[dict[str, object]] = []
+    summary = _forged_summary_with_raw_plan(
+        field_name="buy_submit_plan",
+        plan=_valid_buy_submit_plan(),
+    )
+
+    result = _service(calls).execute(
+        SignalExecutionRequest(
+            signal="BUY",
+            ts=123,
+            market_price=100_000_000.0,
+            decision_context={},
+            execution_decision_summary=summary,
+        )
+    )
+
+    assert result is None
+    assert calls == []
+    assert "live_real_order_missing_typed_submit_plan:buy_submit_plan" in caplog.text
+
+
+def test_live_real_order_blocks_non_execution_decision_summary_object(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _arm_live_real_orders(engine="lot_native")
+    calls: list[dict[str, object]] = []
+
+    result = _service(calls).execute(
+        SignalExecutionRequest(
+            signal="BUY",
+            ts=123,
+            market_price=100_000_000.0,
+            decision_context={},
+            execution_decision_summary=object(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert result is None
+    assert calls == []
+    assert "live_real_order_invalid_typed_execution_summary" in caplog.text
+
+
 def test_execution_decision_summary_rejects_dict_submit_plan_at_core_model_boundary() -> None:
     with pytest.raises(TypeError, match="target_submit_plan_must_be_execution_submit_plan"):
         ExecutionDecisionSummary(
@@ -627,3 +829,17 @@ def test_execution_decision_summary_rejects_dict_submit_plan_at_core_model_bound
             target_shadow_decision=None,
             target_submit_plan=_valid_target_submit_plan(),  # type: ignore[arg-type]
         )
+
+
+def test_live_broker_lot_native_buy_submit_plan_accepts_only_typed_authority_payload() -> None:
+    valid = live_broker._lot_native_buy_submit_plan(_valid_buy_submit_plan())
+    assert valid is not None
+    assert valid["side"] == "BUY"
+    assert valid["qty"] == pytest.approx(0.001)
+    assert valid["notional_krw"] == pytest.approx(100_000.0)
+
+    bad_source = {**_valid_buy_submit_plan(), "source": "legacy_context"}
+    assert live_broker._lot_native_buy_submit_plan(bad_source) is None
+
+    blocked = {**_valid_buy_submit_plan(), "block_reason": "entry_blocked"}
+    assert live_broker._lot_native_buy_submit_plan(blocked) is None
