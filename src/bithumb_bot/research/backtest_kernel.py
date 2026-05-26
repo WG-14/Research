@@ -12,7 +12,12 @@ from bithumb_bot.core.sma_policy import (
     StrategyDecisionV2,
 )
 from bithumb_bot.execution_service import (
+    ExecutionReadinessPlanningInput,
+    ExecutionDecisionSummary,
     ExecutionSubmitPlan,
+    ExecutionTargetPlanningInput,
+    TypedExecutionPlanningInput,
+    build_typed_execution_decision_summary,
     validate_execution_submit_plan_payload,
 )
 from bithumb_bot.strategy.exit_rules import ExitPolicyConfig, evaluate_sma_exit_policy, merge_exit_rules
@@ -131,6 +136,7 @@ class ResearchExecutionPlanBundle:
     execution_engine: str
     status: str
     reason_code: str
+    summary: ExecutionDecisionSummary | None = None
 
     @property
     def submit_expected(self) -> bool:
@@ -223,12 +229,54 @@ def _research_execution_plan_bundle(
     if normalized_side not in {"BUY", "SELL"}:
         return ResearchExecutionPlanBundle(
             submit_plan=None,
+            summary=None,
             source="research_backtest",
             authority="research_virtual_execution_planner",
             execution_engine="research_virtual",
             status="BLOCKED",
             reason_code=block_reason or "research_no_submit_signal",
         )
+    if policy_decision is not None:
+        summary = build_typed_execution_decision_summary(
+            typed_input=TypedExecutionPlanningInput(
+                strategy_decision=policy_decision,
+                candle_ts=0,
+                market_price=float(reference_price),
+                readiness=ExecutionReadinessPlanningInput.from_payload(
+                    {
+                        "cash_available": float(cash),
+                        "total_effective_exposure_notional_krw": (
+                            max(0.0, float(sellable_qty) * float(reference_price))
+                        ),
+                        "residual_inventory_policy_allows_run": True,
+                    }
+                ),
+                target=ExecutionTargetPlanningInput(previous_target_exposure_krw=0.0),
+            )
+        )
+        submit_plan = (
+            summary.typed_target_submit_plan()
+            or summary.typed_residual_submit_plan()
+            or summary.typed_buy_submit_plan()
+        )
+        if submit_plan is not None or normalized_side == "BUY":
+            return ResearchExecutionPlanBundle(
+                submit_plan=submit_plan,
+                summary=summary,
+                source="research_backtest" if submit_plan is None else submit_plan.source,
+                authority=(
+                    "typed_execution_planner"
+                    if submit_plan is None
+                    else submit_plan.authority
+                ),
+                execution_engine="research_virtual",
+                status="PLANNED" if submit_plan is not None and submit_plan.submit_expected else "BLOCKED",
+                reason_code=(
+                    "none"
+                    if submit_plan is not None and submit_plan.submit_expected
+                    else summary.block_reason
+                ),
+            )
     submit_plan = _research_execution_submit_plan(
         side=normalized_side,
         cash=cash,
@@ -239,6 +287,7 @@ def _research_execution_plan_bundle(
     )
     return ResearchExecutionPlanBundle(
         submit_plan=submit_plan,
+        summary=None,
         source=submit_plan.source,
         authority=submit_plan.authority,
         execution_engine="research_virtual",

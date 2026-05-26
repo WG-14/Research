@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field, replace
-from typing import Callable, Protocol
+from typing import Callable, Mapping, Protocol
 
 from . import runtime_state
 from .config import settings
 from .db_core import ensure_db
 from .decision_contract import apply_decision_contract
 from .decision_context import resolve_canonical_position_exposure_snapshot
+from .core.sma_policy import StrategyDecisionV2
 from .execution_order_rules import resolve_execution_order_rules
 from .observability import format_log_kv
 from .oms import build_order_intent_key
@@ -22,6 +23,51 @@ if False:  # pragma: no cover
 RUN_LOG = logging.getLogger("bithumb_bot.run")
 
 
+EXECUTION_PLANNING_READINESS_KEYS = frozenset(
+    {
+        "residual_inventory_mode",
+        "residual_inventory_state",
+        "residual_inventory_policy_allows_run",
+        "residual_inventory_policy_allows_buy",
+        "residual_inventory_policy_allows_sell",
+        "residual_inventory",
+        "residual_sell_candidate",
+        "projection_converged",
+        "projection_convergence",
+        "open_order_count",
+        "unresolved_open_order_count",
+        "recovery_required_count",
+        "submit_unknown_count",
+        "broker_position_evidence",
+        "total_effective_exposure_qty",
+        "total_effective_exposure_notional_krw",
+        "residual_inventory_notional_krw",
+        "min_qty",
+        "qty_step",
+        "min_notional_krw",
+        "bid_min_total_krw",
+        "bid_types",
+        "residual_proof_min_qty",
+        "residual_proof_min_notional_krw",
+        "residual_proof_locked_qty",
+        "active_fee_accounting_blocker",
+        "accounting_projection_ok",
+        "idempotency_scope",
+        "cash_available",
+        "target_policy_action",
+        "target_origin",
+        "target_adoption_reason",
+        "target_adopted_broker_qty",
+        "target_adopted_exposure_krw",
+        "target_startup_policy_state",
+        "target_existing_state_present",
+        "target_missing_state_resolution",
+        "target_closeout_requested",
+        "target_strategy_signal_source",
+    }
+)
+
+
 @dataclass(frozen=True)
 class SignalExecutionRequest:
     signal: str
@@ -33,6 +79,107 @@ class SignalExecutionRequest:
     exit_rule_name: str | None = None
     decision_context: dict[str, object] | None = None
     execution_decision_summary: "ExecutionDecisionSummary | None" = None
+
+
+@dataclass(frozen=True)
+class ExecutionReadinessPlanningInput:
+    """Allowlisted readiness material used by the typed execution planner."""
+
+    fields: Mapping[str, object] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: Mapping[str, object] | None,
+        *,
+        target_policy_metadata: Mapping[str, object] | None = None,
+    ) -> "ExecutionReadinessPlanningInput":
+        merged: dict[str, object] = {}
+        for source in (payload or {}, target_policy_metadata or {}):
+            for key, value in source.items():
+                if str(key) in EXECUTION_PLANNING_READINESS_KEYS:
+                    merged[str(key)] = value
+        return cls(fields=merged)
+
+    def as_payload(self) -> dict[str, object]:
+        return {key: self.fields[key] for key in sorted(self.fields)}
+
+
+@dataclass(frozen=True)
+class ExecutionTargetPlanningInput:
+    previous_target_exposure_krw: float | None = None
+
+
+@dataclass(frozen=True)
+class TypedExecutionPlanningInput:
+    strategy_decision: StrategyDecisionV2
+    candle_ts: int
+    market_price: float
+    readiness: ExecutionReadinessPlanningInput = field(
+        default_factory=ExecutionReadinessPlanningInput
+    )
+    target: ExecutionTargetPlanningInput = field(default_factory=ExecutionTargetPlanningInput)
+    observability_context: Mapping[str, object] = field(default_factory=dict)
+
+    def as_authority_payload(self) -> dict[str, object]:
+        decision = self.strategy_decision
+        payload = self.readiness.as_payload()
+        payload.update(
+            {
+                "ts": int(self.candle_ts),
+                "candle_ts": int(self.candle_ts),
+                "last_close": float(self.market_price),
+                "market_price": float(self.market_price),
+                "strategy": decision.strategy_name,
+                "signal": decision.final_signal,
+                "reason": decision.final_reason,
+                "raw_signal": decision.raw_signal,
+                "raw_reason": decision.raw_reason,
+                "final_signal": decision.final_signal,
+                "final_reason": decision.final_reason,
+                "entry_block_reason": decision.entry_block_reason,
+                "exit_rule": decision.exit_rule,
+                "exit_reason": decision.exit_reason,
+                "policy_contract_hash": decision.policy_contract_hash,
+                "policy_input_hash": decision.policy_input_hash,
+                "policy_decision_hash": decision.policy_decision_hash,
+                "decision_authority_source": "TypedExecutionPlanningInput.strategy_decision",
+                "persistence_context_authoritative": 0,
+            }
+        )
+        position = decision.position_snapshot
+        payload.update(
+            {
+                "entry_allowed": bool(position.entry_allowed),
+                "exit_allowed": bool(position.exit_allowed),
+                "exit_block_reason": position.exit_block_reason,
+                "terminal_state": position.terminal_state,
+                "qty_open": float(position.qty_open),
+                "raw_qty_open": float(position.raw_qty_open),
+                "raw_total_asset_qty": float(position.raw_total_asset_qty),
+                "open_lot_count": int(position.open_lot_count),
+                "dust_tracking_lot_count": int(position.dust_tracking_lot_count),
+                "reserved_exit_lot_count": int(position.reserved_exit_lot_count),
+                "sellable_executable_lot_count": int(position.sellable_executable_lot_count),
+                "sellable_executable_qty": float(position.qty_open),
+                "dust_classification": position.dust_classification,
+                "dust_state": position.dust_state,
+                "effective_flat": bool(position.effective_flat),
+                "has_executable_exposure": bool(position.has_executable_exposure),
+                "has_any_position_residue": bool(position.has_any_position_residue),
+                "has_non_executable_residue": bool(position.has_non_executable_residue),
+                "has_dust_only_remainder": bool(position.has_dust_only_remainder),
+            }
+        )
+        if (
+            "total_effective_exposure_notional_krw" not in payload
+            and not bool(position.has_executable_exposure)
+        ):
+            payload["total_effective_exposure_notional_krw"] = 0.0
+        execution_intent = decision.execution_intent
+        if execution_intent is not None and hasattr(execution_intent, "as_dict"):
+            payload["execution_intent"] = execution_intent.as_dict()
+        return payload
 
 
 @dataclass(frozen=True)
@@ -756,6 +903,22 @@ def _residual_block_reason(
     )
 
 
+def build_typed_execution_decision_summary(
+    *,
+    typed_input: TypedExecutionPlanningInput,
+    strategy_performance_gate: object | None = None,
+) -> ExecutionDecisionSummary:
+    payload = typed_input.as_authority_payload()
+    return _build_execution_decision_summary_from_authority_payload(
+        authority_payload=payload,
+        raw_signal=typed_input.strategy_decision.raw_signal,
+        final_signal=typed_input.strategy_decision.final_signal,
+        final_reason=typed_input.strategy_decision.final_reason,
+        previous_target_exposure_krw=typed_input.target.previous_target_exposure_krw,
+        strategy_performance_gate=strategy_performance_gate,
+    )
+
+
 def build_execution_decision_summary(
     *,
     decision_context: dict[str, object] | None,
@@ -766,50 +929,37 @@ def build_execution_decision_summary(
     previous_target_exposure_krw: float | None = None,
     strategy_performance_gate: object | None = None,
 ) -> ExecutionDecisionSummary:
+    """Compatibility wrapper for legacy dict callers.
+
+    Runtime envelope planning must use ``build_typed_execution_decision_summary``.
+    This wrapper is retained for older diagnostics/tests and makes the legacy
+    authority boundary explicit.
+    """
     payload: dict[str, object] = dict(decision_context or {})
     if isinstance(readiness_payload, dict):
-        for key in (
-            "residual_inventory_mode",
-            "residual_inventory_state",
-            "residual_inventory_policy_allows_run",
-            "residual_inventory_policy_allows_buy",
-            "residual_inventory_policy_allows_sell",
-            "residual_inventory",
-            "residual_sell_candidate",
-            "projection_converged",
-            "projection_convergence",
-            "open_order_count",
-            "unresolved_open_order_count",
-            "recovery_required_count",
-            "submit_unknown_count",
-            "broker_position_evidence",
-            "total_effective_exposure_qty",
-            "total_effective_exposure_notional_krw",
-            "residual_inventory_notional_krw",
-            "min_qty",
-            "qty_step",
-            "min_notional_krw",
-            "bid_min_total_krw",
-            "bid_types",
-            "residual_proof_min_qty",
-            "residual_proof_min_notional_krw",
-            "residual_proof_locked_qty",
-            "active_fee_accounting_blocker",
-            "accounting_projection_ok",
-            "idempotency_scope",
-            "target_policy_action",
-            "target_origin",
-            "target_adoption_reason",
-            "target_adopted_broker_qty",
-            "target_adopted_exposure_krw",
-            "target_startup_policy_state",
-            "target_existing_state_present",
-            "target_missing_state_resolution",
-            "target_closeout_requested",
-            "target_strategy_signal_source",
-        ):
-            if key in readiness_payload:
-                payload[key] = readiness_payload[key]
+        payload.update(
+            ExecutionReadinessPlanningInput.from_payload(readiness_payload).as_payload()
+        )
+    return _build_execution_decision_summary_from_authority_payload(
+        authority_payload=payload,
+        raw_signal=raw_signal,
+        final_signal=final_signal,
+        final_reason=final_reason,
+        previous_target_exposure_krw=previous_target_exposure_krw,
+        strategy_performance_gate=strategy_performance_gate,
+    )
+
+
+def _build_execution_decision_summary_from_authority_payload(
+    *,
+    authority_payload: dict[str, object],
+    raw_signal: str | None = None,
+    final_signal: str | None = None,
+    final_reason: str | None = None,
+    previous_target_exposure_krw: float | None = None,
+    strategy_performance_gate: object | None = None,
+) -> ExecutionDecisionSummary:
+    payload: dict[str, object] = dict(authority_payload)
 
     raw = str(raw_signal or payload.get("raw_signal") or payload.get("base_signal") or payload.get("signal") or "HOLD").upper()
     final = str(final_signal or payload.get("final_signal") or payload.get("signal") or "HOLD").upper()
@@ -831,6 +981,18 @@ def build_execution_decision_summary(
     buy_delta_krw = None
     if raw == "BUY":
         target_exposure_krw = max(0.0, float(getattr(settings, "MAX_ORDER_KRW", 0.0) or 0.0))
+        execution_intent = _dict_value(payload.get("execution_intent"))
+        if str(execution_intent.get("budget_model") or "") == "cash_fraction_capped_by_max_order_krw":
+            cash_available = payload.get("cash_available")
+            if cash_available is not None:
+                target_exposure_krw = max(
+                    0.0,
+                    float(cash_available or 0.0)
+                    * float(execution_intent.get("budget_fraction_of_cash") or 0.0),
+                )
+                max_budget = float(execution_intent.get("max_budget_krw") or 0.0)
+                if max_budget > 0.0:
+                    target_exposure_krw = min(target_exposure_krw, max_budget)
         current_effective_exposure_krw = (
             None
             if payload.get("total_effective_exposure_notional_krw") is None

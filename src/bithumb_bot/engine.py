@@ -86,6 +86,7 @@ from .execution_service import (
     ExecutionDecisionSummary,
     SignalExecutionRequest,
     build_execution_decision_summary,
+    build_typed_execution_decision_summary,
     build_signal_execution_service,
     live_execute_signal,
     paper_execute,
@@ -3507,7 +3508,7 @@ def run_loop(short_n: int, long_n: int) -> None:
                     planning_bundle = ExecutionPlanner(
                         readiness_snapshot_builder=compute_runtime_readiness_snapshot,
                         performance_gate_evaluator=evaluate_strategy_performance_gate,
-                        summary_builder=build_execution_decision_summary,
+                        summary_builder=build_typed_execution_decision_summary,
                         target_state_resolver=_resolve_target_position_state_for_run_loop,
                         persistence_context_builder=prepare_strategy_decision_persistence_context,
                     ).plan_envelope(

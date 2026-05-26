@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from bithumb_bot.execution_service import ExecutionDecisionSummary, ExecutionSubmitPlan
+from bithumb_bot.core.sma_policy import EntryExecutionIntent, PositionSnapshot, StrategyDecisionV2
+from bithumb_bot.decision_envelope import DecisionEnvelope
+from bithumb_bot.execution_service import (
+    ExecutionDecisionSummary,
+    ExecutionSubmitPlan,
+    TypedExecutionPlanningInput,
+)
 from bithumb_bot.run_loop_execution_planner import ExecutionPlanner
 
 
@@ -34,6 +40,47 @@ def _summary(*, target_plan: ExecutionSubmitPlan | None = None) -> ExecutionDeci
         buy_submit_plan=None,
         target_shadow_decision={"target_policy_action": "use_existing_target"} if target_plan else None,
         target_submit_plan=target_plan,
+    )
+
+
+def _typed_decision(
+    *,
+    raw_signal: str = "BUY",
+    final_signal: str = "BUY",
+    final_reason: str = "typed_reason",
+) -> StrategyDecisionV2:
+    return StrategyDecisionV2(
+        strategy_name="sma_with_filter",
+        raw_signal=raw_signal,
+        raw_reason="typed_raw_reason",
+        entry_signal=final_signal,
+        entry_reason=final_reason,
+        exit_signal="HOLD",
+        exit_reason="no_exit",
+        final_signal=final_signal,
+        final_reason=final_reason,
+        blocked_filters=(),
+        entry_blocked=False,
+        entry_block_reason=None,
+        exit_rule=None,
+        exit_evaluations=(),
+        protective_exit_overrode_entry=False,
+        exit_filter_suppression_prevented=False,
+        position_snapshot=PositionSnapshot(in_position=False, entry_allowed=True, exit_allowed=False),
+        execution_intent=EntryExecutionIntent(
+            side="BUY",
+            intent="enter",
+            pair="KRW-BTC",
+            requires_execution_sizing=True,
+            budget_fraction_of_cash=1.0,
+            max_budget_krw=100_000.0,
+        ),
+        entry_decision=object(),  # type: ignore[arg-type]
+        trace={"final_signal": final_signal, "final_reason": final_reason},
+        policy_hash="sha256:pure",
+        policy_contract_hash="sha256:contract",
+        policy_input_hash="sha256:input",
+        policy_decision_hash="sha256:decision",
     )
 
 
@@ -109,3 +156,43 @@ def test_run_loop_execution_planner_failure_returns_block_recovery_payload() -> 
     assert result.context["pre_submit_proof_status"] == "failed"
     assert result.context["execution_block_reason"] == "execution_decision_unavailable:RuntimeError"
     assert result.context["execution_decision_authoritative"] == 0
+
+
+def test_plan_envelope_uses_typed_decision_over_conflicting_base_context() -> None:
+    seen: dict[str, object] = {}
+
+    def _summary_builder(**kwargs) -> ExecutionDecisionSummary:
+        typed_input = kwargs["typed_input"]
+        assert isinstance(typed_input, TypedExecutionPlanningInput)
+        seen["final_signal"] = typed_input.strategy_decision.final_signal
+        seen["market_price"] = typed_input.market_price
+        return _summary()
+
+    planner = ExecutionPlanner(
+        readiness_snapshot_builder=lambda _conn: _Readiness({"cash_available": 1_000_000.0}),
+        target_state_resolver=lambda *_args, **_kwargs: {
+            "previous_target_exposure_krw": 0.0,
+            "target_policy_metadata": {},
+        },
+        summary_builder=_summary_builder,
+    )
+    envelope = DecisionEnvelope(
+        strategy_decision=_typed_decision(final_signal="BUY"),
+        candle_ts=123,
+        market_price=10.0,
+        base_context={"final_signal": "SELL", "signal": "SELL", "last_close": 999.0},
+        policy_hashes=None,
+        replay_fingerprint={"candle_ts": 123},
+        boundary={"phase": "test"},
+    )
+
+    result = planner.plan_envelope(object(), envelope, updated_ts=456)
+
+    assert result.planning_error is None
+    assert seen == {"final_signal": "BUY", "market_price": 10.0}
+    assert result.persistence_context["final_signal"] == "BUY"
+    assert result.persistence_context["signal"] == "BUY"
+    assert result.persistence_context["last_close"] == 10.0
+    assert result.persistence_context["decision_authority_source"] == "DecisionEnvelope.strategy_decision"
+    assert result.persistence_context["persistence_context_authoritative"] == 0
+    assert result.persistence_context["execution_plan_bundle_present"] is True

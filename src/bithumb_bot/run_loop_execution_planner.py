@@ -10,8 +10,11 @@ from .decision_equivalence import sha256_prefixed
 from .execution_order_rules import resolve_execution_order_rules
 from .execution_service import (
     ExecutionDecisionSummary,
+    ExecutionReadinessPlanningInput,
     ExecutionSubmitPlan,
-    build_execution_decision_summary,
+    ExecutionTargetPlanningInput,
+    TypedExecutionPlanningInput,
+    build_typed_execution_decision_summary,
 )
 from .core.sma_policy import StrategyDecisionV2
 from .runtime_readiness import compute_runtime_readiness_snapshot
@@ -49,6 +52,7 @@ READINESS_CONTEXT_KEYS = (
     "target_missing_state_resolution",
     "target_closeout_requested",
     "target_strategy_signal_source",
+    "cash_available",
 )
 
 
@@ -235,7 +239,7 @@ def _live_real_target_delta_performance_gate_applies() -> bool:
 class ExecutionPlanner:
     readiness_snapshot_builder: Callable[..., object] = compute_runtime_readiness_snapshot
     performance_gate_evaluator: Callable[..., object] = evaluate_strategy_performance_gate
-    summary_builder: Callable[..., ExecutionDecisionSummary] = build_execution_decision_summary
+    summary_builder: Callable[..., ExecutionDecisionSummary] = build_typed_execution_decision_summary
     target_state_resolver: Callable[..., dict[str, object]] = resolve_target_position_state_for_run_loop
     persistence_context_builder: Callable[..., dict[str, object]] = prepare_strategy_decision_persistence_context
 
@@ -386,32 +390,56 @@ class ExecutionPlanner:
             readiness_payload = {**readiness_payload, **target_policy_metadata}
             summary_context = dict(context)
             if typed_planning_input is not None:
+                from .execution_service import build_execution_decision_summary
+
                 summary_context = self._planning_context_from_envelope_input(typed_planning_input)
-            execution_decision_summary = self.summary_builder(
-                decision_context=summary_context,
-                readiness_payload=readiness_payload,
-                raw_signal=(
-                    typed_planning_input.raw_signal
-                    if typed_planning_input is not None
-                    else raw_signal_for_target
-                ),
-                final_signal=(
-                    typed_planning_input.final_signal
-                    if typed_planning_input is not None
-                    else signal
-                ),
-                final_reason=(
-                    typed_planning_input.final_reason
-                    if typed_planning_input is not None
-                    else reason
-                ),
-                previous_target_exposure_krw=(
-                    None
-                    if previous_target_exposure_krw is None
-                    else float(previous_target_exposure_krw)
-                ),
-                strategy_performance_gate=strategy_performance_gate,
-            )
+                typed_builder = (
+                    build_typed_execution_decision_summary
+                    if self.summary_builder is build_execution_decision_summary
+                    else self.summary_builder
+                )
+                execution_decision_summary = typed_builder(
+                    typed_input=TypedExecutionPlanningInput(
+                        strategy_decision=typed_planning_input.strategy_decision,
+                        candle_ts=typed_planning_input.candle_ts,
+                        market_price=typed_planning_input.market_price,
+                        readiness=ExecutionReadinessPlanningInput.from_payload(
+                            readiness_payload,
+                            target_policy_metadata=target_policy_metadata,
+                        ),
+                        target=ExecutionTargetPlanningInput(
+                            previous_target_exposure_krw=(
+                                None
+                                if previous_target_exposure_krw is None
+                                else float(previous_target_exposure_krw)
+                            ),
+                        ),
+                        observability_context=summary_context,
+                    ),
+                    strategy_performance_gate=strategy_performance_gate,
+                )
+            else:
+                from .execution_service import build_execution_decision_summary
+
+                legacy_summary_kwargs = {
+                    "decision_context": summary_context,
+                    "readiness_payload": readiness_payload,
+                    "raw_signal": raw_signal_for_target,
+                    "final_signal": signal,
+                    "final_reason": reason,
+                    "previous_target_exposure_krw": (
+                        None
+                        if previous_target_exposure_krw is None
+                        else float(previous_target_exposure_krw)
+                    ),
+                    "strategy_performance_gate": strategy_performance_gate,
+                }
+                legacy_builder = (
+                    build_execution_decision_summary
+                    if self.summary_builder is build_typed_execution_decision_summary
+                    else self.summary_builder
+                )
+                execution_decision_summary = legacy_builder(**legacy_summary_kwargs)
             context = self.persistence_context_builder(
                 decision_context=summary_context,
                 execution_decision_summary=execution_decision_summary,

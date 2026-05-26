@@ -2,11 +2,48 @@ from __future__ import annotations
 
 import pytest
 
+from bithumb_bot.core.sma_policy import EntryExecutionIntent, PositionSnapshot, StrategyDecisionV2
 from bithumb_bot.execution_service import ExecutionSubmitPlan
 from bithumb_bot.research.backtest_kernel import (
     _research_execution_plan_bundle,
     execution_submit_plan_to_research_request,
 )
+
+
+def _typed_decision(*, raw_signal: str = "BUY", final_signal: str = "BUY") -> StrategyDecisionV2:
+    return StrategyDecisionV2(
+        strategy_name="sma_with_filter",
+        raw_signal=raw_signal,
+        raw_reason="typed_raw",
+        entry_signal=final_signal,
+        entry_reason="typed_entry",
+        exit_signal="HOLD",
+        exit_reason="no_exit",
+        final_signal=final_signal,
+        final_reason="typed_final",
+        blocked_filters=(),
+        entry_blocked=False,
+        entry_block_reason=None,
+        exit_rule=None,
+        exit_evaluations=(),
+        protective_exit_overrode_entry=False,
+        exit_filter_suppression_prevented=False,
+        position_snapshot=PositionSnapshot(in_position=False, entry_allowed=True, exit_allowed=False),
+        execution_intent=EntryExecutionIntent(
+            side="BUY",
+            intent="enter",
+            pair="KRW-BTC",
+            requires_execution_sizing=True,
+            budget_fraction_of_cash=0.5,
+            max_budget_krw=100_000.0,
+        ),
+        entry_decision=object(),  # type: ignore[arg-type]
+        trace={},
+        policy_hash="sha256:pure",
+        policy_contract_hash="sha256:contract",
+        policy_input_hash="sha256:input",
+        policy_decision_hash="sha256:decision",
+    )
 
 
 def _plan(
@@ -140,3 +177,45 @@ def test_direct_cash_fraction_is_not_request_authority_when_plan_exists() -> Non
     assert request is not None
     assert request.requested_notional == 12_000.0
     assert request.requested_notional != cash * legacy_buy_fraction
+
+
+def test_research_buy_bundle_uses_typed_execution_planner_summary() -> None:
+    bundle = _research_execution_plan_bundle(
+        side="BUY",
+        cash=500_000.0,
+        buy_fraction=0.99,
+        sellable_qty=0.0,
+        reference_price=10.0,
+        policy_decision=_typed_decision(final_signal="BUY"),
+    )
+
+    assert bundle.summary is not None
+    assert bundle.submit_plan is not None
+    assert bundle.submit_plan.submit_expected is True
+    assert bundle.submit_plan.notional_krw == 100_000.0
+    assert bundle.submit_plan.notional_krw != 500_000.0 * 0.99
+    assert bundle.authority == bundle.submit_plan.authority
+
+
+def test_research_typed_hold_blocks_without_fill_request() -> None:
+    bundle = _research_execution_plan_bundle(
+        side="BUY",
+        cash=500_000.0,
+        buy_fraction=1.0,
+        sellable_qty=0.0,
+        reference_price=10.0,
+        policy_decision=_typed_decision(raw_signal="BUY", final_signal="HOLD"),
+    )
+
+    assert bundle.summary is not None
+    assert bundle.submit_plan is not None
+    assert bundle.submit_plan.submit_expected is False
+    assert execution_submit_plan_to_research_request(
+        submit_plan=bundle.submit_plan,
+        signal_ts=100,
+        decision_ts=200,
+        reference_price=10.0,
+        fee_rate=0.001,
+        timing_fields={},
+        depth_fields={},
+    ) is None
