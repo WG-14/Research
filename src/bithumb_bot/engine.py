@@ -36,7 +36,6 @@ from .db_core import (
     get_portfolio_breakdown,
     portfolio_asset_total,
     portfolio_cash_total,
-    load_target_position_state,
     upsert_target_position_state,
 )
 from .db_core import record_strategy_decision
@@ -52,7 +51,6 @@ from .dust import (
     build_dust_display_context,
     build_position_state_model,
 )
-from .execution_order_rules import resolve_execution_order_rules
 from .utils_time import kst_str, parse_interval_sec
 from .notifier import format_event, notify
 from .observability import configure_runtime_logging, format_log_kv, safety_event
@@ -87,12 +85,12 @@ from .execution_service import (
     paper_execute,
     record_harmless_dust_exit_suppression,
 )
-from .target_position import (
-    TARGET_POLICY_ADOPT_EXISTING_BROKER_POSITION,
-    TARGET_POLICY_INITIALIZE_FLAT_TARGET,
-    TARGET_POLICY_INITIALIZE_TRUE_DUST_FLAT,
-    TARGET_POLICY_USE_EXISTING_TARGET,
-    resolve_startup_target_position_policy,
+from .run_loop_execution_planner import (
+    ExecutionPlanner,
+    load_previous_target_exposure_for_run_loop,
+    prepare_strategy_decision_persistence_context as _planner_prepare_strategy_decision_persistence_context,
+    resolve_target_position_state_for_run_loop,
+    run_loop_uses_target_delta,
 )
 
 
@@ -111,19 +109,11 @@ STALE_RISK_STATE_MISMATCH_CLEAR_RECONCILE_REASON_CODES = {
 
 
 def _run_loop_uses_target_delta() -> bool:
-    return (
-        str(getattr(settings, "EXECUTION_ENGINE", "lot_native") or "lot_native").strip().lower()
-        == "target_delta"
-    )
+    return run_loop_uses_target_delta()
 
 
 def _load_previous_target_exposure_for_run_loop(conn) -> float | None:
-    if not _run_loop_uses_target_delta():
-        return None
-    previous_target_state = load_target_position_state(conn, pair=settings.PAIR)
-    if previous_target_state is None:
-        return None
-    return float(previous_target_state.target_exposure_krw)
+    return load_previous_target_exposure_for_run_loop(conn)
 
 
 def _resolve_target_position_state_for_run_loop(
@@ -134,53 +124,13 @@ def _resolve_target_position_state_for_run_loop(
     raw_signal: str,
     updated_ts: int,
 ) -> dict[str, object]:
-    if not _run_loop_uses_target_delta():
-        return {
-            "previous_target_exposure_krw": None,
-            "target_policy_metadata": {},
-            "target_state": None,
-        }
-    previous_target_state = load_target_position_state(conn, pair=settings.PAIR)
-    execution_order_rules = resolve_execution_order_rules(readiness_payload, market=str(settings.PAIR))
-    policy = resolve_startup_target_position_policy(
-        existing_target_state=previous_target_state,
+    return resolve_target_position_state_for_run_loop(
+        conn,
         readiness_payload=readiness_payload,
-        order_rules=execution_order_rules.as_order_rules(),
         reference_price=reference_price,
         raw_signal=raw_signal,
+        updated_ts=updated_ts,
     )
-    metadata = policy.as_dict()
-    if policy.policy_action in {
-        TARGET_POLICY_INITIALIZE_FLAT_TARGET,
-        TARGET_POLICY_ADOPT_EXISTING_BROKER_POSITION,
-        TARGET_POLICY_INITIALIZE_TRUE_DUST_FLAT,
-    }:
-        upsert_target_position_state(
-            conn,
-            pair=settings.PAIR,
-            target_exposure_krw=float(policy.target_exposure_krw or 0.0),
-            target_qty=float(policy.target_qty or 0.0),
-            last_signal=str(raw_signal or "HOLD").upper(),
-            last_decision_id=None,
-            last_reference_price=float(reference_price or 0.0),
-            updated_ts=int(updated_ts),
-            target_origin=policy.target_origin,
-            adoption_reason=policy.adoption_reason,
-            adopted_broker_qty=policy.adopted_broker_qty,
-            adopted_broker_exposure_krw=policy.adopted_broker_exposure_krw,
-            created_from_signal=policy.created_from_signal,
-        )
-        previous_target_state = load_target_position_state(conn, pair=settings.PAIR)
-    previous_exposure = (
-        None if previous_target_state is None else float(previous_target_state.target_exposure_krw)
-    )
-    if policy.policy_action == TARGET_POLICY_USE_EXISTING_TARGET and previous_target_state is not None:
-        metadata.setdefault("target_origin", str(previous_target_state.target_origin or ""))
-    return {
-        "previous_target_exposure_krw": previous_exposure,
-        "target_policy_metadata": metadata,
-        "target_state": previous_target_state,
-    }
 
 
 def _persist_target_position_state_for_run_loop(
@@ -612,29 +562,12 @@ def prepare_strategy_decision_persistence_context(
     readiness_payload: dict[str, object],
     target_policy_metadata: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    """Attach execution summary fields needed by persistence/logging."""
-    if not hasattr(execution_decision_summary, "as_dict"):
-        raise TypeError("execution_decision_summary_missing_as_dict")
-    execution_decision = execution_decision_summary.as_dict()
-    context = dict(decision_context)
-    context["execution_decision"] = execution_decision
-    context["final_action"] = execution_decision["final_action"]
-    context["submit_expected"] = execution_decision["submit_expected"]
-    context["pre_submit_proof_status"] = execution_decision["pre_submit_proof_status"]
-    context["execution_block_reason"] = execution_decision["block_reason"]
-    context["residual_live_sell_mode"] = execution_decision.get("residual_live_sell_mode")
-    context["residual_buy_sizing_mode"] = execution_decision.get("residual_buy_sizing_mode")
-    target_shadow = execution_decision.get("target_shadow_decision")
-    if isinstance(target_shadow, dict):
-        for target_key, target_value in target_shadow.items():
-            context[target_key] = target_value
-    if isinstance(target_policy_metadata, dict):
-        for target_key, target_value in target_policy_metadata.items():
-            context.setdefault(target_key, target_value)
-    for key in READINESS_CONTEXT_KEYS:
-        if key in readiness_payload:
-            context[key] = readiness_payload[key]
-    return context
+    return _planner_prepare_strategy_decision_persistence_context(
+        decision_context=decision_context,
+        execution_decision_summary=execution_decision_summary,
+        readiness_payload=readiness_payload,
+        target_policy_metadata=target_policy_metadata,
+    )
 
 
 def build_signal_execution_request(
@@ -3470,71 +3403,23 @@ def run_loop(short_n: int, long_n: int) -> None:
                 strategy_name = str(context.pop("strategy", settings.STRATEGY_NAME))
                 signal = str(context.pop("signal", "HOLD"))
                 reason = str(context.pop("reason", ""))
-                readiness_payload: dict[str, object] = {}
-                previous_target_exposure_krw: float | None = None
-                execution_decision: dict[str, object] = {}
-                try:
-                    readiness_payload = compute_runtime_readiness_snapshot(conn).as_dict()
-                    strategy_performance_gate = None
-                    if (
-                        _run_loop_uses_target_delta()
-                        and str(settings.MODE).strip().lower() == "live"
-                        and bool(settings.LIVE_REAL_ORDER_ARMED)
-                        and not bool(settings.LIVE_DRY_RUN)
-                    ):
-                        strategy_performance_gate = evaluate_strategy_performance_gate(
-                            conn,
-                            strategy_name=str(settings.STRATEGY_NAME),
-                            pair=str(settings.PAIR),
-                        )
-                    raw_signal_for_target = str(
-                        context.get("raw_signal") or context.get("base_signal") or signal
-                    )
-                    target_resolution = _resolve_target_position_state_for_run_loop(
-                        conn,
-                        readiness_payload=readiness_payload,
-                        reference_price=context.get("market_price", context.get("last_close", context.get("close"))),
-                        raw_signal=raw_signal_for_target,
-                        updated_ts=int(now * 1000),
-                    )
-                    previous_target_exposure_krw = (
-                        target_resolution["previous_target_exposure_krw"]
-                        if isinstance(target_resolution, dict)
-                        else None
-                    )
-                    target_policy_metadata = (
-                        target_resolution.get("target_policy_metadata", {})
-                        if isinstance(target_resolution, dict)
-                        else {}
-                    )
-                    if isinstance(target_policy_metadata, dict):
-                        readiness_payload = {**readiness_payload, **target_policy_metadata}
-                    execution_decision_summary_for_trade = build_execution_decision_summary(
-                        decision_context=context,
-                        readiness_payload=readiness_payload,
-                        raw_signal=raw_signal_for_target,
-                        final_signal=signal,
-                        final_reason=reason,
-                        previous_target_exposure_krw=previous_target_exposure_krw,
-                        strategy_performance_gate=strategy_performance_gate,
-                    )
-                    context = prepare_strategy_decision_persistence_context(
-                        decision_context=context,
-                        execution_decision_summary=execution_decision_summary_for_trade,
-                        readiness_payload=readiness_payload,
-                        target_policy_metadata=target_policy_metadata,
-                    )
-                    decision_context_for_trade = context
-                    execution_decision = context["execution_decision"]
-                except Exception as exc:
-                    execution_decision = {
-                        "final_action": "BLOCK_RECOVERY",
-                        "submit_expected": False,
-                        "pre_submit_proof_status": "failed",
-                        "block_reason": f"execution_decision_unavailable:{type(exc).__name__}",
-                    }
-                    context["execution_decision"] = execution_decision
-                    decision_context_for_trade = context
+                planning = ExecutionPlanner(
+                    readiness_snapshot_builder=compute_runtime_readiness_snapshot,
+                    performance_gate_evaluator=evaluate_strategy_performance_gate,
+                    summary_builder=build_execution_decision_summary,
+                    target_state_resolver=_resolve_target_position_state_for_run_loop,
+                    persistence_context_builder=prepare_strategy_decision_persistence_context,
+                ).plan_strategy_decision(
+                    conn,
+                    decision_context=context,
+                    signal=signal,
+                    reason=reason,
+                    updated_ts=int(now * 1000),
+                )
+                context = planning.context
+                decision_context_for_trade = context
+                execution_decision_summary_for_trade = planning.execution_decision_summary
+                execution_decision = planning.execution_decision
                 exit_ctx = context.get("exit")
                 if isinstance(exit_ctx, dict):
                     raw_rule = exit_ctx.get("rule")

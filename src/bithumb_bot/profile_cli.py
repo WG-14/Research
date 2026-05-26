@@ -620,6 +620,7 @@ def cmd_replay_decision(
     db_path: str,
     strategy_name: str,
     candle_ts: int,
+    readiness_json_path: str | None = None,
     as_json: bool = False,
 ) -> int:
     try:
@@ -634,12 +635,20 @@ def cmd_replay_decision(
             interval=str(settings.INTERVAL),
         )
         resolved_db_path = Path(db_path).expanduser().resolve()
+        readiness_payload = None
+        if readiness_json_path is not None:
+            readiness_path = Path(readiness_json_path).expanduser().resolve()
+            raw_readiness = json.loads(readiness_path.read_text(encoding="utf-8"))
+            if not isinstance(raw_readiness, dict):
+                raise ValueError("replay_decision_readiness_json_not_object")
+            readiness_payload = dict(raw_readiness)
         conn = sqlite3.connect(f"file:{resolved_db_path}?mode=ro", uri=True)
         try:
             bundle = build_sma_with_filter_replay_bundle(
                 conn,
                 strategy,
                 through_ts_ms=int(candle_ts),
+                readiness_payload=readiness_payload,
             )
         finally:
             conn.close()
@@ -655,6 +664,7 @@ def cmd_replay_decision(
         "db": str(resolved_db_path),
         "strategy": selected_strategy,
         "candle_ts": int(candle_ts),
+        "readiness_json": None if readiness_json_path is None else str(readiness_path),
         "bundle": bundle,
     }
     if as_json:

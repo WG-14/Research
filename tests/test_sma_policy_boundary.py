@@ -1091,7 +1091,14 @@ def test_replay_bundle_uses_read_only_noop_normalizer(monkeypatch) -> None:
         "runtime_sma_snapshot.decide_sma_with_filter_snapshot_from_db"
     )
     assert bundle["decision_context_schema_version"] == 1
-    assert bundle["code_provenance"] == {"source": "unavailable"}
+    assert set(bundle["code_provenance"]) == {
+        "schema_version",
+        "source",
+        "commit_sha",
+        "dirty",
+        "reason",
+    }
+    assert bundle["code_provenance"]["source"] in {"git", "unavailable"}
     assert bundle["final_typed_strategy_decision"]["policy_input_hash"] == bundle["policy_input_hash"]
     assert bundle["execution_decision_summary"]["final_signal"] == bundle["final_typed_strategy_decision"]["final_signal"]
 

@@ -1610,26 +1610,30 @@ def test_live_real_order_rejects_raw_dict_submit_plan_even_when_summary_present(
     object.__setattr__(settings, "MODE", "live")
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
-    raw_summary = ExecutionDecisionSummary(
-        raw_signal="BUY",
-        final_signal="BUY",
-        final_action="REBALANCE_TO_TARGET",
-        submit_expected=True,
-        pre_submit_proof_status="passed",
-        block_reason="none",
-        strategy_sell_candidate=None,
-        residual_sell_candidate=None,
-        target_exposure_krw=0.0,
-        current_effective_exposure_krw=57_500.0,
-        tracked_residual_exposure_krw=None,
-        buy_delta_krw=None,
-        residual_live_sell_mode="block",
-        residual_buy_sizing_mode="block",
-        residual_submit_plan=None,
-        buy_submit_plan=None,
-        target_shadow_decision=None,
-        target_submit_plan=_valid_target_submit_plan(),
-    )
+    raw_summary = object.__new__(ExecutionDecisionSummary)
+    for key, value in {
+        "raw_signal": "BUY",
+        "final_signal": "BUY",
+        "final_action": "REBALANCE_TO_TARGET",
+        "submit_expected": True,
+        "pre_submit_proof_status": "passed",
+        "block_reason": "none",
+        "strategy_sell_candidate": None,
+        "residual_sell_candidate": None,
+        "target_exposure_krw": 0.0,
+        "current_effective_exposure_krw": 57_500.0,
+        "tracked_residual_exposure_krw": None,
+        "buy_delta_krw": None,
+        "residual_live_sell_mode": "block",
+        "residual_buy_sizing_mode": "block",
+        "residual_submit_plan": None,
+        "buy_submit_plan": None,
+        "target_shadow_decision": None,
+        "target_submit_plan": _valid_target_submit_plan(),
+        "pre_trade_economics": None,
+        "signal_flow": None,
+    }.items():
+        object.__setattr__(raw_summary, key, value)
     executor_calls: list[dict[str, object]] = []
     service = LiveSignalExecutionService(
         broker=_ResidualFakeBroker(),
@@ -1642,14 +1646,14 @@ def test_live_real_order_rejects_raw_dict_submit_plan_even_when_summary_present(
             signal="BUY",
             ts=123,
             market_price=115_000_000.0,
-            decision_context={"execution_decision": raw_summary.as_dict()},
+            decision_context={},
             execution_decision_summary=raw_summary,
         )
     )
 
     assert result is None
     assert executor_calls == []
-    assert "live_real_order_missing_typed_submit_plan" in caplog.text
+    assert "live_real_order_missing_typed_submit_plan:target_submit_plan" in caplog.text
 
 
 def test_live_real_order_rejects_typed_summary_serialized_context_mismatch(caplog) -> None:

@@ -216,24 +216,31 @@ class ExecutionDecisionSummary:
     buy_delta_krw: float | None
     residual_live_sell_mode: str
     residual_buy_sizing_mode: str
-    residual_submit_plan: ExecutionSubmitPlan | dict[str, object] | None
-    buy_submit_plan: ExecutionSubmitPlan | dict[str, object] | None
+    residual_submit_plan: ExecutionSubmitPlan | None
+    buy_submit_plan: ExecutionSubmitPlan | None
     target_shadow_decision: dict[str, object] | None
-    target_submit_plan: ExecutionSubmitPlan | dict[str, object] | None
+    target_submit_plan: ExecutionSubmitPlan | None
     pre_trade_economics: dict[str, object] | None = None
     signal_flow: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
+        for field_name, plan in (
+            ("residual_submit_plan", self.residual_submit_plan),
+            ("buy_submit_plan", self.buy_submit_plan),
+            ("target_submit_plan", self.target_submit_plan),
+        ):
+            if plan is not None and not isinstance(plan, ExecutionSubmitPlan):
+                raise TypeError(f"{field_name}_must_be_execution_submit_plan")
         validate_execution_submit_plan_payload(
-            _submit_plan_payload(self.residual_submit_plan),
+            self.residual_submit_plan.as_dict() if self.residual_submit_plan is not None else None,
             field_name="residual_submit_plan",
         )
         validate_execution_submit_plan_payload(
-            _submit_plan_payload(self.buy_submit_plan),
+            self.buy_submit_plan.as_dict() if self.buy_submit_plan is not None else None,
             field_name="buy_submit_plan",
         )
         validate_execution_submit_plan_payload(
-            _submit_plan_payload(self.target_submit_plan),
+            self.target_submit_plan.as_dict() if self.target_submit_plan is not None else None,
             field_name="target_submit_plan",
         )
 
@@ -302,17 +309,15 @@ class ExecutionDecisionSummary:
 
 
 def _submit_plan_payload(
-    plan: ExecutionSubmitPlan | dict[str, object] | None,
+    plan: ExecutionSubmitPlan | None,
 ) -> dict[str, object] | None:
     if plan is None:
         return None
-    if isinstance(plan, ExecutionSubmitPlan):
-        return plan.as_dict()
-    return dict(plan)
+    return plan.as_dict()
 
 
 def _typed_submit_plan(
-    plan: ExecutionSubmitPlan | dict[str, object] | None,
+    plan: ExecutionSubmitPlan | None,
 ) -> ExecutionSubmitPlan | None:
     return plan if isinstance(plan, ExecutionSubmitPlan) else None
 

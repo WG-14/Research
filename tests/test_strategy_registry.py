@@ -467,7 +467,14 @@ def test_replay_decision_cli_outputs_single_read_only_replay_bundle(tmp_path, ca
     assert str(bundle["pure_policy_hash"]).startswith("sha256:")
     assert bundle["final_strategy_decision"]["strategy"] == "sma_with_filter"
     assert bundle["decision_context_schema_version"] == 1
-    assert bundle["code_provenance"] == {"source": "unavailable"}
+    assert set(bundle["code_provenance"]) == {
+        "schema_version",
+        "source",
+        "commit_sha",
+        "dirty",
+        "reason",
+    }
+    assert bundle["code_provenance"]["source"] in {"git", "unavailable"}
     assert bundle["final_typed_strategy_decision"]["policy_decision_hash"] == bundle["policy_decision_hash"]
     assert bundle["execution_decision_reconstructable"] is False
     assert bundle["execution_decision_reconstruction_reason"] == (
@@ -476,6 +483,108 @@ def test_replay_decision_cli_outputs_single_read_only_replay_bundle(tmp_path, ca
     assert "execution_decision_summary" in bundle
     assert changes_after_replay == 0
     assert changes_before_replay > 0
+
+
+def test_replay_bundle_code_provenance_schema_survives_git_unavailable(monkeypatch, tmp_path) -> None:
+    def _raise_unavailable(*_args, **_kwargs):
+        raise OSError("git unavailable")
+
+    monkeypatch.setattr("bithumb_bot.runtime_sma_snapshot.subprocess.run", _raise_unavailable)
+    old_db_path = settings.DB_PATH
+    old_env_db_path = os.environ.get("DB_PATH")
+    db_path = str(tmp_path / "replay_git_unavailable.sqlite")
+    os.environ["DB_PATH"] = db_path
+    object.__setattr__(settings, "DB_PATH", db_path)
+    conn = ensure_db()
+    base_ts = 1_700_000_700_000
+    try:
+        for idx in range(40):
+            close = 10.0 + 0.2 * idx
+            ts = base_ts + idx * 60_000
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO candles(ts, pair, interval, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ts, settings.PAIR, settings.INTERVAL, close, close, close, close, 1.0),
+            )
+        conn.commit()
+        strategy = create_strategy_policy(
+            "sma_with_filter",
+            short_n=2,
+            long_n=3,
+            pair=settings.PAIR,
+            interval=settings.INTERVAL,
+        )
+        bundle = build_sma_with_filter_replay_bundle(
+            conn,
+            strategy,
+            through_ts_ms=base_ts + 39 * 60_000,
+        )
+    finally:
+        conn.close()
+        object.__setattr__(settings, "DB_PATH", old_db_path)
+        if old_env_db_path is None:
+            os.environ.pop("DB_PATH", None)
+        else:
+            os.environ["DB_PATH"] = old_env_db_path
+
+    assert bundle is not None
+    assert bundle["code_provenance"]["schema_version"] == 1
+    assert bundle["code_provenance"]["source"] == "unavailable"
+    assert str(bundle["code_provenance"]["reason"]).startswith("git_metadata_unavailable:")
+
+
+def test_replay_decision_cli_with_readiness_json_marks_execution_reconstructable(
+    tmp_path,
+    capsys,
+) -> None:
+    old_db_path = settings.DB_PATH
+    old_env_db_path = os.environ.get("DB_PATH")
+    db_path = str(tmp_path / "single_replay_with_readiness.sqlite")
+    readiness_path = tmp_path / "readiness.json"
+    readiness_path.write_text(
+        json.dumps({"residual_inventory_state": "none", "residual_inventory_mode": "block"}),
+        encoding="utf-8",
+    )
+    os.environ["DB_PATH"] = db_path
+    object.__setattr__(settings, "DB_PATH", db_path)
+    conn = ensure_db()
+    base_ts = 1_700_000_900_000
+    try:
+        for idx in range(40):
+            close = 10.0 + 0.2 * idx
+            ts = base_ts + idx * 60_000
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO candles(ts, pair, interval, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ts, settings.PAIR, settings.INTERVAL, close, close, close, close, 1.0),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+        object.__setattr__(settings, "DB_PATH", old_db_path)
+        if old_env_db_path is None:
+            os.environ.pop("DB_PATH", None)
+        else:
+            os.environ["DB_PATH"] = old_env_db_path
+
+    rc = cmd_replay_decision(
+        db_path=db_path,
+        strategy_name="sma_with_filter",
+        candle_ts=base_ts + 39 * 60_000,
+        readiness_json_path=str(readiness_path),
+        as_json=True,
+    )
+    stdout = capsys.readouterr().out
+    out = json.loads(stdout[stdout.index('{\n  "bundle"') :])
+
+    assert rc == 0
+    assert out["bundle"]["execution_decision_reconstructable"] is True
+    assert out["bundle"]["execution_decision_reconstruction_reason"] == "readiness_payload_supplied"
+    assert out["bundle"]["execution_decision_summary"]["execution_engine"] in {"lot_native", "target_delta"}
 
 
 def test_compute_signal_allows_strategy_override_for_backtest_compatibility(tmp_path) -> None:

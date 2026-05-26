@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from .execution_service import build_execution_decision_summary
@@ -17,13 +19,47 @@ SMA_RUNTIME_BOUNDARY_STAGES = {
     "snapshot_builder": "runtime_sma_snapshot.decide_sma_with_filter_snapshot_from_db",
     "pure_policy": "core.sma_policy.evaluate_sma_policy",
     "final_decision_assembler": "strategy.sma_decision_assembler.evaluate_sma_final_decision",
-    "execution_planner": "execution_service.build_execution_decision_summary",
+    "execution_planner": "run_loop_execution_planner.ExecutionPlanner",
     "broker_submit_path": "engine.submit_or_suppress",
 }
 
 
 def _code_provenance() -> dict[str, object]:
-    return {"source": "unavailable"}
+    repo_root = Path(__file__).resolve().parents[2]
+    base: dict[str, object] = {
+        "schema_version": 1,
+        "source": "unavailable",
+        "commit_sha": None,
+        "dirty": None,
+        "reason": None,
+    }
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            text=True,
+            capture_output=True,
+            timeout=2.0,
+            check=True,
+        ).stdout.strip()
+        dirty_result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_root,
+            text=True,
+            capture_output=True,
+            timeout=2.0,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        base["reason"] = f"git_metadata_unavailable:{type(exc).__name__}"
+        return base
+    return {
+        "schema_version": 1,
+        "source": "git",
+        "commit_sha": commit or None,
+        "dirty": bool(dirty_result.stdout.strip()),
+        "reason": None,
+    }
 
 
 def _typed_strategy_decision_payload(result: RuntimeSmaDecisionResult) -> dict[str, object]:

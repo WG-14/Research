@@ -130,6 +130,36 @@ def _typed_target_execution_summary() -> ExecutionDecisionSummary:
     )
 
 
+def _forged_summary_with_raw_plan(*, field_name: str, plan: dict[str, object]) -> ExecutionDecisionSummary:
+    summary = object.__new__(ExecutionDecisionSummary)
+    values = {
+        "raw_signal": "BUY",
+        "final_signal": "BUY",
+        "final_action": "REBALANCE_TO_TARGET",
+        "submit_expected": True,
+        "pre_submit_proof_status": "passed",
+        "block_reason": "none",
+        "strategy_sell_candidate": None,
+        "residual_sell_candidate": None,
+        "target_exposure_krw": 100_000.0,
+        "current_effective_exposure_krw": 0.0,
+        "tracked_residual_exposure_krw": None,
+        "buy_delta_krw": 100_000.0,
+        "residual_live_sell_mode": "enabled",
+        "residual_buy_sizing_mode": "block",
+        "residual_submit_plan": None,
+        "buy_submit_plan": None,
+        "target_shadow_decision": None,
+        "target_submit_plan": None,
+        "pre_trade_economics": None,
+        "signal_flow": None,
+    }
+    values[field_name] = plan
+    for key, value in values.items():
+        object.__setattr__(summary, key, value)
+    return summary
+
+
 def _typed_residual_execution_summary() -> ExecutionDecisionSummary:
     return ExecutionDecisionSummary(
         raw_signal="SELL",
@@ -487,25 +517,9 @@ def test_live_real_order_blocks_summary_with_dict_only_submit_plan(
 ) -> None:
     _arm_live_real_orders(engine="target_delta")
     calls: list[dict[str, object]] = []
-    summary = ExecutionDecisionSummary(
-        raw_signal="BUY",
-        final_signal="BUY",
-        final_action="REBALANCE_TO_TARGET",
-        submit_expected=True,
-        pre_submit_proof_status="passed",
-        block_reason="none",
-        strategy_sell_candidate=None,
-        residual_sell_candidate=None,
-        target_exposure_krw=100_000.0,
-        current_effective_exposure_krw=0.0,
-        tracked_residual_exposure_krw=None,
-        buy_delta_krw=100_000.0,
-        residual_live_sell_mode="block",
-        residual_buy_sizing_mode="block",
-        residual_submit_plan=None,
-        buy_submit_plan=None,
-        target_shadow_decision=None,
-        target_submit_plan=_valid_target_submit_plan(),
+    summary = _forged_summary_with_raw_plan(
+        field_name="target_submit_plan",
+        plan=_valid_target_submit_plan(),
     )
 
     result = _service(calls).execute(
@@ -523,11 +537,34 @@ def test_live_real_order_blocks_summary_with_dict_only_submit_plan(
     assert "live_real_order_missing_typed_submit_plan:target_submit_plan" in caplog.text
 
 
-def test_execution_decision_summary_rejects_malformed_dict_submit_plan_schema() -> None:
-    malformed_plan = dict(_valid_target_submit_plan())
-    malformed_plan.pop("authority")
+def test_live_real_order_blocks_summary_with_dict_only_residual_submit_plan(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _arm_live_real_orders(engine="lot_native")
+    object.__setattr__(settings, "RESIDUAL_LIVE_SELL_MODE", "enabled")
+    calls: list[dict[str, object]] = []
+    summary = _forged_summary_with_raw_plan(
+        field_name="residual_submit_plan",
+        plan=_valid_residual_submit_plan(),
+    )
 
-    with pytest.raises(ValueError, match="target_submit_plan_schema_missing_fields:authority"):
+    result = _service(calls).execute(
+        SignalExecutionRequest(
+            signal="SELL",
+            ts=123,
+            market_price=100_000_000.0,
+            decision_context={},
+            execution_decision_summary=summary,
+        )
+    )
+
+    assert result is None
+    assert calls == []
+    assert "live_real_order_missing_typed_submit_plan:residual_submit_plan" in caplog.text
+
+
+def test_execution_decision_summary_rejects_dict_submit_plan_at_core_model_boundary() -> None:
+    with pytest.raises(TypeError, match="target_submit_plan_must_be_execution_submit_plan"):
         ExecutionDecisionSummary(
             raw_signal="BUY",
             final_signal="BUY",
@@ -546,5 +583,5 @@ def test_execution_decision_summary_rejects_malformed_dict_submit_plan_schema() 
             residual_submit_plan=None,
             buy_submit_plan=None,
             target_shadow_decision=None,
-            target_submit_plan=malformed_plan,
+            target_submit_plan=_valid_target_submit_plan(),  # type: ignore[arg-type]
         )

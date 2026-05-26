@@ -7792,6 +7792,7 @@ def main(argv: list[str] | None = None) -> int:
     replay_decision.add_argument("--db", required=True)
     replay_decision.add_argument("--strategy", required=True)
     replay_decision.add_argument("--candle-ts", required=True, type=int)
+    replay_decision.add_argument("--readiness-json")
     replay_decision.add_argument("--json", action="store_true")
 
     cash_drift_report = sub.add_parser(
@@ -8352,6 +8353,9 @@ def main(argv: list[str] | None = None) -> int:
             db_path=str(args.db),
             strategy_name=str(args.strategy),
             candle_ts=int(args.candle_ts),
+            readiness_json_path=(
+                None if getattr(args, "readiness_json", None) is None else str(args.readiness_json)
+            ),
             as_json=bool(args.json),
         )
     elif args.cmd == "cash-drift-report":
