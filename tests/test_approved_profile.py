@@ -347,6 +347,13 @@ def test_promotion_artifact_rejects_smoke_backtest_markers() -> None:
         verify_promotion_artifact(promotion)
 
 
+def test_promotion_artifact_rejects_standalone_backtest_marker_alone() -> None:
+    promotion = _promotion(standalone_backtest_not_full_validation=True)
+
+    with pytest.raises(ApprovedProfileError, match="standalone_backtest_not_full_validation"):
+        verify_promotion_artifact(promotion)
+
+
 def test_promotion_artifact_rejects_nested_candidate_profile_smoke_markers() -> None:
     promotion = _promotion()
     candidate_profile = dict(promotion["candidate_profile"])  # type: ignore[arg-type]

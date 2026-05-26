@@ -261,6 +261,12 @@ def test_research_compatibility_fallback_is_blocked_for_promotion_grade() -> Non
     assert bundle.compatibility_fallback is False
     assert bundle.promotion_grade is False
 
+    evidence = _execution_plan_evidence(bundle)
+
+    assert evidence["promotion_grade"] is False
+    assert evidence["execution_plan_reason_code"] == "promotion_requires_typed_execution_submit_plan"
+    assert evidence["recommended_next_action"] == "regenerate_research_decisions_with_typed_execution_submit_plan"
+
 
 def test_research_virtual_execution_service_public_input_is_submit_plan() -> None:
     service = ResearchVirtualExecutionService(

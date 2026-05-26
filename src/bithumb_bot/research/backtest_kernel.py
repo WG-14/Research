@@ -460,7 +460,11 @@ def _execution_plan_evidence(
                 False if plan_bundle is None else bool(plan_bundle.compatibility_fallback)
             ),
             "compatibility_fallback": False if plan_bundle is None else bool(plan_bundle.compatibility_fallback),
-            "promotion_grade": False if plan_bundle is not None and plan_bundle.compatibility_fallback else True,
+            "promotion_grade": (
+                True
+                if plan_bundle is None
+                else bool(plan_bundle.promotion_grade and not plan_bundle.compatibility_fallback)
+            ),
             "recommended_next_action": (
                 "none" if plan_bundle is None else plan_bundle.recommended_next_action
             ),

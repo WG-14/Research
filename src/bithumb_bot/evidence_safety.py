@@ -14,6 +14,8 @@ def smoke_only_evidence_rejection_reasons(payload: Mapping[str, Any] | None) -> 
     if payload.get("evidence_scope") == SMOKE_ONLY_EVIDENCE_SCOPE:
         reasons.append("smoke_backtest_artifact_not_promotable")
         reasons.append("standalone_backtest_not_full_validation")
+    if payload.get("standalone_backtest_not_full_validation") is True:
+        reasons.append("standalone_backtest_not_full_validation")
     if payload.get("non_promotable") is True:
         reasons.append("non_promotable_evidence_artifact")
     if payload.get("promotion_grade") is False:

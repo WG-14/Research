@@ -613,6 +613,19 @@ def test_backtest_candidate_smoke_markers_fail_closed_for_promotion() -> None:
     assert "promotion_grade_validation_required" in reasons
 
 
+def test_backtest_candidate_standalone_marker_alone_fails_closed_for_promotion() -> None:
+    candidate = _production_candidate(
+        standalone_backtest_not_full_validation=True,
+    )
+    candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+
+    allowed, reasons = validate_backtest_candidate_for_promotion(candidate)
+
+    assert not allowed
+    assert "standalone_backtest_not_full_validation" in reasons
+    assert "backtest_standalone_backtest_not_full_validation" in reasons
+
+
 def test_candidate_regime_policy_equivalence_evidence_can_be_bound_to_candidate_profile(tmp_path: Path) -> None:
     candidate = _production_candidate(
         candidate_regime_policy_required_for_live=True,
