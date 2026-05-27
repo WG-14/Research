@@ -36,8 +36,18 @@ from .db_core import (
 )
 from .db_core import record_strategy_decision
 from .decision_envelope import DecisionEnvelope
-from .lifecycle import summarize_position_lots, summarize_reserved_exit_qty
 from .operator_repair_service import OperatorRepairService
+from .runtime_data_access import (
+    count_open_orders as _count_open_orders,
+    latest_order_identifiers as _latest_order_identifiers,
+    mark_open_orders_recovery_required as _mark_open_orders_recovery_required,
+    open_order_identifiers_for_broker_revalidation,
+    open_order_snapshot as _get_open_order_snapshot,
+    portfolio_cash_qty_with_position_state,
+    position_summary as _position_summary,
+    select_latest_candle,
+    select_latest_closed_candle,
+)
 from .runtime_readiness import compute_runtime_readiness_snapshot
 from .runtime_recovery_gate import (
     ResumeBlocker,
@@ -48,8 +58,8 @@ from .runtime_recovery_gate import (
 from .runtime_recovery_services import (
     STARTUP_RECOVERY_GATE_PREFIX,
     StaleRiskStateMismatchHaltService,
-    StartupSafetyGateService,
 )
+from .runtime_gate_api import RuntimeGateApi
 from .runtime_resume_services import (
     RestartReadinessService,
     ResumeGuidance,
@@ -65,10 +75,7 @@ from .runtime_resume_services import (
     reconcile_dust_context,
 )
 from .strategy_performance import evaluate_strategy_performance_gate
-from .dust import (
-    build_dust_display_context,
-    build_position_state_model,
-)
+from .dust import build_dust_display_context
 from .utils_time import kst_str, parse_interval_sec
 from .operator_notification_service import OperatorNotificationService
 from .observability import configure_runtime_logging, format_log_kv, safety_event
@@ -90,7 +97,6 @@ from .operator_flatten_service import OperatorFlattenService
 from .execution_service import (
     ExecutionDecisionSummary,
     SignalExecutionRequest,
-    build_execution_decision_summary,
     build_typed_execution_decision_summary,
     build_signal_execution_service,
     live_execute_signal,
@@ -104,10 +110,6 @@ from .run_loop_execution_planner import (
     resolve_target_position_state_for_run_loop,
     run_loop_uses_target_delta,
 )
-from .run_loop_compatibility import (
-    RunLoopCompatibilityPlanner,
-    legacy_context_planning_allowed_for_compatibility,
-)
 
 
 FAILSAFE_RETRY_DELAY_SEC = 180
@@ -117,12 +119,16 @@ RUN_LOG = logging.getLogger("bithumb_bot.run")
 
 
 def _runtime_recovery_gate_service() -> RuntimeRecoveryGateService:
-    return RuntimeRecoveryGateService(
-        startup_gate_evaluator=evaluate_startup_safety_gate,
+    return _runtime_gate_api().recovery_gate_service()
+
+
+def _runtime_gate_api() -> RuntimeGateApi:
+    return RuntimeGateApi(
         stale_initial_reconcile_halt_clearer=maybe_clear_stale_initial_reconcile_halt,
         stale_live_execution_broker_halt_clearer=maybe_clear_stale_live_execution_broker_halt,
         stale_risk_state_mismatch_halt_clearer=maybe_clear_stale_risk_state_mismatch_halt,
-        state_snapshot=runtime_state.snapshot,
+        exposure_snapshot=_get_exposure_snapshot,
+        logger=RUN_LOG,
     )
 
 
@@ -275,19 +281,6 @@ def _typed_runtime_handoff_failure_reason(
     )
 
 
-def _legacy_context_planning_allowed_for_run_loop(
-    *,
-    selected_strategy_name: str,
-    signal_handoff_fn: object,
-) -> bool:
-    """Limit dict/context planning to explicit compatibility surfaces."""
-    del selected_strategy_name
-    return legacy_context_planning_allowed_for_compatibility(
-        signal_handoff_fn=signal_handoff_fn,
-        runtime_handoff_fn=compute_signal_runtime_handoff,
-    )
-
-
 def _legacy_db_strategy_fallback_allowed(*, selected_strategy_name: str) -> bool:
     return legacy_db_strategy_fallback_allowed(selected_strategy_name=selected_strategy_name)
 
@@ -331,35 +324,6 @@ def prepare_strategy_decision_persistence_context(
         execution_decision_summary=execution_decision_summary,
         readiness_payload=readiness_payload,
         target_policy_metadata=target_policy_metadata,
-    )
-
-
-def _plan_legacy_run_loop_context_for_compatibility(
-    conn,
-    *,
-    decision_context: dict[str, object],
-    signal: str,
-    reason: str,
-    updated_ts: int,
-    signal_handoff_fn: object,
-):
-    """Compatibility-only bridge for patched paper/smoke dict handoffs."""
-    return RunLoopCompatibilityPlanner(
-        planner_factory=lambda: ExecutionPlanner(
-            readiness_snapshot_builder=compute_runtime_readiness_snapshot,
-            performance_gate_evaluator=evaluate_strategy_performance_gate,
-            summary_builder=build_execution_decision_summary,
-            target_state_resolver=_resolve_target_position_state_for_run_loop,
-            persistence_context_builder=prepare_strategy_decision_persistence_context,
-        ),
-        runtime_handoff_fn=compute_signal_runtime_handoff,
-    ).plan_legacy_context(
-        conn,
-        decision_context=decision_context,
-        signal=signal,
-        reason=reason,
-        updated_ts=updated_ts,
-        signal_handoff_fn=signal_handoff_fn,
     )
 
 
@@ -493,14 +457,6 @@ def _dust_residual_resume_blocker(dust_context: dict[str, object]) -> tuple[str,
     return dust_residual_resume_blocker(dust_context)
 
 
-LIVE_UNRESOLVED_ORDER_STATUSES = (
-    "PENDING_SUBMIT",
-    "NEW",
-    "PARTIAL",
-    "SUBMIT_UNKNOWN",
-    "RECOVERY_REQUIRED",
-)
-
 RISK_EXPOSURE_HALT_REASON_CODES = {
     "KILL_SWITCH",
     "DAILY_LOSS_LIMIT",
@@ -551,70 +507,6 @@ def _is_closed_candle(*, candle_ts_ms: int, now_ms: int, interval_sec: int) -> b
     return now_ms >= close_ready_ts_ms
 
 
-def _select_latest_closed_candle(conn, *, pair: str, interval: str, interval_sec: int, now_ms: int):
-    cursor = conn.execute(
-        """
-        SELECT ts, close
-        FROM candles
-        WHERE pair=? AND interval=?
-        ORDER BY ts DESC
-        LIMIT 5
-        """,
-        (pair, interval),
-    )
-    if hasattr(cursor, "fetchall"):
-        rows = cursor.fetchall()
-    else:
-        row = cursor.fetchone()
-        if row is None:
-            return None, None
-        # Compatibility path for lightweight test/mocked cursor objects that only
-        # implement fetchone(); preserve historical single-row behavior without
-        # altering the sqlite cursor contract used in production.
-        return row, None
-    if not rows:
-        return None, None
-
-    latest_row = rows[0]
-    latest_ts = int(latest_row["ts"]) if hasattr(latest_row, "keys") else int(latest_row[0])
-    incomplete_ts = None
-    if not _is_closed_candle(candle_ts_ms=latest_ts, now_ms=now_ms, interval_sec=interval_sec):
-        incomplete_ts = latest_ts
-
-    for row in rows:
-        candle_ts_ms = int(row["ts"]) if hasattr(row, "keys") else int(row[0])
-        if _is_closed_candle(candle_ts_ms=candle_ts_ms, now_ms=now_ms, interval_sec=interval_sec):
-            return row, incomplete_ts
-
-    return None, incomplete_ts
-
-
-def _get_open_order_snapshot(now_ms: int) -> tuple[int, float | None]:
-    conn = ensure_db()
-    try:
-        placeholders = ",".join("?" for _ in LIVE_UNRESOLVED_ORDER_STATUSES)
-        row = conn.execute(
-            f"""
-            SELECT COUNT(*) AS open_count, MIN(created_ts) AS oldest_created_ts
-            FROM orders
-            WHERE status IN ({placeholders})
-            """,
-            LIVE_UNRESOLVED_ORDER_STATUSES,
-        ).fetchone()
-        open_count = int(row["open_count"])
-        oldest_created_ts = (
-            int(row["oldest_created_ts"])
-            if row["oldest_created_ts"] is not None
-            else None
-        )
-        if open_count <= 0 or oldest_created_ts is None:
-            return 0, None
-        age_sec = max(0.0, (now_ms - oldest_created_ts) / 1000)
-        return open_count, age_sec
-    finally:
-        conn.close()
-
-
 def _get_exposure_snapshot(now_ms: int) -> tuple[bool, bool]:
     open_count, _ = _get_open_order_snapshot(now_ms)
     conn = ensure_db()
@@ -635,24 +527,6 @@ def _get_exposure_snapshot(now_ms: int) -> tuple[bool, bool]:
     finally:
         conn.close()
     return open_count > 0, snapshot.position_state.normalized_exposure.has_any_position_residue
-
-
-def _mark_open_orders_recovery_required(reason: str, now_ms: int) -> int:
-    conn = ensure_db()
-    try:
-        placeholders = ",".join("?" for _ in LIVE_UNRESOLVED_ORDER_STATUSES)
-        res = conn.execute(
-            f"""
-            UPDATE orders
-            SET status='RECOVERY_REQUIRED', updated_ts=?, last_error=?
-            WHERE status IN ({placeholders})
-            """,
-            (now_ms, reason, *LIVE_UNRESOLVED_ORDER_STATUSES),
-        )
-        conn.commit()
-        return int(res.rowcount or 0)
-    finally:
-        conn.close()
 
 
 def _can_clear_reconcile_failure_halt(*, state, startup_gate_reason: str | None) -> bool:
@@ -871,19 +745,12 @@ def get_health_status() -> dict[str, float | int | bool | str | None]:
 
 
 def evaluate_startup_safety_gate() -> str | None:
-    return StartupSafetyGateService(
-        state_snapshot=runtime_state.snapshot,
-        refresh_open_order_health=runtime_state.refresh_open_order_health,
-        emergency_flatten_blocker=runtime_state.get_emergency_flatten_blocker,
-        set_startup_gate_reason=runtime_state.set_startup_gate_reason,
-        balance_split_mismatch_counter=_reconcile_balance_split_mismatch_count,
-        logger=RUN_LOG,
-    ).evaluate()
+    return _runtime_gate_api().startup_safety_gate()
 
 
 def evaluate_resume_eligibility() -> tuple[bool, list[ResumeBlocker]]:
     """Returns whether operator resume may proceed and structured blockers."""
-    return _runtime_resume_service().evaluate_resume_eligibility()
+    return _runtime_gate_api().resume_eligibility()
 
 def build_resume_guidance(
     *,
@@ -902,7 +769,7 @@ def build_resume_guidance(
     )
 
 def evaluate_restart_readiness() -> list[tuple[str, bool, str]]:
-    return _restart_readiness_service().evaluate_restart_readiness()
+    return _runtime_gate_api().restart_readiness()
 
 def _halt_trading(reason: HaltReason, *, unresolved: bool = False, attempt_flatten: bool = False) -> None:
     runtime_state.enter_halt(
@@ -999,90 +866,6 @@ def _operator_hint_command(reason_code: str) -> str:
     return "uv run python bot.py recovery-report"
 
 
-def _latest_order_identifiers() -> tuple[str | None, str | None]:
-    conn = ensure_db()
-    try:
-        row = conn.execute(
-            """
-            SELECT client_order_id, exchange_order_id
-            FROM orders
-            WHERE status IN ('PENDING_SUBMIT', 'NEW', 'PARTIAL', 'SUBMIT_UNKNOWN', 'ACCOUNTING_PENDING', 'RECOVERY_REQUIRED', 'CANCEL_REQUESTED')
-            ORDER BY updated_ts DESC, created_ts DESC
-            LIMIT 1
-            """
-        ).fetchone()
-        if row is None:
-            return None, None
-        return row['client_order_id'], row['exchange_order_id']
-    finally:
-        conn.close()
-
-
-def _count_open_orders() -> int:
-    conn = ensure_db()
-    try:
-        placeholders = ",".join("?" for _ in LIVE_UNRESOLVED_ORDER_STATUSES)
-        row = conn.execute(
-            f"SELECT COUNT(*) AS open_order_count FROM orders WHERE status IN ({placeholders})",
-            LIVE_UNRESOLVED_ORDER_STATUSES,
-        ).fetchone()
-        return int(row["open_order_count"] or 0) if row is not None else 0
-    finally:
-        conn.close()
-
-
-def _position_summary() -> str:
-    conn = ensure_db()
-    try:
-        row = conn.execute("SELECT asset_qty FROM portfolio WHERE id=1").fetchone()
-        state = runtime_state.snapshot()
-        try:
-            reserved_exit_qty = summarize_reserved_exit_qty(conn, pair=settings.PAIR)
-            lot_snapshot = summarize_position_lots(conn, pair=settings.PAIR)
-        except Exception as exc:
-            RUN_LOG.warning(
-                format_log_kv(
-                    "[RUN] position summary unavailable",
-                    reason=f"{type(exc).__name__}: {exc}",
-                )
-            )
-            qty = float(row["asset_qty"] or 0.0) if row is not None else 0.0
-            return f"position=unknown qty={qty:.8f} reason=lot_snapshot_unavailable"
-    finally:
-        conn.close()
-
-    qty = float(row["asset_qty"] or 0.0) if row is not None else 0.0
-    dust_context = build_dust_display_context(state.last_reconcile_metadata)
-    lot_definition = getattr(lot_snapshot, "lot_definition", None)
-    position_state = build_position_state_model(
-        raw_qty_open=qty,
-        metadata_raw=state.last_reconcile_metadata,
-        raw_total_asset_qty=max(
-            qty,
-            float(lot_snapshot.raw_total_asset_qty),
-            float(dust_context.raw_holdings.broker_qty),
-        ),
-        open_exposure_qty=float(lot_snapshot.raw_open_exposure_qty),
-        dust_tracking_qty=float(lot_snapshot.dust_tracking_qty),
-        open_lot_count=int(lot_snapshot.open_lot_count),
-        dust_tracking_lot_count=int(lot_snapshot.dust_tracking_lot_count),
-        reserved_exit_qty=reserved_exit_qty,
-        internal_lot_size=(None if lot_definition is None else lot_definition.internal_lot_size),
-        min_qty=(None if lot_definition is None else lot_definition.min_qty),
-        qty_step=(None if lot_definition is None else lot_definition.qty_step),
-        min_notional_krw=(None if lot_definition is None else lot_definition.min_notional_krw),
-        max_qty_decimals=(None if lot_definition is None else lot_definition.max_qty_decimals),
-    )
-    normalized_exposure = position_state.normalized_exposure
-    if normalized_exposure.terminal_state == "flat":
-        return "flat"
-    if normalized_exposure.has_executable_exposure:
-        return f"open_exposure_qty={normalized_exposure.open_exposure_qty:.8f}"
-    if normalized_exposure.has_dust_only_remainder:
-        return f"dust_only_qty={normalized_exposure.dust_tracking_qty:.8f}"
-    return f"non_executable_position_state={normalized_exposure.terminal_state}"
-
-
 def _recommended_operator_commands(
     *,
     reason_code: str,
@@ -1151,33 +934,7 @@ def _revalidate_cleanup_state_after_failure(
         position_present: bool | None = None
 
         try:
-            conn = ensure_db()
-            try:
-                placeholders = ",".join("?" for _ in LIVE_UNRESOLVED_ORDER_STATUSES)
-                rows = conn.execute(
-                    f"""
-                    SELECT client_order_id, exchange_order_id
-                    FROM orders
-                    WHERE status IN ({placeholders})
-                    """,
-                    LIVE_UNRESOLVED_ORDER_STATUSES,
-                ).fetchall()
-            finally:
-                conn.close()
-            exchange_order_ids = sorted(
-                {
-                    str(row["exchange_order_id"]).strip()
-                    for row in rows
-                    if str(row["exchange_order_id"] or "").strip()
-                }
-            )
-            client_order_ids = sorted(
-                {
-                    str(row["client_order_id"]).strip()
-                    for row in rows
-                    if str(row["client_order_id"] or "").strip()
-                }
-            )
+            client_order_ids, exchange_order_ids = open_order_identifiers_for_broker_revalidation()
             if exchange_order_ids or client_order_ids:
                 open_orders_present = (
                     len(
@@ -1187,7 +944,7 @@ def _revalidate_cleanup_state_after_failure(
                         )
                     )
                     > 0
-                )
+            )
             else:
                 open_orders_present = False
         except Exception as exc:
@@ -1601,16 +1358,18 @@ def run_loop(short_n: int, long_n: int) -> None:
                 sync_observed_epoch_sec = time.time()
                 conn = ensure_db()
                 try:
-                    row = conn.execute(
-                        "SELECT ts, close FROM candles WHERE pair=? AND interval=? ORDER BY ts DESC LIMIT 1",
-                        (settings.PAIR, settings.INTERVAL),
-                    ).fetchone()
-                    closed_row, incomplete_ts = _select_latest_closed_candle(
+                    row = select_latest_candle(
+                        conn,
+                        pair=settings.PAIR,
+                        interval=settings.INTERVAL,
+                    )
+                    closed_row, incomplete_ts = select_latest_closed_candle(
                         conn,
                         pair=settings.PAIR,
                         interval=settings.INTERVAL,
                         interval_sec=sec,
                         now_ms=int(sync_observed_epoch_sec * 1000),
+                        is_closed_candle=_is_closed_candle,
                     )
                 finally:
                     conn.close()
@@ -1709,36 +1468,14 @@ def run_loop(short_n: int, long_n: int) -> None:
                     )
                     continue
 
+                portfolio_cash, portfolio_qty, position_state, lot_definition = (
+                    portfolio_cash_qty_with_position_state(pair=settings.PAIR)
+                )
                 conn = ensure_db()
-                portfolio_cash = 0.0
-                portfolio_qty = 0.0
                 try:
-                    portfolio = conn.execute(
-                        "SELECT cash_krw, asset_qty FROM portfolio WHERE id=1"
-                    ).fetchone()
-                    if portfolio is not None:
-                        portfolio_cash = float(portfolio["cash_krw"])
-                        portfolio_qty = float(portfolio["asset_qty"])
-                        dust_context = build_dust_display_context(runtime_state.snapshot().last_reconcile_metadata)
-                        lot_snapshot = summarize_position_lots(conn, pair=settings.PAIR)
-                        lot_definition = getattr(lot_snapshot, "lot_definition", None)
-                        position_state = build_position_state_model(
-                            raw_qty_open=portfolio_qty,
-                            metadata_raw=runtime_state.snapshot().last_reconcile_metadata,
-                            raw_total_asset_qty=max(
-                                portfolio_qty,
-                                float(lot_snapshot.raw_total_asset_qty),
-                                float(dust_context.raw_holdings.broker_qty),
-                            ),
-                            open_exposure_qty=float(lot_snapshot.raw_open_exposure_qty),
-                            dust_tracking_qty=float(lot_snapshot.dust_tracking_qty),
-                            open_lot_count=int(lot_snapshot.open_lot_count),
-                            dust_tracking_lot_count=int(lot_snapshot.dust_tracking_lot_count),
-                            internal_lot_size=(None if lot_definition is None else lot_definition.internal_lot_size),
-                            min_qty=(None if lot_definition is None else lot_definition.min_qty),
-                            qty_step=(None if lot_definition is None else lot_definition.qty_step),
-                            min_notional_krw=(None if lot_definition is None else lot_definition.min_notional_krw),
-                            max_qty_decimals=(None if lot_definition is None else lot_definition.max_qty_decimals),
+                    if position_state is not None:
+                        dust_context = build_dust_display_context(
+                            runtime_state.snapshot().last_reconcile_metadata
                         )
                         # Use latest candle close as the mark price for daily-loss evaluation.
                         blocked, reason = evaluate_daily_loss_breach(
@@ -2031,7 +1768,17 @@ def run_loop(short_n: int, long_n: int) -> None:
                         handoff_type=type(signal_handoff).__name__,
                     )
                     continue
-                r = signal_handoff
+                _log_loop_event(
+                    logging.WARNING,
+                    "[ORDER_SKIP] typed runtime decision required",
+                    symbol=settings.PAIR,
+                    interval=settings.INTERVAL,
+                    candle_ts=closed_candle_ts_ms,
+                    reason="legacy_dict_runtime_handoff_not_execution_authority",
+                    strategy=str(settings.STRATEGY_NAME),
+                    handoff_type=type(signal_handoff).__name__,
+                )
+                continue
 
             _log_loop_event(
                 logging.INFO,
@@ -2056,47 +1803,28 @@ def run_loop(short_n: int, long_n: int) -> None:
             execution_decision_summary_for_trade = None
             execution_plan_bundle_for_trade = None
             try:
-                if typed_runtime_decision is not None:
-                    decision_envelope = DecisionEnvelope.from_runtime_result(
-                        typed_runtime_decision
-                    )
-                    strategy_name = typed_runtime_decision.decision.strategy_name
-                    signal = typed_runtime_decision.decision.final_signal
-                    reason = typed_runtime_decision.decision.final_reason
-                    planning_bundle = ExecutionPlanner(
-                        readiness_snapshot_builder=compute_runtime_readiness_snapshot,
-                        performance_gate_evaluator=evaluate_strategy_performance_gate,
-                        summary_builder=build_typed_execution_decision_summary,
-                        target_state_resolver=_resolve_target_position_state_for_run_loop,
-                        persistence_context_builder=prepare_strategy_decision_persistence_context,
-                    ).plan_envelope(
-                        conn,
-                        decision_envelope,
-                        updated_ts=int(now * 1000),
-                    )
-                    context = planning_bundle.persistence_context
-                    decision_context_for_trade = context
-                    execution_decision_summary_for_trade = planning_bundle.summary
-                    execution_plan_bundle_for_trade = planning_bundle
-                    execution_decision = dict(context["execution_decision"])  # type: ignore[arg-type]
-                else:
-                    context = dict(r)
-                    decision_context_for_trade = context
-                    strategy_name = str(context.pop("strategy", settings.STRATEGY_NAME))
-                    signal = str(context.pop("signal", "HOLD"))
-                    reason = str(context.pop("reason", ""))
-                    planning = _plan_legacy_run_loop_context_for_compatibility(
-                        conn,
-                        decision_context=context,
-                        signal=signal,
-                        reason=reason,
-                        updated_ts=int(now * 1000),
-                        signal_handoff_fn=signal_handoff_fn,
-                    )
-                    context = planning.context
-                    decision_context_for_trade = context
-                    execution_decision_summary_for_trade = planning.execution_decision_summary
-                    execution_decision = planning.execution_decision
+                decision_envelope = DecisionEnvelope.from_runtime_result(
+                    typed_runtime_decision
+                )
+                strategy_name = typed_runtime_decision.decision.strategy_name
+                signal = typed_runtime_decision.decision.final_signal
+                reason = typed_runtime_decision.decision.final_reason
+                planning_bundle = ExecutionPlanner(
+                    readiness_snapshot_builder=compute_runtime_readiness_snapshot,
+                    performance_gate_evaluator=evaluate_strategy_performance_gate,
+                    summary_builder=build_typed_execution_decision_summary,
+                    target_state_resolver=_resolve_target_position_state_for_run_loop,
+                    persistence_context_builder=prepare_strategy_decision_persistence_context,
+                ).plan_envelope(
+                    conn,
+                    decision_envelope,
+                    updated_ts=int(now * 1000),
+                )
+                context = planning_bundle.persistence_context
+                decision_context_for_trade = context
+                execution_decision_summary_for_trade = planning_bundle.summary
+                execution_plan_bundle_for_trade = planning_bundle
+                execution_decision = dict(context["execution_decision"])  # type: ignore[arg-type]
                 exit_ctx = context.get("exit")
                 if isinstance(exit_ctx, dict):
                     raw_rule = exit_ctx.get("rule")

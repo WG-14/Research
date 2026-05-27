@@ -7,8 +7,8 @@ from typing import Any, Mapping
 
 from .core.sma_policy import StrategyDecisionV2
 from .decision_equivalence import sha256_prefixed
+from .runtime_decision_contract import RuntimeStrategyPolicyHashes
 from .runtime_strategy_decision import RuntimeStrategyDecisionResult
-from .runtime_sma_snapshot_builder import RuntimeSmaPolicyHashes
 
 
 def _freeze_value(value: Any) -> object:
@@ -43,7 +43,7 @@ class DecisionEnvelope:
     candle_ts: int
     market_price: float
     base_context: Mapping[str, object]
-    policy_hashes: RuntimeSmaPolicyHashes | Mapping[str, object] | None
+    policy_hashes: RuntimeStrategyPolicyHashes | Mapping[str, object] | object | None
     replay_fingerprint: Mapping[str, object]
     boundary: Mapping[str, object]
 

@@ -28,6 +28,7 @@ from bithumb_bot.run_loop_compatibility import (
     legacy_context_planning_allowed_for_compatibility,
 )
 from bithumb_bot.runtime_recovery_gate import RuntimeRecoveryGateService
+from bithumb_bot.runtime_decision_service import RuntimeStrategyPolicyHashes
 from bithumb_bot.research.backtest_kernel import run_decision_event_backtest
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
 from bithumb_bot.research.decision_event import ResearchDecisionEvent
@@ -121,7 +122,7 @@ class _GenericRuntimeDecisionResult:
     market_price: float
     replay_fingerprint: dict[str, object]
     boundary: dict[str, object]
-    policy_hashes: dict[str, object] | None = None
+    policy_hashes: RuntimeStrategyPolicyHashes | None = None
 
     def as_legacy_dict(self) -> dict[str, object]:
         return dict(self.base_context)
@@ -139,7 +140,7 @@ def _generic_runtime_result(*, strategy_name: str = "unit_promotion") -> _Generi
         market_price=10.0,
         replay_fingerprint={"schema_version": 1, "candle_ts": 1_700_003_000_000},
         boundary={"decision_boundary_phase": "unit_generic_decision"},
-        policy_hashes={"unit_policy_hash": "sha256:unit"},
+        policy_hashes=RuntimeStrategyPolicyHashes({"unit_policy_hash": "sha256:unit"}),
     )
 
 
@@ -504,6 +505,25 @@ def test_engine_import_boundary_stays_thin_for_runtime_entrypoint() -> None:
     assert forbidden_concrete_names.isdisjoint(imported_names)
 
 
+def test_engine_does_not_own_low_level_runtime_sql_helpers() -> None:
+    source = Path("src/bithumb_bot/engine.py").read_text(encoding="utf-8-sig")
+    tree = ast.parse(source)
+    function_names = {
+        node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+    }
+
+    assert "conn.execute" not in source
+    assert "SELECT " not in source
+    assert "UPDATE orders" not in source
+    assert {
+        "_select_latest_closed_candle",
+        "_get_open_order_snapshot",
+        "_mark_open_orders_recovery_required",
+        "_count_open_orders",
+        "_position_summary",
+    }.isdisjoint(function_names)
+
+
 def test_runtime_decision_adapter_registry_drives_promotion_path_without_engine_branch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -594,29 +614,7 @@ def test_run_loop_does_not_unconditionally_enable_legacy_context_planning() -> N
     assert "allow_legacy_context_planning=" not in run_loop_source
     assert ".plan_strategy_decision(" not in run_loop_source
     assert "RunLoopCompatibilityPlanner" not in run_loop_source
-    assert "_plan_legacy_run_loop_context_for_compatibility" in run_loop_source
-
-
-def test_run_loop_legacy_context_planning_gate_blocks_normal_live_adapter_path() -> None:
-    original = {
-        "MODE": settings.MODE,
-        "LIVE_DRY_RUN": settings.LIVE_DRY_RUN,
-        "LIVE_REAL_ORDER_ARMED": settings.LIVE_REAL_ORDER_ARMED,
-    }
-    try:
-        object.__setattr__(settings, "MODE", "live")
-        object.__setattr__(settings, "LIVE_DRY_RUN", True)
-        object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", False)
-
-        allowed = engine._legacy_context_planning_allowed_for_run_loop(
-            selected_strategy_name="sma_with_filter",
-            signal_handoff_fn=engine.compute_signal_runtime_handoff,
-        )
-    finally:
-        for key, value in original.items():
-            object.__setattr__(settings, key, value)
-
-    assert allowed is False
+    assert "_plan_legacy_run_loop_context_for_compatibility" not in run_loop_source
 
 
 def test_run_loop_compatibility_planning_is_not_live_real_order_authority() -> None:
@@ -649,20 +647,41 @@ def test_engine_recovery_policy_functions_delegate_to_services() -> None:
         node.name: node
         for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef)
-        and node.name in {"evaluate_startup_safety_gate", "_evaluate_stale_risk_state_mismatch_halt"}
+        and node.name in {
+            "evaluate_startup_safety_gate",
+            "evaluate_resume_eligibility",
+            "evaluate_restart_readiness",
+            "_evaluate_stale_risk_state_mismatch_halt",
+        }
     }
 
-    startup_names = {node.func.id for node in ast.walk(functions["evaluate_startup_safety_gate"]) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+    startup_attrs = {node.func.attr for node in ast.walk(functions["evaluate_startup_safety_gate"]) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
+    resume_attrs = {node.func.attr for node in ast.walk(functions["evaluate_resume_eligibility"]) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
+    restart_attrs = {node.func.attr for node in ast.walk(functions["evaluate_restart_readiness"]) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
     stale_names = {node.func.id for node in ast.walk(functions["_evaluate_stale_risk_state_mismatch_halt"]) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
 
-    assert "StartupSafetyGateService" in startup_names
+    assert startup_attrs == {"startup_safety_gate"}
+    assert resume_attrs == {"resume_eligibility"}
+    assert restart_attrs == {"restart_readiness"}
     assert "StaleRiskStateMismatchHaltService" in stale_names
     for forbidden in {
+        "StartupSafetyGateService",
+        "RuntimeResumeService",
+        "RestartReadinessService",
         "collect_risky_order_state",
         "compute_accounting_replay",
         "build_external_position_accounting_repair_preview",
     }:
-        assert forbidden not in startup_names
+        assert forbidden not in {
+            node.func.id
+            for name in {
+                "evaluate_startup_safety_gate",
+                "evaluate_resume_eligibility",
+                "evaluate_restart_readiness",
+            }
+            for node in ast.walk(functions[name])
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
         assert forbidden not in stale_names
 
 
