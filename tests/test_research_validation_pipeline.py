@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from bithumb_bot import app as app_module
+from bithumb_bot import app_impl as app_module
 from bithumb_bot.paths import PathManager
 from bithumb_bot.research import cli as research_cli
 from bithumb_bot.research.hashing import sha256_prefixed

@@ -6,7 +6,8 @@ from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from bithumb_bot import app, profile_cli
+from bithumb_bot import app_impl, profile_cli
+from bithumb_bot.cli.main import main as cli_main
 from bithumb_bot.approved_profile import build_approved_profile
 from bithumb_bot.broker.order_rules import DerivedOrderConstraints, RuleResolution
 from bithumb_bot.db_core import ensure_db
@@ -102,9 +103,9 @@ def test_cli_dispatch_reaches_research_export_decisions(monkeypatch) -> None:
         calls.update(kwargs)
         return 0
 
-    monkeypatch.setattr(app, "cmd_research_export_decisions", fake_cmd)
+    monkeypatch.setattr(app_impl, "cmd_research_export_decisions", fake_cmd)
 
-    assert app.main(
+    assert cli_main(
         [
             "research-export-decisions",
             "--manifest",
@@ -135,9 +136,9 @@ def test_cli_dispatch_reaches_runtime_replay_decisions(monkeypatch) -> None:
         calls.update(kwargs)
         return 0
 
-    monkeypatch.setattr(app, "cmd_runtime_replay_decisions", fake_cmd)
+    monkeypatch.setattr(app_impl, "cmd_runtime_replay_decisions", fake_cmd)
 
-    assert app.main(
+    assert cli_main(
         [
             "runtime-replay-decisions",
             "--profile",
@@ -165,9 +166,9 @@ def test_cli_dispatch_reaches_decision_equivalence(monkeypatch) -> None:
         calls.update(kwargs)
         return 0
 
-    monkeypatch.setattr(app, "cmd_decision_equivalence", fake_cmd)
+    monkeypatch.setattr(app_impl, "cmd_decision_equivalence", fake_cmd)
 
-    assert app.main(
+    assert cli_main(
         [
             "decision-equivalence",
             "--research-decisions",
@@ -272,9 +273,9 @@ def test_cli_dispatch_reaches_candidate_regime_policy_equivalence_evidence(monke
         calls.update(kwargs)
         return 0
 
-    monkeypatch.setattr(app, "cmd_candidate_regime_policy_equivalence_evidence", fake_cmd)
+    monkeypatch.setattr(app_impl, "cmd_candidate_regime_policy_equivalence_evidence", fake_cmd)
 
-    assert app.main(
+    assert cli_main(
         [
             "candidate-regime-policy-equivalence-evidence",
             "--backtest-report",
@@ -723,14 +724,14 @@ def test_repo_owned_export_replay_artifacts_can_pass_positive_equivalence(
     old_db_path = profile_cli.settings.DB_PATH
     object.__setattr__(profile_cli.settings, "DB_PATH", str(db_path))
     try:
-        assert app.cmd_research_export_decisions(
+        assert profile_cli.cmd_research_export_decisions(
             manifest_path=str(manifest_path),
             candidate_id_value=selected_candidate_id,
             split="validation",
             out_path=str(research_path),
             profile_path=str(profile_path),
         ) == 0
-        assert app.cmd_runtime_replay_decisions(
+        assert profile_cli.cmd_runtime_replay_decisions(
             profile_path=str(profile_path),
             db_path=str(db_path),
             through_ts_list_path=str(through_ts_path),
@@ -846,7 +847,7 @@ def test_repo_owned_export_replay_open_exposure_positive_equivalence(
     old_db_path = profile_cli.settings.DB_PATH
     object.__setattr__(profile_cli.settings, "DB_PATH", str(db_path))
     try:
-        assert app.cmd_research_export_decisions(
+        assert profile_cli.cmd_research_export_decisions(
             manifest_path=str(manifest_path),
             candidate_id_value=selected_candidate_id,
             split="validation",
@@ -854,7 +855,7 @@ def test_repo_owned_export_replay_open_exposure_positive_equivalence(
             profile_path=str(profile_path),
         ) == 0
         _insert_runtime_open_exposure_lot(db_path)
-        assert app.cmd_runtime_replay_decisions(
+        assert profile_cli.cmd_runtime_replay_decisions(
             profile_path=str(profile_path),
             db_path=str(db_path),
             through_ts_list_path=str(through_ts_path),

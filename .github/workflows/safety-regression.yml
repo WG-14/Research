@@ -34,6 +34,10 @@ jobs:
           tests/test_order_submit_hardening.py
           tests/test_bithumb_execution_modules.py
           tests/test_live_preflight.py
+          tests/test_cli_registry.py
+          tests/test_cli_help_contract.py
+          tests/test_cli_guard_policy.py
+          tests/test_cli_architecture.py
           tests/test_env_loading.py
           tests/test_operator_commands.py::test_main_pre_dispatch_blocks_live_run_without_startup_contract
           tests/test_operator_commands.py::test_main_pre_dispatch_blocks_live_write_command_without_preflight

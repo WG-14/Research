@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from bithumb_bot import app
+from bithumb_bot.cli.main import main as cli_main
 from bithumb_bot import config
 from bithumb_bot.config import settings
 
@@ -66,14 +66,17 @@ def test_operator_docs_describe_live_sma_regime_policy_boundary() -> None:
 
 def test_main_health_fails_fast_on_invalid_mode(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     monkeypatch.setattr(
-        app,
+        config,
         "validate_mode_or_raise",
-        lambda _mode: (_ for _ in ()).throw(app.ModeValidationError("invalid MODE='papre'; allowed values: paper, live")),
+        lambda _mode: (_ for _ in ()).throw(config.ModeValidationError("invalid MODE='papre'; allowed values: paper, live")),
     )
-    monkeypatch.setattr(app, "cmd_health", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
+    monkeypatch.setattr(
+        "bithumb_bot.cli.commands.runtime.call_app_impl",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
 
     with pytest.raises(SystemExit) as exc:
-        app.main(["health"])
+        cli_main(["health"])
 
     assert exc.value.code == 1
 
@@ -83,14 +86,17 @@ def test_main_health_fails_fast_on_invalid_mode(monkeypatch: pytest.MonkeyPatch,
 
 def test_main_run_fails_fast_on_invalid_mode(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     monkeypatch.setattr(
-        app,
+        config,
         "validate_mode_or_raise",
-        lambda _mode: (_ for _ in ()).throw(app.ModeValidationError("invalid MODE='papre'; allowed values: paper, live")),
+        lambda _mode: (_ for _ in ()).throw(config.ModeValidationError("invalid MODE='papre'; allowed values: paper, live")),
     )
-    monkeypatch.setattr(app, "cmd_run", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not run")))
+    monkeypatch.setattr(
+        "bithumb_bot.cli.commands.runtime.call_app_impl",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
 
     with pytest.raises(SystemExit) as exc:
-        app.main(["run"])
+        cli_main(["run"])
 
     assert exc.value.code == 1
     out = capsys.readouterr().out
@@ -102,13 +108,15 @@ def test_main_health_keeps_existing_valid_mode(monkeypatch: pytest.MonkeyPatch) 
     calls: list[str] = []
 
     object.__setattr__(settings, "MODE", "paper")
-    monkeypatch.setattr(app, "cmd_health", lambda: calls.append("health"))
+    monkeypatch.setattr(
+        "bithumb_bot.cli.commands.runtime.call_app_impl",
+        lambda function_name, *_args, **_kwargs: calls.append(function_name),
+    )
 
     try:
-        rc = app.main(["health"])
+        rc = cli_main(["health"])
     finally:
         object.__setattr__(settings, "MODE", original_mode)
-        object.__setattr__(app.settings, "MODE", original_mode)
 
     assert rc == 0
-    assert calls == ["health"]
+    assert calls == ["cmd_health"]

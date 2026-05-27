@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-import sys
+from typing import Any
 
-from . import app_impl as _legacy_app
-from .cli.main import main as _cli_main
+from .cli.main import main
 
-_legacy_app.legacy_main = _legacy_app.main
-_legacy_app.main = _cli_main
 
-sys.modules[__name__] = _legacy_app
+def __getattr__(name: str) -> Any:
+    from . import app_impl
+
+    return getattr(app_impl, name)
+
+
+def legacy_main(argv: list[str] | None = None) -> int:
+    return main(argv)

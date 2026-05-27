@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from bithumb_bot.paths import PathManager
-from bithumb_bot import app as app_module
+from bithumb_bot import app_impl as app_module
 from bithumb_bot.execution_reality_contract import build_execution_reality_contract
 from bithumb_bot.execution_reality_contract import execution_capability_contract_hash, execution_contract_hash
 from bithumb_bot.research import cli as research_cli
