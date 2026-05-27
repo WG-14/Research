@@ -507,6 +507,37 @@ def test_engine_import_boundary_stays_thin_for_runtime_entrypoint() -> None:
     assert forbidden_concrete_names.isdisjoint(imported_names)
 
 
+def test_raw_broker_live_submit_is_not_imported_as_production_authority() -> None:
+    src_root = Path("src/bithumb_bot")
+    violations: list[str] = []
+    for path in src_root.rglob("*.py"):
+        rel = path.as_posix()
+        if rel in {
+            "src/bithumb_bot/broker/live.py",
+            "src/bithumb_bot/execution_service.py",
+        }:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=rel)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module in {"bithumb_bot.broker.live", ".broker.live", "broker.live"}
+                and any(alias.name == "live_execute_signal" for alias in node.names)
+            ):
+                violations.append(f"{rel}:{node.lineno}:import")
+            if isinstance(node, ast.Call):
+                func = node.func
+                if (
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "live_execute_signal"
+                    and isinstance(func.value, ast.Attribute)
+                    and func.value.attr == "live"
+                ):
+                    violations.append(f"{rel}:{node.lineno}:call")
+
+    assert violations == []
+
+
 def test_engine_has_no_concrete_runtime_architecture_references() -> None:
     source = Path("src/bithumb_bot/engine.py").read_text(encoding="utf-8-sig")
     forbidden_tokens = {

@@ -35,6 +35,7 @@ from bithumb_bot.broker.live_submit_orchestrator import (
 )
 from bithumb_bot.broker.order_submit import plan_place_order
 from bithumb_bot.execution import apply_fill_and_trade, record_order_if_missing
+from bithumb_bot.execution_service import ExecutionSubmitPlan
 from bithumb_bot.execution_quality import build_execution_quality_record
 from bithumb_bot.fee_pending_repair import (
     apply_fee_pending_accounting_repair,
@@ -1575,45 +1576,52 @@ def test_live_sell_duplicate_intent_after_cancel_keeps_lot_native_authority(monk
 
 
 def _residual_execution_submit_plan() -> dict[str, object]:
-    return {
-        "side": "SELL",
-        "source": "residual_inventory",
-        "authority": "residual_inventory_policy",
-        "final_action": "CLOSE_RESIDUAL_CANDIDATE",
-        "qty": 0.0004998,
-        "notional_krw": 57_816.0,
-        "submit_expected": True,
-        "pre_submit_proof_status": "passed",
-        "block_reason": "none",
-        "intent_type": "residual_close",
-        "strategy_context": "residual_inventory_policy",
-        "idempotency_key": "residual-close-test-key",
-    }
+    return ExecutionSubmitPlan(
+        side="SELL",
+        source="residual_inventory",
+        authority="residual_inventory_policy",
+        final_action="CLOSE_RESIDUAL_CANDIDATE",
+        qty=0.0004998,
+        notional_krw=57_816.0,
+        target_exposure_krw=None,
+        current_effective_exposure_krw=None,
+        delta_krw=None,
+        submit_expected=True,
+        pre_submit_proof_status="passed",
+        block_reason="none",
+        idempotency_key="residual-close-test-key",
+        extra_payload={
+            "intent_type": "residual_close",
+            "strategy_context": "residual_inventory_policy",
+        },
+    ).as_final_payload()
 
 
 def _target_delta_execution_submit_plan(*, side: str = "SELL", qty: float = 0.0004998) -> dict[str, object]:
-    return {
-        "side": side,
-        "source": "target_delta",
-        "authority": "target_position_delta",
-        "final_action": "REBALANCE_TO_TARGET",
-        "qty": qty,
-        "notional_krw": qty * 115_679_000.0,
-        "target_exposure_krw": 0.0 if side == "SELL" else 100_000.0,
-        "current_effective_exposure_krw": qty * 115_679_000.0,
-        "delta_krw": (-qty if side == "SELL" else qty) * 115_679_000.0,
-        "submit_expected": True,
-        "pre_submit_proof_status": "passed",
-        "block_reason": "none",
-        "intent_type": "target_delta_rebalance",
-        "strategy_context": "target_delta",
-        "target_qty": 0.0 if side == "SELL" else qty,
-        "target_delta_qty": -qty if side == "SELL" else qty,
-        "target_delta_side": side,
-        "target_dust_classification": "executable_delta",
-        "target_position_truth_state": "converged",
-        "idempotency_key": "target-delta-test-key",
-    }
+    return ExecutionSubmitPlan(
+        side=side,
+        source="target_delta",
+        authority="target_position_delta",
+        final_action="REBALANCE_TO_TARGET",
+        qty=qty,
+        notional_krw=qty * 115_679_000.0,
+        target_exposure_krw=0.0 if side == "SELL" else 100_000.0,
+        current_effective_exposure_krw=qty * 115_679_000.0,
+        delta_krw=(-qty if side == "SELL" else qty) * 115_679_000.0,
+        submit_expected=True,
+        pre_submit_proof_status="passed",
+        block_reason="none",
+        idempotency_key="target-delta-test-key",
+        extra_payload={
+            "intent_type": "target_delta_rebalance",
+            "strategy_context": "target_delta",
+            "target_qty": 0.0 if side == "SELL" else qty,
+            "target_delta_qty": -qty if side == "SELL" else qty,
+            "target_delta_side": side,
+            "target_dust_classification": "executable_delta",
+            "target_position_truth_state": "converged",
+        },
+    ).as_final_payload()
 
 
 def test_live_execute_signal_consumes_residual_plan_as_standard_submit_intent(monkeypatch, tmp_path):

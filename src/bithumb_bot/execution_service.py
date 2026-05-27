@@ -9,6 +9,7 @@ from .config import settings
 from .db_core import ensure_db
 from .decision_contract import apply_decision_contract
 from .decision_context import resolve_canonical_position_exposure_snapshot
+from .decision_equivalence import sha256_prefixed
 from .execution_order_rules import resolve_execution_order_rules
 from .observability import format_log_kv
 from .oms import build_order_intent_key
@@ -22,6 +23,8 @@ if False:  # pragma: no cover
     from .broker.base import Broker
 
 RUN_LOG = logging.getLogger("bithumb_bot.run")
+EXECUTION_SUBMIT_PLAN_SCHEMA_VERSION = 1
+EXECUTION_SUBMIT_PLAN_AUTHORITY_LABEL = "ExecutionSubmitPlan.final_payload.v1"
 
 
 EXECUTION_PLANNING_READINESS_KEYS = frozenset(
@@ -323,16 +326,26 @@ class ExecutionSubmitPlan:
         payload = self.as_dict()
         if extra:
             payload.update(extra)
-        validate_execution_submit_plan_payload(payload, field_name="execution_submit_plan")
+        payload["schema_version"] = EXECUTION_SUBMIT_PLAN_SCHEMA_VERSION
+        payload["authority_label"] = EXECUTION_SUBMIT_PLAN_AUTHORITY_LABEL
+        payload["content_hash"] = execution_submit_plan_payload_hash(payload)
+        validate_execution_submit_plan_payload(
+            payload,
+            field_name="execution_submit_plan",
+            require_final_payload=True,
+        )
         return payload
 
     def __getitem__(self, key: str) -> object:
+        """Deprecated compatibility-only dict facade; not live submit authority."""
         return self.as_dict()[key]
 
     def get(self, key: str, default: object = None) -> object:
+        """Deprecated compatibility-only dict facade; not live submit authority."""
         return self.as_dict().get(key, default)
 
     def __contains__(self, key: object) -> bool:
+        """Deprecated compatibility-only dict facade; not live submit authority."""
         return key in self.as_dict()
 
 
@@ -372,18 +385,50 @@ EXECUTION_SUBMIT_PLAN_REQUIRED_FIELDS = frozenset(
         "idempotency_key",
     }
 )
+EXECUTION_SUBMIT_PLAN_FINAL_REQUIRED_FIELDS = frozenset(
+    {
+        "schema_version",
+        "authority_label",
+        "content_hash",
+    }
+)
+
+
+def execution_submit_plan_payload_hash(plan: Mapping[str, object]) -> str:
+    hash_input = {str(key): value for key, value in dict(plan).items() if key != "content_hash"}
+    return sha256_prefixed(hash_input)
 
 
 def validate_execution_submit_plan_payload(
     plan: dict[str, object] | None,
     *,
     field_name: str,
+    require_final_payload: bool = False,
 ) -> None:
     if plan is None:
         return
     missing = sorted(EXECUTION_SUBMIT_PLAN_REQUIRED_FIELDS.difference(plan))
     if missing:
         raise ValueError(f"{field_name}_schema_missing_fields:{','.join(missing)}")
+    if require_final_payload:
+        final_missing = sorted(EXECUTION_SUBMIT_PLAN_FINAL_REQUIRED_FIELDS.difference(plan))
+        if final_missing:
+            raise ValueError(f"{field_name}_schema_missing_fields:{','.join(final_missing)}")
+        try:
+            schema_version = int(plan.get("schema_version") or 0)
+        except (TypeError, ValueError):
+            schema_version = 0
+        if schema_version != EXECUTION_SUBMIT_PLAN_SCHEMA_VERSION:
+            raise ValueError(f"{field_name}_schema_invalid_version:{schema_version or 'missing'}")
+        authority_label = str(plan.get("authority_label") or "")
+        if authority_label != EXECUTION_SUBMIT_PLAN_AUTHORITY_LABEL:
+            raise ValueError(f"{field_name}_schema_invalid_authority_label:{authority_label or 'missing'}")
+        content_hash = str(plan.get("content_hash") or "")
+        if not content_hash:
+            raise ValueError(f"{field_name}_schema_missing_content_hash")
+        expected_hash = execution_submit_plan_payload_hash(plan)
+        if content_hash != expected_hash:
+            raise ValueError(f"{field_name}_schema_content_hash_mismatch")
     side = str(plan.get("side") or "").upper()
     if side not in {"BUY", "SELL", "HOLD", "NONE"}:
         raise ValueError(f"{field_name}_schema_invalid_side:{side or 'missing'}")
@@ -444,7 +489,11 @@ def _live_submit_plan_schema_valid(
     field_name: str,
 ) -> bool:
     try:
-        validate_execution_submit_plan_payload(plan, field_name=field_name)
+        validate_execution_submit_plan_payload(
+            plan,
+            field_name=field_name,
+            require_final_payload=True,
+        )
     except ValueError as exc:
         _log_live_submit_plan_block(
             reason=str(exc),

@@ -12,6 +12,7 @@ from bithumb_bot.execution_service import (
     LiveSignalExecutionService,
     PaperSignalExecutionService,
     SignalExecutionRequest,
+    validate_execution_submit_plan_payload,
 )
 from bithumb_bot.research.backtest_kernel import ResearchExecutionContext, ResearchVirtualExecutionService
 from bithumb_bot.research.execution_model import FixedBpsExecutionModel
@@ -300,6 +301,9 @@ def test_execution_submit_plan_final_payload_validates_after_extra_fields() -> N
 
     payload = plan.as_final_payload(extra={"intent_type": "target_delta_rebalance"})
     assert payload["intent_type"] == "target_delta_rebalance"
+    assert payload["schema_version"] == 1
+    assert payload["authority_label"] == "ExecutionSubmitPlan.final_payload.v1"
+    assert str(payload["content_hash"]).startswith("sha256:")
 
     invalid = ExecutionSubmitPlan(
         side="BUY",
@@ -318,6 +322,26 @@ def test_execution_submit_plan_final_payload_validates_after_extra_fields() -> N
     )
     with pytest.raises(ValueError, match="execution_submit_plan_schema_submit_expected_with_failed_proof"):
         invalid.as_final_payload()
+
+
+def test_final_submit_payload_requires_typed_serialization_proof() -> None:
+    raw_plan = _valid_buy_submit_plan()
+    with pytest.raises(ValueError, match="execution_submit_plan_schema_missing_fields:authority_label,content_hash,schema_version"):
+        validate_execution_submit_plan_payload(
+            raw_plan,
+            field_name="execution_submit_plan",
+            require_final_payload=True,
+        )
+
+    final_payload = _typed_plan(raw_plan).as_final_payload()
+    tampered = dict(final_payload)
+    tampered["qty"] = 0.002
+    with pytest.raises(ValueError, match="execution_submit_plan_schema_content_hash_mismatch"):
+        validate_execution_submit_plan_payload(
+            tampered,
+            field_name="execution_submit_plan",
+            require_final_payload=True,
+        )
 
 
 @pytest.mark.parametrize(
@@ -451,7 +475,7 @@ def test_typed_execution_summary_can_supply_validated_target_submit_plan() -> No
 
     assert submitted == {"status": "submitted", "signal": "BUY"}
     assert len(calls) == 1
-    assert calls[0]["kwargs"]["execution_submit_plan"] == summary.target_submit_plan.as_dict()  # type: ignore[index,union-attr]
+    assert calls[0]["kwargs"]["execution_submit_plan"] == summary.target_submit_plan.as_final_payload()  # type: ignore[index,union-attr]
 
 
 def test_lot_native_typed_buy_submit_plan_reaches_executor() -> None:
@@ -471,7 +495,7 @@ def test_lot_native_typed_buy_submit_plan_reaches_executor() -> None:
 
     assert submitted == {"status": "submitted", "signal": "BUY"}
     assert len(calls) == 1
-    assert calls[0]["kwargs"]["execution_submit_plan"] == summary.buy_submit_plan.as_dict()  # type: ignore[index,union-attr]
+    assert calls[0]["kwargs"]["execution_submit_plan"] == summary.buy_submit_plan.as_final_payload()  # type: ignore[index,union-attr]
 
 
 @pytest.mark.parametrize(
@@ -1009,17 +1033,36 @@ def test_execution_decision_summary_rejects_dict_submit_plan_at_core_model_bound
 
 
 def test_live_broker_lot_native_buy_submit_plan_accepts_only_typed_authority_payload() -> None:
-    valid = live_broker._lot_native_buy_submit_plan(_valid_buy_submit_plan())
+    valid_payload = _typed_plan(_valid_buy_submit_plan()).as_final_payload()
+    valid = live_broker._lot_native_buy_submit_plan(valid_payload)
     assert valid is not None
     assert valid["side"] == "BUY"
     assert valid["qty"] == pytest.approx(0.001)
     assert valid["notional_krw"] == pytest.approx(100_000.0)
 
+    assert live_broker._lot_native_buy_submit_plan(_valid_buy_submit_plan()) is None
+
     bad_source = {**_valid_buy_submit_plan(), "source": "legacy_context"}
     assert live_broker._lot_native_buy_submit_plan(bad_source) is None
 
-    blocked = {**_valid_buy_submit_plan(), "block_reason": "entry_blocked"}
+    blocked = {
+        **_typed_plan(_valid_buy_submit_plan()).as_final_payload(),
+        "block_reason": "entry_blocked",
+    }
     assert live_broker._lot_native_buy_submit_plan(blocked) is None
+
+
+def test_live_broker_target_submit_plan_requires_final_payload_contract() -> None:
+    assert live_broker._target_delta_submit_plan(_valid_target_submit_plan()) is None
+
+    final_payload = _typed_plan(_valid_target_submit_plan()).as_final_payload()
+    accepted = live_broker._target_delta_submit_plan(final_payload)
+    assert accepted is not None
+    assert accepted["source"] == "target_delta"
+
+    tampered = dict(final_payload)
+    tampered["content_hash"] = "sha256:forged"
+    assert live_broker._target_delta_submit_plan(tampered) is None
 
 
 def _summary_for_plan(plan: ExecutionSubmitPlan) -> ExecutionDecisionSummary:

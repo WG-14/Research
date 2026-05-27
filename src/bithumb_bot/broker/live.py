@@ -2362,6 +2362,16 @@ def _target_delta_submit_plan(
 ) -> dict[str, object] | None:
     if not isinstance(execution_submit_plan, dict):
         return None
+    try:
+        from ..execution_service import validate_execution_submit_plan_payload
+
+        validate_execution_submit_plan_payload(
+            execution_submit_plan,
+            field_name="execution_submit_plan",
+            require_final_payload=True,
+        )
+    except ValueError:
+        return None
     if str(execution_submit_plan.get("source") or "") != "target_delta":
         return None
     if str(execution_submit_plan.get("authority") or "") not in {
@@ -2393,6 +2403,16 @@ def _lot_native_buy_submit_plan(
     execution_submit_plan: dict[str, object] | None,
 ) -> dict[str, object] | None:
     if not isinstance(execution_submit_plan, dict):
+        return None
+    try:
+        from ..execution_service import validate_execution_submit_plan_payload
+
+        validate_execution_submit_plan_payload(
+            execution_submit_plan,
+            field_name="execution_submit_plan",
+            require_final_payload=True,
+        )
+    except ValueError:
         return None
     if str(execution_submit_plan.get("source") or "") != "strategy_position":
         return None
@@ -2612,6 +2632,16 @@ def _determine_live_execution_intent(
         and str(execution_submit_plan.get("source") or "") == "residual_inventory"
         and str(execution_submit_plan.get("authority") or "") == "residual_inventory_policy"
     ):
+        try:
+            from ..execution_service import validate_execution_submit_plan_payload
+
+            validate_execution_submit_plan_payload(
+                execution_submit_plan,
+                field_name="execution_submit_plan",
+                require_final_payload=True,
+            )
+        except ValueError:
+            return None
         residual_qty = float(execution_submit_plan.get("qty") or 0.0)
         if residual_qty <= POSITION_EPSILON:
             return None
