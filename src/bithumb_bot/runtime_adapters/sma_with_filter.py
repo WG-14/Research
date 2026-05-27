@@ -11,8 +11,7 @@ from bithumb_bot.runtime_sma_snapshot_builder import (
     _resolve_signal_through_ts_ms,
 )
 from bithumb_bot.runtime_strategy_decision import RuntimeStrategyDecisionResult
-from bithumb_bot.strategy import create_strategy_policy
-from bithumb_bot.strategy.sma_policy_strategy import SmaWithFilterStrategy
+from bithumb_bot.strategy.sma_policy_strategy import SmaWithFilterStrategy, create_sma_with_filter_strategy
 
 
 def _normalization_boundary_label() -> str:
@@ -116,8 +115,7 @@ class SmaWithFilterRuntimeDecisionAdapter:
         long_n: int,
         through_ts_ms: int | None = None,
     ) -> RuntimeStrategyDecisionResult | None:
-        strategy = create_strategy_policy(
-            self.strategy_name,
+        strategy = create_sma_with_filter_strategy(
             short_n=short_n,
             long_n=long_n,
             pair=settings.PAIR,

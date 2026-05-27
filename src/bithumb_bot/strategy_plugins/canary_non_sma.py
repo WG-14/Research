@@ -6,7 +6,11 @@ from typing import Any
 from bithumb_bot.canonical_decision import canonical_payload_hash
 from bithumb_bot.core.sma_policy import PositionSnapshot, StrategyDecisionV2
 from bithumb_bot.decision_equivalence import sha256_prefixed
-from bithumb_bot.research.strategy_registry import ResearchStrategyPlugin, RuntimeParameterAdapter
+from bithumb_bot.research.strategy_registry import (
+    ResearchStrategyPlugin,
+    RuntimeParameterAdapter,
+    StrategyRuntimeCapabilities,
+)
 from bithumb_bot.research.strategy_spec import StrategySpec, materialize_strategy_parameters
 from bithumb_bot.runtime_decision_contract import RuntimeStrategyPolicyHashes
 
@@ -523,4 +527,14 @@ CANARY_NON_SMA_PLUGIN = ResearchStrategyPlugin(
     decision_payload_adapter=_canary_decision_payload_adapter,
     runtime_decision_adapter_factory=CanaryNonSmaRuntimeDecisionAdapter,
     single_replay_bundle_builder=_canary_single_replay_bundle_builder,
+    runtime_capabilities=StrategyRuntimeCapabilities(
+        promotion_runtime_decisions_supported=True,
+        runtime_replay_supported=True,
+        research_only=False,
+        baseline_only=False,
+        live_dry_run_allowed=True,
+        live_real_order_allowed=False,
+        approved_profile_required=True,
+        fail_closed_reason="canary_non_sma_live_real_order_not_allowed",
+    ),
 )

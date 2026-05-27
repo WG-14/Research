@@ -295,12 +295,15 @@ def test_production_bound_buy_and_hold_manifest_requires_behavior_parameters() -
 
 
 def test_noop_baseline_runtime_env_contract_fails_closed() -> None:
-    with pytest.raises(ApprovedProfileError, match="runtime_replay_unsupported_for_strategy:noop_baseline"):
+    with pytest.raises(ApprovedProfileError, match="promotion_runtime_unsupported_for_strategy:noop_baseline"):
         runtime_contract_from_env_values({"STRATEGY_NAME": "noop_baseline"})
 
 
 def test_buy_and_hold_runtime_env_contract_fails_closed() -> None:
-    with pytest.raises(ApprovedProfileError, match="runtime_replay_unsupported_for_strategy:buy_and_hold_baseline"):
+    with pytest.raises(
+        ApprovedProfileError,
+        match="promotion_runtime_unsupported_for_strategy:buy_and_hold_baseline",
+    ):
         runtime_contract_from_env_values({"STRATEGY_NAME": "buy_and_hold_baseline", "SMA_SHORT": "2", "SMA_LONG": "4"})
 
 

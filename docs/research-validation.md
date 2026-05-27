@@ -871,7 +871,7 @@ Currently supported research strategies:
 - `sma_with_filter`
 
 Unknown research strategy names fail before simulation with an operator-readable unsupported strategy error. The research registry is not connected to live strategy execution.
-Live SMA execution is regime-policy gated through `sma_with_filter`. Plain `sma_cross` remains a legacy paper/test/backtest compatibility strategy and is rejected in `MODE=live` with `plain_sma_live_not_allowed`.
+Live strategy execution is gated through the `ResearchStrategyPlugin` capability contract and plugin-bootstrapped runtime decision adapters. A strategy is live-eligible only when its plugin declares promotion-grade runtime decisions, runtime replay, runtime decision adapter support, live eligibility for the requested arming mode, and the required approved-profile behavior. Legacy paper/test/backtest compatibility strategies such as `sma_cross` are rejected in `MODE=live` with `live_strategy_capability_validation_failed` because they are not plugin-manifest promotion runtime strategies.
 
 ## Artifacts
 

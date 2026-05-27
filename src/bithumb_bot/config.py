@@ -333,11 +333,24 @@ def validate_live_strategy_selection(cfg: Settings) -> None:
     if str(cfg.MODE or "").strip().lower() != "live":
         return
     strategy_name = str(cfg.STRATEGY_NAME or "").strip().lower()
-    if strategy_name == "sma_cross":
+    from .research.strategy_registry import strategy_runtime_capability_issues
+
+    issues = strategy_runtime_capability_issues(
+        strategy_name,
+        live_dry_run=bool(cfg.LIVE_DRY_RUN),
+        live_real_order_armed=bool(cfg.LIVE_REAL_ORDER_ARMED),
+        approved_profile_path=(
+            str(cfg.APPROVED_STRATEGY_PROFILE_PATH or "").strip()
+            or str(getattr(cfg, "STRATEGY_APPROVED_PROFILE_PATH", "") or "").strip()
+        ),
+        require_promotion_runtime=True,
+        require_runtime_replay=True,
+        require_runtime_decision_adapter=True,
+    )
+    if issues:
         raise LiveModeValidationError(
-            "plain_sma_live_not_allowed: STRATEGY_NAME='sma_cross' is not allowed when MODE=live; "
-            "use STRATEGY_NAME=sma_with_filter with STRATEGY_CANDIDATE_PROFILE_PATH pointing to a "
-            "promoted candidate profile so BUY entries are regime-policy gated fail-closed"
+            "live_strategy_capability_validation_failed: "
+            f"STRATEGY_NAME={strategy_name!r}; reasons=" + ",".join(issues)
         )
 
 

@@ -1451,12 +1451,18 @@ def test_runtime_contract_from_settings_uses_strategy_adapter() -> None:
 
 
 def test_runtime_parameter_adapter_fails_closed_for_non_runtime_replay_strategies() -> None:
-    with pytest.raises(ApprovedProfileError, match="runtime_replay_unsupported_for_strategy:buy_and_hold_baseline"):
+    with pytest.raises(
+        ApprovedProfileError,
+        match="promotion_runtime_unsupported_for_strategy:buy_and_hold_baseline",
+    ):
         runtime_contract_from_env_values(
             {"STRATEGY_NAME": "buy_and_hold_baseline", "SMA_SHORT": "2", "SMA_LONG": "4"}
         )
 
-    with pytest.raises(ApprovedProfileError, match="runtime_replay_unsupported_for_strategy:noop_baseline"):
+    with pytest.raises(
+        ApprovedProfileError,
+        match="promotion_runtime_unsupported_for_strategy:noop_baseline",
+    ):
         runtime_contract_from_env_values({"STRATEGY_NAME": "noop_baseline", "SMA_SHORT": "2", "SMA_LONG": "4"})
 
 

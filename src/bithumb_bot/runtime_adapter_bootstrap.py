@@ -13,7 +13,10 @@ def ensure_runtime_decision_adapters_registered() -> None:
     if _REGISTERED:
         return
     for plugin in list_research_strategy_plugins():
-        if plugin.runtime_decision_adapter_factory is not None:
+        if (
+            plugin.runtime_capabilities.promotion_runtime_decisions_supported
+            and plugin.runtime_decision_adapter_factory is not None
+        ):
             register_runtime_decision_adapter(plugin.name, plugin.runtime_decision_adapter_factory)
     register_runtime_decision_adapter(SAFE_HOLD_STRATEGY_NAME, SafeHoldRuntimeDecisionAdapter)
     _REGISTERED = True

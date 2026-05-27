@@ -14,6 +14,7 @@ from bithumb_bot.research.strategy_registry import (
     ResearchStrategyPlugin,
     ResearchStrategyRegistryError,
     RuntimeParameterAdapter,
+    StrategyRuntimeCapabilities,
     list_research_strategy_plugins,
     reload_research_strategy_plugins_for_tests,
     resolve_research_strategy_plugin,
@@ -92,7 +93,11 @@ def _dynamic_runtime_adapter_factory() -> _DynamicRuntimeDecisionAdapter:
     return _DynamicRuntimeDecisionAdapter()
 
 
-def _dynamic_plugin(name: str = DYNAMIC_PLUGIN_NAME) -> ResearchStrategyPlugin:
+def _dynamic_plugin(
+    name: str = DYNAMIC_PLUGIN_NAME,
+    *,
+    runtime_supported: bool = True,
+) -> ResearchStrategyPlugin:
     spec = StrategySpec(
         strategy_name=name,
         strategy_version="dynamic_entrypoint_unit.contract.v1",
@@ -114,15 +119,33 @@ def _dynamic_plugin(name: str = DYNAMIC_PLUGIN_NAME) -> ResearchStrategyPlugin:
         required_data=spec.required_data,
         optional_data=spec.optional_data,
         runner=_dynamic_runner,
-        runtime_replay_builder=_dynamic_runtime_replay_builder,
-        runtime_parameter_adapter=RuntimeParameterAdapter(
-            from_env=_dynamic_parameters_from_env,
-            from_settings=_dynamic_parameters_from_settings,
-            env_keys=(),
+        runtime_replay_builder=_dynamic_runtime_replay_builder if runtime_supported else None,
+        runtime_parameter_adapter=(
+            RuntimeParameterAdapter(
+                from_env=_dynamic_parameters_from_env,
+                from_settings=_dynamic_parameters_from_settings,
+                env_keys=(),
+            )
+            if runtime_supported
+            else None
         ),
         decision_contract_version=spec.decision_contract_version,
         diagnostics_namespace=name,
-        runtime_decision_adapter_factory=_dynamic_runtime_adapter_factory,
+        runtime_decision_adapter_factory=_dynamic_runtime_adapter_factory if runtime_supported else None,
+        runtime_capabilities=StrategyRuntimeCapabilities(
+            promotion_runtime_decisions_supported=runtime_supported,
+            runtime_replay_supported=runtime_supported,
+            research_only=not runtime_supported,
+            baseline_only=False,
+            live_dry_run_allowed=runtime_supported,
+            live_real_order_allowed=runtime_supported,
+            approved_profile_required=runtime_supported,
+            fail_closed_reason=(
+                "dynamic_plugin_runtime_unsupported"
+                if not runtime_supported
+                else "dynamic_plugin_capability_missing"
+            ),
+        ),
     )
 
 
@@ -150,6 +173,17 @@ def test_entry_point_strategy_plugin_is_discovered(monkeypatch: pytest.MonkeyPat
 
     assert DYNAMIC_PLUGIN_NAME in {item.name for item in list_research_strategy_plugins()}
     assert resolve_research_strategy_plugin(DYNAMIC_PLUGIN_NAME) is plugin
+    assert plugin.contract_payload()["runtime_capabilities"] == {
+        "schema_version": 1,
+        "promotion_runtime_decisions_supported": True,
+        "runtime_replay_supported": True,
+        "research_only": False,
+        "baseline_only": False,
+        "live_dry_run_allowed": True,
+        "live_real_order_allowed": True,
+        "approved_profile_required": True,
+        "fail_closed_reason": "dynamic_plugin_capability_missing",
+    }
 
 
 def test_discovered_plugin_runtime_adapter_is_bootstrapped(
@@ -172,6 +206,45 @@ def test_discovered_plugin_runtime_adapter_is_bootstrapped(
     adapter = runtime_strategy_decision.get_runtime_decision_adapter(DYNAMIC_PLUGIN_NAME)
     assert isinstance(adapter, _DynamicRuntimeDecisionAdapter)
     assert adapter.typed_authority_required() is True
+
+
+def test_dynamic_research_only_plugin_is_valid_research_but_live_fails_by_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import bithumb_bot.strategy_plugins as strategy_plugins
+    from bithumb_bot.config import LiveModeValidationError, settings, validate_live_strategy_selection
+    from dataclasses import replace
+
+    plugin = _dynamic_plugin(name="dynamic_research_only_unit", runtime_supported=False)
+    monkeypatch.setattr(
+        strategy_plugins.metadata,
+        "entry_points",
+        lambda: [_FakeEntryPoint("unit_dynamic_research_only", "tests:plugin", plugin)],
+    )
+    reload_research_strategy_plugins_for_tests()
+    runtime_strategy_decision.reset_runtime_decision_adapters_for_tests()
+    runtime_adapter_bootstrap.reset_runtime_decision_adapter_bootstrap_for_tests()
+
+    resolved = resolve_research_strategy_plugin("dynamic_research_only_unit")
+    assert resolved.runtime_capabilities.research_only is True
+    assert resolved.runtime_capabilities.promotion_runtime_decisions_supported is False
+
+    with pytest.raises(LiveModeValidationError) as exc:
+        validate_live_strategy_selection(
+            replace(
+                settings,
+                MODE="live",
+                STRATEGY_NAME="dynamic_research_only_unit",
+                LIVE_DRY_RUN=True,
+                LIVE_REAL_ORDER_ARMED=False,
+            )
+        )
+
+    message = str(exc.value)
+    assert "live_strategy_capability_validation_failed" in message
+    assert "promotion_runtime_unsupported_for_strategy:dynamic_research_only_unit" in message
+    assert "dynamic_plugin_runtime_unsupported" in message
+    assert runtime_strategy_decision.get_runtime_decision_adapter("dynamic_research_only_unit") is None
 
 
 def test_generic_runtime_files_do_not_branch_on_dynamic_plugin_name() -> None:

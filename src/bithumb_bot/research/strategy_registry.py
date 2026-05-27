@@ -178,6 +178,48 @@ class RuntimeParameterAdapter:
 
 
 @dataclass(frozen=True)
+class StrategyRuntimeCapabilities:
+    promotion_runtime_decisions_supported: bool
+    runtime_replay_supported: bool
+    research_only: bool = False
+    baseline_only: bool = False
+    live_dry_run_allowed: bool = False
+    live_real_order_allowed: bool = False
+    approved_profile_required: bool = True
+    fail_closed_reason: str = "strategy_runtime_capability_missing"
+
+    def __post_init__(self) -> None:
+        reason = str(self.fail_closed_reason or "").strip().lower()
+        if not reason:
+            raise ValueError("strategy runtime capability fail_closed_reason must be non-empty")
+        object.__setattr__(self, "fail_closed_reason", reason)
+        if bool(self.research_only) or bool(self.baseline_only):
+            if self.promotion_runtime_decisions_supported:
+                raise ValueError("research-only or baseline-only strategy cannot support promotion runtime decisions")
+            if self.live_dry_run_allowed or self.live_real_order_allowed:
+                raise ValueError("research-only or baseline-only strategy cannot be live eligible")
+        if self.live_real_order_allowed and not self.live_dry_run_allowed:
+            raise ValueError("live real-order eligibility requires live dry-run eligibility")
+        if self.live_dry_run_allowed and not self.promotion_runtime_decisions_supported:
+            raise ValueError("live dry-run eligibility requires promotion runtime decision support")
+        if self.live_real_order_allowed and not self.approved_profile_required:
+            raise ValueError("live real-order eligibility requires an approved profile")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "promotion_runtime_decisions_supported": bool(self.promotion_runtime_decisions_supported),
+            "runtime_replay_supported": bool(self.runtime_replay_supported),
+            "research_only": bool(self.research_only),
+            "baseline_only": bool(self.baseline_only),
+            "live_dry_run_allowed": bool(self.live_dry_run_allowed),
+            "live_real_order_allowed": bool(self.live_real_order_allowed),
+            "approved_profile_required": bool(self.approved_profile_required),
+            "fail_closed_reason": self.fail_closed_reason,
+        }
+
+
+@dataclass(frozen=True)
 class ResearchStrategyPlugin:
     name: str
     version: str
@@ -195,6 +237,22 @@ class ResearchStrategyPlugin:
     research_export_normalizer: ResearchExportNormalizer | None = None
     runtime_decision_adapter_factory: Callable[[], Any] | None = None
     single_replay_bundle_builder: SingleReplayBundleBuilder | None = None
+    runtime_capabilities: StrategyRuntimeCapabilities | None = None
+
+    def __post_init__(self) -> None:
+        if self.runtime_capabilities is None:
+            object.__setattr__(self, "runtime_capabilities", _legacy_inferred_runtime_capabilities(self))
+        if self.runtime_capabilities.runtime_replay_supported != (self.runtime_replay_builder is not None):
+            raise ValueError(f"strategy runtime replay capability mismatch: {self.name}")
+        if (
+            self.runtime_capabilities.promotion_runtime_decisions_supported
+            and self.runtime_decision_adapter_factory is None
+        ):
+            raise ValueError(f"strategy promotion runtime capability missing adapter: {self.name}")
+        if self.runtime_capabilities.live_dry_run_allowed and self.runtime_decision_adapter_factory is None:
+            raise ValueError(f"strategy live dry-run capability missing adapter: {self.name}")
+        if self.runtime_capabilities.live_real_order_allowed and self.runtime_decision_adapter_factory is None:
+            raise ValueError(f"strategy live real-order capability missing adapter: {self.name}")
 
     def contract_payload(self) -> dict[str, Any]:
         data_requirements = ResearchStrategyDataRequirements(
@@ -279,6 +337,7 @@ class ResearchStrategyPlugin:
                 else None
             ),
             "runtime_decision_adapter_supported": self.runtime_decision_adapter_factory is not None,
+            "runtime_capabilities": self.runtime_capabilities.as_dict(),
             "runtime_decision_adapter_module": (
                 self.runtime_decision_adapter_factory.__module__
                 if self.runtime_decision_adapter_factory is not None
@@ -304,6 +363,61 @@ class ResearchStrategyPlugin:
 
     def contract_hash(self) -> str:
         return sha256_prefixed(self.contract_payload())
+
+
+def _legacy_inferred_runtime_capabilities(plugin: ResearchStrategyPlugin) -> StrategyRuntimeCapabilities:
+    promotion_supported = plugin.runtime_decision_adapter_factory is not None
+    return StrategyRuntimeCapabilities(
+        promotion_runtime_decisions_supported=promotion_supported,
+        runtime_replay_supported=plugin.runtime_replay_builder is not None,
+        research_only=not promotion_supported,
+        baseline_only=not promotion_supported,
+        live_dry_run_allowed=promotion_supported,
+        live_real_order_allowed=False,
+        approved_profile_required=True,
+        fail_closed_reason=(
+            "legacy_plugin_capability_inferred_runtime_adapter_missing"
+            if not promotion_supported
+            else "legacy_plugin_capability_inferred_live_real_order_not_allowed"
+        ),
+    )
+
+
+def strategy_runtime_capability_issues(
+    strategy_name: str,
+    *,
+    live_dry_run: bool,
+    live_real_order_armed: bool,
+    approved_profile_path: str = "",
+    require_promotion_runtime: bool = True,
+    require_runtime_replay: bool = False,
+    require_runtime_decision_adapter: bool = True,
+) -> tuple[str, ...]:
+    key = str(strategy_name or "").strip().lower()
+    try:
+        plugin = resolve_research_strategy_plugin(key)
+    except ResearchStrategyRegistryError:
+        return (f"strategy_plugin_not_registered:{key}",)
+
+    capabilities = plugin.runtime_capabilities
+    issues: list[str] = []
+    if require_promotion_runtime and not capabilities.promotion_runtime_decisions_supported:
+        issues.append(f"promotion_runtime_unsupported_for_strategy:{plugin.name}:{capabilities.fail_closed_reason}")
+    if require_runtime_replay and not capabilities.runtime_replay_supported:
+        issues.append(f"runtime_replay_unsupported_for_strategy:{plugin.name}:{capabilities.fail_closed_reason}")
+    if require_runtime_decision_adapter and plugin.runtime_decision_adapter_factory is None:
+        issues.append(f"runtime_decision_adapter_unsupported_for_strategy:{plugin.name}:{capabilities.fail_closed_reason}")
+    if bool(live_dry_run) and not capabilities.live_dry_run_allowed:
+        issues.append(f"live_dry_run_not_allowed_for_strategy:{plugin.name}:{capabilities.fail_closed_reason}")
+    if bool(live_real_order_armed) and not capabilities.live_real_order_allowed:
+        issues.append(f"live_real_order_not_allowed_for_strategy:{plugin.name}:{capabilities.fail_closed_reason}")
+    if (
+        bool(live_real_order_armed)
+        and capabilities.approved_profile_required
+        and not str(approved_profile_path or "").strip()
+    ):
+        issues.append(f"approved_profile_required_for_strategy:{plugin.name}")
+    return tuple(issues)
 
 
 TEST_TOP_OF_BOOK_REQUIRED_STRATEGY = "__test_top_of_book_required__"
@@ -754,6 +868,16 @@ _SMA_WITH_FILTER_PLUGIN = ResearchStrategyPlugin(
     research_export_normalizer=_sma_research_export_normalizer,
     runtime_decision_adapter_factory=_sma_runtime_decision_adapter_factory,
     single_replay_bundle_builder=_sma_single_replay_bundle_builder,
+    runtime_capabilities=StrategyRuntimeCapabilities(
+        promotion_runtime_decisions_supported=True,
+        runtime_replay_supported=True,
+        research_only=False,
+        baseline_only=False,
+        live_dry_run_allowed=True,
+        live_real_order_allowed=True,
+        approved_profile_required=True,
+        fail_closed_reason="sma_with_filter_capability_missing",
+    ),
 )
 
 _NOOP_BASELINE_PLUGIN = ResearchStrategyPlugin(
@@ -767,6 +891,16 @@ _NOOP_BASELINE_PLUGIN = ResearchStrategyPlugin(
     runtime_parameter_adapter=None,
     decision_contract_version=NOOP_BASELINE_SPEC.decision_contract_version,
     diagnostics_namespace="noop_baseline",
+    runtime_capabilities=StrategyRuntimeCapabilities(
+        promotion_runtime_decisions_supported=False,
+        runtime_replay_supported=False,
+        research_only=True,
+        baseline_only=True,
+        live_dry_run_allowed=False,
+        live_real_order_allowed=False,
+        approved_profile_required=False,
+        fail_closed_reason="research_baseline_runtime_unsupported",
+    ),
 )
 
 _BUY_AND_HOLD_BASELINE_PLUGIN = ResearchStrategyPlugin(
@@ -780,6 +914,16 @@ _BUY_AND_HOLD_BASELINE_PLUGIN = ResearchStrategyPlugin(
     runtime_parameter_adapter=None,
     decision_contract_version=BUY_AND_HOLD_BASELINE_SPEC.decision_contract_version,
     diagnostics_namespace="buy_and_hold_baseline",
+    runtime_capabilities=StrategyRuntimeCapabilities(
+        promotion_runtime_decisions_supported=False,
+        runtime_replay_supported=False,
+        research_only=True,
+        baseline_only=True,
+        live_dry_run_allowed=False,
+        live_real_order_allowed=False,
+        approved_profile_required=False,
+        fail_closed_reason="research_baseline_runtime_unsupported",
+    ),
 )
 
 

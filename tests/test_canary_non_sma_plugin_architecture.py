@@ -6,13 +6,15 @@ import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from bithumb_bot import profile_cli, runtime_strategy_decision
 from bithumb_bot.canonical_decision import (
     build_runtime_replay_execution_plan_bundle,
     export_runtime_replay_decisions,
     validate_canonical_decision_payload,
 )
-from bithumb_bot.config import settings
+from bithumb_bot.config import LiveModeValidationError, settings, validate_live_strategy_selection
 from bithumb_bot.db_core import ensure_schema
 from bithumb_bot.decision_envelope import DecisionEnvelope
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
@@ -116,6 +118,33 @@ def test_canary_non_sma_plugin_runtime_envelope_and_planner(tmp_path: Path) -> N
         assert bundle.persistence_context["policy_contract_hash"].startswith("sha256:")
     finally:
         conn.close()
+
+
+def test_canary_non_sma_live_real_order_fails_closed_by_plugin_capability() -> None:
+    from dataclasses import replace
+
+    plugin = resolve_research_strategy_plugin("canary_non_sma")
+    assert plugin.runtime_capabilities.promotion_runtime_decisions_supported is True
+    assert plugin.runtime_capabilities.live_dry_run_allowed is True
+    assert plugin.runtime_capabilities.live_real_order_allowed is False
+    assert runtime_strategy_decision.get_runtime_decision_adapter("canary_non_sma") is not None
+
+    with pytest.raises(LiveModeValidationError) as exc:
+        validate_live_strategy_selection(
+            replace(
+                settings,
+                MODE="live",
+                STRATEGY_NAME="canary_non_sma",
+                LIVE_DRY_RUN=False,
+                LIVE_REAL_ORDER_ARMED=True,
+                APPROVED_STRATEGY_PROFILE_PATH="/tmp/profile.json",
+            )
+        )
+
+    message = str(exc.value)
+    assert "live_strategy_capability_validation_failed" in message
+    assert "live_real_order_not_allowed_for_strategy:canary_non_sma" in message
+    assert "canary_non_sma_live_real_order_not_allowed" in message
 
 
 def test_canary_non_sma_runtime_replay_is_promotion_grade_and_read_only(tmp_path: Path) -> None:

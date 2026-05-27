@@ -201,6 +201,7 @@ def test_live_sma_with_filter_route_does_not_call_legacy_decide(
     old_armed = settings.LIVE_REAL_ORDER_ARMED
     old_dry_run = settings.LIVE_DRY_RUN
     old_strategy_name = settings.STRATEGY_NAME
+    old_approved_profile_path = settings.APPROVED_STRATEGY_PROFILE_PATH
     old_env_db_path = os.environ.get("DB_PATH")
 
     def _fail_legacy_decide(*args, **kwargs):
@@ -245,6 +246,7 @@ def test_live_sma_with_filter_route_does_not_call_legacy_decide(
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
     object.__setattr__(settings, "STRATEGY_NAME", "sma_with_filter")
+    object.__setattr__(settings, "APPROVED_STRATEGY_PROFILE_PATH", "/tmp/unit-approved-profile.json")
 
     conn = ensure_db()
     base_ts = 1_700_000_300_000
@@ -269,6 +271,7 @@ def test_live_sma_with_filter_route_does_not_call_legacy_decide(
         object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", old_armed)
         object.__setattr__(settings, "LIVE_DRY_RUN", old_dry_run)
         object.__setattr__(settings, "STRATEGY_NAME", old_strategy_name)
+        object.__setattr__(settings, "APPROVED_STRATEGY_PROFILE_PATH", old_approved_profile_path)
         if old_env_db_path is None:
             os.environ.pop("DB_PATH", None)
         else:
@@ -324,7 +327,10 @@ def test_live_real_sma_cross_rejected_before_legacy_strategy_creation(
     object.__setattr__(settings, "STRATEGY_NAME", "sma_cross")
     try:
         with sqlite3.connect(":memory:") as conn:
-            with pytest.raises(config.LiveModeValidationError, match="plain_sma_live_not_allowed"):
+            with pytest.raises(
+                config.LiveModeValidationError,
+                match="live_strategy_capability_validation_failed",
+            ) as exc:
                 engine_module.compute_strategy_decision_snapshot(conn, 2, 3)
     finally:
         object.__setattr__(settings, "MODE", old_mode)
@@ -332,6 +338,7 @@ def test_live_real_sma_cross_rejected_before_legacy_strategy_creation(
         object.__setattr__(settings, "LIVE_DRY_RUN", old_dry_run)
         object.__setattr__(settings, "STRATEGY_NAME", old_strategy_name)
 
+    assert "strategy_plugin_not_registered:sma_cross" in str(exc.value)
     assert legacy_calls == []
 
 
@@ -354,7 +361,10 @@ def test_legacy_sma_cross_cannot_be_selected_in_live_even_if_strategy_name_argum
     object.__setattr__(settings, "STRATEGY_NAME", "sma_with_filter")
     try:
         with sqlite3.connect(":memory:") as conn:
-            with pytest.raises(config.LiveModeValidationError, match="plain_sma_live_not_allowed"):
+            with pytest.raises(
+                config.LiveModeValidationError,
+                match="live_strategy_capability_validation_failed",
+            ) as exc:
                 engine_module.compute_strategy_decision_snapshot(
                     conn,
                     2,
@@ -367,6 +377,7 @@ def test_legacy_sma_cross_cannot_be_selected_in_live_even_if_strategy_name_argum
         object.__setattr__(settings, "LIVE_DRY_RUN", old_dry_run)
         object.__setattr__(settings, "STRATEGY_NAME", old_strategy_name)
 
+    assert "strategy_plugin_not_registered:sma_cross" in str(exc.value)
     assert legacy_calls == []
 
 
@@ -734,7 +745,8 @@ def test_live_compute_signal_rejects_plain_sma_cross_override() -> None:
     finally:
         object.__setattr__(settings, "MODE", old_mode)
 
-    assert "plain_sma_live_not_allowed" in str(exc.value)
+    assert "live_strategy_capability_validation_failed" in str(exc.value)
+    assert "strategy_plugin_not_registered:sma_cross" in str(exc.value)
 
 
 def test_live_real_order_boundary_disallows_legacy_db_strategy_fallback() -> None:

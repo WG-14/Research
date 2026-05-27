@@ -540,6 +540,32 @@ def test_generic_runtime_decision_code_has_no_sma_specific_imports() -> None:
     assert ".decide(conn" not in source
 
 
+def test_promotion_runtime_path_does_not_depend_on_strategy_registry() -> None:
+    paths = (
+        Path("src/bithumb_bot/engine.py"),
+        Path("src/bithumb_bot/runtime_strategy_decision.py"),
+        Path("src/bithumb_bot/runtime_decision_service.py"),
+        Path("src/bithumb_bot/runtime_adapter_bootstrap.py"),
+        Path("src/bithumb_bot/runtime_adapters/sma_with_filter.py"),
+    )
+    forbidden = {
+        "bithumb_bot.strategy.registry",
+        ".strategy.registry",
+        "create_strategy(",
+        "create_legacy_strategy(",
+        "create_strategy_policy(",
+    }
+
+    violations: list[str] = []
+    for path in paths:
+        source = path.read_text(encoding="utf-8-sig")
+        for token in forbidden:
+            if token in source:
+                violations.append(f"{path}:{token}")
+
+    assert violations == []
+
+
 def test_engine_does_not_own_low_level_runtime_sql_helpers() -> None:
     source = Path("src/bithumb_bot/engine.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(source)

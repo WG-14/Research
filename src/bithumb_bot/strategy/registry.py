@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""Compatibility registry for smoke and legacy strategy construction only.
+
+Promotion-grade research/runtime lifecycle behavior is declared by
+``ResearchStrategyPlugin`` in ``bithumb_bot.research.strategy_registry``.
+Runtime decision paths must use plugin manifests and plugin-bootstrapped
+runtime adapters, not this registry.
+"""
+
 from typing import Callable
 
 from .base import LegacyDbStrategy, StrategyPolicy

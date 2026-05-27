@@ -1288,8 +1288,16 @@ def _require_runtime_replay_supported_strategy(strategy_name: str) -> None:
         plugin = resolve_research_strategy_plugin(str(strategy_name or ""))
     except ResearchStrategyRegistryError as exc:
         raise ApprovedProfileError(f"runtime_strategy_unsupported:{strategy_name}") from exc
-    if plugin.runtime_replay_builder is None:
-        raise ApprovedProfileError(f"runtime_replay_unsupported_for_strategy:{plugin.name}")
+    if not plugin.runtime_capabilities.promotion_runtime_decisions_supported:
+        raise ApprovedProfileError(
+            f"promotion_runtime_unsupported_for_strategy:{plugin.name}:"
+            f"{plugin.runtime_capabilities.fail_closed_reason}"
+        )
+    if not plugin.runtime_capabilities.runtime_replay_supported or plugin.runtime_replay_builder is None:
+        raise ApprovedProfileError(
+            f"runtime_replay_unsupported_for_strategy:{plugin.name}:"
+            f"{plugin.runtime_capabilities.fail_closed_reason}"
+        )
 
 
 def _live_like_runtime_requires_explicit_strategy(

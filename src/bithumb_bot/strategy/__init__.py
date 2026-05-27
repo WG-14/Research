@@ -1,9 +1,11 @@
-"""Strategy registry facade.
+"""Compatibility strategy facade.
 
-Promotion-grade runtime strategies are exposed through ``StrategyPolicy`` and
-``create_strategy_policy``. DB-bound ``SmaCrossStrategy`` and
-``LegacySmaWithFilterDbAdapter`` exports remain compatibility-only and must not
-be used as live promotion-grade decision boundaries.
+Promotion-grade runtime strategy lifecycle behavior is exposed through
+``ResearchStrategyPlugin`` manifests and plugin-bootstrapped runtime decision
+adapters. ``StrategyPolicy`` helpers here are smoke/compatibility construction
+surfaces and must not be used as live promotion-grade decision boundaries.
+DB-bound ``SmaCrossStrategy`` and ``LegacySmaWithFilterDbAdapter`` exports
+remain compatibility-only.
 """
 
 from .base import LegacyDbStrategy, PositionContext, StrategyDecision, StrategyPolicy
