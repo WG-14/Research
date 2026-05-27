@@ -5538,7 +5538,7 @@ def test_stale_risk_state_mismatch_clears_for_historical_repaired_fee_gap_contex
     )
 
     monkeypatch.setattr(
-        "bithumb_bot.engine.compute_runtime_readiness_snapshot",
+        "bithumb_bot.runtime_recovery_services.compute_runtime_readiness_snapshot",
         lambda _conn=None: _stub_stale_halt_readiness(
             fee_gap_incident_kind="historical_fee_gap_repaired",
             fee_gap_active_issue=False,
@@ -5546,19 +5546,19 @@ def test_stale_risk_state_mismatch_clears_for_historical_repaired_fee_gap_contex
         ),
     )
     monkeypatch.setattr(
-        "bithumb_bot.engine.compute_accounting_replay",
+        "bithumb_bot.runtime_recovery_services.compute_accounting_replay",
         lambda _conn: {"replay_cash": 100.0, "replay_qty": 0.0004},
     )
     monkeypatch.setattr(
-        "bithumb_bot.engine.get_portfolio_breakdown",
+        "bithumb_bot.runtime_recovery_services.get_portfolio_breakdown",
         lambda _conn: (100.0, 0.0, 0.0004, 0.0),
     )
     monkeypatch.setattr(
-        "bithumb_bot.engine.build_external_position_accounting_repair_preview",
+        "bithumb_bot.runtime_recovery_services.build_external_position_accounting_repair_preview",
         lambda _conn: {"needs_repair": False},
     )
     monkeypatch.setattr(
-        "bithumb_bot.engine.collect_risky_order_state",
+        "bithumb_bot.runtime_recovery_services.collect_risky_order_state",
         lambda *_args, **_kwargs: {
             "submit_unknown_without_exchange_id_count": 0,
             "stray_remote_open_order_count": 0,
@@ -5599,7 +5599,7 @@ def test_stale_risk_state_mismatch_keeps_active_fee_gap_blocker_visible(tmp_path
     )
 
     monkeypatch.setattr(
-        "bithumb_bot.engine.compute_runtime_readiness_snapshot",
+        "bithumb_bot.runtime_recovery_services.compute_runtime_readiness_snapshot",
         lambda _conn=None: _stub_stale_halt_readiness(
             fee_gap_incident_kind="active_fee_gap_unrepaired",
             fee_gap_active_issue=True,
@@ -5607,19 +5607,19 @@ def test_stale_risk_state_mismatch_keeps_active_fee_gap_blocker_visible(tmp_path
         ),
     )
     monkeypatch.setattr(
-        "bithumb_bot.engine.compute_accounting_replay",
+        "bithumb_bot.runtime_recovery_services.compute_accounting_replay",
         lambda _conn: {"replay_cash": 100.0, "replay_qty": 0.0004},
     )
     monkeypatch.setattr(
-        "bithumb_bot.engine.get_portfolio_breakdown",
+        "bithumb_bot.runtime_recovery_services.get_portfolio_breakdown",
         lambda _conn: (100.0, 0.0, 0.0004, 0.0),
     )
     monkeypatch.setattr(
-        "bithumb_bot.engine.build_external_position_accounting_repair_preview",
+        "bithumb_bot.runtime_recovery_services.build_external_position_accounting_repair_preview",
         lambda _conn: {"needs_repair": False},
     )
     monkeypatch.setattr(
-        "bithumb_bot.engine.collect_risky_order_state",
+        "bithumb_bot.runtime_recovery_services.collect_risky_order_state",
         lambda *_args, **_kwargs: {
             "submit_unknown_without_exchange_id_count": 0,
             "stray_remote_open_order_count": 0,

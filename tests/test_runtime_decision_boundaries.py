@@ -24,6 +24,9 @@ from bithumb_bot.run_loop_execution_planner import (
     ExecutionPlanner,
     ExecutionPlanningInput,
 )
+from bithumb_bot.run_loop_compatibility import (
+    legacy_context_planning_allowed_for_compatibility,
+)
 from bithumb_bot.runtime_recovery_gate import RuntimeRecoveryGateService
 from bithumb_bot.research.backtest_kernel import run_decision_event_backtest
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
@@ -531,6 +534,9 @@ def test_run_loop_does_not_unconditionally_enable_legacy_context_planning() -> N
     run_loop_source = source.split("def run_loop", 1)[1]
 
     assert "allow_legacy_context_planning=True" not in run_loop_source
+    assert "allow_legacy_context_planning=" not in run_loop_source
+    assert ".plan_strategy_decision(" not in run_loop_source
+    assert "RunLoopCompatibilityPlanner" in run_loop_source
 
 
 def test_run_loop_legacy_context_planning_gate_blocks_normal_live_adapter_path() -> None:
@@ -553,6 +559,53 @@ def test_run_loop_legacy_context_planning_gate_blocks_normal_live_adapter_path()
             object.__setattr__(settings, key, value)
 
     assert allowed is False
+
+
+def test_run_loop_compatibility_planning_is_not_live_real_order_authority() -> None:
+    original = {
+        "MODE": settings.MODE,
+        "LIVE_DRY_RUN": settings.LIVE_DRY_RUN,
+        "LIVE_REAL_ORDER_ARMED": settings.LIVE_REAL_ORDER_ARMED,
+    }
+    try:
+        object.__setattr__(settings, "MODE", "live")
+        object.__setattr__(settings, "LIVE_DRY_RUN", False)
+        object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
+
+        assert (
+            legacy_context_planning_allowed_for_compatibility(
+                signal_handoff_fn=lambda *_args, **_kwargs: {"signal": "BUY"},
+                runtime_handoff_fn=engine.compute_signal_runtime_handoff,
+            )
+            is False
+        )
+    finally:
+        for key, value in original.items():
+            object.__setattr__(settings, key, value)
+
+
+def test_engine_recovery_policy_functions_delegate_to_services() -> None:
+    source = Path("src/bithumb_bot/engine.py").read_text(encoding="utf-8-sig")
+    tree = ast.parse(source)
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"evaluate_startup_safety_gate", "_evaluate_stale_risk_state_mismatch_halt"}
+    }
+
+    startup_names = {node.func.id for node in ast.walk(functions["evaluate_startup_safety_gate"]) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+    stale_names = {node.func.id for node in ast.walk(functions["_evaluate_stale_risk_state_mismatch_halt"]) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+
+    assert "StartupSafetyGateService" in startup_names
+    assert "StaleRiskStateMismatchHaltService" in stale_names
+    for forbidden in {
+        "collect_risky_order_state",
+        "compute_accounting_replay",
+        "build_external_position_accounting_repair_preview",
+    }:
+        assert forbidden not in startup_names
+        assert forbidden not in stale_names
 
 
 def test_recovery_gate_service_classifies_startup_blocker_without_engine_callbacks() -> None:
