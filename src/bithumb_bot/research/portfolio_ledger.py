@@ -74,6 +74,30 @@ class PortfolioLedger:
             closed_pnls=self.closed_pnls,
         )
 
+    def pending_qty(self, side: str) -> float:
+        normalized = str(side or "").upper()
+        return sum(item.qty for item in self.pending_fills if item.side == normalized)
+
+    def sellable_qty(self) -> float:
+        return max(0.0, self.qty - self.pending_qty("SELL"))
+
+    def record_open_trade_mark(self, *, ts: int, close: float) -> None:
+        if self.qty <= 1e-12 or self.entry_price is None:
+            return
+        pnl_ratio = (
+            ((float(close) - float(self.entry_price)) / float(self.entry_price))
+            if float(self.entry_price) > 0
+            else 0.0
+        )
+        self.open_trade_path.append(
+            {
+                "ts": int(ts),
+                "close": float(close),
+                "unrealized_pnl": (float(close) - float(self.entry_price)) * float(self.qty),
+                "unrealized_pnl_pct": pnl_ratio * 100.0,
+            }
+        )
+
     def snapshot_for_policy(self, candle_ts: int, market_price: float) -> PositionSnapshot:
         pending_buy_qty = sum(item.qty for item in self.pending_fills if item.side == "BUY")
         pending_sell_qty = sum(item.qty for item in self.pending_fills if item.side == "SELL")

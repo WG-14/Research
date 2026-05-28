@@ -47,6 +47,34 @@ def test_backtest_kernel_is_orchestration_facade_not_transaction_script() -> Non
     assert "BacktestKernel().run(" in source
 
 
+def test_default_backtest_authority_calls_live_inside_stage_classes() -> None:
+    pipeline_source = _source("src/bithumb_bot/research/backtest_pipeline.py")
+    runner_source = _source("src/bithumb_bot/research/backtest_stage_runner.py")
+    loop_source = _source("src/bithumb_bot/research/backtest_loop.py")
+
+    assert "plugin.research_policy_decision_builder" in pipeline_source
+    assert "builder(**policy_builder_kwargs)" in pipeline_source
+    assert "class DefaultStrategyEvaluator" in pipeline_source
+    assert "merge_exit_rules(" in pipeline_source
+    assert "class DefaultRiskGate" in pipeline_source
+    assert "SignalExecutionRequest(" in pipeline_source
+    assert "class DefaultExecutionSimulator" in pipeline_source
+
+    for forbidden in (
+        "research_policy_decision_builder(",
+        "merge_exit_rules(",
+        "SignalExecutionRequest(",
+        "ResearchVirtualExecutionService(",
+        "support.apply_pending_fills(",
+    ):
+        assert forbidden not in runner_source
+
+    assert "DefaultBacktestPipeline().run(" in loop_source
+    assert "research_policy_decision_builder(" not in loop_source
+    assert "support.apply_pending_fills(" not in loop_source
+    assert "SignalExecutionRequest(" not in loop_source
+
+
 def test_production_strategy_decisions_go_through_canonical_service() -> None:
     allowed_files = {
         "src/bithumb_bot/strategy_decision_service.py",

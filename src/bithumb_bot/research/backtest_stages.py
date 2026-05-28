@@ -37,6 +37,7 @@ class RiskGateDecision:
     exit_rule: str = ""
     exit_reason: str = ""
     exit_evaluations: tuple[dict[str, object], ...] = ()
+    payload: dict[str, object] | None = None
 
 
 class MarketReplayClock(Protocol):
