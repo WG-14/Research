@@ -45,6 +45,22 @@ def test_backtest_engine_is_compatibility_only_for_sma_event_generation() -> Non
     assert "Compatibility wrapper" in source
 
 
+def test_backtest_runner_is_strategy_neutral() -> None:
+    source = _source("src/bithumb_bot/research/backtest_runner.py")
+
+    forbidden = (
+        "sma_with_filter",
+        "SMA_",
+        "legacy_disabled_filter_defaults",
+        "SmaWithFilter",
+        "noop_baseline",
+        "buy_and_hold_baseline",
+    )
+    assert all(token not in source for token in forbidden)
+    assert "research_event_builder" in source
+    assert "research_parameter_materializer" in source
+
+
 def test_backtest_support_does_not_import_backtest_engine() -> None:
     source = _source("src/bithumb_bot/research/backtest_support.py")
 
@@ -62,8 +78,25 @@ def test_strategy_registry_does_not_import_engine_owned_runners() -> None:
         "_rolling_sma_values",
         "_rolling_close_range_ratios",
         "_overextended_return_ratios",
+        "build_sma_with_filter_research_events",
+        "build_noop_baseline_events",
+        "build_buy_and_hold_baseline_events",
+        "_SMA_WITH_FILTER_PLUGIN",
+        "_NOOP_BASELINE_PLUGIN",
+        "_BUY_AND_HOLD_BASELINE_PLUGIN",
     )
     assert all(token not in source for token in forbidden)
+    assert "ResearchStrategyPlugin(" not in source
+
+
+def test_active_research_modules_do_not_import_common_types_from_backtest_engine() -> None:
+    active_modules = (
+        "src/bithumb_bot/research/validation_protocol.py",
+    )
+    for module in active_modules:
+        source = _source(module)
+        assert "from .backtest_engine import" not in source
+        assert "backtest_engine import" not in source
 
 
 def test_research_runnable_plugins_declare_event_builders_and_capabilities() -> None:

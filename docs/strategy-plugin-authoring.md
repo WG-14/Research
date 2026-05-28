@@ -16,6 +16,20 @@ The supported research architecture is:
 strategy-neutral `research.backtest_kernel` -> runtime replay, promotion, and
 live capability gates.
 
+`research.backtest_runner` is generic and strategy-neutral. It may call explicit
+plugin contract hooks such as `research_parameter_materializer` and
+`research_event_builder`, but it must not branch on strategy names or own
+strategy-specific defaults. Strategy-specific research materialization,
+exploratory legacy behavior, empty-event policy, event generation, diagnostics,
+and payload adaptation belong in plugin-owned modules.
+
+`research.strategy_registry` owns contract dataclasses, validation,
+registration, discovery, listing, resolving, and test reload behavior only. It
+does not define built-in plugin objects and does not import strategy-specific
+event builders. Built-in plugins are loaded through
+`bithumb_bot.strategy_plugins.iter_builtin_strategy_plugins()`, which should use
+lazy imports to avoid circular dependencies.
+
 1. Create a `StrategySpec`.
    - Include accepted, required, behavior-affecting, metadata-only, and
      research-only parameter names.
@@ -32,6 +46,8 @@ live capability gates.
      timing policy, portfolio policy, and run context needed by the strategy.
    - Runtime-only strategies must set the explicit non-runnable contract rather
      than relying on a missing research runner as an implicit signal.
+   - Built-in plugin definitions belong under `bithumb_bot.strategy_plugins`,
+     not in `research.strategy_registry`.
 
 3. Declare explicit `StrategyRuntimeCapabilities`.
    - Runtime capability is never inferred from adapter presence.
@@ -61,10 +77,13 @@ live capability gates.
    - Research execution should consume manifest-backed datasets and declared
      parameter values through `run_plugin_backtest`.
    - Strategy-specific historical feature and event generation belongs in the
-     plugin layer, not in `research/backtest_kernel.py`,
-     `research/backtest_engine.py`, or strategy-neutral registry internals.
-   - `research/backtest_engine.py` is deprecated compatibility-only. New call
-     sites should import the generic runner or kernel directly.
+     plugin layer, not in `research/backtest_runner.py`,
+     `research/backtest_kernel.py`, `research/backtest_engine.py`, or
+     strategy-neutral registry internals.
+   - `research/backtest_engine.py` is deprecated compatibility-only for old
+     import paths. Active research modules should import common types from
+     `backtest_types.py`, common helpers from `backtest_common.py`, and generic
+     execution through the runner or kernel directly.
    - New strategy PRs should normally modify plugin, spec, and test files. They
      should not add strategy-specific branches to common research files.
    - Do not couple research experiments directly to live runtime state.
@@ -77,7 +96,10 @@ live capability gates.
    - A non-SMA canary path proving generic platform files do not need
      strategy-specific branches.
    - Architecture guards preventing strategy-specific event generation from
-     re-entering common research modules.
+     re-entering common research modules. Guard tests enforce that
+     `backtest_runner`, `backtest_kernel`, `backtest_engine`,
+     `backtest_support`, and `strategy_registry` remain on their documented
+     side of the plugin boundary.
 
 9. Keep compatibility code isolated.
    - `strategy.registry` is legacy/smoke compatibility only.

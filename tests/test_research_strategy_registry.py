@@ -36,8 +36,13 @@ def test_research_strategy_registry_resolves_sma_with_filter() -> None:
     assert plugin.runtime_replay_builder is not None
     assert plugin.contract_payload()["diagnostics_namespace"] == "sma_with_filter"
     assert plugin.contract_payload()["runtime_replay_supported"] is True
-    assert plugin.contract_payload()["runner_module"] == "bithumb_bot.research.strategy_registry"
-    assert plugin.contract_payload()["runner_qualname"] == "_run_sma_with_filter"
+    assert plugin.contract_payload()["runner_module"] == "bithumb_bot.strategy_plugins.sma_with_filter_plugin"
+    assert plugin.contract_payload()["runner_qualname"] == "run_sma_with_filter_backtest"
+    assert plugin.contract_payload()["research_parameter_materializer_supported"] is True
+    assert (
+        plugin.contract_payload()["research_parameter_materializer_module"]
+        == "bithumb_bot.strategy_plugins.sma_with_filter_plugin"
+    )
     assert plugin.contract_payload()["runtime_replay_builder_module"] == "bithumb_bot.research.sma_with_filter_plugin"
     assert plugin.contract_payload()["runtime_replay_builder_qualname"] == "build_runtime_replay_strategy"
     assert plugin.contract_payload()["runtime_parameter_adapter_supported"] is True
@@ -144,7 +149,8 @@ def test_research_strategy_registry_resolves_noop_baseline_as_independent_plugin
     assert plugin.contract_payload()["runtime_parameter_from_settings_module"] is None
     assert plugin.contract_payload()["runtime_parameter_from_settings_qualname"] is None
     assert plugin.contract_payload()["diagnostics_namespace"] == "noop_baseline"
-    assert plugin.contract_payload()["runner_qualname"] == "_run_noop_baseline"
+    assert plugin.contract_payload()["runner_module"] == "bithumb_bot.strategy_plugins.baseline_plugins"
+    assert plugin.contract_payload()["runner_qualname"] == "run_noop_baseline_backtest"
     requirements = research_strategy_data_requirements("noop_baseline")
     assert requirements.required_data == ("candles",)
     assert requirements.optional_data == ()

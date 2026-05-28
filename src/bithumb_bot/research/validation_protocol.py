@@ -26,13 +26,13 @@ from .dataset_snapshot import (
     load_dataset_range,
     load_dataset_split,
 )
-from .backtest_engine import (
+from .backtest_common import execution_event_summary
+from .backtest_types import (
     BacktestHeartbeatPolicy,
     BacktestResourceLimitExceeded,
     BacktestResourceLimits,
     BacktestRun,
     BacktestRunContext,
-    execution_event_summary,
 )
 from .audit_trail import (
     AuditTraceScope,

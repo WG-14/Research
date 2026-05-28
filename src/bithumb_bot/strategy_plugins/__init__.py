@@ -11,8 +11,15 @@ STRATEGY_PLUGIN_ENTRY_POINT_GROUP = "bithumb_bot.strategy_plugins"
 
 
 def iter_builtin_strategy_plugins() -> Iterable[ResearchStrategyPlugin]:
+    from .baseline_plugins import BUY_AND_HOLD_BASELINE_PLUGIN, NOOP_BASELINE_PLUGIN
     from .canary_non_sma import CANARY_NON_SMA_PLUGIN
+    from .safe_hold_plugin import SAFE_HOLD_PLUGIN
+    from .sma_with_filter_plugin import SMA_WITH_FILTER_PLUGIN
 
+    yield SMA_WITH_FILTER_PLUGIN
+    yield NOOP_BASELINE_PLUGIN
+    yield BUY_AND_HOLD_BASELINE_PLUGIN
+    yield SAFE_HOLD_PLUGIN
     yield CANARY_NON_SMA_PLUGIN
 
 

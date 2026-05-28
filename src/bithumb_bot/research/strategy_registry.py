@@ -12,15 +12,13 @@ from .execution_model import ExecutionModel
 from .experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
 from .hashing import sha256_prefixed
 from .strategy_spec import (
-    BUY_AND_HOLD_BASELINE_SPEC,
-    NOOP_BASELINE_SPEC,
-    SMA_WITH_FILTER_SPEC,
     StrategySpec,
     materialize_strategy_parameters,
 )
 
 
 ResearchEventBuilder = Callable[..., tuple[ResearchDecisionEvent, ...]]
+ResearchParameterMaterializer = Callable[..., dict[str, Any]]
 
 
 ResearchStrategyRunner = Callable[
@@ -238,6 +236,7 @@ class ResearchStrategyPlugin:
     decision_contract_version: str
     diagnostics_namespace: str
     research_event_builder: ResearchEventBuilder | None = None
+    research_parameter_materializer: ResearchParameterMaterializer | None = None
     decision_payload_adapter: DecisionPayloadAdapter | None = None
     exit_signal_context_builder: ExitSignalContextBuilder | None = None
     exit_rule_factory: ExitRuleFactory | None = None
@@ -288,6 +287,17 @@ class ResearchStrategyPlugin:
             ),
             "research_event_builder_qualname": (
                 self.research_event_builder.__qualname__ if self.research_event_builder is not None else None
+            ),
+            "research_parameter_materializer_supported": self.research_parameter_materializer is not None,
+            "research_parameter_materializer_module": (
+                self.research_parameter_materializer.__module__
+                if self.research_parameter_materializer is not None
+                else None
+            ),
+            "research_parameter_materializer_qualname": (
+                self.research_parameter_materializer.__qualname__
+                if self.research_parameter_materializer is not None
+                else None
             ),
             "runtime_replay_supported": self.runtime_replay_builder is not None,
             "runtime_replay_builder_module": (
@@ -498,25 +508,9 @@ def resolve_research_strategy_plugin(strategy_name: str) -> ResearchStrategyPlug
 
 def resolve_research_strategy(strategy_name: str) -> ResearchStrategyRunner:
     if strategy_name == TEST_TOP_OF_BOOK_REQUIRED_STRATEGY:
-        return _run_sma_with_filter
+        return _run_private_required_data_test_hook
     return resolve_research_strategy_plugin(strategy_name).runner
 
-
-from . import sma_with_filter_plugin
-from bithumb_bot.strategy_plugins.baseline_events import (
-    build_buy_and_hold_baseline_events,
-    build_noop_baseline_events,
-)
-from bithumb_bot.strategy_plugins.sma_with_filter_events import build_sma_with_filter_research_events
-
-SAFE_HOLD_STRATEGY_NAME = "safe_hold"
-SAFE_HOLD_POLICY_CONTRACT_VERSION = "safe_hold_runtime_policy_v1"
-
-
-def _safe_hold_runtime_decision_adapter_factory() -> Any:
-    from bithumb_bot.runtime_adapters.safe_hold import SafeHoldRuntimeDecisionAdapter
-
-    return SafeHoldRuntimeDecisionAdapter()
 
 def runtime_strategy_parameters_from_env(strategy_name: str, env: dict[str, str]) -> dict[str, Any]:
     plugin = resolve_research_strategy_plugin(strategy_name)
@@ -584,113 +578,7 @@ def _assert_runtime_parameters_accepted(
         raise ResearchStrategyRegistryError(f"runtime parameter extraction returned unsupported keys:{plugin.name}:{joined}")
 
 
-def _run_plugin_backtest_by_name(
-    strategy_name: str,
-    *,
-    dataset: DatasetSnapshot,
-    parameter_values: dict[str, Any],
-    fee_rate: float,
-    slippage_bps: float,
-    parameter_stability_score: float | None = None,
-    execution_model: ExecutionModel | None = None,
-    execution_timing_policy: ExecutionTimingPolicy | None = None,
-    portfolio_policy: PortfolioPolicy | None = None,
-    context: BacktestRunContext | None = None,
-) -> BacktestRun:
-    from .backtest_runner import run_plugin_backtest
-
-    return run_plugin_backtest(
-        plugin=resolve_research_strategy_plugin(strategy_name),
-        dataset=dataset,
-        parameter_values=parameter_values,
-        fee_rate=fee_rate,
-        slippage_bps=slippage_bps,
-        parameter_stability_score=parameter_stability_score,
-        execution_model=execution_model,
-        execution_timing_policy=execution_timing_policy,
-        portfolio_policy=portfolio_policy,
-        context=context,
-    )
-
-
-def _run_sma_with_filter(
-    dataset: DatasetSnapshot,
-    parameter_values: dict[str, Any],
-    fee_rate: float,
-    slippage_bps: float,
-    parameter_stability_score: float | None = None,
-    execution_model: ExecutionModel | None = None,
-    execution_timing_policy: ExecutionTimingPolicy | None = None,
-    portfolio_policy: PortfolioPolicy | None = None,
-    context: BacktestRunContext | None = None,
-) -> BacktestRun:
-    _require_parameter(parameter_values, "SMA_SHORT")
-    _require_parameter(parameter_values, "SMA_LONG")
-    return _run_plugin_backtest_by_name(
-        "sma_with_filter",
-        dataset=dataset,
-        parameter_values=parameter_values,
-        fee_rate=fee_rate,
-        slippage_bps=slippage_bps,
-        parameter_stability_score=parameter_stability_score,
-        execution_model=execution_model,
-        execution_timing_policy=execution_timing_policy,
-        portfolio_policy=portfolio_policy,
-        context=context,
-    )
-
-
-def _run_noop_baseline(
-    dataset: DatasetSnapshot,
-    parameter_values: dict[str, Any],
-    fee_rate: float,
-    slippage_bps: float,
-    parameter_stability_score: float | None = None,
-    execution_model: ExecutionModel | None = None,
-    execution_timing_policy: ExecutionTimingPolicy | None = None,
-    portfolio_policy: PortfolioPolicy | None = None,
-    context: BacktestRunContext | None = None,
-) -> BacktestRun:
-    return _run_plugin_backtest_by_name(
-        "noop_baseline",
-        dataset=dataset,
-        parameter_values=parameter_values,
-        fee_rate=fee_rate,
-        slippage_bps=slippage_bps,
-        parameter_stability_score=parameter_stability_score,
-        execution_model=execution_model,
-        execution_timing_policy=execution_timing_policy,
-        portfolio_policy=portfolio_policy,
-        context=context,
-    )
-
-
-def _run_buy_and_hold_baseline(
-    dataset: DatasetSnapshot,
-    parameter_values: dict[str, Any],
-    fee_rate: float,
-    slippage_bps: float,
-    parameter_stability_score: float | None = None,
-    execution_model: ExecutionModel | None = None,
-    execution_timing_policy: ExecutionTimingPolicy | None = None,
-    portfolio_policy: PortfolioPolicy | None = None,
-    context: BacktestRunContext | None = None,
-) -> BacktestRun:
-    return _run_plugin_backtest_by_name(
-        "buy_and_hold_baseline",
-        dataset=dataset,
-        parameter_values=parameter_values,
-        fee_rate=fee_rate,
-        slippage_bps=slippage_bps,
-        parameter_stability_score=parameter_stability_score,
-        execution_model=execution_model,
-        execution_timing_policy=execution_timing_policy,
-        portfolio_policy=portfolio_policy,
-        context=context,
-    )
-
-
-def _run_safe_hold_research_placeholder(
+def _run_private_required_data_test_hook(
     dataset: DatasetSnapshot,
     parameter_values: dict[str, Any],
     fee_rate: float,
@@ -712,169 +600,10 @@ def _run_safe_hold_research_placeholder(
         portfolio_policy,
         context,
     )
-    raise ResearchStrategyRegistryError("safe_hold is runtime fallback only and has no research runner")
+    raise ResearchStrategyRegistryError("private required-data test hook should fail before backtest execution")
 
 
-def _require_parameter(parameter_values: dict[str, Any], key: str) -> None:
-    if key not in parameter_values:
-        raise ResearchStrategyRegistryError(f"sma_with_filter missing required parameter: {key}")
-
-
-_SMA_WITH_FILTER_PLUGIN = ResearchStrategyPlugin(
-    name=SMA_WITH_FILTER_SPEC.strategy_name,
-    version=SMA_WITH_FILTER_SPEC.strategy_version,
-    spec=SMA_WITH_FILTER_SPEC,
-    required_data=SMA_WITH_FILTER_SPEC.required_data,
-    optional_data=SMA_WITH_FILTER_SPEC.optional_data,
-    runner=_run_sma_with_filter,
-    research_event_builder=build_sma_with_filter_research_events,
-    runtime_replay_builder=sma_with_filter_plugin.build_runtime_replay_strategy,
-    runtime_parameter_adapter=RuntimeParameterAdapter(
-        from_env=sma_with_filter_plugin.runtime_parameters_from_env,
-        from_settings=sma_with_filter_plugin.runtime_parameters_from_settings,
-        env_keys=(
-            "SMA_SHORT",
-            "SMA_LONG",
-            "SMA_FILTER_GAP_MIN_RATIO",
-            "SMA_FILTER_VOL_WINDOW",
-            "SMA_FILTER_VOL_MIN_RANGE_RATIO",
-            "SMA_FILTER_OVEREXT_LOOKBACK",
-            "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO",
-            "SMA_MARKET_REGIME_ENABLED",
-            "SMA_COST_EDGE_ENABLED",
-            "SMA_COST_EDGE_MIN_RATIO",
-            "ENTRY_EDGE_BUFFER_RATIO",
-            "STRATEGY_MIN_EXPECTED_EDGE_RATIO",
-            "STRATEGY_ENTRY_SLIPPAGE_BPS",
-            "LIVE_FEE_RATE_ESTIMATE",
-            "STRATEGY_EXIT_RULES",
-            "STRATEGY_EXIT_STOP_LOSS_RATIO",
-            "STRATEGY_EXIT_MAX_HOLDING_MIN",
-            "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO",
-            "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO",
-        ),
-    ),
-    decision_contract_version=SMA_WITH_FILTER_SPEC.decision_contract_version,
-    diagnostics_namespace="sma_with_filter",
-    decision_payload_adapter=sma_with_filter_plugin.decision_payload_adapter,
-    exit_signal_context_builder=sma_with_filter_plugin.exit_signal_context,
-    exit_rule_factory=sma_with_filter_plugin.exit_rule_factory,
-    research_policy_decision_builder=sma_with_filter_plugin.research_policy_decision_builder,
-    research_export_normalizer=sma_with_filter_plugin.research_export_normalizer,
-    runtime_decision_adapter_factory=sma_with_filter_plugin.runtime_decision_adapter_factory,
-    single_replay_bundle_builder=sma_with_filter_plugin.single_replay_bundle_builder,
-    policy_assembly_factory=sma_with_filter_plugin.policy_assembly_factory,
-    runtime_capabilities=StrategyRuntimeCapabilities(
-        promotion_runtime_decisions_supported=True,
-        runtime_replay_supported=True,
-        research_only=False,
-        baseline_only=False,
-        live_dry_run_allowed=True,
-        live_real_order_allowed=True,
-        approved_profile_required=True,
-        fail_closed_reason="sma_with_filter_capability_missing",
-    ),
-)
-
-_NOOP_BASELINE_PLUGIN = ResearchStrategyPlugin(
-    name=NOOP_BASELINE_SPEC.strategy_name,
-    version=NOOP_BASELINE_SPEC.strategy_version,
-    spec=NOOP_BASELINE_SPEC,
-    required_data=NOOP_BASELINE_SPEC.required_data,
-    optional_data=NOOP_BASELINE_SPEC.optional_data,
-    runner=_run_noop_baseline,
-    research_event_builder=build_noop_baseline_events,
-    runtime_replay_builder=None,
-    runtime_parameter_adapter=None,
-    decision_contract_version=NOOP_BASELINE_SPEC.decision_contract_version,
-    diagnostics_namespace="noop_baseline",
-    runtime_capabilities=StrategyRuntimeCapabilities(
-        promotion_runtime_decisions_supported=False,
-        runtime_replay_supported=False,
-        research_only=True,
-        baseline_only=True,
-        live_dry_run_allowed=False,
-        live_real_order_allowed=False,
-        approved_profile_required=False,
-        fail_closed_reason="research_baseline_runtime_unsupported",
-    ),
-)
-
-_BUY_AND_HOLD_BASELINE_PLUGIN = ResearchStrategyPlugin(
-    name=BUY_AND_HOLD_BASELINE_SPEC.strategy_name,
-    version=BUY_AND_HOLD_BASELINE_SPEC.strategy_version,
-    spec=BUY_AND_HOLD_BASELINE_SPEC,
-    required_data=BUY_AND_HOLD_BASELINE_SPEC.required_data,
-    optional_data=BUY_AND_HOLD_BASELINE_SPEC.optional_data,
-    runner=_run_buy_and_hold_baseline,
-    research_event_builder=build_buy_and_hold_baseline_events,
-    runtime_replay_builder=None,
-    runtime_parameter_adapter=None,
-    decision_contract_version=BUY_AND_HOLD_BASELINE_SPEC.decision_contract_version,
-    diagnostics_namespace="buy_and_hold_baseline",
-    runtime_capabilities=StrategyRuntimeCapabilities(
-        promotion_runtime_decisions_supported=False,
-        runtime_replay_supported=False,
-        research_only=True,
-        baseline_only=True,
-        live_dry_run_allowed=False,
-        live_real_order_allowed=False,
-        approved_profile_required=False,
-        fail_closed_reason="research_baseline_runtime_unsupported",
-    ),
-)
-
-_SAFE_HOLD_SPEC = StrategySpec(
-    strategy_name=SAFE_HOLD_STRATEGY_NAME,
-    strategy_version=SAFE_HOLD_POLICY_CONTRACT_VERSION,
-    accepted_parameter_names=(),
-    required_parameter_names=(),
-    behavior_affecting_parameter_names=(),
-    metadata_only_parameter_names=(),
-    research_only_parameter_names=(),
-    default_parameters={},
-    decision_contract_version=SAFE_HOLD_POLICY_CONTRACT_VERSION,
-    required_data=("candles",),
-    optional_data=(),
-    exit_policy_schema={"schema_version": 1, "rules": (), "strategy_name": SAFE_HOLD_STRATEGY_NAME},
-)
-
-_SAFE_HOLD_PLUGIN = ResearchStrategyPlugin(
-    name=_SAFE_HOLD_SPEC.strategy_name,
-    version=_SAFE_HOLD_SPEC.strategy_version,
-    spec=_SAFE_HOLD_SPEC,
-    required_data=_SAFE_HOLD_SPEC.required_data,
-    optional_data=_SAFE_HOLD_SPEC.optional_data,
-    runner=_run_safe_hold_research_placeholder,
-    research_event_builder=None,
-    runtime_replay_builder=None,
-    runtime_parameter_adapter=None,
-    decision_contract_version=_SAFE_HOLD_SPEC.decision_contract_version,
-    diagnostics_namespace=SAFE_HOLD_STRATEGY_NAME,
-    runtime_decision_adapter_factory=_safe_hold_runtime_decision_adapter_factory,
-    research_runnable=False,
-    runtime_capabilities=StrategyRuntimeCapabilities(
-        promotion_runtime_decisions_supported=True,
-        runtime_replay_supported=False,
-        research_only=False,
-        baseline_only=False,
-        live_dry_run_allowed=False,
-        live_real_order_allowed=False,
-        approved_profile_required=False,
-        fail_closed_reason="safe_hold_runtime_fallback_not_live_eligible",
-    ),
-)
-
-
-_BUILTIN_RESEARCH_STRATEGY_PLUGINS: tuple[ResearchStrategyPlugin, ...] = (
-    _SMA_WITH_FILTER_PLUGIN,
-    _NOOP_BASELINE_PLUGIN,
-    _BUY_AND_HOLD_BASELINE_PLUGIN,
-    _SAFE_HOLD_PLUGIN,
-)
-_RESEARCH_STRATEGY_PLUGINS: dict[str, ResearchStrategyPlugin] = {
-    plugin.name: plugin for plugin in _BUILTIN_RESEARCH_STRATEGY_PLUGINS
-}
+_RESEARCH_STRATEGY_PLUGINS: dict[str, ResearchStrategyPlugin] = {}
 _DISCOVERED_STRATEGY_PLUGINS_LOADED = False
 
 
@@ -919,9 +648,7 @@ def reload_research_strategy_plugins_for_tests(
 ) -> None:
     """Reset plugin registry state for tests that monkeypatch discovery."""
     global _RESEARCH_STRATEGY_PLUGINS, _DISCOVERED_STRATEGY_PLUGINS_LOADED
-    _RESEARCH_STRATEGY_PLUGINS = {
-        plugin.name: plugin for plugin in _BUILTIN_RESEARCH_STRATEGY_PLUGINS
-    }
+    _RESEARCH_STRATEGY_PLUGINS = {}
     _DISCOVERED_STRATEGY_PLUGINS_LOADED = False
     if providers is None:
         _ensure_discovered_strategy_plugins_loaded()

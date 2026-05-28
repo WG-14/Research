@@ -20,7 +20,10 @@ from bithumb_bot.core.sma_policy import (
 )
 from bithumb_bot.canonical_decision import export_runtime_replay_decisions
 from bithumb_bot.market_regime import MARKET_REGIME_VERSION
-from bithumb_bot.strategy_plugins.sma_with_filter_events import SmaWithFilterDecisionAdapter
+from bithumb_bot.strategy_plugins.sma_with_filter_events import (
+    SmaWithFilterDecisionAdapter,
+    build_sma_with_filter_research_events,
+)
 from bithumb_bot.research.backtest_engine import run_sma_backtest
 from bithumb_bot.research import backtest_kernel
 from bithumb_bot.research import sma_with_filter_plugin
@@ -1059,6 +1062,127 @@ def test_runtime_db_and_research_adapter_policy_input_hashes_are_non_comparable_
         research_trace["execution_constraints"]["fee_authority"]
     )
     assert research_trace["position"]["terminal_state"] == "flat"
+
+
+def test_plugin_owned_sma_event_builder_matches_runtime_replay_decision_hash_with_explicit_scope_boundary() -> None:
+    closes = [10.0, 10.0, 10.0, 10.0, 11.0]
+    candidate_regime_policy = {
+        "regime_classifier_version": MARKET_REGIME_VERSION,
+        "allowed_regimes": (
+            "uptrend_high_vol_unknown",
+            "uptrend_high_vol_volume_normal",
+        ),
+        "blocked_regimes": (),
+        "regime_evidence": {},
+    }
+    parameter_values = _runtime_bound_sma_parameters(
+        STRATEGY_EXIT_STOP_LOSS_RATIO=0.0,
+        STRATEGY_EXIT_MAX_HOLDING_MIN=0,
+    )
+    assembly = SmaWithFilterPolicyAssembly()
+    materialized = assembly.materialize_parameters(
+        parameter_values,
+        MaterializationMode.RUNTIME_REPLAY,
+    )
+    strategy = assembly.build_strategy(
+        materialized,
+        pair="BTC_KRW",
+        interval="1m",
+        candidate_regime_policy=candidate_regime_policy,
+    )
+    conn = _build_candle_db(closes)
+    try:
+        runtime_decision = runtime_sma.decide_sma_with_filter_snapshot_from_db(
+            conn,
+            strategy,
+            through_ts_ms=1_700_000_240_000,
+        )
+    finally:
+        conn.close()
+
+    dataset = _dataset_from_closes(closes)
+    events = build_sma_with_filter_research_events(
+        dataset=dataset,
+        parameter_values=parameter_values,
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        execution_timing_policy=ExecutionTimingPolicy(),
+        portfolio_policy=None,
+        context=None,
+    )
+    research_event = events[-1]
+    research_decision = sma_with_filter_plugin.research_policy_decision_builder(
+        event=research_event,
+        dataset=dataset,
+        candle_index=len(closes) - 1,
+        position=_flat_position(),
+        parameter_values=parameter_values,
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        active_exit_policy={
+            "rules": ("stop_loss", "opposite_cross", "max_holding_time"),
+            "stop_loss": {"stop_loss_ratio": 0.0},
+            "max_holding_time": {"max_holding_min": 0},
+            "opposite_cross": {
+                "min_take_profit_ratio": 0.0,
+                "small_loss_tolerance_ratio": 0.0,
+            },
+        },
+        buy_fraction=0.99,
+        materialization_mode=MaterializationMode.RUNTIME_REPLAY,
+        candidate_regime_policy=candidate_regime_policy,
+        candidate_regime_policy_enforced=True,
+    )
+
+    assert runtime_decision is not None
+    assert research_decision is not None
+    runtime_context = runtime_decision.context
+    runtime_trace = runtime_context["pure_policy_trace"]
+    research_trace = research_decision.as_trace()
+    assert runtime_trace["market"]["candle_ts"] == research_trace["market"]["candle_ts"]
+    assert runtime_trace["market"]["last_close"] == research_trace["market"]["last_close"]
+    assert runtime_trace["market"]["prev_s"] == research_trace["market"]["prev_s"]
+    assert runtime_trace["market"]["prev_l"] == research_trace["market"]["prev_l"]
+    assert runtime_trace["market"]["curr_s"] == research_trace["market"]["curr_s"]
+    assert runtime_trace["market"]["curr_l"] == research_trace["market"]["curr_l"]
+    assert runtime_context["policy_decision_hash"] == research_decision.policy_decision_hash
+    assert runtime_trace["final_signal"] == research_trace["final_signal"]
+    assert runtime_trace["final_reason"] == research_trace["final_reason"]
+    assert runtime_trace["execution_intent"] == research_trace["execution_intent"]
+
+    non_comparable_scope = {
+        "policy_input_hash": (
+            runtime_trace["market"]["previous_cross_state"],
+            research_trace["market"]["previous_cross_state"],
+            "runtime_db_replay_does_not_derive_previous_cross_state_from_plugin_event_history",
+        ),
+        "replay_fingerprint_hash": (
+            runtime_context.get("replay_fingerprint_hash"),
+            "research_kernel_only_decision_field",
+            "runtime_snapshot_builder_exposes_replay_fingerprint_payload_without_top_level_hash",
+        ),
+        "execution_submit_plan_hash": (
+            runtime_context.get("execution_submit_plan_hash"),
+            "research_kernel_only_decision_field",
+            "runtime_snapshot_replay_lacks_live_readiness_context_for_submit_plan_reconstruction",
+        ),
+    }
+    assert runtime_context["policy_input_hash"] != research_decision.policy_input_hash
+    assert non_comparable_scope["policy_input_hash"] == (
+        "unknown",
+        "below",
+        "runtime_db_replay_does_not_derive_previous_cross_state_from_plugin_event_history",
+    )
+    assert non_comparable_scope["replay_fingerprint_hash"] == (
+        None,
+        "research_kernel_only_decision_field",
+        "runtime_snapshot_builder_exposes_replay_fingerprint_payload_without_top_level_hash",
+    )
+    assert non_comparable_scope["execution_submit_plan_hash"] == (
+        None,
+        "research_kernel_only_decision_field",
+        "runtime_snapshot_replay_lacks_live_readiness_context_for_submit_plan_reconstruction",
+    )
 
 
 def test_research_adapter_does_not_override_policy_first_cross_when_prev_above_unknown() -> None:
