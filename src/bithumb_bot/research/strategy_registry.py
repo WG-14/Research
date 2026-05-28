@@ -250,7 +250,7 @@ class ResearchStrategyPlugin:
 
     def __post_init__(self) -> None:
         if self.runtime_capabilities is None:
-            object.__setattr__(self, "runtime_capabilities", _legacy_inferred_runtime_capabilities(self))
+            raise ValueError(f"strategy runtime capabilities must be explicit: {self.name}")
         if self.runtime_capabilities.runtime_replay_supported != (self.runtime_replay_builder is not None):
             raise ValueError(f"strategy runtime replay capability mismatch: {self.name}")
         if (
@@ -482,6 +482,15 @@ def resolve_research_strategy(strategy_name: str) -> ResearchStrategyRunner:
 
 from . import sma_with_filter_plugin
 
+SAFE_HOLD_STRATEGY_NAME = "safe_hold"
+SAFE_HOLD_POLICY_CONTRACT_VERSION = "safe_hold_runtime_policy_v1"
+
+
+def _safe_hold_runtime_decision_adapter_factory() -> Any:
+    from bithumb_bot.runtime_adapters.safe_hold import SafeHoldRuntimeDecisionAdapter
+
+    return SafeHoldRuntimeDecisionAdapter()
+
 def runtime_strategy_parameters_from_env(strategy_name: str, env: dict[str, str]) -> dict[str, Any]:
     plugin = resolve_research_strategy_plugin(strategy_name)
     generic = _strategy_parameters_json_from_env(env)
@@ -622,6 +631,31 @@ def _run_buy_and_hold_baseline(
     )
 
 
+def _run_safe_hold_research_placeholder(
+    dataset: DatasetSnapshot,
+    parameter_values: dict[str, Any],
+    fee_rate: float,
+    slippage_bps: float,
+    parameter_stability_score: float | None = None,
+    execution_model: ExecutionModel | None = None,
+    execution_timing_policy: ExecutionTimingPolicy | None = None,
+    portfolio_policy: PortfolioPolicy | None = None,
+    context: BacktestRunContext | None = None,
+) -> BacktestRun:
+    del (
+        dataset,
+        parameter_values,
+        fee_rate,
+        slippage_bps,
+        parameter_stability_score,
+        execution_model,
+        execution_timing_policy,
+        portfolio_policy,
+        context,
+    )
+    raise ResearchStrategyRegistryError("safe_hold is runtime fallback only and has no research runner")
+
+
 def _require_parameter(parameter_values: dict[str, Any], key: str) -> None:
     if key not in parameter_values:
         raise ResearchStrategyRegistryError(f"sma_with_filter missing required parameter: {key}")
@@ -727,11 +761,51 @@ _BUY_AND_HOLD_BASELINE_PLUGIN = ResearchStrategyPlugin(
     ),
 )
 
+_SAFE_HOLD_SPEC = StrategySpec(
+    strategy_name=SAFE_HOLD_STRATEGY_NAME,
+    strategy_version=SAFE_HOLD_POLICY_CONTRACT_VERSION,
+    accepted_parameter_names=(),
+    required_parameter_names=(),
+    behavior_affecting_parameter_names=(),
+    metadata_only_parameter_names=(),
+    research_only_parameter_names=(),
+    default_parameters={},
+    decision_contract_version=SAFE_HOLD_POLICY_CONTRACT_VERSION,
+    required_data=("candles",),
+    optional_data=(),
+    exit_policy_schema={"schema_version": 1, "rules": (), "strategy_name": SAFE_HOLD_STRATEGY_NAME},
+)
+
+_SAFE_HOLD_PLUGIN = ResearchStrategyPlugin(
+    name=_SAFE_HOLD_SPEC.strategy_name,
+    version=_SAFE_HOLD_SPEC.strategy_version,
+    spec=_SAFE_HOLD_SPEC,
+    required_data=_SAFE_HOLD_SPEC.required_data,
+    optional_data=_SAFE_HOLD_SPEC.optional_data,
+    runner=_run_safe_hold_research_placeholder,
+    runtime_replay_builder=None,
+    runtime_parameter_adapter=None,
+    decision_contract_version=_SAFE_HOLD_SPEC.decision_contract_version,
+    diagnostics_namespace=SAFE_HOLD_STRATEGY_NAME,
+    runtime_decision_adapter_factory=_safe_hold_runtime_decision_adapter_factory,
+    runtime_capabilities=StrategyRuntimeCapabilities(
+        promotion_runtime_decisions_supported=True,
+        runtime_replay_supported=False,
+        research_only=False,
+        baseline_only=False,
+        live_dry_run_allowed=False,
+        live_real_order_allowed=False,
+        approved_profile_required=False,
+        fail_closed_reason="safe_hold_runtime_fallback_not_live_eligible",
+    ),
+)
+
 
 _BUILTIN_RESEARCH_STRATEGY_PLUGINS: tuple[ResearchStrategyPlugin, ...] = (
     _SMA_WITH_FILTER_PLUGIN,
     _NOOP_BASELINE_PLUGIN,
     _BUY_AND_HOLD_BASELINE_PLUGIN,
+    _SAFE_HOLD_PLUGIN,
 )
 _RESEARCH_STRATEGY_PLUGINS: dict[str, ResearchStrategyPlugin] = {
     plugin.name: plugin for plugin in _BUILTIN_RESEARCH_STRATEGY_PLUGINS

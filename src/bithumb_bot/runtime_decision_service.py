@@ -15,7 +15,6 @@ from .runtime_strategy_decision import (
     legacy_db_strategy_fallback_allowed,
     list_runtime_decision_adapters,
     promotion_grade_typed_runtime_decision_required,
-    register_runtime_decision_adapter,
     typed_runtime_handoff_failure_reason,
 )
 from .runtime_decision_contract import (
@@ -43,6 +42,5 @@ __all__ = [
     "legacy_db_strategy_fallback_allowed",
     "list_runtime_decision_adapters",
     "promotion_grade_typed_runtime_decision_required",
-    "register_runtime_decision_adapter",
     "typed_runtime_handoff_failure_reason",
 ]

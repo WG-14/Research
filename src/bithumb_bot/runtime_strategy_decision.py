@@ -92,21 +92,9 @@ class RuntimeDecisionAdapter(Protocol):
 
 RuntimeDecisionAdapterFactory = Callable[[], RuntimeDecisionAdapter]
 
-_RUNTIME_DECISION_ADAPTERS: dict[str, RuntimeDecisionAdapterFactory] = {}
-_BOOTSTRAP_IN_PROGRESS = False
-
-
-def _ensure_builtin_adapters_registered() -> None:
-    global _BOOTSTRAP_IN_PROGRESS
-    if _BOOTSTRAP_IN_PROGRESS:
-        return
-    _BOOTSTRAP_IN_PROGRESS = True
-    try:
-        from .runtime_adapter_bootstrap import ensure_runtime_decision_adapters_registered
-
-        ensure_runtime_decision_adapters_registered()
-    finally:
-        _BOOTSTRAP_IN_PROGRESS = False
+_DERIVED_RUNTIME_DECISION_ADAPTER_CACHE: dict[tuple[str, str, str], RuntimeDecisionAdapter] = {}
+_TEST_ONLY_RUNTIME_DECISION_ADAPTERS: dict[str, RuntimeDecisionAdapterFactory] = {}
+_RUNTIME_DECISION_ADAPTERS = _TEST_ONLY_RUNTIME_DECISION_ADAPTERS
 
 
 def _normalize_name(name: str) -> str:
@@ -120,22 +108,65 @@ def register_runtime_decision_adapter(
     name: str,
     factory: RuntimeDecisionAdapterFactory,
 ) -> None:
-    _RUNTIME_DECISION_ADAPTERS[_normalize_name(name)] = factory
+    """Compatibility test hook.
+
+    Production runtime adapter resolution is derived from ResearchStrategyPlugin
+    manifests. Registering here intentionally does not make an unregistered
+    strategy runtime-resolvable.
+    """
+    _TEST_ONLY_RUNTIME_DECISION_ADAPTERS[_normalize_name(name)] = factory
 
 
 def reset_runtime_decision_adapters_for_tests() -> None:
-    _RUNTIME_DECISION_ADAPTERS.clear()
+    _DERIVED_RUNTIME_DECISION_ADAPTER_CACHE.clear()
+    _TEST_ONLY_RUNTIME_DECISION_ADAPTERS.clear()
 
 
 def list_runtime_decision_adapters() -> tuple[str, ...]:
-    _ensure_builtin_adapters_registered()
-    return tuple(sorted(_RUNTIME_DECISION_ADAPTERS))
+    from .research.strategy_registry import list_research_strategy_plugins
+
+    return tuple(
+        sorted(
+            plugin.name
+            for plugin in list_research_strategy_plugins()
+            if plugin.runtime_capabilities.promotion_runtime_decisions_supported
+            and plugin.runtime_decision_adapter_factory is not None
+        )
+    )
 
 
 def get_runtime_decision_adapter(name: str) -> RuntimeDecisionAdapter | None:
-    _ensure_builtin_adapters_registered()
-    factory = _RUNTIME_DECISION_ADAPTERS.get(_normalize_name(name))
-    return None if factory is None else factory()
+    from .research.strategy_registry import ResearchStrategyRegistryError, resolve_research_strategy_plugin
+
+    key = _normalize_name(name)
+    try:
+        plugin = resolve_research_strategy_plugin(key)
+    except ResearchStrategyRegistryError:
+        return None
+    if not plugin.runtime_capabilities.promotion_runtime_decisions_supported:
+        return None
+    test_factory = _TEST_ONLY_RUNTIME_DECISION_ADAPTERS.get(plugin.name)
+    factory = test_factory or plugin.runtime_decision_adapter_factory
+    if factory is None:
+        return None
+    if test_factory is not None:
+        adapter = test_factory()
+        adapter_name = _normalize_name(getattr(adapter, "strategy_name", ""))
+        if adapter_name != plugin.name:
+            raise RuntimeError(f"runtime_decision_adapter_name_mismatch:{plugin.name}:{adapter_name}")
+        return adapter
+    contract_hash = plugin.contract_hash()
+    cache_key = (plugin.name, contract_hash, "plugin")
+    cached = _DERIVED_RUNTIME_DECISION_ADAPTER_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    adapter = factory()
+    adapter_name = _normalize_name(getattr(adapter, "strategy_name", ""))
+    if adapter_name != plugin.name:
+        raise RuntimeError(f"runtime_decision_adapter_name_mismatch:{plugin.name}:{adapter_name}")
+    _DERIVED_RUNTIME_DECISION_ADAPTER_CACHE.clear()
+    _DERIVED_RUNTIME_DECISION_ADAPTER_CACHE[cache_key] = adapter
+    return adapter
 
 
 def is_runtime_strategy_decision_result(value: object) -> bool:

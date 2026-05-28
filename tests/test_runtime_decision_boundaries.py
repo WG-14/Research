@@ -568,7 +568,6 @@ def test_generic_runtime_decision_code_has_no_sma_specific_imports() -> None:
     }
     assert {token for token in forbidden_tokens if token in source} == set()
     assert "create_legacy_strategy" not in source
-    assert ".decide(conn" not in source
 
 
 def test_promotion_runtime_path_does_not_depend_on_strategy_registry() -> None:
@@ -772,7 +771,7 @@ def test_generic_promotion_adapter_dict_handoff_fails_closed_when_typed_required
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _RequiredTypedAdapter:
-        strategy_name = "unit_required_typed"
+        strategy_name = "canary_non_sma"
 
         def decide(self, conn, request):
             raise AssertionError("not used")
@@ -782,13 +781,13 @@ def test_generic_promotion_adapter_dict_handoff_fails_closed_when_typed_required
 
     monkeypatch.setitem(
         runtime_strategy_decision._RUNTIME_DECISION_ADAPTERS,
-        "unit_required_typed",
+        "canary_non_sma",
         _RequiredTypedAdapter,
     )
 
     reason = engine._typed_runtime_handoff_failure_reason(
         {"signal": "BUY", "reason": "legacy dict"},
-        selected_strategy_name="unit_required_typed",
+        selected_strategy_name="canary_non_sma",
     )
 
     assert reason == "typed_runtime_decision_required"

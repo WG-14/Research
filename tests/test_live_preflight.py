@@ -445,6 +445,42 @@ def test_live_preflight_skips_paper_mode() -> None:
     config.validate_live_real_order_execution_preflight(settings)
 
 
+def test_live_preflight_validates_active_strategy_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_valid_live_defaults(monkeypatch)
+    monkeypatch.setenv("ACTIVE_STRATEGIES", "sma_with_filter,sma_cross")
+
+    with pytest.raises(config.LiveModeValidationError) as exc:
+        config.validate_live_mode_preflight(settings)
+
+    msg = str(exc.value)
+    assert "runtime_strategy_set_selection_failed" in msg
+    assert "sma_cross:strategy_plugin_not_registered" in msg
+
+
+def test_live_preflight_rejects_invalid_runtime_strategy_set_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_valid_live_defaults(monkeypatch)
+    monkeypatch.setenv("RUNTIME_STRATEGY_SET_JSON", '{"strategies": "not-a-list"}')
+
+    with pytest.raises(config.LiveModeValidationError) as exc:
+        config.validate_live_mode_preflight(settings)
+
+    msg = str(exc.value)
+    assert "runtime_strategy_set_selection_failed" in msg
+    assert "runtime_strategy_set_json_must_be_list" in msg
+
+
+def test_runtime_strategy_set_preflight_accepts_valid_single_strategy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_valid_live_defaults(monkeypatch)
+    monkeypatch.delenv("ACTIVE_STRATEGIES", raising=False)
+    monkeypatch.delenv("RUNTIME_STRATEGY_SET_JSON", raising=False)
+
+    config.validate_runtime_strategy_set_selection(settings)
+
+
 def test_live_real_order_execution_preflight_rejects_live_dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_valid_live_defaults(monkeypatch)
 

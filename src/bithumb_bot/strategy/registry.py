@@ -27,11 +27,11 @@ def _normalize_name(name: str) -> str:
     return key
 
 
-def register_strategy_policy(name: str, factory: StrategyPolicyFactory) -> None:
+def register_smoke_strategy_policy(name: str, factory: StrategyPolicyFactory) -> None:
     _POLICY_REGISTRY[_normalize_name(name)] = factory
 
 
-def create_strategy_policy(name: str, **kwargs) -> StrategyPolicy:
+def create_smoke_strategy_policy(name: str, **kwargs) -> StrategyPolicy:
     key = _normalize_name(name)
     factory = _POLICY_REGISTRY.get(key)
     if factory is None:
@@ -43,15 +43,30 @@ def create_strategy_policy(name: str, **kwargs) -> StrategyPolicy:
     return policy
 
 
-def list_strategy_policies() -> tuple[str, ...]:
+def list_smoke_strategy_policies() -> tuple[str, ...]:
     return tuple(sorted(_POLICY_REGISTRY))
 
 
-def register_legacy_strategy(name: str, factory: LegacyStrategyFactory) -> None:
+def register_strategy_policy(name: str, factory: StrategyPolicyFactory) -> None:
+    """Deprecated compatibility alias for smoke strategy policies only."""
+    register_smoke_strategy_policy(name, factory)
+
+
+def create_strategy_policy(name: str, **kwargs) -> StrategyPolicy:
+    """Deprecated compatibility alias for smoke strategy policies only."""
+    return create_smoke_strategy_policy(name, **kwargs)
+
+
+def list_strategy_policies() -> tuple[str, ...]:
+    """Deprecated compatibility alias for smoke strategy policies only."""
+    return list_smoke_strategy_policies()
+
+
+def register_legacy_db_strategy(name: str, factory: LegacyStrategyFactory) -> None:
     _LEGACY_REGISTRY[_normalize_name(name)] = factory
 
 
-def create_legacy_strategy(name: str, **kwargs) -> LegacyDbStrategy:
+def create_legacy_db_strategy(name: str, **kwargs) -> LegacyDbStrategy:
     key = _normalize_name(name)
     factory = _LEGACY_REGISTRY.get(key)
     if factory is None:
@@ -60,19 +75,35 @@ def create_legacy_strategy(name: str, **kwargs) -> LegacyDbStrategy:
     return factory(**kwargs)
 
 
-def list_legacy_strategies() -> tuple[str, ...]:
+def list_legacy_db_strategies() -> tuple[str, ...]:
     return tuple(sorted(_LEGACY_REGISTRY))
 
 
+def register_legacy_strategy(name: str, factory: LegacyStrategyFactory) -> None:
+    """Deprecated compatibility alias for DB-bound smoke strategies only."""
+    register_legacy_db_strategy(name, factory)
+
+
+def create_legacy_strategy(name: str, **kwargs) -> LegacyDbStrategy:
+    """Deprecated compatibility alias for DB-bound smoke strategies only."""
+    return create_legacy_db_strategy(name, **kwargs)
+
+
+def list_legacy_strategies() -> tuple[str, ...]:
+    """Deprecated compatibility alias for DB-bound smoke strategies only."""
+    return list_legacy_db_strategies()
+
+
 def register_strategy(name: str, factory: StrategyFactory) -> None:
-    """Compatibility registration for DB-bound smoke strategies only."""
-    register_legacy_strategy(name, factory)
+    """Deprecated compatibility alias for DB-bound smoke strategies only."""
+    register_legacy_db_strategy(name, factory)
 
 
 def create_strategy(name: str, **kwargs) -> LegacyDbStrategy:
-    """Compatibility creation for DB-bound smoke strategies only."""
-    return create_legacy_strategy(name, **kwargs)
+    """Deprecated compatibility alias for DB-bound smoke strategies only."""
+    return create_legacy_db_strategy(name, **kwargs)
 
 
 def list_strategies() -> tuple[str, ...]:
-    return list_legacy_strategies()
+    """Deprecated compatibility alias for DB-bound smoke strategies only."""
+    return list_legacy_db_strategies()

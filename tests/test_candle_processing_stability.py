@@ -403,6 +403,51 @@ def test_run_loop_processes_latest_closed_candle_and_persists_it(monkeypatch, ca
     assert runtime_state.snapshot().last_processed_candle_ts_ms == closed_ts
 
 
+def test_run_loop_does_not_mark_candle_processed_when_decision_persistence_fails(
+    monkeypatch,
+    caplog,
+):
+    closed_ts = 0
+    open_ts = 60_000
+    _insert_candle(closed_ts, 100.0)
+    _insert_candle(open_ts, 101.0)
+
+    monkeypatch.setattr("bithumb_bot.engine.cmd_sync", lambda quiet=True: None)
+    monkeypatch.setattr("bithumb_bot.engine.parse_interval_sec", lambda _: 60)
+    monkeypatch.setattr(
+        "bithumb_bot.engine.compute_signal",
+        lambda _conn, *, through_ts_ms=None, strategy_name=None: _runtime_handoff(
+            candle_ts=through_ts_ms,
+            price=100.0,
+            final_signal="HOLD",
+        ),
+    )
+
+    def _record_failure(*_args, **_kwargs):
+        raise RuntimeError("unit persistence failure")
+
+    monkeypatch.setattr("bithumb_bot.engine.record_strategy_decision", _record_failure)
+    times = iter([64.0, 65.0, 65.0])
+    monkeypatch.setattr("bithumb_bot.engine.time.time", lambda: next(times, 65.0))
+    sleep_calls = {"n": 0}
+
+    def _sleep(_sec: float) -> None:
+        sleep_calls["n"] += 1
+        if sleep_calls["n"] >= 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr("bithumb_bot.engine.time.sleep", _sleep)
+
+    with caplog.at_level("INFO", logger="bithumb_bot.run"):
+        run_loop()
+
+    output = caplog.text
+    assert "[WARN] strategy decision persistence failed" in output
+    assert "decision_persistence_failed_retryable" in output
+    assert "[RUN] processed closed candle" not in output
+    assert runtime_state.snapshot().last_processed_candle_ts_ms != closed_ts
+
+
 def test_run_loop_uses_closed_candle_for_signal_and_trade_log_correlation(monkeypatch, caplog):
     closed_ts = 0
     open_ts = 60_000

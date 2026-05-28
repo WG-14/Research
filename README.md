@@ -158,6 +158,7 @@ Operator reporting reference:
 Research validation reference:
 
 - [`docs/research-validation.md`](/docs/research-validation.md)
+- [`docs/strategy-plugin-authoring.md`](/docs/strategy-plugin-authoring.md)
 
 ## Smoke / Manual DB Validation
 

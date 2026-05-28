@@ -354,6 +354,101 @@ def validate_live_strategy_selection(cfg: Settings) -> None:
         )
 
 
+def validate_runtime_strategy_set_selection(cfg: Settings) -> None:
+    """Validate the exact active runtime strategy set before the run loop starts."""
+    from .research.strategy_registry import (
+        ResearchStrategyRegistryError,
+        resolve_research_strategy_plugin,
+        runtime_strategy_parameters_from_settings,
+        strategy_runtime_capability_issues,
+    )
+    from .approved_profile import PROFILE_HASH_FIELD, load_approved_profile
+    from .runtime_strategy_decision import get_runtime_decision_adapter
+    from .runtime_strategy_set import RuntimeStrategySetResolver
+
+    try:
+        strategy_set = RuntimeStrategySetResolver(settings_obj=cfg).resolve()
+    except Exception as exc:
+        raise LiveModeValidationError(
+            f"runtime_strategy_set_selection_failed: resolve_failed:{type(exc).__name__}:{exc}"
+        ) from exc
+
+    issues: list[str] = []
+    live_like = str(cfg.MODE or "").strip().lower() == "live"
+    for spec in strategy_set.active_strategies:
+        issue_count_before_spec = len(issues)
+        try:
+            plugin = resolve_research_strategy_plugin(spec.strategy_name)
+        except ResearchStrategyRegistryError as exc:
+            issues.append(f"{spec.strategy_name}:strategy_plugin_not_registered:{exc}")
+            continue
+
+        issues.extend(
+            f"{spec.strategy_name}:{issue}"
+            for issue in strategy_runtime_capability_issues(
+                spec.strategy_name,
+                live_dry_run=bool(cfg.LIVE_DRY_RUN),
+                live_real_order_armed=bool(cfg.LIVE_REAL_ORDER_ARMED),
+                approved_profile_path=(
+                    str(spec.approved_profile_path or "").strip()
+                    or str(cfg.APPROVED_STRATEGY_PROFILE_PATH or "").strip()
+                    or str(getattr(cfg, "STRATEGY_APPROVED_PROFILE_PATH", "") or "").strip()
+                ),
+                require_promotion_runtime=True,
+                require_runtime_replay=live_like,
+                require_runtime_decision_adapter=True,
+            )
+        )
+
+        unexpected = sorted(set(spec.parameters or {}) - set(plugin.spec.accepted_parameter_names))
+        if unexpected:
+            issues.append(
+                f"{spec.strategy_name}:runtime_strategy_parameters_unsupported:{','.join(unexpected)}"
+            )
+        elif spec.parameters:
+            missing = sorted(set(plugin.spec.required_parameter_names) - set(spec.parameters or {}))
+            if missing:
+                issues.append(
+                    f"{spec.strategy_name}:runtime_strategy_parameters_missing_required:{','.join(missing)}"
+                )
+        else:
+            try:
+                runtime_strategy_parameters_from_settings(spec.strategy_name, cfg)
+            except Exception as exc:
+                issues.append(
+                    f"{spec.strategy_name}:runtime_strategy_parameters_invalid:{type(exc).__name__}:{exc}"
+                )
+
+        try:
+            adapter = get_runtime_decision_adapter(spec.strategy_name)
+        except Exception as exc:
+            issues.append(
+                f"{spec.strategy_name}:runtime_decision_adapter_invalid:{type(exc).__name__}:{exc}"
+            )
+        else:
+            if adapter is None:
+                issues.append(f"{spec.strategy_name}:runtime_decision_adapter_unavailable")
+
+        if spec.approved_profile_hash and spec.approved_profile_path and len(issues) == issue_count_before_spec:
+            try:
+                profile = load_approved_profile(spec.approved_profile_path)
+                profile_hash = str(profile.get(PROFILE_HASH_FIELD) or "")
+                if profile_hash != spec.approved_profile_hash:
+                    issues.append(f"{spec.strategy_name}:approved_profile_hash_mismatch")
+            except Exception as exc:
+                issues.append(
+                    f"{spec.strategy_name}:approved_profile_hash_validation_failed:{type(exc).__name__}:{exc}"
+                )
+        if spec.runtime_contract_hash and not str(spec.runtime_contract_hash).startswith("sha256:"):
+            issues.append(f"{spec.strategy_name}:runtime_contract_hash_invalid")
+
+    if issues:
+        raise LiveModeValidationError(
+            "runtime_strategy_set_selection_failed: "
+            f"source={strategy_set.source}; reasons=" + "; ".join(issues)
+        )
+
+
 def _normalize_config_market_input(raw_market: str, *, env_key: str, strict_canonical: bool) -> str:
     token = str(raw_market or "").strip().upper()
     if not token:
@@ -940,6 +1035,10 @@ def validate_live_mode_preflight(cfg: Settings) -> None:
     issues: list[str] = []
     try:
         validate_live_strategy_selection(cfg)
+    except LiveModeValidationError as exc:
+        issues.append(str(exc))
+    try:
+        validate_runtime_strategy_set_selection(cfg)
     except LiveModeValidationError as exc:
         issues.append(str(exc))
     if (

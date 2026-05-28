@@ -23,6 +23,7 @@ from bithumb_bot.runtime_sma_snapshot import build_sma_with_filter_replay_bundle
 from bithumb_bot.research.strategy_registry import (
     ResearchStrategyRegistryError,
     resolve_research_strategy_plugin,
+    runtime_strategy_parameters_from_settings,
 )
 import bithumb_bot.strategy.base as strategy_base
 import bithumb_bot.strategy.registry as strategy_registry
@@ -33,18 +34,18 @@ from bithumb_bot.strategy.sma_legacy_adapter import (
     create_legacy_sma_with_filter_db_adapter,
 )
 from bithumb_bot.strategy import (
-    create_legacy_strategy,
-    create_strategy_policy,
-    list_legacy_strategies,
-    list_strategy_policies,
+    create_legacy_db_strategy,
+    create_smoke_strategy_policy,
+    list_legacy_db_strategies,
+    list_smoke_strategy_policies,
 )
 from bithumb_bot.strategy.base import StrategyDecision
 
 
 def test_registry_default_strategy_available() -> None:
-    assert "sma_cross" in list_legacy_strategies()
-    assert "sma_cross" not in list_strategy_policies()
-    assert "sma_with_filter" in list_strategy_policies()
+    assert "sma_cross" in list_legacy_db_strategies()
+    assert "sma_cross" not in list_smoke_strategy_policies()
+    assert "sma_with_filter" in list_smoke_strategy_policies()
 
 
 def test_public_sma_with_filter_name_resolves_to_policy_strategy() -> None:
@@ -65,11 +66,11 @@ def test_legacy_sma_adapter_has_explicit_non_policy_name() -> None:
 
 
 def test_live_policy_registry_cannot_instantiate_legacy_sma_with_filter_adapter() -> None:
-    policy = create_strategy_policy("sma_with_filter", short_n=2, long_n=3)
+    policy = create_smoke_strategy_policy("sma_with_filter", short_n=2, long_n=3)
 
     assert policy.__class__.__module__ == "bithumb_bot.strategy.sma_policy_strategy"
     assert not isinstance(policy, LegacySmaWithFilterDbAdapter)
-    assert "sma_with_filter" not in list_legacy_strategies()
+    assert "sma_with_filter" not in list_legacy_db_strategies()
 
 
 def test_db_bound_strategy_protocol_is_explicitly_legacy() -> None:
@@ -85,8 +86,8 @@ def test_db_bound_strategy_protocol_is_explicitly_legacy() -> None:
 
 
 def test_registry_has_separate_policy_and_legacy_creation_paths() -> None:
-    policy_annotations = strategy_registry.create_strategy_policy.__annotations__
-    legacy_annotations = strategy_registry.create_legacy_strategy.__annotations__
+    policy_annotations = strategy_registry.create_smoke_strategy_policy.__annotations__
+    legacy_annotations = strategy_registry.create_legacy_db_strategy.__annotations__
 
     assert "StrategyPolicy" in str(policy_annotations.get("return"))
     assert "LegacyDbStrategy" in str(legacy_annotations.get("return"))
@@ -238,6 +239,18 @@ def test_live_sma_with_filter_route_does_not_call_legacy_decide(
         "decide_sma_with_filter_runtime_snapshot_from_db",
         _snapshot_boundary,
     )
+    import bithumb_bot.runtime_strategy_set as runtime_strategy_set
+
+    monkeypatch.setattr(
+        runtime_strategy_set,
+        "load_approved_profile",
+            lambda _path: {
+                "profile_mode": "small_live",
+                "profile_content_hash": "sha256:unit",
+                "strategy_parameters": runtime_strategy_parameters_from_settings("sma_with_filter", settings),
+            },
+        )
+    monkeypatch.setattr(runtime_strategy_set, "diff_profile_to_runtime", lambda *_args, **_kwargs: ())
 
     db_path = str(tmp_path / "strategy_no_legacy_decide.sqlite")
     os.environ["DB_PATH"] = db_path
@@ -405,7 +418,7 @@ def test_runtime_replay_bundle_contains_reproducibility_material(tmp_path) -> No
             )
         conn.commit()
 
-        strategy = create_strategy_policy(
+        strategy = create_smoke_strategy_policy(
             "sma_with_filter",
             short_n=2,
             long_n=3,
@@ -571,7 +584,7 @@ def test_replay_bundle_code_provenance_schema_survives_git_unavailable(monkeypat
                 (ts, settings.PAIR, settings.INTERVAL, close, close, close, close, 1.0),
             )
         conn.commit()
-        strategy = create_strategy_policy(
+        strategy = create_smoke_strategy_policy(
             "sma_with_filter",
             short_n=2,
             long_n=3,
@@ -778,11 +791,11 @@ def test_sma_cross_is_excluded_from_research_promotion_plugin_registry() -> None
 
 def test_registry_rejects_unknown_strategy_name() -> None:
     with pytest.raises(ValueError, match="strategy_policy_not_registered"):
-        create_strategy_policy("does_not_exist")
+        create_smoke_strategy_policy("does_not_exist")
 
 
 def test_registry_can_create_filtered_sma_strategy() -> None:
-    strategy = create_strategy_policy("sma_with_filter", short_n=2, long_n=3)
+    strategy = create_smoke_strategy_policy("sma_with_filter", short_n=2, long_n=3)
     assert strategy.name == "sma_with_filter"
     assert strategy.__class__.__module__ == "bithumb_bot.strategy.sma_policy_strategy"
     assert hasattr(strategy, "decide_snapshot")
@@ -791,11 +804,11 @@ def test_registry_can_create_filtered_sma_strategy() -> None:
 
 def test_policy_registry_excludes_plain_sma_cross() -> None:
     with pytest.raises(ValueError, match="strategy_policy_not_registered:sma_cross"):
-        create_strategy_policy("sma_cross", short_n=2, long_n=3)
+        create_smoke_strategy_policy("sma_cross", short_n=2, long_n=3)
 
 
 def test_legacy_registry_can_create_plain_sma_cross_for_compatibility() -> None:
-    strategy = create_legacy_strategy("sma_cross", short_n=2, long_n=3)
+    strategy = create_legacy_db_strategy("sma_cross", short_n=2, long_n=3)
     assert strategy.name == "sma_cross"
     assert hasattr(strategy, "decide")
     assert not hasattr(strategy, "decide_snapshot")

@@ -1834,7 +1834,7 @@ def run_loop() -> None:
 
             _log_loop_event(
                 logging.INFO,
-                "[RUN] processed closed candle",
+                "[RUN] closed candle decision ready",
                 symbol=settings.PAIR,
                 interval=settings.INTERVAL,
                 candle_ts=r["ts"],
@@ -1844,7 +1844,6 @@ def run_loop() -> None:
                 strategy=r["strategy"],
                 reason=r["reason"],
             )
-            runtime_state.mark_processed_candle(candle_ts_ms=int(r["ts"]), now_epoch_sec=now)
 
             conn = ensure_db()
             decision_id: int | None = None
@@ -2005,6 +2004,16 @@ def run_loop() -> None:
             finally:
                 conn.close()
 
+            if decision_id is None:
+                _log_loop_event(
+                    logging.WARNING,
+                    "[ORDER_SKIP] strategy decision not durable",
+                    signal=str(r["signal"]),
+                    candle_ts=r["ts"],
+                    reason="decision_persistence_failed_retryable",
+                )
+                continue
+
             submit_expectation = resolve_typed_execution_submit_expectation(
                 execution_decision_summary_for_trade
             )
@@ -2017,6 +2026,16 @@ def run_loop() -> None:
                     reason="execution_planning_failed_closed",
                 )
                 continue
+            runtime_state.mark_processed_candle(candle_ts_ms=int(r["ts"]), now_epoch_sec=now)
+            _log_loop_event(
+                logging.INFO,
+                "[RUN] processed closed candle",
+                symbol=settings.PAIR,
+                interval=settings.INTERVAL,
+                candle_ts=r["ts"],
+                last_processed_candle_ts=last_processed_candle_ts_ms,
+                reason="decision_persisted_execution_planned",
+            )
             target_delta_submit = bool(
                 str(getattr(settings, "EXECUTION_ENGINE", "lot_native") or "lot_native").strip().lower()
                 == "target_delta"

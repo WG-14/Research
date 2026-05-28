@@ -8,7 +8,14 @@ REPO = Path(__file__).resolve().parents[1]
 
 OFFICIAL_PATHS = (
     "src/bithumb_bot/approved_profile.py",
+    "src/bithumb_bot/config.py",
     "src/bithumb_bot/evidence_chain.py",
+    "src/bithumb_bot/engine.py",
+    "src/bithumb_bot/execution_service.py",
+    "src/bithumb_bot/profile_cli.py",
+    "src/bithumb_bot/runtime_adapter_bootstrap.py",
+    "src/bithumb_bot/runtime_strategy_decision.py",
+    "src/bithumb_bot/runtime_strategy_set.py",
     "src/bithumb_bot/execution_service.py",
     "src/bithumb_bot/run_loop_execution_planner.py",
     "src/bithumb_bot/decision_envelope.py",
@@ -26,8 +33,13 @@ FORBIDDEN_MARKERS = (
     "diagnostic_smoke_backtest",
     "SmaCrossStrategy",
     "LegacySmaWithFilterDbAdapter",
+    "bithumb_bot.strategy.registry",
+    ".strategy.registry",
+    "register_strategy(",
+    "register_legacy_strategy(",
     "create_legacy_strategy",
     "create_strategy(",
+    "register_runtime_decision_adapter(",
     "build_execution_decision_summary(",
 )
 
@@ -62,6 +74,11 @@ def _marker_allowed(relative: str, line: str, marker: str) -> bool:
         )
     if marker == "create_strategy(":
         return relative.endswith("strategy_registry.py")
+    if marker == "register_runtime_decision_adapter(":
+        return (
+            relative == "src/bithumb_bot/runtime_strategy_decision.py"
+            and stripped.startswith("def register_runtime_decision_adapter(")
+        )
     return False
 
 

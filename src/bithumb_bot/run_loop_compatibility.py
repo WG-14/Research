@@ -5,7 +5,7 @@ from typing import Callable
 
 from .config import settings
 from .run_loop_execution_planner import ExecutionPlanner, ExecutionPlanningResult
-from .strategy import create_legacy_strategy
+from .strategy import create_legacy_db_strategy
 
 
 def _live_real_order_enabled() -> bool:
@@ -61,7 +61,7 @@ class RunLoopCompatibilityPlanner:
 class LegacyDbDecisionCompatibilityRunner:
     """Explicit non-production runner for legacy DB-bound smoke compatibility."""
 
-    strategy_factory: Callable[..., object] = create_legacy_strategy
+    strategy_factory: Callable[..., object] = create_legacy_db_strategy
 
     def decide_snapshot(
         self,

@@ -205,6 +205,60 @@ def test_discovered_plugin_runtime_adapter_is_bootstrapped(
     assert adapter.typed_authority_required() is True
 
 
+def test_direct_adapter_registration_does_not_make_unregistered_strategy_resolvable() -> None:
+    runtime_strategy_decision.register_runtime_decision_adapter(
+        "unregistered_runtime_unit",
+        _dynamic_runtime_adapter_factory,
+    )
+
+    assert runtime_strategy_decision.get_runtime_decision_adapter("unregistered_runtime_unit") is None
+    assert "unregistered_runtime_unit" not in runtime_strategy_decision.list_runtime_decision_adapters()
+
+
+def test_plugin_adapter_name_mismatch_fails_closed() -> None:
+    plugin = _dynamic_plugin(name="dynamic_mismatch_unit")
+    reload_research_strategy_plugins_for_tests(providers=(lambda: (plugin,),))
+
+    with pytest.raises(RuntimeError, match="runtime_decision_adapter_name_mismatch:dynamic_mismatch_unit"):
+        runtime_strategy_decision.get_runtime_decision_adapter("dynamic_mismatch_unit")
+
+
+def test_runtime_capabilities_must_be_explicit() -> None:
+    spec = StrategySpec(
+        strategy_name="missing_capabilities_unit",
+        strategy_version="missing_capabilities_unit.contract.v1",
+        accepted_parameter_names=(),
+        required_parameter_names=(),
+        behavior_affecting_parameter_names=(),
+        metadata_only_parameter_names=(),
+        research_only_parameter_names=(),
+        default_parameters={},
+        decision_contract_version="missing_capabilities_unit.decision.v1",
+        required_data=("candles",),
+        optional_data=(),
+        exit_policy_schema={"schema_version": 1, "rules": ()},
+    )
+
+    with pytest.raises(ValueError, match="strategy runtime capabilities must be explicit"):
+        ResearchStrategyPlugin(
+            name=spec.strategy_name,
+            version=spec.strategy_version,
+            spec=spec,
+            required_data=spec.required_data,
+            optional_data=spec.optional_data,
+            runner=_dynamic_runner,
+            runtime_replay_builder=_dynamic_runtime_replay_builder,
+            runtime_parameter_adapter=RuntimeParameterAdapter(
+                from_env=_dynamic_parameters_from_env,
+                from_settings=_dynamic_parameters_from_settings,
+                env_keys=(),
+            ),
+            decision_contract_version=spec.decision_contract_version,
+            diagnostics_namespace=spec.strategy_name,
+            runtime_decision_adapter_factory=_dynamic_runtime_adapter_factory,
+        )
+
+
 def test_dynamic_research_only_plugin_is_valid_research_but_live_fails_by_capability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
