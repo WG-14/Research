@@ -29,6 +29,7 @@ from .research.strategy_spec import (
     runtime_bound_behavior_parameter_names,
 )
 from .runtime_strategy_decision import (
+    RuntimeDecisionAdapter,
     RuntimeDecisionRequest,
     RuntimeStrategyDecisionResult,
     _attach_runtime_request_metadata,
@@ -658,21 +659,17 @@ class RuntimeStrategyDecisionResultBundle:
                 spec = self.strategy_set.spec_for_strategy(result_name)
             if spec is None:
                 raise ValueError(f"runtime_strategy_result_set_mismatch:extra={result_name}")
-            try:
-                base_context = getattr(result, "base_context", {})
-                through_ts = (
-                    base_context.get("through_ts_ms")
-                    if isinstance(base_context, Mapping) and "through_ts_ms" in base_context
-                    else int(result.candle_ts)
-                )
-                request = RuntimeDecisionRequestBuilder().build_for_spec(
-                    spec,
-                    through_ts_ms=None if through_ts is None else int(through_ts),
-                )
-            except ResearchStrategyRegistryError:
-                validate_runtime_decision_result_bundle_provenance(result, spec)
-            else:
-                validate_runtime_decision_result_provenance(result, request)
+            base_context = getattr(result, "base_context", {})
+            through_ts = (
+                base_context.get("through_ts_ms")
+                if isinstance(base_context, Mapping) and "through_ts_ms" in base_context
+                else int(result.candle_ts)
+            )
+            request = RuntimeDecisionRequestBuilder().build_for_spec(
+                spec,
+                through_ts_ms=None if through_ts is None else int(through_ts),
+            )
+            validate_runtime_decision_result_provenance(result, request)
         candle_ts_values = {int(result.candle_ts) for result in self.results}
         if len(candle_ts_values) != 1:
             raise ValueError("runtime_strategy_results_must_share_candle")
@@ -818,31 +815,13 @@ def validate_runtime_decision_result_provenance(
         raise ValueError(f"runtime_strategy_candle_mismatch:{request.strategy_name}")
 
 
-def validate_runtime_decision_result_bundle_provenance(
-    result: RuntimeStrategyDecisionResult,
-    spec: RuntimeStrategySpec,
-) -> None:
-    if not is_runtime_strategy_decision_result(result):
-        raise TypeError(f"typed_runtime_decision_required:{spec.strategy_name}")
-    result_name = str(getattr(result.decision, "strategy_name", "")).strip().lower()
-    if result_name != spec.strategy_name:
-        raise ValueError("runtime_strategy_result_set_mismatch:strategy_name")
-    base_context = getattr(result, "base_context", {})
-    if not isinstance(base_context, Mapping):
-        raise ValueError("runtime_decision_request_metadata_missing:base_context")
-    for field in _REQUIRED_REQUEST_METADATA_FIELDS:
-        if field not in base_context:
-            raise ValueError(f"runtime_decision_request_metadata_missing:{field}")
-    instance_id = str(base_context.get("strategy_instance_id") or "").strip()
-    if instance_id != derive_strategy_instance_id(spec):
-        raise ValueError("runtime_decision_request_metadata_mismatch:strategy_instance_id")
-    through_ts_ms = base_context.get("through_ts_ms")
-    if through_ts_ms is not None and int(through_ts_ms) != int(result.candle_ts):
-        raise ValueError(f"runtime_strategy_candle_mismatch:{spec.strategy_name}")
+RuntimeDecisionAdapterResolver = Callable[[str], RuntimeDecisionAdapter | None]
 
 
+@dataclass(frozen=True)
 class RuntimeStrategyDecisionCollector:
     request_builder: RuntimeDecisionRequestBuilder = RuntimeDecisionRequestBuilder()
+    adapter_resolver: RuntimeDecisionAdapterResolver = get_runtime_decision_adapter
 
     def collect(
         self,
@@ -853,10 +832,15 @@ class RuntimeStrategyDecisionCollector:
     ) -> RuntimeStrategyDecisionResultBundle | None:
         results: list[RuntimeStrategyDecisionResult] = []
         for spec in strategy_set.active_strategies:
-            adapter = get_runtime_decision_adapter(spec.strategy_name)
             validate_live_strategy_selection(replace(settings, STRATEGY_NAME=spec.strategy_name))
+            adapter = self.adapter_resolver(spec.strategy_name)
             if adapter is None:
                 raise production_runtime_strategy_missing_error(spec.strategy_name)
+            adapter_name = str(getattr(adapter, "strategy_name", "") or "").strip().lower()
+            if adapter_name != spec.strategy_name:
+                raise RuntimeError(
+                    f"runtime_decision_adapter_name_mismatch:{spec.strategy_name}:{adapter_name}"
+                )
             request = self.request_builder.build_for_spec(spec, through_ts_ms=through_ts_ms)
             result = adapter.decide(conn, request)
             if result is None:

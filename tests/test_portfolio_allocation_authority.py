@@ -27,13 +27,9 @@ from bithumb_bot.strategy_preference import (
     StrategyPreferenceSet,
     strategy_decision_to_preference,
 )
-from bithumb_bot.runtime_strategy_decision import (
-    register_runtime_decision_adapter,
-    reset_runtime_decision_adapters_for_tests,
-)
-from bithumb_bot.runtime_adapter_bootstrap import reset_runtime_decision_adapter_bootstrap_for_tests
 from bithumb_bot.runtime_strategy_set import (
     derive_strategy_instance_id,
+    RuntimeDecisionRequestBuilder,
     RuntimeStrategyDecisionCollector,
     RuntimeStrategyDecisionResultBundle,
     RuntimeStrategySet,
@@ -153,10 +149,13 @@ def _runtime_result(
     *,
     candle_ts: int = 123,
     strategy_instance_id: str | None = None,
+    spec: RuntimeStrategySpec | None = None,
 ) -> _RuntimeResult:
     decision = _decision(final_signal=signal, strategy_name=name)
-    instance_id = strategy_instance_id or derive_strategy_instance_id(RuntimeStrategySpec(name))
-    request_hash = f"sha256:request-{instance_id}"
+    request_spec = spec or RuntimeStrategySpec(name, strategy_instance_id=strategy_instance_id)
+    request = RuntimeDecisionRequestBuilder().build_for_spec(request_spec, through_ts_ms=candle_ts)
+    instance_id = request.strategy_instance_id
+    request_hash = request.request_hash
     return _RuntimeResult(
         decision=decision,
         base_context={
@@ -166,10 +165,10 @@ def _runtime_result(
             "market_price": 100_000_000.0,
             "runtime_decision_request_hash": request_hash,
             "strategy_instance_id": instance_id,
-            "strategy_parameters_hash": "sha256:parameters",
-            "approved_profile_hash": None,
-            "runtime_contract_hash": "sha256:runtime-contract",
-            "plugin_contract_hash": "sha256:plugin-contract",
+            "strategy_parameters_hash": request.strategy_parameters_hash,
+            "approved_profile_hash": request.approved_profile_hash,
+            "runtime_contract_hash": request.runtime_contract_hash,
+            "plugin_contract_hash": request.plugin_contract_hash,
             "through_ts_ms": candle_ts,
         },
         candle_ts=candle_ts,
@@ -184,10 +183,10 @@ def _runtime_result(
             "strategy_name": name,
             "runtime_decision_request_hash": request_hash,
             "strategy_instance_id": instance_id,
-            "strategy_parameters_hash": "sha256:parameters",
-            "approved_profile_hash": None,
-            "runtime_contract_hash": "sha256:runtime-contract",
-            "plugin_contract_hash": "sha256:plugin-contract",
+            "strategy_parameters_hash": request.strategy_parameters_hash,
+            "approved_profile_hash": request.approved_profile_hash,
+            "runtime_contract_hash": request.runtime_contract_hash,
+            "plugin_contract_hash": request.plugin_contract_hash,
             "through_ts_ms": candle_ts,
         },
         boundary={"phase": "unit"},
@@ -332,27 +331,26 @@ def test_runtime_strategy_set_resolver_reads_structured_strategy_contract(
 
 
 def test_multi_strategy_collector_executes_all_on_same_candle() -> None:
-    reset_runtime_decision_adapters_for_tests()
-    try:
-        first = _runtime_result("BUY", "sma_with_filter")
-        second = _runtime_result("HOLD", "canary_non_sma")
-        register_runtime_decision_adapter("sma_with_filter", lambda: _Adapter(first))
-        register_runtime_decision_adapter("canary_non_sma", lambda: _Adapter(second))
-        strategy_set = RuntimeStrategySet(
-            source="unit",
-            strategies=(
-                RuntimeStrategySpec("sma_with_filter", priority=10, parameters=_complete_sma_parameters(SMA_SHORT=7, SMA_LONG=30)),
-                RuntimeStrategySpec("canary_non_sma", priority=10),
-            ),
-        )
-        bundle = RuntimeStrategyDecisionCollector().collect(
-            object(),
-            strategy_set,
-            through_ts_ms=123,
-        )
-    finally:
-        reset_runtime_decision_adapters_for_tests()
-        reset_runtime_decision_adapter_bootstrap_for_tests()
+    first = _runtime_result("BUY", "sma_with_filter")
+    second = _runtime_result("HOLD", "canary_non_sma")
+    adapters = {
+        "sma_with_filter": _Adapter(first),
+        "canary_non_sma": _Adapter(second),
+    }
+    strategy_set = RuntimeStrategySet(
+        source="unit",
+        strategies=(
+            RuntimeStrategySpec("sma_with_filter", priority=10, parameters=_complete_sma_parameters(SMA_SHORT=7, SMA_LONG=30)),
+            RuntimeStrategySpec("canary_non_sma", priority=10),
+        ),
+    )
+    bundle = RuntimeStrategyDecisionCollector(
+        adapter_resolver=lambda strategy_name: adapters.get(str(strategy_name).strip().lower()),
+    ).collect(
+        object(),
+        strategy_set,
+        through_ts_ms=123,
+    )
     assert bundle is not None
     assert bundle.candle_ts == 123
     assert [result.decision.strategy_name for result in bundle.results] == [
@@ -595,18 +593,17 @@ def test_run_loop_multi_strategy_path_sends_multiple_preferences_to_allocator() 
         },
         summary_builder=_summary_builder,
     )
+    buy_spec = RuntimeStrategySpec("canary_non_sma", priority=10, desired_exposure_krw=60_000.0)
+    hold_spec = RuntimeStrategySpec("safe_hold", priority=10, desired_exposure_krw=60_000.0)
     strategy_set = RuntimeStrategySet(
         source="unit",
-        strategies=(
-            RuntimeStrategySpec("strategy_buy", priority=10, desired_exposure_krw=60_000.0),
-            RuntimeStrategySpec("strategy_hold", priority=10, desired_exposure_krw=60_000.0),
-        ),
+        strategies=(buy_spec, hold_spec),
     )
     bundle = RuntimeStrategyDecisionResultBundle(
         strategy_set=strategy_set,
         results=(
-            _runtime_result("HOLD", "strategy_hold"),
-            _runtime_result("BUY", "strategy_buy"),
+            _runtime_result("HOLD", "safe_hold", spec=hold_spec),
+            _runtime_result("BUY", "canary_non_sma", spec=buy_spec),
         ),
     )
     result = planner.plan_runtime_strategy_results(object(), bundle, updated_ts=456)
@@ -620,8 +617,8 @@ def test_run_loop_multi_strategy_path_sends_multiple_preferences_to_allocator() 
     assert len(result.persistence_context["allocation_contributions"]) == 2
     assert result.persistence_context["allocation_selected_signal"] == "BUY"
     assert result.persistence_context["allocation_selected_strategies"] == [
-        "strategy_buy",
-        "strategy_hold",
+        "canary_non_sma",
+        "safe_hold",
     ]
     assert result.persistence_context["allocation_conflict_count"] == 0
     assert result.persistence_context["allocation_primary_block_reason"] == "none"
@@ -645,28 +642,27 @@ def test_run_loop_multi_strategy_allocator_signal_overrides_representative_hold(
                 "target_policy_metadata": {},
             },
         )
+        hold_spec = RuntimeStrategySpec(
+            "safe_hold",
+            strategy_instance_id="aaa_strategy_hold",
+            priority=10,
+            desired_exposure_krw=60_000.0,
+        )
+        buy_spec = RuntimeStrategySpec(
+            "canary_non_sma",
+            strategy_instance_id="zzz_strategy_buy",
+            priority=10,
+            desired_exposure_krw=60_000.0,
+        )
         strategy_set = RuntimeStrategySet(
             source="unit",
-            strategies=(
-                RuntimeStrategySpec(
-                    "strategy_hold",
-                    strategy_instance_id="aaa_strategy_hold",
-                    priority=10,
-                    desired_exposure_krw=60_000.0,
-                ),
-                RuntimeStrategySpec(
-                    "strategy_buy",
-                    strategy_instance_id="zzz_strategy_buy",
-                    priority=10,
-                    desired_exposure_krw=60_000.0,
-                ),
-            ),
+            strategies=(hold_spec, buy_spec),
         )
         bundle = RuntimeStrategyDecisionResultBundle(
             strategy_set=strategy_set,
             results=(
-                _runtime_result("HOLD", "strategy_hold", strategy_instance_id="aaa_strategy_hold"),
-                _runtime_result("BUY", "strategy_buy", strategy_instance_id="zzz_strategy_buy"),
+                _runtime_result("HOLD", "safe_hold", spec=hold_spec),
+                _runtime_result("BUY", "canary_non_sma", spec=buy_spec),
             ),
         )
         result = planner.plan_runtime_strategy_results(object(), bundle, updated_ts=456)
@@ -694,18 +690,21 @@ def test_run_loop_multi_strategy_conflict_fails_closed_without_submit() -> None:
                 "target_policy_metadata": {},
             },
         )
+        buy_spec = RuntimeStrategySpec("canary_non_sma", priority=10)
+        sell_spec = RuntimeStrategySpec(
+            "sma_with_filter",
+            priority=10,
+            parameters=_complete_sma_parameters(SMA_SHORT=7, SMA_LONG=30),
+        )
         strategy_set = RuntimeStrategySet(
             source="unit",
-            strategies=(
-                RuntimeStrategySpec("strategy_buy", priority=10),
-                RuntimeStrategySpec("strategy_sell", priority=10),
-            ),
+            strategies=(buy_spec, sell_spec),
         )
         bundle = RuntimeStrategyDecisionResultBundle(
             strategy_set=strategy_set,
             results=(
-                _runtime_result("BUY", "strategy_buy"),
-                _runtime_result("SELL", "strategy_sell"),
+                _runtime_result("BUY", "canary_non_sma", spec=buy_spec),
+                _runtime_result("SELL", "sma_with_filter", spec=sell_spec),
             ),
         )
         result = planner.plan_runtime_strategy_results(object(), bundle, updated_ts=456)
@@ -721,8 +720,8 @@ def test_run_loop_multi_strategy_conflict_fails_closed_without_submit() -> None:
     assert result.persistence_context["allocation_conflict_count"] == 1
     assert result.persistence_context["allocation_selected_signal"] == ""
     assert result.persistence_context["allocation_selected_strategies"] == [
-        "strategy_buy",
-        "strategy_sell",
+        "canary_non_sma",
+        "sma_with_filter",
     ]
 
 

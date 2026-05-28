@@ -615,9 +615,7 @@ def test_engine_does_not_own_low_level_runtime_sql_helpers() -> None:
     }.isdisjoint(function_names)
 
 
-def test_runtime_decision_adapter_registry_drives_promotion_path_without_engine_branch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_runtime_decision_gateway_accepts_explicit_collector_adapter_resolver_without_engine_branch() -> None:
     calls: list[tuple[str, int | None]] = []
 
     class _UnitPromotionAdapter:
@@ -630,18 +628,32 @@ def test_runtime_decision_adapter_registry_drives_promotion_path_without_engine_
         def typed_authority_required(self) -> bool:
             return True
 
-    monkeypatch.setitem(
-        runtime_strategy_decision._RUNTIME_DECISION_ADAPTERS,
-        "canary_non_sma",
-        _UnitPromotionAdapter,
+    from bithumb_bot.runtime_strategy_set import (
+        RuntimeDecisionGateway,
+        RuntimeStrategyDecisionCollector,
+        RuntimeStrategySet,
+        RuntimeStrategySpec,
     )
 
-    result = engine.compute_strategy_decision_snapshot(
+    bundle = RuntimeDecisionGateway(
+        collector=RuntimeStrategyDecisionCollector(
+            adapter_resolver=lambda strategy_name: (
+                _UnitPromotionAdapter()
+                if str(strategy_name).strip().lower() == "canary_non_sma"
+                else None
+            ),
+        ),
+    ).decide_bundle(
         None,
+        strategy_set=RuntimeStrategySet(
+            source="unit",
+            strategies=(RuntimeStrategySpec("canary_non_sma"),),
+        ),
         through_ts_ms=1_700_003_000_000,
-        strategy_name="canary_non_sma",
     )
 
+    assert bundle is not None
+    result = bundle.results[0]
     assert isinstance(result, _GenericRuntimeDecisionResult)
     assert result.decision.strategy_name == "canary_non_sma"
     assert calls == [("canary_non_sma", 1_700_003_000_000)]
@@ -767,24 +779,7 @@ def test_persistence_context_cannot_override_typed_decision_authority() -> None:
     assert bundle.persistence_context["persistence_context_authoritative"] == 0
 
 
-def test_generic_promotion_adapter_dict_handoff_fails_closed_when_typed_required(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _RequiredTypedAdapter:
-        strategy_name = "canary_non_sma"
-
-        def decide(self, conn, request):
-            raise AssertionError("not used")
-
-        def typed_authority_required(self) -> bool:
-            return True
-
-    monkeypatch.setitem(
-        runtime_strategy_decision._RUNTIME_DECISION_ADAPTERS,
-        "canary_non_sma",
-        _RequiredTypedAdapter,
-    )
-
+def test_generic_promotion_adapter_dict_handoff_fails_closed_when_typed_required() -> None:
     reason = engine._typed_runtime_handoff_failure_reason(
         {"signal": "BUY", "reason": "legacy dict"},
         selected_strategy_name="canary_non_sma",
@@ -813,6 +808,7 @@ def test_run_loop_uses_only_runtime_decision_gateway_for_decisions() -> None:
     assert "RuntimeDecisionGateway().decide_bundle(" in run_loop_source
     assert "compute_signal" not in run_loop_source
     assert "_ORIGINAL_COMPUTE_SIGNAL" not in run_loop_source
+    assert "compute_signal_runtime_handoff" not in run_loop_source
     assert "signal_handoff_fn" not in run_loop_source
     assert "TypeError" not in run_loop_source
     assert "legacy_dict_runtime_handoff" not in run_loop_source

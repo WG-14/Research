@@ -96,6 +96,14 @@ def _attach_unit_request_metadata(result: _RuntimeResult, request: RuntimeDecisi
     return result
 
 
+def _adapter_resolver(adapters: dict[str, object]):
+    def _resolve(strategy_name: str):
+        adapter = adapters.get(str(strategy_name).strip().lower())
+        return adapter() if isinstance(adapter, type) else adapter
+
+    return _resolve
+
+
 def _conn() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -167,7 +175,24 @@ def test_common_runtime_adapter_protocol_is_request_shaped() -> None:
                 assert "long_n" not in names
 
 
-def test_collector_passes_runtime_decision_request(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_production_runtime_modules_have_no_test_only_adapter_registry() -> None:
+    forbidden = {
+        "_TEST_ONLY_RUNTIME_DECISION_ADAPTERS",
+        "_RUNTIME_DECISION_ADAPTERS",
+        "register_runtime_decision_adapter",
+        "reset_runtime_decision_adapters_for_tests",
+    }
+    for path in (
+        Path("src/bithumb_bot/runtime_strategy_decision.py"),
+        Path("src/bithumb_bot/runtime_strategy_set.py"),
+        Path("src/bithumb_bot/runtime_decision_service.py"),
+        Path("src/bithumb_bot/engine.py"),
+    ):
+        source = path.read_text(encoding="utf-8-sig")
+        assert {token for token in forbidden if token in source} == set()
+
+
+def test_collector_passes_runtime_decision_request() -> None:
     received: list[RuntimeDecisionRequest] = []
 
     class _Adapter:
@@ -181,15 +206,13 @@ def test_collector_passes_runtime_decision_request(monkeypatch: pytest.MonkeyPat
         def typed_authority_required(self) -> bool:
             return True
 
-    from bithumb_bot import runtime_strategy_decision
-
-    runtime_strategy_decision.list_runtime_decision_adapters()
-    monkeypatch.setitem(runtime_strategy_decision._RUNTIME_DECISION_ADAPTERS, "canary_non_sma", _Adapter)
     strategy_set = RuntimeStrategySet(
         source="unit",
         strategies=(RuntimeStrategySpec("canary_non_sma"),),
     )
-    bundle = RuntimeStrategyDecisionCollector().collect(
+    bundle = RuntimeStrategyDecisionCollector(
+        adapter_resolver=_adapter_resolver({"canary_non_sma": _Adapter()}),
+    ).collect(
         _conn(),
         strategy_set,
         through_ts_ms=1_700_000_180_000,
@@ -200,7 +223,7 @@ def test_collector_passes_runtime_decision_request(monkeypatch: pytest.MonkeyPat
     assert isinstance(received[0], RuntimeDecisionRequest)
 
 
-def test_collector_rejects_dict_returning_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_collector_rejects_dict_returning_adapter() -> None:
     class _Adapter:
         strategy_name = "canary_non_sma"
 
@@ -211,13 +234,10 @@ def test_collector_rejects_dict_returning_adapter(monkeypatch: pytest.MonkeyPatc
         def typed_authority_required(self) -> bool:
             return True
 
-    from bithumb_bot import runtime_strategy_decision
-
-    runtime_strategy_decision.list_runtime_decision_adapters()
-    monkeypatch.setitem(runtime_strategy_decision._RUNTIME_DECISION_ADAPTERS, "canary_non_sma", _Adapter)
-
     with pytest.raises(TypeError, match="typed_runtime_decision_required:canary_non_sma"):
-        RuntimeStrategyDecisionCollector().collect(
+        RuntimeStrategyDecisionCollector(
+            adapter_resolver=_adapter_resolver({"canary_non_sma": _Adapter()}),
+        ).collect(
             _conn(),
             RuntimeStrategySet(source="unit", strategies=(RuntimeStrategySpec("canary_non_sma"),)),
             through_ts_ms=1_700_000_180_000,
@@ -273,19 +293,6 @@ def test_multi_strategy_parameters_are_independent(monkeypatch: pytest.MonkeyPat
         def typed_authority_required(self) -> bool:
             return True
 
-    from bithumb_bot import runtime_strategy_decision
-
-    runtime_strategy_decision.list_runtime_decision_adapters()
-    monkeypatch.setitem(
-        runtime_strategy_decision._RUNTIME_DECISION_ADAPTERS,
-        "canary_non_sma",
-        lambda: _Adapter("canary_non_sma"),
-    )
-    monkeypatch.setitem(
-        runtime_strategy_decision._RUNTIME_DECISION_ADAPTERS,
-        "sma_with_filter",
-        lambda: _Adapter("sma_with_filter"),
-    )
     strategy_set = RuntimeStrategySet(
         source="unit",
         strategies=(
@@ -300,7 +307,14 @@ def test_multi_strategy_parameters_are_independent(monkeypatch: pytest.MonkeyPat
             ),
         ),
     )
-    RuntimeStrategyDecisionCollector().collect(_conn(), strategy_set, through_ts_ms=1_700_000_180_000)
+    RuntimeStrategyDecisionCollector(
+        adapter_resolver=_adapter_resolver(
+            {
+                "canary_non_sma": _Adapter("canary_non_sma"),
+                "sma_with_filter": _Adapter("sma_with_filter"),
+            }
+        ),
+    ).collect(_conn(), strategy_set, through_ts_ms=1_700_000_180_000)
 
     assert set(received) == {"sma_with_filter", "canary_non_sma"}
     assert received["sma_with_filter"].parameters["SMA_SHORT"] == 7
@@ -444,9 +458,7 @@ def test_approved_profile_mismatch_fails_before_adapter(monkeypatch: pytest.Monk
         def typed_authority_required(self) -> bool:
             return True
 
-    from bithumb_bot import runtime_strategy_decision, runtime_strategy_set
-
-    monkeypatch.setitem(runtime_strategy_decision._RUNTIME_DECISION_ADAPTERS, "canary_non_sma", _Adapter)
+    from bithumb_bot import runtime_strategy_set
     monkeypatch.setattr(
         runtime_strategy_set,
         "load_approved_profile",
@@ -471,7 +483,9 @@ def test_approved_profile_mismatch_fails_before_adapter(monkeypatch: pytest.Monk
     )
 
     with pytest.raises(RuntimeError, match="approved_profile_runtime_parameter_mismatch"):
-        RuntimeStrategyDecisionCollector().collect(_conn(), strategy_set, through_ts_ms=1_700_000_180_000)
+        RuntimeStrategyDecisionCollector(
+            adapter_resolver=_adapter_resolver({"canary_non_sma": _Adapter()}),
+        ).collect(_conn(), strategy_set, through_ts_ms=1_700_000_180_000)
 
     assert called is False
 

@@ -152,7 +152,6 @@ def _restore_plugin_and_runtime_registries() -> None:
     from bithumb_bot.strategy_plugins import iter_builtin_strategy_plugins
 
     reload_research_strategy_plugins_for_tests(providers=(iter_builtin_strategy_plugins,))
-    runtime_strategy_decision.reset_runtime_decision_adapters_for_tests()
     runtime_adapter_bootstrap.reset_runtime_decision_adapter_bootstrap_for_tests()
 
 
@@ -195,7 +194,6 @@ def test_discovered_plugin_runtime_adapter_is_bootstrapped(
         lambda: [_FakeEntryPoint("unit_dynamic", "tests:plugin", plugin)],
     )
     reload_research_strategy_plugins_for_tests()
-    runtime_strategy_decision.reset_runtime_decision_adapters_for_tests()
     runtime_adapter_bootstrap.reset_runtime_decision_adapter_bootstrap_for_tests()
 
     runtime_adapter_bootstrap.ensure_runtime_decision_adapters_registered()
@@ -203,16 +201,6 @@ def test_discovered_plugin_runtime_adapter_is_bootstrapped(
     adapter = runtime_strategy_decision.get_runtime_decision_adapter(DYNAMIC_PLUGIN_NAME)
     assert isinstance(adapter, _DynamicRuntimeDecisionAdapter)
     assert adapter.typed_authority_required() is True
-
-
-def test_direct_adapter_registration_does_not_make_unregistered_strategy_resolvable() -> None:
-    runtime_strategy_decision.register_runtime_decision_adapter(
-        "unregistered_runtime_unit",
-        _dynamic_runtime_adapter_factory,
-    )
-
-    assert runtime_strategy_decision.get_runtime_decision_adapter("unregistered_runtime_unit") is None
-    assert "unregistered_runtime_unit" not in runtime_strategy_decision.list_runtime_decision_adapters()
 
 
 def test_plugin_adapter_name_mismatch_fails_closed() -> None:
@@ -273,7 +261,6 @@ def test_dynamic_research_only_plugin_is_valid_research_but_live_fails_by_capabi
         lambda: [_FakeEntryPoint("unit_dynamic_research_only", "tests:plugin", plugin)],
     )
     reload_research_strategy_plugins_for_tests()
-    runtime_strategy_decision.reset_runtime_decision_adapters_for_tests()
     runtime_adapter_bootstrap.reset_runtime_decision_adapter_bootstrap_for_tests()
 
     resolved = resolve_research_strategy_plugin("dynamic_research_only_unit")

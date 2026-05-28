@@ -112,8 +112,6 @@ class RuntimeDecisionAdapter(Protocol):
 RuntimeDecisionAdapterFactory = Callable[[], RuntimeDecisionAdapter]
 
 _DERIVED_RUNTIME_DECISION_ADAPTER_CACHE: dict[tuple[str, str, str], RuntimeDecisionAdapter] = {}
-_TEST_ONLY_RUNTIME_DECISION_ADAPTERS: dict[str, RuntimeDecisionAdapterFactory] = {}
-_RUNTIME_DECISION_ADAPTERS = _TEST_ONLY_RUNTIME_DECISION_ADAPTERS
 
 
 def _normalize_name(name: str) -> str:
@@ -121,24 +119,6 @@ def _normalize_name(name: str) -> str:
     if not key:
         raise ValueError("runtime strategy name must not be empty")
     return key
-
-
-def register_runtime_decision_adapter(
-    name: str,
-    factory: RuntimeDecisionAdapterFactory,
-) -> None:
-    """Compatibility test hook.
-
-    Production runtime adapter resolution is derived from ResearchStrategyPlugin
-    manifests. Registering here intentionally does not make an unregistered
-    strategy runtime-resolvable.
-    """
-    _TEST_ONLY_RUNTIME_DECISION_ADAPTERS[_normalize_name(name)] = factory
-
-
-def reset_runtime_decision_adapters_for_tests() -> None:
-    _DERIVED_RUNTIME_DECISION_ADAPTER_CACHE.clear()
-    _TEST_ONLY_RUNTIME_DECISION_ADAPTERS.clear()
 
 
 def list_runtime_decision_adapters() -> tuple[str, ...]:
@@ -164,16 +144,9 @@ def get_runtime_decision_adapter(name: str) -> RuntimeDecisionAdapter | None:
         return None
     if not plugin.runtime_capabilities.promotion_runtime_decisions_supported:
         return None
-    test_factory = _TEST_ONLY_RUNTIME_DECISION_ADAPTERS.get(plugin.name)
-    factory = test_factory or plugin.runtime_decision_adapter_factory
+    factory = plugin.runtime_decision_adapter_factory
     if factory is None:
         return None
-    if test_factory is not None:
-        adapter = test_factory()
-        adapter_name = _normalize_name(getattr(adapter, "strategy_name", ""))
-        if adapter_name != plugin.name:
-            raise RuntimeError(f"runtime_decision_adapter_name_mismatch:{plugin.name}:{adapter_name}")
-        return adapter
     contract_hash = plugin.contract_hash()
     cache_key = (plugin.name, contract_hash, "plugin")
     cached = _DERIVED_RUNTIME_DECISION_ADAPTER_CACHE.get(cache_key)

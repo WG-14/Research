@@ -329,6 +329,9 @@ class _LoopConn:
         if "FROM broker_fill_observations" in q:
             return _Rows([])
 
+        if "INSERT INTO strategy_decisions" in q:
+            return _Rows(None, rowcount=1, lastrowid=42)
+
         if "SET status='RECOVERY_REQUIRED'" in q:
             if self.open_order_created_ts is None:
                 self.marked_recovery_required = 0
@@ -351,9 +354,10 @@ class _LoopConn:
 
 
 class _Rows:
-    def __init__(self, row, rowcount: int = 0):
+    def __init__(self, row, rowcount: int = 0, lastrowid: int = 1):
         self._row = row
         self.rowcount = rowcount
+        self.lastrowid = lastrowid
 
     def fetchone(self):
         return self._row
@@ -429,6 +433,62 @@ class _RuntimeDecisionResult:
         return dict(self.base_context)
 
 
+class _RuntimeDecisionBundle:
+    def __init__(self, result: _RuntimeDecisionResult, strategy_set) -> None:
+        self.results = (result,)
+        self.strategy_set = strategy_set
+
+    @property
+    def candle_ts(self) -> int:
+        return int(self.results[0].candle_ts)
+
+    @property
+    def market_price(self) -> float:
+        return float(self.results[0].market_price)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "authority_label": "RuntimeStrategyDecisionResultBundle",
+            "result_count": 1,
+            "results": [dict(self.results[0].base_context)],
+        }
+
+    def content_hash(self) -> str:
+        return "sha256:unit-runtime-decision-bundle"
+
+
+def _install_runtime_gateway(monkeypatch, result_factory) -> None:
+    class _Gateway:
+        def decide_bundle(self, conn, *, strategy_set=None, through_ts_ms=None):
+            result = result_factory(conn, through_ts_ms=through_ts_ms)
+            result.base_context.update(
+                {
+                    "runtime_decision_request_hash": "sha256:unit-runtime-request",
+                    "strategy_instance_id": str(result.decision.strategy_name),
+                    "strategy_parameters_hash": "sha256:unit-parameters",
+                    "approved_profile_hash": None,
+                    "runtime_contract_hash": "sha256:unit-runtime-contract",
+                    "plugin_contract_hash": "sha256:unit-plugin-contract",
+                    "through_ts_ms": through_ts_ms,
+                }
+            )
+            result.replay_fingerprint.update(
+                {
+                    "runtime_decision_request_hash": "sha256:unit-runtime-request",
+                    "strategy_instance_id": str(result.decision.strategy_name),
+                    "strategy_parameters_hash": "sha256:unit-parameters",
+                    "approved_profile_hash": None,
+                    "runtime_contract_hash": "sha256:unit-runtime-contract",
+                    "plugin_contract_hash": "sha256:unit-plugin-contract",
+                    "through_ts_ms": through_ts_ms,
+                }
+            )
+            return _RuntimeDecisionBundle(result, strategy_set)
+
+    monkeypatch.setattr("bithumb_bot.engine.RuntimeDecisionGateway", _Gateway)
+
+
 def _runtime_result_from_payload(payload: dict[str, object]) -> _RuntimeDecisionResult:
     signal = str(payload.get("signal") or payload.get("final_signal") or "HOLD").upper()
     candle_ts = int(payload.get("ts") or 9000)
@@ -488,6 +548,7 @@ def _prepare_run_loop(
 
     object.__setattr__(settings, "MODE", "live")
     object.__setattr__(settings, "LIVE_DRY_RUN", True)
+    object.__setattr__(settings, "STRATEGY_NAME", "safe_hold")
     object.__setattr__(settings, "MAX_ORDER_KRW", 100000.0)
     object.__setattr__(settings, "MAX_DAILY_LOSS_KRW", 50000.0)
     object.__setattr__(settings, "MAX_DAILY_ORDER_COUNT", 10)
@@ -504,16 +565,21 @@ def _prepare_run_loop(
     object.__setattr__(settings, "LIVE_ORDER_MAX_QTY_DECIMALS", 8)
 
     monkeypatch.setattr("bithumb_bot.engine.validate_live_mode_preflight", lambda _cfg: None)
+    monkeypatch.setattr("bithumb_bot.engine.validate_runtime_strategy_set_selection", lambda _cfg: None)
     monkeypatch.setattr("bithumb_bot.engine.validate_market_runtime", lambda _cfg: None)
+    monkeypatch.setattr(
+        "bithumb_bot.engine.normalized_runtime_strategy_set_manifest",
+        lambda **_kwargs: {"runtime_strategy_set_manifest_hash": "sha256:unit-runtime-strategy-set"},
+    )
     monkeypatch.setattr("bithumb_bot.engine.parse_interval_sec", lambda _: 1)
     monkeypatch.setattr("bithumb_bot.engine.cmd_sync", lambda quiet=True: None)
     monkeypatch.setattr(
         "bithumb_bot.engine._select_latest_closed_candle",
         lambda _conn, **_kwargs: ({"ts": 9000, "close": 100.0}, None),
     )
-    monkeypatch.setattr(
-        "bithumb_bot.engine.compute_signal",
-        lambda conn, s, l, **_kwargs: _RuntimeDecisionResult(signal="BUY", candle_ts=9000),
+    _install_runtime_gateway(
+        monkeypatch,
+        lambda _conn, **_kwargs: _RuntimeDecisionResult(signal="BUY", candle_ts=9000),
     )
 
     loop_conn = _LoopConn(
@@ -822,9 +888,9 @@ def test_run_loop_startup_recovery_gate_allows_clean_startup(monkeypatch, tmp_pa
 def test_run_loop_live_harmless_dust_sell_suppresses_before_live_execution(monkeypatch):
     _prepare_run_loop(monkeypatch, asset_qty=0.00009193)
 
-    monkeypatch.setattr(
-        "bithumb_bot.engine.compute_signal",
-        lambda conn, s, l, **_kwargs: _runtime_result_from_payload(
+    _install_runtime_gateway(
+        monkeypatch,
+        lambda _conn, **_kwargs: _runtime_result_from_payload(
             {
                 "ts": 1000,
                 "last_close": 100_000_000.0,
@@ -903,9 +969,9 @@ def test_run_loop_live_harmless_dust_sell_suppresses_before_live_execution(monke
 def test_run_loop_live_sell_does_not_presuppress_when_canonical_sell_authority_is_executable(monkeypatch):
     _prepare_run_loop(monkeypatch, asset_qty=0.00049193)
 
-    monkeypatch.setattr(
-        "bithumb_bot.engine.compute_signal",
-        lambda conn, s, l, **_kwargs: _runtime_result_from_payload(
+    _install_runtime_gateway(
+        monkeypatch,
+        lambda _conn, **_kwargs: _runtime_result_from_payload(
             {
                 "ts": 1000,
                 "last_close": 100_000_000.0,
@@ -2066,8 +2132,8 @@ def test_run_loop_target_delta_persisted_target_state_reaches_live_execution(
     object.__setattr__(settings, "TARGET_EXPOSURE_KRW", None)
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
     monkeypatch.setattr("bithumb_bot.engine.evaluate_startup_safety_gate", lambda: None)
-    monkeypatch.setattr(
-        "bithumb_bot.engine.compute_signal",
+    _install_runtime_gateway(
+        monkeypatch,
         lambda _conn, **_kwargs: _runtime_result_from_payload(
             {
                 "ts": 9000,
@@ -2166,8 +2232,8 @@ def test_run_loop_target_delta_missing_target_holding_btc_adopts_without_closeou
     object.__setattr__(settings, "TARGET_EXPOSURE_KRW", None)
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
     monkeypatch.setattr("bithumb_bot.engine.evaluate_startup_safety_gate", lambda: None)
-    monkeypatch.setattr(
-        "bithumb_bot.engine.compute_signal",
+    _install_runtime_gateway(
+        monkeypatch,
         lambda _conn, **_kwargs: _runtime_result_from_payload(
             {
                 "ts": 9000,
@@ -2238,8 +2304,8 @@ def test_run_loop_target_delta_adopted_target_strategy_sell_submits_delta_sell(m
     object.__setattr__(settings, "RESIDUAL_LIVE_SELL_MODE", "telemetry")
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
     monkeypatch.setattr("bithumb_bot.engine.evaluate_startup_safety_gate", lambda: None)
-    monkeypatch.setattr(
-        "bithumb_bot.engine.compute_signal",
+    _install_runtime_gateway(
+        monkeypatch,
         lambda _conn, **_kwargs: _runtime_result_from_payload(
             {
                 "ts": 9000,

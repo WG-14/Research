@@ -137,6 +137,72 @@ def _runtime_handoff(*, candle_ts: int, price: float, final_signal: str) -> _Run
     )
 
 
+class _RuntimeDecisionBundle:
+    def __init__(self, result: _RuntimeDecisionResult, strategy_set) -> None:
+        self.results = (result,)
+        self.strategy_set = strategy_set
+
+    @property
+    def candle_ts(self) -> int:
+        return int(self.results[0].candle_ts)
+
+    @property
+    def market_price(self) -> float:
+        return float(self.results[0].market_price)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "authority_label": "RuntimeStrategyDecisionResultBundle",
+            "result_count": 1,
+            "results": [dict(self.results[0].base_context)],
+        }
+
+    def content_hash(self) -> str:
+        return "sha256:unit-runtime-decision-bundle"
+
+
+def _install_runtime_gateway(monkeypatch, result_factory) -> None:
+    class _Gateway:
+        def decide_bundle(self, conn, *, strategy_set=None, through_ts_ms=None):
+            result = result_factory(conn, through_ts_ms=through_ts_ms)
+            result.base_context.update(
+                {
+                    "runtime_decision_request_hash": "sha256:unit-runtime-request",
+                    "strategy_instance_id": str(result.decision.strategy_name),
+                    "strategy_parameters_hash": "sha256:unit-parameters",
+                    "approved_profile_hash": None,
+                    "runtime_contract_hash": "sha256:unit-runtime-contract",
+                    "plugin_contract_hash": "sha256:unit-plugin-contract",
+                    "through_ts_ms": through_ts_ms,
+                }
+            )
+            result.replay_fingerprint.update(
+                {
+                    "runtime_decision_request_hash": "sha256:unit-runtime-request",
+                    "strategy_instance_id": str(result.decision.strategy_name),
+                    "strategy_parameters_hash": "sha256:unit-parameters",
+                    "approved_profile_hash": None,
+                    "runtime_contract_hash": "sha256:unit-runtime-contract",
+                    "plugin_contract_hash": "sha256:unit-plugin-contract",
+                    "through_ts_ms": through_ts_ms,
+                }
+            )
+            return _RuntimeDecisionBundle(result, strategy_set)
+
+    monkeypatch.setattr("bithumb_bot.engine.RuntimeDecisionGateway", _Gateway)
+
+    class _Planner:
+        def plan_runtime_strategy_results(self, _conn, result_bundle, *, updated_ts: int):
+            del updated_ts
+            result = result_bundle.results[0]
+            if result.decision.final_signal == "BUY":
+                return _buy_execution_plan()
+            return _hold_execution_plan(result)
+
+    monkeypatch.setattr("bithumb_bot.engine.run_loop_execution_planner", lambda **_kwargs: _Planner())
+
+
 def _buy_execution_plan() -> ExecutionPlanBundle:
     plan = ExecutionSubmitPlan(
         side="BUY",
@@ -186,6 +252,48 @@ def _buy_execution_plan() -> ExecutionPlanBundle:
             "execution_plan_bundle_present": True,
             "submit_plan_source": plan.source,
             "submit_plan_authority": plan.authority,
+            "decision_authority_source": "DecisionEnvelope.strategy_decision",
+            "decision_envelope_present": True,
+            "persistence_context_authoritative": 0,
+        },
+        readiness_payload={},
+        target_policy_metadata={},
+    )
+
+
+def _hold_execution_plan(result: _RuntimeDecisionResult) -> ExecutionPlanBundle:
+    summary = ExecutionDecisionSummary(
+        raw_signal=result.decision.raw_signal,
+        final_signal=result.decision.final_signal,
+        final_action="HOLD",
+        submit_expected=False,
+        pre_submit_proof_status="not_required",
+        block_reason="none",
+        strategy_sell_candidate=None,
+        residual_sell_candidate=None,
+        target_exposure_krw=0.0,
+        current_effective_exposure_krw=0.0,
+        tracked_residual_exposure_krw=None,
+        buy_delta_krw=None,
+        residual_live_sell_mode="telemetry",
+        residual_buy_sizing_mode="telemetry",
+        residual_submit_plan=None,
+        buy_submit_plan=None,
+        target_shadow_decision=None,
+        target_submit_plan=None,
+    )
+    return ExecutionPlanBundle(
+        summary=summary,
+        submit_plan=None,
+        persistence_context={
+            **result.base_context,
+            "ts": result.candle_ts,
+            "last_close": result.market_price,
+            "execution_decision": summary.as_dict(),
+            "final_action": "HOLD",
+            "submit_expected": False,
+            "pre_submit_proof_status": "not_required",
+            "execution_plan_bundle_present": True,
             "decision_authority_source": "DecisionEnvelope.strategy_decision",
             "decision_envelope_present": True,
             "persistence_context_authoritative": 0,
@@ -338,9 +446,9 @@ def test_run_loop_logs_duplicate_and_incomplete_candle_and_skips_reprocessing(mo
 
     monkeypatch.setattr("bithumb_bot.engine.cmd_sync", lambda quiet=True: None)
     monkeypatch.setattr("bithumb_bot.engine.parse_interval_sec", lambda _: 60)
-    monkeypatch.setattr(
-        "bithumb_bot.engine.compute_signal",
-        lambda *_args, **_kwargs: pytest.fail("duplicate candle should not reach compute_signal"),
+    _install_runtime_gateway(
+        monkeypatch,
+        lambda *_args, **_kwargs: pytest.fail("duplicate candle should not reach runtime gateway"),
     )
 
     times = iter([64.0, 65.0, 65.0])
@@ -373,9 +481,9 @@ def test_run_loop_processes_latest_closed_candle_and_persists_it(monkeypatch, ca
 
     monkeypatch.setattr("bithumb_bot.engine.cmd_sync", lambda quiet=True: None)
     monkeypatch.setattr("bithumb_bot.engine.parse_interval_sec", lambda _: 60)
-    monkeypatch.setattr(
-        "bithumb_bot.engine.compute_signal",
-        lambda _conn, *, through_ts_ms=None, strategy_name=None: _runtime_handoff(
+    _install_runtime_gateway(
+        monkeypatch,
+        lambda _conn, *, through_ts_ms=None: _runtime_handoff(
             candle_ts=through_ts_ms,
             price=100.0,
             final_signal="HOLD",
@@ -414,9 +522,9 @@ def test_run_loop_does_not_mark_candle_processed_when_decision_persistence_fails
 
     monkeypatch.setattr("bithumb_bot.engine.cmd_sync", lambda quiet=True: None)
     monkeypatch.setattr("bithumb_bot.engine.parse_interval_sec", lambda _: 60)
-    monkeypatch.setattr(
-        "bithumb_bot.engine.compute_signal",
-        lambda _conn, *, through_ts_ms=None, strategy_name=None: _runtime_handoff(
+    _install_runtime_gateway(
+        monkeypatch,
+        lambda _conn, *, through_ts_ms=None: _runtime_handoff(
             candle_ts=through_ts_ms,
             price=100.0,
             final_signal="HOLD",
@@ -457,11 +565,11 @@ def test_run_loop_uses_closed_candle_for_signal_and_trade_log_correlation(monkey
     monkeypatch.setattr("bithumb_bot.engine.cmd_sync", lambda quiet=True: None)
     monkeypatch.setattr("bithumb_bot.engine.parse_interval_sec", lambda _: 60)
 
-    def _compute_signal(_conn, *, through_ts_ms=None, strategy_name=None):
+    def _decide(_conn, *, through_ts_ms=None):
         assert through_ts_ms == closed_ts
         return _runtime_handoff(candle_ts=through_ts_ms, price=100.0, final_signal="BUY")
 
-    monkeypatch.setattr("bithumb_bot.engine.compute_signal", _compute_signal)
+    _install_runtime_gateway(monkeypatch, _decide)
     monkeypatch.setattr(
         "bithumb_bot.engine.paper_execute",
         lambda _signal, _ts, _price, **_kwargs: {

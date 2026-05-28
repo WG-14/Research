@@ -39,7 +39,6 @@ FORBIDDEN_MARKERS = (
     "register_legacy_strategy(",
     "create_legacy_strategy",
     "create_strategy(",
-    "register_runtime_decision_adapter(",
     "build_execution_decision_summary(",
 )
 
@@ -74,11 +73,6 @@ def _marker_allowed(relative: str, line: str, marker: str) -> bool:
         )
     if marker == "create_strategy(":
         return relative.endswith("strategy_registry.py")
-    if marker == "register_runtime_decision_adapter(":
-        return (
-            relative == "src/bithumb_bot/runtime_strategy_decision.py"
-            and stripped.startswith("def register_runtime_decision_adapter(")
-        )
     return False
 
 

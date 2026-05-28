@@ -15,7 +15,6 @@ from bithumb_bot import profile_cli
 from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_db
 from bithumb_bot.runtime_decision_service import (
-    DecisionRunner,
     compute_legacy_signal_for_diagnostics as compute_signal,
 )
 from bithumb_bot.profile_cli import cmd_replay_decision
@@ -298,9 +297,7 @@ def test_live_sma_with_filter_route_does_not_call_legacy_decide(
     assert snapshot_calls == ["sma_with_filter"]
 
 
-def test_decision_runner_exposes_typed_strategy_decision_boundary(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_collector_injection_exposes_typed_strategy_decision_boundary() -> None:
     calls: list[tuple[str, int | None]] = []
 
     class _UnitAdapter:
@@ -314,12 +311,22 @@ def test_decision_runner_exposes_typed_strategy_decision_boundary(
         def typed_authority_required(self) -> bool:
             return True
 
-    runtime_strategy_decision.list_runtime_decision_adapters()
-    monkeypatch.setitem(runtime_strategy_decision._RUNTIME_DECISION_ADAPTERS, "canary_non_sma", _UnitAdapter)
+    from bithumb_bot.runtime_strategy_set import (
+        RuntimeStrategyDecisionCollector,
+        RuntimeStrategySet,
+        RuntimeStrategySpec,
+    )
 
-    runner = DecisionRunner(strategy_name="canary_non_sma")
     with sqlite3.connect(":memory:") as conn:
-        result = runner.decide_snapshot(conn, through_ts_ms=123)
+        result = RuntimeStrategyDecisionCollector(
+            adapter_resolver=lambda strategy_name: (
+                _UnitAdapter() if str(strategy_name).strip().lower() == "canary_non_sma" else None
+            )
+        ).collect(
+            conn,
+            RuntimeStrategySet(source="unit", strategies=(RuntimeStrategySpec("canary_non_sma"),)),
+            through_ts_ms=123,
+        )
 
     assert result is None
     assert calls == [("canary_non_sma", 123)]
