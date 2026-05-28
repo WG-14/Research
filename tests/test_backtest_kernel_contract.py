@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from bithumb_bot.canonical_decision import canonical_payload_hash
-from bithumb_bot.research import backtest_engine, backtest_kernel, backtest_pipeline, backtest_support
+from bithumb_bot.research import backtest_engine, backtest_kernel, backtest_loop, backtest_pipeline, backtest_support
 import bithumb_bot.research.strategy_registry as strategy_registry
 from bithumb_bot.research.backtest_engine import BacktestRunContext
 from bithumb_bot.research.backtest_kernel import BacktestKernel, run_decision_event_backtest
@@ -706,6 +706,116 @@ def test_default_backtest_pipeline_invokes_injected_stage_interfaces_in_order() 
     ]
 
 
+def test_default_backtest_pipeline_constructs_concrete_default_stages() -> None:
+    pipeline = backtest_pipeline.DefaultBacktestPipeline()
+
+    assert [type(stage).__name__ for stage in pipeline.stages.ordered()] == [
+        "DefaultMarketReplayClock",
+        "DefaultPortfolioLedgerStage",
+        "DefaultStrategyEvaluator",
+        "DefaultRiskGate",
+        "DefaultExecutionSimulator",
+        "DefaultMetricsCollector",
+        "DefaultExperimentRecorder",
+    ]
+
+
+def test_default_backtest_pipeline_does_not_invoke_legacy_giant_loop(monkeypatch) -> None:
+    dataset = DatasetSnapshot(
+        snapshot_id="kernel_no_legacy_loop",
+        source="unit",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="validation",
+        date_range=DateRange("2026-01-01", "2026-01-02"),
+        candles=tuple(
+            Candle(index * 60_000, 100.0 + index, 100.0 + index, 100.0 + index, 100.0 + index, 1.0)
+            for index in range(4)
+        ),
+    )
+    event = ResearchDecisionEvent(
+        candle_ts=dataset.candles[1].ts,
+        decision_ts=dataset.candles[1].ts + 60_000,
+        strategy_name="buy_and_hold_baseline",
+        strategy_version="buy_and_hold_baseline.research_contract.v1",
+        raw_signal="BUY",
+        final_signal="BUY",
+        reason="kernel_no_legacy_loop_buy",
+        feature_snapshot={"candle_index": 1, "close": dataset.candles[1].close},
+        strategy_diagnostics={"schema_version": 1, "emitted_buy_intent": True},
+        entry_signal="BUY",
+        order_intent={"side": "BUY"},
+    )
+
+    def _legacy_loop_is_forbidden(**_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("legacy giant loop was invoked")
+
+    monkeypatch.setattr(backtest_loop, "_run_decision_event_backtest_impl", _legacy_loop_is_forbidden)
+
+    result = backtest_pipeline.DefaultBacktestPipeline().run(
+        dataset=dataset,
+        strategy_name="buy_and_hold_baseline",
+        parameter_values={"BUY_HOLD_BUY_INDEX": 1, "BUY_HOLD_DECISION_REASON": "kernel_no_legacy_loop_buy"},
+        fee_rate=0.001,
+        slippage_bps=5.0,
+        decision_events=(event,),
+        context=BacktestRunContext(report_detail="full"),
+    )
+
+    assert result.trades
+    assert result.decisions[0]["execution_plan_status"] == "PLANNED"
+
+
+def test_default_portfolio_stage_is_ledger_authority(monkeypatch) -> None:
+    calls: list[tuple[float, float]] = []
+    real_create = backtest_pipeline.PortfolioLedger.create
+
+    def _spy_create(_cls, *, starting_cash: float, initial_position_qty: float = 0.0):  # type: ignore[no-untyped-def]
+        calls.append((float(starting_cash), float(initial_position_qty)))
+        return real_create(starting_cash=starting_cash, initial_position_qty=initial_position_qty)
+
+    monkeypatch.setattr(backtest_pipeline.PortfolioLedger, "create", classmethod(_spy_create))
+
+    dataset = DatasetSnapshot(
+        snapshot_id="kernel_ledger_authority",
+        source="unit",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="validation",
+        date_range=DateRange("2026-01-01", "2026-01-02"),
+        candles=tuple(
+            Candle(index * 60_000, 100.0 + index, 100.0 + index, 100.0 + index, 100.0 + index, 1.0)
+            for index in range(3)
+        ),
+    )
+    event = ResearchDecisionEvent(
+        candle_ts=dataset.candles[1].ts,
+        decision_ts=dataset.candles[1].ts + 60_000,
+        strategy_name="buy_and_hold_baseline",
+        strategy_version="buy_and_hold_baseline.research_contract.v1",
+        raw_signal="BUY",
+        final_signal="BUY",
+        reason="kernel_ledger_authority_buy",
+        feature_snapshot={"candle_index": 1},
+        strategy_diagnostics={"schema_version": 1},
+        entry_signal="BUY",
+        order_intent={"side": "BUY"},
+    )
+
+    result = run_decision_event_backtest(
+        dataset=dataset,
+        strategy_name="buy_and_hold_baseline",
+        parameter_values={"BUY_HOLD_BUY_INDEX": 1, "BUY_HOLD_DECISION_REASON": "kernel_ledger_authority_buy"},
+        fee_rate=0.001,
+        slippage_bps=5.0,
+        decision_events=(event,),
+        context=BacktestRunContext(report_detail="full"),
+    )
+
+    assert calls == [(1_000_000.0, 0.0)]
+    assert result.trades
+
+
 def test_backtest_kernel_delegates_decision_event_implementation_to_pipeline() -> None:
     source = inspect.getsource(backtest_kernel.run_decision_event_backtest)
     implementation_source = inspect.getsource(backtest_pipeline._run_decision_event_backtest_impl)
@@ -715,6 +825,7 @@ def test_backtest_kernel_delegates_decision_event_implementation_to_pipeline() -
     assert "from .backtest_engine import _run_decision_event_backtest_impl" not in source
     assert "Execute strategy decision events through the shared research backtest kernel" in implementation_source
     assert "resolve_research_strategy_plugin(strategy_name)" in implementation_source
+    assert "backtest_loop._run_decision_event_backtest_impl" not in implementation_source
 
 
 def test_backtest_kernel_has_no_sma_specific_dependencies_or_branches() -> None:
