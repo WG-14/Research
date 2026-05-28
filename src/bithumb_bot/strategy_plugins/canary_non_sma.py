@@ -479,6 +479,26 @@ def _canary_runtime_parameters_from_settings(_cfg: object) -> dict[str, Any]:
     return _normalize_canary_parameters({})
 
 
+@dataclass(frozen=True)
+class CanaryNonSmaPolicyAssembly:
+    strategy_name: str = CANARY_NON_SMA_STRATEGY_NAME
+    decision_contract_version: str = CANARY_NON_SMA_POLICY_CONTRACT_VERSION
+
+    def materialize_parameters(self, raw: dict[str, Any]) -> dict[str, Any]:
+        return _normalize_canary_parameters(dict(raw or {}))
+
+    def replay_fingerprint_material(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "strategy_name": self.strategy_name,
+            "decision_contract_version": self.decision_contract_version,
+        }
+
+
+def _canary_policy_assembly_factory() -> CanaryNonSmaPolicyAssembly:
+    return CanaryNonSmaPolicyAssembly()
+
+
 def build_canary_non_sma_research_events(
     *,
     dataset: Any,
@@ -571,6 +591,31 @@ def build_canary_non_sma_research_events(
     return tuple(events)
 
 
+def _canary_research_policy_decision_builder(
+    *,
+    event: Any,
+    dataset: Any,
+    candle_index: int,
+    position: Any,
+    parameter_values: dict[str, Any],
+    fee_rate: float,
+    slippage_bps: float,
+    active_exit_policy: dict[str, Any],
+    buy_fraction: float = 0.0,
+    **_kwargs: Any,
+) -> StrategyDecisionV2:
+    del position, fee_rate, slippage_bps, active_exit_policy, buy_fraction
+    candle = dataset.candles[int(candle_index)]
+    return _canary_result(
+        pair=str(dataset.market),
+        interval=str(dataset.interval),
+        candle_ts=int(event.candle_ts),
+        market_price=float(candle.close),
+        candle_index=int(candle_index),
+        parameters=dict(parameter_values or {}),
+    ).decision
+
+
 def run_canary_non_sma_backtest(
     dataset: Any,
     parameter_values: dict[str, Any],
@@ -652,8 +697,10 @@ CANARY_NON_SMA_PLUGIN = ResearchStrategyPlugin(
     decision_contract_version=CANARY_NON_SMA_SPEC.decision_contract_version,
     diagnostics_namespace=CANARY_NON_SMA_STRATEGY_NAME,
     decision_payload_adapter=_canary_decision_payload_adapter,
+    research_policy_decision_builder=_canary_research_policy_decision_builder,
     runtime_decision_adapter_factory=CanaryNonSmaRuntimeDecisionAdapter,
     single_replay_bundle_builder=_canary_single_replay_bundle_builder,
+    policy_assembly_factory=_canary_policy_assembly_factory,
     runtime_capabilities=StrategyRuntimeCapabilities(
         promotion_runtime_decisions_supported=True,
         runtime_replay_supported=True,

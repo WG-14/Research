@@ -8,6 +8,7 @@ from bithumb_bot.strategy_plugins.sma_with_filter_assembly import (
     MaterializationMode,
     SmaWithFilterPolicyAssembly,
 )
+from bithumb_bot.strategy_decision_service import StrategyDecisionService, StrategyEvaluationRequest
 
 
 @dataclass(frozen=True)
@@ -319,18 +320,42 @@ def research_policy_decision_builder(
         for name in active_exit_policy.get("rules") or ()
     }
     fee = float(materialized.values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate)
-    return strategy.decide_snapshot(
-        market=market,
-        position=position,
-        config=config,
-        execution_context=assembly.build_execution_snapshot(
-            materialized,
-            pair=dataset.market,
-            fee_rate_for_decision=fee,
-        ),
-        exit_policy_config=exit_policy_config,
-        rule_sources=rule_sources,
+    result = StrategyDecisionService().evaluate(
+        StrategyEvaluationRequest(
+            strategy_name=strategy.name,
+            strategy_instance_id=None,
+            mode=str(
+                materialization_mode.value
+                if isinstance(materialization_mode, MaterializationMode)
+                else materialization_mode
+            ),
+            strategy_policy=strategy,
+            market_snapshot=market,
+            position_snapshot=position,
+            strategy_config=config,
+            execution_constraints=assembly.build_execution_snapshot(
+                materialized,
+                pair=dataset.market,
+                fee_rate_for_decision=fee,
+            ),
+            exit_policy_config=exit_policy_config,
+            rule_sources=rule_sources,
+            approved_profile_hash=(
+                candidate_regime_policy.get("strategy_profile_hash")
+                if isinstance(candidate_regime_policy, dict)
+                else None
+            ),
+            runtime_contract_hash=None,
+            plugin_contract_hash=None,
+            request_hash=None,
+            provenance={
+                "decision_boundary": "StrategyDecisionService.evaluate",
+                "snapshot_builder": "research.sma_with_filter_plugin",
+                "candle_ts": int(event.candle_ts),
+            },
+        )
     )
+    return result.decision
 
 
 def runtime_decision_adapter_factory() -> Any:

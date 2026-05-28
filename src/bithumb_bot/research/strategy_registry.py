@@ -251,15 +251,20 @@ class ResearchStrategyPlugin:
     def __post_init__(self) -> None:
         if self.runtime_capabilities is None:
             raise ValueError(f"strategy runtime capabilities must be explicit: {self.name}")
+        decision_contract_version = str(self.decision_contract_version or "").strip()
+        if not decision_contract_version:
+            raise ValueError(f"strategy decision contract version missing: {self.name}")
         if bool(self.research_runnable) and self.research_event_builder is None:
             raise ValueError(f"research event builder missing: {self.name}")
         if self.runtime_capabilities.runtime_replay_supported != (self.runtime_replay_builder is not None):
             raise ValueError(f"strategy runtime replay capability mismatch: {self.name}")
-        if (
-            self.runtime_capabilities.promotion_runtime_decisions_supported
-            and self.runtime_decision_adapter_factory is None
-        ):
-            raise ValueError(f"strategy promotion runtime capability missing adapter: {self.name}")
+        if self.runtime_capabilities.promotion_runtime_decisions_supported:
+            if self.runtime_parameter_adapter is None:
+                raise ValueError(f"strategy promotion runtime capability missing parameter adapter: {self.name}")
+            if self.runtime_decision_adapter_factory is None:
+                raise ValueError(f"strategy promotion runtime capability missing adapter: {self.name}")
+            if self.policy_assembly_factory is None:
+                raise ValueError(f"strategy promotion runtime capability missing policy assembly: {self.name}")
         if self.runtime_capabilities.live_dry_run_allowed and self.runtime_decision_adapter_factory is None:
             raise ValueError(f"strategy live dry-run capability missing adapter: {self.name}")
         if self.runtime_capabilities.live_real_order_allowed and self.runtime_decision_adapter_factory is None:
@@ -411,6 +416,23 @@ class ResearchStrategyPlugin:
                 if self.policy_assembly_factory is not None
                 else None
             ),
+            "decision_assembly_contract": {
+                "schema_version": 1,
+                "promotion_runtime_decisions_supported": bool(
+                    self.runtime_capabilities.promotion_runtime_decisions_supported
+                ),
+                "runtime_parameter_adapter_required": bool(
+                    self.runtime_capabilities.promotion_runtime_decisions_supported
+                ),
+                "runtime_decision_adapter_required": bool(
+                    self.runtime_capabilities.promotion_runtime_decisions_supported
+                ),
+                "policy_assembly_required": bool(
+                    self.runtime_capabilities.promotion_runtime_decisions_supported
+                ),
+                "decision_contract_version": self.decision_contract_version,
+                "runtime_capabilities": self.runtime_capabilities.as_dict(),
+            },
         }
 
     def contract_hash(self) -> str:

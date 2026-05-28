@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from bithumb_bot.research.backtest_types import BacktestRun, BacktestRunContext
@@ -9,6 +10,7 @@ from bithumb_bot.research.experiment_manifest import ExecutionTimingPolicy, Port
 from bithumb_bot.research.strategy_registry import (
     ResearchStrategyPlugin,
     ResearchStrategyRegistryError,
+    RuntimeParameterAdapter,
     StrategyRuntimeCapabilities,
 )
 from bithumb_bot.research.strategy_spec import StrategySpec
@@ -22,6 +24,29 @@ def _safe_hold_runtime_decision_adapter_factory() -> Any:
     from bithumb_bot.runtime_adapters.safe_hold import SafeHoldRuntimeDecisionAdapter
 
     return SafeHoldRuntimeDecisionAdapter()
+
+
+def _safe_hold_runtime_parameters_from_env(_env: dict[str, str]) -> dict[str, Any]:
+    return {}
+
+
+def _safe_hold_runtime_parameters_from_settings(_cfg: object) -> dict[str, Any]:
+    return {}
+
+
+@dataclass(frozen=True)
+class SafeHoldPolicyAssembly:
+    strategy_name: str = SAFE_HOLD_STRATEGY_NAME
+    decision_contract_version: str = SAFE_HOLD_POLICY_CONTRACT_VERSION
+
+    def materialize_parameters(self, raw: dict[str, Any]) -> dict[str, Any]:
+        if raw:
+            raise ValueError("safe_hold_parameters_unsupported")
+        return {}
+
+
+def _safe_hold_policy_assembly_factory() -> SafeHoldPolicyAssembly:
+    return SafeHoldPolicyAssembly()
 
 
 def run_safe_hold_research_placeholder(
@@ -74,10 +99,15 @@ SAFE_HOLD_PLUGIN = ResearchStrategyPlugin(
     runner=run_safe_hold_research_placeholder,
     research_event_builder=None,
     runtime_replay_builder=None,
-    runtime_parameter_adapter=None,
+    runtime_parameter_adapter=RuntimeParameterAdapter(
+        from_env=_safe_hold_runtime_parameters_from_env,
+        from_settings=_safe_hold_runtime_parameters_from_settings,
+        env_keys=(),
+    ),
     decision_contract_version=SAFE_HOLD_SPEC.decision_contract_version,
     diagnostics_namespace=SAFE_HOLD_STRATEGY_NAME,
     runtime_decision_adapter_factory=_safe_hold_runtime_decision_adapter_factory,
+    policy_assembly_factory=_safe_hold_policy_assembly_factory,
     research_runnable=False,
     runtime_capabilities=StrategyRuntimeCapabilities(
         promotion_runtime_decisions_supported=True,

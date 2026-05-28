@@ -35,10 +35,12 @@ from bithumb_bot.strategy.sma_legacy_adapter import (
     LegacySmaWithFilterDbAdapter,
     create_legacy_sma_with_filter_db_adapter,
 )
-from bithumb_bot.strategy import (
+from bithumb_bot.compat.strategy import (
     create_legacy_db_strategy,
-    create_smoke_strategy_policy,
     list_legacy_db_strategies,
+)
+from bithumb_bot.strategy import (
+    create_smoke_strategy_policy,
     list_smoke_strategy_policies,
 )
 from bithumb_bot.strategy.base import StrategyDecision
@@ -55,6 +57,18 @@ def test_public_sma_with_filter_name_resolves_to_policy_strategy() -> None:
 
     assert PublicSmaWithFilterStrategy.__module__ == "bithumb_bot.strategy.sma_policy_strategy"
     assert SmaWithFilterStrategy.__module__ == "bithumb_bot.strategy.sma_policy_strategy"
+
+
+def test_top_level_strategy_api_does_not_export_legacy_db_strategy_surface() -> None:
+    import bithumb_bot.strategy as strategy_api
+
+    for name in (
+        "LegacyDbStrategy",
+        "SmaCrossStrategy",
+        "LegacySmaWithFilterDbAdapter",
+        "create_legacy_db_strategy",
+    ):
+        assert not hasattr(strategy_api, name)
 
 
 def test_legacy_sma_adapter_has_explicit_non_policy_name() -> None:

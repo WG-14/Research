@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from .strategy_decision_service import (
+    StrategyDecisionService,
+    StrategyEvaluationRequest,
+    StrategyEvaluationResult,
+)
 from .runtime_adapter_bootstrap import ensure_runtime_decision_adapters_registered
 from .runtime_strategy_decision import (
     DecisionRunner,
@@ -26,6 +31,9 @@ from .runtime_decision_contract import (
 ensure_runtime_decision_adapters_registered()
 
 __all__ = [
+    "StrategyDecisionService",
+    "StrategyEvaluationRequest",
+    "StrategyEvaluationResult",
     "DecisionRunner",
     "RuntimeDecisionGateway",
     "RuntimeDecisionRequest",

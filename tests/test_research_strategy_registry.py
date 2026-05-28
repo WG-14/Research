@@ -46,6 +46,9 @@ def test_research_strategy_registry_resolves_sma_with_filter() -> None:
     assert plugin.contract_payload()["runtime_replay_builder_module"] == "bithumb_bot.research.sma_with_filter_plugin"
     assert plugin.contract_payload()["runtime_replay_builder_qualname"] == "build_runtime_replay_strategy"
     assert plugin.contract_payload()["runtime_parameter_adapter_supported"] is True
+    assert plugin.contract_payload()["policy_assembly_supported"] is True
+    assert plugin.contract_payload()["decision_assembly_contract"]["policy_assembly_required"] is True
+    assert plugin.policy_assembly_factory is not None
     assert plugin.contract_payload()["runtime_parameter_env_keys"] == list(
         runtime_strategy_parameter_env_keys("sma_with_filter")
     )
@@ -227,6 +230,13 @@ def test_runtime_parameter_adapter_identity_is_contract_bound_and_deterministic(
     encoded = json.dumps(plugin.contract_payload(), sort_keys=True)
     assert "<function" not in encoded
     assert " object at 0x" not in encoded
+
+
+def test_promotion_capable_plugin_requires_policy_assembly_factory() -> None:
+    plugin = resolve_research_strategy_plugin("sma_with_filter")
+
+    with pytest.raises(ValueError, match="missing policy assembly"):
+        replace(plugin, policy_assembly_factory=None)
 
 
 def test_research_strategy_registry_rejects_unknown_strategy() -> None:

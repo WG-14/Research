@@ -339,6 +339,8 @@ def _research_execution_plan_bundle(
                 reference_price=reference_price,
                 policy_decision=policy_decision,
             )
+        if promotion_grade_required and bool(summary.submit_expected) and submit_plan is None:
+            raise ValueError(summary.block_reason or "research_typed_submit_plan_missing")
         return ResearchExecutionPlanBundle(
             submit_plan=submit_plan,
             summary=summary,
@@ -853,12 +855,14 @@ def _run_decision_event_backtest_impl(
             "active_exit_policy": active_exit_policy,
             "buy_fraction": float(buy_fraction),
         }
+        policy_materialization_mode = str(
+            getattr(run_context, "policy_materialization_mode", "research_exploratory")
+        )
+        promotion_grade_policy_required = policy_materialization_mode != "research_exploratory"
         if strategy_plugin.policy_assembly_factory is not None:
             policy_builder_kwargs.update(
                 {
-                    "materialization_mode": str(
-                        getattr(run_context, "policy_materialization_mode", "research_exploratory")
-                    ),
+                    "materialization_mode": policy_materialization_mode,
                     "candidate_regime_policy": (
                         dict(getattr(run_context, "candidate_regime_policy"))
                         if isinstance(getattr(run_context, "candidate_regime_policy", None), dict)
@@ -882,6 +886,8 @@ def _run_decision_event_backtest_impl(
             and not (evaluates_exit_policy and allows_legacy_event_first_exit_policy)
         ):
             policy_unsupported_reason = "research_policy_decision_missing_not_comparable"
+        if promotion_grade_policy_required and policy_decision is None:
+            raise ValueError(policy_unsupported_reason or "research_policy_decision_missing_not_comparable")
         if policy_decision is not None:
             entry_decision = policy_decision.entry_decision
             raw_signal = str(policy_decision.raw_signal or "HOLD").upper()
@@ -910,12 +916,13 @@ def _run_decision_event_backtest_impl(
             if entry_decision is not None
             else False
         )
-        requested_action = str(event.final_signal or "HOLD").upper()
         policy_drives_execution = True
         if policy_decision is not None and policy_drives_execution:
             requested_action = str(policy_decision.final_signal or "HOLD").upper()
         elif policy_unsupported_reason:
             requested_action = "HOLD"
+        else:
+            requested_action = str(event.final_signal or "HOLD").upper()
         execution_policy_decision = policy_decision if policy_drives_execution else None
         action = requested_action
         blocked = bool(policy_unsupported_reason)

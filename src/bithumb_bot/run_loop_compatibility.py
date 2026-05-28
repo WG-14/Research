@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .config import settings
+from .compat.strategy import create_legacy_db_strategy
 from .run_loop_execution_planner import ExecutionPlanner, ExecutionPlanningResult
-from .strategy import create_legacy_db_strategy
 
 
 def _live_real_order_enabled() -> bool:

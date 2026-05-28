@@ -1405,7 +1405,8 @@ def test_runtime_decide_is_read_only_and_normalization_boundary_is_explicit() ->
     assert "conn.commit()" in normalizer_source
     assert "readonly_decision_context(" in builder_source
     assert "_load_position_context(" in builder_impl_source
-    assert "strategy.decide_snapshot(" in builder_impl_source
+    assert "StrategyDecisionService().evaluate(" in builder_impl_source
+    assert "StrategyEvaluationRequest(" in builder_impl_source
     assert "normalize_and_persist(" not in orchestration_source
     assert "normalize_and_persist(" in runtime_normalization_source
     assert "strategy.decide(" not in orchestration_source

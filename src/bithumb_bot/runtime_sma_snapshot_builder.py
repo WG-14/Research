@@ -22,6 +22,7 @@ from .strategy_plugins.sma_with_filter_assembly import (
     MaterializationMode,
     SmaWithFilterPolicyAssembly,
 )
+from .strategy_decision_service import StrategyDecisionService, StrategyEvaluationRequest
 from .runtime_position_state_normalizer import (
     load_last_reconcile_metadata,
 )
@@ -561,13 +562,33 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
             candidate_regime_policy=strategy.candidate_regime_policy,
         )
     )
-    final_policy_decision = policy_strategy.decide_snapshot(
-        market=market_snapshot,
-        position=position_snapshot,
-        config=policy_config,
-        execution_context=execution_snapshot,
-        exit_policy_config=exit_policy_config,
+    final_policy_result = StrategyDecisionService().evaluate(
+        StrategyEvaluationRequest(
+            strategy_name=strategy.name,
+            strategy_instance_id=None,
+            mode="runtime_replay",
+            strategy_policy=policy_strategy,
+            market_snapshot=market_snapshot,
+            position_snapshot=position_snapshot,
+            strategy_config=policy_config,
+            execution_constraints=execution_snapshot,
+            exit_policy_config=exit_policy_config,
+            rule_sources={},
+            approved_profile_hash=(
+                strategy.candidate_regime_policy.get("strategy_profile_hash")
+                if isinstance(strategy.candidate_regime_policy, dict)
+                else None
+            ),
+            runtime_contract_hash=None,
+            plugin_contract_hash=None,
+            request_hash=None,
+            provenance={
+                "decision_boundary": "StrategyDecisionService.evaluate",
+                "snapshot_builder": "runtime_sma_snapshot_builder",
+            },
+        )
     )
+    final_policy_decision = final_policy_result.decision
     policy_decision = final_policy_decision
     entry_decision = policy_decision.entry_decision
     base_signal = policy_decision.raw_signal

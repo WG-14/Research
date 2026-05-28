@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 from bithumb_bot.research.strategy_registry import list_research_strategy_plugins
@@ -27,6 +28,54 @@ def test_backtest_kernel_stays_strategy_neutral() -> None:
     assert "ResearchDecisionEvent" in source
     assert "StrategyDecisionV2" in source
     assert "ExecutionSubmitPlan" in source
+
+
+def test_production_strategy_decisions_go_through_canonical_service() -> None:
+    allowed_files = {
+        "src/bithumb_bot/strategy_decision_service.py",
+        "src/bithumb_bot/runtime_strategy_decision.py",
+        "src/bithumb_bot/strategy/sma_policy_strategy.py",
+    }
+    violations: list[str] = []
+    for path in (ROOT / "src/bithumb_bot").rglob("*.py"):
+        rel = path.relative_to(ROOT).as_posix()
+        if rel in allowed_files:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=rel)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr == "decide_snapshot":
+                    violations.append(f"{rel}:{node.lineno}")
+
+    assert violations == []
+
+
+def test_runtime_production_modules_do_not_import_legacy_db_strategies() -> None:
+    forbidden = {
+        "LegacyDbStrategy",
+        "create_legacy_db_strategy",
+        "SmaCrossStrategy",
+        "LegacySmaWithFilterDbAdapter",
+    }
+    allowed = {
+        "src/bithumb_bot/compat/strategy.py",
+        "src/bithumb_bot/run_loop_compatibility.py",
+        "src/bithumb_bot/strategy/base.py",
+        "src/bithumb_bot/strategy/registry.py",
+        "src/bithumb_bot/strategy/sma.py",
+        "src/bithumb_bot/strategy/sma_legacy_adapter.py",
+    }
+    violations: list[str] = []
+    for path in (ROOT / "src/bithumb_bot").rglob("*.py"):
+        rel = path.relative_to(ROOT).as_posix()
+        if rel in allowed:
+            continue
+        source = path.read_text(encoding="utf-8-sig")
+        for token in forbidden:
+            if token in source:
+                violations.append(f"{rel}:{token}")
+
+    assert violations == []
 
 
 def test_backtest_engine_is_compatibility_only_for_sma_event_generation() -> None:
