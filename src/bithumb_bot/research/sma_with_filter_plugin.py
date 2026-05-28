@@ -35,48 +35,9 @@ def build_runtime_replay_strategy(
     profile: dict[str, Any],
     candidate_regime_policy: dict[str, Any] | None = None,
 ) -> Any:
-    from bithumb_bot.config import settings
-    from bithumb_bot.strategy.sma_policy_strategy import create_sma_with_filter_strategy
+    from bithumb_bot.runtime_adapters.sma_with_filter import SmaWithFilterRuntimeConfig
 
-    params = profile.get("strategy_parameters") if isinstance(profile.get("strategy_parameters"), dict) else {}
-    cost = profile.get("cost_model") if isinstance(profile.get("cost_model"), dict) else {}
-    strategy = create_sma_with_filter_strategy(
-        short_n=int(params.get("SMA_SHORT", settings.SMA_SHORT)),
-        long_n=int(params.get("SMA_LONG", settings.SMA_LONG)),
-        pair=str(profile.get("market") or settings.PAIR),
-        interval=str(profile.get("interval") or settings.INTERVAL),
-        min_gap_ratio=float(params.get("SMA_FILTER_GAP_MIN_RATIO", settings.SMA_FILTER_GAP_MIN_RATIO)),
-        volatility_window=int(params.get("SMA_FILTER_VOL_WINDOW", settings.SMA_FILTER_VOL_WINDOW)),
-        min_volatility_ratio=float(
-            params.get("SMA_FILTER_VOL_MIN_RANGE_RATIO", settings.SMA_FILTER_VOL_MIN_RANGE_RATIO)
-        ),
-        overextended_lookback=int(
-            params.get("SMA_FILTER_OVEREXT_LOOKBACK", settings.SMA_FILTER_OVEREXT_LOOKBACK)
-        ),
-        overextended_max_return_ratio=float(
-            params.get("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO", settings.SMA_FILTER_OVEREXT_MAX_RETURN_RATIO)
-        ),
-        cost_edge_enabled=_coerce_bool(params.get("SMA_COST_EDGE_ENABLED", settings.SMA_COST_EDGE_ENABLED)),
-        cost_edge_min_ratio=float(params.get("SMA_COST_EDGE_MIN_RATIO", settings.SMA_COST_EDGE_MIN_RATIO)),
-        entry_edge_buffer_ratio=float(params.get("ENTRY_EDGE_BUFFER_RATIO", settings.ENTRY_EDGE_BUFFER_RATIO)),
-        slippage_bps=float(cost.get("slippage_bps", settings.STRATEGY_ENTRY_SLIPPAGE_BPS)),
-        live_fee_rate_estimate=float(cost.get("fee_rate", settings.LIVE_FEE_RATE_ESTIMATE)),
-        exit_rule_names=str(params.get("STRATEGY_EXIT_RULES", settings.STRATEGY_EXIT_RULES)).split(","),
-        exit_stop_loss_ratio=float(
-            params.get("STRATEGY_EXIT_STOP_LOSS_RATIO", settings.STRATEGY_EXIT_STOP_LOSS_RATIO)
-        ),
-        exit_max_holding_min=int(
-            params.get("STRATEGY_EXIT_MAX_HOLDING_MIN", settings.STRATEGY_EXIT_MAX_HOLDING_MIN)
-        ),
-        exit_min_take_profit_ratio=float(
-            params.get("STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO", settings.STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO)
-        ),
-        exit_small_loss_tolerance_ratio=float(
-            params.get(
-                "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO",
-                settings.STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO,
-            )
-        ),
+    strategy = SmaWithFilterRuntimeConfig.from_profile(profile).build_strategy(
         candidate_regime_policy=candidate_regime_policy,
     )
     from bithumb_bot.runtime_sma_snapshot import decide_sma_with_filter_runtime_snapshot_from_db

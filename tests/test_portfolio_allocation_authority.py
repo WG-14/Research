@@ -254,18 +254,29 @@ def test_runtime_strategy_set_resolver_reads_structured_strategy_contract(
         "RUNTIME_STRATEGY_SET_JSON",
         """
         [
-          {"strategy_name":"strategy_b","priority":20,"weight":2,"desired_exposure_krw":90000,"risk_budget_krw":50000},
-          {"strategy_name":"strategy_a","priority":10,"weight":1,"desired_exposure_krw":30000,"risk_budget_krw":30000}
+          {"strategy_name":"canary_non_sma","priority":20,"weight":2,"desired_exposure_krw":90000,"risk_budget_krw":50000,
+           "parameters":{"CANARY_ORDER_SIDE":"BUY","CANARY_ORDER_REASON":"canary_json"}},
+          {"strategy_name":"sma_with_filter","priority":10,"weight":1,"desired_exposure_krw":30000,"risk_budget_krw":30000,
+           "parameters":{"SMA_SHORT":7,"SMA_LONG":30}}
         ]
         """,
     )
     strategy_set = RuntimeStrategySetResolver().resolve()
     assert strategy_set.multi_strategy_enabled is True
     assert [item.strategy_name for item in strategy_set.active_strategies] == [
-        "strategy_a",
-        "strategy_b",
+        "sma_with_filter",
+        "canary_non_sma",
     ]
-    assert strategy_set.spec_for_strategy("strategy_b").risk_budget_krw == pytest.approx(50_000.0)  # type: ignore[union-attr]
+    canary_spec = strategy_set.spec_for_strategy("canary_non_sma")
+    sma_spec = strategy_set.spec_for_strategy("sma_with_filter")
+    assert canary_spec is not None
+    assert sma_spec is not None
+    assert canary_spec.risk_budget_krw == pytest.approx(50_000.0)
+    assert dict(canary_spec.parameters) == {
+        "CANARY_ORDER_SIDE": "BUY",
+        "CANARY_ORDER_REASON": "canary_json",
+    }
+    assert dict(sma_spec.parameters) == {"SMA_SHORT": 7, "SMA_LONG": 30}
 
 
 def test_multi_strategy_collector_executes_all_on_same_candle() -> None:
@@ -293,8 +304,8 @@ def test_multi_strategy_collector_executes_all_on_same_candle() -> None:
     assert bundle is not None
     assert bundle.candle_ts == 123
     assert [result.decision.strategy_name for result in bundle.results] == [
-        "strategy_a",
-        "strategy_b",
+        "canary_non_sma",
+        "sma_with_filter",
     ]
 
 
@@ -504,6 +515,12 @@ def test_run_loop_single_strategy_path_passes_through_allocator() -> None:
     assert bundle.persistence_context["portfolio_target_present"] is True
     assert bundle.persistence_context["portfolio_target_authoritative"] is True
     assert str(bundle.persistence_context["allocation_decision_hash"]).startswith("sha256:")
+    assert str(bundle.persistence_context["allocator_config_hash"]).startswith("sha256:")
+    assert str(bundle.persistence_context["strategy_contribution_hash"]).startswith("sha256:")
+    assert bundle.persistence_context["allocation_selected_signal"] == "BUY"
+    assert bundle.persistence_context["allocation_selected_strategies"] == ["sma_with_filter"]
+    assert bundle.persistence_context["allocation_conflict_count"] == 0
+    assert bundle.persistence_context["allocation_primary_block_reason"] == "none"
     assert bundle.persistence_context["allocation_contributions"]
 
 
@@ -545,12 +562,17 @@ def test_run_loop_multi_strategy_path_sends_multiple_preferences_to_allocator() 
     assert str(seen["allocation_decision_hash"]).startswith("sha256:")
     assert result.persistence_context["runtime_multi_strategy_enabled"] is True
     assert result.persistence_context["strategy_preference_count"] == 2
+    assert str(result.persistence_context["allocation_decision_hash"]).startswith("sha256:")
+    assert str(result.persistence_context["allocator_config_hash"]).startswith("sha256:")
+    assert str(result.persistence_context["strategy_contribution_hash"]).startswith("sha256:")
     assert len(result.persistence_context["allocation_contributions"]) == 2
     assert result.persistence_context["allocation_selected_signal"] == "BUY"
     assert result.persistence_context["allocation_selected_strategies"] == [
         "strategy_buy",
         "strategy_hold",
     ]
+    assert result.persistence_context["allocation_conflict_count"] == 0
+    assert result.persistence_context["allocation_primary_block_reason"] == "none"
 
 
 def test_run_loop_multi_strategy_conflict_fails_closed_without_submit() -> None:
@@ -586,8 +608,16 @@ def test_run_loop_multi_strategy_conflict_fails_closed_without_submit() -> None:
     assert result.submit_plan is not None
     assert result.submit_plan.submit_expected is False
     assert result.submit_plan.block_reason == "conflicting_equal_priority_signals"
+    assert str(result.persistence_context["allocation_decision_hash"]).startswith("sha256:")
+    assert str(result.persistence_context["allocator_config_hash"]).startswith("sha256:")
+    assert str(result.persistence_context["strategy_contribution_hash"]).startswith("sha256:")
     assert result.persistence_context["allocation_primary_block_reason"] == "conflicting_equal_priority_signals"
     assert result.persistence_context["allocation_conflict_count"] == 1
+    assert result.persistence_context["allocation_selected_signal"] == ""
+    assert result.persistence_context["allocation_selected_strategies"] == [
+        "strategy_buy",
+        "strategy_sell",
+    ]
 
 
 def test_target_delta_typed_planning_fails_closed_without_portfolio_target() -> None:

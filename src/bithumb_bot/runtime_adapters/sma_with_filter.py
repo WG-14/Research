@@ -11,7 +11,7 @@ from bithumb_bot.runtime_sma_snapshot_builder import (
     _resolve_signal_through_ts_ms,
 )
 from bithumb_bot.runtime_strategy_decision import RuntimeStrategyDecisionResult
-from bithumb_bot.research.strategy_spec import materialize_strategy_parameters
+from bithumb_bot.research.strategy_spec import materialize_strategy_parameters, strategy_spec_for_name
 from bithumb_bot.strategy.sma_policy_strategy import SmaWithFilterStrategy, create_sma_with_filter_strategy
 
 
@@ -135,8 +135,42 @@ class SmaWithFilterRuntimeConfig:
             raise RuntimeError("sma_runtime_request_pair_missing")
         if not interval:
             raise RuntimeError("sma_runtime_request_interval_missing")
-        params = materialize_strategy_parameters("sma_with_filter", dict(request.parameters or {}))
-        return cls(
+        raw_params = dict(request.parameters or {})
+        return cls.from_parameter_payload(pair=pair, interval=interval, parameters=raw_params)
+
+    @classmethod
+    def from_profile(cls, profile: dict[str, object]) -> "SmaWithFilterRuntimeConfig":
+        pair = str(profile.get("market") or "").strip()
+        interval = str(profile.get("interval") or "").strip()
+        if not pair:
+            raise RuntimeError("sma_runtime_profile_market_missing")
+        if not interval:
+            raise RuntimeError("sma_runtime_profile_interval_missing")
+        params = profile.get("strategy_parameters") if isinstance(profile.get("strategy_parameters"), dict) else {}
+        return cls.from_parameter_payload(pair=pair, interval=interval, parameters=dict(params))
+
+    @classmethod
+    def from_parameter_payload(
+        cls,
+        *,
+        pair: str,
+        interval: str,
+        parameters: dict[str, object],
+    ) -> "SmaWithFilterRuntimeConfig":
+        raw_params = dict(parameters or {})
+        spec = strategy_spec_for_name("sma_with_filter")
+        runtime_bound = tuple(
+            name
+            for name in spec.behavior_affecting_parameter_names
+            if name not in set(spec.research_only_parameter_names)
+        )
+        missing = tuple(name for name in runtime_bound if name not in raw_params)
+        if missing:
+            raise RuntimeError(
+                "sma_runtime_request_behavior_parameter_missing:" + ",".join(sorted(missing))
+            )
+        params = materialize_strategy_parameters("sma_with_filter", raw_params)
+        config = cls(
             pair=pair,
             interval=interval,
             short_n=int(params["SMA_SHORT"]),
@@ -162,8 +196,43 @@ class SmaWithFilterRuntimeConfig:
             exit_min_take_profit_ratio=float(params["STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO"]),
             exit_small_loss_tolerance_ratio=float(params["STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO"]),
         )
+        config_keys = set(config.runtime_parameter_names())
+        missing_from_config = sorted(set(runtime_bound) - config_keys)
+        if missing_from_config:
+            raise RuntimeError(
+                "sma_runtime_config_unmapped_behavior_parameter:" + ",".join(missing_from_config)
+            )
+        return config
 
-    def build_strategy(self) -> SmaWithFilterStrategy:
+    @staticmethod
+    def runtime_parameter_names() -> tuple[str, ...]:
+        return (
+            "SMA_SHORT",
+            "SMA_LONG",
+            "SMA_FILTER_GAP_MIN_RATIO",
+            "SMA_FILTER_VOL_WINDOW",
+            "SMA_FILTER_VOL_MIN_RANGE_RATIO",
+            "SMA_FILTER_OVEREXT_LOOKBACK",
+            "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO",
+            "SMA_COST_EDGE_ENABLED",
+            "SMA_COST_EDGE_MIN_RATIO",
+            "SMA_MARKET_REGIME_ENABLED",
+            "ENTRY_EDGE_BUFFER_RATIO",
+            "STRATEGY_MIN_EXPECTED_EDGE_RATIO",
+            "STRATEGY_ENTRY_SLIPPAGE_BPS",
+            "LIVE_FEE_RATE_ESTIMATE",
+            "STRATEGY_EXIT_RULES",
+            "STRATEGY_EXIT_STOP_LOSS_RATIO",
+            "STRATEGY_EXIT_MAX_HOLDING_MIN",
+            "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO",
+            "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO",
+        )
+
+    def build_strategy(
+        self,
+        *,
+        candidate_regime_policy: dict[str, object] | None = None,
+    ) -> SmaWithFilterStrategy:
         return create_sma_with_filter_strategy(
             short_n=self.short_n,
             long_n=self.long_n,
@@ -185,6 +254,8 @@ class SmaWithFilterRuntimeConfig:
             exit_max_holding_min=self.exit_max_holding_min,
             exit_min_take_profit_ratio=self.exit_min_take_profit_ratio,
             exit_small_loss_tolerance_ratio=self.exit_small_loss_tolerance_ratio,
+            candidate_regime_policy=candidate_regime_policy,
+            legacy_candidate_regime_policy_fallback=False,
         )
 
 
@@ -236,14 +307,16 @@ def compute_sma_with_filter_signal(
 ) -> dict[str, object] | None:
     from bithumb_bot.runtime_strategy_decision import _attach_runtime_request_metadata
     from bithumb_bot.runtime_strategy_set import RuntimeDecisionRequestBuilder, RuntimeStrategySpec
+    from bithumb_bot.research.strategy_registry import runtime_strategy_parameters_from_settings
+
+    parameters = runtime_strategy_parameters_from_settings("sma_with_filter", settings)
+    parameters["SMA_SHORT"] = int(settings.SMA_SHORT if short_n is None else short_n)
+    parameters["SMA_LONG"] = int(settings.SMA_LONG if long_n is None else long_n)
 
     request = RuntimeDecisionRequestBuilder().build_for_spec(
         RuntimeStrategySpec(
             strategy_name="sma_with_filter",
-            parameters={
-                "SMA_SHORT": int(settings.SMA_SHORT if short_n is None else short_n),
-                "SMA_LONG": int(settings.SMA_LONG if long_n is None else long_n),
-            },
+            parameters=parameters,
             parameter_source="sma_diagnostic_arguments",
         ),
         through_ts_ms=through_ts_ms,

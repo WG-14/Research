@@ -79,7 +79,11 @@ def strategy_parameter_env_keys_for_env(env: dict[str, str]) -> tuple[str, ...]:
     return runtime_strategy_parameter_env_keys(strategy_name)
 
 
-STRATEGY_PARAMETER_ENV_KEYS = strategy_parameter_env_keys_for_env({"STRATEGY_NAME": "sma_with_filter"})
+LEGACY_SMA_STRATEGY_PARAMETER_ENV_KEYS = runtime_strategy_parameter_env_keys("sma_with_filter")
+# Deprecated compatibility alias for older callers that imported the SMA env-key tuple directly.
+# Generic runtime/profile verification must resolve keys through strategy_parameter_env_keys_for_*()
+# or runtime_strategy_parameter_env_keys(strategy_name).
+STRATEGY_PARAMETER_ENV_KEYS = LEGACY_SMA_STRATEGY_PARAMETER_ENV_KEYS
 COST_MODEL_ENV_KEYS = (
     "LIVE_FEE_RATE_ESTIMATE",
     "PAPER_FEE_RATE",

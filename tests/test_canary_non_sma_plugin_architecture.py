@@ -127,6 +127,54 @@ def test_canary_non_sma_plugin_runtime_envelope_and_planner(tmp_path: Path) -> N
         conn.close()
 
 
+def test_canary_non_sma_runtime_adapter_is_request_bound(tmp_path: Path) -> None:
+    db_path = tmp_path / "paper.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        for index in range(3):
+            ts = 1_700_000_000_000 + index * 300_000
+            close = 20.0 + index
+            conn.execute(
+                """
+                INSERT INTO candles(ts, pair, interval, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ts, "KRW-ETH", "5m", close, close, close, close, 1.0),
+            )
+        conn.commit()
+        from bithumb_bot.runtime_strategy_set import RuntimeDecisionRequestBuilder, RuntimeStrategySpec
+        from bithumb_bot.strategy_plugins.canary_non_sma import CanaryNonSmaRuntimeDecisionAdapter
+
+        request = RuntimeDecisionRequestBuilder().build_for_spec(
+            RuntimeStrategySpec(
+                "canary_non_sma",
+                pair="KRW-ETH",
+                interval="5m",
+                parameters={
+                    "CANARY_ORDER_START_INDEX": 99,
+                    "CANARY_ORDER_SIDE": "SELL",
+                    "CANARY_ORDER_REASON": "request_bound_canary",
+                },
+            ),
+            through_ts_ms=1_700_000_600_000,
+        )
+        result = CanaryNonSmaRuntimeDecisionAdapter().decide(conn, request)
+
+        assert result is not None
+        assert result.decision.final_signal == "HOLD"
+        assert result.decision.final_reason == "canary_before_order_start_index"
+        assert result.replay_fingerprint["parameters"]["CANARY_ORDER_SIDE"] == "SELL"
+        assert result.replay_fingerprint["parameters"]["CANARY_ORDER_START_INDEX"] == 99
+        assert result.decision.execution_intent is None
+        serialized = json.dumps(result.as_legacy_dict(), sort_keys=True)
+        for forbidden in ("curr_s", "curr_l", "SMA_SHORT", "SMA_LONG"):
+            assert forbidden not in serialized
+    finally:
+        conn.close()
+
+
 def test_canary_non_sma_live_real_order_fails_closed_by_plugin_capability() -> None:
     from dataclasses import replace
 

@@ -140,8 +140,13 @@ def create_sma_with_filter_strategy(
     exit_max_holding_min: int | None = None,
     exit_min_take_profit_ratio: float | None = None,
     exit_small_loss_tolerance_ratio: float | None = None,
+    legacy_candidate_regime_policy_fallback: bool = True,
 ) -> SmaWithFilterStrategy:
-    settings_config = sma_strategy_config_from_settings(short_n=short_n, long_n=long_n)
+    settings_config = (
+        sma_strategy_config_from_settings(short_n=short_n, long_n=long_n)
+        if legacy_candidate_regime_policy_fallback and candidate_regime_policy is None
+        else None
+    )
     return SmaWithFilterStrategy(
         short_n=int(settings.SMA_SHORT if short_n is None else short_n),
         long_n=int(settings.SMA_LONG if long_n is None else long_n),
@@ -199,7 +204,7 @@ def create_sma_with_filter_strategy(
             else bool(market_regime_enabled)
         ),
         candidate_regime_policy=(
-            settings_config.candidate_regime_policy
+            settings_config.candidate_regime_policy if settings_config is not None else None
             if candidate_regime_policy is None
             else candidate_regime_policy
         ),

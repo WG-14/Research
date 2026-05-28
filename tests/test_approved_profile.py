@@ -8,6 +8,7 @@ import pytest
 
 from bithumb_bot.approved_profile import (
     ApprovedProfileError,
+    LEGACY_SMA_STRATEGY_PARAMETER_ENV_KEYS,
     STRATEGY_PARAMETER_ENV_KEYS,
     build_approved_profile,
     compute_approved_profile_hash,
@@ -1477,11 +1478,24 @@ def test_strategy_parameter_env_keys_include_all_runtime_bound_behavior_params()
     spec = strategy_spec_for_name("sma_with_filter")
     required = set(spec.behavior_affecting_parameter_names) - set(spec.research_only_parameter_names)
 
-    assert required <= set(STRATEGY_PARAMETER_ENV_KEYS)
+    assert required <= set(strategy_parameter_env_keys_for_env({"STRATEGY_NAME": "sma_with_filter"}))
 
 
 def test_strategy_parameter_env_keys_include_sma_market_regime_enabled() -> None:
-    assert "SMA_MARKET_REGIME_ENABLED" in STRATEGY_PARAMETER_ENV_KEYS
+    assert "SMA_MARKET_REGIME_ENABLED" in strategy_parameter_env_keys_for_env(
+        {"STRATEGY_NAME": "sma_with_filter"}
+    )
+
+
+def test_legacy_sma_strategy_parameter_env_keys_are_not_generic_source_of_truth() -> None:
+    assert STRATEGY_PARAMETER_ENV_KEYS == LEGACY_SMA_STRATEGY_PARAMETER_ENV_KEYS
+    assert "SMA_SHORT" in LEGACY_SMA_STRATEGY_PARAMETER_ENV_KEYS
+    assert strategy_parameter_env_keys_for_env(
+        {"STRATEGY_NAME": "canary_non_sma"}
+    ) != LEGACY_SMA_STRATEGY_PARAMETER_ENV_KEYS
+    source = inspect.getsource(runtime_contract_from_env_values)
+    assert "STRATEGY_PARAMETER_ENV_KEYS" not in source
+    assert "LEGACY_SMA_STRATEGY_PARAMETER_ENV_KEYS" not in source
 
 
 def test_candidate_profile_contains_raw_and_effective_strategy_parameters() -> None:

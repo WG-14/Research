@@ -239,10 +239,17 @@ class DecisionRunner:
 
 def compute_strategy_decision_snapshot(
     conn,
-    *,
+    *diagnostic_sma_windows: int,
     through_ts_ms: int | None = None,
     strategy_name: str | None = None,
 ) -> RuntimeStrategyDecisionResult | None:
+    if diagnostic_sma_windows:
+        selected_strategy_name = str(strategy_name or settings.STRATEGY_NAME or "").strip().lower()
+        if selected_strategy_name != "sma_with_filter":
+            validate_live_strategy_selection(replace(settings, STRATEGY_NAME=selected_strategy_name))
+            adapter = get_runtime_decision_adapter(selected_strategy_name)
+            if adapter is None:
+                raise production_runtime_strategy_missing_error(selected_strategy_name)
     return DecisionRunner(strategy_name=strategy_name).decide_snapshot(
         conn,
         through_ts_ms=through_ts_ms,
@@ -269,6 +276,12 @@ def compute_signal(
     strategy_name: str | None = None,
 ):
     if diagnostic_sma_windows:
+        selected_strategy_name = str(strategy_name or settings.STRATEGY_NAME or "").strip().lower()
+        if selected_strategy_name != "sma_with_filter":
+            validate_live_strategy_selection(replace(settings, STRATEGY_NAME=selected_strategy_name))
+            adapter = get_runtime_decision_adapter(selected_strategy_name)
+            if adapter is None:
+                raise production_runtime_strategy_missing_error(selected_strategy_name)
         from .runtime_adapters.sma_with_filter import compute_sma_with_filter_signal
 
         return compute_sma_with_filter_signal(

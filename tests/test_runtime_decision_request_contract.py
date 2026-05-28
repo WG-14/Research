@@ -11,6 +11,7 @@ import pytest
 
 from bithumb_bot.db_core import ensure_schema
 from bithumb_bot.decision_envelope import DecisionEnvelope
+from bithumb_bot.config import settings
 from bithumb_bot.run_loop_execution_planner import ExecutionPlanner
 from bithumb_bot.runtime_decision_contract import RuntimeStrategyPolicyHashes
 from bithumb_bot.runtime_adapters.safe_hold import SafeHoldRuntimeDecisionAdapter
@@ -23,6 +24,7 @@ from bithumb_bot.runtime_strategy_set import (
 )
 from bithumb_bot.strategy_plugins.canary_non_sma import CanaryNonSmaRuntimeDecisionAdapter
 from bithumb_bot.runtime_adapters.sma_with_filter import SmaWithFilterRuntimeConfig
+from bithumb_bot.research.strategy_spec import strategy_spec_for_name
 from bithumb_bot.strategy_policy_contract import PositionSnapshot, StrategyDecisionV2
 
 
@@ -88,6 +90,32 @@ def _conn() -> sqlite3.Connection:
         )
     conn.commit()
     return conn
+
+
+def _complete_sma_parameters(**overrides: object) -> dict[str, object]:
+    params: dict[str, object] = {
+        "SMA_SHORT": 2,
+        "SMA_LONG": 5,
+        "SMA_FILTER_GAP_MIN_RATIO": 0.9,
+        "SMA_FILTER_VOL_WINDOW": 3,
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": 0.8,
+        "SMA_FILTER_OVEREXT_LOOKBACK": 4,
+        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": 0.7,
+        "SMA_MARKET_REGIME_ENABLED": False,
+        "SMA_COST_EDGE_ENABLED": False,
+        "SMA_COST_EDGE_MIN_RATIO": 0.6,
+        "ENTRY_EDGE_BUFFER_RATIO": 0.5,
+        "STRATEGY_MIN_EXPECTED_EDGE_RATIO": 0.4,
+        "STRATEGY_ENTRY_SLIPPAGE_BPS": 33,
+        "LIVE_FEE_RATE_ESTIMATE": 0.0123,
+        "STRATEGY_EXIT_RULES": "opposite_cross",
+        "STRATEGY_EXIT_STOP_LOSS_RATIO": 0,
+        "STRATEGY_EXIT_MAX_HOLDING_MIN": 11,
+        "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": 0.22,
+        "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": 0.11,
+    }
+    params.update(overrides)
+    return params
 
 
 def test_common_runtime_adapter_protocol_is_request_shaped() -> None:
@@ -333,33 +361,31 @@ def test_sma_runtime_config_uses_request_parameters_not_global_settings() -> Non
     request = RuntimeDecisionRequestBuilder().build_for_spec(
         RuntimeStrategySpec(
             "sma_with_filter",
-            parameters={
-                "SMA_SHORT": 2,
-                "SMA_LONG": 5,
-                "SMA_FILTER_GAP_MIN_RATIO": 0.9,
-                "SMA_FILTER_VOL_WINDOW": 3,
-                "SMA_FILTER_VOL_MIN_RANGE_RATIO": 0.8,
-                "SMA_FILTER_OVEREXT_LOOKBACK": 4,
-                "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": 0.7,
-                "SMA_MARKET_REGIME_ENABLED": False,
-                "SMA_COST_EDGE_ENABLED": False,
-                "SMA_COST_EDGE_MIN_RATIO": 0.6,
-                "ENTRY_EDGE_BUFFER_RATIO": 0.5,
-                "STRATEGY_MIN_EXPECTED_EDGE_RATIO": 0.4,
-                "STRATEGY_ENTRY_SLIPPAGE_BPS": 33,
-                "LIVE_FEE_RATE_ESTIMATE": 0.0123,
-                "STRATEGY_EXIT_RULES": "opposite_cross",
-                "STRATEGY_EXIT_STOP_LOSS_RATIO": 0,
-                "STRATEGY_EXIT_MAX_HOLDING_MIN": 11,
-                "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": 0.22,
-                "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": 0.11,
-            },
+            parameters=_complete_sma_parameters(),
         ),
         through_ts_ms=1_700_000_180_000,
     )
 
-    config = SmaWithFilterRuntimeConfig.from_runtime_request(request)
-    strategy = config.build_strategy()
+    original_values = {
+        "SMA_SHORT": settings.SMA_SHORT,
+        "SMA_LONG": settings.SMA_LONG,
+        "SMA_FILTER_GAP_MIN_RATIO": settings.SMA_FILTER_GAP_MIN_RATIO,
+        "STRATEGY_EXIT_MAX_HOLDING_MIN": settings.STRATEGY_EXIT_MAX_HOLDING_MIN,
+        "LIVE_FEE_RATE_ESTIMATE": settings.LIVE_FEE_RATE_ESTIMATE,
+        "STRATEGY_ENTRY_SLIPPAGE_BPS": settings.STRATEGY_ENTRY_SLIPPAGE_BPS,
+    }
+    try:
+        object.__setattr__(settings, "SMA_SHORT", 99)
+        object.__setattr__(settings, "SMA_LONG", 199)
+        object.__setattr__(settings, "SMA_FILTER_GAP_MIN_RATIO", 0.00001)
+        object.__setattr__(settings, "STRATEGY_EXIT_MAX_HOLDING_MIN", 999)
+        object.__setattr__(settings, "LIVE_FEE_RATE_ESTIMATE", 0.999)
+        object.__setattr__(settings, "STRATEGY_ENTRY_SLIPPAGE_BPS", 999)
+        config = SmaWithFilterRuntimeConfig.from_runtime_request(request)
+        strategy = config.build_strategy()
+    finally:
+        for key, value in original_values.items():
+            object.__setattr__(settings, key, value)
 
     assert strategy.short_n == 2
     assert strategy.long_n == 5
@@ -370,6 +396,43 @@ def test_sma_runtime_config_uses_request_parameters_not_global_settings() -> Non
     assert strategy.market_regime_enabled is False
     assert strategy.slippage_bps == 33
     assert strategy.live_fee_rate_estimate == 0.0123
+    assert strategy.exit_max_holding_min == 11
+
+
+def test_sma_runtime_config_maps_every_runtime_bound_behavior_parameter() -> None:
+    spec = strategy_spec_for_name("sma_with_filter")
+    runtime_bound = set(spec.behavior_affecting_parameter_names) - set(spec.research_only_parameter_names)
+
+    assert runtime_bound == set(SmaWithFilterRuntimeConfig.runtime_parameter_names())
+
+
+def test_sma_runtime_config_missing_behavior_parameter_fails_closed() -> None:
+    params = _complete_sma_parameters()
+    params.pop("SMA_FILTER_OVEREXT_LOOKBACK")
+    request = RuntimeDecisionRequestBuilder().build_for_spec(
+        RuntimeStrategySpec("sma_with_filter", parameters=params),
+        through_ts_ms=1_700_000_180_000,
+    )
+
+    with pytest.raises(RuntimeError, match="sma_runtime_request_behavior_parameter_missing"):
+        SmaWithFilterRuntimeConfig.from_runtime_request(request)
+
+
+def test_promotion_runtime_paths_do_not_import_legacy_sma_settings_config() -> None:
+    for path in (
+        Path("src/bithumb_bot/approved_profile.py"),
+        Path("src/bithumb_bot/runtime_strategy_set.py"),
+        Path("src/bithumb_bot/runtime_strategy_decision.py"),
+    ):
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        imported = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+        }
+        assert "SmaStrategyConfig" not in imported
+        assert "sma_strategy_config_from_settings" not in imported
 
 
 def test_strategy_specific_settings_extension_uses_generic_json_not_new_fields() -> None:
@@ -378,6 +441,73 @@ def test_strategy_specific_settings_extension_uses_generic_json_not_new_fields()
     assert "CANARY_ORDER_SIDE" not in source
     assert "CANARY_ORDER_REASON" not in source
     assert "STRATEGY_PARAMETERS_JSON" in source
+
+
+def test_settings_strategy_specific_fields_are_legacy_allowlisted() -> None:
+    source = Path("src/bithumb_bot/config.py").read_text(encoding="utf-8-sig")
+    tree = ast.parse(source)
+    settings_class = next(
+        node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Settings"
+    )
+    field_names = {
+        target.id
+        for node in settings_class.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+        for target in (node.target,)
+    }
+    legacy_strategy_specific = {
+        "SMA_SHORT",
+        "SMA_LONG",
+        "SMA_FILTER_GAP_MIN_RATIO",
+        "SMA_FILTER_VOL_WINDOW",
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO",
+        "SMA_FILTER_OVEREXT_LOOKBACK",
+        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO",
+        "SMA_COST_EDGE_ENABLED",
+        "SMA_COST_EDGE_MIN_RATIO",
+        "SMA_MARKET_REGIME_ENABLED",
+        "STRATEGY_EXIT_RULES",
+        "STRATEGY_EXIT_STOP_LOSS_RATIO",
+        "STRATEGY_EXIT_MAX_HOLDING_MIN",
+        "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO",
+        "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO",
+    }
+    generic_strategy_runtime = {
+        "STRATEGY_NAME",
+        "ACTIVE_STRATEGIES",
+        "RUNTIME_STRATEGY_SET_JSON",
+        "STRATEGY_PARAMETERS_JSON",
+        "STRATEGY_APPROVED_PROFILE_PATH",
+        "APPROVED_STRATEGY_PROFILE_PATH",
+        "STRATEGY_CANDIDATE_PROFILE_PATH",
+        "STRATEGY_MIN_EXPECTED_EDGE_RATIO",
+        "STRATEGY_ENTRY_SLIPPAGE_BPS",
+    }
+    forbidden_prefixes = (
+        "RSI_",
+        "BREAKOUT_",
+        "MEAN_REVERSION_",
+        "CANARY_",
+    )
+    unexpected_prefixed = sorted(
+        name for name in field_names if name.startswith(forbidden_prefixes)
+    )
+    unexpected_strategy = sorted(
+        name
+        for name in field_names
+        if name.startswith("STRATEGY_")
+        and name not in legacy_strategy_specific
+        and name not in generic_strategy_runtime
+    )
+    unexpected_sma = sorted(
+        name
+        for name in field_names
+        if name.startswith("SMA_") and name not in legacy_strategy_specific
+    )
+
+    assert unexpected_prefixed == []
+    assert unexpected_strategy == []
+    assert unexpected_sma == []
 
 
 def test_runtime_strategy_spec_carries_pair_and_interval_into_request() -> None:
