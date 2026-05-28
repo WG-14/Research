@@ -81,6 +81,7 @@ from .backtest_pipeline import (  # noqa: E402
     ResearchExecutionPlanBundle,
     _execution_plan_evidence,
     _research_execution_plan_bundle,
+    _research_position_snapshot,
     _run_decision_event_backtest_impl,
 )
 from .execution_simulator import (  # noqa: E402
