@@ -75,6 +75,10 @@ class BacktestRunContext:
     heartbeat: BacktestHeartbeatPolicy = field(default_factory=BacktestHeartbeatPolicy)
     progress_callback: ProgressCallback | None = None
     audit_trace: Any | None = None
+    approved_profile: dict[str, object] | None = None
+    candidate_regime_policy: dict[str, object] | None = None
+    candidate_regime_policy_drives_research_execution: bool = False
+    policy_materialization_mode: str = "research_exploratory"
     started_at: float = field(default_factory=time.perf_counter)
 
 

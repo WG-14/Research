@@ -81,6 +81,8 @@ def _stable_market_policy_input(payload: dict[str, object]) -> dict[str, object]
             "prev_l",
             "curr_s",
             "curr_l",
+            "previous_cross_state",
+            "allow_initial_cross",
         )
     }
 
@@ -113,6 +115,25 @@ class MarketWindow:
     previous_cross_state: str | None = None
     allow_initial_cross: bool = True
 
+    def policy_input_payload(self) -> dict[str, object]:
+        return {
+            "pair": self.pair,
+            "interval": self.interval,
+            "candle_ts": int(self.candle_ts),
+            "through_ts_ms": self.through_ts_ms,
+            "last_close": float(self.closes[-1]) if self.closes else None,
+            "prev_s": float(self.prev_s),
+            "prev_l": float(self.prev_l),
+            "curr_s": float(self.curr_s),
+            "curr_l": float(self.curr_l),
+            "previous_cross_state": self.previous_cross_state,
+            "allow_initial_cross": bool(self.allow_initial_cross),
+            "gap_ratio": self.gap_ratio,
+            "volatility_ratio": self.volatility_ratio,
+            "overextended_ratio": self.overextended_ratio,
+            "market_regime_snapshot": dict(self.market_regime_snapshot or {}),
+        }
+
 
 @dataclass(frozen=True)
 class SmaPolicyConfig:
@@ -132,8 +153,59 @@ class SmaPolicyConfig:
     market_regime_enabled: bool
     buy_fraction: float
     max_order_krw: float
+    strategy_min_expected_edge_ratio: float = 0.0
     candidate_regime_policy: dict[str, object] | None = None
     require_candidate_regime_policy: bool = False
+    candidate_regime_policy_enforced: bool | None = None
+    candidate_regime_policy_status: dict[str, object] | None = None
+    runtime_comparable: bool = True
+    materialization_mode: str = "unspecified"
+
+    def policy_input_payload(self) -> dict[str, object]:
+        candidate_status = dict(self.candidate_regime_policy_status or {})
+        if "candidate_regime_policy_hash" not in candidate_status:
+            candidate_status["candidate_regime_policy_hash"] = (
+                _stable_hash(dict(self.candidate_regime_policy))
+                if isinstance(self.candidate_regime_policy, dict)
+                else "sha256:missing"
+            )
+        candidate_status.setdefault(
+            "candidate_regime_policy_required",
+            bool(self.require_candidate_regime_policy),
+        )
+        candidate_status.setdefault(
+            "candidate_regime_policy_loaded",
+            isinstance(self.candidate_regime_policy, dict),
+        )
+        return {
+            "strategy_name": self.strategy_name,
+            "short_n": int(self.short_n),
+            "long_n": int(self.long_n),
+            "min_gap_ratio": float(self.min_gap_ratio),
+            "volatility_window": int(self.volatility_window),
+            "min_volatility_ratio": float(self.min_volatility_ratio),
+            "overextended_lookback": int(self.overextended_lookback),
+            "overextended_max_return_ratio": float(self.overextended_max_return_ratio),
+            "slippage_bps": float(self.slippage_bps),
+            "live_fee_rate_estimate": float(self.live_fee_rate_estimate),
+            "entry_edge_buffer_ratio": float(self.entry_edge_buffer_ratio),
+            "cost_edge_enabled": bool(self.cost_edge_enabled),
+            "cost_edge_min_ratio": float(self.cost_edge_min_ratio),
+            "strategy_min_expected_edge_ratio": float(self.strategy_min_expected_edge_ratio),
+            "effective_cost_edge_min_ratio": max(
+                float(self.cost_edge_min_ratio),
+                float(self.strategy_min_expected_edge_ratio),
+            ),
+            "market_regime_enabled": bool(self.market_regime_enabled),
+            "require_candidate_regime_policy": bool(self.require_candidate_regime_policy),
+            "candidate_regime_policy_status": candidate_status,
+            "runtime_comparable": bool(self.runtime_comparable),
+            "materialization_equivalence_scope": (
+                "runtime_comparable"
+                if bool(self.runtime_comparable)
+                else "research_exploratory_not_runtime_comparable"
+            ),
+        }
 
 
 def evaluate_sma_policy(
@@ -176,10 +248,25 @@ def evaluate_sma_policy(
             live_fee_rate_estimate=float(execution_context.fee_rate_for_decision),
             entry_edge_buffer_ratio=float(config.entry_edge_buffer_ratio),
             cost_edge_enabled=bool(config.cost_edge_enabled),
-            cost_edge_min_ratio=float(config.cost_edge_min_ratio),
+            cost_edge_min_ratio=max(
+                float(config.cost_edge_min_ratio),
+                float(config.strategy_min_expected_edge_ratio),
+            ),
             market_regime_enabled=bool(config.market_regime_enabled),
-            candidate_regime_policy=config.candidate_regime_policy,
-            require_candidate_regime_policy=bool(config.require_candidate_regime_policy),
+            candidate_regime_policy=(
+                config.candidate_regime_policy
+                if (
+                    bool(config.require_candidate_regime_policy)
+                    if config.candidate_regime_policy_enforced is None
+                    else bool(config.candidate_regime_policy_enforced)
+                )
+                else None
+            ),
+            require_candidate_regime_policy=(
+                bool(config.require_candidate_regime_policy)
+                if config.candidate_regime_policy_enforced is None
+                else bool(config.candidate_regime_policy_enforced)
+            ),
             fee_authority_degraded_blocks_entry=bool(
                 execution_context.fee_authority_degraded_blocks_entry
             ),
@@ -200,10 +287,25 @@ def evaluate_sma_policy(
             live_fee_rate_estimate=float(execution_context.fee_rate_for_decision),
             entry_edge_buffer_ratio=float(config.entry_edge_buffer_ratio),
             cost_edge_enabled=bool(config.cost_edge_enabled),
-            cost_edge_min_ratio=float(config.cost_edge_min_ratio),
+            cost_edge_min_ratio=max(
+                float(config.cost_edge_min_ratio),
+                float(config.strategy_min_expected_edge_ratio),
+            ),
             market_regime_enabled=bool(config.market_regime_enabled),
-            candidate_regime_policy=config.candidate_regime_policy,
-            require_candidate_regime_policy=bool(config.require_candidate_regime_policy),
+            candidate_regime_policy=(
+                config.candidate_regime_policy
+                if (
+                    bool(config.require_candidate_regime_policy)
+                    if config.candidate_regime_policy_enforced is None
+                    else bool(config.candidate_regime_policy_enforced)
+                )
+                else None
+            ),
+            require_candidate_regime_policy=(
+                bool(config.require_candidate_regime_policy)
+                if config.candidate_regime_policy_enforced is None
+                else bool(config.candidate_regime_policy_enforced)
+            ),
             fee_authority_degraded_blocks_entry=bool(
                 execution_context.fee_authority_degraded_blocks_entry
             ),
@@ -300,6 +402,7 @@ def evaluate_sma_policy(
         "market_regime_blocked": bool(entry_decision.market_regime_triggered),
         "candidate_regime_blocked": bool(entry_decision.candidate_regime_triggered),
         "position": asdict(position),
+        "config": config.policy_input_payload(),
         "execution_constraints": {
             "fee_rate_for_decision": float(execution_context.fee_rate_for_decision),
             "fee_authority_degraded_blocks_entry": bool(
@@ -309,27 +412,18 @@ def evaluate_sma_policy(
             "order_rules": dict(execution_context.order_rules),
         },
     }
+    config_payload = config.policy_input_payload()
+    position_payload = position.policy_input_payload()
+    position_payload["terminal_state"] = _stable_position_terminal_state(
+        position_payload.get("terminal_state")
+    )
     policy_input = {
         "market": _stable_market_policy_input(trace["market"]),  # type: ignore[arg-type]
-        "position": _stable_position_policy_input(trace["position"]),  # type: ignore[arg-type]
+        "position": position_payload,
         "execution_constraints": _stable_execution_constraints_payload(
             trace["execution_constraints"]  # type: ignore[arg-type]
         ),
-        "config": {
-            "strategy_name": config.strategy_name,
-            "short_n": int(config.short_n),
-            "long_n": int(config.long_n),
-            "min_gap_ratio": float(config.min_gap_ratio),
-            "volatility_window": int(config.volatility_window),
-            "min_volatility_ratio": float(config.min_volatility_ratio),
-            "overextended_lookback": int(config.overextended_lookback),
-            "overextended_max_return_ratio": float(config.overextended_max_return_ratio),
-            "slippage_bps": float(config.slippage_bps),
-            "live_fee_rate_estimate": float(config.live_fee_rate_estimate),
-            "entry_edge_buffer_ratio": float(config.entry_edge_buffer_ratio),
-            "cost_edge_enabled": bool(config.cost_edge_enabled),
-            "cost_edge_min_ratio": float(config.cost_edge_min_ratio),
-        },
+        "config": config_payload,
     }
     policy_hash = _stable_hash(trace)
     policy_input_hash = _stable_hash(policy_input)

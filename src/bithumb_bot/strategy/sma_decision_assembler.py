@@ -113,6 +113,22 @@ def evaluate_sma_final_decision(
         if typed_execution_intent is not None
         else None
     )
+    exit_policy_payload = exit_policy_config.policy_input_payload()
+    policy_input_hash = _stable_hash(
+        {
+            "entry_policy_input_hash": entry_decision.policy_input_hash,
+            "exit_policy": exit_policy_payload,
+            "exit_policy_hash": _stable_hash(exit_policy_payload),
+            "execution_sizing": (
+                {
+                    "buy_fraction": float(config.buy_fraction),
+                    "max_order_krw": float(config.max_order_krw),
+                }
+                if typed_execution_intent is not None and typed_execution_intent.side == "BUY"
+                else None
+            ),
+        }
+    )
     trace = dict(entry_decision.trace)
     trace.update(
         {
@@ -120,6 +136,8 @@ def evaluate_sma_final_decision(
             "policy": "sma_with_filter_final_decision",
             "exit_signal": resolved_exit_signal,
             "exit_reason": exit_reason,
+            "exit_policy": exit_policy_payload,
+            "exit_policy_hash": _stable_hash(exit_policy_payload),
             "exit_rule": exit_rule,
             "exit_evaluations": [dict(item) for item in exit_evaluations],
             "final_signal": final_signal,
@@ -171,6 +189,7 @@ def evaluate_sma_final_decision(
         execution_intent=typed_execution_intent,
         trace=trace,
         policy_hash=policy_hash,
+        policy_input_hash=policy_input_hash,
         policy_decision_hash=policy_decision_hash,
     )
 

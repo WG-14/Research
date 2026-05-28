@@ -25,6 +25,16 @@ class ExitPolicyConfig:
     small_loss_tolerance_ratio: float
     live_fee_rate_estimate: float
 
+    def policy_input_payload(self) -> dict[str, object]:
+        return {
+            "rule_names": list(self.rule_names),
+            "stop_loss_ratio": float(self.stop_loss_ratio),
+            "max_holding_sec": float(self.max_holding_sec),
+            "min_take_profit_ratio": float(self.min_take_profit_ratio),
+            "small_loss_tolerance_ratio": float(self.small_loss_tolerance_ratio),
+            "live_fee_rate_estimate": float(self.live_fee_rate_estimate),
+        }
+
 
 @dataclass(frozen=True)
 class ExitDecision:

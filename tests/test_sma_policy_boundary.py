@@ -4,6 +4,7 @@ import ast
 import inspect
 import sqlite3
 import textwrap
+from pathlib import Path
 from dataclasses import replace
 
 import pytest
@@ -23,6 +24,11 @@ from bithumb_bot.research.backtest_engine import SmaWithFilterDecisionAdapter
 from bithumb_bot.research.backtest_engine import run_sma_backtest
 from bithumb_bot.research import backtest_kernel
 from bithumb_bot.research import sma_with_filter_plugin
+from bithumb_bot.research.sma_policy_assembly import (
+    MaterializationMode,
+    SmaWithFilterPolicyAssembly,
+)
+from bithumb_bot.research.strategy_spec import runtime_bound_behavior_parameter_names
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
 from bithumb_bot.research.decision_event import ResearchDecisionEvent
 from bithumb_bot.research.experiment_manifest import (
@@ -137,6 +143,34 @@ def _allowing_policy() -> dict[str, object]:
     }
 
 
+def _runtime_bound_sma_parameters(**overrides: object) -> dict[str, object]:
+    params: dict[str, object] = {
+        "SMA_SHORT": 2,
+        "SMA_LONG": 3,
+        "SMA_FILTER_GAP_MIN_RATIO": 0.0,
+        "SMA_FILTER_VOL_WINDOW": 3,
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": 0.0,
+        "SMA_FILTER_OVEREXT_LOOKBACK": 1,
+        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": 0.0,
+        "SMA_MARKET_REGIME_ENABLED": False,
+        "SMA_COST_EDGE_ENABLED": False,
+        "SMA_COST_EDGE_MIN_RATIO": 0.0,
+        "ENTRY_EDGE_BUFFER_RATIO": 0.0,
+        "STRATEGY_MIN_EXPECTED_EDGE_RATIO": 0.0,
+        "STRATEGY_ENTRY_SLIPPAGE_BPS": 0.0,
+        "LIVE_FEE_RATE_ESTIMATE": 0.0,
+        "STRATEGY_EXIT_RULES": "stop_loss,opposite_cross,max_holding_time",
+        "STRATEGY_EXIT_STOP_LOSS_RATIO": 0.05,
+        "STRATEGY_EXIT_MAX_HOLDING_MIN": 60,
+        "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": 0.0,
+        "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": 0.0,
+        "BUY_FRACTION": 0.99,
+        "MAX_ORDER_KRW": 100_000.0,
+    }
+    params.update(overrides)
+    return params
+
+
 def test_evaluate_sma_policy_is_deterministic_for_same_snapshot() -> None:
     first = evaluate_sma_policy(
         market=_market_window(),
@@ -155,6 +189,213 @@ def test_evaluate_sma_policy_is_deterministic_for_same_snapshot() -> None:
     assert first.policy_hash == second.policy_hash
     assert first.raw_signal == "BUY"
     assert first.final_signal == "BUY"
+
+
+def test_sma_policy_assembly_covers_runtime_bound_parameters_and_payload() -> None:
+    assembly = SmaWithFilterPolicyAssembly()
+    params = _runtime_bound_sma_parameters(STRATEGY_MIN_EXPECTED_EDGE_RATIO=0.001)
+    materialized = assembly.materialize_parameters(params, MaterializationMode.RUNTIME_REPLAY)
+    strategy = assembly.build_strategy(
+        materialized,
+        pair="BTC_KRW",
+        interval="1m",
+        candidate_regime_policy=_allowing_policy(),
+    )
+    config = assembly.build_policy_config(
+        materialized,
+        strategy,
+        candidate_regime_policy=_allowing_policy(),
+    )
+    market = assembly.build_market_snapshot(
+        pair="BTC_KRW",
+        interval="1m",
+        candle_ts=1_700_000_240_000,
+        closes=(10.0, 10.0, 10.0, 10.0, 11.0),
+        prev_s=10.0,
+        prev_l=10.0,
+        curr_s=10.5,
+        curr_l=10.333333333333334,
+    )
+    execution = ExecutionConstraintSnapshot(fee_rate_for_decision=0.0)
+    exit_config = assembly.build_exit_policy_config(materialized, fee_rate_for_decision=0.0)
+    payload = assembly.policy_input_payload(
+        materialized=materialized,
+        market=market,
+        position=_flat_position(),
+        policy_config=config,
+        execution_context=execution,
+        exit_policy_config=exit_config,
+    )
+
+    runtime_bound = set(runtime_bound_behavior_parameter_names("sma_with_filter"))
+    assert runtime_bound <= set(materialized.values)
+    assert runtime_bound <= set(payload["parameters"])
+    assert strategy.short_n == materialized.values["SMA_SHORT"]
+    assert strategy.long_n == materialized.values["SMA_LONG"]
+    assert config.policy_input_payload()["strategy_min_expected_edge_ratio"] == 0.001
+    assert payload["exit_policy_hash"].startswith("sha256:")
+
+
+def test_promotion_and_runtime_assembly_have_equivalent_candidate_policy_hashes() -> None:
+    assembly = SmaWithFilterPolicyAssembly()
+    params = _runtime_bound_sma_parameters()
+    decisions = []
+    for mode in (MaterializationMode.RESEARCH_PROMOTION, MaterializationMode.RUNTIME_REPLAY):
+        materialized = assembly.materialize_parameters(params, mode)
+        strategy = assembly.build_strategy(
+            materialized,
+            pair="BTC_KRW",
+            interval="1m",
+            candidate_regime_policy=_allowing_policy(),
+        )
+        decisions.append(
+            strategy.decide_snapshot(
+                market=assembly.build_market_snapshot(
+                    pair="BTC_KRW",
+                    interval="1m",
+                    candle_ts=1_700_000_240_000,
+                    closes=(10.0, 10.0, 10.0, 10.0, 11.0),
+                    prev_s=10.0,
+                    prev_l=10.0,
+                    curr_s=10.5,
+                    curr_l=10.333333333333334,
+                ),
+                position=_flat_position(),
+                config=assembly.build_policy_config(
+                    materialized,
+                    strategy,
+                    candidate_regime_policy=_allowing_policy(),
+                ),
+                execution_context=ExecutionConstraintSnapshot(fee_rate_for_decision=0.0),
+                exit_policy_config=assembly.build_exit_policy_config(
+                    materialized,
+                    fee_rate_for_decision=0.0,
+                ),
+            )
+        )
+
+    research_decision, runtime_decision = decisions
+    assert research_decision.policy_input_hash == runtime_decision.policy_input_hash
+    assert research_decision.policy_decision_hash == runtime_decision.policy_decision_hash
+    assert research_decision.final_signal == runtime_decision.final_signal == "BUY"
+    assert research_decision.blocked_filters == runtime_decision.blocked_filters == ()
+    status = research_decision.trace["config"]["candidate_regime_policy_status"]
+    assert status["candidate_regime_policy_required"] is True
+    assert status["candidate_regime_policy_loaded"] is True
+    assert status["candidate_regime_policy_valid"] is True
+    assert status["candidate_regime_policy_hash"].startswith("sha256:")
+
+
+def test_candidate_regime_policy_missing_fails_closed_in_comparable_modes() -> None:
+    assembly = SmaWithFilterPolicyAssembly()
+    materialized = assembly.materialize_parameters(
+        _runtime_bound_sma_parameters(SMA_MARKET_REGIME_ENABLED=False),
+        MaterializationMode.RESEARCH_PROMOTION,
+    )
+    strategy = assembly.build_strategy(
+        materialized,
+        pair="BTC_KRW",
+        interval="1m",
+        candidate_regime_policy=None,
+    )
+    decision = strategy.decide_snapshot(
+        market=_market_window(),
+        position=_flat_position(),
+        config=assembly.build_policy_config(materialized, strategy, candidate_regime_policy=None),
+        execution_context=ExecutionConstraintSnapshot(fee_rate_for_decision=0.0),
+        exit_policy_config=assembly.build_exit_policy_config(materialized, fee_rate_for_decision=0.0),
+    )
+
+    assert decision.final_signal == "HOLD"
+    assert decision.entry_blocked is True
+    assert decision.entry_decision.candidate_regime_triggered is True
+    assert decision.entry_decision.candidate_regime_decision["regime_block_reason"] == (
+        "regime_policy_missing"
+    )
+    status = decision.trace["config"]["candidate_regime_policy_status"]
+    assert status["candidate_regime_policy_required"] is True
+    assert status["candidate_regime_policy_loaded"] is False
+    assert status["candidate_regime_policy_valid"] is False
+
+
+def test_legacy_exploratory_defaults_are_marked_non_runtime_comparable() -> None:
+    assembly = SmaWithFilterPolicyAssembly()
+    exploratory = assembly.materialize_parameters(
+        {"SMA_SHORT": 2, "SMA_LONG": 3},
+        MaterializationMode.RESEARCH_EXPLORATORY,
+    )
+    assert exploratory.runtime_comparable is False
+    assert "SMA_FILTER_GAP_MIN_RATIO" in exploratory.legacy_defaults_used
+
+    with pytest.raises(Exception, match="runtime_bound_parameter_missing"):
+        assembly.materialize_parameters(
+            {"SMA_SHORT": 2, "SMA_LONG": 3},
+            MaterializationMode.RESEARCH_PROMOTION,
+        )
+
+
+def test_sma_policy_hash_changes_for_equivalence_inputs() -> None:
+    assembly = SmaWithFilterPolicyAssembly()
+    params = _runtime_bound_sma_parameters(SMA_MARKET_REGIME_ENABLED=False)
+
+    def _decision(**overrides: object):
+        candidate = overrides.pop("candidate_regime_policy", _allowing_policy())
+        materialized = assembly.materialize_parameters({**params, **overrides}, MaterializationMode.RUNTIME_REPLAY)
+        strategy = assembly.build_strategy(
+            materialized,
+            pair="BTC_KRW",
+            interval="1m",
+            candidate_regime_policy=candidate,
+        )
+        return strategy.decide_snapshot(
+            market=_market_window(),
+            position=_flat_position(),
+            config=assembly.build_policy_config(
+                materialized,
+                strategy,
+                candidate_regime_policy=candidate,
+            ),
+            execution_context=ExecutionConstraintSnapshot(fee_rate_for_decision=0.0),
+            exit_policy_config=assembly.build_exit_policy_config(materialized, fee_rate_for_decision=0.0),
+        )
+
+    base = _decision()
+    changed_regime = _decision(SMA_MARKET_REGIME_ENABLED=True)
+    changed_sizing = _decision(BUY_FRACTION=0.5)
+    changed_exit = _decision(STRATEGY_EXIT_STOP_LOSS_RATIO=0.10)
+    changed_candidate = _decision(
+        candidate_regime_policy={**_allowing_policy(), "allowed_regimes": ["sideways_normal_vol_unknown"]}
+    )
+
+    assert changed_regime.policy_input_hash != base.policy_input_hash
+    assert changed_sizing.policy_input_hash != base.policy_input_hash
+    assert changed_exit.policy_input_hash != base.policy_input_hash
+    assert changed_candidate.policy_input_hash != base.policy_input_hash
+
+
+def test_sma_assembly_static_guard_blocks_duplicate_policy_construction() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    guarded = (
+        repo_root / "src/bithumb_bot/research/sma_with_filter_plugin.py",
+        repo_root / "src/bithumb_bot/runtime_adapters/sma_with_filter.py",
+        repo_root / "src/bithumb_bot/runtime_sma_snapshot_builder.py",
+    )
+    forbidden = {
+        "SmaPolicyConfig",
+        "MarketWindow",
+        "create_sma_with_filter_strategy",
+    }
+    violations: list[str] = []
+    for path in guarded:
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+                if name in forbidden:
+                    violations.append(f"{path.relative_to(repo_root)}:{name}")
+
+    assert violations == []
 
 
 def test_evaluate_sma_policy_has_no_runtime_dependency_imports_or_side_effect_surfaces() -> None:

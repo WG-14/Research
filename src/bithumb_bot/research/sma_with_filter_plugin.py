@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from .dataset_snapshot import DatasetSnapshot
+from .sma_policy_assembly import MaterializationMode, SmaWithFilterPolicyAssembly
 
 
 @dataclass(frozen=True)
@@ -35,9 +36,24 @@ def build_runtime_replay_strategy(
     profile: dict[str, Any],
     candidate_regime_policy: dict[str, Any] | None = None,
 ) -> Any:
-    from bithumb_bot.runtime_adapters.sma_with_filter import SmaWithFilterRuntimeConfig
-
-    strategy = SmaWithFilterRuntimeConfig.from_profile(profile).build_strategy(
+    assembly = SmaWithFilterPolicyAssembly()
+    params = profile.get("strategy_parameters") if isinstance(profile.get("strategy_parameters"), dict) else {}
+    try:
+        materialized = assembly.materialize_parameters(
+            dict(params),
+            MaterializationMode.RUNTIME_REPLAY,
+            profile=profile,
+        )
+    except Exception as exc:
+        message = str(exc)
+        if "runtime_bound_parameter_missing:" in message:
+            missing = message.split("runtime_bound_parameter_missing:", 1)[1]
+            raise RuntimeError("sma_runtime_request_behavior_parameter_missing:" + missing) from exc
+        raise
+    strategy = assembly.build_strategy(
+        materialized,
+        pair=str(profile.get("market") or ""),
+        interval=str(profile.get("interval") or ""),
         candidate_regime_policy=candidate_regime_policy,
     )
     from bithumb_bot.runtime_sma_snapshot import decide_sma_with_filter_runtime_snapshot_from_db
@@ -229,21 +245,10 @@ def research_policy_decision_builder(
     slippage_bps: float,
     active_exit_policy: dict[str, Any],
     buy_fraction: float = 0.0,
+    materialization_mode: MaterializationMode | str = MaterializationMode.RESEARCH_EXPLORATORY,
+    candidate_regime_policy: dict[str, object] | None = None,
+    candidate_regime_policy_enforced: bool | None = None,
 ) -> Any:
-    from bithumb_bot.core.sma_policy import (
-        ExecutionConstraintSnapshot,
-        MarketWindow,
-        SmaPolicyConfig,
-    )
-    from bithumb_bot.runtime_sma_context import (
-        fee_authority_context,
-        get_effective_order_rules,
-        resolve_strategy_fee_authority,
-    )
-    from bithumb_bot.canonical_decision import order_rules_snapshot_payload
-    from bithumb_bot.strategy.exit_rules import ExitPolicyConfig
-    from bithumb_bot.strategy.sma_policy_strategy import create_sma_with_filter_strategy
-
     event_extra = event.extra_payload if isinstance(getattr(event, "extra_payload", None), dict) else {}
     feature_snapshot = (
         event.feature_snapshot if isinstance(getattr(event, "feature_snapshot", None), dict) else {}
@@ -256,7 +261,14 @@ def research_policy_decision_builder(
     candles = dataset.candles[: candle_index + 1]
     prev_above = event_extra.get("prev_above")
     previous_cross_state = "unknown" if prev_above is None else "above" if bool(prev_above) else "below"
-    market = MarketWindow(
+    assembly = SmaWithFilterPolicyAssembly()
+    materialized = assembly.materialize_parameters(
+        {**dict(parameter_values), "BUY_FRACTION": buy_fraction},
+        materialization_mode,
+        fee_rate=fee_rate,
+        slippage_bps=slippage_bps,
+    )
+    market = assembly.build_market_snapshot(
         pair=dataset.market,
         interval=dataset.interval,
         candle_ts=int(event.candle_ts),
@@ -273,35 +285,21 @@ def research_policy_decision_builder(
         previous_cross_state=previous_cross_state,
         allow_initial_cross=False,
     )
-    config = SmaPolicyConfig(
-        strategy_name=str(event.strategy_name),
-        short_n=int(parameter_values.get("SMA_SHORT") or 0),
-        long_n=int(parameter_values.get("SMA_LONG") or 0),
-        min_gap_ratio=float(parameter_values.get("SMA_FILTER_GAP_MIN_RATIO") or 0.0),
-        volatility_window=int(parameter_values.get("SMA_FILTER_VOL_WINDOW") or 1),
-        min_volatility_ratio=float(parameter_values.get("SMA_FILTER_VOL_MIN_RANGE_RATIO") or 0.0),
-        overextended_lookback=int(parameter_values.get("SMA_FILTER_OVEREXT_LOOKBACK") or 1),
-        overextended_max_return_ratio=float(
-            parameter_values.get("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO") or 0.0
-        ),
-        slippage_bps=float(parameter_values.get("STRATEGY_ENTRY_SLIPPAGE_BPS", slippage_bps) or 0.0),
-        live_fee_rate_estimate=float(parameter_values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate),
-        entry_edge_buffer_ratio=float(parameter_values.get("ENTRY_EDGE_BUFFER_RATIO") or 0.0),
-        cost_edge_enabled=bool(parameter_values.get("SMA_COST_EDGE_ENABLED", True)),
-        cost_edge_min_ratio=float(parameter_values.get("SMA_COST_EDGE_MIN_RATIO") or 0.0),
-        market_regime_enabled=bool(parameter_values.get("SMA_MARKET_REGIME_ENABLED", True)),
-        buy_fraction=float(parameter_values.get("BUY_FRACTION") or buy_fraction or 0.0),
-        max_order_krw=float(parameter_values.get("MAX_ORDER_KRW") or 0.0),
-        candidate_regime_policy=None,
+    strategy = assembly.build_strategy(
+        materialized,
+        pair=dataset.market,
+        interval=dataset.interval,
+        candidate_regime_policy=candidate_regime_policy,
     )
-    strategy_specific_policy = active_exit_policy.get("strategy_specific", {})
-    exit_policy_config = ExitPolicyConfig(
-        rule_names=tuple(active_exit_policy.get("rules") or ()),
-        stop_loss_ratio=float(active_exit_policy.get("stop_loss", {}).get("stop_loss_ratio", 0.0)),
-        max_holding_sec=float(active_exit_policy.get("max_holding_time", {}).get("max_holding_min", 0.0)) * 60.0,
-        min_take_profit_ratio=float(strategy_specific_policy.get("min_take_profit_ratio", 0.0)),
-        small_loss_tolerance_ratio=float(strategy_specific_policy.get("small_loss_tolerance_ratio", 0.0)),
-        live_fee_rate_estimate=float(parameter_values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate),
+    config = assembly.build_policy_config(
+        materialized,
+        strategy,
+        candidate_regime_policy=candidate_regime_policy,
+        candidate_regime_policy_enforced=candidate_regime_policy_enforced,
+    )
+    exit_policy_config = assembly.build_exit_policy_config(
+        materialized,
+        fee_rate_for_decision=float(materialized.values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate),
     )
     common_exit_rule_names = set(active_exit_policy.get("common_rules") or ())
     strategy_exit_rule_names = set(active_exit_policy.get("strategy_rules") or ())
@@ -317,45 +315,15 @@ def research_policy_decision_builder(
         )
         for name in active_exit_policy.get("rules") or ()
     }
-    fee = float(parameter_values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate)
-    strategy = create_sma_with_filter_strategy(
-        short_n=int(parameter_values.get("SMA_SHORT") or 0),
-        long_n=int(parameter_values.get("SMA_LONG") or 0),
-        pair=dataset.market,
-        interval=dataset.interval,
-        min_gap_ratio=float(parameter_values.get("SMA_FILTER_GAP_MIN_RATIO") or 0.0),
-        volatility_window=int(parameter_values.get("SMA_FILTER_VOL_WINDOW") or 1),
-        min_volatility_ratio=float(parameter_values.get("SMA_FILTER_VOL_MIN_RANGE_RATIO") or 0.0),
-        overextended_lookback=int(parameter_values.get("SMA_FILTER_OVEREXT_LOOKBACK") or 1),
-        overextended_max_return_ratio=float(
-            parameter_values.get("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO") or 0.0
-        ),
-        slippage_bps=float(parameter_values.get("STRATEGY_ENTRY_SLIPPAGE_BPS", slippage_bps) or 0.0),
-        live_fee_rate_estimate=float(parameter_values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate),
-        entry_edge_buffer_ratio=float(parameter_values.get("ENTRY_EDGE_BUFFER_RATIO") or 0.0),
-        cost_edge_enabled=bool(parameter_values.get("SMA_COST_EDGE_ENABLED", True)),
-        cost_edge_min_ratio=float(parameter_values.get("SMA_COST_EDGE_MIN_RATIO") or 0.0),
-        market_regime_enabled=bool(parameter_values.get("SMA_MARKET_REGIME_ENABLED", True)),
-        candidate_regime_policy=None,
-        exit_rule_names=list(active_exit_policy.get("rules") or ()),
-        exit_stop_loss_ratio=float(active_exit_policy.get("stop_loss", {}).get("stop_loss_ratio", 0.0)),
-        exit_max_holding_min=int(active_exit_policy.get("max_holding_time", {}).get("max_holding_min", 0.0)),
-        exit_min_take_profit_ratio=float(strategy_specific_policy.get("min_take_profit_ratio", 0.0)),
-        exit_small_loss_tolerance_ratio=float(strategy_specific_policy.get("small_loss_tolerance_ratio", 0.0)),
-    )
+    fee = float(materialized.values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate)
     return strategy.decide_snapshot(
         market=market,
         position=position,
         config=config,
-        execution_context=ExecutionConstraintSnapshot(
+        execution_context=assembly.build_execution_snapshot(
+            materialized,
+            pair=dataset.market,
             fee_rate_for_decision=fee,
-            fee_authority=fee_authority_context(
-                resolve_strategy_fee_authority(pair=dataset.market, config_fallback_fee_rate=fee)
-            ),
-            order_rules=order_rules_snapshot_payload(
-                get_effective_order_rules(dataset.market),
-                pair=dataset.market,
-            ),
         ),
         exit_policy_config=exit_policy_config,
         rule_sources=rule_sources,
@@ -366,6 +334,10 @@ def runtime_decision_adapter_factory() -> Any:
     from bithumb_bot.runtime_adapters.sma_with_filter import SmaWithFilterRuntimeDecisionAdapter
 
     return SmaWithFilterRuntimeDecisionAdapter()
+
+
+def policy_assembly_factory() -> SmaWithFilterPolicyAssembly:
+    return SmaWithFilterPolicyAssembly()
 
 
 def single_replay_bundle_builder(

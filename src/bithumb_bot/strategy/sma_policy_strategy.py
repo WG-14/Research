@@ -39,6 +39,7 @@ class SmaWithFilterStrategy:
     entry_edge_buffer_ratio: float = settings.ENTRY_EDGE_BUFFER_RATIO
     cost_edge_enabled: bool = settings.SMA_COST_EDGE_ENABLED
     cost_edge_min_ratio: float = settings.SMA_COST_EDGE_MIN_RATIO
+    strategy_min_expected_edge_ratio: float = settings.STRATEGY_MIN_EXPECTED_EDGE_RATIO
     market_regime_enabled: bool = settings.SMA_MARKET_REGIME_ENABLED
     exit_rule_names: list[str] = field(
         default_factory=lambda: list(normalize_exit_rule_names(settings.STRATEGY_EXIT_RULES))
@@ -140,6 +141,8 @@ def create_sma_with_filter_strategy(
     exit_max_holding_min: int | None = None,
     exit_min_take_profit_ratio: float | None = None,
     exit_small_loss_tolerance_ratio: float | None = None,
+    buy_fraction: float | None = None,
+    max_order_krw: float | None = None,
     legacy_candidate_regime_policy_fallback: bool = True,
 ) -> SmaWithFilterStrategy:
     settings_config = (
@@ -198,6 +201,11 @@ def create_sma_with_filter_strategy(
                 else cost_edge_min_ratio
             )
         ),
+        strategy_min_expected_edge_ratio=float(
+            settings.STRATEGY_MIN_EXPECTED_EDGE_RATIO
+            if strategy_min_expected_edge_ratio is None
+            else strategy_min_expected_edge_ratio
+        ),
         market_regime_enabled=(
             bool(settings.SMA_MARKET_REGIME_ENABLED)
             if market_regime_enabled is None
@@ -233,6 +241,8 @@ def create_sma_with_filter_strategy(
             if exit_small_loss_tolerance_ratio is None
             else exit_small_loss_tolerance_ratio
         ),
+        buy_fraction=float(settings.BUY_FRACTION if buy_fraction is None else buy_fraction),
+        max_order_krw=float(settings.MAX_ORDER_KRW if max_order_krw is None else max_order_krw),
     )
 
 

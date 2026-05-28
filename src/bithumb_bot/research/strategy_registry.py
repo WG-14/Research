@@ -246,6 +246,7 @@ class ResearchStrategyPlugin:
     research_export_normalizer: ResearchExportNormalizer | None = None
     runtime_decision_adapter_factory: Callable[[], Any] | None = None
     single_replay_bundle_builder: SingleReplayBundleBuilder | None = None
+    policy_assembly_factory: Callable[[], Any] | None = None
     runtime_capabilities: StrategyRuntimeCapabilities | None = None
 
     def __post_init__(self) -> None:
@@ -377,6 +378,17 @@ class ResearchStrategyPlugin:
             "single_replay_bundle_builder_qualname": (
                 self.single_replay_bundle_builder.__qualname__
                 if self.single_replay_bundle_builder is not None
+                else None
+            ),
+            "policy_assembly_supported": self.policy_assembly_factory is not None,
+            "policy_assembly_module": (
+                self.policy_assembly_factory.__module__
+                if self.policy_assembly_factory is not None
+                else None
+            ),
+            "policy_assembly_qualname": (
+                self.policy_assembly_factory.__qualname__
+                if self.policy_assembly_factory is not None
                 else None
             ),
         }
@@ -703,6 +715,7 @@ _SMA_WITH_FILTER_PLUGIN = ResearchStrategyPlugin(
     research_export_normalizer=sma_with_filter_plugin.research_export_normalizer,
     runtime_decision_adapter_factory=sma_with_filter_plugin.runtime_decision_adapter_factory,
     single_replay_bundle_builder=sma_with_filter_plugin.single_replay_bundle_builder,
+    policy_assembly_factory=sma_with_filter_plugin.policy_assembly_factory,
     runtime_capabilities=StrategyRuntimeCapabilities(
         promotion_runtime_decisions_supported=True,
         runtime_replay_supported=True,

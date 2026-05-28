@@ -281,6 +281,30 @@ def compute_strategy_decision_snapshot(
             adapter = get_runtime_decision_adapter(selected_strategy_name)
             if adapter is None:
                 raise production_runtime_strategy_missing_error(selected_strategy_name)
+        else:
+            from .research.strategy_registry import runtime_strategy_parameters_from_settings
+            from .runtime_strategy_set import RuntimeDecisionRequestBuilder, RuntimeStrategySpec
+
+            short_n = int(diagnostic_sma_windows[0])
+            long_n = int(diagnostic_sma_windows[1]) if len(diagnostic_sma_windows) > 1 else int(settings.SMA_LONG)
+            parameters = runtime_strategy_parameters_from_settings("sma_with_filter", settings)
+            parameters["SMA_SHORT"] = short_n
+            parameters["SMA_LONG"] = long_n
+            request = RuntimeDecisionRequestBuilder().build_for_spec(
+                RuntimeStrategySpec(
+                    strategy_name="sma_with_filter",
+                    parameters=parameters,
+                    parameter_source="diagnostic_sma_windows",
+                ),
+                through_ts_ms=through_ts_ms,
+            )
+            adapter = get_runtime_decision_adapter("sma_with_filter")
+            if adapter is None:
+                raise production_runtime_strategy_missing_error("sma_with_filter")
+            result = adapter.decide(conn, request)
+            if result is not None:
+                _attach_runtime_request_metadata(result, request)
+            return result
     return DecisionRunner(strategy_name=strategy_name).decide_snapshot(
         conn,
         through_ts_ms=through_ts_ms,
@@ -289,12 +313,13 @@ def compute_strategy_decision_snapshot(
 
 def compute_signal_runtime_handoff(
     conn,
-    *,
+    *diagnostic_sma_windows: int,
     through_ts_ms: int | None = None,
     strategy_name: str | None = None,
 ) -> RuntimeStrategyDecisionResult | None:
     return compute_strategy_decision_snapshot(
         conn,
+        *diagnostic_sma_windows,
         through_ts_ms=through_ts_ms,
         strategy_name=strategy_name,
     )

@@ -38,6 +38,7 @@ from .decision_equivalence import (
     promotion_grade_decision_equivalence_fail_reasons,
 )
 from .research.dataset_snapshot import load_dataset_split
+from .research.backtest_engine import BacktestRunContext
 from .research.experiment_manifest import load_manifest
 from .research.hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
 from .research.decision_export_normalizers import (
@@ -483,6 +484,24 @@ def cmd_research_export_decisions(
             None,
             None,
             manifest.execution_timing,
+            None,
+            BacktestRunContext(
+                report_detail="full",
+                approved_profile=profile if isinstance(profile, dict) else None,
+                candidate_regime_policy=(
+                    _candidate_regime_policy_from_approved_profile(profile)
+                    if isinstance(profile, dict)
+                    else None
+                ),
+                candidate_regime_policy_drives_research_execution=bool(
+                    profile.get("candidate_regime_policy_applied_in_research")
+                )
+                if isinstance(profile, dict)
+                else False,
+                policy_materialization_mode=(
+                    "research_promotion" if promotion_grade_export else "research_exploratory"
+                ),
+            ),
         )
         order_rules_hash = sha256_prefixed(
             order_rules_snapshot_payload(get_effective_order_rules(manifest.market), pair=manifest.market)

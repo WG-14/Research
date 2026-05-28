@@ -11,10 +11,9 @@ from .canonical_decision import order_rules_snapshot_payload
 from .config import settings
 from .core.sma_policy import (
     ExecutionConstraintSnapshot,
-    MarketWindow,
     PositionSnapshot,
-    SmaPolicyConfig,
     StrategyDecisionV2,
+    _stable_hash,
 )
 from .decision_contract import build_replay_fingerprint
 from .dust import build_dust_display_context, build_position_state_model
@@ -25,6 +24,7 @@ from .lifecycle import (
     summarize_reserved_exit_qty,
 )
 from .runtime_readonly_guard import readonly_decision_context
+from .research.sma_policy_assembly import MaterializationMode, SmaWithFilterPolicyAssembly
 from .runtime_position_state_normalizer import (
     load_last_reconcile_metadata,
 )
@@ -40,7 +40,6 @@ from .runtime_sma_context import (
     sma,
 )
 from .strategy.base import PositionContext, StrategyDecision
-from .strategy.exit_rules import ExitPolicyConfig
 from .strategy.sma_policy_strategy import SmaWithFilterStrategy
 
 
@@ -464,30 +463,36 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
 
     if int(strategy.short_n) >= int(strategy.long_n):
         raise ValueError("short는 long보다 작아야 해. 예: short=7 long=30")
-    strategy = SmaWithFilterStrategy(
-        short_n=int(strategy.short_n),
-        long_n=int(strategy.long_n),
-        pair=str(strategy.pair),
-        interval=str(strategy.interval),
-        min_gap_ratio=float(strategy.min_gap_ratio),
-        volatility_window=int(strategy.volatility_window),
-        min_volatility_ratio=float(strategy.min_volatility_ratio),
-        overextended_lookback=int(strategy.overextended_lookback),
-        overextended_max_return_ratio=float(strategy.overextended_max_return_ratio),
-        slippage_bps=float(strategy.slippage_bps),
-        live_fee_rate_estimate=float(strategy.live_fee_rate_estimate),
-        entry_edge_buffer_ratio=float(strategy.entry_edge_buffer_ratio),
-        cost_edge_enabled=bool(strategy.cost_edge_enabled),
-        cost_edge_min_ratio=float(strategy.cost_edge_min_ratio),
-        market_regime_enabled=bool(strategy.market_regime_enabled),
-        exit_rule_names=list(strategy.exit_rule_names),
-        exit_stop_loss_ratio=float(strategy.exit_stop_loss_ratio),
-        exit_max_holding_min=int(strategy.exit_max_holding_min),
-        exit_min_take_profit_ratio=float(strategy.exit_min_take_profit_ratio),
-        exit_small_loss_tolerance_ratio=float(strategy.exit_small_loss_tolerance_ratio),
-        buy_fraction=float(strategy.buy_fraction),
-        max_order_krw=float(strategy.max_order_krw),
-        candidate_regime_policy=strategy.candidate_regime_policy,
+    assembly = SmaWithFilterPolicyAssembly()
+    materialized = assembly.materialize_parameters(
+        {
+            "SMA_SHORT": int(strategy.short_n),
+            "SMA_LONG": int(strategy.long_n),
+            "SMA_FILTER_GAP_MIN_RATIO": float(strategy.min_gap_ratio),
+            "SMA_FILTER_VOL_WINDOW": int(strategy.volatility_window),
+            "SMA_FILTER_VOL_MIN_RANGE_RATIO": float(strategy.min_volatility_ratio),
+            "SMA_FILTER_OVEREXT_LOOKBACK": int(strategy.overextended_lookback),
+            "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": float(strategy.overextended_max_return_ratio),
+            "SMA_COST_EDGE_ENABLED": bool(strategy.cost_edge_enabled),
+            "SMA_COST_EDGE_MIN_RATIO": float(strategy.cost_edge_min_ratio),
+            "SMA_MARKET_REGIME_ENABLED": bool(strategy.market_regime_enabled),
+            "ENTRY_EDGE_BUFFER_RATIO": float(strategy.entry_edge_buffer_ratio),
+            "STRATEGY_MIN_EXPECTED_EDGE_RATIO": float(
+                getattr(strategy, "strategy_min_expected_edge_ratio", strategy.cost_edge_min_ratio)
+            ),
+            "STRATEGY_ENTRY_SLIPPAGE_BPS": float(strategy.slippage_bps),
+            "LIVE_FEE_RATE_ESTIMATE": float(strategy.live_fee_rate_estimate),
+            "STRATEGY_EXIT_RULES": ",".join(str(item) for item in strategy.exit_rule_names),
+            "STRATEGY_EXIT_STOP_LOSS_RATIO": float(strategy.exit_stop_loss_ratio),
+            "STRATEGY_EXIT_MAX_HOLDING_MIN": int(strategy.exit_max_holding_min),
+            "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": float(strategy.exit_min_take_profit_ratio),
+            "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": float(
+                strategy.exit_small_loss_tolerance_ratio
+            ),
+            "BUY_FRACTION": float(strategy.buy_fraction),
+            "MAX_ORDER_KRW": float(strategy.max_order_krw),
+        },
+        MaterializationMode.RUNTIME_REPLAY,
     )
 
     min_rows = max(
@@ -543,7 +548,7 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
         slippage_bps=float(strategy.slippage_bps),
         entry_edge_buffer_ratio=float(strategy.entry_edge_buffer_ratio),
     )
-    market_snapshot = MarketWindow(
+    market_snapshot = assembly.build_market_snapshot(
         pair=strategy.pair,
         interval=strategy.interval,
         candle_ts=int(ts_list[-1]),
@@ -553,27 +558,16 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
         curr_s=float(curr_s),
         curr_l=float(curr_l),
         through_ts_ms=signal_through_ts_ms,
+        previous_cross_state=(
+            "above" if float(prev_s) > float(prev_l) else "below"
+        ),
+        allow_initial_cross=False,
     )
     position_snapshot = _policy_position_snapshot(position=position, exposure=exposure)
-    policy_config = SmaPolicyConfig(
-        strategy_name=strategy.name,
-        short_n=int(strategy.short_n),
-        long_n=int(strategy.long_n),
-        min_gap_ratio=float(strategy.min_gap_ratio),
-        volatility_window=int(strategy.volatility_window),
-        min_volatility_ratio=float(strategy.min_volatility_ratio),
-        overextended_lookback=int(strategy.overextended_lookback),
-        overextended_max_return_ratio=float(strategy.overextended_max_return_ratio),
-        slippage_bps=float(strategy.slippage_bps),
-        live_fee_rate_estimate=float(strategy.live_fee_rate_estimate),
-        entry_edge_buffer_ratio=float(strategy.entry_edge_buffer_ratio),
-        cost_edge_enabled=bool(strategy.cost_edge_enabled),
-        cost_edge_min_ratio=float(strategy.cost_edge_min_ratio),
-        market_regime_enabled=bool(strategy.market_regime_enabled),
-        buy_fraction=float(strategy.buy_fraction),
-        max_order_krw=float(strategy.max_order_krw),
+    policy_config = assembly.build_policy_config(
+        materialized,
+        strategy,
         candidate_regime_policy=strategy.candidate_regime_policy,
-        require_candidate_regime_policy=True,
     )
     execution_snapshot = ExecutionConstraintSnapshot(
         fee_rate_for_decision=fee_rate_for_decision,
@@ -581,13 +575,9 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
         fee_authority=fee_authority_context(fee_authority),
         order_rules=order_rules_snapshot,
     )
-    exit_policy_config = ExitPolicyConfig(
-        rule_names=tuple(strategy.exit_rule_names),
-        max_holding_sec=float(strategy.exit_max_holding_min) * 60.0,
-        min_take_profit_ratio=float(strategy.exit_min_take_profit_ratio),
-        live_fee_rate_estimate=fee_rate_for_decision,
-        small_loss_tolerance_ratio=float(strategy.exit_small_loss_tolerance_ratio),
-        stop_loss_ratio=float(strategy.exit_stop_loss_ratio),
+    exit_policy_config = assembly.build_exit_policy_config(
+        materialized,
+        fee_rate_for_decision=fee_rate_for_decision,
     )
     final_policy_decision = strategy.decide_snapshot(
         market=market_snapshot,
@@ -827,6 +817,7 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
         "regime_policy_source": candidate_regime_decision.get("regime_policy_source"),
         "regime_policy_present": bool(candidate_regime_decision.get("regime_policy_present")),
         "regime_policy_valid": bool(candidate_regime_decision.get("regime_policy_valid")),
+        **policy_config.candidate_regime_policy_status,
         "order_rules": order_rules_snapshot,
         "position_gate": build_position_gate_context(
             position_state.normalized_exposure,
@@ -917,10 +908,20 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
         "sma_filter_overext_max_return_ratio": float(strategy.overextended_max_return_ratio),
         "sma_cost_edge_enabled": bool(strategy.cost_edge_enabled),
         "sma_cost_edge_min_ratio": float(strategy.cost_edge_min_ratio),
+        "strategy_min_expected_edge_ratio": float(policy_config.strategy_min_expected_edge_ratio),
         "entry_edge_buffer_ratio": float(strategy.entry_edge_buffer_ratio),
         "market_regime_enabled": bool(strategy.market_regime_enabled),
         "candidate_regime_policy_configured": bool(candidate_regime_decision.get("regime_policy_present")),
+        **policy_config.candidate_regime_policy_status,
     }
+    policy_input_payload = assembly.policy_input_payload(
+        materialized=materialized,
+        market=market_snapshot,
+        position=position_snapshot,
+        policy_config=policy_config,
+        execution_context=execution_snapshot,
+        exit_policy_config=exit_policy_config,
+    )
     replay_fingerprint = build_replay_fingerprint(
         strategy_name=strategy.name,
         pair=strategy.pair,
@@ -933,7 +934,15 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
         fee_authority=fee_authority_context(fee_authority),
         slippage_bps=float(strategy.slippage_bps),
         regime_version=str(market_regime.get("version") or ""),
+        order_sizing={
+            "buy_fraction": float(strategy.buy_fraction),
+            "max_order_krw": float(strategy.max_order_krw),
+        },
     )
+    replay_fingerprint["policy_input_payload_hash"] = _stable_hash(policy_input_payload)
+    replay_fingerprint["policy_input_payload"] = policy_input_payload
+    replay_fingerprint["policy_input_hash"] = final_policy_decision.policy_input_hash
+    replay_fingerprint["exit_policy_hash"] = policy_input_payload["exit_policy_hash"]
     base_context["replay_fingerprint"] = replay_fingerprint
     boundary = {
         "normalization_boundary": "engine.normalize_position_state_before_strategy_decision",

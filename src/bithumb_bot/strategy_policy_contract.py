@@ -35,6 +35,23 @@ class PositionSnapshot:
     has_non_executable_residue: bool = False
     has_dust_only_remainder: bool = False
 
+    def policy_input_payload(self) -> dict[str, object]:
+        return {
+            "in_position": bool(self.in_position),
+            "entry_allowed": bool(self.entry_allowed),
+            "exit_allowed": bool(self.exit_allowed),
+            "entry_block_reason": self.entry_block_reason,
+            "exit_block_reason": self.exit_block_reason,
+            "terminal_state": self.terminal_state,
+            "dust_classification": self.dust_classification,
+            "dust_state": self.dust_state,
+            "effective_flat": bool(self.effective_flat),
+            "has_executable_exposure": bool(self.has_executable_exposure),
+            "has_any_position_residue": bool(self.has_any_position_residue),
+            "has_non_executable_residue": bool(self.has_non_executable_residue),
+            "has_dust_only_remainder": bool(self.has_dust_only_remainder),
+        }
+
 
 @dataclass(frozen=True)
 class ExecutionConstraintSnapshot:
@@ -42,6 +59,21 @@ class ExecutionConstraintSnapshot:
     fee_authority_degraded_blocks_entry: bool = False
     fee_authority: dict[str, object] = field(default_factory=dict)
     order_rules: dict[str, object] = field(default_factory=dict)
+
+    def policy_input_payload(self) -> dict[str, object]:
+        fee_authority = {
+            key: value
+            for key, value in dict(self.fee_authority).items()
+            if key not in {"retrieved_at_sec", "expires_at_sec"}
+        }
+        return {
+            "fee_rate_for_decision": float(self.fee_rate_for_decision),
+            "fee_authority_degraded_blocks_entry": bool(
+                self.fee_authority_degraded_blocks_entry
+            ),
+            "fee_authority": fee_authority,
+            "order_rules": dict(self.order_rules),
+        }
 
 
 @dataclass(frozen=True)

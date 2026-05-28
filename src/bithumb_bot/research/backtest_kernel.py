@@ -842,18 +842,35 @@ def _run_decision_event_backtest_impl(
             isinstance(event.exit_intent, dict)
             and str(event.exit_intent.get("mode") or "") == "evaluate_exit_policy"
         )
-        policy_decision = (
-            strategy_plugin.research_policy_decision_builder(
-                event=event,
-                dataset=dataset,
-                candle_index=index,
-                position=policy_position,
-                parameter_values=parameter_values,
-                fee_rate=fee_rate,
-                slippage_bps=slippage_bps,
-                active_exit_policy=active_exit_policy,
-                buy_fraction=float(buy_fraction),
+        policy_builder_kwargs = {
+            "event": event,
+            "dataset": dataset,
+            "candle_index": index,
+            "position": policy_position,
+            "parameter_values": parameter_values,
+            "fee_rate": fee_rate,
+            "slippage_bps": slippage_bps,
+            "active_exit_policy": active_exit_policy,
+            "buy_fraction": float(buy_fraction),
+        }
+        if strategy_plugin.policy_assembly_factory is not None:
+            policy_builder_kwargs.update(
+                {
+                    "materialization_mode": str(
+                        getattr(run_context, "policy_materialization_mode", "research_exploratory")
+                    ),
+                    "candidate_regime_policy": (
+                        dict(getattr(run_context, "candidate_regime_policy"))
+                        if isinstance(getattr(run_context, "candidate_regime_policy", None), dict)
+                        else None
+                    ),
+                    "candidate_regime_policy_enforced": bool(
+                        getattr(run_context, "candidate_regime_policy_drives_research_execution", True)
+                    ),
+                }
             )
+        policy_decision = (
+            strategy_plugin.research_policy_decision_builder(**policy_builder_kwargs)
             if strategy_plugin.research_policy_decision_builder is not None
             else None
         )
@@ -894,15 +911,17 @@ def _run_decision_event_backtest_impl(
             else False
         )
         requested_action = str(event.final_signal or "HOLD").upper()
-        if policy_decision is not None:
+        policy_drives_execution = True
+        if policy_decision is not None and policy_drives_execution:
             requested_action = str(policy_decision.final_signal or "HOLD").upper()
         elif policy_unsupported_reason:
             requested_action = "HOLD"
+        execution_policy_decision = policy_decision if policy_drives_execution else None
         action = requested_action
         blocked = bool(policy_unsupported_reason)
         block_reason = (
             str(policy_decision.final_reason)
-            if policy_decision is not None
+            if policy_decision is not None and policy_drives_execution
             else policy_unsupported_reason or event.reason
         )
         exit_evaluations: list[dict[str, object]] = []
@@ -1014,10 +1033,14 @@ def _run_decision_event_backtest_impl(
             buy_fraction=float(buy_fraction),
             sellable_qty=float(sellable_qty),
             reference_price=float(candle.close),
-            policy_decision=policy_decision,
+            policy_decision=execution_policy_decision,
             candle_ts=int(candle.ts),
-            allow_compatibility_fallback=allow_execution_compatibility_fallback,
-            promotion_grade_required=not allow_execution_compatibility_fallback,
+            allow_compatibility_fallback=(
+                allow_execution_compatibility_fallback or not policy_drives_execution
+            ),
+            promotion_grade_required=(
+                policy_drives_execution and not allow_execution_compatibility_fallback
+            ),
             block_reason=block_reason,
         )
         submit_plan = execution_plan_bundle.submit_plan
@@ -1139,6 +1162,7 @@ def _run_decision_event_backtest_impl(
                     "policy_contract_hash": policy_decision.policy_contract_hash,
                     "policy_input_hash": policy_decision.policy_input_hash,
                     "policy_decision_hash": policy_decision.policy_decision_hash,
+                    "pure_policy_trace": policy_decision.as_trace(),
                     "policy_position_terminal_state": policy_position.terminal_state,
                     "policy_recomputed_with_simulated_position": True,
                 }
