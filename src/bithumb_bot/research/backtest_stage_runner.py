@@ -17,12 +17,14 @@ from .backtest_stages import (
     StrategyStageResult,
 )
 from .decision_payload import DecisionPayloadBuilder
+from .execution_planner_stage import ExecutionPlanningRequest
 from .execution_simulator_stage import ExecutionSimulationRequest, blocked_execution_evidence
 from .execution_model import FixedBpsExecutionModel
 from .execution_timing import candle_close_ts
 from .experiment_manifest import ExecutionTimingPolicy, legacy_research_portfolio_policy
 from .metrics_contract import EquityPoint
 from .portfolio_ledger import PortfolioLedger
+from .risk_gate_stage import PortfolioRiskSnapshot, RiskContextBuilder
 from .stage_trace_recorder import StageTraceRecorder
 from .strategy_spec import exit_policy_from_parameters, exit_policy_hash, strategy_spec_for_name
 
@@ -74,6 +76,7 @@ class BacktestEventProcessor:
     trace_recorder: StageTraceRecorder
     strategy_evaluator: Any
     risk_gate: Any
+    execution_planner: Any
     execution_simulator: Any
     metrics_collector: Any | None
     experiment_recorder: Any | None
@@ -206,6 +209,26 @@ class BacktestEventProcessor:
         candle = tick.candle
         event = tick.event
         policy_decision = strategy.envelope.decision
+        current_equity = float(prepared.mark_cash) + float(prepared.mark_qty) * float(candle.close)
+        baseline_equity = float(self.ledger.starting_cash)
+        risk_context = RiskContextBuilder().build(
+            strategy_plugin=self.strategy_plugin,
+            event=event,
+            active_exit_policy=self.active_exit_policy,
+            parameter_values=self.parameter_values,
+            fee_rate=self.fee_rate,
+            strategy_envelope=strategy.envelope,
+            portfolio_risk_snapshot=PortfolioRiskSnapshot(
+                current_equity=current_equity,
+                baseline_equity=baseline_equity,
+                loss_today=max(0.0, baseline_equity - current_equity),
+                current_cash=float(prepared.mark_cash),
+                current_asset_qty=float(prepared.mark_qty),
+                position_entry_price=getattr(strategy.position_snapshot, "entry_price", None),
+            ),
+            evaluation_ts_ms=int(candle.ts),
+            mark_price=float(candle.close),
+        )
         risk_decision = self.risk_gate.evaluate(
             policy_decision,
             strategy.position_snapshot,
@@ -214,14 +237,7 @@ class BacktestEventProcessor:
                 "close": float(candle.close),
             },
             prepared.portfolio_snapshot,
-            {
-                "strategy_plugin": self.strategy_plugin,
-                "event": event,
-                "active_exit_policy": self.active_exit_policy,
-                "parameter_values": self.parameter_values,
-                "fee_rate": self.fee_rate,
-                "strategy_envelope": strategy.envelope,
-            },
+            risk_context,
         )
         risk_gate_hash = risk_decision.evidence_hash
         self.trace_recorder.record_risk(
@@ -249,6 +265,35 @@ class BacktestEventProcessor:
         decision_payload_qty = float(self.ledger.qty)
         decision_payload_sellable_qty = float(prepared.sellable_qty)
         if action in {"BUY", "SELL"}:
+            planning = self.execution_planner.plan(
+                ExecutionPlanningRequest(
+                    candle=candle,
+                    event=event,
+                    ledger=self.ledger,
+                    strategy_name=self.strategy_plugin.name,
+                    action=action,
+                    decision_reason=risk_decision.reason_code,
+                    sellable_qty=prepared.sellable_qty,
+                    buy_fraction=self.buy_fraction,
+                    promotion_grade_policy_required=bool(
+                        strategy_envelope.provenance.get("promotion_grade_policy_required")
+                    ),
+                    allow_execution_compatibility_fallback=bool(
+                        strategy_envelope.provenance.get("allow_execution_compatibility_fallback")
+                    ),
+                    policy_drives_execution=True,
+                    policy_decision=policy_decision,
+                )
+            )
+            self.warnings.extend(planning.warnings)
+            planning_hash = canonical_payload_hash(planning.evidence)
+            self.trace_recorder.record_execution_planning(
+                input_hash=risk.risk_gate_hash,
+                execution_plan_hash=planning_hash,
+                reason_code=str(
+                    planning.evidence.get("execution_plan_reason_code") or risk_decision.reason_code
+                ),
+            )
             outcome = self.execution_simulator.execute(
                 ExecutionSimulationRequest(
                     dataset=self.dataset,
@@ -276,6 +321,8 @@ class BacktestEventProcessor:
                     ),
                     policy_drives_execution=True,
                     policy_decision=policy_decision,
+                    plan_bundle=planning.plan_bundle,
+                    execution_evidence=planning.evidence,
                     exit_rule=risk_decision.exit_rule,
                     exit_reason=risk_decision.exit_reason,
                 )
@@ -310,7 +357,7 @@ class BacktestEventProcessor:
             execution_plan_hash = canonical_payload_hash(execution_evidence)
             fill_hash = canonical_payload_hash({})
         self.trace_recorder.record_execution(
-            input_hash=risk.risk_gate_hash,
+            input_hash=risk.risk_gate_hash if action not in {"BUY", "SELL"} else execution_plan_hash,
             execution_plan_hash=execution_plan_hash,
             fill_hash=fill_hash,
             reason_code=str(execution_evidence.get("execution_plan_reason_code") or risk_decision.reason_code),
@@ -434,7 +481,7 @@ class BacktestEventProcessor:
         _flush_stage_trace_observability(
             self.trace_recorder,
             self.warnings,
-            count=5,
+            count=6,
             metrics_collector=self.metrics_collector,
             experiment_recorder=self.experiment_recorder,
             event_number=event_number,
@@ -463,6 +510,7 @@ def run_stage_owned_decision_event_backtest(
     prepared_ledger: PortfolioLedger | None = None,
     strategy_evaluator: Any | None = None,
     risk_gate: Any | None = None,
+    execution_planner: Any | None = None,
     execution_simulator: Any | None = None,
     metrics_collector: Any | None = None,
     experiment_recorder: Any | None = None,
@@ -568,6 +616,7 @@ def run_stage_owned_decision_event_backtest(
         trace_recorder=trace_recorder,
         strategy_evaluator=strategy_evaluator,
         risk_gate=risk_gate,
+        execution_planner=execution_planner,
         execution_simulator=execution_simulator,
         metrics_collector=metrics_collector,
         experiment_recorder=experiment_recorder,

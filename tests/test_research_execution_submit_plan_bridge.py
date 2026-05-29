@@ -12,6 +12,7 @@ from bithumb_bot.research.backtest_kernel import (
     execution_submit_plan_to_research_request,
 )
 from bithumb_bot.research.execution_model import FixedBpsExecutionModel
+from bithumb_bot.research.execution_planner_stage import DefaultExecutionPlanner, ExecutionPlanningRequest
 from bithumb_bot.research.execution_simulator_stage import DefaultExecutionSimulator, ExecutionSimulationRequest
 
 
@@ -471,6 +472,37 @@ def test_execution_simulator_is_independent_stage() -> None:
 
     assert simulator.run(object()) is not None
     assert DefaultExecutionSimulator.__module__ == "bithumb_bot.research.execution_simulator_stage"
+
+
+def test_execution_planner_is_independent_typed_plan_stage() -> None:
+    class Candle:
+        ts = 1_700_000_000_000
+        close = 100.0
+
+    class Ledger:
+        cash = 1_000_000.0
+
+    result = DefaultExecutionPlanner().plan(
+        ExecutionPlanningRequest(
+            candle=Candle(),
+            event=object(),
+            ledger=Ledger(),
+            strategy_name="sma_with_filter",
+            action="BUY",
+            decision_reason="unit_buy",
+            sellable_qty=0.0,
+            buy_fraction=0.99,
+            promotion_grade_policy_required=True,
+            allow_execution_compatibility_fallback=False,
+            policy_drives_execution=True,
+            policy_decision=_typed_decision(final_signal="BUY"),
+        )
+    )
+
+    assert result.plan_bundle.submit_plan is not None
+    assert isinstance(result.plan_bundle.submit_plan, ExecutionSubmitPlan)
+    assert result.evidence["typed_submit_plan"] is True
+    assert result.evidence["typed_execution_boundary"] == "SignalExecutionRequest"
 
 
 def test_execution_simulator_accepts_typed_request_boundary() -> None:

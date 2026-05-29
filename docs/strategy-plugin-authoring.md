@@ -81,6 +81,12 @@ lazy imports to avoid circular dependencies.
 7. Use the generic research runner.
    - Research execution should consume manifest-backed datasets and declared
      parameter values through `run_plugin_backtest`.
+   - Decision-event backtests execute through `BacktestKernel` ->
+     `DefaultBacktestPipeline` -> typed stages. Strategy evaluation, risk
+     evaluation, execution planning, execution simulation, portfolio ledger
+     mutation, metrics, audit, and experiment recording are separate boundaries.
+   - Execution planning is owned by `DefaultExecutionPlanner`; execution
+     simulation consumes the typed plan and must not invent submit authority.
    - Strategy-specific historical feature and event generation belongs in the
      plugin layer, not in `research/backtest_runner.py`,
      `research/backtest_kernel.py`, `research/backtest_engine.py`, or

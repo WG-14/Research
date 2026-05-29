@@ -139,6 +139,11 @@ class RiskGate(Protocol):
         ...
 
 
+class ExecutionPlanner(Protocol):
+    def plan(self, request: Any) -> Any:
+        ...
+
+
 class ExecutionSimulatorStage(Protocol):
     def execute(self, request: Any) -> Any:
         ...

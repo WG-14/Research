@@ -9,10 +9,12 @@ from .backtest_stages import (
     MarketReplayClock,
     MetricsCollector,
     PortfolioLedgerStage,
+    ExecutionPlanner,
     ReplayTick,
     RiskGate,
     StrategyEvaluator,
 )
+from .execution_planner_stage import DefaultExecutionPlanner
 from .execution_simulator_stage import DefaultExecutionSimulator
 from .experiment_manifest import ExecutionTimingPolicy, legacy_research_portfolio_policy
 from .portfolio_ledger import PortfolioLedger
@@ -62,6 +64,7 @@ class BacktestStageSet:
     portfolio_ledger: PortfolioLedgerStage | None = None
     strategy_evaluator: StrategyEvaluator | None = None
     risk_gate: RiskGate | None = None
+    execution_planner: ExecutionPlanner | None = None
     execution_simulator: ExecutionSimulator | None = None
     metrics_collector: MetricsCollector | None = None
     experiment_recorder: ExperimentRecorder | None = None
@@ -74,6 +77,7 @@ class BacktestStageSet:
                 self.portfolio_ledger,
                 self.strategy_evaluator,
                 self.risk_gate,
+                self.execution_planner,
                 self.execution_simulator,
                 self.metrics_collector,
                 self.experiment_recorder,
@@ -88,6 +92,7 @@ def default_backtest_stage_set() -> BacktestStageSet:
         portfolio_ledger=DefaultPortfolioLedgerStage(),
         strategy_evaluator=DefaultStrategyEvaluator(),
         risk_gate=DefaultRiskGate(),
+        execution_planner=DefaultExecutionPlanner(),
         execution_simulator=DefaultExecutionSimulator(),
         metrics_collector=DefaultMetricsCollector(),
         experiment_recorder=DefaultExperimentRecorder(),
@@ -258,6 +263,8 @@ class DefaultBacktestPipeline:
             raise RuntimeError("default_backtest_pipeline_missing_strategy_evaluator")
         if self.stages.risk_gate is None:
             raise RuntimeError("default_backtest_pipeline_missing_risk_gate")
+        if self.stages.execution_planner is None:
+            raise RuntimeError("default_backtest_pipeline_missing_execution_planner")
         if self.stages.execution_simulator is None:
             raise RuntimeError("default_backtest_pipeline_missing_execution_simulator")
         if self.stages.metrics_collector is None:
@@ -270,6 +277,7 @@ class DefaultBacktestPipeline:
         for stage in (
             self.stages.strategy_evaluator,
             self.stages.risk_gate,
+            self.stages.execution_planner,
             self.stages.execution_simulator,
             self.stages.metrics_collector,
         ):
@@ -292,6 +300,7 @@ class DefaultBacktestPipeline:
             prepared_ledger=prepared.ledger,
             strategy_evaluator=self.stages.strategy_evaluator,
             risk_gate=self.stages.risk_gate,
+            execution_planner=self.stages.execution_planner,
             execution_simulator=self.stages.execution_simulator,
             metrics_collector=self.stages.metrics_collector,
             experiment_recorder=self.stages.experiment_recorder,
@@ -393,6 +402,7 @@ def _run_stage_composed_decision_event_backtest(
     prepared_ledger: PortfolioLedger | None = None,
     strategy_evaluator: StrategyEvaluator | None = None,
     risk_gate: RiskGate | None = None,
+    execution_planner: ExecutionPlanner | None = None,
     execution_simulator: ExecutionSimulator | None = None,
     metrics_collector: MetricsCollector | None = None,
     experiment_recorder: ExperimentRecorder | None = None,
@@ -416,6 +426,7 @@ def _run_stage_composed_decision_event_backtest(
         prepared_ledger=prepared_ledger,
         strategy_evaluator=strategy_evaluator or DefaultStrategyEvaluator(),
         risk_gate=risk_gate or DefaultRiskGate(),
+        execution_planner=execution_planner or DefaultExecutionPlanner(),
         execution_simulator=execution_simulator or DefaultExecutionSimulator(),
         metrics_collector=metrics_collector or DefaultMetricsCollector(),
         experiment_recorder=experiment_recorder or DefaultExperimentRecorder(),

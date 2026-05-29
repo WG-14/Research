@@ -44,6 +44,8 @@ class ExecutionSimulationRequest:
     allow_execution_compatibility_fallback: bool
     policy_drives_execution: bool
     policy_decision: Any | None
+    plan_bundle: ResearchExecutionPlanBundle | None = None
+    execution_evidence: dict[str, object] | None = None
     exit_rule: str = ""
     exit_reason: str = ""
 
@@ -71,6 +73,8 @@ class ExecutionSimulationRequest:
             ),
             policy_drives_execution=bool(payload.get("policy_drives_execution", True)),
             policy_decision=payload.get("policy_decision"),
+            plan_bundle=payload.get("plan_bundle"),
+            execution_evidence=payload.get("execution_evidence"),
             exit_rule=str(payload.get("exit_rule") or ""),
             exit_reason=str(payload.get("exit_reason") or ""),
         )
@@ -112,31 +116,35 @@ class DefaultExecutionSimulator:
         allow_execution_compatibility_fallback = bool(request.allow_execution_compatibility_fallback)
         policy_drives_execution = bool(request.policy_drives_execution)
         policy_decision = request.policy_decision
-        plan_bundle_builder = _compat_attr(
-            "_research_execution_plan_bundle",
-            _default_research_execution_plan_bundle,
-        )
-        plan_bundle = plan_bundle_builder(
-            side=action,
-            cash=float(ledger.cash),
-            buy_fraction=buy_fraction,
-            sellable_qty=sellable_qty,
-            reference_price=float(candle.close),
-            policy_decision=policy_decision if policy_drives_execution else None,
-            candle_ts=int(candle.ts),
-            allow_compatibility_fallback=(
-                allow_execution_compatibility_fallback or not policy_drives_execution
-            ),
-            promotion_grade_required=(
-                policy_drives_execution
-                and promotion_grade_policy_required
-                and not allow_execution_compatibility_fallback
-            ),
-            block_reason=decision_reason,
-        )
+        plan_bundle = request.plan_bundle
+        if plan_bundle is None:
+            plan_bundle_builder = _compat_attr(
+                "_research_execution_plan_bundle",
+                _default_research_execution_plan_bundle,
+            )
+            plan_bundle = plan_bundle_builder(
+                side=action,
+                cash=float(ledger.cash),
+                buy_fraction=buy_fraction,
+                sellable_qty=sellable_qty,
+                reference_price=float(candle.close),
+                policy_decision=policy_decision if policy_drives_execution else None,
+                candle_ts=int(candle.ts),
+                allow_compatibility_fallback=(
+                    allow_execution_compatibility_fallback or not policy_drives_execution
+                ),
+                promotion_grade_required=(
+                    policy_drives_execution
+                    and promotion_grade_policy_required
+                    and not allow_execution_compatibility_fallback
+                ),
+                block_reason=decision_reason,
+            )
         submit_plan = plan_bundle.submit_plan
-        evidence_builder = _compat_attr("_execution_plan_evidence", _default_execution_plan_evidence)
-        evidence = evidence_builder(plan_bundle)
+        evidence = dict(request.execution_evidence or {})
+        if not evidence:
+            evidence_builder = _compat_attr("_execution_plan_evidence", _default_execution_plan_evidence)
+            evidence = evidence_builder(plan_bundle)
         if submit_plan is None:
             if promotion_grade_policy_required:
                 raise ValueError("research_submit_plan_missing")

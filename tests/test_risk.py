@@ -22,6 +22,7 @@ from bithumb_bot.risk import (
 from bithumb_bot.reason_codes import POSITION_LOSS_LIMIT
 from bithumb_bot.research.backtest_pipeline import DefaultRiskGate
 from bithumb_bot.research.backtest_stages import StrategyEvaluationEnvelope
+from bithumb_bot.research.risk_gate_stage import PortfolioRiskSnapshot, RiskContextBuilder, RiskGateContext
 from bithumb_bot.strategy_policy_contract import PositionSnapshot
 
 KST = timezone(timedelta(hours=9))
@@ -141,6 +142,61 @@ def test_research_risk_gate_matches_runtime_daily_loss_reason_codes() -> None:
     assert runtime.reason_code == DAILY_LOSS_LIMIT_REASON_CODE
     assert research.block is True
     assert research.allow is False
+    assert research.reason_code == runtime.reason_code
+
+
+def test_research_risk_context_builder_produces_runtime_taxonomy_input() -> None:
+    event = type("Event", (), {"reason": "unit", "final_signal": "BUY", "exit_intent": None})()
+    envelope = StrategyEvaluationEnvelope(
+        decision=None,
+        provenance={
+            "raw_signal": "BUY",
+            "raw_reason": "unit",
+            "entry_signal": "BUY",
+            "evaluates_exit_policy": False,
+        },
+        replay_fingerprint_hash="sha256:unit",
+    )
+
+    context = RiskContextBuilder().build(
+        strategy_plugin=type("Plugin", (), {})(),
+        event=event,
+        active_exit_policy={},
+        parameter_values={},
+        fee_rate=0.0,
+        strategy_envelope=envelope,
+        portfolio_risk_snapshot=PortfolioRiskSnapshot(
+            current_equity=950_000.0,
+            baseline_equity=1_000_000.0,
+            loss_today=50_000.0,
+            current_cash=900_000.0,
+            current_asset_qty=0.5,
+            position_entry_price=110.0,
+            max_daily_loss_krw=30_000.0,
+            max_position_loss_pct=10.0,
+        ),
+        evaluation_ts_ms=1,
+        mark_price=100.0,
+    )
+
+    assert isinstance(context, RiskGateContext)
+    assert context.pure_risk_input is not None
+    runtime = evaluate_pure_risk(context.pure_risk_input)
+    research = DefaultRiskGate().evaluate(
+        None,
+        PositionSnapshot(
+            in_position=True,
+            entry_allowed=False,
+            exit_allowed=True,
+            entry_price=110.0,
+            qty_open=0.5,
+        ),
+        {"candle_ts": 1, "close": 100.0},
+        {"qty": 0.5, "pending_buy_qty": 0.0, "pending_sell_qty": 0.0, "sellable_qty": 0.5},
+        context,
+    )
+
+    assert runtime.reason_code == DAILY_LOSS_LIMIT_REASON_CODE
     assert research.reason_code == runtime.reason_code
 
 

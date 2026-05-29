@@ -84,6 +84,75 @@ class RiskGateContext:
 
 
 @dataclass(frozen=True)
+class PortfolioRiskSnapshot:
+    current_equity: float
+    baseline_equity: float
+    loss_today: float
+    current_cash: float
+    current_asset_qty: float
+    position_entry_price: float | None
+    max_daily_loss_krw: float = 0.0
+    max_position_loss_pct: float = 0.0
+    broker_local_mismatch: bool = False
+    recovery_risk_mismatch_reason: str | None = None
+
+    def pure_risk_input(self, *, evaluation_ts_ms: int, mark_price: float) -> PureRiskInput:
+        return PureRiskInput(
+            evaluation_ts_ms=int(evaluation_ts_ms),
+            current_equity=float(self.current_equity),
+            baseline_equity=float(self.baseline_equity),
+            loss_today=float(self.loss_today),
+            max_daily_loss_krw=float(self.max_daily_loss_krw),
+            mark_price=float(mark_price),
+            current_cash_krw=float(self.current_cash),
+            current_asset_qty=float(self.current_asset_qty),
+            position_entry_price=self.position_entry_price,
+            max_position_loss_pct=float(self.max_position_loss_pct),
+            broker_local_mismatch=bool(self.broker_local_mismatch),
+            recovery_risk_mismatch_reason=self.recovery_risk_mismatch_reason,
+        )
+
+
+@dataclass(frozen=True)
+class RiskContextBuilder:
+    """Build deterministic research risk inputs using the runtime reason taxonomy."""
+
+    def build(
+        self,
+        *,
+        strategy_plugin: Any,
+        event: Any,
+        active_exit_policy: dict[str, object],
+        parameter_values: dict[str, object],
+        fee_rate: float,
+        strategy_envelope: Any,
+        portfolio_risk_snapshot: PortfolioRiskSnapshot,
+        evaluation_ts_ms: int,
+        mark_price: float,
+    ) -> RiskGateContext:
+        return RiskGateContext(
+            strategy_plugin=strategy_plugin,
+            event=event,
+            active_exit_policy=active_exit_policy,
+            parameter_values=parameter_values,
+            fee_rate=float(fee_rate),
+            strategy_envelope=strategy_envelope,
+            pure_risk_input=portfolio_risk_snapshot.pure_risk_input(
+                evaluation_ts_ms=int(evaluation_ts_ms),
+                mark_price=float(mark_price),
+            ),
+            current_equity=float(portfolio_risk_snapshot.current_equity),
+            baseline_equity=float(portfolio_risk_snapshot.baseline_equity),
+            loss_today=float(portfolio_risk_snapshot.loss_today),
+            max_daily_loss_krw=float(portfolio_risk_snapshot.max_daily_loss_krw),
+            current_cash=float(portfolio_risk_snapshot.current_cash),
+            max_position_loss_pct=float(portfolio_risk_snapshot.max_position_loss_pct),
+            broker_local_mismatch=bool(portfolio_risk_snapshot.broker_local_mismatch),
+            recovery_risk_mismatch_reason=portfolio_risk_snapshot.recovery_risk_mismatch_reason,
+        )
+
+
+@dataclass(frozen=True)
 class DefaultRiskGate:
     """Exit-policy and research risk admission boundary."""
 
@@ -299,4 +368,11 @@ def _float_or_none(value: object) -> float | None:
     return parsed
 
 
-__all__ = ["DefaultRiskGate", "RiskGateContext", "RiskMarketSnapshot", "RiskPortfolioSnapshot"]
+__all__ = [
+    "DefaultRiskGate",
+    "PortfolioRiskSnapshot",
+    "RiskContextBuilder",
+    "RiskGateContext",
+    "RiskMarketSnapshot",
+    "RiskPortfolioSnapshot",
+]

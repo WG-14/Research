@@ -53,6 +53,23 @@ class StageTraceRecorder:
             )
         )
 
+    def record_execution_planning(
+        self,
+        *,
+        input_hash: str,
+        execution_plan_hash: str,
+        reason_code: str,
+    ) -> StageTrace:
+        return self.record(
+            StageTrace(
+                stage_id="execution_planning",
+                input_hash=input_hash,
+                output_hash=execution_plan_hash,
+                reason_code=reason_code,
+                payload={"execution_plan_hash": execution_plan_hash},
+            )
+        )
+
     def record_execution(
         self,
         *,

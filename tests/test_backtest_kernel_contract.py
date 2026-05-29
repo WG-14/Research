@@ -119,11 +119,12 @@ def test_stage_trace_records_strategy_risk_execution_fill_ledger_equity_hashes()
 
     traces = result.resource_usage["stage_trace"]
     by_stage = {trace["stage_id"]: trace for trace in traces}
-    assert {"strategy", "risk", "execution", "ledger", "equity"} <= set(by_stage)
+    assert {"strategy", "risk", "execution_planning", "execution", "ledger", "equity"} <= set(by_stage)
     assert by_stage["strategy"]["payload"]["replay_tick_hash"].startswith("sha256:")
     assert by_stage["strategy"]["payload"]["position_snapshot_hash"].startswith("sha256:")
     assert by_stage["strategy"]["payload"]["strategy_decision_hash"].startswith("sha256:")
     assert by_stage["risk"]["payload"]["risk_gate_hash"].startswith("sha256:")
+    assert by_stage["execution_planning"]["payload"]["execution_plan_hash"].startswith("sha256:")
     assert by_stage["execution"]["payload"]["execution_plan_hash"].startswith("sha256:")
     assert by_stage["execution"]["payload"]["fill_hash"].startswith("sha256:")
     assert by_stage["ledger"]["payload"]["ledger_hash"].startswith("sha256:")
@@ -903,6 +904,7 @@ def test_default_backtest_pipeline_invokes_injected_stage_interfaces_in_order() 
             FakeStage("PortfolioLedger"),
             FakeStage("StrategyEvaluator"),
             FakeStage("RiskGate"),
+            FakeStage("ExecutionPlanner"),
             FakeStage("ExecutionSimulator"),
             FakeStage("MetricsCollector"),
             FakeStage("ExperimentRecorder", expected),
@@ -924,6 +926,7 @@ def test_default_backtest_pipeline_invokes_injected_stage_interfaces_in_order() 
         "PortfolioLedger",
         "StrategyEvaluator",
         "RiskGate",
+        "ExecutionPlanner",
         "ExecutionSimulator",
         "MetricsCollector",
         "ExperimentRecorder",
@@ -938,10 +941,71 @@ def test_default_backtest_pipeline_constructs_concrete_default_stages() -> None:
         "DefaultPortfolioLedgerStage",
         "DefaultStrategyEvaluator",
         "DefaultRiskGate",
+        "DefaultExecutionPlanner",
         "DefaultExecutionSimulator",
         "DefaultMetricsCollector",
         "DefaultExperimentRecorder",
     ]
+
+
+def test_default_backtest_pipeline_uses_injected_execution_planner_stage() -> None:
+    calls: list[str] = []
+
+    class SpyPlanner:
+        def __init__(self) -> None:
+            self.delegate = backtest_pipeline.DefaultExecutionPlanner()
+
+        def run(self, state):  # type: ignore[no-untyped-def]
+            return state
+
+        def plan(self, request):  # type: ignore[no-untyped-def]
+            calls.append(str(request.action))
+            return self.delegate.plan(request)
+
+    dataset = DatasetSnapshot(
+        snapshot_id="kernel_injected_execution_planner",
+        source="unit",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="validation",
+        date_range=DateRange("2026-01-01", "2026-01-02"),
+        candles=tuple(
+            Candle(index * 60_000, 100.0 + index, 100.0 + index, 100.0 + index, 100.0 + index, 1.0)
+            for index in range(4)
+        ),
+    )
+    event = ResearchDecisionEvent(
+        candle_ts=dataset.candles[1].ts,
+        decision_ts=dataset.candles[1].ts + 60_000,
+        strategy_name="buy_and_hold_baseline",
+        strategy_version="buy_and_hold_baseline.research_contract.v1",
+        raw_signal="BUY",
+        final_signal="BUY",
+        reason="kernel_injected_execution_planner_buy",
+        feature_snapshot={"candle_index": 1, "close": dataset.candles[1].close},
+        strategy_diagnostics={"schema_version": 1, "emitted_buy_intent": True},
+        entry_signal="BUY",
+        order_intent={"side": "BUY"},
+    )
+    pipeline = backtest_pipeline.DefaultBacktestPipeline(
+        stages=replace(backtest_pipeline.default_backtest_stage_set(), execution_planner=SpyPlanner())
+    )
+
+    result = pipeline.run(
+        dataset=dataset,
+        strategy_name="buy_and_hold_baseline",
+        parameter_values={
+            "BUY_HOLD_BUY_INDEX": 1,
+            "BUY_HOLD_DECISION_REASON": "kernel_injected_execution_planner_buy",
+        },
+        fee_rate=0.001,
+        slippage_bps=5.0,
+        decision_events=(event,),
+        context=BacktestRunContext(report_detail="full"),
+    )
+
+    assert calls == ["BUY"]
+    assert result.trades
 
 
 def test_default_backtest_pipeline_does_not_invoke_legacy_giant_loop(monkeypatch) -> None:

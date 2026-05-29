@@ -74,6 +74,7 @@ def test_default_backtest_authority_calls_live_inside_stage_classes() -> None:
     strategy_source = _source("src/bithumb_bot/research/strategy_evaluator_stage.py")
     risk_source = _source("src/bithumb_bot/research/risk_gate_stage.py")
     execution_source = _source("src/bithumb_bot/research/execution_simulator_stage.py")
+    planner_source = _source("src/bithumb_bot/research/execution_planner_stage.py")
     planning_source = _source("src/bithumb_bot/research/execution_planning.py")
     loop_source = _source("src/bithumb_bot/research/backtest_loop.py")
 
@@ -90,8 +91,12 @@ def test_default_backtest_authority_calls_live_inside_stage_classes() -> None:
     assert "merge_exit_rules(" not in pipeline_source
     assert "plugin.research_policy_decision_builder" not in pipeline_source
     assert "from .execution_simulator_stage import DefaultExecutionSimulator" in pipeline_source
+    assert "from .execution_planner_stage import DefaultExecutionPlanner" in pipeline_source
     assert "SignalExecutionRequest(" not in pipeline_source
     assert "class DefaultExecutionSimulator" not in pipeline_source
+    assert "class DefaultExecutionPlanner" not in pipeline_source
+    assert "class DefaultExecutionPlanner" in planner_source
+    assert "_default_research_execution_plan_bundle" in planner_source
     assert "class DefaultExecutionSimulator" in execution_source
     assert "SignalExecutionRequest(" not in execution_source
     assert "ResearchVirtualExecutionService(" not in execution_source
@@ -132,6 +137,10 @@ def test_backtest_stage_protocols_match_default_stage_contracts() -> None:
         "portfolio_snapshot",
         "risk_context",
     ]
+    assert list(inspect.signature(backtest_stages.ExecutionPlanner.plan).parameters) == [
+        "self",
+        "request",
+    ]
     assert list(inspect.signature(backtest_stages.ExecutionSimulatorStage.execute).parameters) == [
         "self",
         "request",
@@ -152,7 +161,6 @@ def test_backtest_event_processor_is_thin_typed_stage_coordinator() -> None:
     for forbidden in (
         "strategy_evaluator.evaluate(",
         "risk_gate.evaluate(",
-        "execution_simulator.execute(",
         "apply_execution_outcome(",
         "_build_decision_observability_payload(",
         "record_ledger_and_equity(",
@@ -228,6 +236,7 @@ def test_backtest_stage_runner_observability_is_extracted_to_named_components() 
 def test_execution_planning_helpers_are_not_canonical_in_backtest_loop() -> None:
     loop_source = _source("src/bithumb_bot/research/backtest_loop.py")
     planning_source = _source("src/bithumb_bot/research/execution_planning.py")
+    planner_source = _source("src/bithumb_bot/research/execution_planner_stage.py")
 
     assert "class ResearchExecutionPlanBundle" not in loop_source
     assert "def _research_execution_plan_bundle(" not in loop_source
@@ -238,6 +247,8 @@ def test_execution_planning_helpers_are_not_canonical_in_backtest_loop() -> None
     assert "class ResearchExecutionPlanBundle" in planning_source
     assert "def _research_execution_plan_bundle(" in planning_source
     assert "def _execution_plan_evidence(" in planning_source
+    assert "class DefaultExecutionPlanner" in planner_source
+    assert "ExecutionPlanningRequest" in planner_source
 
 
 def test_production_strategy_decisions_go_through_canonical_service() -> None:
