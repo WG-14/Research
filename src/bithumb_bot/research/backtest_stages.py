@@ -41,6 +41,53 @@ class RiskGateDecision:
 
 
 @dataclass(frozen=True)
+class StrategyStageResult:
+    tick: ReplayTick
+    position_snapshot: PositionSnapshot
+    envelope: StrategyEvaluationEnvelope
+    replay_tick_hash: str
+    position_snapshot_hash: str
+    strategy_decision_hash: str
+
+
+@dataclass(frozen=True)
+class RiskStageResult:
+    strategy: StrategyStageResult
+    decision: RiskGateDecision
+    risk_gate_hash: str
+    final_signal: str
+
+
+@dataclass(frozen=True)
+class ExecutionStageResult:
+    risk: RiskStageResult
+    outcome: Any | None
+    evidence: dict[str, object]
+    execution_plan_hash: str
+    fill_hash: str
+    mark_cash: float
+    mark_qty: float
+    decision_payload_qty: float
+    decision_payload_sellable_qty: float
+
+
+@dataclass(frozen=True)
+class LedgerStageResult:
+    execution: ExecutionStageResult
+    mark_boundary_ts: int
+    mark_cash: float
+    mark_qty: float
+    retained_equity: bool
+
+
+@dataclass(frozen=True)
+class ObservabilityStageResult:
+    ledger: LedgerStageResult
+    decision_payload: dict[str, object]
+    retained_decision: bool
+
+
+@dataclass(frozen=True)
 class StageTrace:
     stage_id: str
     input_hash: str
@@ -61,15 +108,12 @@ class StageTrace:
 
 
 class MarketReplayClock(Protocol):
-    def ticks(self) -> tuple[ReplayTick, ...]:
+    def run(self, state: Any) -> Any:
         ...
 
 
 class PortfolioLedgerStage(Protocol):
-    def apply_pending_fills(self, boundary_ts: int) -> None:
-        ...
-
-    def snapshot_for_policy(self, candle_ts: int, market_price: float) -> PositionSnapshot:
+    def run(self, state: Any) -> Any:
         ...
 
 
@@ -101,11 +145,17 @@ class ExecutionSimulatorStage(Protocol):
 
 
 class MetricsCollector(Protocol):
+    def run(self, state: Any) -> Any:
+        ...
+
     def record(self, stage_id: str, payload: dict[str, object]) -> None:
         ...
 
 
 class ExperimentRecorder(Protocol):
+    def run(self, state: Any) -> Any:
+        ...
+
     def record_stage(
         self,
         *,

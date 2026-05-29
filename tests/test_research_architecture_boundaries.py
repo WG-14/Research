@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import ast
+import inspect
 from pathlib import Path
 
 import pytest
 
 from bithumb_bot.canonical_decision import canonical_payload_hash
+from bithumb_bot.research import backtest_stages
+from bithumb_bot.research.backtest_stage_runner import BacktestEventProcessor
 from bithumb_bot.research.backtest_pipeline import DefaultStrategyEvaluator
+from bithumb_bot.research.backtest_kernel import BacktestKernel
 from bithumb_bot.research.backtest_stages import ReplayTick
 from bithumb_bot.research.backtest_support import BacktestRunContext
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
@@ -60,6 +64,10 @@ def test_backtest_kernel_is_orchestration_facade_not_transaction_script() -> Non
     assert "BacktestKernel().run(" in source
 
 
+def test_backtest_kernel_default_pipeline_is_not_shared_between_instances() -> None:
+    assert BacktestKernel().pipeline is not BacktestKernel().pipeline
+
+
 def test_default_backtest_authority_calls_live_inside_stage_classes() -> None:
     pipeline_source = _source("src/bithumb_bot/research/backtest_pipeline.py")
     runner_source = _source("src/bithumb_bot/research/backtest_stage_runner.py")
@@ -102,6 +110,94 @@ def test_default_backtest_authority_calls_live_inside_stage_classes() -> None:
     assert "research_policy_decision_builder(" not in loop_source
     assert "support.apply_pending_fills(" not in loop_source
     assert "SignalExecutionRequest(" not in loop_source
+
+
+def test_backtest_stage_protocols_match_default_stage_contracts() -> None:
+    stages_source = _source("src/bithumb_bot/research/backtest_stages.py")
+
+    assert "def ticks(" not in stages_source
+    assert "def run(self, state: Any) -> Any:" in inspect.getsource(backtest_stages.MarketReplayClock)
+    assert "def run(self, state: Any) -> Any:" in inspect.getsource(backtest_stages.PortfolioLedgerStage)
+    assert list(inspect.signature(backtest_stages.StrategyEvaluator.evaluate).parameters) == [
+        "self",
+        "tick",
+        "position_snapshot",
+        "strategy_context",
+    ]
+    assert list(inspect.signature(backtest_stages.RiskGate.evaluate).parameters) == [
+        "self",
+        "strategy_decision",
+        "position_snapshot",
+        "market_snapshot",
+        "portfolio_snapshot",
+        "risk_context",
+    ]
+    assert list(inspect.signature(backtest_stages.ExecutionSimulatorStage.execute).parameters) == [
+        "self",
+        "request",
+    ]
+    assert "def run(self, state: Any) -> Any:" in inspect.getsource(backtest_stages.MetricsCollector)
+    assert "def run(self, state: Any) -> Any:" in inspect.getsource(backtest_stages.ExperimentRecorder)
+
+
+def test_backtest_event_processor_is_thin_typed_stage_coordinator() -> None:
+    source = inspect.getsource(BacktestEventProcessor.process_tick)
+
+    assert "_prepare_tick(tick)" in source
+    assert "_evaluate_strategy(prepared)" in source
+    assert "_evaluate_risk(prepared, strategy)" in source
+    assert "_execute(prepared, risk)" in source
+    assert "_mark_ledger(prepared, execution)" in source
+    assert "_record_observability(prepared, ledger, event_number)" in source
+    for forbidden in (
+        "strategy_evaluator.evaluate(",
+        "risk_gate.evaluate(",
+        "execution_simulator.execute(",
+        "apply_execution_outcome(",
+        "_build_decision_observability_payload(",
+        "record_ledger_and_equity(",
+    ):
+        assert forbidden not in source
+
+
+def test_per_tick_stage_result_dtos_declare_authority_flow() -> None:
+    dto_names = (
+        "ReplayTick",
+        "StrategyStageResult",
+        "RiskStageResult",
+        "ExecutionStageResult",
+        "LedgerStageResult",
+        "ObservabilityStageResult",
+    )
+
+    for name in dto_names:
+        assert hasattr(backtest_stages, name)
+
+    assert list(backtest_stages.StrategyStageResult.__dataclass_fields__) == [
+        "tick",
+        "position_snapshot",
+        "envelope",
+        "replay_tick_hash",
+        "position_snapshot_hash",
+        "strategy_decision_hash",
+    ]
+    assert list(backtest_stages.RiskStageResult.__dataclass_fields__) == [
+        "strategy",
+        "decision",
+        "risk_gate_hash",
+        "final_signal",
+    ]
+    assert list(backtest_stages.ExecutionStageResult.__dataclass_fields__) == [
+        "risk",
+        "outcome",
+        "evidence",
+        "execution_plan_hash",
+        "fill_hash",
+        "mark_cash",
+        "mark_qty",
+        "decision_payload_qty",
+        "decision_payload_sellable_qty",
+    ]
 
 
 def test_backtest_stage_runner_observability_is_extracted_to_named_components() -> None:

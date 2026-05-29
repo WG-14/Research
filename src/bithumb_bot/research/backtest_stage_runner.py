@@ -8,7 +8,14 @@ from bithumb_bot.canonical_decision import canonical_payload_hash
 
 from .audit_trace_recorder import AuditTraceRecorder
 from .backtest_result_assembler import BacktestResultAssembler
-from .backtest_stages import ReplayTick
+from .backtest_stages import (
+    ExecutionStageResult,
+    LedgerStageResult,
+    ObservabilityStageResult,
+    ReplayTick,
+    RiskStageResult,
+    StrategyStageResult,
+)
 from .decision_payload import DecisionPayloadBuilder
 from .execution_simulator_stage import ExecutionSimulationRequest, blocked_execution_evidence
 from .execution_model import FixedBpsExecutionModel
@@ -27,6 +34,19 @@ class BacktestEventProcessResult:
     mark_qty: float
     retained_equity: bool
     decision_payload: dict[str, object]
+
+
+@dataclass(frozen=True)
+class TickPreparation:
+    tick: ReplayTick
+    mark_boundary_ts: int
+    decision_boundary_ts: int
+    mark_cash: float
+    mark_qty: float
+    sellable_qty: float
+    portfolio_snapshot: dict[str, object]
+    regime_snapshot: dict[str, object]
+    position_snapshot: Any
 
 
 @dataclass
@@ -64,6 +84,21 @@ class BacktestEventProcessor:
     regime_coverage_accumulator: Any
 
     def process_tick(self, *, tick: ReplayTick, event_number: int) -> BacktestEventProcessResult:
+        prepared = self._prepare_tick(tick)
+        strategy = self._evaluate_strategy(prepared)
+        risk = self._evaluate_risk(prepared, strategy)
+        execution = self._execute(prepared, risk)
+        ledger = self._mark_ledger(prepared, execution)
+        observability = self._record_observability(prepared, ledger, event_number)
+        return BacktestEventProcessResult(
+            mark_boundary_ts=ledger.mark_boundary_ts,
+            mark_cash=ledger.mark_cash,
+            mark_qty=ledger.mark_qty,
+            retained_equity=ledger.retained_equity,
+            decision_payload=observability.decision_payload,
+        )
+
+    def _prepare_tick(self, tick: ReplayTick) -> TickPreparation:
         event = tick.event
         candle = tick.candle
         mark_boundary_ts = candle_close_ts(candle, interval=self.dataset.interval)
@@ -90,6 +125,21 @@ class BacktestEventProcessor:
             candle_ts=int(candle.ts),
             market_price=float(candle.close),
         )
+        return TickPreparation(
+            tick=tick,
+            mark_boundary_ts=mark_boundary_ts,
+            decision_boundary_ts=decision_boundary_ts,
+            mark_cash=mark_cash,
+            mark_qty=mark_qty,
+            sellable_qty=sellable_qty,
+            portfolio_snapshot={"qty": self.ledger.qty, **self.ledger.portfolio_snapshot(tick_state)},
+            regime_snapshot=regime_snapshot,
+            position_snapshot=policy_position,
+        )
+
+    def _evaluate_strategy(self, prepared: TickPreparation) -> StrategyStageResult:
+        tick = prepared.tick
+        event = tick.event
         replay_tick_hash = canonical_payload_hash(
             {
                 "candle_ts": int(tick.candle_ts),
@@ -100,11 +150,13 @@ class BacktestEventProcessor:
             }
         )
         position_snapshot_hash = canonical_payload_hash(
-            policy_position.as_dict() if hasattr(policy_position, "as_dict") else vars(policy_position)
+            prepared.position_snapshot.as_dict()
+            if hasattr(prepared.position_snapshot, "as_dict")
+            else vars(prepared.position_snapshot)
         )
         strategy_envelope = self.strategy_evaluator.evaluate(
             tick,
-            policy_position,
+            prepared.position_snapshot,
             {
                 "dataset": self.dataset,
                 "strategy_name": self.strategy_name,
@@ -136,36 +188,66 @@ class BacktestEventProcessor:
             unsupported_reason=strategy_envelope.unsupported_reason,
             recommended_next_action=strategy_envelope.recommended_next_action,
         )
-        policy_decision = strategy_envelope.decision
+        return StrategyStageResult(
+            tick=tick,
+            position_snapshot=prepared.position_snapshot,
+            envelope=strategy_envelope,
+            replay_tick_hash=replay_tick_hash,
+            position_snapshot_hash=position_snapshot_hash,
+            strategy_decision_hash=strategy_decision_hash,
+        )
+
+    def _evaluate_risk(
+        self,
+        prepared: TickPreparation,
+        strategy: StrategyStageResult,
+    ) -> RiskStageResult:
+        tick = prepared.tick
+        candle = tick.candle
+        event = tick.event
+        policy_decision = strategy.envelope.decision
         risk_decision = self.risk_gate.evaluate(
             policy_decision,
-            policy_position,
+            strategy.position_snapshot,
             {
                 "candle_ts": int(candle.ts),
                 "close": float(candle.close),
             },
-            {
-                "qty": self.ledger.qty,
-                **self.ledger.portfolio_snapshot(tick_state),
-            },
+            prepared.portfolio_snapshot,
             {
                 "strategy_plugin": self.strategy_plugin,
                 "event": event,
                 "active_exit_policy": self.active_exit_policy,
                 "parameter_values": self.parameter_values,
                 "fee_rate": self.fee_rate,
-                "strategy_envelope": strategy_envelope,
+                "strategy_envelope": strategy.envelope,
             },
         )
         risk_gate_hash = risk_decision.evidence_hash
         self.trace_recorder.record_risk(
-            input_hash=strategy_decision_hash,
+            input_hash=strategy.strategy_decision_hash,
             risk_gate_hash=risk_gate_hash,
             reason_code=risk_decision.reason_code,
         )
-        action = risk_decision.final_signal
+        return RiskStageResult(
+            strategy=strategy,
+            decision=risk_decision,
+            risk_gate_hash=risk_gate_hash,
+            final_signal=risk_decision.final_signal,
+        )
+
+    def _execute(self, prepared: TickPreparation, risk: RiskStageResult) -> ExecutionStageResult:
+        tick = prepared.tick
+        event = tick.event
+        candle = tick.candle
+        action = risk.final_signal
+        risk_decision = risk.decision
+        strategy_envelope = risk.strategy.envelope
+        policy_decision = strategy_envelope.decision
+        mark_cash = prepared.mark_cash
+        mark_qty = prepared.mark_qty
         decision_payload_qty = float(self.ledger.qty)
-        decision_payload_sellable_qty = float(sellable_qty)
+        decision_payload_sellable_qty = float(prepared.sellable_qty)
         if action in {"BUY", "SELL"}:
             outcome = self.execution_simulator.execute(
                 ExecutionSimulationRequest(
@@ -180,9 +262,11 @@ class BacktestEventProcessor:
                     strategy_name=self.strategy_plugin.name,
                     action=action,
                     decision_reason=risk_decision.reason_code,
-                    regime_snapshot=regime_snapshot,
-                    decision_hash=str(strategy_envelope.replay_fingerprint_hash or strategy_decision_hash),
-                    sellable_qty=sellable_qty,
+                    regime_snapshot=prepared.regime_snapshot,
+                    decision_hash=str(
+                        strategy_envelope.replay_fingerprint_hash or risk.strategy.strategy_decision_hash
+                    ),
+                    sellable_qty=prepared.sellable_qty,
                     buy_fraction=self.buy_fraction,
                     promotion_grade_policy_required=bool(
                         strategy_envelope.provenance.get("promotion_grade_policy_required")
@@ -200,9 +284,9 @@ class BacktestEventProcessor:
             self.warnings.extend(outcome.warnings)
             application = self.ledger.apply_execution_outcome(
                 outcome,
-                mark_boundary_ts=mark_boundary_ts,
-                mark_cash=mark_cash,
-                mark_qty=mark_qty,
+                mark_boundary_ts=prepared.mark_boundary_ts,
+                mark_cash=prepared.mark_cash,
+                mark_qty=prepared.mark_qty,
             )
             mark_cash = application.mark_cash
             mark_qty = application.mark_qty
@@ -215,40 +299,81 @@ class BacktestEventProcessor:
                     input_hash=canonical_payload_hash(self.ledger.trade_ledger[-1]),
                     trade=self.ledger.trade_ledger[-1],
                 )
-                self.ledger.apply_pending_fills(decision_boundary_ts)
+                self.ledger.apply_pending_fills(prepared.decision_boundary_ts)
             execution_plan_hash = canonical_payload_hash(execution_evidence)
             fill_hash = canonical_payload_hash(
                 outcome.fill.as_dict() if outcome.fill is not None and hasattr(outcome.fill, "as_dict") else {}
             )
         else:
+            outcome = None
             execution_evidence = blocked_execution_evidence(risk_decision.reason_code)
             execution_plan_hash = canonical_payload_hash(execution_evidence)
             fill_hash = canonical_payload_hash({})
         self.trace_recorder.record_execution(
-            input_hash=risk_gate_hash,
+            input_hash=risk.risk_gate_hash,
             execution_plan_hash=execution_plan_hash,
             fill_hash=fill_hash,
             reason_code=str(execution_evidence.get("execution_plan_reason_code") or risk_decision.reason_code),
         )
-
-        retain_equity = self.accumulator.retain_equity_point()
-        self.ledger.mark_tick_equity(
-            ts=mark_boundary_ts,
-            mark_price=float(candle.close),
-            cash=mark_cash,
-            qty=mark_qty,
-        )
-        self.trace_recorder.record_ledger_and_equity(
+        return ExecutionStageResult(
+            risk=risk,
+            outcome=outcome,
+            evidence=execution_evidence,
             execution_plan_hash=execution_plan_hash,
-            ledger_snapshot=self.ledger.portfolio_snapshot(),
-            mark_boundary_ts=mark_boundary_ts,
+            fill_hash=fill_hash,
             mark_cash=mark_cash,
             mark_qty=mark_qty,
+            decision_payload_qty=decision_payload_qty,
+            decision_payload_sellable_qty=decision_payload_sellable_qty,
+        )
+
+    def _mark_ledger(
+        self,
+        prepared: TickPreparation,
+        execution: ExecutionStageResult,
+    ) -> LedgerStageResult:
+        candle = prepared.tick.candle
+        retain_equity = self.accumulator.retain_equity_point()
+        self.ledger.mark_tick_equity(
+            ts=prepared.mark_boundary_ts,
+            mark_price=float(candle.close),
+            cash=execution.mark_cash,
+            qty=execution.mark_qty,
+        )
+        self.trace_recorder.record_ledger_and_equity(
+            execution_plan_hash=execution.execution_plan_hash,
+            ledger_snapshot=self.ledger.portfolio_snapshot(),
+            mark_boundary_ts=prepared.mark_boundary_ts,
+            mark_cash=execution.mark_cash,
+            mark_qty=execution.mark_qty,
             mark_price=float(candle.close),
         )
         if not retain_equity and self.ledger.equity_curve:
             self.ledger.equity_curve.pop()
-        self.accumulator.update_equity(retained=retain_equity, ts=mark_boundary_ts, asset_qty=mark_qty)
+        self.accumulator.update_equity(
+            retained=retain_equity,
+            ts=prepared.mark_boundary_ts,
+            asset_qty=execution.mark_qty,
+        )
+        return LedgerStageResult(
+            execution=execution,
+            mark_boundary_ts=prepared.mark_boundary_ts,
+            mark_cash=execution.mark_cash,
+            mark_qty=execution.mark_qty,
+            retained_equity=retain_equity,
+        )
+
+    def _record_observability(
+        self,
+        prepared: TickPreparation,
+        ledger: LedgerStageResult,
+        event_number: int,
+    ) -> ObservabilityStageResult:
+        event = prepared.tick.event
+        strategy = ledger.execution.risk.strategy
+        strategy_envelope = strategy.envelope
+        risk_decision = ledger.execution.risk.decision
+        policy_decision = strategy_envelope.decision
         decision_payload = _build_decision_observability_payload(
             payload_builder=self.payload_builder,
             trace_recorder=self.trace_recorder,
@@ -265,16 +390,16 @@ class BacktestEventProcessor:
             timing_policy=self.timing_policy,
             portfolio_policy=self.portfolio_policy,
             event=event,
-            decision_boundary_ts=decision_boundary_ts,
+            decision_boundary_ts=prepared.decision_boundary_ts,
             strategy_envelope=strategy_envelope,
             risk_decision=risk_decision,
-            policy_position=policy_position,
+            policy_position=strategy.position_snapshot,
             policy_decision=policy_decision,
-            regime_snapshot=regime_snapshot,
-            qty=decision_payload_qty,
-            sellable_qty=decision_payload_sellable_qty,
-            execution_evidence=execution_evidence,
-            input_hash=execution_plan_hash,
+            regime_snapshot=prepared.regime_snapshot,
+            qty=ledger.execution.decision_payload_qty,
+            sellable_qty=ledger.execution.decision_payload_sellable_qty,
+            execution_evidence=ledger.execution.evidence,
+            input_hash=ledger.execution.execution_plan_hash,
         )
         retain_decision = self.accumulator.retain_decision()
         if retain_decision:
@@ -296,15 +421,15 @@ class BacktestEventProcessor:
             input_hash=canonical_payload_hash(
                 {
                     "stage": "tick_equity",
-                    "ts": mark_boundary_ts,
-                    "cash": mark_cash,
-                    "asset_qty": mark_qty,
+                    "ts": ledger.mark_boundary_ts,
+                    "cash": ledger.mark_cash,
+                    "asset_qty": ledger.mark_qty,
                 }
             ),
-            ts=mark_boundary_ts,
-            equity=mark_cash + mark_qty * float(candle.close),
-            cash=mark_cash,
-            asset_qty=mark_qty,
+            ts=ledger.mark_boundary_ts,
+            equity=ledger.mark_cash + ledger.mark_qty * float(prepared.tick.candle.close),
+            cash=ledger.mark_cash,
+            asset_qty=ledger.mark_qty,
         )
         _flush_stage_trace_observability(
             self.trace_recorder,
@@ -314,12 +439,10 @@ class BacktestEventProcessor:
             experiment_recorder=self.experiment_recorder,
             event_number=event_number,
         )
-        return BacktestEventProcessResult(
-            mark_boundary_ts=mark_boundary_ts,
-            mark_cash=mark_cash,
-            mark_qty=mark_qty,
-            retained_equity=retain_equity,
+        return ObservabilityStageResult(
+            ledger=ledger,
             decision_payload=decision_payload,
+            retained_decision=retain_decision,
         )
 
 

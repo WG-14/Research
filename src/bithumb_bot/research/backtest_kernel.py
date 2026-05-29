@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .backtest_pipeline import DefaultBacktestPipeline
@@ -15,7 +15,7 @@ from .experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
 class BacktestKernel:
     """Stable public facade for decision-event backtests."""
 
-    pipeline: DefaultBacktestPipeline = DefaultBacktestPipeline()
+    pipeline: DefaultBacktestPipeline = field(default_factory=DefaultBacktestPipeline)
 
     def run(
         self,
