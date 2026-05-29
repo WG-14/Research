@@ -11,7 +11,7 @@ from bithumb_bot.db_core import (
     load_target_position_state,
     upsert_target_position_state,
 )
-from bithumb_bot.engine import (
+from bithumb_bot.runtime_compat import (
     _load_previous_target_exposure_for_run_loop,
     _resolve_target_position_state_for_run_loop,
     _persist_target_position_state_for_run_loop,

@@ -49,7 +49,7 @@ from .db_core import (
     upsert_target_position_state,
 )
 from .utils_time import kst_str, parse_interval_sec
-from .engine import (
+from .runtime_compat import (
     build_resume_guidance,
     evaluate_restart_readiness,
     evaluate_resume_eligibility,

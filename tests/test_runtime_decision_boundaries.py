@@ -1210,13 +1210,6 @@ def test_recovery_controller_evaluate_is_pure_and_apply_mutates_separately() -> 
 def test_safety_controller_interprets_cancel_failure_as_fail_closed() -> None:
     messages: list[object] = []
 
-    class _Notifier:
-        def send_event(self, event: object) -> None:
-            messages.append(event)
-
-        def send_message(self, message: str) -> None:
-            messages.append(message)
-
     class _State:
         halt_operator_action_required = True
         unresolved_open_order_count = 0
@@ -1235,7 +1228,6 @@ def test_safety_controller_interprets_cancel_failure_as_fail_closed() -> None:
         latest_order_identifiers=lambda: (None, None),
         count_open_orders=lambda: 0,
         position_summary=lambda: "flat",
-        notification_sender=_Notifier(),
         cancel_open_orders_with_broker=lambda _broker: (_ for _ in ()).throw(RuntimeError("boom")),
         record_cancel_open_orders_result=lambda **_kwargs: messages.append(("record_cancel", _kwargs)),
         flatten_position=lambda **_kwargs: {"status": "skipped"},
@@ -1246,5 +1238,11 @@ def test_safety_controller_interprets_cancel_failure_as_fail_closed() -> None:
         live_dry_run=lambda: True,
     )
 
-    assert controller.attempt_open_order_cancellation(object(), trigger="unit") is False
+    events: list[object] = []
+    assert controller.attempt_open_order_cancellation(
+        object(),
+        trigger="unit",
+        notification_events=events,
+    ) is False
     assert any(item[0] == "record_cancel" for item in messages if isinstance(item, tuple))
+    assert any(isinstance(item, dict) and item.get("reason_code") == "CANCEL_FAILURE" for item in events)

@@ -50,6 +50,30 @@ def test_engine_is_explicit_entrypoint_or_facade() -> None:
     assert hasattr(engine, "run_loop")
 
 
+def test_engine_does_not_reexport_runtime_private_helpers() -> None:
+    exported = set(getattr(engine, "__all__", ()))
+    assert "_attempt_open_order_cancellation" not in exported
+    assert "_revalidate_cleanup_state_after_failure" not in exported
+    assert "maybe_clear_stale_initial_reconcile_halt" not in exported
+    assert all(not name.startswith("_") for name in exported)
+
+
+def test_engine_imports_only_runner_or_public_facade() -> None:
+    source = inspect.getsource(engine)
+    tree = ast.parse(source)
+    imports = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+    modules = {node.module for node in imports}
+    assert modules <= {"__future__", "config", "runtime.runner"}
+    for node in imports:
+        if node.module == "runtime.runner":
+            assert [alias.name for alias in node.names] == ["run_loop"]
+        if node.module == "config":
+            assert [alias.name for alias in node.names] == ["settings"]
+    assert "from .runtime.runner import (" not in source
+    assert "_attempt_open_order_cancellation" not in source
+    assert "_revalidate_cleanup_state_after_failure" not in source
+
+
 def test_runner_does_not_compose_operator_notifications() -> None:
     source = inspect.getsource(runner)
     assert "safety_event(" not in source
@@ -182,6 +206,35 @@ def test_recovery_controller_evaluate_phase_has_no_state_apply() -> None:
     assert "set_resume_gate" not in source
 
 
+def test_recovery_clearance_public_wrappers_are_side_effect_free() -> None:
+    forbidden = {
+        "refresh_open_order_health",
+        "disable_trading_until",
+        "enable_trading",
+        "set_resume_gate",
+        "evaluate_and_apply",
+        "apply_clearance",
+    }
+    for func in (
+        runner.evaluate_initial_reconcile_halt_clearance,
+        runner.evaluate_live_execution_broker_halt_clearance,
+        runner.evaluate_risk_state_mismatch_halt_clearance,
+    ):
+        source = inspect.getsource(func)
+        tree = ast.parse(source)
+        called = {
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        called.update(
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        )
+        assert forbidden.isdisjoint(called)
+
+
 def test_runtime_state_disable_trading_until_does_not_query_exposure_sources() -> None:
     source = inspect.getsource(runtime_state.disable_trading_until)
     assert "ensure_db(" not in source
@@ -302,7 +355,6 @@ def test_safety_controller_decision_creation_is_separate_from_notification_send(
         latest_order_identifiers=lambda: (None, None),
         count_open_orders=lambda: 0,
         position_summary=lambda: "flat",
-        notification_sender=NotificationAdapter(notifications),
         cancel_open_orders_with_broker=lambda _broker: {},
         record_cancel_open_orders_result=lambda **_kwargs: None,
         flatten_position=lambda **_kwargs: {},
@@ -319,8 +371,46 @@ def test_safety_controller_decision_creation_is_separate_from_notification_send(
     assert mutations == []
 
     controller.apply(decision)
-    assert notifications.events
+    assert notifications.events == []
     assert mutations == ["halt"]
+
+
+def test_safety_controller_apply_does_not_send_notifications() -> None:
+    source = inspect.getsource(SafetyController.apply)
+    assert "send_event" not in source
+    assert "send_message" not in source
+    assert "NotificationAdapter" not in source
+    assert "notification_sender" not in inspect.getsource(SafetyController)
+
+
+def test_operator_event_composer_owns_operator_action_fields() -> None:
+    source = inspect.getsource(SafetyController)
+    assert "operator_next_action" not in source
+    assert "operator_hint_command" not in source
+    assert "operator_compact_summary" not in source
+    assert "operator_recommended_commands" not in source
+
+    event = OperatorEventComposer("BTC_KRW").trading_halted_event(
+        reason_code="TEST",
+        reason="detail",
+        unresolved=True,
+        operator_action_required=True,
+        open_orders_present=True,
+        position_present=False,
+        recommended_commands=["uv run python bot.py recovery-report"],
+    )
+    assert event["event_type"] == "trading_halted"
+    assert event["operator_next_action"]
+    assert event["operator_hint_command"]
+    assert event["operator_compact_summary"]
+    assert event["operator_recommended_commands"]
+    assert event["event_hash"].startswith("sha256:")
+
+
+def test_runner_does_not_create_market_runtime_halt_reason_codes() -> None:
+    source = inspect.getsource(runner.run_loop)
+    assert "MARKET_RUNTIME_POLICY_INVALID" not in source
+    assert "MARKET_RUNTIME_CONTRACT_FAILED" not in source
 
 
 def test_operator_event_composer_has_no_runtime_state_side_effects() -> None:

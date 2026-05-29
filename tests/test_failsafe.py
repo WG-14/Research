@@ -13,7 +13,8 @@ from bithumb_bot.broker.base import BrokerBalance, BrokerOrder, BrokerRejectErro
 from bithumb_bot.broker.balance_source import _default_flat_start_safety_check
 from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_db
-from bithumb_bot.engine import get_health_status, run_loop
+from bithumb_bot.engine import run_loop
+from bithumb_bot.runtime_compat import get_health_status
 from bithumb_bot.execution_service import (
     ExecutionDecisionSummary,
     ExecutionSubmitPlan,
@@ -668,7 +669,7 @@ def test_run_loop_live_broker_error_halts_instead_of_crash(monkeypatch):
     )
 
     notifications: list[str] = []
-    monkeypatch.setattr("bithumb_bot.engine.notify", lambda msg: notifications.append(msg))
+    monkeypatch.setattr("bithumb_bot.notifier.notify", lambda msg: notifications.append(msg))
 
     run_loop()
 
@@ -751,7 +752,7 @@ def test_run_loop_reconcile_error_halts_instead_of_crash(monkeypatch):
     _prepare_run_loop(monkeypatch)
 
     notifications: list[str] = []
-    monkeypatch.setattr("bithumb_bot.engine.notify", lambda msg: notifications.append(msg))
+    monkeypatch.setattr("bithumb_bot.notifier.notify", lambda msg: notifications.append(msg))
 
     calls = {"n": 0}
 
@@ -2839,14 +2840,14 @@ def test_attempt_open_order_cancellation_failure_emits_reason_code(monkeypatch):
     )
 
     notifications: list[str] = []
-    monkeypatch.setattr("bithumb_bot.engine.notify", lambda msg: notifications.append(msg))
+    monkeypatch.setattr("bithumb_bot.notifier.notify", lambda msg: notifications.append(msg))
 
-    from bithumb_bot.engine import _attempt_open_order_cancellation
+    from bithumb_bot.runtime_compat import _attempt_open_order_cancellation
 
     ok = _attempt_open_order_cancellation(object(), trigger="kill-switch")
 
     assert ok is False
-    assert any("event=cancel_open_orders_failed" in n for n in notifications)
+    assert any("event=panic_cleanup" in n for n in notifications)
     assert any(
         "reason_code=CANCEL_FAILURE" in n and "cancel_detail_code=CANCEL_OPEN_ORDERS_ERROR" in n
         for n in notifications
@@ -2884,7 +2885,7 @@ class _CleanupRevalidateBroker:
 
 
 def test_cleanup_revalidation_recovers_safe_state_after_initial_uncertainty(monkeypatch):
-    from bithumb_bot.engine import _revalidate_cleanup_state_after_failure
+    from bithumb_bot.runtime_compat import _revalidate_cleanup_state_after_failure
 
     broker = _CleanupRevalidateBroker(open_orders_seq=[True, False], position_seq=[True, False])
 
@@ -2907,7 +2908,7 @@ def test_cleanup_revalidation_recovers_safe_state_after_initial_uncertainty(monk
 
 
 def test_cleanup_revalidation_ambiguous_state_remains_halted(monkeypatch):
-    from bithumb_bot.engine import _revalidate_cleanup_state_after_failure
+    from bithumb_bot.runtime_compat import _revalidate_cleanup_state_after_failure
 
     class _AmbiguousBroker:
         def get_open_orders(
@@ -2946,7 +2947,7 @@ def test_cleanup_revalidation_ambiguous_state_remains_halted(monkeypatch):
 
 
 def test_cleanup_revalidation_is_bounded_by_max_attempts(monkeypatch):
-    from bithumb_bot.engine import _revalidate_cleanup_state_after_failure
+    from bithumb_bot.runtime_compat import _revalidate_cleanup_state_after_failure
 
     broker = _CleanupRevalidateBroker(open_orders_seq=[True], position_seq=[True])
     conn = ensure_db()

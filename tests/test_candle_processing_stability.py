@@ -8,7 +8,8 @@ import pytest
 from bithumb_bot import runtime_state
 from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_db
-from bithumb_bot.engine import _close_guard_ms, _is_closed_candle, _select_latest_closed_candle, run_loop
+from bithumb_bot.engine import run_loop
+from bithumb_bot.runtime_compat import _close_guard_ms, _is_closed_candle, _select_latest_closed_candle
 from bithumb_bot.execution_service import ExecutionDecisionSummary, ExecutionSubmitPlan
 from bithumb_bot.run_loop_execution_planner import ExecutionPlanBundle
 from bithumb_bot.strategy_policy_contract import EntryExecutionIntent, PositionSnapshot, StrategyDecisionV2

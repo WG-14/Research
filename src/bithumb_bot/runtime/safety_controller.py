@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Mapping
+from typing import Callable, Mapping, MutableSequence
 
 from ..dust import build_dust_display_context
 from ..reason_codes import CANCEL_FAILURE, POSITION_LOSS_LIMIT, RISKY_ORDER_BLOCK
@@ -14,9 +14,6 @@ from ..risk import (
 from .lifecycle_artifacts import SafetyDecision, StateTransitionResult
 from .operator_event_composer import (
     OperatorEventComposer,
-    format_operator_next_action,
-    operator_compact_summary,
-    operator_hint_command,
     recommended_operator_commands,
 )
 
@@ -42,7 +39,10 @@ class RuntimeSafetyResult:
     safety_decision: SafetyDecision | None = None
     state_transition_hash: str | None = None
     notification_event_hashes: tuple[str, ...] = ()
+    notification_events: tuple[Mapping[str, object], ...] = ()
+    notification_messages: tuple[str, ...] = ()
     last_open_order_reconcile_at: float | None = None
+    last_market_runtime_check_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -54,7 +54,6 @@ class SafetyController:
     latest_order_identifiers: Callable[[], tuple[str | None, str | None]]
     count_open_orders: Callable[[], int]
     position_summary: Callable[[], str]
-    notification_sender: object
     cancel_open_orders_with_broker: Callable[[object], Mapping[str, object]]
     record_cancel_open_orders_result: Callable[..., None]
     flatten_position: Callable[..., Mapping[str, object]]
@@ -95,39 +94,21 @@ class SafetyController:
             reason=reason.detail,
             unresolved=unresolved,
             operator_action_required=operator_action_required,
+            force_resume_allowed=force_resume_allowed,
+            open_orders_present=bool(getattr(halt_state, "halt_open_orders_present", False)),
+            position_present=bool(getattr(halt_state, "halt_position_present", False)),
+            unresolved_order_count=int(getattr(halt_state, "unresolved_open_order_count", 0) or 0),
+            primary_blocker_code=primary_blocker_code,
+            blocker_summary=blocker_summary,
+            halt_policy_stage=getattr(halt_state, "halt_policy_stage", None),
+            block_new_orders=bool(getattr(halt_state, "halt_policy_block_new_orders", False)),
+            attempt_cancel_open_orders=bool(getattr(halt_state, "halt_policy_attempt_cancel_open_orders", False)),
+            auto_liquidate_positions=bool(getattr(halt_state, "halt_policy_auto_liquidate_positions", False)),
             latest_client_order_id=latest_client_order_id,
             latest_exchange_order_id=latest_exchange_order_id,
             open_order_count=open_order_count,
             position_summary=position_summary,
             recommended_commands=recommended_commands,
-            extra={
-                "unresolved_order_count": int(getattr(halt_state, "unresolved_open_order_count", 0) or 0),
-                "position_may_remain": int(bool(getattr(halt_state, "halt_position_present", False))),
-                "operator_next_action": format_operator_next_action(
-                    reason_code=reason.code,
-                    unresolved=unresolved,
-                    operator_action_required=operator_action_required,
-                    open_orders_present=bool(getattr(halt_state, "halt_open_orders_present", False)),
-                    position_present=bool(getattr(halt_state, "halt_position_present", False)),
-                ),
-                "operator_hint_command": operator_hint_command(reason.code, force_resume_allowed=False),
-                "primary_blocker_code": primary_blocker_code,
-                "blocker_summary": blocker_summary,
-                "force_resume_allowed": int(force_resume_allowed),
-                "halt_policy_stage": getattr(halt_state, "halt_policy_stage", None),
-                "block_new_orders": int(bool(getattr(halt_state, "halt_policy_block_new_orders", False))),
-                "attempt_cancel_open_orders": int(bool(getattr(halt_state, "halt_policy_attempt_cancel_open_orders", False))),
-                "auto_liquidate_positions": int(bool(getattr(halt_state, "halt_policy_auto_liquidate_positions", False))),
-                "halt_position_present": int(bool(getattr(halt_state, "halt_position_present", False))),
-                "halt_open_orders_present": int(bool(getattr(halt_state, "halt_open_orders_present", False))),
-                "operator_compact_summary": operator_compact_summary(
-                    halt_reason=reason.code,
-                    unresolved_order_count=int(getattr(halt_state, "unresolved_open_order_count", 0) or 0),
-                    open_order_count=open_order_count,
-                    position_summary=position_summary,
-                    recommended_commands=recommended_commands,
-                ),
-            },
         )
         transition = StateTransitionResult(
             status="pending",
@@ -163,8 +144,6 @@ class SafetyController:
             unresolved=decision.unresolved,
             attempt_flatten=decision.attempt_flatten,
         )
-        if decision.operator_event:
-            self.notification_sender.send_event(decision.operator_event)
         return StateTransitionResult(
             status="applied",
             reason_code=decision.reason_code,
@@ -195,6 +174,60 @@ class SafetyController:
             evidence=decision.evidence,
         )
 
+    def evaluate_market_runtime(
+        self,
+        *,
+        settings_obj: object,
+        now_epoch_sec: float,
+        last_market_runtime_check_at: float | None,
+        validate_market_runtime: Callable[[object], None],
+        validation_error_type: type[BaseException],
+    ) -> RuntimeSafetyResult:
+        check_interval = float(getattr(settings_obj, "MARKET_RUNTIME_REGISTRY_REFRESH_INTERVAL_SEC"))
+        if check_interval < 0:
+            decision = self.halt_trading(
+                HaltReason(
+                    "MARKET_RUNTIME_POLICY_INVALID",
+                    "MARKET_RUNTIME_REGISTRY_REFRESH_INTERVAL_SEC must be >= 0",
+                ),
+                unresolved=False,
+            )
+            return self._blocked_result(
+                "halt:market_runtime_policy_invalid",
+                decision,
+                last_open_order_reconcile_at=None,
+                notification_events=([decision.operator_event] if decision.operator_event else []),
+            )
+        should_check = getattr(settings_obj, "MODE", None) == "live" and check_interval > 0 and (
+            last_market_runtime_check_at is None
+            or (now_epoch_sec - last_market_runtime_check_at) >= check_interval
+        )
+        if not should_check:
+            return RuntimeSafetyResult(
+                blocked=False,
+                last_market_runtime_check_at=last_market_runtime_check_at,
+            )
+        try:
+            validate_market_runtime(settings_obj)
+        except validation_error_type as exc:
+            decision = self.halt_trading(
+                HaltReason(
+                    "MARKET_RUNTIME_CONTRACT_FAILED",
+                    f"market runtime contract failed: {exc}",
+                ),
+                unresolved=False,
+            )
+            return self._blocked_result(
+                "halt:market_runtime_contract_failed",
+                decision,
+                last_open_order_reconcile_at=None,
+                notification_events=([decision.operator_event] if decision.operator_event else []),
+            )
+        return RuntimeSafetyResult(
+            blocked=False,
+            last_market_runtime_check_at=now_epoch_sec,
+        )
+
     def evaluate_and_apply_live_runtime(
         self,
         *,
@@ -212,6 +245,8 @@ class SafetyController:
         if getattr(settings_obj, "MODE", None) != "live" or broker is None:
             return RuntimeSafetyResult(blocked=False, last_open_order_reconcile_at=last_open_order_reconcile_at)
 
+        notification_events: list[Mapping[str, object]] = []
+        notification_messages: list[str] = []
         if bool(getattr(settings_obj, "KILL_SWITCH", False)):
             cleanup = self.attempt_cleanup_with_optional_flatten(
                 broker,
@@ -220,13 +255,21 @@ class SafetyController:
                 cancel_trigger="kill-switch",
                 flatten_trigger="kill-switch",
                 attempt_flatten=bool(getattr(settings_obj, "KILL_SWITCH_LIQUIDATE", False)),
+                notification_events=notification_events,
+                notification_messages=notification_messages,
             )
             decision = self.halt_trading(
                 cleanup.halt_reason,
                 unresolved=cleanup.unresolved,
                 attempt_flatten=bool(getattr(settings_obj, "KILL_SWITCH_LIQUIDATE", False)),
             )
-            return self._blocked_result("halt:kill_switch", decision, last_open_order_reconcile_at)
+            return self._blocked_result(
+                "halt:kill_switch",
+                decision,
+                last_open_order_reconcile_at,
+                notification_events=notification_events,
+                notification_messages=notification_messages,
+            )
 
         portfolio_cash, portfolio_qty, position_state, lot_definition = portfolio_cash_qty_with_position_state(
             pair=getattr(settings_obj, "PAIR")
@@ -257,9 +300,17 @@ class SafetyController:
                             cancel_trigger="daily-loss-halt",
                             flatten_trigger="daily-loss-halt",
                             attempt_flatten=True,
+                            notification_events=notification_events,
+                            notification_messages=notification_messages,
                         )
                         decision = self.halt_trading(cleanup.halt_reason, unresolved=cleanup.unresolved)
-                    return self._blocked_result("halt:daily_loss", decision, last_open_order_reconcile_at)
+                    return self._blocked_result(
+                        "halt:daily_loss",
+                        decision,
+                        last_open_order_reconcile_at,
+                        notification_events=notification_events,
+                        notification_messages=notification_messages,
+                    )
 
                 position_loss_qty = float(position_state.normalized_exposure.open_exposure_qty)
                 dust_view = position_state.normalized_exposure.dust_operator_view
@@ -289,9 +340,17 @@ class SafetyController:
                         cancel_trigger="position-loss-halt",
                         flatten_trigger="position-loss-halt",
                         attempt_flatten=True,
+                        notification_events=notification_events,
+                        notification_messages=notification_messages,
                     )
                     decision = self.halt_trading(cleanup.halt_reason, unresolved=cleanup.unresolved)
-                    return self._blocked_result("halt:position_loss", decision, last_open_order_reconcile_at)
+                    return self._blocked_result(
+                        "halt:position_loss",
+                        decision,
+                        last_open_order_reconcile_at,
+                        notification_events=notification_events,
+                        notification_messages=notification_messages,
+                    )
         finally:
             conn.close()
 
@@ -332,8 +391,13 @@ class SafetyController:
                         unresolved_order_count=self.state_snapshot().unresolved_open_order_count,
                         position_summary=self.position_summary(),
                     )
-                    self.notification_sender.send_event(event)
-                    canceled_ok = self.attempt_open_order_cancellation(broker, trigger="stale-open-order-halt")
+                    notification_events.append(event)
+                    canceled_ok = self.attempt_open_order_cancellation(
+                        broker,
+                        trigger="stale-open-order-halt",
+                        notification_events=notification_events,
+                        notification_messages=notification_messages,
+                    )
                     halt_detail = (
                         f"{reason}; marked={marked} recovery_required; "
                         + ("emergency cancellation attempted" if canceled_ok else "emergency cancellation failed")
@@ -352,6 +416,8 @@ class SafetyController:
                         decision,
                         next_reconcile_at,
                         notification_event_hashes=(str(event.get("event_hash")),),
+                        notification_events=notification_events,
+                        notification_messages=notification_messages,
                     )
 
             if open_count > 0:
@@ -359,11 +425,11 @@ class SafetyController:
                     reason_code=RISKY_ORDER_BLOCK,
                     reason="unresolved open order exists; skip new order placement",
                 )
-                self.notification_sender.send_event(event)
                 return RuntimeSafetyResult(
                     blocked=True,
                     cycle_id="skip:open_order_blocked",
                     notification_event_hashes=(str(event.get("event_hash")),),
+                    notification_events=(event,),
                     last_open_order_reconcile_at=next_reconcile_at,
                 )
 
@@ -375,6 +441,8 @@ class SafetyController:
         decision: SafetyDecision,
         last_open_order_reconcile_at: float | None,
         notification_event_hashes: tuple[str, ...] = (),
+        notification_events: MutableSequence[Mapping[str, object]] | None = None,
+        notification_messages: MutableSequence[str] | None = None,
     ) -> RuntimeSafetyResult:
         payload = decision.as_dict()
         transition = payload.get("state_transition")
@@ -386,10 +454,21 @@ class SafetyController:
             safety_decision=decision,
             state_transition_hash=str(transition_hash) if transition_hash else None,
             notification_event_hashes=tuple(str(item) for item in event_hashes),
+            notification_events=tuple(notification_events or ()),
+            notification_messages=tuple(notification_messages or ()),
             last_open_order_reconcile_at=last_open_order_reconcile_at,
         )
 
-    def attempt_open_order_cancellation(self, broker: object, trigger: str) -> bool:
+    def attempt_open_order_cancellation(
+        self,
+        broker: object,
+        trigger: str,
+        *,
+        notification_events: MutableSequence[Mapping[str, object]] | None = None,
+        notification_messages: MutableSequence[str] | None = None,
+    ) -> bool:
+        events = notification_events
+        messages = notification_messages
         try:
             summary = self.cancel_open_orders_with_broker(broker)
         except Exception as exc:
@@ -398,8 +477,9 @@ class SafetyController:
                 status="error",
                 summary={"error": f"{type(exc).__name__}: {exc}"},
             )
-            self.notification_sender.send_event(
-                OperatorEventComposer(self.symbol).panic_cleanup_event(
+            if events is not None:
+                events.append(
+                    OperatorEventComposer(self.symbol).panic_cleanup_event(
                     reason_code=CANCEL_FAILURE,
                     status="cancel_open_orders_error",
                     trigger=trigger,
@@ -407,7 +487,7 @@ class SafetyController:
                     error_type=type(exc).__name__,
                     reason=str(exc),
                 )
-            )
+                )
             return False
 
         remote_open_count = int(summary["remote_open_count"])
@@ -421,22 +501,26 @@ class SafetyController:
             failed_count=failed_count,
             status=status,
         )
-        self.notification_sender.send_event(event)
+        if events is not None:
+            events.append(event)
         for message in summary.get("stray_messages", []):
-            self.notification_sender.send_message(str(message))
+            if messages is not None:
+                messages.append(str(message))
         for message in summary.get("error_messages", []):
-            self.notification_sender.send_message(str(message))
+            if messages is not None:
+                messages.append(str(message))
         self.record_cancel_open_orders_result(trigger=trigger, status=status, summary=summary)
         if failed_count > 0:
-            self.notification_sender.send_event(
-                OperatorEventComposer(self.symbol).panic_cleanup_event(
+            if events is not None:
+                events.append(
+                    OperatorEventComposer(self.symbol).panic_cleanup_event(
                     reason_code=CANCEL_FAILURE,
                     status="cancel_open_orders_incomplete",
                     trigger=trigger,
                     cancel_detail_code="CANCEL_OPEN_ORDERS_INCOMPLETE",
                     failed_count=failed_count,
                 )
-            )
+                )
             return False
         return True
 
@@ -449,9 +533,16 @@ class SafetyController:
         cancel_trigger: str,
         flatten_trigger: str,
         attempt_flatten: bool,
+        notification_events: MutableSequence[Mapping[str, object]] | None = None,
+        notification_messages: MutableSequence[str] | None = None,
     ) -> CleanupResult:
         initial_open_orders_present, initial_position_present = self.exposure_snapshot(self.now_ms())
-        canceled_ok = self.attempt_open_order_cancellation(broker, trigger=cancel_trigger)
+        canceled_ok = self.attempt_open_order_cancellation(
+            broker,
+            trigger=cancel_trigger,
+            notification_events=notification_events,
+            notification_messages=notification_messages,
+        )
         flatten_outcome: Mapping[str, object] | None = None
         if attempt_flatten and canceled_ok:
             flatten_outcome = self.flatten_position(

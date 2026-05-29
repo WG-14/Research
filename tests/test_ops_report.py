@@ -16,7 +16,7 @@ from bithumb_bot.db_core import (
     set_portfolio_breakdown,
 )
 from bithumb_bot.config import PATH_MANAGER
-from bithumb_bot.engine import evaluate_startup_safety_gate
+from bithumb_bot.runtime_compat import evaluate_startup_safety_gate
 from bithumb_bot.reporting import _sell_failure_category_from_observability, cmd_ops_report
 from bithumb_bot.oms import record_order_suppression
 from bithumb_bot.utils_time import kst_str

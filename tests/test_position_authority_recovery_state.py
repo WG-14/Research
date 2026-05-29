@@ -19,7 +19,7 @@ from bithumb_bot.db_core import (
     set_portfolio_breakdown,
     summarize_fill_accounting_incident_projection,
 )
-from bithumb_bot.engine import (
+from bithumb_bot.runtime_compat import (
     evaluate_restart_readiness,
     evaluate_resume_eligibility,
     evaluate_startup_safety_gate,

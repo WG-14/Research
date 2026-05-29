@@ -17,7 +17,11 @@ from bithumb_bot.db_core import (
     set_portfolio_breakdown,
 )
 from bithumb_bot.execution import apply_fill_and_trade, record_order_if_missing
-from bithumb_bot.engine import evaluate_resume_eligibility, evaluate_startup_safety_gate, _classify_balance_split_blocker
+from bithumb_bot.runtime_compat import (
+    _classify_balance_split_blocker,
+    evaluate_resume_eligibility,
+    evaluate_startup_safety_gate,
+)
 from bithumb_bot.oms import add_fill, set_status
 from bithumb_bot.recovery import reconcile_with_broker
 from bithumb_bot import runtime_state

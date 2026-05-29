@@ -537,7 +537,6 @@ def _recovery_controller() -> RecoveryController:
 
 
 def _evaluate_recovery_clearance(*, clearance_type: str, startup_gate_reason: str | None = None):
-    runtime_state.refresh_open_order_health()
     snapshot = runtime_state.snapshot()
     gate_reason = startup_gate_reason if startup_gate_reason is not None else evaluate_startup_safety_gate()
     return _recovery_controller().evaluate_clearance(
@@ -578,7 +577,29 @@ def evaluate_risk_state_mismatch_halt_clearance(*, startup_gate_reason: str | No
     )
 
 
+def _evaluate_initial_reconcile_halt_clearance_after_observation_refresh(*, startup_gate_reason: str | None = None):
+    runtime_state.refresh_open_order_health()
+    return evaluate_initial_reconcile_halt_clearance(startup_gate_reason=startup_gate_reason)
+
+
+def _evaluate_live_execution_broker_halt_clearance_after_observation_refresh(
+    *,
+    startup_gate_reason: str | None = None,
+):
+    runtime_state.refresh_open_order_health()
+    return evaluate_live_execution_broker_halt_clearance(startup_gate_reason=startup_gate_reason)
+
+
+def _evaluate_risk_state_mismatch_halt_clearance_after_observation_refresh(
+    *,
+    startup_gate_reason: str | None = None,
+):
+    runtime_state.refresh_open_order_health()
+    return evaluate_risk_state_mismatch_halt_clearance(startup_gate_reason=startup_gate_reason)
+
+
 def maybe_clear_stale_initial_reconcile_halt() -> bool:
+    runtime_state.refresh_open_order_health()
     state = runtime_state.snapshot()
     clearance = evaluate_initial_reconcile_halt_clearance()
     if not clearance.allowed:
@@ -607,6 +628,7 @@ def maybe_clear_stale_initial_reconcile_halt() -> bool:
 
 
 def maybe_clear_stale_live_execution_broker_halt(*, startup_gate_reason: str | None = None) -> bool:
+    runtime_state.refresh_open_order_health()
     state = runtime_state.snapshot()
     clearance = evaluate_live_execution_broker_halt_clearance(
         startup_gate_reason=startup_gate_reason,
@@ -640,6 +662,7 @@ def _can_clear_stale_risk_state_mismatch_halt(*, state, startup_gate_reason: str
 
 
 def maybe_clear_stale_risk_state_mismatch_halt(*, startup_gate_reason: str | None = None) -> bool:
+    runtime_state.refresh_open_order_health()
     state = runtime_state.snapshot()
     clearance = evaluate_risk_state_mismatch_halt_clearance(
         startup_gate_reason=startup_gate_reason,
@@ -750,7 +773,6 @@ def _safety_controller() -> SafetyController:
         latest_order_identifiers=_latest_order_identifiers,
         count_open_orders=_count_open_orders,
         position_summary=_position_summary,
-        notification_sender=NotificationAdapter(_operator_notification_service()),
         cancel_open_orders_with_broker=cancel_open_orders_with_broker,
         record_cancel_open_orders_result=runtime_state.record_cancel_open_orders_result,
         flatten_position=_flatten_position_compat,
@@ -790,20 +812,43 @@ def _startup_controller() -> StartupController:
         enable_trading=runtime_state.enable_trading,
         set_resume_gate=runtime_state.set_resume_gate,
         recovery_clearance_evaluators=(
-            evaluate_initial_reconcile_halt_clearance,
-            evaluate_live_execution_broker_halt_clearance,
-            evaluate_risk_state_mismatch_halt_clearance,
+            _evaluate_initial_reconcile_halt_clearance_after_observation_refresh,
+            _evaluate_live_execution_broker_halt_clearance_after_observation_refresh,
+            _evaluate_risk_state_mismatch_halt_clearance_after_observation_refresh,
         ),
         recovery_clearance_applier=recovery_controller.apply_clearance,
     )
 
 
 def _halt_trading(reason: HaltReason, *, unresolved: bool = False, attempt_flatten: bool = False) -> None:
-    _safety_controller().halt_trading(
+    decision = _safety_controller().halt_trading(
         reason,
         unresolved=unresolved,
         attempt_flatten=attempt_flatten,
     )
+    _dispatch_safety_decision(NotificationAdapter(_operator_notification_service()), decision)
+
+
+def _dispatch_safety_decision(notification_adapter: NotificationAdapter, decision) -> None:
+    if decision.operator_event:
+        notification_adapter.send_event(decision.operator_event)
+
+
+def _dispatch_runtime_safety_notifications(
+    notification_adapter: NotificationAdapter,
+    result,
+) -> None:
+    if result.safety_decision is not None:
+        _dispatch_safety_decision(notification_adapter, result.safety_decision)
+    safety_event_hashes = set()
+    if result.safety_decision is not None:
+        safety_event_hashes.update(result.safety_decision.as_dict().get("operator_event_hashes", []))
+    for event in result.notification_events:
+        if str(event.get("event_hash")) in safety_event_hashes:
+            continue
+        notification_adapter.send_event(event)
+    for message in result.notification_messages:
+        notification_adapter.send_message(message)
 
 
 def _recommended_operator_commands(
@@ -899,7 +944,20 @@ def _revalidate_cleanup_state_after_failure(
 
 
 def _attempt_open_order_cancellation(broker: BithumbBroker, trigger: str) -> bool:
-    return _safety_controller().attempt_open_order_cancellation(broker, trigger=trigger)
+    events: list[dict[str, object]] = []
+    messages: list[str] = []
+    ok = _safety_controller().attempt_open_order_cancellation(
+        broker,
+        trigger=trigger,
+        notification_events=events,
+        notification_messages=messages,
+    )
+    adapter = NotificationAdapter(_operator_notification_service())
+    for event in events:
+        adapter.send_event(event)
+    for message in messages:
+        adapter.send_message(message)
+    return ok
 
 
 def _attempt_cleanup_with_optional_flatten(
@@ -979,13 +1037,23 @@ def run_loop() -> None:
     startup_result = _startup_controller().prepare_runtime_start(
         live_mode=settings.MODE == "live"
     )
+    startup_notification_adapter = NotificationAdapter(_operator_notification_service())
+    startup_notification_hashes = list(startup_result.as_dict().get("operator_event_hashes", []))
     if startup_result.operator_event:
-        NotificationAdapter(_operator_notification_service()).send_event(startup_result.operator_event)
+        startup_notification_adapter.send_event(startup_result.operator_event)
+    else:
+        halt_transition = startup_result.as_dict().get("halt_transition", {})
+        halt_evidence = halt_transition.get("evidence", {}) if isinstance(halt_transition, dict) else {}
+        operator_event = halt_evidence.get("operator_event", {}) if isinstance(halt_evidence, dict) else {}
+        if isinstance(operator_event, dict) and operator_event:
+            startup_notification_adapter.send_event(operator_event)
+            if operator_event.get("event_hash"):
+                startup_notification_hashes.append(str(operator_event.get("event_hash")))
     _record_runtime_cycle_artifact(
         "startup",
         startup_state=startup_result.status,
         readiness_hash=startup_result.as_dict()["decision_hash"],
-        notification_event_hashes=startup_result.as_dict().get("operator_event_hashes", []),
+        notification_event_hashes=startup_notification_hashes,
         state_transition_hash=(
             startup_result.as_dict().get("halt_transition", {}).get("decision_hash")
             if isinstance(startup_result.as_dict().get("halt_transition"), dict)
@@ -1209,49 +1277,31 @@ def run_loop() -> None:
                 )
                 continue
 
-            runtime_market_check_interval = float(settings.MARKET_RUNTIME_REGISTRY_REFRESH_INTERVAL_SEC)
-            if runtime_market_check_interval < 0:
-                decision = safety_controller.halt_trading(
-                    _halt_reason(
-                        "MARKET_RUNTIME_POLICY_INVALID",
-                        "MARKET_RUNTIME_REGISTRY_REFRESH_INTERVAL_SEC must be >= 0",
-                    ),
-                    unresolved=False,
+            market_safety_result = safety_controller.evaluate_market_runtime(
+                settings_obj=settings,
+                now_epoch_sec=now,
+                last_market_runtime_check_at=last_market_runtime_check_at,
+                validate_market_runtime=validate_market_runtime,
+                validation_error_type=MarketPreflightValidationError,
+            )
+            if market_safety_result.last_market_runtime_check_at is not None:
+                last_market_runtime_check_at = market_safety_result.last_market_runtime_check_at
+            if market_safety_result.blocked:
+                _dispatch_runtime_safety_notifications(notification_adapter, market_safety_result)
+                safety_hash = (
+                    market_safety_result.safety_decision.as_dict()["decision_hash"]
+                    if market_safety_result.safety_decision is not None
+                    else None
                 )
                 _record_runtime_cycle_artifact(
-                    "halt:market_runtime_policy_invalid",
+                    market_safety_result.cycle_id or "halt:market_runtime",
                     candle_ts=last_ts,
                     startup_state="READY",
-                    safety_decision_hash=decision.as_dict()["decision_hash"],
-                    state_transition_hash=decision.as_dict()["state_transition"].get("decision_hash"),
-                    notification_event_hashes=decision.as_dict().get("operator_event_hashes", []),
+                    safety_decision_hash=safety_hash,
+                    state_transition_hash=market_safety_result.state_transition_hash,
+                    notification_event_hashes=market_safety_result.notification_event_hashes,
                 )
                 continue
-            should_check_runtime_market = settings.MODE == "live" and runtime_market_check_interval > 0 and (
-                last_market_runtime_check_at is None
-                or (now - last_market_runtime_check_at) >= runtime_market_check_interval
-            )
-            if should_check_runtime_market:
-                try:
-                    validate_market_runtime(settings)
-                    last_market_runtime_check_at = now
-                except MarketPreflightValidationError as exc:
-                    decision = safety_controller.halt_trading(
-                        _halt_reason(
-                            "MARKET_RUNTIME_CONTRACT_FAILED",
-                            f"market runtime contract failed: {exc}",
-                        ),
-                        unresolved=False,
-                    )
-                    _record_runtime_cycle_artifact(
-                        "halt:market_runtime_contract_failed",
-                        candle_ts=last_ts,
-                        startup_state="READY",
-                        safety_decision_hash=decision.as_dict()["decision_hash"],
-                        state_transition_hash=decision.as_dict()["state_transition"].get("decision_hash"),
-                        notification_event_hashes=decision.as_dict().get("operator_event_hashes", []),
-                    )
-                    continue
 
             safety_result = safety_controller.evaluate_and_apply_live_runtime(
                 settings_obj=settings,
@@ -1267,6 +1317,7 @@ def run_loop() -> None:
             )
             last_open_order_reconcile_at = safety_result.last_open_order_reconcile_at
             if safety_result.blocked:
+                _dispatch_runtime_safety_notifications(notification_adapter, safety_result)
                 safety_hash = (
                     safety_result.safety_decision.as_dict()["decision_hash"]
                     if safety_result.safety_decision is not None
@@ -1501,6 +1552,7 @@ def run_loop() -> None:
                     _halt_reason(halt_reason_code, halt_reason),
                     unresolved=True,
                 )
+                _dispatch_safety_decision(notification_adapter, decision)
                 event = runtime_events.execution_failure_from_transition(execution_result.halt_transition)
                 notification_adapter.send_event(event)
                 _record_runtime_cycle_artifact(

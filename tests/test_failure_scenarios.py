@@ -8,7 +8,8 @@ from bithumb_bot import runtime_state
 from bithumb_bot.broker.base import BrokerBalance, BrokerFill, BrokerOrder
 from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_db
-from bithumb_bot.engine import evaluate_startup_safety_gate, run_loop
+from bithumb_bot.engine import run_loop
+from bithumb_bot.runtime_compat import evaluate_startup_safety_gate
 from bithumb_bot.execution import apply_fill_and_trade, record_order_if_missing
 from bithumb_bot.oms import set_exchange_order_id, set_status
 from bithumb_bot.recovery import reconcile_with_broker

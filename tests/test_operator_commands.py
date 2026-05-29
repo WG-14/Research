@@ -52,7 +52,7 @@ from bithumb_bot.db_core import (
     set_portfolio_breakdown,
     upsert_target_position_state,
 )
-from bithumb_bot.engine import (
+from bithumb_bot.runtime_compat import (
     ResumeBlocker,
     build_resume_guidance,
     evaluate_restart_readiness,

@@ -15,7 +15,7 @@ from bithumb_bot.broker.base import (
 from bithumb_bot.config import settings
 from bithumb_bot.db_core import compute_accounting_replay, ensure_db, get_portfolio_breakdown
 from bithumb_bot.dust import build_dust_display_context, build_position_state_model
-from bithumb_bot.engine import (
+from bithumb_bot.runtime_compat import (
     evaluate_startup_safety_gate,
     maybe_clear_stale_initial_reconcile_halt,
     run_loop,

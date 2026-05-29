@@ -10,7 +10,7 @@ from bithumb_bot import runtime_state
 from bithumb_bot.broker.base import BrokerBalance
 from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_db
-from bithumb_bot.engine import evaluate_startup_safety_gate
+from bithumb_bot.runtime_compat import evaluate_startup_safety_gate
 from bithumb_bot.recovery import reconcile_with_broker
 
 
@@ -292,7 +292,7 @@ def test_unresolved_open_order_survives_restart_and_blocks_resume(tmp_path):
 
     runtime_state.disable_trading_until(float("inf"), reason="manual operator pause")
     rs = importlib.reload(runtime_state)
-    from bithumb_bot.engine import evaluate_resume_eligibility
+    from bithumb_bot.runtime_compat import evaluate_resume_eligibility
 
     eligible, blockers = evaluate_resume_eligibility()
     state = rs.snapshot()
@@ -324,7 +324,7 @@ def test_submit_unknown_survives_restart_into_reconcile_and_startup_gate(tmp_pat
         conn.close()
 
     rs = importlib.reload(runtime_state)
-    from bithumb_bot.engine import evaluate_startup_safety_gate
+    from bithumb_bot.runtime_compat import evaluate_startup_safety_gate
 
     startup_reason_before = evaluate_startup_safety_gate()
     assert startup_reason_before is not None
@@ -386,7 +386,7 @@ def test_unresolved_halt_persists_across_restart_and_resume_remains_blocked(tmp_
     )
 
     rs = importlib.reload(runtime_state)
-    from bithumb_bot.engine import evaluate_resume_eligibility
+    from bithumb_bot.runtime_compat import evaluate_resume_eligibility
 
     eligible, blockers = evaluate_resume_eligibility()
     state = rs.snapshot()
