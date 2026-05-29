@@ -3,7 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Mapping
 
-from ..reason_codes import CANCEL_FAILURE
+from ..dust import build_dust_display_context
+from ..reason_codes import CANCEL_FAILURE, POSITION_LOSS_LIMIT, RISKY_ORDER_BLOCK
+from ..risk import (
+    RISK_STATE_MISMATCH,
+    daily_loss_reason_code_from_reason,
+    evaluate_daily_loss_breach,
+    evaluate_position_loss_breach,
+)
 from .lifecycle_artifacts import SafetyDecision, StateTransitionResult
 from .operator_event_composer import (
     OperatorEventComposer,
@@ -26,6 +33,16 @@ class CleanupResult:
     canceled_ok: bool
     unresolved: bool
     decision: SafetyDecision
+
+
+@dataclass(frozen=True)
+class RuntimeSafetyResult:
+    blocked: bool
+    cycle_id: str | None = None
+    safety_decision: SafetyDecision | None = None
+    state_transition_hash: str | None = None
+    notification_event_hashes: tuple[str, ...] = ()
+    last_open_order_reconcile_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -178,6 +195,200 @@ class SafetyController:
             evidence=decision.evidence,
         )
 
+    def evaluate_and_apply_live_runtime(
+        self,
+        *,
+        settings_obj: object,
+        broker: object | None,
+        now_epoch_sec: float,
+        last_close: float,
+        last_open_order_reconcile_at: float | None,
+        portfolio_cash_qty_with_position_state: Callable[..., tuple[float, float, object, object]],
+        db_factory: Callable[[], object],
+        open_order_snapshot: Callable[[int], tuple[int, float | None]],
+        mark_open_orders_recovery_required: Callable[[str, int], int],
+        reconcile_with_broker: Callable[[object], None],
+    ) -> RuntimeSafetyResult:
+        if getattr(settings_obj, "MODE", None) != "live" or broker is None:
+            return RuntimeSafetyResult(blocked=False, last_open_order_reconcile_at=last_open_order_reconcile_at)
+
+        if bool(getattr(settings_obj, "KILL_SWITCH", False)):
+            cleanup = self.attempt_cleanup_with_optional_flatten(
+                broker,
+                reason_code="KILL_SWITCH",
+                reason_detail="KILL_SWITCH=ON",
+                cancel_trigger="kill-switch",
+                flatten_trigger="kill-switch",
+                attempt_flatten=bool(getattr(settings_obj, "KILL_SWITCH_LIQUIDATE", False)),
+            )
+            decision = self.halt_trading(
+                cleanup.halt_reason,
+                unresolved=cleanup.unresolved,
+                attempt_flatten=bool(getattr(settings_obj, "KILL_SWITCH_LIQUIDATE", False)),
+            )
+            return self._blocked_result("halt:kill_switch", decision, last_open_order_reconcile_at)
+
+        portfolio_cash, portfolio_qty, position_state, lot_definition = portfolio_cash_qty_with_position_state(
+            pair=getattr(settings_obj, "PAIR")
+        )
+        conn = db_factory()
+        try:
+            if position_state is not None:
+                dust_context = build_dust_display_context(self.state_snapshot().last_reconcile_metadata)
+                blocked, reason = evaluate_daily_loss_breach(
+                    conn,
+                    ts_ms=int(now_epoch_sec * 1000),
+                    cash=portfolio_cash,
+                    qty=portfolio_qty,
+                    price=float(last_close),
+                    broker=broker,
+                    mark_price_source="closed_candle",
+                    evaluation_origin="run_loop_daily_halt",
+                )
+                if blocked:
+                    reason_code = daily_loss_reason_code_from_reason(reason)
+                    if reason_code == RISK_STATE_MISMATCH:
+                        decision = self.halt_trading(HaltReason(RISK_STATE_MISMATCH, reason), unresolved=True)
+                    else:
+                        cleanup = self.attempt_cleanup_with_optional_flatten(
+                            broker,
+                            reason_code="DAILY_LOSS_LIMIT",
+                            reason_detail=reason,
+                            cancel_trigger="daily-loss-halt",
+                            flatten_trigger="daily-loss-halt",
+                            attempt_flatten=True,
+                        )
+                        decision = self.halt_trading(cleanup.halt_reason, unresolved=cleanup.unresolved)
+                    return self._blocked_result("halt:daily_loss", decision, last_open_order_reconcile_at)
+
+                position_loss_qty = float(position_state.normalized_exposure.open_exposure_qty)
+                dust_view = position_state.normalized_exposure.dust_operator_view
+                min_position_loss_qty = max(
+                    0.0,
+                    float(0.0 if lot_definition is None else lot_definition.min_qty),
+                    float(getattr(settings_obj, "LIVE_MIN_ORDER_QTY", 0.0) or 0.0),
+                )
+                if (
+                    bool(dust_context.classification.present)
+                    and bool(dust_view.resume_allowed)
+                    and min_position_loss_qty > 0.0
+                    and 0.0 < float(portfolio_qty) < min_position_loss_qty
+                ):
+                    position_loss_qty = 0.0
+
+                blocked, reason = evaluate_position_loss_breach(
+                    conn,
+                    qty=position_loss_qty,
+                    price=float(last_close),
+                )
+                if blocked:
+                    cleanup = self.attempt_cleanup_with_optional_flatten(
+                        broker,
+                        reason_code=POSITION_LOSS_LIMIT,
+                        reason_detail=reason,
+                        cancel_trigger="position-loss-halt",
+                        flatten_trigger="position-loss-halt",
+                        attempt_flatten=True,
+                    )
+                    decision = self.halt_trading(cleanup.halt_reason, unresolved=cleanup.unresolved)
+                    return self._blocked_result("halt:position_loss", decision, last_open_order_reconcile_at)
+        finally:
+            conn.close()
+
+        open_count, oldest_open_age_sec = open_order_snapshot(int(now_epoch_sec * 1000))
+        next_reconcile_at = last_open_order_reconcile_at
+        if open_count > 0:
+            min_reconcile_sec = max(1, int(getattr(settings_obj, "OPEN_ORDER_RECONCILE_MIN_INTERVAL_SEC")))
+            if next_reconcile_at is None or (now_epoch_sec - next_reconcile_at) >= min_reconcile_sec:
+                try:
+                    reconcile_with_broker(broker)
+                    next_reconcile_at = now_epoch_sec
+                except Exception as exc:
+                    decision = self.halt_trading(
+                        HaltReason(
+                            "PERIODIC_RECONCILE_FAILED",
+                            f"periodic reconcile failed ({type(exc).__name__}): {exc}",
+                        ),
+                        unresolved=True,
+                    )
+                    return self._blocked_result("halt:periodic_reconcile_failed", decision, next_reconcile_at)
+
+            open_count, oldest_open_age_sec = open_order_snapshot(int(now_epoch_sec * 1000))
+            if open_count > 0 and oldest_open_age_sec is not None:
+                max_age_sec = max(1, int(getattr(settings_obj, "MAX_OPEN_ORDER_AGE_SEC")))
+                if oldest_open_age_sec > max_age_sec:
+                    reason = (
+                        "stale unresolved open order detected: "
+                        f"age={oldest_open_age_sec:.1f}s > {max_age_sec}s"
+                    )
+                    marked = mark_open_orders_recovery_required(reason, int(now_epoch_sec * 1000))
+                    latest_client_order_id, latest_exchange_order_id = self.latest_order_identifiers()
+                    event = OperatorEventComposer(self.symbol).stale_open_order_recovery_required_event(
+                        reason=reason,
+                        marked_count=marked,
+                        latest_client_order_id=latest_client_order_id,
+                        latest_exchange_order_id=latest_exchange_order_id,
+                        open_order_count=self.count_open_orders(),
+                        unresolved_order_count=self.state_snapshot().unresolved_open_order_count,
+                        position_summary=self.position_summary(),
+                    )
+                    self.notification_sender.send_event(event)
+                    canceled_ok = self.attempt_open_order_cancellation(broker, trigger="stale-open-order-halt")
+                    halt_detail = (
+                        f"{reason}; marked={marked} recovery_required; "
+                        + ("emergency cancellation attempted" if canceled_ok else "emergency cancellation failed")
+                    )
+                    unresolved = True
+                    if not canceled_ok:
+                        revalidated_safe, revalidation_detail = self.revalidate_cleanup_state_after_failure(
+                            broker,
+                            trigger="stale-open-order-halt",
+                        )
+                        halt_detail += f"; {revalidation_detail}"
+                        unresolved = not revalidated_safe
+                    decision = self.halt_trading(HaltReason("STALE_OPEN_ORDER", halt_detail), unresolved=unresolved)
+                    return self._blocked_result(
+                        "halt:stale_open_order",
+                        decision,
+                        next_reconcile_at,
+                        notification_event_hashes=(str(event.get("event_hash")),),
+                    )
+
+            if open_count > 0:
+                event = OperatorEventComposer(self.symbol).open_order_blocked_event(
+                    reason_code=RISKY_ORDER_BLOCK,
+                    reason="unresolved open order exists; skip new order placement",
+                )
+                self.notification_sender.send_event(event)
+                return RuntimeSafetyResult(
+                    blocked=True,
+                    cycle_id="skip:open_order_blocked",
+                    notification_event_hashes=(str(event.get("event_hash")),),
+                    last_open_order_reconcile_at=next_reconcile_at,
+                )
+
+        return RuntimeSafetyResult(blocked=False, last_open_order_reconcile_at=next_reconcile_at)
+
+    def _blocked_result(
+        self,
+        cycle_id: str,
+        decision: SafetyDecision,
+        last_open_order_reconcile_at: float | None,
+        notification_event_hashes: tuple[str, ...] = (),
+    ) -> RuntimeSafetyResult:
+        payload = decision.as_dict()
+        transition = payload.get("state_transition")
+        transition_hash = transition.get("decision_hash") if isinstance(transition, dict) else None
+        event_hashes = tuple(payload.get("operator_event_hashes") or ()) + tuple(notification_event_hashes)
+        return RuntimeSafetyResult(
+            blocked=True,
+            cycle_id=cycle_id,
+            safety_decision=decision,
+            state_transition_hash=str(transition_hash) if transition_hash else None,
+            notification_event_hashes=tuple(str(item) for item in event_hashes),
+            last_open_order_reconcile_at=last_open_order_reconcile_at,
+        )
+
     def attempt_open_order_cancellation(self, broker: object, trigger: str) -> bool:
         try:
             summary = self.cancel_open_orders_with_broker(broker)
@@ -324,5 +535,6 @@ class SafetyController:
 __all__ = [
     "CleanupResult",
     "HaltReason",
+    "RuntimeSafetyResult",
     "SafetyController",
 ]

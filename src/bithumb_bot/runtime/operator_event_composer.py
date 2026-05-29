@@ -160,6 +160,108 @@ class OperatorEventComposer:
             **fields,
         )
 
+    def failsafe_retry_window_reached_event(self) -> dict[str, Any]:
+        return _event(
+            "failsafe_retry_window_reached",
+            alert_kind="runtime_resume",
+            symbol=self.symbol,
+            reason_code="FAILSAFE_RETRY_WINDOW_REACHED",
+            reason="failsafe retry window reached; attempting auto-resume",
+        )
+
+    def no_candles_after_sync_event(self) -> dict[str, Any]:
+        return _event(
+            "no_candles_after_sync",
+            alert_kind="market_data",
+            symbol=self.symbol,
+            reason_code="NO_CANDLES_AFTER_SYNC",
+            reason="sync completed but latest candle row was not found",
+        )
+
+    def sync_failed_event(self, *, fail_count: int, max_fails: int, error: str) -> dict[str, Any]:
+        return _event(
+            "sync_failed",
+            alert_kind="market_data",
+            symbol=self.symbol,
+            reason_code="SYNC_FAILED",
+            fail_count=int(fail_count),
+            max_fails=int(max_fails),
+            reason=error,
+        )
+
+    def failsafe_pause_enabled_event(self, *, retry_at_epoch_sec: float) -> dict[str, Any]:
+        return _event(
+            "failsafe_pause_enabled",
+            alert_kind="runtime_pause",
+            symbol=self.symbol,
+            reason_code="FAILSAFE_PAUSE_ENABLED",
+            retry_at_epoch_sec=int(retry_at_epoch_sec),
+            reason="failsafe enabled after consecutive sync failures",
+        )
+
+    def stale_candle_detected_event(self, *, age_sec: float, stale_cutoff_sec: float) -> dict[str, Any]:
+        return _event(
+            "stale_candle_detected",
+            alert_kind="market_data",
+            symbol=self.symbol,
+            reason_code="STALE_CANDLE_DETECTED",
+            age_sec=float(age_sec),
+            stale_cutoff_sec=float(stale_cutoff_sec),
+            reason="stale candle detected; order blocked",
+        )
+
+    def open_order_blocked_event(self, *, reason_code: str, reason: str) -> dict[str, Any]:
+        return self.recovery_required_event(
+            reason_code=reason_code,
+            reason=reason,
+            event_name="order_submit_blocked",
+        )
+
+    def execution_failed_event(self, *, reason_code: str, reason: str, **fields: Any) -> dict[str, Any]:
+        return _event(
+            "execution_failed",
+            alert_kind="execution",
+            symbol=self.symbol,
+            reason_code=reason_code,
+            reason=reason,
+            **fields,
+        )
+
+    def post_trade_reconcile_failed_event(self, *, reason: str, **fields: Any) -> dict[str, Any]:
+        return _event(
+            "post_trade_reconcile_failed",
+            alert_kind="reconcile",
+            symbol=self.symbol,
+            reason_code="POST_TRADE_RECONCILE_FAILED",
+            reason=reason,
+            **fields,
+        )
+
+
+@dataclass(frozen=True)
+class RuntimeOperatorEventComposer:
+    symbol: str
+
+    @property
+    def composer(self) -> OperatorEventComposer:
+        return OperatorEventComposer(self.symbol)
+
+    def event(self, name: str, **fields: Any) -> dict[str, Any]:
+        method = getattr(self.composer, f"{name}_event")
+        return method(**fields)
+
+    def execution_failure_from_transition(self, transition: Mapping[str, Any]) -> dict[str, Any]:
+        reason_code = str(transition.get("reason_code") or "EXECUTION_FAILED")
+        evidence = transition.get("evidence")
+        reason = (
+            str(evidence.get("error"))
+            if isinstance(evidence, Mapping) and evidence.get("error") is not None
+            else reason_code
+        )
+        if reason_code == "POST_TRADE_RECONCILE_FAILED":
+            return self.composer.post_trade_reconcile_failed_event(reason=reason)
+        return self.composer.execution_failed_event(reason_code=reason_code, reason=reason)
+
 
 def format_operator_next_action(
     *,
@@ -234,6 +336,7 @@ def operator_compact_summary(
 
 __all__ = [
     "OperatorEventComposer",
+    "RuntimeOperatorEventComposer",
     "format_operator_next_action",
     "operator_compact_summary",
     "operator_hint_command",

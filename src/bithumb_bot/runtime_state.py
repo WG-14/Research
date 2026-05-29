@@ -812,6 +812,12 @@ def mark_processed_candle(*, candle_ts_ms: int, now_epoch_sec: float | None = No
         _persist_state(_STATE)
 
 
+def persist_current_state() -> None:
+    with _LOCK:
+        _sync_state_from_persisted_locked()
+        _persist_state(_STATE)
+
+
 def disable_trading_until(
     epoch_sec: float,
     reason: str | None = None,
@@ -865,8 +871,8 @@ def enter_halt(
     reason: str,
     unresolved: bool,
     attempt_flatten: bool = False,
+    halt_projection: dict[str, object] | None = None,
 ) -> None:
-    halt_projection = project_halt_state()
     disable_trading_until(
         float("inf"),
         reason=reason,

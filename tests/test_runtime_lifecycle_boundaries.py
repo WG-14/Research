@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import ast
 from dataclasses import dataclass
 
 from bithumb_bot import engine
@@ -13,6 +14,7 @@ from bithumb_bot.runtime.operator_event_composer import OperatorEventComposer
 from bithumb_bot.runtime.recovery_controller import RecoveryController, ReconcileClearEvidence
 from bithumb_bot.runtime.safety_controller import HaltReason, SafetyController
 from bithumb_bot.runtime.startup_controller import StartupController
+from bithumb_bot.runtime.state_store import RuntimeStateStore
 
 
 @dataclass
@@ -58,6 +60,34 @@ def test_runner_does_not_compose_operator_notifications() -> None:
     assert "globals()[" not in source
 
 
+def test_runner_only_coordinates_controllers() -> None:
+    source = inspect.getsource(runner.run_loop)
+    assert "prepare_runtime_start(" in source
+    assert ".decide_cycle(" in source
+    assert ".evaluate_and_apply_live_runtime(" in source
+    assert ".execute_cycle(" in source
+    assert ".evaluate_closed_candle(" in source
+    assert ".apply(" in source
+    for forbidden in {
+        "RuntimeDecisionGateway().decide_bundle(",
+        "record_strategy_decision(",
+        "run_loop_execution_planner(",
+        "execution_service.execute(",
+        "BrokerError",
+        "evaluate_daily_loss_breach(",
+        "evaluate_position_loss_breach(",
+    }:
+        assert forbidden not in source
+    tree = ast.parse(source)
+    direct_composer_calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "OperatorEventComposer"
+    ]
+    assert direct_composer_calls == []
+
+
 def test_runner_does_not_own_startup_gate_branches() -> None:
     source = inspect.getsource(runner.run_loop)
     assert "prepare_runtime_start" in source
@@ -79,12 +109,70 @@ def test_runner_does_not_call_runtime_state_halt_mutators_directly() -> None:
     assert "runtime_state.mark_processed_candle(" not in source
 
 
+def test_runner_does_not_directly_submit_orders_or_reconcile_post_trade() -> None:
+    source = inspect.getsource(runner.run_loop)
+    assert "execution_service.execute(" not in source
+    assert "build_signal_execution_request(" not in source
+    assert "except BrokerError" not in source
+    assert "POST_TRADE_RECONCILE_FAILED" not in source
+    assert "LIVE_EXECUTION_FAILED" not in source
+    assert "LIVE_EXECUTION_BROKER_ERROR" not in source
+
+
+def test_runner_does_not_own_safety_policy_branches() -> None:
+    source = inspect.getsource(runner.run_loop)
+    for forbidden in {
+        "KILL_SWITCH",
+        "KILL_SWITCH_LIQUIDATE",
+        "DAILY_LOSS_LIMIT",
+        "POSITION_LOSS_LIMIT",
+        "MAX_OPEN_ORDER_AGE_SEC",
+        "OPEN_ORDER_RECONCILE_MIN_INTERVAL_SEC",
+        "stale unresolved open order",
+        "emergency cancellation",
+    }:
+        assert forbidden not in source
+
+
+def test_execution_coordinator_execute_cycle_is_used_by_runner() -> None:
+    source = inspect.getsource(runner.run_loop)
+    assert ".execute_cycle(" in source
+    assert ".resolve_submit_expectation(" not in source
+    assert ".target_delta_submit_expected(" not in source
+
+
 def test_runtime_recovery_gate_does_not_call_side_effect_clearers_in_prepare_phase() -> None:
     from bithumb_bot.runtime_recovery_gate import RuntimeRecoveryGateService
 
     source = inspect.getsource(RuntimeRecoveryGateService.prepare_resume_gate)
     assert "clearer" not in source
     assert "evaluate_and_apply" not in source
+
+
+def test_runtime_recovery_gate_compat_clearers_are_not_main_path_side_effects() -> None:
+    from bithumb_bot.runtime_recovery_gate import RuntimeRecoveryGateService
+
+    calls: list[str] = []
+    service = RuntimeRecoveryGateService(
+        startup_gate_evaluator=lambda: None,
+        state_snapshot=lambda: _State(),
+        stale_initial_reconcile_halt_clearer=lambda: calls.append("initial") or True,
+        stale_live_execution_broker_halt_clearer=lambda **_kwargs: calls.append("broker") or True,
+        stale_risk_state_mismatch_halt_clearer=lambda **_kwargs: calls.append("risk") or True,
+    )
+
+    preparation = service.prepare_resume_gate()
+
+    assert calls == []
+    assert preparation.initial_reconcile_halt_cleared is False
+    assert preparation.live_execution_broker_halt_cleared is False
+    assert preparation.risk_state_mismatch_halt_cleared is False
+
+
+def test_startup_controller_does_not_call_side_effect_stale_clearers_in_evaluate_phase() -> None:
+    source = inspect.getsource(StartupController.evaluate_persisted_halt)
+    assert "stale_initial_reconcile_clearer" not in source
+    assert "stale_live_execution_broker_clearer" not in source
 
 
 def test_recovery_controller_evaluate_phase_has_no_state_apply() -> None:
@@ -99,6 +187,28 @@ def test_runtime_state_disable_trading_until_does_not_query_exposure_sources() -
     assert "ensure_db(" not in source
     assert "summarize_position_lots" not in source
     assert "build_position_state_model" not in source
+
+
+def test_runtime_state_store_owns_state_application_boundary() -> None:
+    source = inspect.getsource(RuntimeStateStore)
+    assert "def snapshot" in source
+    assert "def persist" in source
+    assert "def apply_transition" in source
+    assert "def pause_until" in source
+    assert "def enable" in source
+    assert "def set_resume_gate" in source
+    assert "HaltStateProjector" in source
+
+
+def test_runtime_cycle_artifact_is_recorded_for_halt_recovery_and_execution_failure() -> None:
+    source = inspect.getsource(runner)
+    assert '"recovery:initial_reconcile_clear"' in source
+    assert '"recovery:live_execution_broker_clear"' in source
+    assert '"recovery:risk_state_mismatch_clear"' in source
+    assert "safety_decision_hash=decision.as_dict()" in source
+    assert "state_transition_hash=decision.as_dict()" in source
+    assert "notification_event_hashes=" in source
+    assert "execution_result.planning_status" in source
 
 
 def test_startup_controller_prepare_runtime_start_statuses() -> None:

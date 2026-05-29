@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Sequence
 
-from .lifecycle_artifacts import StartupResult
+from .lifecycle_artifacts import RecoveryClearance, StartupResult, StateTransitionResult
 from .operator_event_composer import OperatorEventComposer
 
 
@@ -24,11 +24,35 @@ class StartupController:
     halt_on_startup_failure: Callable[..., object] | None = None
     enable_trading: Callable[[], None] | None = None
     set_resume_gate: Callable[..., None] | None = None
+    recovery_clearance_evaluators: Sequence[Callable[..., RecoveryClearance]] = ()
+    recovery_clearance_applier: Callable[[RecoveryClearance], StateTransitionResult] | None = None
 
     def prepare_runtime_start(self, *, live_mode: bool) -> StartupResult:
+        startup_gate_reason = self.startup_gate_evaluator()
+        clearances: list[RecoveryClearance] = []
+        transitions: list[StateTransitionResult] = []
+        for evaluator in self.recovery_clearance_evaluators:
+            clearance = evaluator(startup_gate_reason=startup_gate_reason)
+            clearances.append(clearance)
+            if clearance.allowed and self.recovery_clearance_applier is not None:
+                transitions.append(self.recovery_clearance_applier(clearance))
+
         persisted = self.evaluate_persisted_halt()
         if persisted.status != "READY":
-            return persisted
+            evidence = {
+                **persisted.evidence,
+                "clearance_artifacts": [item.as_dict() for item in clearances],
+                "transition_artifacts": [item.as_dict() for item in transitions],
+            }
+            return StartupResult(
+                status=persisted.status,
+                broker=persisted.broker,
+                startup_gate_reason=persisted.startup_gate_reason,
+                reason_code=persisted.reason_code,
+                operator_event=persisted.operator_event,
+                halt_transition=persisted.halt_transition,
+                evidence=evidence,
+            )
 
         broker = None
         if live_mode:
@@ -61,7 +85,7 @@ class StartupController:
                     evidence={"live_mode": True, "initial_reconcile": "failed"},
                 )
 
-        gate = self.evaluate_startup_gate()
+        gate = self.evaluate_startup_gate(startup_gate_reason=startup_gate_reason)
         if gate.status == "DEGRADED_RECOVERY_CONTINUE":
             if self.enable_trading is not None:
                 self.enable_trading()
@@ -82,17 +106,25 @@ class StartupController:
                 reason_code=gate.reason_code,
                 operator_event=gate.operator_event,
                 halt_transition=transition,
-                evidence={**gate.evidence, "live_mode": live_mode},
+                evidence={
+                    **gate.evidence,
+                    "live_mode": live_mode,
+                    "clearance_artifacts": [item.as_dict() for item in clearances],
+                    "transition_artifacts": [item.as_dict() for item in transitions],
+                },
             )
         return StartupResult(
             status="READY",
             broker=broker,
-            evidence={"live_mode": live_mode, "startup_gate": "clear"},
+            evidence={
+                "live_mode": live_mode,
+                "startup_gate": "clear",
+                "clearance_artifacts": [item.as_dict() for item in clearances],
+                "transition_artifacts": [item.as_dict() for item in transitions],
+            },
         )
 
     def evaluate_persisted_halt(self) -> StartupResult:
-        self.stale_initial_reconcile_clearer()
-        self.stale_live_execution_broker_clearer()
         state = self.state_snapshot()
         if not bool(getattr(state, "halt_new_orders_blocked", False)):
             return StartupResult(status="READY", reason_code=None, evidence={"persisted_halt": False})
@@ -124,8 +156,9 @@ class StartupController:
             evidence={"persisted_halt": True},
         )
 
-    def evaluate_startup_gate(self) -> StartupResult:
-        startup_gate_reason = self.startup_gate_evaluator()
+    def evaluate_startup_gate(self, startup_gate_reason: str | None = None) -> StartupResult:
+        if startup_gate_reason is None:
+            startup_gate_reason = self.startup_gate_evaluator()
         if startup_gate_reason is None:
             return StartupResult(status="READY", evidence={"startup_gate": "clear"})
         state = self.state_snapshot()

@@ -19,25 +19,16 @@ from ..config import (
 )
 from ..marketdata import cmd_sync
 from ..runtime_decision_service import (
-    RuntimeStrategyDecisionResult,
-    RuntimeDecisionGateway,
     compute_strategy_decision_snapshot,
     get_runtime_decision_adapter,
     legacy_db_strategy_fallback_allowed,
 )
 from ..runtime_strategy_set import (
-    RuntimeStrategyDecisionResultBundle,
     active_runtime_strategy_set,
     normalized_runtime_strategy_set_manifest,
 )
 from ..broker.bithumb import BithumbBroker, build_broker_with_auth_diagnostics
-from ..broker.base import BrokerError
-from ..db_core import (
-    ensure_db,
-    upsert_target_position_state,
-)
-from ..db_core import record_strategy_decision
-from ..execution_service import build_execution_decision_summary
+from ..db_core import ensure_db
 from ..runtime_data_access import (
     count_open_orders as _count_open_orders,
     latest_order_identifiers as _latest_order_identifiers,
@@ -72,22 +63,12 @@ from ..runtime_resume_services import (
     reconcile_balance_split_mismatch_count,
     reconcile_dust_context,
 )
-from ..dust import build_dust_display_context
 from ..utils_time import kst_str, parse_interval_sec
 from ..observability import configure_runtime_logging, format_log_kv
 from ..bootstrap import get_last_explicit_env_load_summary
-from ..reason_codes import POSITION_LOSS_LIMIT, RISKY_ORDER_BLOCK
 from .. import runtime_state
-from ..risk import (
-    RISK_STATE_MISMATCH,
-    daily_loss_reason_code_from_reason,
-    evaluate_daily_loss_breach,
-    evaluate_position_loss_breach,
-)
+from ..risk import RISK_STATE_MISMATCH
 from ..execution_service import (
-    ExecutionObservabilityPayload,
-    SignalExecutionRequest,
-    TypedExecutionRequest,
     build_signal_execution_service,
     live_execute_signal,
     paper_execute,
@@ -106,12 +87,20 @@ from ..runtime_service_factories import (
     run_loop_execution_planner,
 )
 from .execution_coordinator import ExecutionCoordinator
+from .decision_coordinator import (
+    DecisionCoordinator,
+    persist_target_position_state_for_run_loop,
+)
+from .execution_coordinator import (
+    authoritative_execution_signal_for_trade,
+    build_signal_execution_request,
+)
 from .lifecycle_artifacts import RuntimeCycleArtifact
-from .runtime_checkpoint import apply_processed_candle_checkpoint
-from .state_store import pause_trading_until
+from .runtime_checkpoint import RuntimeCheckpoint
+from .state_store import RuntimeStateStore, pause_trading_until
 from .notification_adapter import NotificationAdapter
 from .operator_event_composer import (
-    OperatorEventComposer,
+    RuntimeOperatorEventComposer,
     recommended_operator_commands,
 )
 from .recovery_controller import (
@@ -280,46 +269,13 @@ def _persist_target_position_state_for_run_loop(
     decision_id: int | None,
     updated_ts: int,
 ) -> bool:
-    if not _run_loop_uses_target_delta():
-        return False
-    target_decision = (
-        execution_decision.get("target_shadow_decision")
-        if isinstance(execution_decision, dict)
-        and isinstance(execution_decision.get("target_shadow_decision"), dict)
-        else None
-    )
-    if not isinstance(target_decision, dict):
-        return False
-    if (
-        target_decision.get("target_new_exposure_krw") is None
-        or target_decision.get("target_qty") is None
-        or target_decision.get("target_reference_price") is None
-    ):
-        return False
-    upsert_target_position_state(
+    return persist_target_position_state_for_run_loop(
         conn,
-        pair=settings.PAIR,
-        target_exposure_krw=float(target_decision["target_new_exposure_krw"] or 0.0),
-        target_qty=float(target_decision["target_qty"] or 0.0),
-        last_signal=signal,
-        last_decision_id=decision_id,
-        last_reference_price=float(target_decision["target_reference_price"] or 0.0),
+        execution_decision=execution_decision,
+        signal=signal,
+        decision_id=decision_id,
         updated_ts=int(updated_ts),
-        target_origin=str(target_decision.get("target_origin") or ""),
-        adoption_reason=str(target_decision.get("target_adoption_reason") or ""),
-        adopted_broker_qty=(
-            None
-            if target_decision.get("target_adopted_broker_qty") is None
-            else float(target_decision.get("target_adopted_broker_qty") or 0.0)
-        ),
-        adopted_broker_exposure_krw=(
-            None
-            if target_decision.get("target_adopted_exposure_krw") is None
-            else float(target_decision.get("target_adopted_exposure_krw") or 0.0)
-        ),
-        created_from_signal=str(target_decision.get("target_strategy_signal_source") or signal),
     )
-    return True
 
 
 def _evaluate_stale_risk_state_mismatch_halt(
@@ -400,54 +356,6 @@ def prepare_strategy_decision_persistence_context(
         readiness_payload=readiness_payload,
         target_policy_metadata=target_policy_metadata,
     )
-
-
-def build_signal_execution_request(
-    *,
-    signal: str,
-    ts: int,
-    market_price: float,
-    strategy_name: str | None,
-    decision_id: int | None,
-    decision_reason: str | None,
-    exit_rule_name: str | None,
-    execution_decision_summary: object | None,
-    decision_context: dict[str, object] | None,
-    execution_plan_bundle: object | None = None,
-) -> SignalExecutionRequest:
-    typed_request = TypedExecutionRequest(
-        signal=signal,
-        ts=ts,
-        market_price=market_price,
-        strategy_name=strategy_name,
-        decision_id=decision_id,
-        decision_reason=decision_reason,
-        exit_rule_name=exit_rule_name,
-        execution_decision_summary=execution_decision_summary,
-        execution_plan_bundle=execution_plan_bundle,
-    )
-    return SignalExecutionRequest.from_typed(
-        typed_request,
-        observability_payload=ExecutionObservabilityPayload(decision_context or {}),
-    )
-
-
-def authoritative_execution_signal_for_trade(
-    decision_context: dict[str, object] | None,
-    *,
-    fallback_signal: object,
-) -> str:
-    if isinstance(decision_context, dict):
-        planned = str(decision_context.get("authoritative_execution_signal") or "").strip().upper()
-        if planned in {"BUY", "SELL", "HOLD"}:
-            return planned
-        execution_decision = decision_context.get("execution_decision")
-        if isinstance(execution_decision, dict):
-            planned = str(execution_decision.get("final_signal") or "").strip().upper()
-            if planned in {"BUY", "SELL", "HOLD"}:
-                return planned
-    fallback = str(fallback_signal or "HOLD").strip().upper()
-    return fallback if fallback in {"BUY", "SELL", "HOLD"} else "HOLD"
 
 
 def _halt_reason(code: str, detail: str) -> HaltReason:
@@ -675,7 +583,14 @@ def maybe_clear_stale_initial_reconcile_halt() -> bool:
     clearance = evaluate_initial_reconcile_halt_clearance()
     if not clearance.allowed:
         return False
-    _recovery_controller().apply_clearance(clearance)
+    transition = _recovery_controller().apply_clearance(clearance)
+    _record_runtime_cycle_artifact(
+        "recovery:initial_reconcile_clear",
+        startup_state="RECOVERY",
+        recovery_decision_hash=clearance.as_dict()["decision_hash"],
+        state_transition_hash=transition.as_dict()["decision_hash"],
+        notification_event_hashes=clearance.as_dict().get("operator_event_hashes", []),
+    )
     event_name = (
         "[RUN] startup_gate_auto_recovery_continue"
         if state.halt_reason_code == "STARTUP_SAFETY_GATE"
@@ -698,7 +613,14 @@ def maybe_clear_stale_live_execution_broker_halt(*, startup_gate_reason: str | N
     )
     if not clearance.allowed:
         return False
-    _recovery_controller().apply_clearance(clearance)
+    transition = _recovery_controller().apply_clearance(clearance)
+    _record_runtime_cycle_artifact(
+        "recovery:live_execution_broker_clear",
+        startup_state="RECOVERY",
+        recovery_decision_hash=clearance.as_dict()["decision_hash"],
+        state_transition_hash=transition.as_dict()["decision_hash"],
+        notification_event_hashes=clearance.as_dict().get("operator_event_hashes", []),
+    )
     _log_loop_event(
         logging.INFO,
         "[RUN] stale_live_execution_broker_halt_cleared",
@@ -724,7 +646,14 @@ def maybe_clear_stale_risk_state_mismatch_halt(*, startup_gate_reason: str | Non
     )
     if not clearance.allowed:
         return False
-    _recovery_controller().apply_clearance(clearance)
+    transition = _recovery_controller().apply_clearance(clearance)
+    _record_runtime_cycle_artifact(
+        "recovery:risk_state_mismatch_clear",
+        startup_state="RECOVERY",
+        recovery_decision_hash=clearance.as_dict()["decision_hash"],
+        state_transition_hash=transition.as_dict()["decision_hash"],
+        notification_event_hashes=clearance.as_dict().get("operator_event_hashes", []),
+    )
     _log_loop_event(
         logging.INFO,
         "[RUN] stale_risk_state_mismatch_halt_cleared",
@@ -811,11 +740,12 @@ def evaluate_restart_readiness() -> list[tuple[str, bool, str]]:
 
 def _safety_controller() -> SafetyController:
     from ..recovery import cancel_open_orders_with_broker
+    state_store = RuntimeStateStore(runtime_state.snapshot)
 
     return SafetyController(
         symbol=settings.PAIR,
         state_snapshot=runtime_state.snapshot,
-        enter_halt=runtime_state.enter_halt,
+        enter_halt=state_store.enter_halt,
         resume_evaluator=evaluate_resume_eligibility,
         latest_order_identifiers=_latest_order_identifiers,
         count_open_orders=_count_open_orders,
@@ -833,6 +763,7 @@ def _safety_controller() -> SafetyController:
 
 
 def _startup_controller() -> StartupController:
+    recovery_controller = _recovery_controller()
     return StartupController(
         symbol=settings.PAIR,
         startup_gate_evaluator=evaluate_startup_safety_gate,
@@ -858,6 +789,12 @@ def _startup_controller() -> StartupController:
         ),
         enable_trading=runtime_state.enable_trading,
         set_resume_gate=runtime_state.set_resume_gate,
+        recovery_clearance_evaluators=(
+            evaluate_initial_reconcile_halt_clearance,
+            evaluate_live_execution_broker_halt_clearance,
+            evaluate_risk_state_mismatch_halt_clearance,
+        ),
+        recovery_clearance_applier=recovery_controller.apply_clearance,
     )
 
 
@@ -1047,6 +984,7 @@ def run_loop() -> None:
     _record_runtime_cycle_artifact(
         "startup",
         startup_state=startup_result.status,
+        readiness_hash=startup_result.as_dict()["decision_hash"],
         notification_event_hashes=startup_result.as_dict().get("operator_event_hashes", []),
         state_transition_hash=(
             startup_result.as_dict().get("halt_transition", {}).get("decision_hash")
@@ -1054,6 +992,26 @@ def run_loop() -> None:
             else None
         ),
     )
+    startup_clearances = startup_result.evidence.get("clearance_artifacts")
+    startup_transitions = startup_result.evidence.get("transition_artifacts")
+    if isinstance(startup_clearances, list):
+        transition_items = startup_transitions if isinstance(startup_transitions, list) else []
+        for idx, clearance_payload in enumerate(startup_clearances):
+            if not isinstance(clearance_payload, dict) or not bool(clearance_payload.get("allowed")):
+                continue
+            transition_payload = transition_items[idx] if idx < len(transition_items) else {}
+            _record_runtime_cycle_artifact(
+                "startup:recovery_clear",
+                startup_state=startup_result.status,
+                readiness_hash=startup_result.as_dict()["decision_hash"],
+                recovery_decision_hash=str(clearance_payload.get("decision_hash") or ""),
+                state_transition_hash=(
+                    str(transition_payload.get("decision_hash"))
+                    if isinstance(transition_payload, dict) and transition_payload.get("decision_hash")
+                    else None
+                ),
+                notification_event_hashes=clearance_payload.get("operator_event_hashes", []),
+            )
     if startup_result.status == "BLOCKED":
         _log_loop_event(
             logging.WARNING,
@@ -1074,6 +1032,14 @@ def run_loop() -> None:
         )
     broker = startup_result.broker
     from ..recovery import reconcile_with_broker
+    notification_adapter = NotificationAdapter(_operator_notification_service())
+    runtime_events = RuntimeOperatorEventComposer(settings.PAIR)
+    runtime_checkpoint = RuntimeCheckpoint(symbol=settings.PAIR, interval=settings.INTERVAL)
+    decision_coordinator = DecisionCoordinator()
+    execution_coordinator = ExecutionCoordinator(
+        str(getattr(settings, "EXECUTION_ENGINE", "lot_native") or "lot_native")
+    )
+    safety_controller = _safety_controller()
 
     sec = parse_interval_sec(settings.INTERVAL)
     runtime_strategy_set = active_runtime_strategy_set()
@@ -1143,7 +1109,7 @@ def run_loop() -> None:
                     )
                     continue
                 runtime_state.enable_trading()
-                _operator_notification_service().send_message("failsafe retry window reached, attempting auto-resume")
+                notification_adapter.send_event(runtime_events.event("failsafe_retry_window_reached"))
 
             try:
                 cmd_sync(quiet=True)
@@ -1173,8 +1139,13 @@ def run_loop() -> None:
                         candle_ts_ms=None,
                         detail="sync completed but latest candle row was not found",
                     )
-                    _operator_notification_service().send_message("no candles after sync")
-                    _record_runtime_cycle_artifact("skip:no_candles", startup_state="READY")
+                    event = runtime_events.event("no_candles_after_sync")
+                    notification_adapter.send_event(event)
+                    _record_runtime_cycle_artifact(
+                        "skip:no_candles",
+                        startup_state="READY",
+                        notification_event_hashes=[event.get("event_hash")],
+                    )
                     continue
 
                 last_ts = int(row["ts"]) if hasattr(row, "keys") else int(row[0])
@@ -1197,34 +1168,63 @@ def run_loop() -> None:
             except Exception as e:
                 fail_count += 1
                 runtime_state.set_error_count(fail_count)
-                _operator_notification_service().send_message(f"sync failed ({fail_count}/{MAX_FAILS}): {e}")
+                sync_event = runtime_events.event(
+                    "sync_failed",
+                    fail_count=fail_count,
+                    max_fails=MAX_FAILS,
+                    error=f"{type(e).__name__}: {e}",
+                )
+                notification_adapter.send_event(sync_event)
                 if fail_count >= MAX_FAILS:
                     retry_at = time.time() + FAILSAFE_RETRY_DELAY_SEC
                     pause_trading_until(retry_at)
-                    _operator_notification_service().send_message(
-                        "failsafe enabled after consecutive sync failures. "
-                        f"trading paused until epoch={int(retry_at)}"
+                    pause_event = runtime_events.event(
+                        "failsafe_pause_enabled",
+                        retry_at_epoch_sec=retry_at,
                     )
-                _record_runtime_cycle_artifact("skip:sync_failed", startup_state="READY")
+                    notification_adapter.send_event(pause_event)
+                    event_hashes = [sync_event.get("event_hash"), pause_event.get("event_hash")]
+                else:
+                    event_hashes = [sync_event.get("event_hash")]
+                _record_runtime_cycle_artifact(
+                    "skip:sync_failed",
+                    startup_state="READY",
+                    notification_event_hashes=event_hashes,
+                )
                 continue
 
             stale_cutoff_sec = sec * 2
             if candle_age_sec > stale_cutoff_sec:
-                _operator_notification_service().send_message(
-                    f"stale candle detected: age={candle_age_sec:.1f}s > "
-                    f"{stale_cutoff_sec}s; order blocked"
+                event = runtime_events.event(
+                    "stale_candle_detected",
+                    age_sec=candle_age_sec,
+                    stale_cutoff_sec=stale_cutoff_sec,
                 )
-                _record_runtime_cycle_artifact("skip:stale_candle", candle_ts=last_ts, startup_state="READY")
+                notification_adapter.send_event(event)
+                _record_runtime_cycle_artifact(
+                    "skip:stale_candle",
+                    candle_ts=last_ts,
+                    startup_state="READY",
+                    notification_event_hashes=[event.get("event_hash")],
+                )
                 continue
 
             runtime_market_check_interval = float(settings.MARKET_RUNTIME_REGISTRY_REFRESH_INTERVAL_SEC)
             if runtime_market_check_interval < 0:
-                _halt_trading(
+                decision = safety_controller.halt_trading(
                     _halt_reason(
                         "MARKET_RUNTIME_POLICY_INVALID",
                         "MARKET_RUNTIME_REGISTRY_REFRESH_INTERVAL_SEC must be >= 0",
                     ),
                     unresolved=False,
+                )
+                _record_runtime_cycle_artifact(
+                    "halt:market_runtime_policy_invalid",
+                    candle_ts=last_ts,
+                    startup_state="READY",
+                    safety_decision_hash=decision.as_dict()["decision_hash"],
+                    state_transition_hash=decision.as_dict()["state_transition"].get("decision_hash"),
+                    notification_event_hashes=decision.as_dict().get("operator_event_hashes", []),
                 )
                 continue
             should_check_runtime_market = settings.MODE == "live" and runtime_market_check_interval > 0 and (
@@ -1236,262 +1236,77 @@ def run_loop() -> None:
                     validate_market_runtime(settings)
                     last_market_runtime_check_at = now
                 except MarketPreflightValidationError as exc:
-                    _halt_trading(
+                    decision = safety_controller.halt_trading(
                         _halt_reason(
                             "MARKET_RUNTIME_CONTRACT_FAILED",
                             f"market runtime contract failed: {exc}",
                         ),
                         unresolved=False,
                     )
-                    continue
-
-            if settings.MODE == "live" and broker is not None:
-                if settings.KILL_SWITCH:
-                    halt_reason, _canceled_ok, unresolved = perform_panic_stop_cleanup(
-                        broker,
-                        reason_code="KILL_SWITCH",
-                        reason_detail="KILL_SWITCH=ON",
-                        cancel_trigger="kill-switch",
-                        flatten_trigger="kill-switch",
-                        attempt_flatten=bool(settings.KILL_SWITCH_LIQUIDATE),
-                    )
-                    _halt_trading(
-                        halt_reason,
-                        unresolved=unresolved,
-                        attempt_flatten=bool(settings.KILL_SWITCH_LIQUIDATE),
+                    _record_runtime_cycle_artifact(
+                        "halt:market_runtime_contract_failed",
+                        candle_ts=last_ts,
+                        startup_state="READY",
+                        safety_decision_hash=decision.as_dict()["decision_hash"],
+                        state_transition_hash=decision.as_dict()["state_transition"].get("decision_hash"),
+                        notification_event_hashes=decision.as_dict().get("operator_event_hashes", []),
                     )
                     continue
 
-                portfolio_cash, portfolio_qty, position_state, lot_definition = (
-                    portfolio_cash_qty_with_position_state(pair=settings.PAIR)
+            safety_result = safety_controller.evaluate_and_apply_live_runtime(
+                settings_obj=settings,
+                broker=broker,
+                now_epoch_sec=now,
+                last_close=float(last_close),
+                last_open_order_reconcile_at=last_open_order_reconcile_at,
+                portfolio_cash_qty_with_position_state=portfolio_cash_qty_with_position_state,
+                db_factory=ensure_db,
+                open_order_snapshot=_get_open_order_snapshot,
+                mark_open_orders_recovery_required=_mark_open_orders_recovery_required,
+                reconcile_with_broker=reconcile_with_broker,
+            )
+            last_open_order_reconcile_at = safety_result.last_open_order_reconcile_at
+            if safety_result.blocked:
+                safety_hash = (
+                    safety_result.safety_decision.as_dict()["decision_hash"]
+                    if safety_result.safety_decision is not None
+                    else None
                 )
-                conn = ensure_db()
-                try:
-                    if position_state is not None:
-                        dust_context = build_dust_display_context(
-                            runtime_state.snapshot().last_reconcile_metadata
-                        )
-                        # Use latest candle close as the mark price for daily-loss evaluation.
-                        blocked, reason = evaluate_daily_loss_breach(
-                            conn,
-                            ts_ms=int(now * 1000),
-                            cash=portfolio_cash,
-                            qty=portfolio_qty,
-                            price=float(last_close),
-                            broker=broker,
-                            mark_price_source="closed_candle",
-                            evaluation_origin="run_loop_daily_halt",
-                        )
-                        if blocked:
-                            reason_code = daily_loss_reason_code_from_reason(reason)
-                            if reason_code == RISK_STATE_MISMATCH:
-                                _halt_trading(
-                                    _halt_reason(RISK_STATE_MISMATCH, reason),
-                                    unresolved=True,
-                                )
-                            else:
-                                halt_reason, canceled_ok, cleanup_unresolved = _attempt_risk_breach_flatten(
-                                    broker,
-                                    reason_code="DAILY_LOSS_LIMIT",
-                                    reason_detail=reason,
-                                    cancel_trigger="daily-loss-halt",
-                                    flatten_trigger="daily-loss-halt",
-                                )
-                                _halt_trading(
-                                    halt_reason,
-                                    unresolved=cleanup_unresolved,
-                                )
-                            continue
-
-                        position_loss_qty = float(position_state.normalized_exposure.open_exposure_qty)
-                        dust_view = position_state.normalized_exposure.dust_operator_view
-                        min_position_loss_qty = max(
-                            0.0,
-                            float(0.0 if lot_definition is None else lot_definition.min_qty),
-                            float(getattr(settings, "LIVE_MIN_ORDER_QTY", 0.0) or 0.0),
-                        )
-                        if (
-                            bool(dust_context.classification.present)
-                            and bool(dust_view.resume_allowed)
-                            and min_position_loss_qty > 0.0
-                            and 0.0 < float(portfolio_qty) < min_position_loss_qty
-                        ):
-                            position_loss_qty = 0.0
-
-                        blocked, reason = evaluate_position_loss_breach(
-                            conn,
-                            qty=position_loss_qty,
-                            price=float(last_close),
-                        )
-                        if blocked:
-                            halt_reason, canceled_ok, cleanup_unresolved = _attempt_risk_breach_flatten(
-                                broker,
-                                reason_code=POSITION_LOSS_LIMIT,
-                                reason_detail=reason,
-                                cancel_trigger="position-loss-halt",
-                                flatten_trigger="position-loss-halt",
-                            )
-                            _halt_trading(
-                                halt_reason,
-                                unresolved=cleanup_unresolved,
-                            )
-                            continue
-                finally:
-                    conn.close()
-
-                open_count, oldest_open_age_sec = _get_open_order_snapshot(int(now * 1000))
-                if open_count > 0:
-                    min_reconcile_sec = max(
-                        1, int(settings.OPEN_ORDER_RECONCILE_MIN_INTERVAL_SEC)
-                    )
-                    if (
-                        last_open_order_reconcile_at is None
-                        or (now - last_open_order_reconcile_at) >= min_reconcile_sec
-                    ):
-                        try:
-                            reconcile_with_broker(broker)
-                            last_open_order_reconcile_at = now
-                        except Exception as e:
-                            _halt_trading(
-                                _halt_reason(
-                                    "PERIODIC_RECONCILE_FAILED",
-                                    f"periodic reconcile failed ({type(e).__name__}): {e}",
-                                ),
-                                unresolved=True,
-                            )
-                            continue
-
-                    open_count, oldest_open_age_sec = _get_open_order_snapshot(
-                        int(now * 1000)
-                    )
-                    if open_count > 0 and oldest_open_age_sec is not None:
-                        max_age_sec = max(1, int(settings.MAX_OPEN_ORDER_AGE_SEC))
-                        if oldest_open_age_sec > max_age_sec:
-                            reason = (
-                                "stale unresolved open order detected: "
-                                f"age={oldest_open_age_sec:.1f}s > {max_age_sec}s"
-                            )
-                            marked = _mark_open_orders_recovery_required(
-                                reason, int(now * 1000)
-                            )
-                            latest_client_order_id, latest_exchange_order_id = _latest_order_identifiers()
-                            NotificationAdapter(_operator_notification_service()).send_event(
-                                OperatorEventComposer(settings.PAIR).stale_open_order_recovery_required_event(
-                                    reason=reason,
-                                    marked_count=marked,
-                                    latest_client_order_id=latest_client_order_id,
-                                    latest_exchange_order_id=latest_exchange_order_id,
-                                    open_order_count=_count_open_orders(),
-                                    unresolved_order_count=runtime_state.snapshot().unresolved_open_order_count,
-                                    position_summary=_position_summary(),
-                                )
-                            )
-                            canceled_ok = _attempt_open_order_cancellation(
-                                broker, trigger="stale-open-order-halt"
-                            )
-                            halt_detail = (
-                                f"{reason}; marked={marked} recovery_required; "
-                                + (
-                                    "emergency cancellation attempted"
-                                    if canceled_ok
-                                    else "emergency cancellation failed"
-                                )
-                            )
-                            if not canceled_ok:
-                                revalidated_safe, revalidation_detail = _revalidate_cleanup_state_after_failure(
-                                    broker,
-                                    trigger="stale-open-order-halt",
-                                )
-                                halt_detail += f"; {revalidation_detail}"
-                                _halt_trading(
-                                    _halt_reason("STALE_OPEN_ORDER", halt_detail),
-                                    unresolved=not revalidated_safe,
-                                )
-                            else:
-                                _halt_trading(
-                                    _halt_reason("STALE_OPEN_ORDER", halt_detail),
-                                    unresolved=True,
-                                )
-                            continue
-
-                    if open_count > 0:
-                        NotificationAdapter(_operator_notification_service()).send_event(
-                            OperatorEventComposer(settings.PAIR).recovery_required_event(
-                                reason_code=RISKY_ORDER_BLOCK,
-                                reason="unresolved open order exists; skip new order placement",
-                                event_name="order_submit_blocked",
-                            )
-                        )
-                        _record_runtime_cycle_artifact("skip:open_order_blocked", startup_state="READY")
-                        continue
+                _record_runtime_cycle_artifact(
+                    safety_result.cycle_id or "safety:block",
+                    candle_ts=last_ts,
+                    startup_state="READY",
+                    safety_decision_hash=safety_hash,
+                    state_transition_hash=safety_result.state_transition_hash,
+                    notification_event_hashes=safety_result.notification_event_hashes,
+                )
+                continue
 
             state = runtime_state.snapshot()
             last_processed_candle_ts_ms = state.last_processed_candle_ts_ms
 
-            if incomplete_ts is not None:
-                _log_loop_event(
-                    logging.INFO,
-                    "[SKIP] incomplete/open candle",
-                    symbol=settings.PAIR,
-                    interval=settings.INTERVAL,
-                    candle_ts=incomplete_ts,
-                    last_processed_candle_ts=last_processed_candle_ts_ms,
-                    reason=f"latest candle has not cleared close guard ({_close_guard_ms(sec)}ms)",
+            checkpoint_decision = runtime_checkpoint.evaluate_closed_candle(
+                closed_row=closed_row,
+                incomplete_ts=incomplete_ts,
+                last_processed_candle_ts_ms=last_processed_candle_ts_ms,
+                close_guard_ms=_close_guard_ms(sec),
+            )
+            if not checkpoint_decision.allowed:
+                _record_runtime_cycle_artifact(
+                    checkpoint_decision.cycle_id,
+                    candle_ts=checkpoint_decision.candle_ts,
+                    startup_state="READY",
                 )
-
-            if closed_row is None:
-                _log_loop_event(
-                    logging.INFO,
-                    "[SKIP] incomplete/open candle",
-                    symbol=settings.PAIR,
-                    interval=settings.INTERVAL,
-                    candle_ts=incomplete_ts,
-                    last_processed_candle_ts=last_processed_candle_ts_ms,
-                    reason="no fully closed candle available yet",
-                )
-                _record_runtime_cycle_artifact("skip:no_closed_candle", candle_ts=incomplete_ts, startup_state="READY")
                 continue
 
-            closed_candle_ts_ms = int(closed_row["ts"]) if hasattr(closed_row, "keys") else int(closed_row[0])
-            if last_processed_candle_ts_ms is not None:
-                if closed_candle_ts_ms == last_processed_candle_ts_ms:
-                    _log_loop_event(
-                        logging.INFO,
-                        "[SKIP] duplicate candle",
-                        symbol=settings.PAIR,
-                        interval=settings.INTERVAL,
-                        candle_ts=closed_candle_ts_ms,
-                        last_processed_candle_ts=last_processed_candle_ts_ms,
-                        reason="closed candle already processed before restart/previous tick",
-                    )
-                    _record_runtime_cycle_artifact("skip:duplicate_candle", candle_ts=closed_candle_ts_ms, startup_state="READY")
-                    continue
-                if closed_candle_ts_ms < last_processed_candle_ts_ms:
-                    _log_loop_event(
-                        logging.INFO,
-                        "[SKIP] stale candle",
-                        symbol=settings.PAIR,
-                        interval=settings.INTERVAL,
-                        candle_ts=closed_candle_ts_ms,
-                        last_processed_candle_ts=last_processed_candle_ts_ms,
-                        reason="closed candle is older than persisted last processed candle",
-                    )
-                    _record_runtime_cycle_artifact("skip:stale_processed_candle", candle_ts=closed_candle_ts_ms, startup_state="READY")
-                    continue
+            closed_candle_ts_ms = int(checkpoint_decision.candle_ts or 0)
+            decision_result = decision_coordinator.decide_cycle(
+                runtime_strategy_set=runtime_strategy_set,
+                candle_ts=closed_candle_ts_ms,
+                updated_ts=int(now * 1000),
+            )
 
-            conn = ensure_db()
-            typed_runtime_decision: RuntimeStrategyDecisionResult | None = None
-            typed_runtime_decision_bundle: RuntimeStrategyDecisionResultBundle | None = None
-            try:
-                typed_runtime_decision_bundle = RuntimeDecisionGateway().decide_bundle(
-                    conn,
-                    strategy_set=runtime_strategy_set,
-                    through_ts_ms=closed_candle_ts_ms,
-                )
-            finally:
-                conn.close()
-
-            if typed_runtime_decision_bundle is None:
+            if decision_result.persistence_status == "insufficient_signal_history":
                 _log_loop_event(
                     logging.INFO,
                     "[RUN] signal_skipped",
@@ -1499,21 +1314,17 @@ def run_loop() -> None:
                     interval=settings.INTERVAL,
                     candle_ts=closed_candle_ts_ms,
                     last_processed_candle_ts=last_processed_candle_ts_ms,
-                    reason="insufficient candle history; signal will be recalculated after more syncs",
+                    reason=decision_result.reason,
                 )
                 _record_runtime_cycle_artifact("skip:insufficient_signal_history", candle_ts=closed_candle_ts_ms, startup_state="READY")
                 continue
-            typed_runtime_decision = typed_runtime_decision_bundle.results[0]
+
             r = {
-                "ts": typed_runtime_decision.candle_ts,
-                "last_close": typed_runtime_decision.market_price,
-                "signal": typed_runtime_decision.decision.final_signal,
-                "reason": typed_runtime_decision.decision.final_reason,
-                "strategy": (
-                    "multi_strategy"
-                    if typed_runtime_decision_bundle.strategy_set.multi_strategy_enabled
-                    else typed_runtime_decision.decision.strategy_name
-                ),
+                "ts": decision_result.candle_ts,
+                "last_close": decision_result.market_price,
+                "signal": decision_result.signal,
+                "reason": decision_result.reason,
+                "strategy": decision_result.strategy_name,
             }
 
             _log_loop_event(
@@ -1529,61 +1340,18 @@ def run_loop() -> None:
                 reason=r["reason"],
             )
 
-            conn = ensure_db()
-            decision_id: int | None = None
-            decision_reason_for_trade: str | None = None
-            decision_exit_rule_name: str | None = None
-            decision_strategy_name_for_trade: str | None = None
-            decision_context_for_trade: dict[str, object] | None = None
-            execution_decision_summary_for_trade = None
-            execution_plan_bundle_for_trade = None
-            try:
-                assert typed_runtime_decision_bundle is not None
-                strategy_name = (
-                    "multi_strategy"
-                    if typed_runtime_decision_bundle.strategy_set.multi_strategy_enabled
-                    else typed_runtime_decision.decision.strategy_name
-                )
-                signal = typed_runtime_decision.decision.final_signal
-                reason = typed_runtime_decision.decision.final_reason
-                planner = run_loop_execution_planner(
-                    target_state_resolver=_resolve_target_position_state_for_run_loop,
-                    persistence_context_builder=prepare_strategy_decision_persistence_context,
-                )
-                planning_bundle = planner.plan_runtime_strategy_results(
-                    conn,
-                    typed_runtime_decision_bundle,
-                    updated_ts=int(now * 1000),
-                )
-                context = planning_bundle.persistence_context
-                if typed_runtime_decision_bundle.strategy_set.multi_strategy_enabled:
-                    target_payload = context.get("portfolio_target")
-                    if isinstance(target_payload, dict):
-                        target_conflict = target_payload.get("conflict_resolution")
-                        if isinstance(target_conflict, dict):
-                            signal = str(target_conflict.get("selected_signal") or signal)
-                    reason = str(context.get("allocator_reason") or reason)
-                decision_context_for_trade = context
-                execution_decision_summary_for_trade = planning_bundle.summary
-                execution_plan_bundle_for_trade = planning_bundle
-                execution_decision = dict(context["execution_decision"])  # type: ignore[arg-type]
-                exit_ctx = context.get("exit")
-                if isinstance(exit_ctx, dict):
-                    raw_rule = exit_ctx.get("rule")
-                    if raw_rule is not None:
-                        decision_exit_rule_name = str(raw_rule)
-                decision_reason_for_trade = reason
-                decision_strategy_name_for_trade = strategy_name
-                candle_ts_raw = context.get("ts")
-                market_price_raw = context.get("last_close")
-                confidence_raw = context.get("confidence")
+            decision_context_for_trade = decision_result.decision_context
+            execution_decision_summary_for_trade = decision_result.execution_decision_summary
+            execution_plan_bundle_for_trade = decision_result.execution_plan_bundle
+            if decision_context_for_trade is not None:
+                context = decision_context_for_trade
                 _log_loop_event(
                     logging.INFO,
                     "[RUN] strategy decision",
-                    strategy=strategy_name,
+                    strategy=decision_result.strategy_name,
                     decision_type=str(context.get("decision_type") or "-"),
-                    raw_signal=str(context.get("raw_signal") or context.get("base_signal") or signal),
-                    final_signal=signal,
+                    raw_signal=str(context.get("raw_signal") or context.get("base_signal") or decision_result.signal),
+                    final_signal=decision_result.signal,
                     entry_blocked=1 if bool(context.get("entry_blocked")) else 0,
                     entry_block_reason=str(context.get("entry_block_reason") or "-"),
                     dust_classification=str(context.get("dust_classification") or context.get("position_gate", {}).get("dust_state") or "-"),
@@ -1644,40 +1412,10 @@ def run_loop() -> None:
                     target_missing_state_resolution=str(context.get("target_missing_state_resolution") or "-"),
                     target_closeout_requested=1 if bool(context.get("target_closeout_requested")) else 0,
                     target_strategy_signal_source=str(context.get("target_strategy_signal_source") or "-"),
-                    reason=reason,
+                    reason=decision_result.reason,
                 )
-                try:
-                    decision_id = record_strategy_decision(
-                        conn,
-                        decision_ts=int(now * 1000),
-                        strategy_name=strategy_name,
-                        signal=signal,
-                        reason=reason,
-                        candle_ts=int(candle_ts_raw) if candle_ts_raw is not None else None,
-                        market_price=float(market_price_raw) if market_price_raw is not None else None,
-                        confidence=float(confidence_raw) if confidence_raw is not None else None,
-                        context=context,
-                    )
-                    _persist_target_position_state_for_run_loop(
-                        conn,
-                        execution_decision=execution_decision,
-                        signal=signal,
-                        decision_id=decision_id,
-                        updated_ts=int(now * 1000),
-                    )
-                    conn.commit()
-                except Exception as exc:
-                    _log_loop_event(
-                        logging.WARNING,
-                        "[WARN] strategy decision persistence failed",
-                        error=f"{type(exc).__name__}: {exc}",
-                        strategy=strategy_name,
-                        signal=signal,
-                    )
-            finally:
-                conn.close()
 
-            if decision_id is None:
+            if decision_result.decision_id is None:
                 _log_loop_event(
                     logging.WARNING,
                     "[ORDER_SKIP] strategy decision not durable",
@@ -1692,17 +1430,11 @@ def run_loop() -> None:
                     "skip:decision_persistence_failed",
                     candle_ts=int(r["ts"]),
                     startup_state="READY",
-                    strategy_decision_hash=_artifact_hash(decision_context_for_trade or {}),
-                    execution_plan_bundle_hash=_artifact_hash(execution_plan_bundle_for_trade),
+                    strategy_decision_hash=decision_result.strategy_decision_hash,
+                    execution_plan_bundle_hash=decision_result.execution_plan_bundle_hash,
                 )
                 continue
 
-            execution_coordinator = ExecutionCoordinator(
-                str(getattr(settings, "EXECUTION_ENGINE", "lot_native") or "lot_native")
-            )
-            submit_expectation = execution_coordinator.resolve_submit_expectation(
-                execution_decision_summary_for_trade
-            )
             if execution_decision_summary_for_trade is None:
                 _log_loop_event(
                     logging.WARNING,
@@ -1718,17 +1450,39 @@ def run_loop() -> None:
                     "skip:execution_summary_missing",
                     candle_ts=int(r["ts"]),
                     startup_state="READY",
-                    strategy_decision_hash=_artifact_hash(decision_context_for_trade or {}),
-                    execution_plan_bundle_hash=_artifact_hash(execution_plan_bundle_for_trade),
+                    strategy_decision_hash=decision_result.strategy_decision_hash,
+                    execution_plan_bundle_hash=decision_result.execution_plan_bundle_hash,
                 )
                 continue
-            apply_processed_candle_checkpoint(candle_ts_ms=int(r["ts"]), now_epoch_sec=now)
+
+            execution_result = execution_coordinator.execute_cycle(
+                candle_ts=int(r["ts"]),
+                decision_id=decision_result.decision_id,
+                signal=str(r["signal"] or "HOLD"),
+                market_price=float(r["last_close"] or 0.0),
+                strategy_name=decision_result.strategy_name,
+                decision_reason=decision_result.reason,
+                exit_rule_name=decision_result.exit_rule_name,
+                decision_context=decision_context_for_trade,
+                execution_plan_bundle=execution_plan_bundle_for_trade,
+                execution_decision_summary=execution_decision_summary_for_trade,
+                execution_service=execution_service,
+                post_trade_reconcile=(
+                    (lambda: reconcile_with_broker(broker))
+                    if settings.MODE == "live" and broker is not None
+                    else None
+                ),
+                input_hash=decision_result.as_dict()["decision_hash"],
+                execution_plan_bundle_hash=decision_result.execution_plan_bundle_hash,
+            )
+            if execution_result.mark_processed_allowed:
+                runtime_checkpoint.apply(candle_ts_ms=int(r["ts"]), now_epoch_sec=now)
             _record_runtime_cycle_artifact(
                 "checkpoint:processed",
                 candle_ts=int(r["ts"]),
                 startup_state="READY",
-                strategy_decision_hash=_artifact_hash(decision_context_for_trade or {}),
-                execution_plan_bundle_hash=_artifact_hash(execution_plan_bundle_for_trade),
+                strategy_decision_hash=decision_result.strategy_decision_hash,
+                execution_plan_bundle_hash=decision_result.execution_plan_bundle_hash,
             )
             _log_loop_event(
                 logging.INFO,
@@ -1739,61 +1493,32 @@ def run_loop() -> None:
                 last_processed_candle_ts=last_processed_candle_ts_ms,
                 reason="decision_persisted_execution_planned",
             )
-            target_delta_submit = execution_coordinator.target_delta_submit_expected(submit_expected=submit_expectation.submit_expected)
-            authoritative_execution_signal = authoritative_execution_signal_for_trade(
-                decision_context_for_trade,
-                fallback_signal=r["signal"],
-            )
-            if authoritative_execution_signal not in ("BUY", "SELL") and not target_delta_submit:
+
+            if execution_result.halt_transition:
+                halt_reason_code = str(execution_result.halt_transition.get("reason_code") or execution_result.planning_status)
+                halt_reason = str(execution_result.halt_transition.get("evidence", {}).get("error") or halt_reason_code)
+                decision = safety_controller.halt_trading(
+                    _halt_reason(halt_reason_code, halt_reason),
+                    unresolved=True,
+                )
+                event = runtime_events.execution_failure_from_transition(execution_result.halt_transition)
+                notification_adapter.send_event(event)
+                _record_runtime_cycle_artifact(
+                    f"halt:{execution_result.planning_status}",
+                    candle_ts=int(r["ts"]),
+                    startup_state="READY",
+                    strategy_decision_hash=decision_result.strategy_decision_hash,
+                    execution_plan_bundle_hash=decision_result.execution_plan_bundle_hash,
+                    safety_decision_hash=decision.as_dict()["decision_hash"],
+                    state_transition_hash=decision.as_dict()["state_transition"].get("decision_hash"),
+                    notification_event_hashes=[
+                        *decision.as_dict().get("operator_event_hashes", []),
+                        event.get("event_hash"),
+                    ],
+                )
                 continue
 
-            trade = None
-            if execution_service is not None:
-                try:
-                    trade = execution_service.execute(
-                        build_signal_execution_request(
-                            signal=authoritative_execution_signal,
-                            ts=r["ts"],
-                            market_price=float(r["last_close"]),
-                            strategy_name=decision_strategy_name_for_trade,
-                            decision_id=decision_id,
-                            decision_reason=decision_reason_for_trade,
-                            exit_rule_name=decision_exit_rule_name,
-                            execution_decision_summary=execution_decision_summary_for_trade,
-                            decision_context=decision_context_for_trade,
-                            execution_plan_bundle=execution_plan_bundle_for_trade,
-                        )
-                    )
-                except BrokerError as e:
-                    _halt_trading(
-                        _halt_reason(
-                            "LIVE_EXECUTION_BROKER_ERROR",
-                            f"live execution broker error ({type(e).__name__}): {e}",
-                        ),
-                        unresolved=True,
-                    )
-                    continue
-                except Exception as e:
-                    _halt_trading(
-                        _halt_reason(
-                            "LIVE_EXECUTION_FAILED",
-                            f"live execution failed ({type(e).__name__}): {e}",
-                        ),
-                        unresolved=True,
-                    )
-                    continue
-                if settings.MODE == "live" and broker is not None:
-                    try:
-                        reconcile_with_broker(broker)
-                    except Exception as e:
-                        _halt_trading(
-                            _halt_reason(
-                                "POST_TRADE_RECONCILE_FAILED",
-                                f"reconcile failed ({type(e).__name__}): {e}",
-                            ),
-                            unresolved=True,
-                        )
-                        continue
+            trade = execution_result.trade
 
             if trade:
                 _log_loop_event(

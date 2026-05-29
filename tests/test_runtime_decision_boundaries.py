@@ -793,13 +793,17 @@ def test_run_loop_does_not_unconditionally_enable_legacy_context_planning() -> N
     assert "_plan_legacy_run_loop_context_for_compatibility" not in run_loop_source
 
 
-def test_run_loop_uses_only_runtime_decision_gateway_for_decisions() -> None:
+def test_run_loop_uses_decision_coordinator_for_decisions() -> None:
     source = Path("src/bithumb_bot/runtime/runner.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(source)
     run_loop = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "run_loop")
     run_loop_source = ast.get_source_segment(source, run_loop) or ""
 
-    assert "RuntimeDecisionGateway().decide_bundle(" in run_loop_source
+    assert "DecisionCoordinator()" in run_loop_source
+    assert ".decide_cycle(" in run_loop_source
+    assert "RuntimeDecisionGateway().decide_bundle(" not in run_loop_source
+    assert "record_strategy_decision(" not in run_loop_source
+    assert "run_loop_execution_planner(" not in run_loop_source
     assert "compute_signal" not in run_loop_source
     assert "_ORIGINAL_COMPUTE_SIGNAL" not in run_loop_source
     assert "compute_signal_runtime_handoff" not in run_loop_source

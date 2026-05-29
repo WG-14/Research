@@ -27,6 +27,19 @@ from .runtime.runner import (
     perform_panic_stop_cleanup,
     run_loop,
 )
+from .execution_service import build_execution_decision_summary
+from .config import settings
+from .runtime.execution_coordinator import (
+    resolve_typed_execution_submit_expectation as _resolve_typed_execution_submit_expectation,
+)
+from .run_loop_execution_planner import prepare_strategy_decision_persistence_context
+
+
+def resolve_typed_execution_submit_expectation(summary):
+    return _resolve_typed_execution_submit_expectation(
+        summary,
+        execution_engine_name=str(getattr(settings, "EXECUTION_ENGINE", "lot_native") or "lot_native"),
+    )
 
 __all__ = [
     "ResumeBlocker",
@@ -45,6 +58,7 @@ __all__ = [
     "authoritative_execution_signal_for_trade",
     "build_resume_guidance",
     "build_signal_execution_request",
+    "build_execution_decision_summary",
     "compute_strategy_decision_snapshot",
     "evaluate_restart_readiness",
     "evaluate_resume_eligibility",
@@ -54,4 +68,6 @@ __all__ = [
     "maybe_clear_stale_initial_reconcile_halt",
     "perform_panic_stop_cleanup",
     "run_loop",
+    "resolve_typed_execution_submit_expectation",
+    "prepare_strategy_decision_persistence_context",
 ]

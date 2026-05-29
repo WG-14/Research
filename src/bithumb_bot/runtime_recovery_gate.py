@@ -30,6 +30,22 @@ class ResumeBlocker:
     recent_external_cash_adjustment_count: int | None = None
 
 
+@dataclass(frozen=True)
+class DeprecatedClearerShimClearance:
+    clearance_type: str
+    allowed: bool = False
+    reason_code: str = "DEPRECATED_SIDE_EFFECT_CLEARER_NOT_USED_IN_PREPARE"
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "artifact_type": "deprecated_clearer_shim_clearance",
+            "schema_version": 1,
+            "clearance_type": self.clearance_type,
+            "allowed": self.allowed,
+            "reason_code": self.reason_code,
+        }
+
+
 def resume_blocker(
     *,
     code: str,
@@ -152,19 +168,19 @@ class RuntimeRecoveryGateService:
             self,
             "initial_reconcile_halt_evaluator",
             initial_reconcile_halt_evaluator
-            or (lambda **_kwargs: stale_initial_reconcile_halt_clearer() if stale_initial_reconcile_halt_clearer else False),
+            or (lambda **_kwargs: DeprecatedClearerShimClearance("initial_reconcile")),
         )
         object.__setattr__(
             self,
             "live_execution_broker_halt_evaluator",
             live_execution_broker_halt_evaluator
-            or (lambda **kwargs: stale_live_execution_broker_halt_clearer(**kwargs) if stale_live_execution_broker_halt_clearer else False),
+            or (lambda **_kwargs: DeprecatedClearerShimClearance("live_execution_broker")),
         )
         object.__setattr__(
             self,
             "risk_state_mismatch_halt_evaluator",
             risk_state_mismatch_halt_evaluator
-            or (lambda **kwargs: stale_risk_state_mismatch_halt_clearer(**kwargs) if stale_risk_state_mismatch_halt_clearer else False),
+            or (lambda **_kwargs: DeprecatedClearerShimClearance("risk_state_mismatch")),
         )
         object.__setattr__(self, "state_snapshot", state_snapshot)
         object.__setattr__(self, "startup_gate_reason_classifier", startup_gate_reason_classifier)
