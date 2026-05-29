@@ -1,3 +1,10 @@
+"""Compatibility import surface for historical backtest-loop users.
+
+The old loop body has been retired. This module intentionally delegates the
+legacy implementation name to DefaultBacktestPipeline so callers cannot bypass
+the stage-owned authority boundaries.
+"""
+
 from __future__ import annotations
 
 from . import backtest_support as support

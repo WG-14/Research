@@ -1,3 +1,10 @@
+"""Compatibility import surface for historical research backtest users.
+
+Decision-event backtests delegate through BacktestKernel and DefaultBacktestPipeline.
+This module keeps old import paths stable without owning common strategy, risk,
+execution, or ledger authority.
+"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -204,6 +211,7 @@ def _run_decision_event_backtest_impl(
     portfolio_policy: PortfolioPolicy | None = None,
     context: BacktestRunContext | None = None,
 ) -> BacktestRun:
+    """Compatibility implementation name; delegates to BacktestKernel."""
     from .backtest_kernel import run_decision_event_backtest as _run_decision_event_backtest
 
     return _run_decision_event_backtest(

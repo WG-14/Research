@@ -77,6 +77,9 @@ def run_decision_event_backtest(
 
 
 # Compatibility re-exports for existing tests and downstream research tooling.
+# These names are not authority boundaries. New code should enter through
+# BacktestKernel.run() or DefaultBacktestPipeline and let the pipeline stages own
+# strategy, risk, execution, ledger, metrics, and experiment responsibilities.
 from .backtest_pipeline import (  # noqa: E402
     ResearchExecutionPlanBundle,
     _execution_plan_evidence,

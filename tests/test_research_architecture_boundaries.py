@@ -217,6 +217,50 @@ def test_research_runtime_parity_matrix_declares_supported_strategy_boundaries()
     assert "safe_hold" not in source
 
 
+def test_safe_hold_is_documented_as_runtime_failsafe_outside_research_parity() -> None:
+    plugin = strategy_registry.resolve_research_strategy_plugin("safe_hold")
+    plugin_source = _source("src/bithumb_bot/strategy_plugins/safe_hold_plugin.py")
+    authoring_doc = _source("docs/strategy-plugin-authoring.md")
+    readme = _source("README.md")
+
+    assert plugin.research_runnable is False
+    assert plugin.research_event_builder is None
+    assert plugin.runtime_capabilities.runtime_replay_supported is False
+    assert plugin.runtime_capabilities.live_real_order_allowed is False
+    assert "runtime fail-safe" in plugin_source
+    assert "safe_hold` are outside the research" in authoring_doc
+    assert "`safe_hold` is a typed runtime fail-safe strategy" in readme
+
+
+def test_portfolio_ledger_is_only_authority_facing_pending_fill_mutator() -> None:
+    authority_callers: list[str] = []
+    for path in (ROOT / "src/bithumb_bot/research").rglob("*.py"):
+        rel = path.relative_to(ROOT).as_posix()
+        source = path.read_text(encoding="utf-8-sig")
+        if "support.apply_pending_fills(" in source:
+            authority_callers.append(rel)
+
+    assert authority_callers == ["src/bithumb_bot/research/portfolio_ledger.py"]
+    assert "PortfolioLedger is the only authority-facing entry point" in _source(
+        "src/bithumb_bot/research/backtest_common.py"
+    )
+    assert "Compatibility wrapper; PortfolioLedger owns authority-facing mutation" in _source(
+        "src/bithumb_bot/research/backtest_support.py"
+    )
+
+
+def test_backtest_compatibility_surfaces_document_pipeline_delegation() -> None:
+    kernel_source = _source("src/bithumb_bot/research/backtest_kernel.py")
+    engine_source = _source("src/bithumb_bot/research/backtest_engine.py")
+    loop_source = _source("src/bithumb_bot/research/backtest_loop.py")
+
+    assert "These names are not authority boundaries" in kernel_source
+    assert "Compatibility import surface" in engine_source
+    assert "Compatibility import surface" in loop_source
+    assert "DefaultBacktestPipeline().run(" in loop_source
+    assert "BacktestKernel and DefaultBacktestPipeline" in engine_source
+
+
 @pytest.mark.parametrize("strategy_name", ("sma_with_filter", "canary_non_sma"))
 def test_promotion_grade_research_policy_builders_emit_service_provenance_and_hashes(strategy_name: str) -> None:
     plugin = strategy_registry.resolve_research_strategy_plugin(strategy_name)

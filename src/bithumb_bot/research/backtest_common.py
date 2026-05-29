@@ -256,6 +256,13 @@ def _apply_pending_fills(
     float,
     float,
 ]:
+    """Ledger-private pending-fill mutation helper.
+
+    PortfolioLedger is the only authority-facing entry point for portfolio
+    state mutation. This helper remains in the common module for compatibility
+    with historical imports, but callers must not treat it as an independent
+    state authority.
+    """
     ready = sorted(
         [item for item in pending_fills if item.effective_ts <= int(boundary_ts)],
         key=lambda item: (item.effective_ts, item.trade_index),

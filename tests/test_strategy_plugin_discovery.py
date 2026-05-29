@@ -65,6 +65,17 @@ class _DynamicRuntimeReplayStrategy:
         return None
 
 
+@dataclass(frozen=True)
+class _DynamicPolicyAssembly:
+    strategy_name: str = DYNAMIC_PLUGIN_NAME
+    decision_contract_version: str = "dynamic_entrypoint_unit.decision.v1"
+
+    def materialize_parameters(self, raw: dict[str, Any]) -> dict[str, Any]:
+        if raw:
+            raise ValueError("dynamic_entrypoint_unit_parameters_unsupported")
+        return {}
+
+
 def _dynamic_runner(*args: Any, **kwargs: Any) -> Any:
     del args, kwargs
     raise AssertionError("dynamic discovery runner should not execute in these tests")
@@ -88,6 +99,10 @@ def _dynamic_parameters_from_settings(_cfg: object) -> dict[str, Any]:
 
 def _dynamic_runtime_adapter_factory() -> _DynamicRuntimeDecisionAdapter:
     return _DynamicRuntimeDecisionAdapter()
+
+
+def _dynamic_policy_assembly_factory() -> _DynamicPolicyAssembly:
+    return _DynamicPolicyAssembly()
 
 
 def _dynamic_plugin(
@@ -130,6 +145,7 @@ def _dynamic_plugin(
         decision_contract_version=spec.decision_contract_version,
         diagnostics_namespace=name,
         runtime_decision_adapter_factory=_dynamic_runtime_adapter_factory if runtime_supported else None,
+        policy_assembly_factory=_dynamic_policy_assembly_factory if runtime_supported else None,
         runtime_capabilities=StrategyRuntimeCapabilities(
             promotion_runtime_decisions_supported=runtime_supported,
             runtime_replay_supported=runtime_supported,

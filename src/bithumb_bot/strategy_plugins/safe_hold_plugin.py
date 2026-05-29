@@ -60,6 +60,7 @@ def run_safe_hold_research_placeholder(
     portfolio_policy: PortfolioPolicy | None = None,
     context: BacktestRunContext | None = None,
 ) -> BacktestRun:
+    """Fail closed because safe_hold is a runtime fail-safe, not research parity."""
     del (
         dataset,
         parameter_values,

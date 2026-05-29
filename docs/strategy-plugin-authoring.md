@@ -53,6 +53,11 @@ lazy imports to avoid circular dependencies.
    - Runtime capability is never inferred from adapter presence.
    - Research-only and baseline-only strategies must explicitly declare that
      they do not support promotion runtime decisions.
+   - Runtime fail-safe strategies such as `safe_hold` are outside the research
+     parity target. They may declare typed runtime decision support and a policy
+     assembly for runtime fail-closed behavior, but they must remain
+     `research_runnable=false`, have no `research_event_builder`, and reject
+     research execution explicitly.
    - Live dry-run and live real-order eligibility must be declared separately.
 
 4. Implement `runtime_decision_adapter_factory`.
@@ -103,7 +108,11 @@ lazy imports to avoid circular dependencies.
 
 9. Keep compatibility code isolated.
    - `strategy.registry` is legacy/smoke compatibility only.
-   - `research.backtest_engine` is compatibility-only for old import paths.
+   - `research.backtest_engine`, `research.backtest_loop`, and compatibility
+     re-exports from `research.backtest_kernel` are compatibility-only for old
+     import paths. They must delegate through `BacktestKernel` or
+     `DefaultBacktestPipeline` and must not regain strategy, risk, execution, or
+     ledger authority.
    - Do not use compatibility registry APIs as promotion, replay, or runtime
      decision authority.
 

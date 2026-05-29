@@ -528,6 +528,7 @@ def fill_applies_to_mark(*args: Any, **kwargs: Any) -> bool:
 
 
 def apply_pending_fills(*args: Any, **kwargs: Any):
+    """Compatibility wrapper; PortfolioLedger owns authority-facing mutation."""
     from .backtest_common import apply_pending_fills as impl
     return impl(*args, **kwargs)
 
