@@ -81,7 +81,9 @@ def build_dataset_quality_report_sql(
     max_missing_sample: int = 20,
     include_top_of_book: bool = True,
 ) -> DatasetQualityReport:
-    default_dataset_adapter_registry().resolve(manifest.dataset.source)
+    adapter = default_dataset_adapter_registry().resolve(manifest.dataset.source)
+    if not getattr(adapter, "supports_sqlite_streaming_quality_scan", False):
+        raise ValueError(f"dataset_adapter_sqlite_streaming_not_supported:{manifest.dataset.source}")
     if manifest.dataset.top_of_book is not None:
         default_dataset_adapter_registry().resolve_top_of_book(manifest.dataset.top_of_book.source)
     date_range = _split_range(manifest, split_name)
@@ -220,6 +222,7 @@ def build_dataset_quality_report_sql(
         "signal_level_depth_coverage_status": "not_computed_depth_walk_not_wired_to_research_backtest",
         "depth_liquidity_sufficiency_status": "not_computed_depth_walk_not_wired_to_research_backtest",
     }
+    payload["adapter_provenance_hash"] = sha256_prefixed(payload["adapter_provenance"])
     if top_of_book:
         payload.update(top_of_book)
         tob_reasons = list(top_of_book.get("top_of_book_gate_reasons") or [])

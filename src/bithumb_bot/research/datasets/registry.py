@@ -29,6 +29,22 @@ class DatasetAdapterRegistry:
                 return adapter
         raise UnsupportedDatasetAdapterError(f"unsupported_top_of_book_adapter:{normalized}")
 
+    def resolve_depth(self, source: str) -> DatasetAdapter:
+        normalized = str(source or "").strip()
+        for adapter in self._adapters.values():
+            if normalized in getattr(adapter, "supported_depth_sources", frozenset()):
+                return adapter
+        raise UnsupportedDatasetAdapterError(f"unsupported_depth_adapter:{normalized}")
+
+    def resolve_capability(self, source: str, capability: str) -> DatasetAdapter:
+        adapter = self.resolve(source)
+        normalized_capability = str(capability or "").strip()
+        if normalized_capability not in getattr(adapter, "supported_capabilities", frozenset()):
+            raise UnsupportedDatasetAdapterError(
+                f"unsupported_dataset_capability:{source}:{normalized_capability}"
+            )
+        return adapter
+
     def sources(self) -> tuple[str, ...]:
         return tuple(sorted(self._adapters))
 

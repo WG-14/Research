@@ -18,6 +18,8 @@ from .data_plane import (
     split_names,
     walk_forward_payload,
 )
+from .datasets.contracts import DatasetLoadContext
+from .datasets.registry import default_dataset_adapter_registry
 from .execution_calibration import compare_calibration_to_scenario, load_calibration_artifact
 from .experiment_manifest import ExperimentManifest, load_manifest
 
@@ -37,13 +39,19 @@ def build_research_readiness_report(
 
     split_reports: dict[str, dict[str, Any]] = {}
     failed = False
+    registry = default_dataset_adapter_registry()
+    adapter = registry.resolve(manifest.dataset.source)
+    if manifest.dataset.top_of_book is not None:
+        registry.resolve_top_of_book(manifest.dataset.top_of_book.source)
     for split_name in split_names(manifest):
         if progress_callback is not None:
-            progress_callback(split_name)
-        report = build_dataset_quality_report_sql(
-            db_path=resolved_db_path,
+            method = "sqlite_streaming" if getattr(adapter, "supports_sqlite_streaming_quality_scan", False) else "adapter_snapshot"
+            progress_callback(split_name, method)
+        report = _adapter_quality_report(
+            adapter=adapter,
             manifest=manifest,
             split_name=split_name,
+            db_path=resolved_db_path,
         ).payload
         split_payload = _split_payload(report)
         split_reports[split_name] = split_payload
@@ -84,6 +92,16 @@ def build_research_readiness_report(
         "manifest_hash": manifest.manifest_hash(),
         "mode": settings.MODE,
         "db_path": str(resolved_db_path),
+        "dataset_adapter": {
+            "dataset_source": manifest.dataset.source,
+            "adapter_name": adapter.adapter_name,
+            "adapter_version": adapter.adapter_version,
+            "quality_backend": (
+                "sqlite_streaming"
+                if getattr(adapter, "supports_sqlite_streaming_quality_scan", False)
+                else "adapter_snapshot"
+            ),
+        },
         "env_file": env_summary.get("env_file"),
         "env_loaded": bool(env_summary.get("loaded")),
         "env_exists": bool(env_summary.get("exists")),
@@ -124,7 +142,7 @@ def cmd_research_readiness(
             progress_callback=(
                 None
                 if as_json
-                else lambda split_name: print(f"[RESEARCH-READINESS] scanning split={split_name} method=sqlite_streaming")
+                else lambda split_name, method: print(f"[RESEARCH-READINESS] scanning split={split_name} method={method}")
             ),
         )
     except Exception as exc:
@@ -135,6 +153,29 @@ def cmd_research_readiness(
     else:
         _print_readiness(report)
     return 0 if report["status"] == "PASS" else 1
+
+
+def _adapter_quality_report(
+    *,
+    adapter: Any,
+    manifest: ExperimentManifest,
+    split_name: str,
+    db_path: Path,
+) -> Any:
+    if getattr(adapter, "supports_sqlite_streaming_quality_scan", False):
+        return build_dataset_quality_report_sql(
+            db_path=db_path,
+            manifest=manifest,
+            split_name=split_name,
+        )
+    date_range = getattr(manifest.dataset.split, split_name)
+    snapshot = adapter.load_range(
+        manifest=manifest,
+        split_name=split_name,
+        date_range=date_range,
+        context=DatasetLoadContext(db_path=db_path),
+    )
+    return adapter.quality_report(snapshot=snapshot, context=DatasetLoadContext(db_path=db_path))
 
 
 def _split_payload(report: dict[str, Any]) -> dict[str, Any]:
@@ -156,7 +197,7 @@ def _split_payload(report: dict[str, Any]) -> dict[str, Any]:
         "missing_bucket_ranges": list(report.get("missing_bucket_ranges") or []),
         "missing_bucket_sample": list(report.get("missing_bucket_sample") or []),
         "missing_ranges_truncated": bool(report.get("missing_ranges_truncated")),
-        "db_schema_fingerprint": report["db_schema_fingerprint"],
+        "db_schema_fingerprint": report.get("db_schema_fingerprint"),
         "quality_status": report["quality_gate_status"],
         "quality_reasons": list(report.get("quality_gate_reasons") or []),
         "top_of_book_required": bool(report.get("top_of_book_required")),

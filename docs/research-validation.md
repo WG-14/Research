@@ -449,6 +449,73 @@ echo "backtest_rc=${PIPESTATUS[0]}"
 
 `deployment_tier=research_only` backtests are diagnostic research outputs, not production promotion evidence. The research SMA performance fixes do not relax dataset quality gates, missing-candle policy, top-of-book requirements, execution calibration requirements, promotion gates, or production evidence requirements.
 
+## Dataset Adapter Contract
+
+Research data enters the validation flow through a source adapter, not by treating one SQLite table layout as the internal API:
+
+```text
+ExperimentManifest / DatasetSpec
+-> DatasetAdapterRegistry
+-> source-specific adapter
+-> canonical DatasetSnapshot
+-> DatasetQualityReport with adapter provenance
+-> backtest / validation / promotion / reproduction
+```
+
+`DatasetSnapshot` is the canonical in-process object. It contains normalized candles, optional top-of-book quote joins, optional event-level top-of-book quotes, optional L2 depth snapshots, the dataset source, market, interval, split name, and split date range. Source-specific file paths, table names, schemas, and locator conventions must not become canonical strategy inputs.
+
+`DatasetQualityReport` is the common quality artifact. Current reports must carry source-neutral fields including `dataset_source`, `adapter_name`, `adapter_version`, `source_content_hash`, `source_schema_hash`, `canonical_snapshot_hash`, `quality_gate_status`, `quality_gate_reasons`, `adapter_provenance`, `adapter_provenance_hash`, and `content_hash`. SQLite-specific fields such as `db_schema_fingerprint` are compatibility fields and also live under `adapter_provenance.sqlite`.
+
+SQLite remains the default compatibility adapter for existing manifests:
+
+```json
+{
+  "dataset": {
+    "source": "sqlite_candles",
+    "snapshot_id": "candles_v1",
+    "train": {"start": "2023-01-01", "end": "2023-06-30"},
+    "validation": {"start": "2023-07-01", "end": "2023-09-30"}
+  }
+}
+```
+
+Adapters may also use explicit locator/provenance fields. Production-bound manifests must use immutable, repository-external or content-addressed locators and reviewed hashes:
+
+```json
+{
+  "dataset": {
+    "source": "sqlite_candles",
+    "snapshot_id": "candles_reviewed_2026_05",
+    "source_uri": "managed-db:paper/research-reviewed/candles_reviewed_2026_05",
+    "source_content_hash": "sha256:replace_with_reviewed_dataset_content_hash",
+    "source_schema_hash": "sha256:replace_with_reviewed_schema_hash",
+    "locator": {
+      "policy": "managed-db",
+      "identity": "candles_reviewed_2026_05"
+    },
+    "options": {
+      "quality_backend": "sqlite_streaming"
+    },
+    "train": {"start": "2023-01-01", "end": "2023-06-30"},
+    "validation": {"start": "2023-07-01", "end": "2023-09-30"}
+  }
+}
+```
+
+For `paper_candidate`, `live_dry_run_candidate`, and `small_live_candidate`, validation fails closed when adapter name/version, dataset source, canonical snapshot hash, split hashes, quality hashes, source content hash, source schema hash, adapter provenance hash, or immutable locator evidence is missing or mismatched. Mutable locators such as `latest` and `current`, repo-relative paths, and wrong-mode paths such as a production-bound locator containing `/paper/` are not promotion-grade evidence.
+
+SQLite streaming quality scan is an optimization exposed by the SQLite adapter. `research-readiness` resolves the manifest source through `DatasetAdapterRegistry`; it uses SQLite streaming only when the resolved adapter declares that backend. Other adapters must provide `DatasetSnapshot` loading and a quality report path that can be evaluated without opening SQLite.
+
+To add a new research data source:
+
+1. Implement a dataset adapter that loads canonical `DatasetSnapshot` objects and emits `DatasetQualityReport` payloads with adapter provenance.
+2. Register the adapter with `DatasetAdapterRegistry`.
+3. Add adapter contract tests for source resolution, unsupported-source fail-closed behavior, quality evaluation, and provenance hashes.
+4. Add a manifest example with `source`, immutable locator fields, `source_content_hash`, and `source_schema_hash`.
+5. Verify quality, canonical snapshot, source, schema, and adapter provenance hashes.
+6. Run `research-validate`.
+7. Run `research-reproduce` on the resulting promotion artifact.
+
 ## Data Readiness And Historical Backfill
 
 Run `research-readiness` before `research-backtest` when using production or production-like manifests:
@@ -457,7 +524,7 @@ Run `research-readiness` before `research-backtest` when using production or pro
 uv run bithumb-bot research-readiness --manifest "$MANIFEST"
 ```
 
-The command is read-only and SQL/streaming-backed. It prints split-level scan progress, manifest path and hash, effective `MODE`, resolved `DB_PATH`, market, interval, split ranges, candle coverage by split, top-of-book readiness, execution calibration readiness, and walk-forward readiness. It exits non-zero when required data or evidence is missing, so operators can see why `research-backtest` will fail before generating research artifacts. The output labels production readiness separately from research-only candle diagnostics.
+The command is read-only and adapter-backed. It prints split-level scan progress, manifest path and hash, effective `MODE`, the legacy resolved `DB_PATH` when applicable, adapter name/version, market, interval, split ranges, candle coverage by split, top-of-book readiness, execution calibration readiness, and walk-forward readiness. It exits non-zero when required data or evidence is missing, so operators can see why `research-backtest` will fail before generating research artifacts. The output labels production readiness separately from research-only candle diagnostics.
 
 Historical candle acquisition uses the configured runtime DB and explicit date range:
 
@@ -633,7 +700,7 @@ Manifests are JSON to avoid adding another dependency. See:
 Required sections:
 
 - `experiment_id`, `hypothesis`, `strategy_name`, `market`, `interval`
-- `dataset.source`, `dataset.snapshot_id`, `train`, `validation`, optional `final_holdout`. `sqlite_candles` is the default/current production adapter, not the only manifest-level source string.
+- `dataset.source`, `dataset.snapshot_id`, `train`, `validation`, optional `final_holdout`. `sqlite_candles` is the default compatibility adapter, not the only manifest-level source string. Manifest parsing validates source-neutral shape; source support is decided by `DatasetAdapterRegistry.resolve(source)` and unsupported sources fail closed.
 - `parameter_space`
 - `cost_model.fee_rate`, `cost_model.slippage_bps` for legacy fixed-bps manifests
 - `execution_model` for normalized fixed-bps or stress execution scenarios. Stress scenarios may configure slippage bps, latency, partial-fill rate, order-failure rate, market-order extra cost, scenario policy, scenario role, seed, and calibration requirements. Unsupported execution-model fields fail manifest parsing rather than being ignored.
@@ -643,7 +710,7 @@ Required sections:
 Optional section:
 
 - `walk_forward.train_window_days`, `test_window_days`, `step_days`, `min_windows`
-- `dataset.top_of_book` to opt into top-of-book quote joins. The current SQLite adapter supports `source=sqlite_orderbook_top_snapshots`; source support is resolved by the dataset adapter registry, not by manifest parsing. Supported fields are `source`, `required`, `join_tolerance_ms` (default `3000`), `missing_policy`, optional `quote_source`, `min_coverage_pct`, and optional adapter provenance fields. Unsupported dataset or top-of-book fields fail manifest parsing rather than being ignored.
+- `dataset.top_of_book` to opt into top-of-book quote joins. The current SQLite adapter supports `source=sqlite_orderbook_top_snapshots`; source support is resolved by the dataset adapter registry/capability layer, not by manifest parsing. Supported fields are `source`, `required`, `join_tolerance_ms` (default `3000`), `missing_policy`, optional `quote_source`, `min_coverage_pct`, and optional adapter provenance fields. Depth evidence is reported as a separate capability, currently backed by SQLite `orderbook_depth_levels` when available. Unsupported dataset or top-of-book fields fail manifest parsing rather than being ignored.
 - `statistical_validation` is optional for `research_only` diagnostics and required for production-bound promotion. Supported fields are `required_for_promotion`, `benchmark`, `primary_metric`, `selection_universe`, `multiple_testing_scope`, `bootstrap`, and `gates`. Unsupported or malformed statistical fields fail manifest parsing.
 - `stress_suite` is optional for `research_only` diagnostics and required for production-bound manifests. It is independent of execution stress. Supported implemented sections are `trade_removal`, `trade_order_monte_carlo`, `period_ablation`, `parameter_perturbation`, and `risk_adjusted_score`. Unsupported stress-suite fields fail manifest parsing rather than being ignored.
 - `final_selection` is optional only for `research_only` diagnostics and required for production-bound manifests. It declares the deterministic policy for choosing one candidate from the eligible candidate universe after acceptance, statistical, stress, dataset-quality, final-holdout, and production-calibration gates have produced evidence.

@@ -226,6 +226,8 @@ def load_dataset_range(
     top_of_book_spec = manifest.dataset.top_of_book
     if top_of_book_spec is not None:
         default_dataset_adapter_registry().resolve_top_of_book(top_of_book_spec.source)
+    if any(scenario.type == "depth_walk" for scenario in manifest.execution_model.scenarios):
+        default_dataset_adapter_registry().resolve_depth("orderbook_depth_levels")
     return adapter.load_range(
         manifest=manifest,
         split_name=split_name,
@@ -345,10 +347,7 @@ def build_dataset_quality_report(
     db_path: str | Path,
     snapshot: DatasetSnapshot,
 ) -> DatasetQualityReport:
-    try:
-        adapter = default_dataset_adapter_registry().resolve(snapshot.source)
-    except ValueError:
-        return _build_source_agnostic_dataset_quality_report(db_path=db_path, snapshot=snapshot)
+    adapter = default_dataset_adapter_registry().resolve(snapshot.source)
     return adapter.quality_report(snapshot=snapshot, context=DatasetLoadContext(db_path=db_path))
 
 
@@ -473,6 +472,7 @@ def _build_source_agnostic_dataset_quality_report(
         "source_hash_status": "present",
         "source_schema_hash_status": "present" if snapshot.source == "sqlite_candles" and db_path is not None else "not_applicable",
         "adapter_provenance": adapter_provenance or {},
+        "adapter_provenance_hash": sha256_prefixed(adapter_provenance or {}),
         "quality_gate_status": "PASS" if not reasons else "FAIL",
         "quality_gate_reasons": reasons,
         "limitations": {
@@ -928,7 +928,10 @@ class SQLiteCandleAdapter:
     source = "sqlite_candles"
     adapter_name = "sqlite_candle_adapter"
     adapter_version = "1"
+    supported_capabilities = frozenset({"candles", "top_of_book", "l2_depth_snapshot"})
     supported_top_of_book_sources = frozenset({"sqlite_orderbook_top_snapshots"})
+    supported_depth_sources = frozenset({"orderbook_depth_levels"})
+    supports_sqlite_streaming_quality_scan = True
 
     def load_range(
         self,

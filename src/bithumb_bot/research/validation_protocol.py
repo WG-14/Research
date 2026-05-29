@@ -4547,6 +4547,10 @@ def _dataset_adapter_provenance_payload(
             split_name: payload.get("adapter_provenance") or {}
             for split_name, payload in sorted(split_reports.items())
         },
+        "adapter_provenance_hashes": {
+            split_name: payload.get("adapter_provenance_hash")
+            for split_name, payload in sorted(split_reports.items())
+        },
         "top_of_book": manifest.dataset.top_of_book.as_dict() if manifest.dataset.top_of_book else None,
     }
 
@@ -4573,6 +4577,8 @@ def _validate_dataset_adapter_provenance(
         source = str(payload.get("dataset_source") or payload.get("source") or "")
         source_content_hash = str(payload.get("source_content_hash") or "")
         source_schema_hash = str(payload.get("source_schema_hash") or "")
+        adapter_provenance = payload.get("adapter_provenance")
+        adapter_provenance_hash = str(payload.get("adapter_provenance_hash") or "")
         canonical_hash = str(payload.get("canonical_snapshot_hash") or payload.get("dataset_content_hash") or "")
         if not adapter_name:
             reasons.append(f"{split_name}:dataset_adapter_name_missing")
@@ -4582,14 +4588,20 @@ def _validate_dataset_adapter_provenance(
             reasons.append(f"{split_name}:dataset_source_missing")
         if not canonical_hash.startswith("sha256:"):
             reasons.append(f"{split_name}:canonical_snapshot_hash_missing")
-        if source == "sqlite_candles" and source_content_hash.startswith("sha256:"):
-            pass
-        elif source_content_hash.startswith("sha256:"):
-            pass
-        else:
+        if not manifest.dataset.source_content_hash:
+            reasons.append(f"{split_name}:declared_source_content_hash_missing")
+        if not manifest.dataset.source_schema_hash:
+            reasons.append(f"{split_name}:declared_source_schema_hash_missing")
+        if not source_content_hash.startswith("sha256:"):
             reasons.append(f"{split_name}:source_content_hash_missing")
         if not source_schema_hash.startswith("sha256:"):
             reasons.append(f"{split_name}:source_schema_hash_missing")
+        if not isinstance(adapter_provenance, dict) or not adapter_provenance:
+            reasons.append(f"{split_name}:adapter_provenance_missing")
+        if not adapter_provenance_hash.startswith("sha256:"):
+            reasons.append(f"{split_name}:adapter_provenance_hash_missing")
+        elif adapter_provenance_hash != sha256_prefixed(adapter_provenance or {}):
+            reasons.append(f"{split_name}:adapter_provenance_hash_mismatch")
         if manifest.dataset.source_content_hash and manifest.dataset.source_content_hash != source_content_hash:
             reasons.append(f"{split_name}:source_content_hash_mismatch")
         if manifest.dataset.source_schema_hash and manifest.dataset.source_schema_hash != source_schema_hash:
@@ -4616,6 +4628,11 @@ def _has_mutable_dataset_locator(manifest: ExperimentManifest) -> bool:
             return True
         if is_production_bound_target(manifest.deployment_tier) and "/paper/" in text:
             return True
+        if "://" not in text and not text.startswith(("managed-db:", "s3://")):
+            if "/" in text or text.startswith("."):
+                return True
+            if text not in {"immutable", "content_addressed"} and "." in text:
+                return True
         if "/" in text and "://" not in text and not text.startswith(("/", "managed-db:")):
             return True
     return False
@@ -4638,14 +4655,18 @@ def _validate_strategy_data_requirements(manifest: ExperimentManifest) -> None:
 
 def _manifest_data_capabilities(manifest: ExperimentManifest) -> dict[str, bool]:
     top_of_book_requested = manifest.dataset.top_of_book is not None
-    default_dataset_adapter_registry().resolve(manifest.dataset.source)
+    registry = default_dataset_adapter_registry()
+    registry.resolve(manifest.dataset.source)
     if top_of_book_requested and manifest.dataset.top_of_book is not None:
-        default_dataset_adapter_registry().resolve_top_of_book(manifest.dataset.top_of_book.source)
+        registry.resolve_top_of_book(manifest.dataset.top_of_book.source)
+    depth_requested = any(scenario.type == "depth_walk" for scenario in manifest.execution_model.scenarios)
+    if depth_requested:
+        registry.resolve_depth("orderbook_depth_levels")
     return {
         "candles": True,
         "top_of_book": top_of_book_requested,
-        "l2_depth_snapshot": any(scenario.type == "depth_walk" for scenario in manifest.execution_model.scenarios),
-        "depth_walk": any(scenario.type == "depth_walk" for scenario in manifest.execution_model.scenarios),
+        "l2_depth_snapshot": depth_requested,
+        "depth_walk": depth_requested,
         "trade_ticks": False,
         "funding": False,
         "cross_asset": False,

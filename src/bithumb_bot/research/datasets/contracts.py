@@ -23,7 +23,10 @@ class DatasetAdapter(Protocol):
     source: str
     adapter_name: str
     adapter_version: str
+    supported_capabilities: frozenset[str]
     supported_top_of_book_sources: frozenset[str]
+    supported_depth_sources: frozenset[str]
+    supports_sqlite_streaming_quality_scan: bool
 
     def load_range(
         self,
