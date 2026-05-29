@@ -30,6 +30,16 @@ from bithumb_bot.run_loop_compatibility import (
     legacy_context_planning_allowed_for_compatibility,
 )
 from bithumb_bot.runtime_recovery_gate import RuntimeRecoveryGateService
+from bithumb_bot.runtime.lifecycle_artifacts import (
+    RecoveryClearance,
+    RuntimeCycleArtifact,
+    SafetyDecision,
+    StartupResult,
+)
+from bithumb_bot.runtime.notification_adapter import NotificationAdapter
+from bithumb_bot.runtime.operator_event_composer import OperatorEventComposer
+from bithumb_bot.runtime.recovery_controller import RecoveryController, ReconcileClearEvidence
+from bithumb_bot.runtime.safety_controller import HaltReason, SafetyController
 from bithumb_bot.runtime_decision_service import RuntimeStrategyPolicyHashes
 from bithumb_bot.research.backtest_kernel import run_decision_event_backtest
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
@@ -464,8 +474,7 @@ def test_engine_import_boundary_stays_thin_for_runtime_entrypoint() -> None:
     }
 
     assert violations == {}
-    assert "from .runtime_decision_service import" in source
-    assert "from .runtime_service_factories import" in source
+    assert "from .runtime import runner as _runner" in source
     assert "from .operator_repair_service import" not in source
     assert "from .operator_notification_service import" not in source
     assert "from .operator_flatten_service import" not in source
@@ -773,7 +782,7 @@ def test_generic_promotion_adapter_dict_handoff_fails_closed_when_typed_required
 
 
 def test_run_loop_does_not_unconditionally_enable_legacy_context_planning() -> None:
-    source = Path("src/bithumb_bot/engine.py").read_text(encoding="utf-8-sig")
+    source = Path("src/bithumb_bot/runtime/runner.py").read_text(encoding="utf-8-sig")
     run_loop_source = source.split("def run_loop", 1)[1]
 
     assert "allow_legacy_context_planning=True" not in run_loop_source
@@ -784,7 +793,7 @@ def test_run_loop_does_not_unconditionally_enable_legacy_context_planning() -> N
 
 
 def test_run_loop_uses_only_runtime_decision_gateway_for_decisions() -> None:
-    source = Path("src/bithumb_bot/engine.py").read_text(encoding="utf-8-sig")
+    source = Path("src/bithumb_bot/runtime/runner.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(source)
     run_loop = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "run_loop")
     run_loop_source = ast.get_source_segment(source, run_loop) or ""
@@ -822,7 +831,7 @@ def test_run_loop_compatibility_planning_is_not_live_real_order_authority() -> N
 
 
 def test_engine_recovery_policy_functions_delegate_to_services() -> None:
-    source = Path("src/bithumb_bot/engine.py").read_text(encoding="utf-8-sig")
+    source = Path("src/bithumb_bot/runtime/runner.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(source)
     functions = {
         node.name: node
@@ -1075,3 +1084,162 @@ def test_research_kernel_marks_missing_sma_policy_metadata_non_comparable() -> N
     assert decision["research_policy_unsupported_reason"] == (
         "research_policy_decision_missing_not_comparable"
     )
+
+
+def test_runtime_lifecycle_artifacts_are_stable_and_serializable() -> None:
+    safety = SafetyDecision(
+        action="HALT",
+        reason_code="UNIT_HALT",
+        reason="unit",
+        unresolved=True,
+        evidence={"cleanup": "failed_closed"},
+    )
+    recovery = RecoveryClearance(
+        status="allowed",
+        reason_code="INITIAL_RECONCILE_FAILED",
+        allowed=True,
+        evidence={"reconcile": "ok"},
+    )
+    startup = StartupResult(
+        status="BLOCKED",
+        reason_code="STARTUP_SAFETY_GATE",
+        startup_gate_reason="unresolved_open_orders=1",
+        evidence={"gate": "blocked"},
+    )
+    cycle = RuntimeCycleArtifact(
+        cycle_id="unit-cycle",
+        candle_ts=1_700_000_000_000,
+        startup_state=startup.status,
+        safety_decision_hash=safety.as_dict()["decision_hash"],
+        recovery_decision_hash=recovery.as_dict()["decision_hash"],
+        notification_event_hashes=("sha256:unit",),
+    )
+
+    assert safety.as_dict() == safety.as_dict()
+    assert recovery.as_dict()["allowed"] is True
+    assert startup.as_dict()["operator_event_hashes"] == []
+    assert cycle.as_dict() == cycle.as_dict()
+    assert cycle.as_dict()["decision_hash"].startswith("sha256:")
+
+
+def test_operator_event_composer_builds_structured_events_without_delivery() -> None:
+    composer = OperatorEventComposer("BTC_KRW")
+
+    event = composer.trading_halted_event(
+        reason_code="KILL_SWITCH",
+        reason="KILL_SWITCH=ON",
+        unresolved=True,
+        operator_action_required=True,
+        open_order_count=2,
+        position_summary="asset=1",
+        recommended_commands=("uv run python bot.py recovery-report",),
+    )
+
+    assert event["event_type"] == "trading_halted"
+    assert event["reason_code"] == "KILL_SWITCH"
+    assert event["symbol"] == "BTC_KRW"
+    assert event["event_hash"].startswith("sha256:")
+
+
+def test_notification_adapter_delivers_event_through_service_boundary() -> None:
+    sent: list[tuple[str, dict[str, object]]] = []
+
+    class _Service:
+        def send_event(self, event_name: str, **fields: object) -> None:
+            sent.append((event_name, fields))
+
+        def send_message(self, message: str) -> None:
+            sent.append(("message", {"message": message}))
+
+    NotificationAdapter(_Service()).send_event(
+        {"event_type": "unit_event", "event_hash": "sha256:ignored", "reason_code": "UNIT"}
+    )
+
+    assert sent == [("unit_event", {"reason_code": "UNIT"})]
+
+
+class _RecoveryState:
+    halt_new_orders_blocked = True
+    halt_state_unresolved = True
+    halt_reason_code = "INITIAL_RECONCILE_FAILED"
+    last_reconcile_status = "ok"
+    last_reconcile_reason_code = "RECONCILE_OK"
+    unresolved_open_order_count = 0
+    recovery_required_count = 0
+    last_disable_reason = "unit"
+    last_reconcile_metadata = None
+
+
+def test_recovery_controller_evaluate_is_pure_and_apply_mutates_separately() -> None:
+    calls: list[str] = []
+    state = _RecoveryState()
+    controller = RecoveryController(
+        state_snapshot=lambda: state,
+        refresh_open_order_health=lambda: calls.append("refresh"),
+        startup_gate_evaluator=lambda: None,
+        reconcile_clear_evidence=lambda _state: ReconcileClearEvidence(
+            open_orders_present=False,
+            position_present=False,
+            mismatch_count=0,
+            dust_effective_flat=True,
+        ),
+        risk_state_clear_allowed=lambda **_kwargs: False,
+        enable_trading=lambda: calls.append("enable"),
+        disable_trading_until=lambda *_args, **_kwargs: calls.append("disable"),
+        set_resume_gate=lambda **_kwargs: calls.append("resume_gate"),
+    )
+
+    clearance = controller.evaluate_clearance(
+        snapshot=state,
+        startup_gate_reason=None,
+        clearance_type="initial_reconcile",
+    )
+    assert clearance.allowed is True
+    assert calls == []
+
+    transition = controller.apply_clearance(clearance)
+    assert transition.applied is True
+    assert calls == ["disable", "resume_gate"]
+
+
+def test_safety_controller_interprets_cancel_failure_as_fail_closed() -> None:
+    messages: list[object] = []
+
+    class _Notifier:
+        def send_event(self, event: object) -> None:
+            messages.append(event)
+
+        def send_message(self, message: str) -> None:
+            messages.append(message)
+
+    class _State:
+        halt_operator_action_required = True
+        unresolved_open_order_count = 0
+        halt_position_present = False
+        halt_open_orders_present = False
+        halt_policy_stage = "halted"
+        halt_policy_block_new_orders = True
+        halt_policy_attempt_cancel_open_orders = True
+        halt_policy_auto_liquidate_positions = False
+
+    controller = SafetyController(
+        symbol="BTC_KRW",
+        state_snapshot=lambda: _State(),
+        enter_halt=lambda **_kwargs: None,
+        resume_evaluator=lambda: (False, []),
+        latest_order_identifiers=lambda: (None, None),
+        count_open_orders=lambda: 0,
+        position_summary=lambda: "flat",
+        notification_sender=_Notifier(),
+        cancel_open_orders_with_broker=lambda _broker: (_ for _ in ()).throw(RuntimeError("boom")),
+        record_cancel_open_orders_result=lambda **_kwargs: messages.append(("record_cancel", _kwargs)),
+        flatten_position=lambda **_kwargs: {"status": "skipped"},
+        record_flatten_position_result=lambda **_kwargs: None,
+        exposure_snapshot=lambda _now: (True, False),
+        revalidate_cleanup_state_after_failure=lambda *_args, **_kwargs: (False, "unknown"),
+        now_ms=lambda: 1,
+        live_dry_run=lambda: True,
+    )
+
+    assert controller.attempt_open_order_cancellation(object(), trigger="unit") is False
+    assert any(item[0] == "record_cancel" for item in messages if isinstance(item, tuple))

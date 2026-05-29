@@ -187,3 +187,60 @@ def test_promotion_runtime_adapters_do_not_construct_strategy_decision_v2_outsid
                 continue
             failures.append(f"{relative}:{node.lineno}")
     assert failures == []
+
+
+def test_engine_is_thin_runtime_entrypoint() -> None:
+    source = (REPO / "src/bithumb_bot/engine.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
+
+    assert len(functions) <= 10
+    assert "operator_next_action" not in source
+    assert "operator_hint_command" not in source
+    assert "cancel_open_orders_with_broker" not in source
+    assert "flatten_position" not in source
+    assert "LIVE_EXECUTION_BROKER_ERROR" not in source
+    assert "STARTUP_SAFETY_GATE" not in source
+
+
+def test_runtime_recovery_controller_evaluate_phase_has_no_mutation_or_delivery_calls() -> None:
+    source = (REPO / "src/bithumb_bot/runtime/recovery_controller.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    evaluate_nodes = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "evaluate_clearance"
+    ]
+    assert len(evaluate_nodes) == 1
+    evaluate_source = ast.get_source_segment(source, evaluate_nodes[0]) or ""
+    forbidden = (
+        "disable_trading_until",
+        "enter_halt",
+        "set_resume_gate",
+        "notify",
+        "send_event",
+        "send_message",
+        "cancel_open_orders",
+        "flatten",
+        "get_balance",
+    )
+    assert all(marker not in evaluate_source for marker in forbidden)
+
+
+def test_notification_composer_has_no_runtime_state_side_effects() -> None:
+    source = (REPO / "src/bithumb_bot/runtime/operator_event_composer.py").read_text(encoding="utf-8")
+    assert "runtime_state" not in source
+    assert "notify" not in source
+    assert "send_message" not in source
+    assert "send_event" not in source
+
+
+def test_runtime_runner_delegates_safety_recovery_and_execution_boundaries() -> None:
+    source = (REPO / "src/bithumb_bot/runtime/runner.py").read_text(encoding="utf-8-sig")
+
+    assert "RecoveryController(" in source
+    assert "SafetyController(" in source
+    assert "StartupController(" in source
+    assert "ExecutionCoordinator(" in source
+    assert "cancel_open_orders_with_broker(broker)" not in source
+    assert "flatten_status = str(flatten_outcome.get" not in source
