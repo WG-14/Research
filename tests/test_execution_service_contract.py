@@ -326,6 +326,21 @@ def test_execution_submit_plan_final_payload_validates_after_extra_fields() -> N
         invalid.as_final_payload()
 
 
+def test_production_execution_request_is_typed_only() -> None:
+    assert PaperSignalExecutionService.execute.__annotations__["request"] == "TypedExecutionRequest"
+    assert LiveSignalExecutionService.execute.__annotations__["request"] == "TypedExecutionRequest"
+
+    typed = TypedExecutionRequest(
+        signal="BUY",
+        ts=123,
+        market_price=100_000_000.0,
+        execution_decision_summary=_typed_buy_execution_summary(submit_expected=False, block_reason="blocked"),
+        observability_payload=ExecutionObservabilityPayload({"execution_decision": {"dict": "observability_only"}}),
+    )
+    assert typed.observability_payload is not None
+    assert typed.observability_payload.as_dict()["execution_decision"] == {"dict": "observability_only"}
+
+
 def test_final_submit_payload_requires_typed_serialization_proof() -> None:
     raw_plan = _valid_buy_submit_plan()
     with pytest.raises(ValueError, match="execution_submit_plan_schema_missing_fields:authority_label,content_hash,schema_version"):

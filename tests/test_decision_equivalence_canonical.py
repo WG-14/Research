@@ -114,6 +114,38 @@ def _decision_v2(**overrides: object) -> dict[str, object]:
         "required_edge_ratio",
     ):
         payload.pop(key, None)
+    bundle_evidence = {
+        "schema_version": 1,
+        "authority_label": "ExecutionPlanBundle",
+        "summary_authority": "ExecutionDecisionSummary",
+        "submit_plan_authority": "ExecutionSubmitPlan",
+        "planning_error": None,
+    }
+    summary_evidence = {
+        "execution_engine": "research_virtual",
+        "final_action": "ENTER_STRATEGY_POSITION",
+        "submit_expected": True,
+        "pre_submit_proof_status": "not_required",
+        "block_reason": "none",
+    }
+    submit_evidence = {
+        "side": "BUY",
+        "source": "research_backtest",
+        "authority": "strategy_execution_intent",
+        "final_action": "ENTER_STRATEGY_POSITION",
+        "qty": 1.0,
+        "notional_krw": 100.0,
+        "target_exposure_krw": 100.0,
+        "current_effective_exposure_krw": 0.0,
+        "delta_krw": 100.0,
+        "submit_expected": True,
+        "pre_submit_proof_status": "not_required",
+        "block_reason": "none",
+        "idempotency_key": None,
+        "schema_version": 1,
+        "authority_label": "ExecutionSubmitPlan.final_payload.v1",
+    }
+    submit_evidence["content_hash"] = sha256_prefixed(submit_evidence)
     payload.update(
         {
             "decision_contract_version": 2,
@@ -122,9 +154,12 @@ def _decision_v2(**overrides: object) -> dict[str, object]:
             "runtime_decision_request_hash": VALID_SHA256,
             "runtime_strategy_set_manifest_hash": VALID_SHA256,
             "approved_profile_hash": VALID_SHA256,
-            "execution_summary_hash": "sha256:summary",
-            "execution_submit_plan_hash": "sha256:plan",
-            "execution_plan_bundle_hash": "sha256:bundle",
+            "execution_summary_hash": sha256_prefixed(summary_evidence),
+            "execution_submit_plan_hash": sha256_prefixed(submit_evidence),
+            "execution_plan_bundle_hash": sha256_prefixed(bundle_evidence),
+            "execution_plan_bundle_evidence": bundle_evidence,
+            "typed_execution_summary_evidence": summary_evidence,
+            "execution_submit_plan_evidence": submit_evidence,
             "final_action": "ENTER_STRATEGY_POSITION",
             "submit_expected": True,
             "pre_submit_proof_status": "not_required",
@@ -963,7 +998,7 @@ def test_decision_export_artifact_compare_fails_on_strategy_plugin_hash_mismatch
 
 
 def test_promotion_grade_decision_without_position_authority_fails_incomplete() -> None:
-    payload = _decision()
+    payload = _decision_v2()
     payload.pop("position_authority")
 
     result = _compare(payload, payload)
@@ -986,9 +1021,9 @@ def test_promotion_grade_position_authority_hash_mismatches_fail_incomplete(
     authority_field: str,
     reason: str,
 ) -> None:
-    authority = dict(_decision()["position_authority"])  # type: ignore[arg-type]
+    authority = dict(_decision_v2()["position_authority"])  # type: ignore[arg-type]
     authority[authority_field] = "sha256:other"
-    payload = _decision(position_authority=authority)
+    payload = _decision_v2(position_authority=authority)
 
     result = _compare(payload, payload)
 

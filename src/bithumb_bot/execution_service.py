@@ -717,7 +717,7 @@ def _live_real_order_typed_submit_plan_error(
 
 
 def _request_execution_decision_payload(
-    request: SignalExecutionRequest,
+    request: TypedExecutionRequest,
 ) -> tuple[dict[str, object] | None, str | None]:
     observability_context = _request_observability_payload(request)
     raw_execution_decision = (
@@ -763,13 +763,13 @@ def _request_execution_decision_payload(
     return None, None
 
 
-def _request_observability_payload(request: SignalExecutionRequest) -> dict[str, object] | None:
+def _request_observability_payload(request: TypedExecutionRequest) -> dict[str, object] | None:
     payload = (
         request.observability_payload
         if request.observability_payload is not None
-        else request.observability_context
-        if request.observability_context is not None
-        else request.decision_context
+        else getattr(request, "observability_context", None)
+        if getattr(request, "observability_context", None) is not None
+        else getattr(request, "decision_context", None)
     )
     if isinstance(payload, ExecutionObservabilityPayload):
         return payload.as_dict()
@@ -777,7 +777,7 @@ def _request_observability_payload(request: SignalExecutionRequest) -> dict[str,
 
 
 class SignalExecutionService(Protocol):
-    def execute(self, request: SignalExecutionRequest) -> dict | None: ...
+    def execute(self, request: TypedExecutionRequest) -> dict | None: ...
 
 
 def paper_execute(
@@ -862,7 +862,7 @@ def _live_real_order_submit_plan_required() -> bool:
 
 
 def require_typed_execution_decision_summary_for_live_real_order(
-    request: SignalExecutionRequest,
+    request: TypedExecutionRequest,
 ) -> tuple[ExecutionDecisionSummary | None, str | None]:
     bundle_summary = getattr(request.execution_plan_bundle, "summary", None)
     if (
@@ -1850,7 +1850,7 @@ def _canonical_harmless_dust_sell_preview(decision_context: dict[str, object] | 
 
 
 def _paper_typed_submit_plan(
-    request: SignalExecutionRequest,
+    request: TypedExecutionRequest,
 ) -> tuple[ExecutionSubmitPlan | None, str | None]:
     bundle = request.execution_plan_bundle
     bundle_present = bundle is not None
@@ -1923,7 +1923,7 @@ def _paper_typed_submit_plan(
 class PaperSignalExecutionService:
     executor: Callable[..., dict | None]
 
-    def execute(self, request: SignalExecutionRequest) -> dict | None:
+    def execute(self, request: TypedExecutionRequest) -> dict | None:
         submit_plan, submit_plan_error = _paper_typed_submit_plan(request)
         if submit_plan_error is not None:
             RUN_LOG.warning(
@@ -1969,15 +1969,15 @@ class LiveSignalExecutionService:
     executor: Callable[..., dict | None]
     harmless_dust_recorder: Callable[..., bool]
 
-    def execute(self, request: SignalExecutionRequest) -> dict | None:
+    def execute(self, request: TypedExecutionRequest) -> dict | None:
         submit_plan_required = _live_real_order_submit_plan_required()
         observability_context = _request_observability_payload(request)
         if observability_context is not None and not isinstance(observability_context, dict):
             field_name = (
                 "decision_context"
                 if request.observability_payload is None
-                and request.observability_context is None
-                and request.decision_context is observability_context
+                and getattr(request, "observability_context", None) is None
+                and getattr(request, "decision_context", None) is observability_context
                 else "observability_context"
             )
             _log_live_submit_plan_block(
@@ -2426,7 +2426,9 @@ class LiveSignalExecutionService:
             return None
         harmless_dust_preview = None
         if request.signal == "SELL":
-            harmless_dust_preview = _canonical_harmless_dust_sell_preview(request.decision_context)
+            harmless_dust_preview = _canonical_harmless_dust_sell_preview(
+                getattr(request, "decision_context", None)
+            )
         if harmless_dust_preview is not None:
             suppression_conn = ensure_db()
             try:

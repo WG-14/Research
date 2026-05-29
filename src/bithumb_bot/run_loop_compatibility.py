@@ -5,6 +5,7 @@ from typing import Callable
 
 from .config import settings
 from .compat.strategy import create_legacy_db_strategy
+from .diagnostic_only.execution_planning import plan_legacy_context
 from .run_loop_execution_planner import ExecutionPlanner, ExecutionPlanningResult
 
 
@@ -44,16 +45,28 @@ class RunLoopCompatibilityPlanner:
         updated_ts: int,
         signal_handoff_fn: object,
     ) -> ExecutionPlanningResult:
-        return self.planner_factory().plan_diagnostic_legacy_context(
+        planner = self.planner_factory()
+        allow_legacy = legacy_context_planning_allowed_for_compatibility(
+            signal_handoff_fn=signal_handoff_fn,
+            runtime_handoff_fn=self.runtime_handoff_fn,
+        )
+        if not allow_legacy:
+            return planner.fail_closed_context(
+                decision_context=decision_context,
+                reason_code="legacy_context_planning_disabled",
+            )
+        if _live_real_order_enabled():
+            return planner.fail_closed_context(
+                decision_context=decision_context,
+                reason_code="legacy_context_planning_live_real_order_disabled",
+            )
+        return plan_legacy_context(
+            planner,
             conn,
             decision_context=decision_context,
             signal=signal,
             reason=reason,
             updated_ts=updated_ts,
-            allow_legacy_context_planning=legacy_context_planning_allowed_for_compatibility(
-                signal_handoff_fn=signal_handoff_fn,
-                runtime_handoff_fn=self.runtime_handoff_fn,
-            ),
         )
 
 

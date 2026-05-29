@@ -299,23 +299,11 @@ def test_diagnostic_execution_planner_legacy_context_matches_typed_summary_seman
     assert legacy.context["legacy_context_planning_used"] is True
 
 
-def test_legacy_plan_strategy_decision_fails_closed_by_default() -> None:
-    result = _runtime_result()
-    envelope = DecisionEnvelope.from_runtime_result(result)
+def test_production_execution_planner_has_no_legacy_context_method() -> None:
+    planner = _planner()
 
-    planning = _planner().plan_strategy_decision(
-        None,
-        decision_context=envelope.as_persistence_context(),
-        signal="BUY",
-        reason="legacy context only",
-        updated_ts=1_700_003_060_000,
-    )
-
-    assert planning.execution_decision_summary is None
-    assert planning.planning_error == "legacy_context_planning_disabled"
-    assert planning.context["final_action"] == "BLOCK_RECOVERY"
-    assert planning.context["submit_expected"] is False
-    assert planning.context["persistence_context_authoritative"] == 0
+    assert not hasattr(planner, "plan_strategy_decision")
+    assert not hasattr(planner, "plan_diagnostic_legacy_context")
 
 
 def test_production_execution_planner_rejects_legacy_context_even_when_opted_in() -> None:
@@ -328,24 +316,13 @@ def test_production_execution_planner_rejects_legacy_context_even_when_opted_in(
         object.__setattr__(settings, "MODE", "live")
         object.__setattr__(settings, "LIVE_DRY_RUN", False)
         object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
-        result = _runtime_result()
-        envelope = DecisionEnvelope.from_runtime_result(result)
-
-        planning = _planner().plan_strategy_decision(
-            None,
-            decision_context=envelope.as_persistence_context(),
-            signal="BUY",
-            reason="legacy context only",
-            updated_ts=1_700_003_060_000,
-            allow_legacy_context_planning=True,
-        )
+        planner = _planner()
     finally:
         for key, value in original.items():
             object.__setattr__(settings, key, value)
 
-    assert planning.execution_decision_summary is None
-    assert planning.planning_error == "legacy_context_planning_diagnostic_only"
-    assert planning.context["submit_expected"] is False
+    assert not hasattr(planner, "plan_strategy_decision")
+    assert not hasattr(planner, "plan_diagnostic_legacy_context")
 
 
 def test_sma_with_filter_live_runtime_requires_typed_handoff() -> None:

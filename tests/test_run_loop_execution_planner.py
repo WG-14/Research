@@ -145,19 +145,11 @@ def test_diagnostic_legacy_equivalence_cannot_create_promotion_artifact() -> Non
     assert result.context["recommended_next_action"] == "regenerate_decision_with_typed_execution_authority"
 
 
-def test_execution_planner_rejects_legacy_context_planning_even_when_requested() -> None:
-    result = ExecutionPlanner().plan_strategy_decision(
-        object(),
-        decision_context={"strategy": "sma_with_filter"},
-        signal="BUY",
-        reason="cross_up",
-        updated_ts=123,
-        allow_legacy_context_planning=True,
-    )
+def test_production_execution_planner_has_no_diagnostic_legacy_entrypoint() -> None:
+    planner = ExecutionPlanner()
 
-    assert result.execution_decision_summary is None
-    assert result.context["promotion_grade"] is False
-    assert result.context["execution_block_reason"] == "legacy_context_planning_diagnostic_only"
+    assert not hasattr(planner, "plan_strategy_decision")
+    assert not hasattr(planner, "plan_diagnostic_legacy_context")
 
 
 def test_run_loop_execution_planner_failure_returns_block_recovery_payload() -> None:

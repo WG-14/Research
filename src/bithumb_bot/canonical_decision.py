@@ -19,8 +19,8 @@ from .promotion_provenance import (
     PROMOTION_ARTIFACT_GRADE,
     PROMOTION_AUTHORITY_PLANE,
     PROMOTION_EXECUTION_EVIDENCE_SOURCE,
-    PromotionArtifactProvenance,
-    promotion_provenance_failure_codes,
+    build_typed_no_submit_proof,
+    validate_promotion_artifact as validate_promotion_artifact_provenance_gate,
 )
 
 
@@ -104,6 +104,10 @@ COMMON_CANONICAL_DECISION_FIELDS_V2 = (
     "artifact_grade",
     "authority_plane",
     "promotion_rejection_reason",
+    "execution_plan_bundle_evidence",
+    "typed_execution_summary_evidence",
+    "execution_submit_plan_evidence",
+    "typed_no_submit_proof",
     "feature_snapshot_hash",
     "strategy_behavior_hash",
 )
@@ -378,11 +382,18 @@ def validate_canonical_decision_payload(
             ]
         )
     if promotion_grade:
-        if int(normalized.get("decision_contract_version") or 0) >= CANONICAL_DECISION_CONTRACT_VERSION:
-            provenance_failures = _promotion_artifact_provenance_failures(payload, normalized)
-            for field, reason in provenance_failures:
-                missing.append(field)
-                reason_codes.extend([reason, "canonical_decision_incomplete"])
+        if int(normalized.get("decision_contract_version") or 0) < CANONICAL_DECISION_CONTRACT_VERSION:
+            missing.append("decision_contract_version")
+            reason_codes.extend(
+                [
+                    "canonical_promotion_legacy_contract_version",
+                    "canonical_decision_incomplete",
+                ]
+            )
+        provenance_failures = _promotion_artifact_provenance_failures(payload, normalized)
+        for field, reason in provenance_failures:
+            missing.append(field)
+            reason_codes.extend([reason, "canonical_decision_incomplete"])
         authority = payload.get("position_authority")
         if not isinstance(authority, dict):
             missing.append("position_authority")
@@ -437,7 +448,7 @@ def _promotion_artifact_provenance_failures(
     provenance_payload = dict(payload)
     provenance_payload["execution_plan_bundle_hash"] = normalized.get("execution_plan_bundle_hash")
     provenance_payload["execution_evidence_source"] = normalized.get("execution_evidence_source")
-    provenance = PromotionArtifactProvenance.from_payload(provenance_payload)
+    validation = validate_promotion_artifact_provenance_gate(provenance_payload)
     reason_to_field = {
         "canonical_promotion_compatibility_fallback": "compatibility_fallback",
         "canonical_promotion_legacy_context_planning": "legacy_context_planning_used",
@@ -455,10 +466,12 @@ def _promotion_artifact_provenance_failures(
         "canonical_promotion_typed_authority_plane_missing": "authority_plane",
         "canonical_promotion_artifact_grade_not_promotion": "artifact_grade",
         "canonical_promotion_rejection_reason_present": "promotion_rejection_reason",
+        "canonical_promotion_legacy_contract_version": "decision_contract_version",
+        "canonical_promotion_forged_or_unverified_typed_evidence": "typed_execution_evidence",
     }
     return [
         (reason_to_field.get(reason, "promotion_provenance"), reason)
-        for reason in promotion_provenance_failure_codes(provenance)
+        for reason in validation.reason_codes
     ]
 
 
@@ -612,6 +625,10 @@ def runtime_decision_to_canonical_event(
             "execution_plan_bundle_hash": execution_evidence["execution_plan_bundle_hash"],
             "execution_evidence_source": execution_evidence["execution_evidence_source"],
             "typed_execution_summary_present": bool(execution_evidence["typed_execution_summary_present"]),
+            "execution_plan_bundle_evidence": execution_evidence.get("execution_plan_bundle_evidence"),
+            "typed_execution_summary_evidence": execution_evidence.get("typed_execution_summary_evidence"),
+            "execution_submit_plan_evidence": execution_evidence.get("execution_submit_plan_evidence"),
+            "typed_no_submit_proof": execution_evidence.get("typed_no_submit_proof"),
             "compatibility_fallback": bool(context.get("compatibility_fallback")),
             "legacy_context_planning_used": bool(context.get("legacy_context_planning_used")),
             "artifact_grade": str(execution_evidence["artifact_grade"]),
@@ -645,6 +662,10 @@ def runtime_decision_to_canonical_event(
         "execution_plan_bundle_hash",
         "execution_evidence_source",
         "typed_execution_summary_present",
+        "execution_plan_bundle_evidence",
+        "typed_execution_summary_evidence",
+        "execution_submit_plan_evidence",
+        "typed_no_submit_proof",
         "compatibility_fallback",
         "legacy_context_planning_used",
         "persistence_context_authoritative",
@@ -708,6 +729,10 @@ def research_decision_to_canonical_event(
     payload["execution_plan_bundle_present"] = bool(payload.get("execution_plan_bundle_present"))
     payload["execution_evidence_source"] = str(payload.get("execution_evidence_source") or "")
     payload["typed_execution_summary_present"] = bool(payload.get("typed_execution_summary_present"))
+    payload["execution_plan_bundle_evidence"] = payload.get("execution_plan_bundle_evidence")
+    payload["typed_execution_summary_evidence"] = payload.get("typed_execution_summary_evidence")
+    payload["execution_submit_plan_evidence"] = payload.get("execution_submit_plan_evidence")
+    payload["typed_no_submit_proof"] = payload.get("typed_no_submit_proof")
     payload["compatibility_fallback"] = bool(payload.get("compatibility_fallback"))
     payload["legacy_context_planning_used"] = bool(payload.get("legacy_context_planning_used"))
     payload["runtime_replay_planning_error"] = str(payload.get("runtime_replay_planning_error") or "")
@@ -798,6 +823,7 @@ def _runtime_execution_plan_evidence(
     if execution_plan_bundle is not None and execution_plan_bundle.summary is not None:
         submit_plan = execution_plan_bundle.submit_plan
         submit_plan_payload = None if submit_plan is None else submit_plan.as_dict()
+        final_submit_plan_payload = None if submit_plan is None else submit_plan.as_final_payload()
         summary_payload = execution_plan_bundle.summary.as_dict()
         execution_engine = str(summary_payload.get("execution_engine") or "")
         bundle_hash = str(execution_plan_bundle.content_hash())
@@ -805,8 +831,11 @@ def _runtime_execution_plan_evidence(
             execution_plan_bundle=execution_plan_bundle,
             runtime_replay_planning_error=runtime_replay_planning_error,
         )
+        no_submit_proof = build_typed_no_submit_proof(summary_payload)
         provenance = {
             "execution_plan_bundle_hash": bundle_hash,
+            "execution_plan_bundle_evidence": execution_plan_bundle.as_dict(),
+            "typed_execution_summary_evidence": summary_payload,
             "execution_evidence_source": PROMOTION_TYPED_EXECUTION_EVIDENCE_SOURCE,
             "typed_execution_summary_present": True,
             "artifact_grade": PROMOTION_ARTIFACT_GRADE,
@@ -816,7 +845,7 @@ def _runtime_execution_plan_evidence(
         if submit_plan is None:
             return {
                 "execution_summary_hash": canonical_payload_hash(summary_payload),
-                "execution_submit_plan_hash": canonical_payload_hash(None),
+                "execution_submit_plan_hash": canonical_payload_hash(no_submit_proof),
                 "final_action": str(summary_payload.get("final_action") or ""),
                 "submit_expected": bool(summary_payload.get("submit_expected")),
                 "pre_submit_proof_status": str(summary_payload.get("pre_submit_proof_status") or ""),
@@ -825,19 +854,12 @@ def _runtime_execution_plan_evidence(
                 "submit_plan_authority": "typed_execution_planner",
                 "execution_engine": execution_engine,
                 "observability": observability,
+                "typed_no_submit_proof": no_submit_proof,
                 **provenance,
             }
-        canonical_summary_payload = {
-            "final_action": submit_plan.final_action,
-            "submit_expected": bool(submit_plan.submit_expected),
-            "pre_submit_proof_status": submit_plan.pre_submit_proof_status,
-            "block_reason": submit_plan.block_reason,
-            "primary_submit_plan": submit_plan_payload,
-            "execution_engine": execution_engine,
-        }
         return {
-            "execution_summary_hash": canonical_payload_hash(canonical_summary_payload),
-            "execution_submit_plan_hash": canonical_payload_hash(submit_plan_payload),
+            "execution_summary_hash": canonical_payload_hash(summary_payload),
+            "execution_submit_plan_hash": canonical_payload_hash(final_submit_plan_payload),
             "final_action": submit_plan.final_action,
             "submit_expected": bool(submit_plan.submit_expected),
             "pre_submit_proof_status": submit_plan.pre_submit_proof_status,
@@ -846,6 +868,7 @@ def _runtime_execution_plan_evidence(
             "submit_plan_authority": submit_plan.authority,
             "execution_engine": execution_engine,
             "observability": observability,
+            "execution_submit_plan_evidence": final_submit_plan_payload,
             **provenance,
         }
 
@@ -896,6 +919,10 @@ def _runtime_execution_plan_evidence(
             "artifact_grade": "diagnostic_only",
             "authority_plane": "compatibility_context",
             "promotion_rejection_reason": "context_fallback_execution_evidence",
+            "execution_plan_bundle_evidence": None,
+            "typed_execution_summary_evidence": None,
+            "execution_submit_plan_evidence": None,
+            "typed_no_submit_proof": None,
         }
 
     execution_block_reason = block_reason or "none"
@@ -949,6 +976,10 @@ def _runtime_execution_plan_evidence(
                 runtime_replay_planning_error
                 or "typed_execution_plan_bundle_missing"
             ),
+            "execution_plan_bundle_evidence": None,
+            "typed_execution_summary_evidence": None,
+            "execution_submit_plan_evidence": None,
+            "typed_no_submit_proof": None,
         }
 
 

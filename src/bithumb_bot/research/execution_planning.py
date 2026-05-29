@@ -230,6 +230,7 @@ def _research_execution_plan_bundle(
 
 def _execution_plan_evidence(plan_bundle: ResearchExecutionPlanBundle | None) -> dict[str, object]:
     from bithumb_bot.canonical_decision import canonical_payload_hash
+    from bithumb_bot.promotion_provenance import build_typed_no_submit_proof
 
     submit_plan = None if plan_bundle is None else plan_bundle.submit_plan
     if submit_plan is None:
@@ -243,9 +244,10 @@ def _execution_plan_evidence(plan_bundle: ResearchExecutionPlanBundle | None) ->
             "primary_submit_plan": None,
             "execution_engine": "none",
         }
+        no_submit_proof = build_typed_no_submit_proof(summary_payload)
         return {
             "execution_summary_hash": canonical_payload_hash(summary_payload),
-            "execution_submit_plan_hash": canonical_payload_hash(None),
+            "execution_submit_plan_hash": canonical_payload_hash(no_submit_proof),
             "final_action": final_action,
             "submit_expected": False,
             "pre_submit_proof_status": "not_required",
@@ -272,21 +274,21 @@ def _execution_plan_evidence(plan_bundle: ResearchExecutionPlanBundle | None) ->
             ),
             "recommended_next_action": "none" if plan_bundle is None else plan_bundle.recommended_next_action,
         }
-    plan_payload = submit_plan.as_dict()
     summary_payload_for_engine = None if plan_bundle.summary is None else plan_bundle.summary.as_dict()
     execution_engine = str(
         (summary_payload_for_engine or {}).get("execution_engine")
         or plan_bundle.execution_engine
         or "research_virtual"
     )
-    summary_payload = {
+    summary_payload = summary_payload_for_engine or {
         "final_action": submit_plan.final_action,
         "submit_expected": bool(submit_plan.submit_expected),
         "pre_submit_proof_status": submit_plan.pre_submit_proof_status,
         "block_reason": submit_plan.block_reason,
-        "primary_submit_plan": plan_payload,
+        "primary_submit_plan": submit_plan.as_dict(),
         "execution_engine": execution_engine,
     }
+    plan_payload = submit_plan.as_final_payload()
     return {
         "execution_summary_hash": canonical_payload_hash(summary_payload),
         "execution_submit_plan_hash": canonical_payload_hash(plan_payload),

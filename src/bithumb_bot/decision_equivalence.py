@@ -682,7 +682,10 @@ def _canonical_validation_items(
     out: list[dict[str, object]] = []
     for source, decisions in (("research", research_decisions), ("runtime", runtime_decisions)):
         for item in decisions:
-            result = validate_canonical_decision_payload(item, promotion_grade=True)
+            result = validate_canonical_decision_payload(
+                item,
+                promotion_grade=is_canonical_decision_v2(item),
+            )
             if result.reason_codes:
                 out.append(
                     {

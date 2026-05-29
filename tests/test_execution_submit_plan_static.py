@@ -24,5 +24,19 @@ def test_execution_submit_plan_dict_facade_not_used_in_runtime() -> None:
                     "submit_plan",
                 }:
                     offenders.append(f"{path}:{node.lineno}:{node.value.attr}")
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr
+                in {
+                    "target_submit_plan",
+                    "residual_submit_plan",
+                    "buy_submit_plan",
+                    "submit_plan",
+                }
+            ):
+                offenders.append(f"{path}:{node.lineno}:{node.func.value.attr}.get")
 
     assert offenders == []
