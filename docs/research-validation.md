@@ -30,6 +30,126 @@ Each stage records `name`, `required`, `status`, `input_hashes`, `output_hashes`
 
 Production-bound `paper_candidate`, `live_dry_run_candidate`, and `small_live_candidate` validation requires final holdout, walk-forward, stress suite, statistical validation, final selection, promotion eligibility, promotion, and reproduce stages. Execution calibration, audit/trace evidence, approved-profile chain readiness, and related policy checks remain enforced by the existing report, promotion, reproduction, and profile gates; the validation-run stages expose those outcomes instead of weakening them.
 
+## Dataset Adapter Contract
+
+Research data sources are resolved through adapters. SQLite remains the default
+compatibility adapter for existing manifests, but it is not the research data
+layer's internal API and must not be assumed by strategy, validation, promotion,
+or reproduction code.
+
+Canonical flow:
+
+```text
+ExperimentManifest / DatasetSpec
+-> DatasetAdapterRegistry
+-> source-specific adapter
+-> canonical DatasetSnapshot
+-> DatasetQualityReport with adapter provenance
+-> backtest / validation / promotion / reproduction
+```
+
+`dataset.source` is resolved by `DatasetAdapterRegistry.resolve(source)`. An
+unknown source fails closed with `unsupported_dataset_adapter:<source>`.
+`sqlite_candles` is registered by default and preserves the legacy candle
+manifest behavior.
+
+Top-of-book and depth evidence are separate capabilities, not hidden SQLite
+subtables inside the candle adapter. `dataset.top_of_book.source` is resolved by
+the top-of-book adapter registry and may differ from `dataset.source`. L2 depth
+evidence is resolved by the depth adapter registry when a depth-aware execution
+model requires it. This composition is valid:
+
+```json
+{
+  "dataset": {
+    "source": "sqlite_candles",
+    "snapshot_id": "krw_btc_1m_2026q2",
+    "train": {"start": "2026-01-01", "end": "2026-03-31"},
+    "validation": {"start": "2026-04-01", "end": "2026-04-30"},
+    "top_of_book": {
+      "source": "sqlite_orderbook_top_snapshots",
+      "required": true,
+      "join_tolerance_ms": 3000,
+      "missing_policy": "fail",
+      "min_coverage_pct": 100.0
+    }
+  }
+}
+```
+
+For production-bound tiers, dataset evidence must be immutable and hash-bound.
+A production-bound manifest must declare `source_content_hash`,
+`source_schema_hash`, and immutable locator/provenance material. Validation
+fails closed on missing or mismatched source hashes, missing or mismatched
+adapter provenance hashes, mutable locators such as `latest` or `current`,
+repo-relative locators, and wrong-mode locators such as production-bound data
+pointing into a paper path.
+
+Legacy SQLite compatibility example:
+
+```json
+{
+  "dataset": {
+    "source": "sqlite_candles",
+    "snapshot_id": "runtime_sqlite_compat",
+    "train": {"start": "2026-01-01", "end": "2026-03-31"},
+    "validation": {"start": "2026-04-01", "end": "2026-04-30"}
+  }
+}
+```
+
+Adapter locator/provenance example:
+
+```json
+{
+  "dataset": {
+    "source": "parquet_candles",
+    "snapshot_id": "krw_btc_1m_content_addressed_v1",
+    "source_uri": "s3://research-datasets/immutable/krw-btc/1m/2026q2.parquet",
+    "source_content_hash": "sha256:<source-bytes-hash>",
+    "source_schema_hash": "sha256:<schema-hash>",
+    "locator": {
+      "bucket": "research-datasets",
+      "key": "immutable/krw-btc/1m/2026q2.parquet",
+      "version_id": "<immutable-object-version>"
+    },
+    "options": {
+      "timezone": "UTC",
+      "timestamp_unit": "ms"
+    },
+    "train": {"start": "2026-01-01", "end": "2026-03-31"},
+    "validation": {"start": "2026-04-01", "end": "2026-04-30"},
+    "top_of_book": {
+      "source": "parquet_top_of_book",
+      "source_uri": "s3://research-datasets/immutable/krw-btc/top/2026q2.parquet",
+      "source_content_hash": "sha256:<quote-source-bytes-hash>",
+      "source_schema_hash": "sha256:<quote-schema-hash>",
+      "locator": {
+        "bucket": "research-datasets",
+        "key": "immutable/krw-btc/top/2026q2.parquet",
+        "version_id": "<immutable-object-version>"
+      },
+      "required": true,
+      "join_tolerance_ms": 3000,
+      "missing_policy": "fail",
+      "min_coverage_pct": 100.0
+    }
+  }
+}
+```
+
+How to add a new research data source:
+
+1. Implement a candle, top-of-book, or depth adapter that emits canonical
+   `DatasetSnapshot` material or capability data.
+2. Register the adapter with `DatasetAdapterRegistry`.
+3. Add adapter contract tests that prove loading and fail-closed resolution.
+4. Add a manifest example with immutable locator and options.
+5. Verify source, schema, canonical snapshot, quality, and adapter provenance
+   hashes.
+6. Run `research-validate` from the manifest.
+7. Run `research-reproduce` on the resulting promotion artifact.
+
 ## Audit Trail Evidence
 
 `research_run.report_detail=summary` is a compact diagnostic/reporting mode. It

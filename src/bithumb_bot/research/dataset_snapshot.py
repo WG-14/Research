@@ -222,17 +222,70 @@ def load_dataset_range(
     split_name: str,
     date_range: DateRange,
 ) -> DatasetSnapshot:
-    adapter = default_dataset_adapter_registry().resolve(manifest.dataset.source)
+    registry = default_dataset_adapter_registry()
+    adapter = registry.resolve(manifest.dataset.source)
     top_of_book_spec = manifest.dataset.top_of_book
+    top_of_book_adapter = None
     if top_of_book_spec is not None:
-        default_dataset_adapter_registry().resolve_top_of_book(top_of_book_spec.source)
-    if any(scenario.type == "depth_walk" for scenario in manifest.execution_model.scenarios):
-        default_dataset_adapter_registry().resolve_depth("orderbook_depth_levels")
-    return adapter.load_range(
+        top_of_book_adapter = registry.resolve_top_of_book(top_of_book_spec.source)
+    depth_requested = any(scenario.type == "depth_walk" for scenario in manifest.execution_model.scenarios)
+    depth_adapter = registry.resolve_depth("orderbook_depth_levels") if depth_requested else None
+    snapshot = adapter.load_range(
         manifest=manifest,
         split_name=split_name,
         date_range=date_range,
         context=DatasetLoadContext(db_path=db_path),
+    )
+    execution_lookahead_ms = (
+        int(manifest.execution_timing.decision_guard_ms)
+        + int(max((scenario.latency_ms for scenario in manifest.execution_model.scenarios), default=0))
+        + int(manifest.execution_timing.max_quote_wait_ms)
+    )
+    top_of_book_quotes: tuple[TopOfBookQuote | None, ...] = ()
+    top_of_book_event_quotes: tuple[TopOfBookQuote, ...] = ()
+    if top_of_book_adapter is not None:
+        top_of_book_quotes = tuple(
+            top_of_book_adapter.load_candle_quotes(
+                manifest=manifest,
+                candles=snapshot.candles,
+                context=DatasetLoadContext(db_path=db_path),
+            )
+        )
+        top_of_book_event_quotes = tuple(
+            top_of_book_adapter.load_event_quotes(
+                manifest=manifest,
+                candles=snapshot.candles,
+                execution_quote_lookahead_ms=execution_lookahead_ms,
+                context=DatasetLoadContext(db_path=db_path),
+            )
+        )
+    orderbook_depth_snapshots: tuple[OrderbookDepthSnapshot, ...] = ()
+    if depth_adapter is not None:
+        orderbook_depth_snapshots = tuple(
+            depth_adapter.load_event_snapshots(
+                manifest=manifest,
+                candles=snapshot.candles,
+                execution_depth_lookahead_ms=execution_lookahead_ms,
+                context=DatasetLoadContext(db_path=db_path),
+            )
+        )
+    return DatasetSnapshot(
+        snapshot_id=snapshot.snapshot_id,
+        source=snapshot.source,
+        market=snapshot.market,
+        interval=snapshot.interval,
+        split_name=snapshot.split_name,
+        date_range=snapshot.date_range,
+        candles=snapshot.candles,
+        top_of_book_quotes=top_of_book_quotes,
+        top_of_book_event_quotes=top_of_book_event_quotes,
+        top_of_book_requested=top_of_book_spec is not None,
+        top_of_book_required=bool(top_of_book_spec.required) if top_of_book_spec is not None else False,
+        top_of_book_missing_policy=top_of_book_spec.missing_policy if top_of_book_spec is not None else None,
+        top_of_book_source=top_of_book_spec.source if top_of_book_spec is not None else None,
+        top_of_book_join_tolerance_ms=top_of_book_spec.join_tolerance_ms if top_of_book_spec is not None else None,
+        top_of_book_min_coverage_pct=top_of_book_spec.min_coverage_pct if top_of_book_spec is not None else 100.0,
+        orderbook_depth_snapshots=orderbook_depth_snapshots,
     )
 
 
@@ -272,56 +325,7 @@ def _load_sqlite_dataset_range(
         )
         for row in rows
     )
-    top_of_book_quotes: tuple[TopOfBookQuote | None, ...] = ()
-    top_of_book_event_quotes: tuple[TopOfBookQuote, ...] = ()
-    orderbook_depth_snapshots: tuple[OrderbookDepthSnapshot, ...] = ()
     top_of_book_spec = manifest.dataset.top_of_book
-    depth_requested = any(scenario.type == "depth_walk" for scenario in manifest.execution_model.scenarios)
-    if top_of_book_spec is not None:
-        if top_of_book_spec.source not in SQLiteCandleAdapter.supported_top_of_book_sources:
-            raise ValueError(f"dataset_top_of_book_adapter_not_supported_by_sqlite_candles:{top_of_book_spec.source}")
-        top_of_book_quotes = _load_top_of_book_quotes(
-            db_path=db_path,
-            market=manifest.market,
-            candles=candles,
-            join_tolerance_ms=top_of_book_spec.join_tolerance_ms,
-            quote_source=top_of_book_spec.quote_source,
-        )
-        execution_quote_lookahead_ms = (
-            int(manifest.execution_timing.decision_guard_ms)
-            + int(max((scenario.latency_ms for scenario in manifest.execution_model.scenarios), default=0))
-            + int(manifest.execution_timing.max_quote_wait_ms)
-        )
-        top_of_book_event_quotes = _load_top_of_book_event_quotes(
-            db_path=db_path,
-            market=manifest.market,
-            interval=manifest.interval,
-            candles=candles,
-            quote_source=top_of_book_spec.quote_source,
-            execution_quote_lookahead_ms=execution_quote_lookahead_ms,
-        )
-        orderbook_depth_snapshots = _load_orderbook_depth_event_snapshots(
-            db_path=db_path,
-            market=manifest.market,
-            interval=manifest.interval,
-            candles=candles,
-            source=top_of_book_spec.quote_source,
-            execution_depth_lookahead_ms=execution_quote_lookahead_ms,
-        )
-    elif depth_requested:
-        execution_depth_lookahead_ms = (
-            int(manifest.execution_timing.decision_guard_ms)
-            + int(max((scenario.latency_ms for scenario in manifest.execution_model.scenarios), default=0))
-            + int(manifest.execution_timing.max_quote_wait_ms)
-        )
-        orderbook_depth_snapshots = _load_orderbook_depth_event_snapshots(
-            db_path=db_path,
-            market=manifest.market,
-            interval=manifest.interval,
-            candles=candles,
-            source=None,
-            execution_depth_lookahead_ms=execution_depth_lookahead_ms,
-        )
     return DatasetSnapshot(
         snapshot_id=manifest.dataset.snapshot_id,
         source=manifest.dataset.source,
@@ -330,15 +334,12 @@ def _load_sqlite_dataset_range(
         split_name=split_name,
         date_range=date_range,
         candles=candles,
-        top_of_book_quotes=top_of_book_quotes,
-        top_of_book_event_quotes=top_of_book_event_quotes,
         top_of_book_requested=top_of_book_spec is not None,
         top_of_book_required=bool(top_of_book_spec.required) if top_of_book_spec is not None else False,
         top_of_book_missing_policy=top_of_book_spec.missing_policy if top_of_book_spec is not None else None,
         top_of_book_source=top_of_book_spec.source if top_of_book_spec is not None else None,
         top_of_book_join_tolerance_ms=top_of_book_spec.join_tolerance_ms if top_of_book_spec is not None else None,
         top_of_book_min_coverage_pct=top_of_book_spec.min_coverage_pct if top_of_book_spec is not None else 100.0,
-        orderbook_depth_snapshots=orderbook_depth_snapshots,
     )
 
 
@@ -426,11 +427,15 @@ def _build_source_agnostic_dataset_quality_report(
     actual_count = len(candles)
     present_expected_count = len(actual_expected_ts)
     coverage_pct = (present_expected_count / expected_count * 100.0) if expected_count else 0.0
-    depth_summary = (
-        _orderbook_depth_summary(db_path=db_path, snapshot=snapshot)
-        if db_path is not None and snapshot.source == "sqlite_candles"
-        else _empty_orderbook_depth_summary()
-    )
+    if db_path is not None and snapshot.source == "sqlite_candles":
+        depth_summary = default_dataset_adapter_registry().resolve_depth("orderbook_depth_levels").quality_summary(
+            snapshot=snapshot,
+            context=DatasetLoadContext(db_path=db_path),
+        )
+    elif snapshot.orderbook_depth_snapshots:
+        depth_summary = _orderbook_depth_summary_from_snapshot(snapshot=snapshot)
+    else:
+        depth_summary = _empty_orderbook_depth_summary()
     depth_rows_available = bool(depth_summary["l2_depth_rows_available"])
     depth_complete_snapshots_available = bool(depth_summary["l2_depth_complete_snapshots_available"])
     payload: dict[str, Any] = {
@@ -650,6 +655,25 @@ def _orderbook_depth_summary(*, db_path: str | Path, snapshot: DatasetSnapshot) 
         )
     finally:
         conn.close()
+
+
+def _orderbook_depth_summary_from_snapshot(*, snapshot: DatasetSnapshot) -> dict[str, Any]:
+    snapshots = snapshot.orderbook_depth_snapshots
+    if not snapshots:
+        return _empty_orderbook_depth_summary()
+    row_count = sum(len(item.bids) + len(item.asks) for item in snapshots)
+    sources = sorted({str(item.source) for item in snapshots})
+    payload = [_depth_snapshot_payload(item) for item in sorted(snapshots, key=lambda item: (int(item.ts), str(item.source)))]
+    return {
+        "l2_depth_rows_available": row_count > 0,
+        "l2_depth_complete_snapshots_available": True,
+        "l2_depth_snapshot_count": len(snapshots),
+        "l2_depth_row_count": row_count,
+        "l2_depth_first_ts": min(int(item.ts) for item in snapshots),
+        "l2_depth_last_ts": max(int(item.ts) for item in snapshots),
+        "l2_depth_sources": sources,
+        "l2_depth_content_hash": sha256_prefixed(payload),
+    }
 
 
 def _empty_orderbook_depth_summary() -> dict[str, Any]:
@@ -928,9 +952,9 @@ class SQLiteCandleAdapter:
     source = "sqlite_candles"
     adapter_name = "sqlite_candle_adapter"
     adapter_version = "1"
-    supported_capabilities = frozenset({"candles", "top_of_book", "l2_depth_snapshot"})
-    supported_top_of_book_sources = frozenset({"sqlite_orderbook_top_snapshots"})
-    supported_depth_sources = frozenset({"orderbook_depth_levels"})
+    supported_capabilities = frozenset({"candles"})
+    supported_top_of_book_sources = frozenset()
+    supported_depth_sources = frozenset()
     supports_sqlite_streaming_quality_scan = True
 
     def load_range(
@@ -959,13 +983,41 @@ class SQLiteCandleAdapter:
         if context.db_path is None:
             raise ValueError("sqlite_dataset_adapter_db_path_missing")
         schema_hash = _db_schema_fingerprint(context.db_path)
+        registry = default_dataset_adapter_registry()
+        top_adapter = (
+            registry.resolve_top_of_book(snapshot.top_of_book_source)
+            if snapshot.top_of_book_requested and snapshot.top_of_book_source is not None
+            else None
+        )
+        depth_adapter = registry.resolve_depth("orderbook_depth_levels")
         provenance = {
+            "candle": {
+                "dataset_source": self.source,
+                "adapter_name": self.adapter_name,
+                "adapter_version": self.adapter_version,
+            },
             "sqlite": {
                 "source_locator_policy": "runtime_db_path_excluded_from_dataset_quality_hash",
                 "db_schema_fingerprint": schema_hash,
                 "tables": _sqlite_present_tables(context.db_path),
                 "scan_method": "snapshot_materialized_with_sqlite_depth_summary",
-            }
+            },
+            "top_of_book": (
+                {
+                    "source": snapshot.top_of_book_source,
+                    "requested": snapshot.top_of_book_requested,
+                    "adapter_name": top_adapter.adapter_name if top_adapter is not None else None,
+                    "adapter_version": top_adapter.adapter_version if top_adapter is not None else None,
+                }
+                if snapshot.top_of_book_requested
+                else None
+            ),
+            "depth": {
+                "source": "orderbook_depth_levels",
+                "adapter_name": depth_adapter.adapter_name,
+                "adapter_version": depth_adapter.adapter_version,
+                "snapshot_count": len(snapshot.orderbook_depth_snapshots),
+            },
         }
         report = _build_source_agnostic_dataset_quality_report(
             db_path=context.db_path,
@@ -994,8 +1046,117 @@ class SQLiteCandleAdapter:
             "source_locator": "runtime_db_path_excluded_from_dataset_hash",
             "source_content_hash": manifest.dataset.source_content_hash,
             "source_schema_hash": manifest.dataset.source_schema_hash or schema_hash,
-            "top_of_book_source": manifest.dataset.top_of_book.source if manifest.dataset.top_of_book else None,
             "provenance_policy": "sqlite_compatibility_adapter",
+        }
+
+
+class SQLiteTopOfBookAdapter:
+    source = "sqlite_orderbook_top_snapshots"
+    adapter_name = "sqlite_top_of_book_adapter"
+    adapter_version = "1"
+
+    def load_candle_quotes(
+        self,
+        *,
+        manifest: ExperimentManifest,
+        candles: tuple[Candle, ...],
+        context: DatasetLoadContext,
+    ) -> tuple[TopOfBookQuote | None, ...]:
+        if context.db_path is None:
+            raise ValueError("sqlite_top_of_book_adapter_db_path_missing")
+        spec = manifest.dataset.top_of_book
+        if spec is None:
+            return ()
+        return _load_top_of_book_quotes(
+            db_path=context.db_path,
+            market=manifest.market,
+            candles=candles,
+            join_tolerance_ms=spec.join_tolerance_ms,
+            quote_source=spec.quote_source,
+        )
+
+    def load_event_quotes(
+        self,
+        *,
+        manifest: ExperimentManifest,
+        candles: tuple[Candle, ...],
+        execution_quote_lookahead_ms: int,
+        context: DatasetLoadContext,
+    ) -> tuple[TopOfBookQuote, ...]:
+        if context.db_path is None:
+            raise ValueError("sqlite_top_of_book_adapter_db_path_missing")
+        spec = manifest.dataset.top_of_book
+        if spec is None:
+            return ()
+        return _load_top_of_book_event_quotes(
+            db_path=context.db_path,
+            market=manifest.market,
+            interval=manifest.interval,
+            candles=candles,
+            quote_source=spec.quote_source,
+            execution_quote_lookahead_ms=execution_quote_lookahead_ms,
+        )
+
+    def provenance(
+        self,
+        *,
+        manifest: ExperimentManifest,
+        context: DatasetLoadContext,
+    ) -> dict[str, Any]:
+        return {
+            "top_of_book_source": self.source,
+            "adapter_name": self.adapter_name,
+            "adapter_version": self.adapter_version,
+            "quote_source": manifest.dataset.top_of_book.quote_source if manifest.dataset.top_of_book else None,
+            "provenance_policy": "sqlite_top_of_book_compatibility_adapter",
+        }
+
+
+class SQLiteOrderbookDepthAdapter:
+    source = "orderbook_depth_levels"
+    adapter_name = "sqlite_orderbook_depth_adapter"
+    adapter_version = "1"
+
+    def load_event_snapshots(
+        self,
+        *,
+        manifest: ExperimentManifest,
+        candles: tuple[Candle, ...],
+        execution_depth_lookahead_ms: int,
+        context: DatasetLoadContext,
+    ) -> tuple[OrderbookDepthSnapshot, ...]:
+        if context.db_path is None:
+            raise ValueError("sqlite_orderbook_depth_adapter_db_path_missing")
+        return _load_orderbook_depth_event_snapshots(
+            db_path=context.db_path,
+            market=manifest.market,
+            interval=manifest.interval,
+            candles=candles,
+            source=manifest.dataset.top_of_book.quote_source if manifest.dataset.top_of_book else None,
+            execution_depth_lookahead_ms=execution_depth_lookahead_ms,
+        )
+
+    def quality_summary(
+        self,
+        *,
+        snapshot: DatasetSnapshot,
+        context: DatasetLoadContext,
+    ) -> dict[str, Any]:
+        if context.db_path is not None and snapshot.source == "sqlite_candles":
+            return _orderbook_depth_summary(db_path=context.db_path, snapshot=snapshot)
+        return _orderbook_depth_summary_from_snapshot(snapshot=snapshot)
+
+    def provenance(
+        self,
+        *,
+        manifest: ExperimentManifest,
+        context: DatasetLoadContext,
+    ) -> dict[str, Any]:
+        return {
+            "depth_source": self.source,
+            "adapter_name": self.adapter_name,
+            "adapter_version": self.adapter_version,
+            "provenance_policy": "sqlite_orderbook_depth_compatibility_adapter",
         }
 
 
@@ -1016,3 +1177,5 @@ def _sqlite_present_tables(db_path: str | Path) -> list[str]:
 
 
 default_dataset_adapter_registry().register(SQLiteCandleAdapter())
+default_dataset_adapter_registry().register_top_of_book(SQLiteTopOfBookAdapter())
+default_dataset_adapter_registry().register_depth(SQLiteOrderbookDepthAdapter())

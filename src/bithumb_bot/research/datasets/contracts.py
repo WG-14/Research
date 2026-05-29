@@ -53,3 +53,68 @@ class DatasetAdapter(Protocol):
         context: DatasetLoadContext,
     ) -> dict[str, Any]:
         ...
+
+
+class TopOfBookAdapter(Protocol):
+    source: str
+    adapter_name: str
+    adapter_version: str
+
+    def load_candle_quotes(
+        self,
+        *,
+        manifest: ExperimentManifest,
+        candles: tuple[Any, ...],
+        context: DatasetLoadContext,
+    ) -> tuple[Any | None, ...]:
+        ...
+
+    def load_event_quotes(
+        self,
+        *,
+        manifest: ExperimentManifest,
+        candles: tuple[Any, ...],
+        execution_quote_lookahead_ms: int,
+        context: DatasetLoadContext,
+    ) -> tuple[Any, ...]:
+        ...
+
+    def provenance(
+        self,
+        *,
+        manifest: ExperimentManifest,
+        context: DatasetLoadContext,
+    ) -> dict[str, Any]:
+        ...
+
+
+class OrderbookDepthAdapter(Protocol):
+    source: str
+    adapter_name: str
+    adapter_version: str
+
+    def load_event_snapshots(
+        self,
+        *,
+        manifest: ExperimentManifest,
+        candles: tuple[Any, ...],
+        execution_depth_lookahead_ms: int,
+        context: DatasetLoadContext,
+    ) -> tuple[Any, ...]:
+        ...
+
+    def quality_summary(
+        self,
+        *,
+        snapshot: DatasetSnapshot,
+        context: DatasetLoadContext,
+    ) -> dict[str, Any]:
+        ...
+
+    def provenance(
+        self,
+        *,
+        manifest: ExperimentManifest,
+        context: DatasetLoadContext,
+    ) -> dict[str, Any]:
+        ...
