@@ -31,6 +31,16 @@
         "identity": "orderbook_top_krw_btc_2023_2026_v1"
       }
     },
+    "depth": {
+      "source": "orderbook_depth_levels",
+      "required": false,
+      "source_content_hash": "sha256:replace_with_reviewed_depth_source_hash_when_depth_walk_is_used",
+      "source_schema_hash": "sha256:replace_with_reviewed_depth_schema_hash_when_depth_walk_is_used",
+      "locator": {
+        "policy": "managed-db",
+        "identity": "orderbook_depth_krw_btc_2023_2026_v1"
+      }
+    },
     "train": {
       "start": "2023-01-01",
       "end": "2024-06-30"

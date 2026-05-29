@@ -20,6 +20,7 @@ from .data_plane import (
 )
 from .datasets.contracts import DatasetLoadContext
 from .datasets.registry import default_dataset_adapter_registry
+from .dataset_snapshot import load_dataset_range
 from .execution_calibration import compare_calibration_to_scenario, load_calibration_artifact
 from .experiment_manifest import ExperimentManifest, load_manifest
 
@@ -169,11 +170,11 @@ def _adapter_quality_report(
             split_name=split_name,
         )
     date_range = getattr(manifest.dataset.split, split_name)
-    snapshot = adapter.load_range(
+    snapshot = load_dataset_range(
+        db_path=db_path,
         manifest=manifest,
         split_name=split_name,
         date_range=date_range,
-        context=DatasetLoadContext(db_path=db_path),
     )
     return adapter.quality_report(snapshot=snapshot, context=DatasetLoadContext(db_path=db_path))
 

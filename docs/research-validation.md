@@ -606,7 +606,7 @@ Adapters may also use explicit locator/provenance fields. Production-bound manif
   "dataset": {
     "source": "sqlite_candles",
     "snapshot_id": "candles_reviewed_2026_05",
-    "source_uri": "managed-db:paper/research-reviewed/candles_reviewed_2026_05",
+    "source_uri": "managed-db:DATA_ROOT/<mode>/trades/<mode>.sqlite",
     "source_content_hash": "sha256:replace_with_reviewed_dataset_content_hash",
     "source_schema_hash": "sha256:replace_with_reviewed_schema_hash",
     "locator": {
@@ -616,13 +616,38 @@ Adapters may also use explicit locator/provenance fields. Production-bound manif
     "options": {
       "quality_backend": "sqlite_streaming"
     },
+    "top_of_book": {
+      "source": "sqlite_orderbook_top_snapshots",
+      "required": true,
+      "join_tolerance_ms": 3000,
+      "missing_policy": "fail",
+      "min_coverage_pct": 100,
+      "source_content_hash": "sha256:replace_with_reviewed_top_of_book_hash",
+      "source_schema_hash": "sha256:replace_with_reviewed_top_of_book_schema_hash",
+      "locator": {
+        "policy": "managed-db",
+        "identity": "orderbook_top_reviewed_2026_05"
+      }
+    },
+    "depth": {
+      "source": "orderbook_depth_levels",
+      "required": true,
+      "source_content_hash": "sha256:replace_with_reviewed_depth_hash",
+      "source_schema_hash": "sha256:replace_with_reviewed_depth_schema_hash",
+      "locator": {
+        "policy": "managed-db",
+        "identity": "orderbook_depth_reviewed_2026_05"
+      }
+    },
     "train": {"start": "2023-01-01", "end": "2023-06-30"},
     "validation": {"start": "2023-07-01", "end": "2023-09-30"}
   }
 }
 ```
 
-For `paper_candidate`, `live_dry_run_candidate`, and `small_live_candidate`, validation fails closed when adapter name/version, dataset source, canonical snapshot hash, split hashes, quality hashes, source content hash, source schema hash, adapter provenance hash, or immutable locator evidence is missing or mismatched. Mutable locators such as `latest` and `current`, repo-relative paths, and wrong-mode paths such as a production-bound locator containing `/paper/` are not promotion-grade evidence.
+Top-of-book and depth are independent capabilities. `dataset.top_of_book.source` resolves through the top-of-book adapter registry, and `dataset.depth.source` resolves through the orderbook-depth adapter registry. Legacy SQLite depth-walk manifests that omit `dataset.depth` still default to `orderbook_depth_levels`, but production-bound depth evidence must be declared with immutable source/schema hashes and adapter provenance.
+
+For `paper_candidate`, `live_dry_run_candidate`, and `small_live_candidate`, validation fails closed when adapter name/version, dataset source, canonical snapshot hash, split hashes, quality hashes, source content hash, source schema hash, adapter provenance hash, or immutable locator evidence is missing or mismatched. When top-of-book or depth evidence is requested or required, the same source hash, schema hash, locator, and adapter provenance hash requirements apply to those capability adapters. Mutable locators such as `latest` and `current`, repo-relative paths, and wrong-mode paths such as a production-bound locator containing `/paper/` are not promotion-grade evidence.
 
 SQLite streaming quality scan is an optimization exposed by the SQLite adapter. `research-readiness` resolves the manifest source through `DatasetAdapterRegistry`; it uses SQLite streaming only when the resolved adapter declares that backend. Other adapters must provide `DatasetSnapshot` loading and a quality report path that can be evaluated without opening SQLite.
 

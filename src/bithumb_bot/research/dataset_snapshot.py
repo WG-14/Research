@@ -82,7 +82,16 @@ class DatasetSnapshot:
     top_of_book_source: str | None = None
     top_of_book_join_tolerance_ms: int | None = None
     top_of_book_min_coverage_pct: float = 100.0
+    top_of_book_source_content_hash: str | None = None
+    top_of_book_source_schema_hash: str | None = None
+    top_of_book_adapter_provenance: dict[str, Any] | None = None
     orderbook_depth_snapshots: tuple[OrderbookDepthSnapshot, ...] = ()
+    orderbook_depth_requested: bool = False
+    orderbook_depth_required: bool = False
+    orderbook_depth_source: str | None = None
+    orderbook_depth_source_content_hash: str | None = None
+    orderbook_depth_source_schema_hash: str | None = None
+    orderbook_depth_adapter_provenance: dict[str, Any] | None = None
 
     def fingerprint_payload(self) -> dict[str, object]:
         return {
@@ -228,8 +237,10 @@ def load_dataset_range(
     top_of_book_adapter = None
     if top_of_book_spec is not None:
         top_of_book_adapter = registry.resolve_top_of_book(top_of_book_spec.source)
-    depth_requested = any(scenario.type == "depth_walk" for scenario in manifest.execution_model.scenarios)
-    depth_adapter = registry.resolve_depth("orderbook_depth_levels") if depth_requested else None
+    depth_requested = _depth_requested(manifest)
+    depth_spec = manifest.dataset.depth
+    depth_source = depth_spec.source if depth_spec is not None else "orderbook_depth_levels"
+    depth_adapter = registry.resolve_depth(depth_source) if depth_requested else None
     snapshot = adapter.load_range(
         manifest=manifest,
         split_name=split_name,
@@ -269,6 +280,16 @@ def load_dataset_range(
                 context=DatasetLoadContext(db_path=db_path),
             )
         )
+    top_of_book_provenance = (
+        top_of_book_adapter.provenance(manifest=manifest, context=DatasetLoadContext(db_path=db_path))
+        if top_of_book_adapter is not None
+        else None
+    )
+    depth_provenance = (
+        depth_adapter.provenance(manifest=manifest, context=DatasetLoadContext(db_path=db_path))
+        if depth_adapter is not None
+        else None
+    )
     return DatasetSnapshot(
         snapshot_id=snapshot.snapshot_id,
         source=snapshot.source,
@@ -285,7 +306,25 @@ def load_dataset_range(
         top_of_book_source=top_of_book_spec.source if top_of_book_spec is not None else None,
         top_of_book_join_tolerance_ms=top_of_book_spec.join_tolerance_ms if top_of_book_spec is not None else None,
         top_of_book_min_coverage_pct=top_of_book_spec.min_coverage_pct if top_of_book_spec is not None else 100.0,
+        top_of_book_source_content_hash=top_of_book_spec.source_content_hash if top_of_book_spec is not None else None,
+        top_of_book_source_schema_hash=top_of_book_spec.source_schema_hash if top_of_book_spec is not None else None,
+        top_of_book_adapter_provenance=top_of_book_provenance,
         orderbook_depth_snapshots=orderbook_depth_snapshots,
+        orderbook_depth_requested=depth_requested,
+        orderbook_depth_required=bool(getattr(depth_spec, "required", False)) or bool(manifest.execution_timing.depth_required),
+        orderbook_depth_source=depth_source if depth_requested else None,
+        orderbook_depth_source_content_hash=depth_spec.source_content_hash if depth_spec is not None else None,
+        orderbook_depth_source_schema_hash=depth_spec.source_schema_hash if depth_spec is not None else None,
+        orderbook_depth_adapter_provenance=depth_provenance,
+    )
+
+
+def _depth_requested(manifest: ExperimentManifest) -> bool:
+    return (
+        manifest.dataset.depth is not None
+        or bool(manifest.execution_timing.depth_required)
+        or manifest.execution_timing.min_execution_reality_level_for_promotion == "l2_depth_walk_no_queue"
+        or any(scenario.type == "depth_walk" for scenario in manifest.execution_model.scenarios)
     )
 
 
@@ -427,7 +466,11 @@ def _build_source_agnostic_dataset_quality_report(
     actual_count = len(candles)
     present_expected_count = len(actual_expected_ts)
     coverage_pct = (present_expected_count / expected_count * 100.0) if expected_count else 0.0
-    if db_path is not None and snapshot.source == "sqlite_candles":
+    if (
+        db_path is not None
+        and snapshot.source == "sqlite_candles"
+        and (snapshot.orderbook_depth_source in {None, "orderbook_depth_levels"})
+    ):
         depth_summary = default_dataset_adapter_registry().resolve_depth("orderbook_depth_levels").quality_summary(
             snapshot=snapshot,
             context=DatasetLoadContext(db_path=db_path),
@@ -438,6 +481,8 @@ def _build_source_agnostic_dataset_quality_report(
         depth_summary = _empty_orderbook_depth_summary()
     depth_rows_available = bool(depth_summary["l2_depth_rows_available"])
     depth_complete_snapshots_available = bool(depth_summary["l2_depth_complete_snapshots_available"])
+    depth_provenance = snapshot.orderbook_depth_adapter_provenance or {}
+    depth_provenance_hash = sha256_prefixed(depth_provenance) if depth_provenance else None
     payload: dict[str, Any] = {
         "schema_version": 2,
         "artifact_type": "dataset_quality_report",
@@ -503,6 +548,17 @@ def _build_source_agnostic_dataset_quality_report(
         "depth_available_semantics": "stored_l2_depth_complete_snapshots_exist_not_execution_model_used",
         "depth_evidence_available": depth_complete_snapshots_available,
         "l2_depth_evidence_available": depth_complete_snapshots_available,
+        "l2_depth_requested": bool(snapshot.orderbook_depth_requested),
+        "l2_depth_required": bool(snapshot.orderbook_depth_required),
+        "l2_depth_source": snapshot.orderbook_depth_source,
+        "l2_depth_source_content_hash": depth_summary.get("l2_depth_content_hash"),
+        "l2_depth_source_schema_hash": (
+            _db_table_schema_fingerprint(db_path, "orderbook_depth_levels")
+            if db_path is not None and snapshot.orderbook_depth_source in {None, "orderbook_depth_levels"}
+            else snapshot.orderbook_depth_source_schema_hash
+        ),
+        "l2_depth_adapter_provenance": depth_provenance,
+        "l2_depth_adapter_provenance_hash": depth_provenance_hash,
         "depth_availability_source": (
             "sqlite_orderbook_depth_levels_complete_snapshots"
             if depth_complete_snapshots_available
@@ -624,10 +680,15 @@ def _compact_missing_ranges(missing_ts: list[int], interval_ms: int, *, max_rang
 
 
 def _db_schema_fingerprint(db_path: str | Path) -> str:
+    return _db_table_schema_fingerprint(db_path, "candles")
+
+
+def _db_table_schema_fingerprint(db_path: str | Path, table_name: str) -> str:
+    normalized_table = str(table_name)
     conn = sqlite3.connect(f"file:{Path(db_path).expanduser().resolve()}?mode=ro", uri=True)
     try:
-        table_info = [tuple(row) for row in conn.execute("PRAGMA table_info(candles)").fetchall()]
-        index_list = [tuple(row) for row in conn.execute("PRAGMA index_list(candles)").fetchall()]
+        table_info = [tuple(row) for row in conn.execute(f"PRAGMA table_info({normalized_table})").fetchall()]
+        index_list = [tuple(row) for row in conn.execute(f"PRAGMA index_list({normalized_table})").fetchall()]
         index_info = {
             str(index[1]): [tuple(row) for row in conn.execute(f"PRAGMA index_info({str(index[1])})").fetchall()]
             for index in index_list
@@ -636,7 +697,7 @@ def _db_schema_fingerprint(db_path: str | Path) -> str:
         conn.close()
     return sha256_prefixed(
         {
-            "table": "candles",
+            "table": normalized_table,
             "table_info": table_info,
             "index_list": index_list,
             "index_info": index_info,
@@ -930,6 +991,7 @@ def _add_top_of_book_quality_fields(*, payload: dict[str, Any], snapshot: Datase
         existing_reasons.extend(reasons)
         payload["quality_gate_reasons"] = existing_reasons
         payload["quality_gate_status"] = "FAIL"
+    top_provenance = snapshot.top_of_book_adapter_provenance or {}
     payload.update(
         {
             "top_of_book_requested": True,
@@ -944,6 +1006,28 @@ def _add_top_of_book_quality_fields(*, payload: dict[str, Any], snapshot: Datase
             "top_of_book_coverage_pct": round(coverage_pct, 8),
             "top_of_book_gate_status": gate_status,
             "top_of_book_gate_reasons": reasons,
+            "top_of_book_source_content_hash": _top_of_book_content_hash(snapshot),
+            "top_of_book_source_schema_hash": snapshot.top_of_book_source_schema_hash,
+            "top_of_book_adapter_name": top_provenance.get("adapter_name"),
+            "top_of_book_adapter_version": top_provenance.get("adapter_version"),
+            "top_of_book_adapter_provenance": top_provenance,
+            "top_of_book_adapter_provenance_hash": sha256_prefixed(top_provenance) if top_provenance else None,
+            "top_of_book_join_policy": "nearest_quote_within_tolerance",
+            "top_of_book_quote_age_policy": "absolute_distance_to_candle_ts_lte_join_tolerance_ms",
+        }
+    )
+
+
+def _top_of_book_content_hash(snapshot: DatasetSnapshot) -> str | None:
+    if not snapshot.top_of_book_requested:
+        return None
+    return sha256_prefixed(
+        {
+            "candle_quotes": [
+                quote.as_tuple() if quote is not None else None
+                for quote in snapshot.top_of_book_quotes
+            ],
+            "event_quotes": [quote.as_tuple() for quote in snapshot.top_of_book_event_quotes],
         }
     )
 
@@ -989,7 +1073,13 @@ class SQLiteCandleAdapter:
             if snapshot.top_of_book_requested and snapshot.top_of_book_source is not None
             else None
         )
-        depth_adapter = registry.resolve_depth("orderbook_depth_levels")
+        depth_source = snapshot.orderbook_depth_source or "orderbook_depth_levels"
+        depth_adapter = registry.resolve_depth(depth_source)
+        top_schema_hash = (
+            _db_table_schema_fingerprint(context.db_path, "orderbook_top_snapshots")
+            if snapshot.top_of_book_requested and snapshot.top_of_book_source == "sqlite_orderbook_top_snapshots"
+            else snapshot.top_of_book_source_schema_hash
+        )
         provenance = {
             "candle": {
                 "dataset_source": self.source,
@@ -1013,7 +1103,7 @@ class SQLiteCandleAdapter:
                 else None
             ),
             "depth": {
-                "source": "orderbook_depth_levels",
+                "source": depth_source,
                 "adapter_name": depth_adapter.adapter_name,
                 "adapter_version": depth_adapter.adapter_version,
                 "snapshot_count": len(snapshot.orderbook_depth_snapshots),
@@ -1028,6 +1118,13 @@ class SQLiteCandleAdapter:
         )
         report.payload["source_schema_hash"] = schema_hash
         report.payload["source_schema_hash_status"] = "present"
+        if snapshot.top_of_book_requested:
+            report.payload["top_of_book_source_schema_hash"] = top_schema_hash
+            report.payload["top_of_book_adapter_provenance"] = snapshot.top_of_book_adapter_provenance or report.payload.get("top_of_book_adapter_provenance")
+            report.payload["top_of_book_adapter_provenance_hash"] = sha256_prefixed(report.payload["top_of_book_adapter_provenance"] or {})
+        if snapshot.orderbook_depth_requested:
+            report.payload["l2_depth_adapter_provenance"] = snapshot.orderbook_depth_adapter_provenance or {}
+            report.payload["l2_depth_adapter_provenance_hash"] = sha256_prefixed(report.payload["l2_depth_adapter_provenance"])
         report.payload["scan_method"] = "sqlite_adapter_snapshot_scan"
         report.payload["content_hash"] = sha256_prefixed({k: v for k, v in report.payload.items() if k != "content_hash"})
         return report

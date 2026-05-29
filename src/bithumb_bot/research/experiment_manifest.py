@@ -96,11 +96,40 @@ class TopOfBookDatasetSpec:
 
 
 @dataclass(frozen=True)
+class OrderbookDepthDatasetSpec:
+    source: str = "orderbook_depth_levels"
+    required: bool = False
+    source_uri: str | None = None
+    source_content_hash: str | None = None
+    source_schema_hash: str | None = None
+    locator: dict[str, object] | None = None
+    options: dict[str, object] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "source": self.source,
+            "required": self.required,
+        }
+        if self.source_uri is not None:
+            payload["source_uri"] = self.source_uri
+        if self.source_content_hash is not None:
+            payload["source_content_hash"] = self.source_content_hash
+        if self.source_schema_hash is not None:
+            payload["source_schema_hash"] = self.source_schema_hash
+        if self.locator is not None:
+            payload["locator"] = dict(self.locator)
+        if self.options:
+            payload["options"] = dict(self.options)
+        return payload
+
+
+@dataclass(frozen=True)
 class DatasetSpec:
     source: str
     snapshot_id: str
     split: DatasetSplit
     top_of_book: TopOfBookDatasetSpec | None = None
+    depth: OrderbookDepthDatasetSpec | None = None
     source_uri: str | None = None
     source_content_hash: str | None = None
     source_schema_hash: str | None = None
@@ -125,6 +154,8 @@ class DatasetSpec:
             payload["options"] = dict(self.options)
         if self.top_of_book is not None:
             payload["top_of_book"] = self.top_of_book.as_dict()
+        if self.depth is not None:
+            payload["depth"] = self.depth.as_dict()
         return payload
 
 
@@ -948,6 +979,7 @@ def _parse_dataset(payload: dict[str, Any]) -> DatasetSpec:
         "validation",
         "final_holdout",
         "top_of_book",
+        "depth",
         "source_uri",
         "source_content_hash",
         "source_schema_hash",
@@ -974,6 +1006,7 @@ def _parse_dataset(payload: dict[str, Any]) -> DatasetSpec:
         snapshot_id=_required_str(payload, "snapshot_id"),
         split=split,
         top_of_book=_parse_top_of_book_dataset(payload.get("top_of_book")),
+        depth=_parse_orderbook_depth_dataset(payload.get("depth")),
         source_uri=_optional_non_empty_str(payload.get("source_uri"), "dataset.source_uri"),
         source_content_hash=_optional_hash(payload.get("source_content_hash"), "dataset.source_content_hash"),
         source_schema_hash=_optional_hash(payload.get("source_schema_hash"), "dataset.source_schema_hash"),
@@ -1083,6 +1116,37 @@ def _parse_top_of_book_dataset(value: Any) -> TopOfBookDatasetSpec | None:
         source_schema_hash=_optional_hash(value.get("source_schema_hash"), "dataset.top_of_book.source_schema_hash"),
         locator=locator,
         options=options,
+    )
+
+
+def _parse_orderbook_depth_dataset(value: Any) -> OrderbookDepthDatasetSpec | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ManifestValidationError("dataset.depth must be an object")
+    allowed_fields = {
+        "source",
+        "required",
+        "source_uri",
+        "source_content_hash",
+        "source_schema_hash",
+        "locator",
+        "options",
+    }
+    unknown = sorted(set(value) - allowed_fields)
+    if unknown:
+        raise ManifestValidationError(f"dataset.depth unsupported fields: {','.join(unknown)}")
+    source = str(value.get("source") or "orderbook_depth_levels").strip()
+    if not source:
+        raise ManifestValidationError("dataset.depth.source must be non-empty")
+    return OrderbookDepthDatasetSpec(
+        source=source,
+        required=bool(value.get("required", False)),
+        source_uri=_optional_non_empty_str(value.get("source_uri"), "dataset.depth.source_uri"),
+        source_content_hash=_optional_hash(value.get("source_content_hash"), "dataset.depth.source_content_hash"),
+        source_schema_hash=_optional_hash(value.get("source_schema_hash"), "dataset.depth.source_schema_hash"),
+        locator=_optional_mapping(value.get("locator"), "dataset.depth.locator"),
+        options=_optional_mapping(value.get("options"), "dataset.depth.options") or {},
     )
 
 

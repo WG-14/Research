@@ -4552,6 +4552,17 @@ def _dataset_adapter_provenance_payload(
             for split_name, payload in sorted(split_reports.items())
         },
         "top_of_book": manifest.dataset.top_of_book.as_dict() if manifest.dataset.top_of_book else None,
+        "top_of_book_adapter_provenance_hashes": {
+            split_name: payload.get("top_of_book_adapter_provenance_hash")
+            for split_name, payload in sorted(split_reports.items())
+            if payload.get("top_of_book_requested")
+        },
+        "depth": manifest.dataset.depth.as_dict() if manifest.dataset.depth else None,
+        "depth_adapter_provenance_hashes": {
+            split_name: payload.get("l2_depth_adapter_provenance_hash")
+            for split_name, payload in sorted(split_reports.items())
+            if payload.get("l2_depth_requested")
+        },
     }
 
 
@@ -4606,36 +4617,131 @@ def _validate_dataset_adapter_provenance(
             reasons.append(f"{split_name}:source_content_hash_mismatch")
         if manifest.dataset.source_schema_hash and manifest.dataset.source_schema_hash != source_schema_hash:
             reasons.append(f"{split_name}:source_schema_hash_mismatch")
-        if _has_mutable_dataset_locator(manifest):
-            reasons.append(f"{split_name}:mutable_dataset_locator")
+        reasons.extend(f"{split_name}:{reason}" for reason in _production_evidence_locator_reasons(manifest, "dataset"))
+        reasons.extend(_top_of_book_provenance_reasons(manifest=manifest, split_name=split_name, payload=payload))
+        reasons.extend(_depth_provenance_reasons(manifest=manifest, split_name=split_name, payload=payload))
     if reasons:
         raise ResearchValidationError("dataset_adapter_provenance_failed:" + ",".join(reasons))
 
 
-def _has_mutable_dataset_locator(manifest: ExperimentManifest) -> bool:
-    values: list[object] = []
-    values.append(manifest.dataset.source_uri)
-    values.extend((manifest.dataset.locator or {}).values())
+def _top_of_book_provenance_reasons(
+    *,
+    manifest: ExperimentManifest,
+    split_name: str,
+    payload: dict[str, Any],
+) -> list[str]:
     top = manifest.dataset.top_of_book
-    if top is not None:
-        values.append(top.source_uri)
-        values.extend((top.locator or {}).values())
+    if top is None:
+        return []
+    reasons: list[str] = []
+    actual_content = str(payload.get("top_of_book_source_content_hash") or "")
+    actual_schema = str(payload.get("top_of_book_source_schema_hash") or "")
+    provenance = payload.get("top_of_book_adapter_provenance")
+    provenance_hash = str(payload.get("top_of_book_adapter_provenance_hash") or "")
+    if not top.source_content_hash:
+        reasons.append(f"{split_name}:top_of_book_declared_source_content_hash_missing")
+    if not top.source_schema_hash:
+        reasons.append(f"{split_name}:top_of_book_declared_source_schema_hash_missing")
+    if not actual_content.startswith("sha256:"):
+        reasons.append(f"{split_name}:top_of_book_source_content_hash_missing")
+    if not actual_schema.startswith("sha256:"):
+        reasons.append(f"{split_name}:top_of_book_source_schema_hash_missing")
+    if top.source_content_hash and top.source_content_hash != actual_content:
+        reasons.append(f"{split_name}:top_of_book_source_content_hash_mismatch")
+    if top.source_schema_hash and top.source_schema_hash != actual_schema:
+        reasons.append(f"{split_name}:top_of_book_source_schema_hash_mismatch")
+    if not isinstance(provenance, dict) or not provenance:
+        reasons.append(f"{split_name}:top_of_book_adapter_provenance_missing")
+    if not provenance_hash.startswith("sha256:"):
+        reasons.append(f"{split_name}:top_of_book_adapter_provenance_hash_missing")
+    elif provenance_hash != sha256_prefixed(provenance or {}):
+        reasons.append(f"{split_name}:top_of_book_adapter_provenance_hash_mismatch")
+    reasons.extend(f"{split_name}:{reason}" for reason in _production_evidence_locator_reasons(manifest, "top_of_book"))
+    return reasons
+
+
+def _depth_provenance_reasons(
+    *,
+    manifest: ExperimentManifest,
+    split_name: str,
+    payload: dict[str, Any],
+) -> list[str]:
+    if not _depth_requested_for_manifest(manifest):
+        return []
+    depth = manifest.dataset.depth
+    reasons: list[str] = []
+    actual_content = str(payload.get("l2_depth_source_content_hash") or "")
+    actual_schema = str(payload.get("l2_depth_source_schema_hash") or "")
+    provenance = payload.get("l2_depth_adapter_provenance")
+    provenance_hash = str(payload.get("l2_depth_adapter_provenance_hash") or "")
+    if depth is None:
+        reasons.append(f"{split_name}:depth_spec_missing_for_production_bound_depth_evidence")
+    else:
+        if not depth.source_content_hash:
+            reasons.append(f"{split_name}:depth_declared_source_content_hash_missing")
+        if not depth.source_schema_hash:
+            reasons.append(f"{split_name}:depth_declared_source_schema_hash_missing")
+        if depth.source_content_hash and depth.source_content_hash != actual_content:
+            reasons.append(f"{split_name}:depth_source_content_hash_mismatch")
+        if depth.source_schema_hash and depth.source_schema_hash != actual_schema:
+            reasons.append(f"{split_name}:depth_source_schema_hash_mismatch")
+    if not actual_content.startswith("sha256:"):
+        reasons.append(f"{split_name}:depth_source_content_hash_missing")
+    if not actual_schema.startswith("sha256:"):
+        reasons.append(f"{split_name}:depth_source_schema_hash_missing")
+    if not isinstance(provenance, dict) or not provenance:
+        reasons.append(f"{split_name}:depth_adapter_provenance_missing")
+    if not provenance_hash.startswith("sha256:"):
+        reasons.append(f"{split_name}:depth_adapter_provenance_hash_missing")
+    elif provenance_hash != sha256_prefixed(provenance or {}):
+        reasons.append(f"{split_name}:depth_adapter_provenance_hash_mismatch")
+    reasons.extend(f"{split_name}:{reason}" for reason in _production_evidence_locator_reasons(manifest, "depth"))
+    return reasons
+
+
+def _depth_requested_for_manifest(manifest: ExperimentManifest) -> bool:
+    return (
+        manifest.dataset.depth is not None
+        or bool(manifest.execution_timing.depth_required)
+        or manifest.execution_timing.min_execution_reality_level_for_promotion == "l2_depth_walk_no_queue"
+        or any(scenario.type == "depth_walk" for scenario in manifest.execution_model.scenarios)
+    )
+
+
+def _production_evidence_locator_reasons(manifest: ExperimentManifest, evidence: str) -> list[str]:
+    values: list[object] = []
+    if evidence == "dataset":
+        values.append(manifest.dataset.source_uri)
+        values.extend((manifest.dataset.locator or {}).values())
+    elif evidence == "top_of_book" and manifest.dataset.top_of_book is not None:
+        values.append(manifest.dataset.top_of_book.source_uri)
+        values.extend((manifest.dataset.top_of_book.locator or {}).values())
+    elif evidence == "depth" and manifest.dataset.depth is not None:
+        values.append(manifest.dataset.depth.source_uri)
+        values.extend((manifest.dataset.depth.locator or {}).values())
+    reasons: list[str] = []
     for value in values:
         text = str(value or "").strip().lower()
         if not text:
             continue
         if text in {"latest", "current"} or text.endswith("/latest") or "/latest/" in text:
-            return True
+            reasons.append(f"mutable_{evidence}_locator")
+            continue
         if is_production_bound_target(manifest.deployment_tier) and "/paper/" in text:
-            return True
+            reasons.append(f"wrong_mode_{evidence}_locator")
+            continue
         if "://" not in text and not text.startswith(("managed-db:", "s3://")):
             if "/" in text or text.startswith("."):
-                return True
+                reasons.append(f"repo_relative_{evidence}_locator")
+                continue
             if text not in {"immutable", "content_addressed"} and "." in text:
-                return True
+                reasons.append(f"mutable_{evidence}_locator")
+                continue
         if "/" in text and "://" not in text and not text.startswith(("/", "managed-db:")):
-            return True
-    return False
+            reasons.append(f"repo_relative_{evidence}_locator")
+    if "mutable_dataset_locator" not in reasons and evidence == "dataset" and reasons:
+        reasons.append("mutable_dataset_locator")
+    return sorted(set(reasons))
 
 
 def _validate_strategy_data_requirements(manifest: ExperimentManifest) -> None:
@@ -4659,9 +4765,10 @@ def _manifest_data_capabilities(manifest: ExperimentManifest) -> dict[str, bool]
     registry.resolve(manifest.dataset.source)
     if top_of_book_requested and manifest.dataset.top_of_book is not None:
         registry.resolve_top_of_book(manifest.dataset.top_of_book.source)
-    depth_requested = any(scenario.type == "depth_walk" for scenario in manifest.execution_model.scenarios)
+    depth_requested = _depth_requested_for_manifest(manifest)
     if depth_requested:
-        registry.resolve_depth("orderbook_depth_levels")
+        depth_source = manifest.dataset.depth.source if manifest.dataset.depth is not None else "orderbook_depth_levels"
+        registry.resolve_depth(depth_source)
     return {
         "candles": True,
         "top_of_book": top_of_book_requested,

@@ -25,7 +25,11 @@ from bithumb_bot.research.readiness import build_research_readiness_report
 from bithumb_bot.research.validation_protocol import ResearchValidationError, _validate_dataset_adapter_provenance
 
 
-def _manifest(source: str = "sqlite_candles", top_source: str | None = None):
+def _manifest(
+    source: str = "sqlite_candles",
+    top_source: str | None = None,
+    depth_source: str | None = None,
+):
     dataset: dict[str, object] = {
         "source": source,
         "snapshot_id": "adapter_unit",
@@ -34,6 +38,8 @@ def _manifest(source: str = "sqlite_candles", top_source: str | None = None):
     }
     if top_source is not None:
         dataset["top_of_book"] = {"source": top_source, "missing_policy": "warn"}
+    if depth_source is not None:
+        dataset["depth"] = {"source": depth_source}
     return parse_manifest(
         {
             "experiment_id": "adapter_unit",
@@ -221,6 +227,28 @@ def test_dummy_depth_adapter_is_resolved_separately_from_candle_adapter() -> Non
 
     assert default_dataset_adapter_registry().resolve("sqlite_candles").adapter_name == "sqlite_candle_adapter"
     assert default_dataset_adapter_registry().resolve_depth("unit_depth_source").adapter_name == "unit_depth_adapter"
+
+
+def test_registered_dummy_depth_adapter_loads_without_hard_coded_sqlite_source(tmp_path: Path) -> None:
+    default_dataset_adapter_registry().register(UnitCandleAdapter())
+    default_dataset_adapter_registry().register_depth(UnitDepthAdapter())
+    manifest = _manifest("unit_candles_adapter_source", depth_source="unit_depth_source")
+
+    snapshot = load_dataset_split(db_path=tmp_path / "unused.sqlite", manifest=manifest, split_name="train")
+
+    assert snapshot.orderbook_depth_requested is True
+    assert snapshot.orderbook_depth_source == "unit_depth_source"
+    assert len(snapshot.orderbook_depth_snapshots) == 1
+    assert snapshot.orderbook_depth_snapshots[0].source == "unit_depth_source"
+
+
+def test_unknown_depth_source_fails_at_resolver_not_parser(tmp_path: Path) -> None:
+    manifest = _manifest("sqlite_candles", depth_source="unknown_depth_source")
+
+    assert manifest.dataset.depth is not None
+    assert manifest.dataset.depth.source == "unknown_depth_source"
+    with pytest.raises(UnsupportedDatasetAdapterError, match="unsupported_depth_adapter:unknown_depth_source"):
+        load_dataset_split(db_path=tmp_path / "unused.sqlite", manifest=manifest, split_name="train")
 
 
 def test_manifest_preserves_adapter_locator_options_and_provenance_fields() -> None:
@@ -588,6 +616,163 @@ def test_production_bound_adapter_provenance_rejects_hash_mismatch() -> None:
     report.payload["content_hash"] = "sha256:test"
 
     with pytest.raises(ResearchValidationError, match="adapter_provenance_hash_mismatch"):
+        _validate_dataset_adapter_provenance(manifest=manifest, quality_reports={"train": report})
+
+
+def test_production_bound_top_of_book_requires_declared_hashes_and_provenance() -> None:
+    manifest = replace(_manifest("unit_candles_adapter_source", top_source="unit_top_of_book_source"), deployment_tier="paper_candidate")
+    snapshot = DatasetSnapshot(
+        snapshot_id="quality_top",
+        source="unit_candles_adapter_source",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="train",
+        date_range=DateRange(start="2023-01-01", end="2023-01-01"),
+        candles=(Candle(1_672_531_200_000, 100.0, 101.0, 99.0, 100.0, 1.0),),
+        top_of_book_quotes=(
+            TopOfBookQuote(1_672_531_200_000, "KRW-BTC", 99.0, 101.0, 200.0, "unit_top_of_book_source"),
+        ),
+        top_of_book_requested=True,
+        top_of_book_source="unit_top_of_book_source",
+        top_of_book_adapter_provenance={"adapter_name": "unit_top_of_book_adapter", "adapter_version": "1"},
+    )
+    report = _build_source_agnostic_dataset_quality_report(
+        db_path=None,
+        snapshot=snapshot,
+        adapter_name="unit_candle_adapter",
+        adapter_version="1",
+        adapter_provenance={"unit": {"source": "unit_candles_adapter_source"}},
+    )
+    report.payload["source_content_hash"] = "sha256:content"
+    report.payload["source_schema_hash"] = "sha256:schema"
+
+    with pytest.raises(ResearchValidationError, match="top_of_book_declared_source_content_hash_missing"):
+        _validate_dataset_adapter_provenance(manifest=manifest, quality_reports={"train": report})
+
+
+def test_production_bound_top_of_book_rejects_mismatched_hash_and_provenance() -> None:
+    manifest = replace(_manifest("unit_candles_adapter_source", top_source="unit_top_of_book_source"), deployment_tier="paper_candidate")
+    manifest = replace(
+        manifest,
+        dataset=replace(
+            manifest.dataset,
+            source_content_hash="sha256:content",
+            source_schema_hash="sha256:schema",
+            top_of_book=replace(
+                manifest.dataset.top_of_book,
+                source_content_hash="sha256:declared-top-content",
+                source_schema_hash="sha256:declared-top-schema",
+            ),
+        ),
+    )
+    snapshot = DatasetSnapshot(
+        snapshot_id="quality_top",
+        source="unit_candles_adapter_source",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="train",
+        date_range=DateRange(start="2023-01-01", end="2023-01-01"),
+        candles=(Candle(1_672_531_200_000, 100.0, 101.0, 99.0, 100.0, 1.0),),
+        top_of_book_quotes=(
+            TopOfBookQuote(1_672_531_200_000, "KRW-BTC", 99.0, 101.0, 200.0, "unit_top_of_book_source"),
+        ),
+        top_of_book_requested=True,
+        top_of_book_source="unit_top_of_book_source",
+        top_of_book_source_schema_hash="sha256:actual-top-schema",
+        top_of_book_adapter_provenance={"adapter_name": "unit_top_of_book_adapter", "adapter_version": "1"},
+    )
+    report = _build_source_agnostic_dataset_quality_report(
+        db_path=None,
+        snapshot=snapshot,
+        adapter_name="unit_candle_adapter",
+        adapter_version="1",
+        adapter_provenance={"unit": {"source": "unit_candles_adapter_source"}},
+    )
+    report.payload["source_content_hash"] = "sha256:content"
+    report.payload["source_schema_hash"] = "sha256:schema"
+    report.payload["top_of_book_adapter_provenance_hash"] = "sha256:wrong"
+
+    with pytest.raises(ResearchValidationError, match="top_of_book_source_content_hash_mismatch"):
+        _validate_dataset_adapter_provenance(manifest=manifest, quality_reports={"train": report})
+    with pytest.raises(ResearchValidationError, match="top_of_book_adapter_provenance_hash_mismatch"):
+        _validate_dataset_adapter_provenance(manifest=manifest, quality_reports={"train": report})
+
+
+def test_production_bound_depth_requires_declared_hashes_and_provenance() -> None:
+    manifest = replace(_manifest("unit_candles_adapter_source", depth_source="unit_depth_source"), deployment_tier="paper_candidate")
+    snapshot = DatasetSnapshot(
+        snapshot_id="quality_depth",
+        source="unit_candles_adapter_source",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="train",
+        date_range=DateRange(start="2023-01-01", end="2023-01-01"),
+        candles=(Candle(1_672_531_200_000, 100.0, 101.0, 99.0, 100.0, 1.0),),
+        orderbook_depth_requested=True,
+        orderbook_depth_source="unit_depth_source",
+        orderbook_depth_adapter_provenance={"adapter_name": "unit_depth_adapter", "adapter_version": "1"},
+    )
+    report = _build_source_agnostic_dataset_quality_report(
+        db_path=None,
+        snapshot=snapshot,
+        adapter_name="unit_candle_adapter",
+        adapter_version="1",
+        adapter_provenance={"unit": {"source": "unit_candles_adapter_source"}},
+    )
+    report.payload["source_content_hash"] = "sha256:content"
+    report.payload["source_schema_hash"] = "sha256:schema"
+
+    with pytest.raises(ResearchValidationError, match="depth_declared_source_content_hash_missing"):
+        _validate_dataset_adapter_provenance(manifest=manifest, quality_reports={"train": report})
+
+
+def test_production_bound_depth_rejects_mismatched_hashes() -> None:
+    manifest = replace(_manifest("unit_candles_adapter_source", depth_source="unit_depth_source"), deployment_tier="paper_candidate")
+    manifest = replace(
+        manifest,
+        dataset=replace(
+            manifest.dataset,
+            source_content_hash="sha256:content",
+            source_schema_hash="sha256:schema",
+            depth=replace(
+                manifest.dataset.depth,
+                source_content_hash="sha256:declared-depth-content",
+                source_schema_hash="sha256:declared-depth-schema",
+            ),
+        ),
+    )
+    depth_snapshot = build_orderbook_depth_snapshot(
+        ts=1_672_531_200_000,
+        pair="KRW-BTC",
+        bid_levels=[(99.0, 1.0)],
+        ask_levels=[(101.0, 1.0)],
+        source="unit_depth_source",
+    )
+    snapshot = DatasetSnapshot(
+        snapshot_id="quality_depth",
+        source="unit_candles_adapter_source",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="train",
+        date_range=DateRange(start="2023-01-01", end="2023-01-01"),
+        candles=(Candle(1_672_531_200_000, 100.0, 101.0, 99.0, 100.0, 1.0),),
+        orderbook_depth_snapshots=(depth_snapshot,),
+        orderbook_depth_requested=True,
+        orderbook_depth_source="unit_depth_source",
+        orderbook_depth_source_schema_hash="sha256:actual-depth-schema",
+        orderbook_depth_adapter_provenance={"adapter_name": "unit_depth_adapter", "adapter_version": "1"},
+    )
+    report = _build_source_agnostic_dataset_quality_report(
+        db_path=None,
+        snapshot=snapshot,
+        adapter_name="unit_candle_adapter",
+        adapter_version="1",
+        adapter_provenance={"unit": {"source": "unit_candles_adapter_source"}},
+    )
+    report.payload["source_content_hash"] = "sha256:content"
+    report.payload["source_schema_hash"] = "sha256:schema"
+
+    with pytest.raises(ResearchValidationError, match="depth_source_content_hash_mismatch"):
         _validate_dataset_adapter_provenance(manifest=manifest, quality_reports={"train": report})
 
 
