@@ -101,7 +101,6 @@ class ExecutionCoordinator:
                 post_trade_reconciled=False,
                 mark_processed_allowed=False,
                 input_hash=input_hash,
-                decision_hash=execution_plan_bundle_hash,
             )
         if execution_decision_summary is None:
             return ExecutionCycleResult(
@@ -113,7 +112,6 @@ class ExecutionCoordinator:
                 post_trade_reconciled=False,
                 mark_processed_allowed=False,
                 input_hash=input_hash,
-                decision_hash=execution_plan_bundle_hash,
             )
         expectation = self.resolve_submit_expectation(execution_decision_summary)
         if not expectation.submit_expected:
@@ -126,7 +124,6 @@ class ExecutionCoordinator:
                 post_trade_reconciled=False,
                 mark_processed_allowed=True,
                 input_hash=input_hash,
-                decision_hash=execution_plan_bundle_hash,
             )
         if execution_service is not None:
             submit_invoker = lambda: execution_service.execute(
@@ -156,7 +153,6 @@ class ExecutionCoordinator:
                 post_trade_reconciled=False,
                 mark_processed_allowed=True,
                 input_hash=input_hash,
-                decision_hash=execution_plan_bundle_hash,
             )
         try:
             trade = submit_invoker()
@@ -203,7 +199,6 @@ class ExecutionCoordinator:
             post_trade_reconciled=post_trade_reconcile is not None,
             mark_processed_allowed=True,
             input_hash=input_hash,
-            decision_hash=execution_plan_bundle_hash,
             trade=trade if isinstance(trade, Mapping) else None,
         )
 
@@ -237,7 +232,6 @@ class ExecutionCoordinator:
             mark_processed_allowed=True,
             halt_transition=transition.as_dict(),
             input_hash=input_hash,
-            decision_hash=execution_plan_bundle_hash,
         )
 
 

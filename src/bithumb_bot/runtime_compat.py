@@ -6,6 +6,9 @@ from .run_loop_execution_planner import prepare_strategy_decision_persistence_co
 from .runtime.execution_coordinator import (
     resolve_typed_execution_submit_expectation as _resolve_typed_execution_submit_expectation,
 )
+from .runtime.cleanup_revalidation import (
+    revalidate_cleanup_state_after_failure_compat as _revalidate_cleanup_state_after_failure,
+)
 from .runtime.runner import (
     ResumeBlocker,
     _attempt_open_order_cancellation,
@@ -17,7 +20,6 @@ from .runtime.runner import (
     _persist_target_position_state_for_run_loop,
     _promotion_grade_typed_runtime_decision_required,
     _resolve_target_position_state_for_run_loop,
-    _revalidate_cleanup_state_after_failure,
     _select_latest_closed_candle,
     _typed_runtime_handoff_failure_reason,
     authoritative_execution_signal_for_trade,

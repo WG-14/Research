@@ -9,6 +9,7 @@ import pytest
 
 from bithumb_bot.config import settings
 from bithumb_bot import engine
+from bithumb_bot import runtime_compat
 from bithumb_bot import runtime_strategy_decision
 from bithumb_bot.core.sma_policy import PositionSnapshot, StrategyDecisionV2
 from bithumb_bot.db_core import ensure_schema
@@ -36,6 +37,7 @@ from bithumb_bot.runtime.lifecycle_artifacts import (
     SafetyDecision,
     StartupResult,
 )
+from bithumb_bot.runtime.cleanup_revalidation import CleanupRevalidationResult
 from bithumb_bot.runtime.notification_adapter import NotificationAdapter
 from bithumb_bot.runtime.operator_event_composer import OperatorEventComposer
 from bithumb_bot.runtime.recovery_controller import RecoveryController, ReconcileClearEvidence
@@ -344,10 +346,10 @@ def test_sma_with_filter_live_runtime_requires_typed_handoff() -> None:
         object.__setattr__(settings, "MODE", "live")
         object.__setattr__(settings, "APPROVED_STRATEGY_PROFILE_PATH", "")
 
-        assert engine._promotion_grade_typed_runtime_decision_required(
+        assert runtime_compat._promotion_grade_typed_runtime_decision_required(
             selected_strategy_name="sma_with_filter"
         ) is True
-        assert engine._promotion_grade_typed_runtime_decision_required(
+        assert runtime_compat._promotion_grade_typed_runtime_decision_required(
             selected_strategy_name="sma_cross"
         ) is True
     finally:
@@ -368,7 +370,7 @@ def test_sma_with_filter_live_dict_handoff_from_monkey_patch_fails_closed() -> N
         object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
         object.__setattr__(settings, "APPROVED_STRATEGY_PROFILE_PATH", "")
 
-        reason = engine._typed_runtime_handoff_failure_reason(
+        reason = runtime_compat._typed_runtime_handoff_failure_reason(
             {"signal": "BUY", "reason": "legacy monkey patch"},
             selected_strategy_name="sma_with_filter",
         )
@@ -392,7 +394,7 @@ def test_sma_with_filter_paper_dict_handoff_fails_closed_for_promotion_runtime()
         object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", False)
         object.__setattr__(settings, "APPROVED_STRATEGY_PROFILE_PATH", "")
 
-        reason = engine._typed_runtime_handoff_failure_reason(
+        reason = runtime_compat._typed_runtime_handoff_failure_reason(
             {"signal": "BUY", "reason": "legacy paper diagnostic"},
             selected_strategy_name="sma_with_filter",
         )
@@ -412,7 +414,7 @@ def test_sma_with_filter_approved_profile_runtime_requires_typed_handoff() -> No
         object.__setattr__(settings, "MODE", "paper")
         object.__setattr__(settings, "APPROVED_STRATEGY_PROFILE_PATH", "/tmp/profile.json")
 
-        assert engine._promotion_grade_typed_runtime_decision_required(
+        assert runtime_compat._promotion_grade_typed_runtime_decision_required(
             selected_strategy_name="sma_with_filter"
         ) is True
     finally:
@@ -474,7 +476,7 @@ def test_engine_import_boundary_stays_thin_for_runtime_entrypoint() -> None:
     }
 
     assert violations == {}
-    assert "from .runtime.runner import (" in source
+    assert "from .runtime.runner import run_loop" in source
     assert "sys.modules[__name__]" not in source
     assert "from .operator_repair_service import" not in source
     assert "from .operator_notification_service import" not in source
@@ -655,16 +657,16 @@ def test_runtime_decision_gateway_accepts_explicit_collector_adapter_resolver_wi
 
 def test_unregistered_runtime_strategy_fails_closed_without_legacy_fallback() -> None:
     with pytest.raises(RuntimeError, match="runtime_decision_adapter_not_registered:missing_runtime"):
-        engine.compute_strategy_decision_snapshot(
+        runtime_compat.compute_strategy_decision_snapshot(
             None,
             through_ts_ms=1_700_003_000_000,
             strategy_name="missing_runtime",
         )
 
-    assert engine._legacy_db_strategy_fallback_allowed(
+    assert runtime_compat._legacy_db_strategy_fallback_allowed(
         selected_strategy_name="missing_runtime"
     ) is False
-    assert engine._typed_runtime_handoff_failure_reason(
+    assert runtime_compat._typed_runtime_handoff_failure_reason(
         {"signal": "BUY"},
         selected_strategy_name="missing_runtime",
     ) == "runtime_decision_adapter_not_registered"
@@ -734,7 +736,7 @@ def test_registered_sma_and_safe_hold_adapters_share_typed_envelope_planner_path
         assert {"sma_with_filter", "safe_hold"}.issubset(registered)
 
         for strategy_name in ("sma_with_filter", "safe_hold"):
-            result = engine.compute_strategy_decision_snapshot(
+            result = runtime_compat.compute_strategy_decision_snapshot(
                 conn,
                 through_ts_ms=1_700_001_000_000 + 39 * 60_000,
                 strategy_name=strategy_name,
@@ -774,7 +776,7 @@ def test_persistence_context_cannot_override_typed_decision_authority() -> None:
 
 
 def test_generic_promotion_adapter_dict_handoff_fails_closed_when_typed_required() -> None:
-    reason = engine._typed_runtime_handoff_failure_reason(
+    reason = runtime_compat._typed_runtime_handoff_failure_reason(
         {"signal": "BUY", "reason": "legacy dict"},
         selected_strategy_name="canary_non_sma",
     )
@@ -1233,7 +1235,13 @@ def test_safety_controller_interprets_cancel_failure_as_fail_closed() -> None:
         flatten_position=lambda **_kwargs: {"status": "skipped"},
         record_flatten_position_result=lambda **_kwargs: None,
         exposure_snapshot=lambda _now: (True, False),
-        revalidate_cleanup_state_after_failure=lambda *_args, **_kwargs: (False, "unknown"),
+        cleanup_revalidator=lambda *_args, **_kwargs: CleanupRevalidationResult(
+            safe=False,
+            detail="unknown",
+            attempts=1,
+            open_orders_present=None,
+            position_present=None,
+        ),
         now_ms=lambda: 1,
         live_dry_run=lambda: True,
     )

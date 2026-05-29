@@ -8,11 +8,13 @@ from bithumb_bot import engine
 from bithumb_bot import runtime_state
 from bithumb_bot.runtime import runner
 from bithumb_bot.runtime.execution_coordinator import ExecutionCoordinator
-from bithumb_bot.runtime.lifecycle_artifacts import RuntimeCycleArtifact
+from bithumb_bot.runtime.cleanup_revalidation import CleanupRevalidationResult, CleanupRevalidationService
+from bithumb_bot.runtime.execution_coordinator import ExecutionCycleResult
+from bithumb_bot.runtime.lifecycle_artifacts import RuntimeCycleArtifact, SafetyDecision
 from bithumb_bot.runtime.notification_adapter import NotificationAdapter
 from bithumb_bot.runtime.operator_event_composer import OperatorEventComposer
 from bithumb_bot.runtime.recovery_controller import RecoveryController, ReconcileClearEvidence
-from bithumb_bot.runtime.safety_controller import HaltReason, SafetyController
+from bithumb_bot.runtime.safety_controller import HaltReason, RuntimeSafetyResult, SafetyController
 from bithumb_bot.runtime.startup_controller import StartupController
 from bithumb_bot.runtime.state_store import RuntimeStateStore
 
@@ -42,6 +44,47 @@ class _Notifications:
 
     def send_message(self, message: str) -> None:
         self.messages.append(message)
+
+
+def _cleanup_revalidation_safe() -> CleanupRevalidationResult:
+    return CleanupRevalidationResult(
+        safe=True,
+        detail="cleanup_revalidation(trigger=unit) attempts=1/1 broker_confirms_no_open_orders_and_no_position",
+        attempts=1,
+        open_orders_present=False,
+        position_present=False,
+    )
+
+
+def _safety_controller(
+    *,
+    state: object | None = None,
+    mutations: list[str] | None = None,
+    cleanup_revalidator=None,
+) -> SafetyController:
+    state_obj = state or _State()
+    mutation_log = mutations if mutations is not None else []
+    return SafetyController(
+        symbol="BTC_KRW",
+        state_snapshot=lambda: state_obj,
+        enter_halt=lambda **_kwargs: mutation_log.append("halt"),
+        resume_evaluator=lambda: (False, []),
+        latest_order_identifiers=lambda: (None, None),
+        count_open_orders=lambda: 0,
+        position_summary=lambda: "flat",
+        cancel_open_orders_with_broker=lambda _broker: {
+            "remote_open_count": 0,
+            "canceled_count": 0,
+            "failed_count": 0,
+        },
+        record_cancel_open_orders_result=lambda **_kwargs: None,
+        flatten_position=lambda **_kwargs: {"status": "skipped"},
+        record_flatten_position_result=lambda **_kwargs: None,
+        exposure_snapshot=lambda _now_ms: (False, False),
+        cleanup_revalidator=cleanup_revalidator or (lambda *_args, **_kwargs: _cleanup_revalidation_safe()),
+        now_ms=lambda: 1,
+        live_dry_run=lambda: True,
+    )
 
 
 def test_engine_is_explicit_entrypoint_or_facade() -> None:
@@ -88,7 +131,7 @@ def test_runner_only_coordinates_controllers() -> None:
     source = inspect.getsource(runner.run_loop)
     assert "prepare_runtime_start(" in source
     assert ".decide_cycle(" in source
-    assert ".evaluate_and_apply_live_runtime(" in source
+    assert ".evaluate_runtime_safety(" in source
     assert ".execute_cycle(" in source
     assert ".evaluate_closed_candle(" in source
     assert ".apply(" in source
@@ -158,6 +201,21 @@ def test_runner_does_not_own_safety_policy_branches() -> None:
         assert forbidden not in source
 
 
+def test_runner_does_not_own_cleanup_revalidation_policy() -> None:
+    source = inspect.getsource(runner)
+    assert "def _revalidate_cleanup_state_after_failure" not in source
+    assert "get_open_orders(" not in source
+    assert "get_balance(" not in source
+    assert "broker_confirms_no_open_orders_and_no_position" not in source
+
+
+def test_runner_applies_safety_decision_after_evaluation() -> None:
+    source = inspect.getsource(runner.run_loop)
+    assert ".evaluate_runtime_safety(" in source
+    assert "_apply_runtime_safety_decision(safety_controller, safety_result)" in source
+    assert "_apply_runtime_safety_decision(safety_controller, market_safety_result)" in source
+
+
 def test_execution_coordinator_execute_cycle_is_used_by_runner() -> None:
     source = inspect.getsource(runner.run_loop)
     assert ".execute_cycle(" in source
@@ -193,8 +251,28 @@ def test_runtime_recovery_gate_compat_clearers_are_not_main_path_side_effects() 
     assert preparation.risk_state_mismatch_halt_cleared is False
 
 
+def test_startup_controller_constructor_has_no_side_effect_clearer_dependencies() -> None:
+    signature = inspect.signature(StartupController)
+    assert "stale_initial_reconcile_clearer" not in signature.parameters
+    assert "stale_live_execution_broker_clearer" not in signature.parameters
+
+
 def test_startup_controller_does_not_call_side_effect_stale_clearers_in_evaluate_phase() -> None:
     source = inspect.getsource(StartupController.evaluate_persisted_halt)
+    assert "stale_initial_reconcile_clearer" not in source
+    assert "stale_live_execution_broker_clearer" not in source
+
+
+def test_startup_controller_prepare_uses_clearance_artifacts_only() -> None:
+    source = inspect.getsource(StartupController.prepare_runtime_start)
+    assert "recovery_clearance_evaluators" in source
+    assert "recovery_clearance_applier" in source
+    assert "stale_initial_reconcile_clearer" not in source
+    assert "stale_live_execution_broker_clearer" not in source
+
+
+def test_runner_does_not_inject_stale_clearers_into_startup_controller() -> None:
+    source = inspect.getsource(runner._startup_controller)
     assert "stale_initial_reconcile_clearer" not in source
     assert "stale_live_execution_broker_clearer" not in source
 
@@ -269,8 +347,6 @@ def test_startup_controller_prepare_runtime_start_statuses() -> None:
     controller = StartupController(
         symbol="BTC_KRW",
         startup_gate_evaluator=lambda: None,
-        stale_initial_reconcile_clearer=lambda: False,
-        stale_live_execution_broker_clearer=lambda **_kwargs: False,
         state_snapshot=lambda: blocked_state,
         latest_order_identifiers=lambda: (None, None),
         count_open_orders=lambda: 0,
@@ -284,8 +360,6 @@ def test_startup_controller_prepare_runtime_start_statuses() -> None:
     ready = StartupController(
         symbol="BTC_KRW",
         startup_gate_evaluator=lambda: None,
-        stale_initial_reconcile_clearer=lambda: False,
-        stale_live_execution_broker_clearer=lambda **_kwargs: False,
         state_snapshot=lambda: state,
         latest_order_identifiers=lambda: (None, None),
         count_open_orders=lambda: 0,
@@ -298,8 +372,6 @@ def test_startup_controller_prepare_runtime_start_statuses() -> None:
     degraded = StartupController(
         symbol="BTC_KRW",
         startup_gate_evaluator=lambda: "fee_pending_auto_recovering=1",
-        stale_initial_reconcile_clearer=lambda: False,
-        stale_live_execution_broker_clearer=lambda **_kwargs: False,
         state_snapshot=lambda: state,
         latest_order_identifiers=lambda: (None, None),
         count_open_orders=lambda: 0,
@@ -360,7 +432,7 @@ def test_safety_controller_decision_creation_is_separate_from_notification_send(
         flatten_position=lambda **_kwargs: {},
         record_flatten_position_result=lambda **_kwargs: None,
         exposure_snapshot=lambda _now_ms: (False, False),
-        revalidate_cleanup_state_after_failure=lambda *_args, **_kwargs: (True, "ok"),
+        cleanup_revalidator=lambda *_args, **_kwargs: _cleanup_revalidation_safe(),
         now_ms=lambda: 1,
         live_dry_run=lambda: True,
     )
@@ -373,6 +445,177 @@ def test_safety_controller_decision_creation_is_separate_from_notification_send(
     controller.apply(decision)
     assert notifications.events == []
     assert mutations == ["halt"]
+
+
+def test_safety_controller_live_runtime_evaluate_phase_has_no_state_apply() -> None:
+    source = inspect.getsource(SafetyController.evaluate_runtime_safety)
+    assert "halt_trading(" not in source
+    assert "enter_halt(" not in source
+    assert "disable_trading_until(" not in source
+
+    class _Settings:
+        MODE = "live"
+        KILL_SWITCH = True
+        KILL_SWITCH_LIQUIDATE = False
+        PAIR = "BTC_KRW"
+
+    mutations: list[str] = []
+    controller = _safety_controller(mutations=mutations)
+    result = controller.evaluate_runtime_safety(
+        settings_obj=_Settings(),
+        broker=object(),
+        now_epoch_sec=1.0,
+        last_close=100.0,
+        last_open_order_reconcile_at=None,
+        portfolio_cash_qty_with_position_state=lambda **_kwargs: (0.0, 0.0, None, None),
+        db_factory=lambda: None,
+        open_order_snapshot=lambda _now_ms: (0, None),
+        mark_open_orders_recovery_required=lambda _reason, _now_ms: 0,
+        reconcile_with_broker=lambda _broker: None,
+    )
+    assert result.blocked is True
+    assert result.safety_decision is not None
+    assert mutations == []
+
+
+def test_safety_controller_apply_phase_owns_halt_state_transition() -> None:
+    mutations: list[str] = []
+    controller = _safety_controller(mutations=mutations)
+    decision = controller.evaluate_halt(HaltReason("UNIT", "detail"), unresolved=True)
+    transition = controller.apply(decision)
+    assert transition.applied is True
+    assert transition.reason_code == "UNIT"
+    assert mutations == ["halt"]
+
+
+def test_runtime_safety_notification_deduplicates_decision_event() -> None:
+    notifications = _Notifications()
+    event = OperatorEventComposer("BTC_KRW").trading_halted_event(
+        reason_code="UNIT",
+        reason="detail",
+        unresolved=True,
+        operator_action_required=True,
+    )
+    decision = SafetyDecision(
+        action="HALT",
+        reason_code="UNIT",
+        reason="detail",
+        operator_event=event,
+    )
+    result = RuntimeSafetyResult(
+        blocked=True,
+        safety_decision=decision,
+        notification_events=(event,),
+    )
+
+    runner._dispatch_runtime_safety_notifications(NotificationAdapter(notifications), result)
+
+    assert len(notifications.events) == 1
+    assert notifications.events[0][0] == "trading_halted"
+
+
+def test_market_runtime_halt_sends_single_operator_event() -> None:
+    notifications = _Notifications()
+    mutations: list[str] = []
+
+    class _Settings:
+        MODE = "live"
+        MARKET_RUNTIME_REGISTRY_REFRESH_INTERVAL_SEC = -1
+
+    controller = _safety_controller(mutations=mutations)
+    result = controller.evaluate_market_runtime(
+        settings_obj=_Settings(),
+        now_epoch_sec=10.0,
+        last_market_runtime_check_at=None,
+        validate_market_runtime=lambda _settings: None,
+        validation_error_type=ValueError,
+    )
+    assert mutations == []
+    result = runner._apply_runtime_safety_decision(controller, result)
+    runner._dispatch_runtime_safety_notifications(NotificationAdapter(notifications), result)
+
+    assert mutations == ["halt"]
+    assert [name for name, _fields in notifications.events] == ["trading_halted"]
+
+
+def test_safety_decision_operator_event_hash_uses_event_hash() -> None:
+    event = {"event_type": "unit", "event_hash": "sha256:event-authority", "payload": "x"}
+    decision = SafetyDecision(
+        action="HALT",
+        reason_code="UNIT",
+        reason="detail",
+        operator_event=event,
+    )
+    assert decision.as_dict()["operator_event_hashes"] == ["sha256:event-authority"]
+
+    fallback = SafetyDecision(
+        action="HALT",
+        reason_code="UNIT",
+        reason="detail",
+        operator_event={"event_type": "unit", "payload": "x"},
+    ).as_dict()["operator_event_hashes"][0]
+    assert fallback.startswith("sha256:")
+    assert fallback == SafetyDecision(
+        action="HALT",
+        reason_code="UNIT",
+        reason="detail",
+        operator_event={"payload": "x", "event_type": "unit"},
+    ).as_dict()["operator_event_hashes"][0]
+
+
+def test_cleanup_revalidation_service_reports_safe_when_broker_confirms_flat() -> None:
+    calls: list[str] = []
+
+    class _Balance:
+        asset_available = 0.0
+        asset_locked = 0.0
+
+    class _Broker:
+        def get_open_orders(self, **_kwargs):
+            calls.append("open_orders")
+            return []
+
+        def get_balance(self):
+            calls.append("balance")
+            return _Balance()
+
+    service = CleanupRevalidationService(
+        reconcile_with_broker=lambda _broker: calls.append("reconcile"),
+        open_order_identifiers=lambda: (["client-1"], ["exchange-1"]),
+        max_attempts=2,
+    )
+
+    result = service.evaluate(_Broker(), trigger="unit")
+
+    assert result.safe is True
+    assert result.open_orders_present is False
+    assert result.position_present is False
+    assert result.as_dict()["decision_hash"].startswith("sha256:")
+    assert calls == ["reconcile", "open_orders", "balance"]
+
+
+def test_cleanup_revalidation_service_fails_closed_on_unknown_broker_state() -> None:
+    class _Broker:
+        def get_open_orders(self, **_kwargs):
+            raise RuntimeError("open orders unknown")
+
+        def get_balance(self):
+            raise RuntimeError("balance unknown")
+
+    service = CleanupRevalidationService(
+        reconcile_with_broker=lambda _broker: None,
+        open_order_identifiers=lambda: (["client-1"], ["exchange-1"]),
+        max_attempts=2,
+    )
+
+    result = service.evaluate(_Broker(), trigger="unit")
+
+    assert result.safe is False
+    assert result.open_orders_present is None
+    assert result.position_present is None
+    assert "open_orders_present=unknown" in result.detail
+    assert "position_present=unknown" in result.detail
+    assert result.errors
 
 
 def test_safety_controller_apply_does_not_send_notifications() -> None:
@@ -472,6 +715,7 @@ def test_runtime_cycle_artifact_hashes_required_paths() -> None:
         readiness_hash="sha256:ready",
         strategy_decision_hash="sha256:strategy",
         execution_plan_bundle_hash="sha256:plan",
+        execution_result_hash="sha256:execution",
         safety_decision_hash="sha256:safety",
         recovery_decision_hash="sha256:recovery",
         state_transition_hash="sha256:state",
@@ -479,4 +723,61 @@ def test_runtime_cycle_artifact_hashes_required_paths() -> None:
     )
     payload = artifact.as_dict()
     assert payload["artifact_type"] == "runtime_cycle_artifact"
+    assert payload["execution_result_hash"] == "sha256:execution"
     assert payload["decision_hash"].startswith("sha256:")
+
+
+def test_runtime_cycle_artifact_records_execution_result_hash_on_submit() -> None:
+    result = ExecutionCycleResult(
+        candle_ts=1,
+        decision_id=1,
+        planning_status="submitted",
+        submit_expected=True,
+        submitted=True,
+        post_trade_reconciled=True,
+        mark_processed_allowed=True,
+    )
+    artifact = RuntimeCycleArtifact(
+        cycle_id="checkpoint:processed",
+        candle_ts=1,
+        execution_result_hash=result.as_dict()["decision_hash"],
+    )
+    assert artifact.as_dict()["execution_result_hash"] == result.as_dict()["decision_hash"]
+    assert artifact.as_dict()["evidence_hash"].startswith("sha256:")
+
+
+def test_runtime_cycle_artifact_records_execution_result_hash_on_submit_blocked() -> None:
+    result = ExecutionCycleResult(
+        candle_ts=1,
+        decision_id=1,
+        planning_status="submit_blocked",
+        submit_expected=False,
+        submitted=False,
+        post_trade_reconciled=False,
+        mark_processed_allowed=True,
+    )
+    artifact = RuntimeCycleArtifact(
+        cycle_id="checkpoint:processed",
+        candle_ts=1,
+        execution_result_hash=result.as_dict()["decision_hash"],
+    )
+    assert artifact.as_dict()["execution_result_hash"] == result.as_dict()["decision_hash"]
+
+
+def test_runtime_cycle_artifact_records_execution_result_hash_on_execution_halt() -> None:
+    result = ExecutionCycleResult(
+        candle_ts=1,
+        decision_id=1,
+        planning_status="live_execution_failed",
+        submit_expected=True,
+        submitted=False,
+        post_trade_reconciled=False,
+        mark_processed_allowed=True,
+        halt_transition={"reason_code": "LIVE_EXECUTION_FAILED"},
+    )
+    artifact = RuntimeCycleArtifact(
+        cycle_id="halt:live_execution_failed",
+        candle_ts=1,
+        execution_result_hash=result.as_dict()["decision_hash"],
+    )
+    assert artifact.as_dict()["execution_result_hash"] == result.as_dict()["decision_hash"]

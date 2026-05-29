@@ -11,6 +11,7 @@ from ..risk import (
     evaluate_daily_loss_breach,
     evaluate_position_loss_breach,
 )
+from .cleanup_revalidation import CleanupRevalidationResult
 from .lifecycle_artifacts import SafetyDecision, StateTransitionResult
 from .operator_event_composer import (
     OperatorEventComposer,
@@ -30,6 +31,7 @@ class CleanupResult:
     canceled_ok: bool
     unresolved: bool
     decision: SafetyDecision
+    cleanup_revalidation: CleanupRevalidationResult | None = None
 
 
 @dataclass(frozen=True)
@@ -59,7 +61,7 @@ class SafetyController:
     flatten_position: Callable[..., Mapping[str, object]]
     record_flatten_position_result: Callable[..., None]
     exposure_snapshot: Callable[[int], tuple[bool, bool]]
-    revalidate_cleanup_state_after_failure: Callable[..., tuple[bool, str]]
+    cleanup_revalidator: Callable[..., CleanupRevalidationResult]
     now_ms: Callable[[], int]
     live_dry_run: Callable[[], bool]
 
@@ -153,25 +155,25 @@ class SafetyController:
             evidence=decision.as_dict(),
         )
 
-    def halt_trading(self, reason: HaltReason, *, unresolved: bool = False, attempt_flatten: bool = False) -> SafetyDecision:
-        decision = self.evaluate_halt(
-            reason,
-            unresolved=unresolved,
-            attempt_flatten=attempt_flatten,
-        )
-        transition = self.apply(decision)
+    def _attach_cleanup_evidence(self, decision: SafetyDecision, cleanup: CleanupResult) -> SafetyDecision:
+        evidence = {
+            **dict(decision.evidence),
+            "cleanup_result": cleanup.decision.as_dict(),
+        }
+        if cleanup.cleanup_revalidation is not None:
+            evidence["cleanup_revalidation"] = cleanup.cleanup_revalidation.as_dict()
         return SafetyDecision(
             action=decision.action,
             reason_code=decision.reason_code,
             reason=decision.reason,
             unresolved=decision.unresolved,
             attempt_flatten=decision.attempt_flatten,
-            state_transition=transition,
+            state_transition=decision.state_transition,
             operator_event=decision.operator_event,
             input_hash=decision.input_hash,
-            evidence_hash=decision.evidence_hash,
-            decision_hash=decision.decision_hash,
-            evidence=decision.evidence,
+            evidence_hash=None,
+            decision_hash=None,
+            evidence=evidence,
         )
 
     def evaluate_market_runtime(
@@ -185,7 +187,7 @@ class SafetyController:
     ) -> RuntimeSafetyResult:
         check_interval = float(getattr(settings_obj, "MARKET_RUNTIME_REGISTRY_REFRESH_INTERVAL_SEC"))
         if check_interval < 0:
-            decision = self.halt_trading(
+            decision = self.evaluate_halt(
                 HaltReason(
                     "MARKET_RUNTIME_POLICY_INVALID",
                     "MARKET_RUNTIME_REGISTRY_REFRESH_INTERVAL_SEC must be >= 0",
@@ -210,7 +212,7 @@ class SafetyController:
         try:
             validate_market_runtime(settings_obj)
         except validation_error_type as exc:
-            decision = self.halt_trading(
+            decision = self.evaluate_halt(
                 HaltReason(
                     "MARKET_RUNTIME_CONTRACT_FAILED",
                     f"market runtime contract failed: {exc}",
@@ -228,7 +230,7 @@ class SafetyController:
             last_market_runtime_check_at=now_epoch_sec,
         )
 
-    def evaluate_and_apply_live_runtime(
+    def evaluate_runtime_safety(
         self,
         *,
         settings_obj: object,
@@ -258,11 +260,11 @@ class SafetyController:
                 notification_events=notification_events,
                 notification_messages=notification_messages,
             )
-            decision = self.halt_trading(
+            decision = self._attach_cleanup_evidence(self.evaluate_halt(
                 cleanup.halt_reason,
                 unresolved=cleanup.unresolved,
                 attempt_flatten=bool(getattr(settings_obj, "KILL_SWITCH_LIQUIDATE", False)),
-            )
+            ), cleanup)
             return self._blocked_result(
                 "halt:kill_switch",
                 decision,
@@ -291,7 +293,7 @@ class SafetyController:
                 if blocked:
                     reason_code = daily_loss_reason_code_from_reason(reason)
                     if reason_code == RISK_STATE_MISMATCH:
-                        decision = self.halt_trading(HaltReason(RISK_STATE_MISMATCH, reason), unresolved=True)
+                        decision = self.evaluate_halt(HaltReason(RISK_STATE_MISMATCH, reason), unresolved=True)
                     else:
                         cleanup = self.attempt_cleanup_with_optional_flatten(
                             broker,
@@ -303,7 +305,10 @@ class SafetyController:
                             notification_events=notification_events,
                             notification_messages=notification_messages,
                         )
-                        decision = self.halt_trading(cleanup.halt_reason, unresolved=cleanup.unresolved)
+                        decision = self._attach_cleanup_evidence(
+                            self.evaluate_halt(cleanup.halt_reason, unresolved=cleanup.unresolved),
+                            cleanup,
+                        )
                     return self._blocked_result(
                         "halt:daily_loss",
                         decision,
@@ -343,7 +348,10 @@ class SafetyController:
                         notification_events=notification_events,
                         notification_messages=notification_messages,
                     )
-                    decision = self.halt_trading(cleanup.halt_reason, unresolved=cleanup.unresolved)
+                    decision = self._attach_cleanup_evidence(
+                        self.evaluate_halt(cleanup.halt_reason, unresolved=cleanup.unresolved),
+                        cleanup,
+                    )
                     return self._blocked_result(
                         "halt:position_loss",
                         decision,
@@ -363,7 +371,7 @@ class SafetyController:
                     reconcile_with_broker(broker)
                     next_reconcile_at = now_epoch_sec
                 except Exception as exc:
-                    decision = self.halt_trading(
+                    decision = self.evaluate_halt(
                         HaltReason(
                             "PERIODIC_RECONCILE_FAILED",
                             f"periodic reconcile failed ({type(exc).__name__}): {exc}",
@@ -404,13 +412,13 @@ class SafetyController:
                     )
                     unresolved = True
                     if not canceled_ok:
-                        revalidated_safe, revalidation_detail = self.revalidate_cleanup_state_after_failure(
+                        revalidation = self.cleanup_revalidator(
                             broker,
                             trigger="stale-open-order-halt",
                         )
-                        halt_detail += f"; {revalidation_detail}"
-                        unresolved = not revalidated_safe
-                    decision = self.halt_trading(HaltReason("STALE_OPEN_ORDER", halt_detail), unresolved=unresolved)
+                        halt_detail += f"; {revalidation.detail}"
+                        unresolved = not revalidation.safe
+                    decision = self.evaluate_halt(HaltReason("STALE_OPEN_ORDER", halt_detail), unresolved=unresolved)
                     return self._blocked_result(
                         "halt:stale_open_order",
                         decision,
@@ -580,13 +588,14 @@ class SafetyController:
 
         cleanup_uncertain = (not canceled_ok) or flatten_failed
         if cleanup_uncertain:
-            revalidated_safe, revalidation_detail = self.revalidate_cleanup_state_after_failure(
+            revalidation = self.cleanup_revalidator(
                 broker,
                 trigger=flatten_trigger,
             )
-            detail_parts.append(revalidation_detail)
-            unresolved = not revalidated_safe
+            detail_parts.append(revalidation.detail)
+            unresolved = not revalidation.safe
         else:
+            revalidation = None
             post_open_orders_present, post_position_present = self.exposure_snapshot(self.now_ms())
             if post_open_orders_present or post_position_present:
                 detail_parts.append(
@@ -613,6 +622,9 @@ class SafetyController:
                 "canceled_ok": bool(canceled_ok),
                 "flatten_status": flatten_status,
                 "cleanup_uncertain": bool(cleanup_uncertain),
+                "cleanup_revalidation": (
+                    revalidation.as_dict() if revalidation is not None else None
+                ),
             },
         )
         return CleanupResult(
@@ -620,6 +632,7 @@ class SafetyController:
             canceled_ok=canceled_ok,
             unresolved=unresolved,
             decision=decision,
+            cleanup_revalidation=revalidation,
         )
 
 

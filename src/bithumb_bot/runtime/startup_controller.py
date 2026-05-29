@@ -11,8 +11,6 @@ from .operator_event_composer import OperatorEventComposer
 class StartupController:
     symbol: str
     startup_gate_evaluator: Callable[[], str | None]
-    stale_initial_reconcile_clearer: Callable[[], bool]
-    stale_live_execution_broker_clearer: Callable[..., bool]
     state_snapshot: Callable[[], object]
     latest_order_identifiers: Callable[[], tuple[str | None, str | None]]
     count_open_orders: Callable[[], int]

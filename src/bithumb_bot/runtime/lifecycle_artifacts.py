@@ -10,6 +10,15 @@ def _stable_hash(payload: Mapping[str, Any] | Sequence[Any] | None) -> str:
     return sha256_prefixed({} if payload is None else payload)
 
 
+def _operator_event_hash(event: Mapping[str, Any] | None) -> str | None:
+    if not event:
+        return None
+    event_hash = event.get("event_hash")
+    if event_hash:
+        return str(event_hash)
+    return _stable_hash(event)
+
+
 @dataclass(frozen=True)
 class StateTransitionResult:
     status: str
@@ -69,7 +78,9 @@ class SafetyDecision:
             "attempt_flatten": bool(self.attempt_flatten),
             "state_transition": transition,
             "operator_event": dict(self.operator_event or {}),
-            "operator_event_hashes": [_stable_hash(self.operator_event or {})] if self.operator_event else [],
+            "operator_event_hashes": (
+                [event_hash] if (event_hash := _operator_event_hash(self.operator_event)) else []
+            ),
             "evidence": dict(self.evidence),
             "input_hash": self.input_hash or _stable_hash({"reason_code": self.reason_code, "reason": self.reason}),
             "evidence_hash": self.evidence_hash or _stable_hash(self.evidence),
@@ -139,7 +150,9 @@ class StartupResult:
             "startup_gate_reason": self.startup_gate_reason,
             "broker_present": self.broker is not None,
             "operator_event": dict(self.operator_event or {}),
-            "operator_event_hashes": [_stable_hash(self.operator_event or {})] if self.operator_event else [],
+            "operator_event_hashes": (
+                [event_hash] if (event_hash := _operator_event_hash(self.operator_event)) else []
+            ),
             "halt_transition": transition,
             "evidence": dict(self.evidence),
             "input_hash": self.input_hash or _stable_hash({"status": self.status, "startup_gate_reason": self.startup_gate_reason}),
@@ -157,6 +170,7 @@ class RuntimeCycleArtifact:
     readiness_hash: str | None = None
     strategy_decision_hash: str | None = None
     execution_plan_bundle_hash: str | None = None
+    execution_result_hash: str | None = None
     safety_decision_hash: str | None = None
     recovery_decision_hash: str | None = None
     state_transition_hash: str | None = None
@@ -172,6 +186,7 @@ class RuntimeCycleArtifact:
             "readiness_hash": self.readiness_hash,
             "strategy_decision_hash": self.strategy_decision_hash,
             "execution_plan_bundle_hash": self.execution_plan_bundle_hash,
+            "execution_result_hash": self.execution_result_hash,
             "safety_decision_hash": self.safety_decision_hash,
             "recovery_decision_hash": self.recovery_decision_hash,
             "state_transition_hash": self.state_transition_hash,
@@ -189,6 +204,7 @@ class RuntimeCycleArtifact:
                 "readiness_hash": self.readiness_hash,
                 "strategy_decision_hash": self.strategy_decision_hash,
                 "execution_plan_bundle_hash": self.execution_plan_bundle_hash,
+                "execution_result_hash": self.execution_result_hash,
                 "safety_decision_hash": self.safety_decision_hash,
                 "recovery_decision_hash": self.recovery_decision_hash,
                 "state_transition_hash": self.state_transition_hash,

@@ -6,6 +6,7 @@ import time
 import json
 import os
 import importlib
+from dataclasses import replace
 from functools import partial
 
 from ..config import (
@@ -33,7 +34,6 @@ from ..runtime_data_access import (
     count_open_orders as _count_open_orders,
     latest_order_identifiers as _latest_order_identifiers,
     mark_open_orders_recovery_required as _mark_open_orders_recovery_required,
-    open_order_identifiers_for_broker_revalidation,
     open_order_snapshot as _get_open_order_snapshot,
     portfolio_cash_qty_with_position_state,
     position_summary as _position_summary,
@@ -87,6 +87,7 @@ from ..runtime_service_factories import (
     run_loop_execution_planner,
 )
 from .execution_coordinator import ExecutionCoordinator
+from .cleanup_revalidation import build_default_cleanup_revalidation_service
 from .decision_coordinator import (
     DecisionCoordinator,
     persist_target_position_state_for_run_loop,
@@ -114,8 +115,6 @@ from .safety_controller import (
 from .startup_controller import StartupController
 
 FAILSAFE_RETRY_DELAY_SEC = 180
-CLEANUP_REVALIDATION_MAX_ATTEMPTS = 2
-CLEANUP_REVALIDATION_POSITION_EPS = 1e-12
 RUN_LOG = logging.getLogger("bithumb_bot.run")
 
 
@@ -127,6 +126,7 @@ def _record_runtime_cycle_artifact(
     readiness_hash: str | None = None,
     strategy_decision_hash: str | None = None,
     execution_plan_bundle_hash: str | None = None,
+    execution_result_hash: str | None = None,
     safety_decision_hash: str | None = None,
     recovery_decision_hash: str | None = None,
     state_transition_hash: str | None = None,
@@ -144,6 +144,7 @@ def _record_runtime_cycle_artifact(
         readiness_hash=readiness_hash,
         strategy_decision_hash=strategy_decision_hash,
         execution_plan_bundle_hash=execution_plan_bundle_hash,
+        execution_result_hash=execution_result_hash,
         safety_decision_hash=safety_decision_hash,
         recovery_decision_hash=recovery_decision_hash,
         state_transition_hash=state_transition_hash,
@@ -778,7 +779,7 @@ def _safety_controller() -> SafetyController:
         flatten_position=_flatten_position_compat,
         record_flatten_position_result=runtime_state.record_flatten_position_result,
         exposure_snapshot=_get_exposure_snapshot,
-        revalidate_cleanup_state_after_failure=_revalidate_cleanup_state_after_failure,
+        cleanup_revalidator=build_default_cleanup_revalidation_service().evaluate,
         now_ms=lambda: int(time.time() * 1000),
         live_dry_run=lambda: bool(settings.LIVE_DRY_RUN),
     )
@@ -789,8 +790,6 @@ def _startup_controller() -> StartupController:
     return StartupController(
         symbol=settings.PAIR,
         startup_gate_evaluator=evaluate_startup_safety_gate,
-        stale_initial_reconcile_clearer=maybe_clear_stale_initial_reconcile_halt,
-        stale_live_execution_broker_clearer=maybe_clear_stale_live_execution_broker_halt,
         state_snapshot=runtime_state.snapshot,
         latest_order_identifiers=_latest_order_identifiers,
         count_open_orders=_count_open_orders,
@@ -821,10 +820,25 @@ def _startup_controller() -> StartupController:
 
 
 def _halt_trading(reason: HaltReason, *, unresolved: bool = False, attempt_flatten: bool = False) -> None:
-    decision = _safety_controller().halt_trading(
+    safety_controller = _safety_controller()
+    decision = safety_controller.evaluate_halt(
         reason,
         unresolved=unresolved,
         attempt_flatten=attempt_flatten,
+    )
+    transition = safety_controller.apply(decision)
+    decision = type(decision)(
+        action=decision.action,
+        reason_code=decision.reason_code,
+        reason=decision.reason,
+        unresolved=decision.unresolved,
+        attempt_flatten=decision.attempt_flatten,
+        state_transition=transition,
+        operator_event=decision.operator_event,
+        input_hash=decision.input_hash,
+        evidence_hash=decision.evidence_hash,
+        decision_hash=decision.decision_hash,
+        evidence=decision.evidence,
     )
     _dispatch_safety_decision(NotificationAdapter(_operator_notification_service()), decision)
 
@@ -851,6 +865,32 @@ def _dispatch_runtime_safety_notifications(
         notification_adapter.send_message(message)
 
 
+def _apply_runtime_safety_decision(safety_controller: SafetyController, result):
+    if result.safety_decision is None:
+        return result
+    transition = safety_controller.apply(result.safety_decision)
+    decision = result.safety_decision
+    applied_decision = type(decision)(
+        action=decision.action,
+        reason_code=decision.reason_code,
+        reason=decision.reason,
+        unresolved=decision.unresolved,
+        attempt_flatten=decision.attempt_flatten,
+        state_transition=transition,
+        operator_event=decision.operator_event,
+        input_hash=decision.input_hash,
+        evidence_hash=decision.evidence_hash,
+        decision_hash=decision.decision_hash,
+        evidence=decision.evidence,
+    )
+    transition_hash = transition.as_dict().get("decision_hash")
+    return replace(
+        result,
+        safety_decision=applied_decision,
+        state_transition_hash=str(transition_hash) if transition_hash else None,
+    )
+
+
 def _recommended_operator_commands(
     *,
     reason_code: str,
@@ -864,83 +904,6 @@ def _recommended_operator_commands(
         recovery_required=recovery_required,
         unresolved_count=unresolved_count,
     )
-
-
-def _revalidate_cleanup_state_after_failure(
-    broker: BithumbBroker,
-    *,
-    trigger: str,
-    max_attempts: int = CLEANUP_REVALIDATION_MAX_ATTEMPTS,
-) -> tuple[bool, str]:
-    """Performs bounded broker-side revalidation after uncertain cleanup results."""
-    from ..recovery import reconcile_with_broker
-
-    attempts = max(1, int(max_attempts))
-    last_open_orders_present: bool | None = None
-    last_position_present: bool | None = None
-    last_errors: list[str] = []
-
-    for attempt in range(1, attempts + 1):
-        try:
-            reconcile_with_broker(broker)
-        except Exception as exc:
-            last_errors.append(f"attempt={attempt} reconcile={type(exc).__name__}: {exc}")
-
-        open_orders_present: bool | None = None
-        position_present: bool | None = None
-
-        try:
-            client_order_ids, exchange_order_ids = open_order_identifiers_for_broker_revalidation()
-            if exchange_order_ids or client_order_ids:
-                open_orders_present = (
-                    len(
-                        broker.get_open_orders(
-                            exchange_order_ids=exchange_order_ids,
-                            client_order_ids=client_order_ids,
-                        )
-                    )
-                    > 0
-            )
-            else:
-                open_orders_present = False
-        except Exception as exc:
-            last_errors.append(f"attempt={attempt} open_orders={type(exc).__name__}: {exc}")
-
-        try:
-            balance = broker.get_balance()
-            position_present = (
-                float(balance.asset_available) + float(balance.asset_locked)
-            ) > CLEANUP_REVALIDATION_POSITION_EPS
-        except Exception as exc:
-            last_errors.append(f"attempt={attempt} balance={type(exc).__name__}: {exc}")
-
-        if open_orders_present is not None:
-            last_open_orders_present = open_orders_present
-        if position_present is not None:
-            last_position_present = position_present
-
-        if open_orders_present is False and position_present is False:
-            return True, (
-                f"cleanup_revalidation(trigger={trigger}) attempts={attempt}/{attempts} "
-                "broker_confirms_no_open_orders_and_no_position"
-            )
-
-    status_parts = [
-        f"cleanup_revalidation(trigger={trigger}) attempts={attempts}/{attempts}",
-        (
-            f"open_orders_present={1 if last_open_orders_present else 0}"
-            if last_open_orders_present is not None
-            else "open_orders_present=unknown"
-        ),
-        (
-            f"position_present={1 if last_position_present else 0}"
-            if last_position_present is not None
-            else "position_present=unknown"
-        ),
-    ]
-    if last_errors:
-        status_parts.append("errors=" + " | ".join(last_errors))
-    return False, "; ".join(status_parts)
 
 
 def _attempt_open_order_cancellation(broker: BithumbBroker, trigger: str) -> bool:
@@ -1287,6 +1250,7 @@ def run_loop() -> None:
             if market_safety_result.last_market_runtime_check_at is not None:
                 last_market_runtime_check_at = market_safety_result.last_market_runtime_check_at
             if market_safety_result.blocked:
+                market_safety_result = _apply_runtime_safety_decision(safety_controller, market_safety_result)
                 _dispatch_runtime_safety_notifications(notification_adapter, market_safety_result)
                 safety_hash = (
                     market_safety_result.safety_decision.as_dict()["decision_hash"]
@@ -1303,7 +1267,7 @@ def run_loop() -> None:
                 )
                 continue
 
-            safety_result = safety_controller.evaluate_and_apply_live_runtime(
+            safety_result = safety_controller.evaluate_runtime_safety(
                 settings_obj=settings,
                 broker=broker,
                 now_epoch_sec=now,
@@ -1317,6 +1281,7 @@ def run_loop() -> None:
             )
             last_open_order_reconcile_at = safety_result.last_open_order_reconcile_at
             if safety_result.blocked:
+                safety_result = _apply_runtime_safety_decision(safety_controller, safety_result)
                 _dispatch_runtime_safety_notifications(notification_adapter, safety_result)
                 safety_hash = (
                     safety_result.safety_decision.as_dict()["decision_hash"]
@@ -1534,6 +1499,7 @@ def run_loop() -> None:
                 startup_state="READY",
                 strategy_decision_hash=decision_result.strategy_decision_hash,
                 execution_plan_bundle_hash=decision_result.execution_plan_bundle_hash,
+                execution_result_hash=execution_result.as_dict()["decision_hash"],
             )
             _log_loop_event(
                 logging.INFO,
@@ -1548,9 +1514,23 @@ def run_loop() -> None:
             if execution_result.halt_transition:
                 halt_reason_code = str(execution_result.halt_transition.get("reason_code") or execution_result.planning_status)
                 halt_reason = str(execution_result.halt_transition.get("evidence", {}).get("error") or halt_reason_code)
-                decision = safety_controller.halt_trading(
+                decision = safety_controller.evaluate_halt(
                     _halt_reason(halt_reason_code, halt_reason),
                     unresolved=True,
+                )
+                transition = safety_controller.apply(decision)
+                decision = type(decision)(
+                    action=decision.action,
+                    reason_code=decision.reason_code,
+                    reason=decision.reason,
+                    unresolved=decision.unresolved,
+                    attempt_flatten=decision.attempt_flatten,
+                    state_transition=transition,
+                    operator_event=decision.operator_event,
+                    input_hash=decision.input_hash,
+                    evidence_hash=decision.evidence_hash,
+                    decision_hash=decision.decision_hash,
+                    evidence=decision.evidence,
                 )
                 _dispatch_safety_decision(notification_adapter, decision)
                 event = runtime_events.execution_failure_from_transition(execution_result.halt_transition)
@@ -1561,6 +1541,7 @@ def run_loop() -> None:
                     startup_state="READY",
                     strategy_decision_hash=decision_result.strategy_decision_hash,
                     execution_plan_bundle_hash=decision_result.execution_plan_bundle_hash,
+                    execution_result_hash=execution_result.as_dict()["decision_hash"],
                     safety_decision_hash=decision.as_dict()["decision_hash"],
                     state_transition_hash=decision.as_dict()["state_transition"].get("decision_hash"),
                     notification_event_hashes=[
