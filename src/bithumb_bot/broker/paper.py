@@ -10,7 +10,8 @@ from typing import Any
 from ..config import settings
 from ..execution_reality_contract import build_execution_reality_contract
 from ..markets import canonical_market_with_raw
-from ..risk import evaluate_buy_guardrails
+from ..risk_contract import SubmitPlan
+from ..runtime_risk_engine import RuntimeRiskEngineAdapter
 from ..db_core import ensure_db, get_portfolio, init_portfolio
 from ..marketdata import fetch_orderbook_top, validated_best_quote_prices
 from ..notifier import notify
@@ -30,7 +31,6 @@ from ..oms import (
     build_client_order_id,
     build_order_intent_key,
     claim_order_intent_dedup,
-    evaluate_unresolved_order_gate,
     new_client_order_id,
     payload_fingerprint,
     record_submit_attempt,
@@ -442,31 +442,6 @@ def paper_execute(
     intent_key = ""
     try:
         init_portfolio(conn)
-        gate_blocked, reason_code, gate_reason = evaluate_unresolved_order_gate(
-            conn,
-            now_ms=int(ts),
-            max_open_order_age_sec=int(settings.MAX_OPEN_ORDER_AGE_SEC),
-        )
-        if gate_blocked:
-            RUN_LOG.info(
-                format_log_kv(
-                    "[SKIP] unresolved order gate",
-                    mode=settings.MODE,
-                    symbol=market,
-                    signal=str(signal).upper(),
-                    side=str(signal).upper(),
-                    signal_ts=int(ts),
-                    reason_code=reason_code,
-                    reason=gate_reason,
-                    unresolved_open_order=1,
-                )
-            )
-            notify(
-                f"event=paper_order_skip mode={settings.MODE} symbol={market} signal={str(signal).upper()} "
-                f"reason_code={reason_code} reason={gate_reason} unresolved_open_order=1"
-            )
-            conn.commit()
-            return None
         quote_context: _PaperQuoteContext | None = None
         if _get_fill_price.__module__ == __name__ and _get_fill_price.__name__ == "_get_fill_price":
             quote_context = _get_paper_quote_context(plan_side, market=market)
@@ -480,6 +455,38 @@ def paper_execute(
         if fill_price is None:
             return None
         cash, qty = get_portfolio(conn)
+        pre_submit_risk = RuntimeRiskEngineAdapter(conn).evaluate_pre_submit(
+            plan=SubmitPlan(side=str(signal).upper(), qty=0.0, source="paper_unresolved_order_gate"),
+            ts_ms=int(ts),
+            now_ms=int(ts),
+            cash=float(cash),
+            qty=float(qty),
+            price=float(fill_price),
+            mark_price_source="paper_fill_price",
+            evaluation_origin="paper_pre_submit",
+        )
+        if pre_submit_risk.status != "ALLOW":
+            risk_fields = pre_submit_risk.identity_fields()
+            RUN_LOG.info(
+                format_log_kv(
+                    "[SKIP] paper risk gate",
+                    mode=settings.MODE,
+                    symbol=market,
+                    signal=str(signal).upper(),
+                    side=str(signal).upper(),
+                    signal_ts=int(ts),
+                    reason_code=pre_submit_risk.reason_code,
+                    reason=pre_submit_risk.reason,
+                    **risk_fields,
+                )
+            )
+            notify(
+                f"event=paper_order_skip mode={settings.MODE} symbol={market} signal={str(signal).upper()} "
+                f"reason_code={pre_submit_risk.reason_code} reason={pre_submit_risk.reason} "
+                f"risk_decision_hash={pre_submit_risk.risk_decision_hash}"
+            )
+            conn.commit()
+            return None
         rules = get_effective_order_rules(settings.PAIR).rules
         lot_snapshot = summarize_position_lots(conn, pair=settings.PAIR)
         raw_open_exposure_qty = float(lot_snapshot.raw_open_exposure_qty)
@@ -597,14 +604,13 @@ def paper_execute(
                         )
                     )
                     return None
-                blocked, _ = evaluate_buy_guardrails(
-                    conn=conn,
+                buy_risk = RuntimeRiskEngineAdapter(conn).evaluate_buy_intent(
                     ts_ms=int(ts),
                     cash=cash,
                     qty=0.0,
                     price=float(fill_price),
                 )
-                if blocked:
+                if buy_risk.status != "ALLOW":
                     return None
                 trade_qty = _adjust_buy_qty_for_paper_cash_safety(
                     qty=requested_plan_qty,
@@ -687,14 +693,13 @@ def paper_execute(
             guardrail_qty = 0.0 if entry_allowed else float(
                 open_exposure_qty if has_executable_exposure else qty
             )
-            blocked, _ = evaluate_buy_guardrails(
-                conn=conn,
+            buy_risk = RuntimeRiskEngineAdapter(conn).evaluate_buy_intent(
                 ts_ms=int(ts),
                 cash=cash,
                 qty=float(guardrail_qty),
                 price=float(fill_price),
             )
-            if blocked:
+            if buy_risk.status != "ALLOW":
                 return None
 
             entry_sizing = build_buy_execution_sizing(

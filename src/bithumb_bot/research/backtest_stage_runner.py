@@ -63,6 +63,7 @@ class BacktestEventProcessor:
     timing_policy: Any
     execution_model: Any
     portfolio_policy: Any
+    risk_policy: Any
     strategy_plugin: Any
     strategy_spec: Any
     active_exit_policy: dict[str, Any]
@@ -225,6 +226,7 @@ class BacktestEventProcessor:
                 current_cash=float(prepared.mark_cash),
                 current_asset_qty=float(prepared.mark_qty),
                 position_entry_price=getattr(strategy.position_snapshot, "entry_price", None),
+                risk_policy=self.risk_policy,
             ),
             evaluation_ts_ms=int(candle.ts),
             mark_price=float(candle.close),
@@ -244,6 +246,7 @@ class BacktestEventProcessor:
             input_hash=strategy.strategy_decision_hash,
             risk_gate_hash=risk_gate_hash,
             reason_code=risk_decision.reason_code,
+            payload=risk_decision.payload or {},
         )
         return RiskStageResult(
             strategy=strategy,
@@ -505,6 +508,7 @@ def run_stage_owned_decision_event_backtest(
     execution_model: Any | None = None,
     execution_timing_policy: Any | None = None,
     portfolio_policy: Any | None = None,
+    risk_policy: Any | None = None,
     context: Any | None = None,
     prepared_ticks: tuple[ReplayTick, ...] | None = None,
     prepared_ledger: PortfolioLedger | None = None,
@@ -530,6 +534,11 @@ def run_stage_owned_decision_event_backtest(
     run_context = context or support.BacktestRunContext(report_detail="full")
     timing_policy = execution_timing_policy or ExecutionTimingPolicy()
     policy = portfolio_policy or legacy_research_portfolio_policy()
+    effective_risk_policy = risk_policy or getattr(run_context, "risk_policy", None)
+    if effective_risk_policy is None:
+        from bithumb_bot.risk_contract import RiskPolicy
+
+        effective_risk_policy = RiskPolicy(policy_status="disabled_explicit", source="research_default_disabled_explicit")
     model = execution_model or FixedBpsExecutionModel(fee_rate=fee_rate, slippage_bps=slippage_bps)
     starting_cash = float(policy.starting_cash_krw)
     ledger = prepared_ledger or PortfolioLedger.create(
@@ -564,6 +573,7 @@ def run_stage_owned_decision_event_backtest(
                 execution_model=execution_model,
                 execution_timing_policy=timing_policy,
                 portfolio_policy=policy,
+                risk_policy=effective_risk_policy,
                 context=run_context,
             )
         ).ticks
@@ -603,6 +613,7 @@ def run_stage_owned_decision_event_backtest(
         timing_policy=timing_policy,
         execution_model=model,
         portfolio_policy=policy,
+        risk_policy=effective_risk_policy,
         strategy_plugin=strategy_plugin,
         strategy_spec=strategy_spec,
         active_exit_policy=active_exit_policy,

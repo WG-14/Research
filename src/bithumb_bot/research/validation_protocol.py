@@ -1884,6 +1884,7 @@ def _evaluate_candidate_base_result(
                 ),
                 execution_timing_policy=manifest.execution_timing,
                 portfolio_policy=manifest.portfolio_policy,
+                risk_policy=manifest.risk_policy,
                 context=context,
             )
             wall_seconds = time.perf_counter() - split_started
@@ -2059,6 +2060,7 @@ def _invoke_strategy_runner(
     execution_model: Any,
     execution_timing_policy: Any,
     portfolio_policy: Any,
+    risk_policy: Any,
     context: BacktestRunContext | None,
 ) -> BacktestRun:
     try:
@@ -2071,11 +2073,16 @@ def _invoke_strategy_runner(
             execution_model=execution_model,
             execution_timing_policy=execution_timing_policy,
             portfolio_policy=portfolio_policy,
+            risk_policy=risk_policy,
             context=context,
         )
     except TypeError as exc:
         message = str(exc)
-        if "portfolio_policy" not in message and "unexpected keyword argument 'dataset'" not in message:
+        if (
+            "risk_policy" not in message
+            and "portfolio_policy" not in message
+            and "unexpected keyword argument 'dataset'" not in message
+        ):
             raise
         if context is None:
             return runner(
@@ -2760,6 +2767,7 @@ def _walk_forward_metrics(
                 execution_model=execution_model,
                 execution_timing_policy=manifest.execution_timing,
                 portfolio_policy=manifest.portfolio_policy,
+                risk_policy=manifest.risk_policy,
                 context=None,
             )
         return _invoke_strategy_runner(
@@ -2772,6 +2780,7 @@ def _walk_forward_metrics(
             execution_model=execution_model,
             execution_timing_policy=manifest.execution_timing,
             portfolio_policy=manifest.portfolio_policy,
+            risk_policy=manifest.risk_policy,
             context=context,
         )
 

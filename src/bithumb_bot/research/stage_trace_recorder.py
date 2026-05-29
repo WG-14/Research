@@ -42,14 +42,24 @@ class StageTraceRecorder:
             )
         )
 
-    def record_risk(self, *, input_hash: str, risk_gate_hash: str, reason_code: str) -> StageTrace:
+    def record_risk(
+        self,
+        *,
+        input_hash: str,
+        risk_gate_hash: str,
+        reason_code: str,
+        payload: dict[str, object] | None = None,
+    ) -> StageTrace:
+        trace_payload = {"risk_gate_hash": risk_gate_hash}
+        if payload is not None:
+            trace_payload.update(dict(payload))
         return self.record(
             StageTrace(
                 stage_id="risk",
                 input_hash=input_hash,
                 output_hash=risk_gate_hash,
                 reason_code=reason_code,
-                payload={"risk_gate_hash": risk_gate_hash},
+                payload=trace_payload,
             )
         )
 

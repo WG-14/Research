@@ -20,7 +20,6 @@ from .db_core import (
 )
 from .lifecycle import summarize_position_lots
 from .observability import format_log_kv
-from .oms import evaluate_unresolved_order_gate
 from .reason_codes import POSITION_LOSS_LIMIT
 from .recovery import CASH_SPLIT_ABS_TOL
 
@@ -215,6 +214,17 @@ def _ensure_daily_risk_tables(conn: sqlite3.Connection) -> None:
         ON risk_evaluations(reason_code, evaluation_ts_ms, id)
         """
     )
+    for name, ddl in (
+        ("risk_input_hash", "risk_input_hash TEXT"),
+        ("risk_policy_hash", "risk_policy_hash TEXT"),
+        ("risk_decision_hash", "risk_decision_hash TEXT"),
+        ("risk_reason_code", "risk_reason_code TEXT"),
+        ("risk_status", "risk_status TEXT"),
+        ("risk_evaluation_point", "risk_evaluation_point TEXT"),
+        ("risk_state_source", "risk_state_source TEXT"),
+        ("effective_risk_limits_json", "effective_risk_limits_json TEXT"),
+    ):
+        _add_column_if_missing(conn, "risk_evaluations", name, ddl)
     if not had_tx:
         conn.commit()
 
@@ -851,36 +861,26 @@ def evaluate_buy_guardrails(
     evaluation_origin: str = "buy_guardrails",
 ) -> tuple[bool, str]:
     """
+    Compatibility wrapper around RuntimeRiskEngineAdapter.
+
     Returns (blocked, reason)
     - Kill switch
     - Max open position (single-position model)
     - Daily loss limit (optional)
     - Daily order count limit (optional)
     """
-    del cash
-    if settings.KILL_SWITCH:
-        return True, "KILL_SWITCH=ON"
+    from .runtime_risk_engine import RuntimeRiskEngineAdapter
 
-    if settings.MAX_OPEN_POSITIONS <= 1 and qty > POSITION_EPSILON:
-        return True, "duplicate entry blocked"
-
-    if settings.MAX_DAILY_ORDER_COUNT > 0:
-        today_orders = _count_orders_today(conn, ts_ms)
-        if today_orders >= settings.MAX_DAILY_ORDER_COUNT:
-            return True, f"daily order count limit exceeded ({today_orders}/{settings.MAX_DAILY_ORDER_COUNT})"
-
-    evaluation = evaluate_daily_loss_state(
-        conn,
+    decision = RuntimeRiskEngineAdapter(conn).evaluate_buy_intent(
         ts_ms=ts_ms,
+        cash=cash,
+        qty=qty,
         price=price,
         broker=broker,
         mark_price_source=mark_price_source,
         evaluation_origin=evaluation_origin,
     )
-    if evaluation.blocked:
-        return True, evaluation.reason
-
-    return False, "ok"
+    return decision.status != "ALLOW", decision.reason
 
 
 def evaluate_daily_loss_breach(
@@ -991,41 +991,22 @@ def evaluate_order_submission_halt(
     mark_price_source: str = "market_price",
     evaluation_origin: str = "submission_halt",
 ) -> tuple[bool, str]:
-    """Shared hard-stop checks before placing any new order."""
-    del cash
-    if settings.KILL_SWITCH:
-        return True, "KILL_SWITCH=ON"
+    """Compatibility wrapper around RuntimeRiskEngineAdapter."""
+    from .risk_contract import SubmitPlan
+    from .runtime_risk_engine import RuntimeRiskEngineAdapter
 
-    blocked, reason = evaluate_daily_loss_breach(
-        conn,
+    decision = RuntimeRiskEngineAdapter(conn).evaluate_pre_submit(
+        plan=SubmitPlan(side="UNKNOWN", qty=0.0, source="compatibility_wrapper"),
         ts_ms=ts_ms,
-        cash=0.0,
-        qty=0.0,
+        now_ms=now_ms,
+        cash=cash,
+        qty=qty,
         price=price,
         broker=broker,
         mark_price_source=mark_price_source,
         evaluation_origin=evaluation_origin,
     )
-    if blocked:
-        return True, reason
-
-    blocked, reason = evaluate_position_loss_breach(
-        conn,
-        qty=qty,
-        price=price,
-    )
-    if blocked:
-        return True, reason
-
-    blocked, _, reason = evaluate_unresolved_order_gate(
-        conn,
-        now_ms=now_ms,
-        max_open_order_age_sec=int(settings.MAX_OPEN_ORDER_AGE_SEC),
-    )
-    if blocked:
-        return True, reason
-
-    return False, "ok"
+    return decision.status != "ALLOW", decision.reason
 
 
 def fetch_daily_risk_baseline(conn: sqlite3.Connection, *, day_kst: str | None = None) -> dict[str, Any] | None:
@@ -1078,6 +1059,14 @@ def fetch_recent_risk_evaluations(conn: sqlite3.Connection, *, limit: int = 20) 
             broker_cash_krw,
             broker_asset_qty,
             mismatch_summary,
+            risk_input_hash,
+            risk_policy_hash,
+            risk_decision_hash,
+            risk_reason_code,
+            risk_status,
+            risk_evaluation_point,
+            risk_state_source,
+            effective_risk_limits_json,
             details_json
         FROM risk_evaluations
         ORDER BY evaluation_ts_ms DESC, id DESC
@@ -1094,6 +1083,13 @@ def fetch_recent_risk_evaluations(conn: sqlite3.Connection, *, limit: int = 20) 
                 payload["details"] = json.loads(str(raw_details))
             except (TypeError, ValueError, json.JSONDecodeError):
                 payload["details"] = raw_details
+        raw_limits = payload.get("effective_risk_limits_json")
+        if raw_limits:
+            try:
+                payload["effective_risk_limits"] = json.loads(str(raw_limits))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload["effective_risk_limits"] = raw_limits
         payload.pop("details_json", None)
+        payload.pop("effective_risk_limits_json", None)
         results.append(payload)
     return results

@@ -12,6 +12,7 @@ from bithumb_bot.execution_reality_contract import (
     unsupported_capability_reasons,
 )
 from bithumb_bot.market_regime import RegimeAcceptanceGate
+from bithumb_bot.risk_contract import RiskPolicy
 
 from .deployment_policy import DEPLOYMENT_TIERS, is_production_bound_target, normalize_deployment_tier
 from .hashing import sha256_prefixed
@@ -669,6 +670,7 @@ class ExperimentManifest:
     execution_model: ExecutionModelConfig
     execution_timing: ExecutionTimingPolicy
     portfolio_policy: PortfolioPolicy
+    risk_policy: RiskPolicy
     deployment_tier: str
     acceptance_gate: AcceptanceGate
     statistical_validation: StatisticalSelectionContract | None
@@ -691,6 +693,7 @@ class ExperimentManifest:
             "execution_model": self.execution_model.as_dict(),
             "execution_timing": self.execution_timing.as_dict(),
             "portfolio_policy": self.portfolio_policy.as_dict(),
+            "risk_policy": self.risk_policy.as_dict(),
             "deployment_tier": self.deployment_tier,
             "dataset_quality_policy": _canonical_dataset_quality_policy(self.raw.get("dataset_quality_policy")),
             "acceptance_gate": self.acceptance_gate.as_dict(),
@@ -723,6 +726,7 @@ class ExperimentManifest:
             "execution_model": self.execution_model.as_dict(),
             "execution_timing": self.execution_timing.as_dict(),
             "portfolio_policy": self.portfolio_policy.as_dict(),
+            "risk_policy": self.risk_policy.as_dict(),
             "walk_forward": self.walk_forward.as_dict() if self.walk_forward is not None else None,
         }
 
@@ -732,10 +736,14 @@ class ExperimentManifest:
     def portfolio_policy_hash(self) -> str:
         return self.portfolio_policy.policy_hash()
 
+    def risk_policy_hash(self) -> str:
+        return self.risk_policy.policy_hash()
+
     def simulation_policy_hash(self) -> str:
         return sha256_prefixed(
             {
                 "portfolio_policy_hash": self.portfolio_policy_hash(),
+                "risk_policy_hash": self.risk_policy_hash(),
                 "execution_model_hash": sha256_prefixed(self.execution_model.as_dict()),
                 "execution_timing_hash": sha256_prefixed(self.execution_timing.as_dict()),
                 "cost_model_hash": sha256_prefixed(self.cost_model.as_dict()),
@@ -783,6 +791,7 @@ def parse_manifest(payload: dict[str, Any]) -> ExperimentManifest:
     )
     _parse_dataset_quality_policy(payload.get("dataset_quality_policy"))
     portfolio_policy = _parse_portfolio_policy(payload.get("portfolio_policy"), deployment_tier=deployment_tier)
+    risk_policy = _parse_risk_policy(payload.get("risk_policy"), deployment_tier=deployment_tier)
     acceptance_gate = _parse_acceptance_gate(_required_dict(payload, "acceptance_gate"))
     if is_production_bound_target(deployment_tier) and acceptance_gate.max_single_trade_dependency_score is None:
         acceptance_gate = replace(acceptance_gate, max_single_trade_dependency_score=0.8)
@@ -828,6 +837,7 @@ def parse_manifest(payload: dict[str, Any]) -> ExperimentManifest:
         execution_model=execution_model,
         execution_timing=execution_timing,
         portfolio_policy=portfolio_policy,
+        risk_policy=risk_policy,
         deployment_tier=deployment_tier,
         acceptance_gate=acceptance_gate,
         statistical_validation=statistical_validation,
@@ -1066,6 +1076,74 @@ def _parse_portfolio_policy(value: Any, *, deployment_tier: str) -> PortfolioPol
         cash_interest_policy=cash_interest_policy,
         position_sizing=sizing,
         source=source,
+    )
+
+
+def _parse_risk_policy(value: Any, *, deployment_tier: str) -> RiskPolicy:
+    production_bound = is_production_bound_target(deployment_tier)
+    if value is None:
+        if production_bound:
+            raise ManifestValidationError("risk_policy is required for production-bound manifests")
+        return RiskPolicy(
+            schema_version=1,
+            policy_status="disabled_explicit",
+            source="research_default_disabled_explicit",
+        )
+    if not isinstance(value, dict):
+        raise ManifestValidationError("risk_policy must be an object")
+    allowed = {
+        "schema_version",
+        "max_daily_loss_krw",
+        "max_position_loss_pct",
+        "max_daily_order_count",
+        "kill_switch",
+        "max_open_positions",
+        "unresolved_order_policy",
+        "policy_status",
+        "missing_policy",
+        "source",
+        "disabled",
+    }
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ManifestValidationError(f"risk_policy unsupported fields: {','.join(unknown)}")
+    schema_version = _positive_int(value.get("schema_version", 1), "risk_policy.schema_version")
+    if schema_version != 1:
+        raise ManifestValidationError("risk_policy.schema_version currently supports only 1")
+    disabled = bool(value.get("disabled", False))
+    policy_status = str(
+        value.get("policy_status") or ("disabled_explicit" if disabled else "enabled")
+    )
+    if policy_status not in {"enabled", "disabled_explicit"}:
+        raise ManifestValidationError("risk_policy.policy_status must be enabled or disabled_explicit")
+    if production_bound and policy_status == "disabled_explicit":
+        raise ManifestValidationError("risk_policy disabled_explicit is not allowed for production-bound manifests")
+    unresolved_policy = str(value.get("unresolved_order_policy", "block"))
+    if unresolved_policy != "block":
+        raise ManifestValidationError("risk_policy.unresolved_order_policy currently supports only block")
+    missing_policy = str(value.get("missing_policy", "fail_closed_for_promotion"))
+    if missing_policy != "fail_closed_for_promotion":
+        raise ManifestValidationError("risk_policy.missing_policy currently supports only fail_closed_for_promotion")
+    return RiskPolicy(
+        schema_version=schema_version,
+        max_daily_loss_krw=_finite_non_negative_float(
+            value.get("max_daily_loss_krw", 0.0),
+            "risk_policy.max_daily_loss_krw",
+        ),
+        max_position_loss_pct=_finite_non_negative_float(
+            value.get("max_position_loss_pct", 0.0),
+            "risk_policy.max_position_loss_pct",
+        ),
+        max_daily_order_count=_positive_or_zero_int(
+            value.get("max_daily_order_count", 0),
+            "risk_policy.max_daily_order_count",
+        ),
+        kill_switch=bool(value.get("kill_switch", False)),
+        max_open_positions=_positive_int(value.get("max_open_positions", 1), "risk_policy.max_open_positions"),
+        unresolved_order_policy=unresolved_policy,
+        policy_status=policy_status,
+        missing_policy=missing_policy,
+        source=str(value.get("source", "manifest")),
     )
 
 

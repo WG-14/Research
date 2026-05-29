@@ -145,6 +145,16 @@ def test_research_rejects_unused_behavior_params_for_production_bound() -> None:
     payload = _manifest()
     payload["deployment_tier"] = "paper_candidate"
     payload["portfolio_policy"] = _portfolio_policy()
+    payload["risk_policy"] = {
+        "schema_version": 1,
+        "max_daily_loss_krw": 30000,
+        "max_position_loss_pct": 10.0,
+        "max_daily_order_count": 20,
+        "kill_switch": False,
+        "max_open_positions": 1,
+        "unresolved_order_policy": "block",
+        "missing_policy": "fail_closed_for_promotion",
+    }
     payload["execution_model"] = {
         "source": "manifest",
         "scenario_policy": "single_base",
@@ -337,6 +347,16 @@ def _production_manifest() -> dict[str, object]:
     payload["deployment_tier"] = "paper_candidate"
     payload["parameter_space"] = _all_runtime_behavior_parameter_space()
     payload["portfolio_policy"] = _portfolio_policy()
+    payload["risk_policy"] = {
+        "schema_version": 1,
+        "max_daily_loss_krw": 30000,
+        "max_position_loss_pct": 10.0,
+        "max_daily_order_count": 20,
+        "kill_switch": False,
+        "max_open_positions": 1,
+        "unresolved_order_policy": "block",
+        "missing_policy": "fail_closed_for_promotion",
+    }
     payload["execution_model"] = {
         "scenario_policy": "single_scenario",
         "scenarios": [

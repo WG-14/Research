@@ -74,7 +74,7 @@ from .live_suppression import (
     record_sell_no_executable_exit_suppression as _record_sell_no_executable_exit_suppression_impl,
 )
 from .balance_source import fetch_balance_snapshot
-from ..risk import evaluate_buy_guardrails, evaluate_order_submission_halt
+from ..runtime_risk_engine import RuntimeRiskEngineAdapter
 from .. import runtime_state
 from ..order_sizing import (
     BuyExecutionAuthority,
@@ -89,7 +89,6 @@ from ..oms import (
     build_order_intent_key,
     build_order_suppression_key,
     claim_order_intent_dedup,
-    evaluate_unresolved_order_gate,
     new_client_order_id,
     payload_fingerprint,
     record_order_suppression,
@@ -2705,8 +2704,7 @@ def _determine_live_execution_intent(
                 if bool(decision_observability.get("has_executable_exposure"))
                 else position_state.portfolio_qty
             )
-            blocked, guardrail_reason = evaluate_buy_guardrails(
-                conn=conn,
+            buy_risk = RuntimeRiskEngineAdapter(conn).evaluate_buy_intent(
                 ts_ms=ts,
                 cash=position_state.cash,
                 qty=guardrail_qty,
@@ -2715,7 +2713,8 @@ def _determine_live_execution_intent(
                 mark_price_source="live_market_reference",
                 evaluation_origin="buy_guardrails",
             )
-            if blocked:
+            if buy_risk.status != "ALLOW":
+                risk_fields = buy_risk.identity_fields()
                 RUN_LOG.info(
                     format_log_kv(
                         "[ORDER_SKIP] buy guardrails",
@@ -2723,7 +2722,7 @@ def _determine_live_execution_intent(
                         final_signal=decision_observability["final_signal"],
                         signal=signal,
                         side="BUY",
-                        reason=guardrail_reason or "blocked",
+                        reason=buy_risk.reason or "blocked",
                         entry_allowed=1 if bool(decision_observability["entry_allowed"]) else 0,
                         effective_flat=1 if bool(decision_observability["effective_flat"]) else 0,
                         normalized_exposure_active=1 if bool(decision_observability["normalized_exposure_active"]) else 0,
@@ -2732,6 +2731,7 @@ def _determine_live_execution_intent(
                         entry_allowed_truth_source=decision_observability["entry_allowed_truth_source"],
                         execution_submit_plan_source=str(buy_plan.get("source") or "strategy_position"),
                         execution_submit_plan_authority=str(buy_plan.get("authority") or "-"),
+                        **risk_fields,
                     )
                 )
                 return None
@@ -2829,8 +2829,7 @@ def _determine_live_execution_intent(
         guardrail_qty = 0.0 if bool(decision_observability["entry_allowed"]) else float(
             normalized_exposure.open_exposure_qty if bool(decision_observability.get("has_executable_exposure")) else position_state.portfolio_qty
         )
-        blocked, guardrail_reason = evaluate_buy_guardrails(
-            conn=conn,
+        buy_risk = RuntimeRiskEngineAdapter(conn).evaluate_buy_intent(
             ts_ms=ts,
             cash=position_state.cash,
             qty=guardrail_qty,
@@ -2839,7 +2838,8 @@ def _determine_live_execution_intent(
             mark_price_source="live_market_reference",
             evaluation_origin="buy_guardrails",
         )
-        if blocked:
+        if buy_risk.status != "ALLOW":
+            risk_fields = buy_risk.identity_fields()
             RUN_LOG.info(
                 format_log_kv(
                     "[ORDER_SKIP] buy guardrails",
@@ -2847,13 +2847,14 @@ def _determine_live_execution_intent(
                     final_signal=decision_observability["final_signal"],
                     signal=signal,
                     side="BUY",
-                    reason=guardrail_reason or "blocked",
+                    reason=buy_risk.reason or "blocked",
                     entry_allowed=1 if bool(decision_observability["entry_allowed"]) else 0,
                     effective_flat=1 if bool(decision_observability["effective_flat"]) else 0,
                     normalized_exposure_active=1 if bool(decision_observability["normalized_exposure_active"]) else 0,
                     normalized_exposure_qty=float(decision_observability["normalized_exposure_qty"]),
                     raw_qty_open=float(decision_observability["raw_qty_open"]),
                     entry_allowed_truth_source=decision_observability["entry_allowed_truth_source"],
+                    **risk_fields,
                 )
             )
             return None

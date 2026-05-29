@@ -16,7 +16,6 @@ from ..oms import (
     build_client_order_id,
     build_order_intent_key,
     claim_order_intent_dedup,
-    evaluate_unresolved_order_gate,
     payload_fingerprint,
     record_submit_attempt,
     record_submit_blocked,
@@ -28,7 +27,8 @@ from ..reason_codes import (
     SELL_FAILURE_CATEGORY_SUBMISSION_HALT,
     SELL_FAILURE_CATEGORY_UNRESOLVED_RISK_GATE,
 )
-from ..risk import evaluate_order_submission_halt
+from ..risk_contract import SubmitPlan
+from ..runtime_risk_engine import RuntimeRiskEngineAdapter
 from .live_submit_planning import build_live_submit_plan
 from .live_submit_orchestrator import (
     StandardSubmitPlanningFailureRequest,
@@ -530,8 +530,12 @@ def execute_live_submission_and_application(
             reference_price = None
             top_of_book_summary = {"error": str(exc).removeprefix("reference price unavailable: ")}
 
-    blocked, reason = evaluate_order_submission_halt(
-        conn,
+    risk_decision = RuntimeRiskEngineAdapter(conn).evaluate_pre_submit(
+        plan=SubmitPlan(
+            side=feasibility.side,
+            qty=float(feasibility.normalized_qty),
+            source="live_submission",
+        ),
         ts_ms=int(ts),
         now_ms=int(time.time() * 1000),
         cash=float(position_state.cash),
@@ -541,13 +545,12 @@ def execute_live_submission_and_application(
         mark_price_source="live_market_reference",
         evaluation_origin="submission_halt",
     )
-    if blocked:
-        gate_blocked, reason_code, gate_reason = evaluate_unresolved_order_gate(
-            conn,
-            now_ms=int(time.time() * 1000),
-            max_open_order_age_sec=int(settings.MAX_OPEN_ORDER_AGE_SEC),
-        )
-        if gate_blocked:
+    if risk_decision.status != "ALLOW":
+        risk_fields = risk_decision.identity_fields()
+        unresolved_evidence = risk_decision.evidence.get("unresolved_order_gate")
+        if isinstance(unresolved_evidence, dict) and bool(unresolved_evidence.get("blocked")):
+            reason_code = str(unresolved_evidence.get("reason_code") or risk_decision.reason_code)
+            gate_reason_detail = str(unresolved_evidence.get("reason") or risk_decision.reason)
             blocked_client_order_id = build_client_order_id(
                 mode="live",
                 side=feasibility.side,
@@ -557,7 +560,7 @@ def execute_live_submission_and_application(
             gate_reason = (
                 f"category=unresolved_risk_gate;"
                 f"reason_detail_code={reason_code};"
-                f"reason={gate_reason}"
+                f"reason={gate_reason_detail}"
             )
             live_module.RUN_LOG.info(
                 format_log_kv(
@@ -581,6 +584,7 @@ def execute_live_submission_and_application(
                     submit_qty_source=decision_observability["submit_qty_source"],
                     position_state_source=decision_observability["position_state_source"],
                     entry_allowed_truth_source=decision_observability["entry_allowed_truth_source"],
+                    **risk_fields,
                 )
             )
             live_module._block_new_submission_for_unresolved_risk(
@@ -602,10 +606,10 @@ def execute_live_submission_and_application(
                 final_signal=decision_observability["final_signal"],
                 signal=signal,
                 side=feasibility.side,
-                reason=f"category=submission_halt;reason_detail_code=submission_halt;reason={reason}",
+                reason=f"category=submission_halt;reason_detail_code={risk_decision.reason_code};reason={risk_decision.reason}",
                 sell_failure_category=SELL_FAILURE_CATEGORY_SUBMISSION_HALT,
                 sell_failure_detail=SELL_FAILURE_CATEGORY_SUBMISSION_HALT,
-                reason_detail_code="submission_halt",
+                reason_detail_code=risk_decision.reason_code,
                 entry_allowed=1 if bool(decision_observability["entry_allowed"]) else 0,
                 effective_flat=1 if bool(decision_observability["effective_flat"]) else 0,
                 normalized_exposure_active=1 if bool(decision_observability["normalized_exposure_active"]) else 0,
@@ -617,10 +621,11 @@ def execute_live_submission_and_application(
                 submit_qty_source=decision_observability["submit_qty_source"],
                 position_state_source=decision_observability["position_state_source"],
                 entry_allowed_truth_source=decision_observability["entry_allowed_truth_source"],
+                **risk_fields,
             )
         )
         _emit_notification(
-            f"live order placement blocked ({feasibility.side}): category=submission_halt;reason={reason}"
+            f"live order placement blocked ({feasibility.side}): category=submission_halt;reason={risk_decision.reason}"
         )
         return None
 

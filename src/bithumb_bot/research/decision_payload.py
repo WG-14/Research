@@ -144,6 +144,21 @@ class DecisionPayloadBuilder:
                 "research_policy_comparable": not bool(strategy_envelope.unsupported_reason),
             }
         )
+        risk_payload = risk_decision.payload if isinstance(risk_decision.payload, dict) else {}
+        for key in (
+            "risk_input_hash",
+            "risk_policy_hash",
+            "risk_decision_hash",
+            "risk_reason_code",
+            "risk_status",
+            "risk_evaluation_point",
+            "risk_state_source",
+            "effective_risk_limits",
+        ):
+            if key in risk_payload:
+                payload[key] = risk_payload[key]
+        if "risk_decision" in risk_payload:
+            payload["risk_decision"] = risk_payload["risk_decision"]
         if policy_decision is not None:
             payload["pure_policy_hash"] = policy_decision.policy_hash
             payload["policy_contract_hash"] = policy_decision.policy_contract_hash

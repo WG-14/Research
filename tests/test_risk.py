@@ -215,7 +215,8 @@ def test_research_risk_gate_matches_runtime_position_loss_reason_code() -> None:
     assert runtime.blocked is True
     assert runtime.reason_code == POSITION_LOSS_LIMIT
     assert research.reason_code == POSITION_LOSS_LIMIT
-    assert research.allow is False
+    assert research.allow is True
+    assert research.payload["risk_status"] == "REDUCE_ONLY"  # type: ignore[index]
 
 
 def test_research_risk_gate_emits_risk_state_mismatch_reason_code() -> None:

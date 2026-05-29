@@ -9,7 +9,6 @@ from .config import (
     validate_live_run_startup_contract,
     validate_mode_or_raise,
 )
-from .risk import evaluate_buy_guardrails
 from .broker.paper import paper_execute
 import os
 import sys

@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from .decision_event import ResearchDecisionEvent
     from .execution_model import ExecutionModel
     from .experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
+    from bithumb_bot.risk_contract import RiskPolicy
 
 
 BacktestRun = support.BacktestRun
@@ -52,6 +53,7 @@ class BacktestPipelineState:
     execution_model: ExecutionModel | None = None
     execution_timing_policy: ExecutionTimingPolicy | None = None
     portfolio_policy: PortfolioPolicy | None = None
+    risk_policy: RiskPolicy | None = None
     context: BacktestRunContext | None = None
     ticks: tuple[ReplayTick, ...] = ()
     ledger: PortfolioLedger | None = None
@@ -206,6 +208,7 @@ class DefaultBacktestPipeline:
         execution_model: ExecutionModel | None = None,
         execution_timing_policy: ExecutionTimingPolicy | None = None,
         portfolio_policy: PortfolioPolicy | None = None,
+        risk_policy: RiskPolicy | None = None,
         context: BacktestRunContext | None = None,
     ) -> BacktestRun:
         if self.injected_stages:
@@ -221,6 +224,7 @@ class DefaultBacktestPipeline:
                     execution_model=execution_model,
                     execution_timing_policy=execution_timing_policy,
                     portfolio_policy=portfolio_policy,
+                    risk_policy=risk_policy,
                     context=context,
                 ),
                 stages=self.injected_stages,
@@ -237,6 +241,7 @@ class DefaultBacktestPipeline:
                 execution_model=execution_model,
                 execution_timing_policy=execution_timing_policy,
                 portfolio_policy=portfolio_policy,
+                risk_policy=risk_policy,
                 context=context,
             )
         )
@@ -295,6 +300,7 @@ class DefaultBacktestPipeline:
             execution_model=prepared.execution_model,
             execution_timing_policy=prepared.execution_timing_policy,
             portfolio_policy=prepared.portfolio_policy,
+            risk_policy=prepared.risk_policy,
             context=prepared.context,
             prepared_ticks=prepared.ticks,
             prepared_ledger=prepared.ledger,
@@ -320,6 +326,7 @@ def run_decision_event_backtest(
     execution_model: ExecutionModel | None = None,
     execution_timing_policy: ExecutionTimingPolicy | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
+    risk_policy: RiskPolicy | None = None,
     context: BacktestRunContext | None = None,
 ) -> BacktestRun:
     return DefaultBacktestPipeline().run(
@@ -333,6 +340,7 @@ def run_decision_event_backtest(
         execution_model=execution_model,
         execution_timing_policy=execution_timing_policy,
         portfolio_policy=portfolio_policy,
+        risk_policy=risk_policy,
         context=context,
     )
 
@@ -349,6 +357,7 @@ def _run_decision_event_backtest_impl(
     execution_model: ExecutionModel | None = None,
     execution_timing_policy: ExecutionTimingPolicy | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
+    risk_policy: RiskPolicy | None = None,
     context: BacktestRunContext | None = None,
     prepared_ticks: tuple[ReplayTick, ...] | None = None,
     prepared_ledger: PortfolioLedger | None = None,
@@ -366,6 +375,7 @@ def _run_decision_event_backtest_impl(
             execution_model=execution_model,
             execution_timing_policy=execution_timing_policy,
             portfolio_policy=portfolio_policy,
+            risk_policy=risk_policy,
             context=context,
             prepared_ticks=prepared_ticks,
             prepared_ledger=prepared_ledger,
@@ -381,6 +391,7 @@ def _run_decision_event_backtest_impl(
         execution_model=execution_model,
         execution_timing_policy=execution_timing_policy,
         portfolio_policy=portfolio_policy,
+        risk_policy=risk_policy,
         context=context,
     )
 
@@ -397,6 +408,7 @@ def _run_stage_composed_decision_event_backtest(
     execution_model: ExecutionModel | None = None,
     execution_timing_policy: ExecutionTimingPolicy | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
+    risk_policy: RiskPolicy | None = None,
     context: BacktestRunContext | None = None,
     prepared_ticks: tuple[ReplayTick, ...] | None = None,
     prepared_ledger: PortfolioLedger | None = None,
@@ -421,6 +433,7 @@ def _run_stage_composed_decision_event_backtest(
         execution_model=execution_model,
         execution_timing_policy=execution_timing_policy,
         portfolio_policy=portfolio_policy,
+        risk_policy=risk_policy,
         context=context,
         prepared_ticks=prepared_ticks,
         prepared_ledger=prepared_ledger,
