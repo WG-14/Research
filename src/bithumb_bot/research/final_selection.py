@@ -170,6 +170,7 @@ def _score_candidate(
     report_context: dict[str, Any],
 ) -> dict[str, Any]:
     reasons = _candidate_universe_reasons(contract=contract, candidate=candidate)
+    reasons.extend(_fallback_metrics_reasons(candidate))
     reasons.extend(_must_pass_reasons(contract=contract, candidate=candidate, report_context=report_context))
     components: list[dict[str, Any]] = []
     sort_key: list[Any] = []
@@ -219,6 +220,27 @@ def _candidate_universe_reasons(*, contract: dict[str, Any], candidate: dict[str
     return []
 
 
+def _fallback_metrics_reasons(candidate: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if bool(candidate.get("candidate_failed_before_complete_metrics")):
+        reasons.append("final_selection_candidate_failed_before_complete_metrics")
+    if candidate.get("metrics_status") == "unavailable":
+        reasons.append("final_selection_metrics_unavailable")
+    if candidate.get("metrics_v2_source") == "failure_fallback":
+        reasons.append("final_selection_metrics_failure_fallback")
+    for split_key in ("train_metrics_v2", "validation_metrics_v2", "final_holdout_metrics_v2"):
+        metrics = candidate.get(split_key)
+        if not isinstance(metrics, dict):
+            continue
+        if metrics.get("metrics_status") == "unavailable":
+            reasons.append(f"final_selection_{split_key}_unavailable")
+        if metrics.get("metrics_v2_source") == "failure_fallback":
+            reasons.append(f"final_selection_{split_key}_failure_fallback")
+        if bool(metrics.get("candidate_failed_before_complete_metrics")):
+            reasons.append(f"final_selection_{split_key}_candidate_failed_before_complete_metrics")
+    return sorted(set(reasons))
+
+
 def _must_pass_reasons(
     *,
     contract: dict[str, Any],
@@ -265,6 +287,12 @@ def _metric_value(*, candidate: dict[str, Any], metric: str) -> tuple[Any, str]:
     for prefix, source_key in prefixes.items():
         if metric.startswith(prefix):
             source = _source_payload(candidate, source_key)
+            if (
+                isinstance(source, dict)
+                and source_key.endswith("metrics_v2")
+                and (source.get("metrics_status") == "unavailable" or source.get("metrics_v2_source") == "failure_fallback")
+            ):
+                return None, source_key
             value = _nested_value(source, metric[len(prefix):])
             return value, source_key
     return _nested_value(candidate, metric), "candidate"

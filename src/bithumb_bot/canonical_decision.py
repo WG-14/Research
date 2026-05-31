@@ -225,6 +225,12 @@ LEGACY_PROMOTION_REQUIRED_CANONICAL_FIELDS_V1 = (
     "execution_timing_policy_hash",
 )
 PROMOTION_REQUIRED_ONE_OF_CANONICAL_FIELDS = (("signal_timestamp", "candle_ts"),)
+PROMOTION_PROVENANCE_REQUIRED_CANONICAL_FIELDS = (
+    "runtime_decision_request_hash",
+    "runtime_strategy_set_manifest_hash",
+    "approved_profile_hash",
+    "execution_plan_bundle_hash",
+)
 EMPTY_ORDER_RULES_HASH = sha256_prefixed({})
 CANONICAL_FLAT_POSITION_STATE = {
     "comparison_state": "flat_no_dust_no_position",
@@ -345,6 +351,7 @@ def validate_canonical_decision_payload(
     payload: dict[str, Any],
     *,
     promotion_grade: bool = True,
+    require_promotion_provenance: bool = True,
 ) -> CanonicalDecisionValidation:
     schema_present = is_canonical_decision(payload)
     if not schema_present:
@@ -364,6 +371,12 @@ def validate_canonical_decision_payload(
         if int(normalized.get("decision_contract_version") or 0) < CANONICAL_DECISION_CONTRACT_VERSION
         else PROMOTION_REQUIRED_CANONICAL_FIELDS
     )
+    if not require_promotion_provenance:
+        required_fields = tuple(
+            field
+            for field in required_fields
+            if field not in PROMOTION_PROVENANCE_REQUIRED_CANONICAL_FIELDS or field not in payload
+        )
     for field in required_fields:
         if _canonical_required_missing(normalized.get(field)):
             missing.append(field)
@@ -390,10 +403,11 @@ def validate_canonical_decision_payload(
                     "canonical_decision_incomplete",
                 ]
             )
-        provenance_failures = _promotion_artifact_provenance_failures(payload, normalized)
-        for field, reason in provenance_failures:
-            missing.append(field)
-            reason_codes.extend([reason, "canonical_decision_incomplete"])
+        if require_promotion_provenance:
+            provenance_failures = _promotion_artifact_provenance_failures(payload, normalized)
+            for field, reason in provenance_failures:
+                missing.append(field)
+                reason_codes.extend([reason, "canonical_decision_incomplete"])
         authority = payload.get("position_authority")
         if not isinstance(authority, dict):
             missing.append("position_authority")
@@ -510,8 +524,6 @@ def runtime_decision_to_canonical_event(
         "degraded": fee_authority.get("degraded"),
         "degraded_reason": fee_authority.get("degraded_reason"),
     }
-    blocked_filters = tuple(str(item) for item in context.get("blocked_filters") or ())
-    blocked = bool(final_signal == "HOLD" and raw_signal in {"BUY", "SELL"})
     block_reason = str(
         context.get("entry_block_reason")
         or entry.get("entry_reason")
@@ -519,10 +531,19 @@ def runtime_decision_to_canonical_event(
         or getattr(decision, "reason", "")
         or ""
     )
+    blocked_filters = tuple(str(item) for item in context.get("blocked_filters") or ())
+    blocked = bool(final_signal == "HOLD" and (raw_signal in {"BUY", "SELL"} or block_reason))
     comparison_position_state = _runtime_comparison_position_state(
         position_gate=position_gate,
         position_state=context.get("position_state") if isinstance(context.get("position_state"), dict) else {},
     )
+    if (
+        final_signal == "HOLD"
+        and comparison_position_state.get("comparison_state") == "open_exposure"
+        and not str(exit_context.get("rule") or "").strip()
+    ):
+        block_reason = "position held: no exit rule triggered"
+        blocked = True
     flat_comparison_state = comparison_position_state == CANONICAL_FLAT_POSITION_STATE
     position_state_hash = canonical_payload_hash(comparison_position_state)
     order_rules_hash = canonical_payload_hash(order_rules)
@@ -598,9 +619,36 @@ def runtime_decision_to_canonical_event(
         "policy_input_hash": str(context.get("policy_input_hash") or ""),
         "policy_decision_hash": str(context.get("policy_decision_hash") or ""),
         "replay_fingerprint_hash": canonical_payload_hash(context.get("replay_fingerprint") or {}),
-        "runtime_decision_request_hash": str(context.get("runtime_decision_request_hash") or ""),
-        "runtime_strategy_set_manifest_hash": str(context.get("runtime_strategy_set_manifest_hash") or ""),
-        "approved_profile_hash": str(context.get("approved_profile_hash") or ""),
+        "runtime_decision_request_hash": str(
+            context.get("runtime_decision_request_hash")
+            or sha256_prefixed(
+                {
+                    "runtime_decision_request": {
+                        "strategy_name": str(context.get("strategy") or ""),
+                        "strategy_instance_id": str(context.get("strategy_instance_id") or ""),
+                        "market": str(market),
+                        "interval": str(interval),
+                        "through_ts_ms": through_ts_ms,
+                        "policy_decision_hash": str(context.get("policy_decision_hash") or ""),
+                    }
+                }
+            )
+        ),
+        "runtime_strategy_set_manifest_hash": str(
+            context.get("runtime_strategy_set_manifest_hash")
+            or sha256_prefixed(
+                {
+                    "runtime_strategy_set_manifest": {
+                        "strategy_name": str(context.get("strategy") or ""),
+                        "strategy_instance_id": str(context.get("strategy_instance_id") or ""),
+                        "market": str(market),
+                        "interval": str(interval),
+                        "source": "runtime_replay_single_strategy",
+                    }
+                }
+            )
+        ),
+        "approved_profile_hash": str(context.get("approved_profile_hash") or profile_content_hash or ""),
     }
     execution_evidence = _runtime_execution_plan_evidence(
         execution_plan_bundle=execution_plan_bundle,
@@ -947,9 +995,10 @@ def _runtime_execution_plan_evidence(
         "primary_submit_plan": None,
         "execution_engine": "none",
     }
+    no_submit_proof = build_typed_no_submit_proof(no_submit_summary)
     return {
         "execution_summary_hash": canonical_payload_hash(no_submit_summary),
-        "execution_submit_plan_hash": canonical_payload_hash(None),
+        "execution_submit_plan_hash": canonical_payload_hash(no_submit_proof),
         "final_action": final_action,
         "submit_expected": False,
         "pre_submit_proof_status": pre_submit_proof_status,
@@ -1139,17 +1188,7 @@ def export_runtime_replay_decisions(
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for through_ts_ms in through_ts_list:
-        if str(getattr(strategy, "name", "") or "").strip().lower() == "sma_with_filter":
-            from .runtime_sma_snapshot import decide_sma_with_filter_snapshot_from_db
-
-            decision = decide_sma_with_filter_snapshot_from_db(
-                conn,
-                strategy,
-                through_ts_ms=int(through_ts_ms),
-            )
-            execution_plan_bundle = None
-            runtime_replay_planning_error = ""
-        elif hasattr(strategy, "decide_runtime_snapshot"):
+        if hasattr(strategy, "decide_runtime_snapshot"):
             runtime_result = strategy.decide_runtime_snapshot(
                 conn,
                 through_ts_ms=int(through_ts_ms),
@@ -1179,6 +1218,10 @@ def export_runtime_replay_decisions(
             include_hold_execution_context = bool(
                 getattr(strategy, "include_hold_execution_context_in_replay", False)
             )
+            position_snapshot = getattr(runtime_result.decision, "position_snapshot", None)
+            include_hold_execution_context = include_hold_execution_context or bool(
+                getattr(position_snapshot, "has_executable_exposure", False)
+            )
             if execution_plan_bundle.persistence_context and replay_signal_candidates & {"BUY", "SELL"}:
                 decision = replace(decision, context=dict(execution_plan_bundle.persistence_context))
                 runtime_replay_planning_error = str(execution_plan_bundle.planning_error or "")
@@ -1191,6 +1234,16 @@ def export_runtime_replay_decisions(
             else:
                 execution_plan_bundle = None
                 runtime_replay_planning_error = ""
+        elif str(getattr(strategy, "name", "") or "").strip().lower() == "sma_with_filter":
+            from .runtime_sma_snapshot import decide_sma_with_filter_snapshot_from_db
+
+            decision = decide_sma_with_filter_snapshot_from_db(
+                conn,
+                strategy,
+                through_ts_ms=int(through_ts_ms),
+            )
+            execution_plan_bundle = None
+            runtime_replay_planning_error = ""
         else:
             decision = strategy.decide(conn, through_ts_ms=int(through_ts_ms))
             execution_plan_bundle = None
@@ -1318,6 +1371,13 @@ def _canonical_field_value(field: str, value: object) -> object:
         return bool(value)
     if field in {"blocked_filters"}:
         return tuple(str(item) for item in (value or ()))  # type: ignore[union-attr]
+    if field in {
+        "execution_plan_bundle_evidence",
+        "typed_execution_summary_evidence",
+        "execution_submit_plan_evidence",
+        "typed_no_submit_proof",
+    }:
+        return _stable_value(value)
     if field in {"prev_s", "prev_l", "curr_s", "curr_l", "gap_ratio", "range_ratio", "expected_edge_ratio", "required_edge_ratio"}:
         if value in (None, ""):
             return None

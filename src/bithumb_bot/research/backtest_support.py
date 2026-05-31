@@ -11,6 +11,7 @@ from .backtest_types import (
     BacktestResourceLimitExceeded,
     BacktestRun,
     BacktestRunContext,
+    MemorySample,
 )
 from .execution_model import ExecutionFill
 
@@ -38,6 +39,10 @@ class BacktestAccumulator:
     trade_ledger_hash_material: list[dict[str, object]] = field(default_factory=list)
     equity_curve_hash_material: list[dict[str, object]] = field(default_factory=list)
     strategy_diagnostic_counts: dict[str, int] = field(default_factory=dict)
+    baseline_memory_sample: MemorySample = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.baseline_memory_sample = self.context.memory_sampler()
 
     @property
     def report_detail(self) -> str:
@@ -172,7 +177,8 @@ class BacktestAccumulator:
         self.last_heartbeat_bar = candles_processed
         callback(self.heartbeat_payload(candles_processed=candles_processed))
 
-    def heartbeat_payload(self, *, candles_processed: int) -> dict[str, Any]:
+    def heartbeat_payload(self, *, candles_processed: int, memory: dict[str, Any] | None = None) -> dict[str, Any]:
+        memory = memory if memory is not None else self.memory_payload()
         return {
             "stage": "heartbeat",
             "experiment_id": self.context.experiment_id,
@@ -188,8 +194,29 @@ class BacktestAccumulator:
             "retained_decision_count": int(self.retained_decision_count),
             "retained_equity_point_count": int(self.retained_equity_point_count),
             "elapsed_s": round(time.perf_counter() - self.context.started_at, 3),
-            "rss_mb": _rss_mb(),
+            **memory,
+            "rss_mb": memory["current_rss_mb"],
             "report_detail": self.report_detail,
+        }
+
+    def memory_payload(self) -> dict[str, Any]:
+        sample = self.context.memory_sampler()
+        baseline = self.baseline_memory_sample.current_rss_mb
+        current = sample.current_rss_mb
+        delta = (
+            round(max(0.0, float(current) - float(baseline)), 3)
+            if current is not None and baseline is not None
+            else None
+        )
+        return {
+            "memory_measurement": "candidate_local_current_rss_delta",
+            "memory_sample_source": sample.source,
+            "peak_rss_source_units": sample.peak_rss_source_units,
+            "peak_rss_platform": sample.peak_rss_platform,
+            "current_rss_mb": current,
+            "peak_rss_mb": sample.peak_rss_mb,
+            "baseline_rss_mb": baseline,
+            "rss_delta_mb": delta,
         }
 
     def check_limits(self, *, candles_processed: int, trades: list[dict[str, object]]) -> None:
@@ -197,7 +224,8 @@ class BacktestAccumulator:
         limits = self.context.resource_limits
         reasons: list[str] = []
         elapsed = time.perf_counter() - self.context.started_at
-        rss = _rss_mb()
+        memory = self.memory_payload()
+        rss_delta = memory["rss_delta_mb"]
         if (
             limits.max_runtime_s_per_candidate_split is not None
             and elapsed > float(limits.max_runtime_s_per_candidate_split)
@@ -205,12 +233,22 @@ class BacktestAccumulator:
             reasons.append("max_runtime_exceeded")
         if limits.max_trades is not None and self.trade_count > int(limits.max_trades):
             reasons.append("max_trades_exceeded")
-        if limits.max_rss_mb is not None and rss is not None and rss > float(limits.max_rss_mb):
+        if limits.max_rss_mb is not None and rss_delta is not None and rss_delta > float(limits.max_rss_mb):
             reasons.append("max_rss_exceeded")
         if not reasons:
             return
-        evidence = self.heartbeat_payload(candles_processed=candles_processed)
-        evidence.update({"status": "TRIPPED", "reasons": sorted(set(reasons))})
+        evidence = self.heartbeat_payload(candles_processed=candles_processed, memory=memory)
+        evidence.update(
+            {
+                "status": "TRIPPED",
+                "reasons": sorted(set(reasons)),
+                "resource_limit_semantics": {
+                    "max_rss_mb": "candidate_local_rss_delta_mb",
+                    "peak_rss_mb": "observability_high_water_not_limit_authority",
+                    "memory_sample_reused_for_failure_evidence": True,
+                },
+            }
+        )
         if self.context.audit_trace is not None:
             evidence["audit_trace_index"] = self.context.audit_trace.complete(status="failed")
         raise BacktestResourceLimitExceeded("candidate_resource_limit_exceeded", evidence)
@@ -220,6 +258,9 @@ class BacktestAccumulator:
         payload.pop("stage", None)
         payload.pop("elapsed_s", None)
         payload.pop("rss_mb", None)
+        payload["applied_resource_limits"] = self.context.resource_limits.as_dict()
+        payload["resource_policy"] = self.context.resource_limits.as_dict()
+        payload["memory_sampling_policy"] = self.context.resource_limits.as_dict()["memory_sampling_policy"]
         payload["decision_hash"] = canonical_payload_hash(self.decision_hash_material)
         payload.update(
             _behavior_hashes(
@@ -450,18 +491,6 @@ def _behavior_hashes(
         "composite_behavior_hash_v2": composite_hash_v2,
         "behavior_hash": composite_hash,
     }
-
-
-def _rss_mb() -> float | None:
-    try:
-        import resource
-
-        rss = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-    except Exception:
-        return None
-    if rss > 10_000_000:
-        return round(rss / (1024.0 * 1024.0), 3)
-    return round(rss / 1024.0, 3)
 
 
 def _regime_snapshot_value(snapshot: Any, key: str) -> str:

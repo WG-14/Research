@@ -164,8 +164,9 @@ def _dynamic_plugin(
 
 
 @pytest.fixture(autouse=True)
-def _restore_plugin_and_runtime_registries() -> None:
+def _restore_plugin_and_runtime_registries(monkeypatch: pytest.MonkeyPatch) -> None:
     yield
+    monkeypatch.undo()
     from bithumb_bot.strategy_plugins import iter_builtin_strategy_plugins
 
     reload_research_strategy_plugins_for_tests(providers=(iter_builtin_strategy_plugins,))

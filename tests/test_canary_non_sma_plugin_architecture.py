@@ -220,7 +220,7 @@ def test_canary_non_sma_runtime_replay_is_promotion_grade_and_read_only(tmp_path
             through_ts_list=[through_ts],
             market=settings.PAIR,
             interval=settings.INTERVAL,
-            profile_content_hash="sha256:profile",
+            profile_content_hash="sha256:" + "1" * 64,
             dataset_content_hash="sha256:dataset",
             db_data_fingerprint="sha256:db",
             candle_basis="closed_candle",

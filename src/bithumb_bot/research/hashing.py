@@ -32,6 +32,15 @@ REPORT_RUNTIME_ONLY_FIELDS = frozenset(
         "trace_manifest_path",
         "trace_manifest_path_value",
         "work_unit_observability",
+        "rss_mb",
+        "current_rss_mb",
+        "peak_rss_mb",
+        "baseline_rss_mb",
+        "rss_delta_mb",
+        "memory_sample_source",
+        "peak_rss_source_units",
+        "peak_rss_platform",
+        "memory_measurement",
     }
 )
 

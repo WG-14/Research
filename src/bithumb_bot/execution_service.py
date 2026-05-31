@@ -1969,6 +1969,43 @@ class LiveSignalExecutionService:
     executor: Callable[..., dict | None]
     harmless_dust_recorder: Callable[..., bool]
 
+    def record_harmless_dust_suppression_if_applicable(
+        self,
+        request: TypedExecutionRequest,
+    ) -> bool:
+        if request.signal != "SELL":
+            return False
+        harmless_dust_preview = _canonical_harmless_dust_sell_preview(
+            getattr(request, "decision_context", None)
+        )
+        if harmless_dust_preview is None:
+            return False
+        suppression_conn = ensure_db()
+        try:
+            recorded = self.harmless_dust_recorder(
+                conn=suppression_conn,
+                state=runtime_state.snapshot(),
+                signal=request.signal,
+                side="SELL",
+                requested_qty=float(harmless_dust_preview["requested_qty"]),
+                market_price=float(request.market_price),
+                normalized_qty=float(harmless_dust_preview["normalized_qty"]),
+                strategy_name=request.strategy_name or settings.STRATEGY_NAME,
+                decision_id=request.decision_id,
+                decision_reason=request.decision_reason,
+                exit_rule_name=request.exit_rule_name,
+                submit_qty_source=str(harmless_dust_preview["submit_qty_source"]),
+                position_state_source=str(harmless_dust_preview["submit_qty_source"]),
+                raw_total_asset_qty=float(harmless_dust_preview["raw_total_asset_qty"]),
+                open_exposure_qty=float(harmless_dust_preview["open_exposure_qty"]),
+                dust_tracking_qty=float(harmless_dust_preview["dust_tracking_qty"]),
+            )
+            if recorded:
+                suppression_conn.commit()
+            return bool(recorded)
+        finally:
+            suppression_conn.close()
+
     def execute(self, request: TypedExecutionRequest) -> dict | None:
         submit_plan_required = _live_real_order_submit_plan_required()
         observability_context = _request_observability_payload(request)
@@ -2430,30 +2467,8 @@ class LiveSignalExecutionService:
                 getattr(request, "decision_context", None)
             )
         if harmless_dust_preview is not None:
-            suppression_conn = ensure_db()
-            try:
-                if self.harmless_dust_recorder(
-                    conn=suppression_conn,
-                    state=runtime_state.snapshot(),
-                    signal=request.signal,
-                    side="SELL",
-                    requested_qty=float(harmless_dust_preview["requested_qty"]),
-                    market_price=float(request.market_price),
-                    normalized_qty=float(harmless_dust_preview["normalized_qty"]),
-                    strategy_name=request.strategy_name or settings.STRATEGY_NAME,
-                    decision_id=request.decision_id,
-                    decision_reason=request.decision_reason,
-                    exit_rule_name=request.exit_rule_name,
-                    submit_qty_source=str(harmless_dust_preview["submit_qty_source"]),
-                    position_state_source=str(harmless_dust_preview["submit_qty_source"]),
-                    raw_total_asset_qty=float(harmless_dust_preview["raw_total_asset_qty"]),
-                    open_exposure_qty=float(harmless_dust_preview["open_exposure_qty"]),
-                    dust_tracking_qty=float(harmless_dust_preview["dust_tracking_qty"]),
-                ):
-                    suppression_conn.commit()
-                    return None
-            finally:
-                suppression_conn.close()
+            if self.record_harmless_dust_suppression_if_applicable(request):
+                return None
         # Legacy lot-native compatibility path. Live real-order execution is
         # blocked above unless a validated explicit submit plan was consumed.
         try:

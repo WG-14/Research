@@ -19,10 +19,12 @@ from bithumb_bot.research.backtest_engine import (
     BacktestResourceLimitExceeded,
     BacktestResourceLimits,
     BacktestRunContext,
+    MemorySample,
     _behavior_hashes,
     _trade_hash_payload,
     run_sma_backtest,
 )
+from bithumb_bot.research.backtest_types import ru_maxrss_to_mb
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot, TopOfBookQuote
 from bithumb_bot.research.execution_calibration import build_calibration_artifact
 from bithumb_bot.research.execution_model import ExecutionFill, ExecutionRequest, FixedBpsExecutionModel, StressExecutionModel
@@ -121,6 +123,10 @@ def _manifest() -> dict[str, object]:
         "dataset": {
             "source": "sqlite_candles",
             "snapshot_id": "unit_candles_v1",
+            "source_uri": "managed-db:unit_candles_v1",
+            "source_content_hash": "sha256:unit-candles-content",
+            "source_schema_hash": "sha256:66a0dab69243f592c1dae02908aed5d1bf11194ec0ec692337a85a5636f711d3",
+            "locator": {"snapshot_id": "unit_candles_v1", "immutable": True},
             "train": {"start": "2023-01-01", "end": "2023-01-01"},
             "validation": {"start": "2023-01-02", "end": "2023-01-02"},
             "final_holdout": {"start": "2023-01-03", "end": "2023-01-03"},
@@ -192,6 +198,17 @@ def _portfolio_policy(*, starting_cash: float = 1_000_000.0, buy_fraction: float
             "max_order_krw": None,
             "rounding_policy": "engine_float_no_exchange_lot_rounding",
         },
+        "source": "manifest",
+    }
+
+
+def _risk_policy() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "max_daily_loss_krw": 50_000.0,
+        "max_daily_order_count": 20,
+        "max_position_loss_pct": 5.0,
+        "kill_switch": False,
         "source": "manifest",
     }
 
@@ -628,6 +645,7 @@ def _production_bound_statistical_manifest() -> dict[str, object]:
         }
     )
     payload["portfolio_policy"] = _portfolio_policy()
+    payload["risk_policy"] = _risk_policy()
     payload["execution_model"] = {
         "type": "fixed_bps",
         "fee_rate": 0.0,
@@ -918,6 +936,7 @@ def test_research_execution_policy_defaults_to_serial() -> None:
         "work_unit": "candidate_scenario",
         "deterministic_merge_order": "scenario_index,candidate_index,split_name",
         "resume": False,
+        "isolation_semantics": "serial_in_process_shared_python_process",
     }
 
 
@@ -953,6 +972,7 @@ def test_research_execution_policy_accepts_parallel_max_workers_two() -> None:
 
     assert manifest.research_run.execution.mode == "parallel"
     assert manifest.research_run.execution.max_workers == 2
+    assert manifest.research_run.execution.as_dict()["isolation_semantics"] == "parallel_process_pool_per_worker_shared_within_worker"
 
 
 def test_research_execution_policy_rejects_parallel_max_workers_one() -> None:
@@ -2279,6 +2299,34 @@ def test_report_content_hash_is_independent_of_db_path_and_runtime_environment(t
     assert changed["execution_plan"]["run_environment_hash"] != first["execution_plan"]["run_environment_hash"]
 
 
+@pytest.mark.memory_sensitive
+def test_report_content_hash_ignores_host_dependent_memory_observability(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    report = run_research_backtest(
+        manifest=parse_manifest(_manifest()),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    changed = json.loads(json.dumps(report))
+    usage = changed["candidates"][0]["validation_resource_usage"]
+    usage["current_rss_mb"] = 999.0
+    usage["peak_rss_mb"] = 1999.0
+    usage["baseline_rss_mb"] = 777.0
+    usage["rss_delta_mb"] = 222.0
+    usage["memory_sample_source"] = "host_specific_sampler"
+    usage["peak_rss_source_units"] = "host_specific_units"
+    usage["peak_rss_platform"] = "host_specific_platform"
+
+    assert sha256_prefixed(report_content_hash_payload(changed)) == report["content_hash"]
+
+
 def test_walk_forward_report_includes_execution_plan_and_observability(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -2853,6 +2901,7 @@ def test_sma_backtest_caches_dataset_content_hash(monkeypatch) -> None:
     ]
 
 
+@pytest.mark.memory_sensitive
 def test_tiny_three_day_sma_backtest_completes_structurally() -> None:
     base_ts = 1_700_000_000_000
     candles = tuple(
@@ -3079,6 +3128,119 @@ def test_heartbeat_and_max_trades_guard_trip() -> None:
     assert raised.value.evidence["retained_decision_count"] == 0
 
 
+@pytest.mark.resource_guard
+@pytest.mark.memory_sensitive
+def test_ru_maxrss_conversion_is_platform_explicit_for_large_linux_values() -> None:
+    assert ru_maxrss_to_mb(12_582_912.0, platform="linux") == (12_288.0, "kib")
+    assert ru_maxrss_to_mb(12_582_912.0, platform="darwin") == (12.0, "bytes")
+    value, units = ru_maxrss_to_mb(12_582_912.0, platform="freebsd13")
+    assert value == pytest.approx(12_288.0)
+    assert units == "kib_assumed_for_platform:freebsd13"
+
+
+@pytest.mark.resource_guard
+@pytest.mark.memory_sensitive
+def test_resource_guard_uses_candidate_local_rss_delta_not_process_peak() -> None:
+    samples = iter(
+        [
+            MemorySample(current_rss_mb=300.0, peak_rss_mb=1500.0, source="test"),
+            MemorySample(current_rss_mb=305.0, peak_rss_mb=1500.0, source="test"),
+            MemorySample(current_rss_mb=305.0, peak_rss_mb=1500.0, source="test"),
+            MemorySample(current_rss_mb=305.0, peak_rss_mb=1500.0, source="test"),
+            MemorySample(current_rss_mb=305.0, peak_rss_mb=1500.0, source="test"),
+        ]
+    )
+
+    def sample_memory() -> MemorySample:
+        return next(samples, MemorySample(current_rss_mb=305.0, peak_rss_mb=1500.0, source="test"))
+
+    result = run_sma_backtest(
+        dataset=_snapshot_from_closes([100, 101, 102, 103, 104, 105]),
+        parameter_values={"SMA_SHORT": 2, "SMA_LONG": 3},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        context=BacktestRunContext(
+            experiment_id="guard_exp",
+            candidate_id="candidate_peak_only",
+            scenario_id="scenario_1",
+            split_name="validation",
+            report_detail="summary",
+            resource_limits=BacktestResourceLimits(
+                max_rss_mb=10.0,
+                max_decisions_retained=0,
+                max_equity_points_retained=0,
+            ),
+            heartbeat=BacktestHeartbeatPolicy(interval_s=None, bar_interval=None),
+            memory_sampler=sample_memory,
+        ),
+    )
+
+    assert result.resource_usage is not None
+    assert result.resource_usage["current_rss_mb"] == pytest.approx(305.0)
+    assert result.resource_usage["peak_rss_mb"] == pytest.approx(1500.0)
+    assert result.resource_usage["baseline_rss_mb"] == pytest.approx(300.0)
+    assert result.resource_usage["rss_delta_mb"] == pytest.approx(5.0)
+    assert result.resource_usage["memory_measurement"] == "candidate_local_current_rss_delta"
+    assert result.resource_usage["applied_resource_limits"]["max_rss_mb"] == pytest.approx(10.0)
+    assert (
+        result.resource_usage["applied_resource_limits"]["max_rss_mb_semantics"]
+        == "candidate_local_rss_delta_mb"
+    )
+    assert (
+        result.resource_usage["memory_sampling_policy"]["cadence"]
+        == "per_resource_limit_check_event"
+    )
+
+
+@pytest.mark.resource_guard
+@pytest.mark.memory_sensitive
+def test_resource_guard_trips_on_candidate_local_rss_delta() -> None:
+    samples = iter(
+        [
+            MemorySample(current_rss_mb=300.0, peak_rss_mb=1500.0, source="test"),
+            MemorySample(current_rss_mb=316.0, peak_rss_mb=1500.0, source="trip_sample"),
+            MemorySample(current_rss_mb=999.0, peak_rss_mb=2000.0, source="would_be_resample"),
+        ]
+    )
+
+    def sample_memory() -> MemorySample:
+        return next(samples, MemorySample(current_rss_mb=316.0, peak_rss_mb=1500.0, source="test"))
+
+    with pytest.raises(BacktestResourceLimitExceeded) as raised:
+        run_sma_backtest(
+            dataset=_snapshot_from_closes([100, 101, 102, 103, 104, 105]),
+            parameter_values={"SMA_SHORT": 2, "SMA_LONG": 3},
+            fee_rate=0.0,
+            slippage_bps=0.0,
+            context=BacktestRunContext(
+                experiment_id="guard_exp",
+                candidate_id="candidate_delta",
+                scenario_id="scenario_1",
+                split_name="validation",
+                report_detail="summary",
+                resource_limits=BacktestResourceLimits(
+                    max_rss_mb=10.0,
+                    max_decisions_retained=0,
+                    max_equity_points_retained=0,
+                ),
+                heartbeat=BacktestHeartbeatPolicy(interval_s=None, bar_interval=None),
+                memory_sampler=sample_memory,
+            ),
+        )
+
+    assert "max_rss_exceeded" in raised.value.evidence["reasons"]
+    assert raised.value.evidence["current_rss_mb"] == pytest.approx(316.0)
+    assert raised.value.evidence["peak_rss_mb"] == pytest.approx(1500.0)
+    assert raised.value.evidence["memory_sample_source"] == "trip_sample"
+    assert raised.value.evidence["baseline_rss_mb"] == pytest.approx(300.0)
+    assert raised.value.evidence["rss_delta_mb"] == pytest.approx(16.0)
+    assert (
+        raised.value.evidence["resource_limit_semantics"]["peak_rss_mb"]
+        == "observability_high_water_not_limit_authority"
+    )
+    assert raised.value.evidence["resource_limit_semantics"]["memory_sample_reused_for_failure_evidence"] is True
+
+
 def test_research_sweep_continues_after_guard_failure_and_writes_candidate_artifacts(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -3135,6 +3297,12 @@ def test_research_sweep_continues_after_guard_failure_and_writes_candidate_artif
     assert failed[0]["failure_artifact_ref"].startswith("derived/research/bounded_sweep/candidate_failures/")
     assert Path(failed[0]["failure_artifact_path"]).exists()
     assert failed[0]["resource_guard"]["status"] == "TRIPPED"
+    assert failed[0]["evaluation_status"] == "resource_limited"
+    assert failed[0]["metrics_status"] == "unavailable"
+    assert failed[0]["metrics_v2_source"] == "failure_fallback"
+    assert failed[0]["candidate_failed_before_complete_metrics"] is True
+    assert failed[0]["validation_metrics_v2"]["metrics_status"] == "unavailable"
+    assert failed[0]["validation_metrics_v2"]["metrics_v2_source"] == "failure_fallback"
 
 
 def test_parallel_research_failure_is_committed_by_main_process(tmp_path, monkeypatch) -> None:
@@ -4491,6 +4659,40 @@ def test_research_report_cli_summary_prints_promotion_grade_unavailable(capsys) 
     assert "  warnings=promotion_grade_statistical_generation_unavailable" in output
 
 
+def test_research_report_cli_summary_prints_fallback_metrics_unavailable(capsys) -> None:
+    _print_report_summary(
+        "RESEARCH-BACKTEST",
+        {
+            "experiment_id": "fallback_metrics_cli",
+            "manifest_hash": "sha256:manifest",
+            "dataset_snapshot_id": "snap",
+            "dataset_content_hash": "sha256:dataset",
+            "candidate_count": 1,
+            "gate_result": "FAIL",
+            "best_validation_metrics_v2": {
+                "metrics_schema_version": 2,
+                "metrics_status": "unavailable",
+                "metrics_v2_source": "failure_fallback",
+            },
+            "candidates": [
+                {
+                    "parameter_candidate_id": "candidate_001",
+                    "acceptance_gate_result": "PASS",
+                    "validation_metrics_v2": {
+                        "metrics_schema_version": 2,
+                        "metrics_status": "unavailable",
+                        "metrics_v2_source": "failure_fallback",
+                    },
+                }
+            ],
+            "artifact_paths": {},
+        },
+    )
+
+    output = capsys.readouterr().out
+    assert "metrics_v2_summary=status=unavailable source=failure_fallback" in output
+
+
 def test_research_backtest_fails_candidate_when_calibration_market_mismatches(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -4695,6 +4897,8 @@ def test_research_backtest_promotes_candidate_when_base_and_stress_pass(
         )
 
 
+@pytest.mark.slow_research
+@pytest.mark.memory_sensitive
 def test_stress_report_is_candidate_order_independent(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -4762,6 +4966,15 @@ def test_stress_report_is_candidate_order_independent(tmp_path, monkeypatch) -> 
     assert execution["seed_derivation_inputs"]["parameter_candidate_id"] == target_id
 
 
+def _first_stress_scenario_execution_model(report: dict[str, object]) -> dict[str, object]:
+    for candidate in report["candidates"]:  # type: ignore[index]
+        for scenario in candidate["scenario_results"]:
+            execution_model = scenario.get("execution_model")
+            if isinstance(execution_model, dict) and execution_model.get("type") == "stress":
+                return execution_model
+    raise AssertionError("expected at least one stress execution model record")
+
+
 def test_different_stress_seed_changes_auditable_seed_hash(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -4796,8 +5009,8 @@ def test_different_stress_seed_changes_auditable_seed_hash(tmp_path, monkeypatch
         generated_at="2026-05-03T00:00:00+00:00",
     )
 
-    first_execution = first["candidates"][0]["scenario_results"][0]["validation_execution_metadata"][0]
-    second_execution = second["candidates"][0]["scenario_results"][0]["validation_execution_metadata"][0]
-    assert first_execution["base_seed"] == 42
-    assert second_execution["base_seed"] == 43
-    assert first_execution["derived_seed_hash"] != second_execution["derived_seed_hash"]
+    first_execution = _first_stress_scenario_execution_model(first)
+    second_execution = _first_stress_scenario_execution_model(second)
+    assert first_execution["seed"] == 42
+    assert second_execution["seed"] == 43
+    assert first_execution["model_params_hash"] != second_execution["model_params_hash"]

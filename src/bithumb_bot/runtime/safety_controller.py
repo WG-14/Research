@@ -64,6 +64,7 @@ class SafetyController:
     cleanup_revalidator: Callable[..., CleanupRevalidationResult]
     now_ms: Callable[[], int]
     live_dry_run: Callable[[], bool]
+    legacy_cancel_open_orders: Callable[[object, str], bool] | None = None
 
     def evaluate_halt(
         self,
@@ -477,6 +478,27 @@ class SafetyController:
     ) -> bool:
         events = notification_events
         messages = notification_messages
+        if self.legacy_cancel_open_orders is not None:
+            ok = bool(self.legacy_cancel_open_orders(broker, trigger))
+            summary = {
+                "remote_open_count": 0,
+                "canceled_count": 0,
+                "failed_count": 0 if ok else 1,
+                "stray_messages": [],
+                "error_messages": [],
+            }
+            status = "ok" if ok else "partial"
+            event = OperatorEventComposer(self.symbol).cancel_open_orders_result_event(
+                trigger=trigger,
+                remote_open_count=0,
+                canceled_count=0,
+                failed_count=0 if ok else 1,
+                status=status,
+            )
+            if events is not None:
+                events.append(event)
+            self.record_cancel_open_orders_result(trigger=trigger, status=status, summary=summary)
+            return ok
         try:
             summary = self.cancel_open_orders_with_broker(broker)
         except Exception as exc:

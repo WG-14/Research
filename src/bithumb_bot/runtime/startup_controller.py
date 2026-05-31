@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Callable, Sequence
 
 from .lifecycle_artifacts import RecoveryClearance, StartupResult, StateTransitionResult
@@ -65,6 +66,7 @@ class StartupController:
                 broker_result = self.broker_factory()
                 broker = broker_result[0] if isinstance(broker_result, tuple) else broker_result
                 self.initial_reconcile(broker)
+                startup_gate_reason = self.startup_gate_evaluator()
             except Exception as exc:
                 reason = f"initial reconcile failed ({type(exc).__name__}): {exc}"
                 transition = None
@@ -179,6 +181,7 @@ class StartupController:
             reason=startup_gate_reason,
             unresolved_order_count=int(getattr(state, "unresolved_open_order_count", 0) or 0),
             position_may_remain=bool(getattr(state, "halt_position_present", False)),
+            timestamp=int(time.time()),
             latest_client_order_id=latest_client_order_id,
             latest_exchange_order_id=latest_exchange_order_id,
             open_order_count=self.count_open_orders(),

@@ -78,7 +78,7 @@ class HaltStateProjector:
                     "open_exposure_qty": float(lot_snapshot.raw_open_exposure_qty),
                     "dust_tracking_qty": float(lot_snapshot.dust_tracking_qty),
                 },
-                dust_context={"classification": str(dust_context.classification.label)},
+                dust_context={"classification": str(dust_context.classification.classification)},
             ),
         }
 

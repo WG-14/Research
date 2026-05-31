@@ -116,6 +116,8 @@ from .startup_controller import StartupController
 
 FAILSAFE_RETRY_DELAY_SEC = 180
 RUN_LOG = logging.getLogger("bithumb_bot.run")
+_LEGACY_ENGINE_ATTEMPT_OPEN_ORDER_CANCELLATION = None
+_ORIGINAL_OPERATOR_NOTIFICATION_SERVICE_FACTORY = operator_notification_service
 
 
 def _record_runtime_cycle_artifact(
@@ -195,10 +197,10 @@ def _operator_notification_service():
 
     class _NotificationProxy:
         def send_event(self, event_name: str, /, **fields: object) -> None:
-            _notify_operator(service.event_formatter(event_name, **fields))
+            service.send_event(event_name, **fields)
 
         def send_message(self, message: str) -> None:
-            _notify_operator(message)
+            service.send_message(message)
 
     return _NotificationProxy()
 
@@ -498,6 +500,10 @@ def _startup_gate_allows_process_auto_recovery(*, state, startup_gate_reason: st
     blocker_code, _ = _classify_startup_gate_reason(startup_gate_reason, state=state)
     if blocker_code != "FEE_PENDING_AUTO_RECOVERING":
         return False
+    try:
+        reconcile_metadata = json.loads(str(getattr(state, "last_reconcile_metadata", None) or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        reconcile_metadata = {}
     conn = ensure_db()
     try:
         readiness_snapshot = compute_runtime_readiness_snapshot(conn)
@@ -505,9 +511,14 @@ def _startup_gate_allows_process_auto_recovery(*, state, startup_gate_reason: st
         conn.close()
     return bool(
         state.last_reconcile_status == "ok"
-        and readiness_snapshot.recovery_stage in {"UNAPPLIED_PRINCIPAL_PENDING", "FEE_FINALIZATION_PENDING"}
-        and readiness_snapshot.run_loop_allowed
-        and int(readiness_snapshot.auto_recovery_count or 0) > 0
+        and (
+            int(reconcile_metadata.get("fee_pending_auto_recovering", 0) or 0) > 0
+            or (
+                readiness_snapshot.recovery_stage
+                in {"UNAPPLIED_PRINCIPAL_PENDING", "FEE_FINALIZATION_PENDING"}
+                and int(readiness_snapshot.auto_recovery_count or 0) > 0
+            )
+        )
         and int(readiness_snapshot.recovery_required_count or 0) == 0
     )
 
@@ -602,6 +613,19 @@ def _evaluate_risk_state_mismatch_halt_clearance_after_observation_refresh(
 def maybe_clear_stale_initial_reconcile_halt() -> bool:
     runtime_state.refresh_open_order_health()
     state = runtime_state.snapshot()
+    try:
+        metadata = json.loads(str(state.last_reconcile_metadata or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        metadata = {}
+    fee_pending_auto_recovering = int(metadata.get("fee_pending_auto_recovering", 0) or 0) > 0
+    if (
+        int(getattr(state, "unresolved_open_order_count", 0) or 0) > 0
+        or int(getattr(state, "recovery_required_count", 0) or 0) > 0
+    ) and not (
+        state.halt_reason_code == "STARTUP_SAFETY_GATE"
+        and fee_pending_auto_recovering
+    ):
+        return False
     clearance = evaluate_initial_reconcile_halt_clearance()
     if not clearance.allowed:
         return False
@@ -741,6 +765,10 @@ def evaluate_startup_safety_gate() -> str | None:
 
 def evaluate_resume_eligibility() -> tuple[bool, list[ResumeBlocker]]:
     """Returns whether operator resume may proceed and structured blockers."""
+    maybe_clear_stale_initial_reconcile_halt()
+    startup_gate_reason = evaluate_startup_safety_gate()
+    maybe_clear_stale_live_execution_broker_halt(startup_gate_reason=startup_gate_reason)
+    maybe_clear_stale_risk_state_mismatch_halt(startup_gate_reason=startup_gate_reason)
     return _runtime_gate_api().resume_eligibility()
 
 def build_resume_guidance(
@@ -765,6 +793,7 @@ def evaluate_restart_readiness() -> list[tuple[str, bool, str]]:
 def _safety_controller() -> SafetyController:
     from ..recovery import cancel_open_orders_with_broker
     state_store = RuntimeStateStore(runtime_state.snapshot)
+    legacy_cancel = _LEGACY_ENGINE_ATTEMPT_OPEN_ORDER_CANCELLATION
 
     return SafetyController(
         symbol=settings.PAIR,
@@ -782,6 +811,7 @@ def _safety_controller() -> SafetyController:
         cleanup_revalidator=build_default_cleanup_revalidation_service().evaluate,
         now_ms=lambda: int(time.time() * 1000),
         live_dry_run=lambda: bool(settings.LIVE_DRY_RUN),
+        legacy_cancel_open_orders=legacy_cancel,
     )
 
 
@@ -923,6 +953,9 @@ def _attempt_open_order_cancellation(broker: BithumbBroker, trigger: str) -> boo
     return ok
 
 
+_ORIGINAL_ATTEMPT_OPEN_ORDER_CANCELLATION = _attempt_open_order_cancellation
+
+
 def _attempt_cleanup_with_optional_flatten(
     broker: BithumbBroker,
     *,
@@ -981,6 +1014,8 @@ def perform_panic_stop_cleanup(
 
 
 def run_loop() -> None:
+    global _LEGACY_ENGINE_ATTEMPT_OPEN_ORDER_CANCELLATION
+    global operator_notification_service
     configure_runtime_logging()
     if settings.MODE != "live":
         try:
@@ -1004,6 +1039,34 @@ def run_loop() -> None:
     startup_notification_hashes = list(startup_result.as_dict().get("operator_event_hashes", []))
     if startup_result.operator_event:
         startup_notification_adapter.send_event(startup_result.operator_event)
+        if startup_result.status == "BLOCKED":
+            startup_snapshot = runtime_state.snapshot()
+            open_order_count = _count_open_orders()
+            unresolved_count = int(getattr(startup_snapshot, "unresolved_open_order_count", 0) or 0)
+            recovery_required_count = int(getattr(startup_snapshot, "recovery_required_count", 0) or 0)
+            operator_visible_order_count = max(
+                int(open_order_count),
+                int(unresolved_count),
+                int(recovery_required_count),
+            )
+            startup_notification_adapter.send_event(
+                RuntimeOperatorEventComposer(settings.PAIR).composer.trading_halted_event(
+                    reason_code=str(startup_result.reason_code or "STARTUP_SAFETY_GATE"),
+                    reason=str(startup_result.startup_gate_reason or "startup blocked"),
+                    unresolved=True,
+                    operator_action_required=True,
+                    open_orders_present=operator_visible_order_count > 0,
+                    open_order_count=operator_visible_order_count,
+                    unresolved_order_count=max(unresolved_count, recovery_required_count),
+                    position_summary=_position_summary(),
+                    recommended_commands=recommended_operator_commands(
+                        reason_code=str(startup_result.reason_code or "STARTUP_SAFETY_GATE"),
+                        startup_gate=True,
+                        recovery_required=True,
+                        unresolved_count=max(unresolved_count, recovery_required_count),
+                    ),
+                )
+            )
     else:
         halt_transition = startup_result.as_dict().get("halt_transition", {})
         halt_evidence = halt_transition.get("evidence", {}) if isinstance(halt_transition, dict) else {}
@@ -1583,3 +1646,6 @@ def run_loop() -> None:
             interval=settings.INTERVAL,
             reason="stopped by user (Ctrl+C)",
         )
+    finally:
+        _LEGACY_ENGINE_ATTEMPT_OPEN_ORDER_CANCELLATION = None
+        operator_notification_service = _ORIGINAL_OPERATOR_NOTIFICATION_SERVICE_FACTORY

@@ -16,6 +16,7 @@ from bithumb_bot.research.strategy_spec import materialized_strategy_parameters_
 class RuntimeReplayStrategyAdapter:
     strategy: Any
     runtime_decision_builder: Callable[..., Any]
+    include_hold_execution_context_in_replay: bool = False
 
     @property
     def name(self) -> str:

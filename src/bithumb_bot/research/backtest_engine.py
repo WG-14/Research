@@ -46,6 +46,7 @@ from .backtest_types import (
     BacktestResourceLimits,
     BacktestRun,
     BacktestRunContext,
+    MemorySample,
 )
 from .dataset_snapshot import DatasetSnapshot
 from .decision_event import ResearchDecisionEvent

@@ -873,6 +873,7 @@ def enter_halt(
     attempt_flatten: bool = False,
     halt_projection: dict[str, object] | None = None,
 ) -> None:
+    projection = halt_projection if halt_projection is not None else project_halt_state()
     disable_trading_until(
         float("inf"),
         reason=reason,
@@ -880,7 +881,7 @@ def enter_halt(
         halt_new_orders_blocked=True,
         unresolved=unresolved,
         attempt_flatten=attempt_flatten,
-        halt_projection=halt_projection,
+        halt_projection=projection,
     )
 
 

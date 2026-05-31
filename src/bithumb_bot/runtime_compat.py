@@ -33,7 +33,7 @@ from .runtime.runner import (
     get_stale_risk_state_mismatch_halt_diagnostics,
     maybe_clear_stale_initial_reconcile_halt,
     perform_panic_stop_cleanup,
-    run_loop,
+    run_loop as _runner_run_loop,
 )
 
 
@@ -42,6 +42,13 @@ def resolve_typed_execution_submit_expectation(summary):
         summary,
         execution_engine_name=str(getattr(settings, "EXECUTION_ENGINE", "lot_native") or "lot_native"),
     )
+
+
+def run_loop() -> None:
+    from . import engine
+
+    engine._sync_runtime_patch_points()
+    _runner_run_loop()
 
 
 __all__ = [

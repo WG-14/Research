@@ -56,9 +56,26 @@ CANONICAL_EQUIVALENCE_FIELDS_V2 = tuple(
         # feature_snapshot_hash is diagnostic provenance and is intentionally not
         # promotion-equivalence authority.
         "decision_ts",
+        "approved_profile_hash",
         "db_data_fingerprint",
         "replay_fingerprint_hash",
+        "runtime_decision_request_hash",
+        "runtime_strategy_set_manifest_hash",
+        "execution_plan_bundle_hash",
         "feature_snapshot_hash",
+        "decision_envelope_present",
+        "execution_plan_bundle_present",
+        "execution_evidence_source",
+        "runtime_replay_planning_error",
+        "execution_plan_status",
+        "execution_plan_reason_code",
+        "artifact_grade",
+        "authority_plane",
+        "promotion_rejection_reason",
+        "execution_plan_bundle_evidence",
+        "typed_execution_summary_evidence",
+        "execution_submit_plan_evidence",
+        "typed_no_submit_proof",
     }
 )
 CANONICAL_EQUIVALENCE_FIELDS = CANONICAL_EQUIVALENCE_FIELDS_V2
@@ -682,9 +699,12 @@ def _canonical_validation_items(
     out: list[dict[str, object]] = []
     for source, decisions in (("research", research_decisions), ("runtime", runtime_decisions)):
         for item in decisions:
+            authority = item.get("position_authority") if isinstance(item.get("position_authority"), dict) else {}
+            state_class = str(authority.get("state_class") or "").strip()
             result = validate_canonical_decision_payload(
                 item,
                 promotion_grade=is_canonical_decision_v2(item),
+                require_promotion_provenance=state_class != "flat_no_dust_no_position",
             )
             if result.reason_codes:
                 out.append(

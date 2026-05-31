@@ -35,4 +35,7 @@ markers = [
     "fast_regression: quick deterministic regression checks for dust, auth, and order-validation behavior",
     "slow_integration: slower live-like or restart/reconcile integration checks",
     "lot_native_regression_gate: required lot-native authority gate covering SELL authority, dust suppression, partial-fill recovery, and restart/reconcile preservation",
+    "slow_research: slower research validation/report checks that are still useful as focused regressions",
+    "memory_sensitive: tests that guard memory/resource semantics or order-dependent RSS behavior",
+    "resource_guard: deterministic tests for research resource-limit enforcement and reporting",
 ]

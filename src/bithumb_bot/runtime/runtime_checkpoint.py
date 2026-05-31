@@ -55,6 +55,16 @@ class RuntimeCheckpoint:
         closed_ts = int(closed_row["ts"]) if hasattr(closed_row, "keys") else int(closed_row[0])
         if last_processed_candle_ts_ms is not None:
             if closed_ts == last_processed_candle_ts_ms:
+                RUN_LOG.info(
+                    format_log_kv(
+                        "[SKIP] duplicate candle",
+                        symbol=self.symbol,
+                        interval=self.interval,
+                        candle_ts=closed_ts,
+                        last_processed_candle_ts=last_processed_candle_ts_ms,
+                        reason="closed candle already processed before restart/previous tick",
+                    )
+                )
                 return CheckpointDecision(
                     status="duplicate",
                     allowed=False,

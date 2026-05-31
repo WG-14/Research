@@ -567,9 +567,14 @@ def _write_manifest(path: Path, *, calibration_required: bool = False, calibrati
                 "strategy_name": "sma_with_filter",
                 "market": "KRW-BTC",
                 "interval": "1m",
+                "risk_policy": _risk_policy(),
                 "dataset": {
                     "source": "sqlite_candles",
                     "snapshot_id": "readiness_unit",
+                    "source_uri": "managed-db:readiness_unit",
+                    "source_content_hash": "sha256:readiness-unit-content",
+                    "source_schema_hash": "sha256:readiness-unit-schema",
+                    "locator": {"snapshot_id": "readiness_unit", "immutable": True},
                     "train": {"start": "2023-01-01", "end": "2023-01-01"},
                     "validation": {"start": "2023-01-02", "end": "2023-01-02"},
                 },
@@ -702,6 +707,17 @@ def _portfolio_policy() -> dict[str, object]:
             "max_order_krw": None,
             "rounding_policy": "engine_float_no_exchange_lot_rounding",
         },
+        "source": "manifest",
+    }
+
+
+def _risk_policy() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "max_daily_loss_krw": 50_000.0,
+        "max_daily_order_count": 20,
+        "max_position_loss_pct": 5.0,
+        "kill_switch": False,
         "source": "manifest",
     }
 

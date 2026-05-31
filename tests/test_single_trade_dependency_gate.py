@@ -50,6 +50,17 @@ def _portfolio_policy() -> dict[str, object]:
     }
 
 
+def _risk_policy() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "max_daily_loss_krw": 50_000.0,
+        "max_daily_order_count": 20,
+        "max_position_loss_pct": 5.0,
+        "kill_switch": False,
+        "source": "manifest",
+    }
+
+
 def _production_manifest() -> dict[str, object]:
     return {
         "experiment_id": "single_trade_dependency_test",
@@ -59,6 +70,7 @@ def _production_manifest() -> dict[str, object]:
         "market": "KRW-BTC",
         "interval": "1m",
         "portfolio_policy": _portfolio_policy(),
+        "risk_policy": _risk_policy(),
         "dataset": {
             "source": "sqlite_candles",
             "snapshot_id": "candles_v1",

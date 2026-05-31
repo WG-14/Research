@@ -35,6 +35,21 @@ class ResearchExecutionPlanBundle:
     def submit_expected(self) -> bool:
         return bool(self.submit_plan is not None and self.submit_plan.submit_expected)
 
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "source": self.source,
+            "authority": self.authority,
+            "execution_engine": self.execution_engine,
+            "status": self.status,
+            "reason_code": self.reason_code,
+            "summary": None if self.summary is None else self.summary.as_dict(),
+            "submit_plan": None if self.submit_plan is None else self.submit_plan.as_final_payload(),
+            "compatibility_fallback": bool(self.compatibility_fallback),
+            "promotion_grade": bool(self.promotion_grade),
+            "recommended_next_action": self.recommended_next_action,
+        }
+
 
 def _research_execution_submit_plan(
     *,
@@ -115,16 +130,6 @@ def _research_execution_plan_bundle(
     block_reason: str = "",
 ) -> ResearchExecutionPlanBundle:
     normalized_side = str(side or "HOLD").upper()
-    if normalized_side not in {"BUY", "SELL"}:
-        return ResearchExecutionPlanBundle(
-            submit_plan=None,
-            summary=None,
-            source="research_backtest",
-            authority="research_virtual_execution_planner",
-            execution_engine="research_virtual",
-            status="BLOCKED",
-            reason_code=block_reason or "research_no_submit_signal",
-        )
     if policy_decision is not None:
         summary = build_typed_execution_decision_summary(
             typed_input=TypedExecutionPlanningInput(
@@ -184,6 +189,16 @@ def _research_execution_plan_bundle(
                 else summary.block_reason or "research_typed_submit_plan_missing"
             ),
         )
+    if normalized_side not in {"BUY", "SELL"}:
+        return ResearchExecutionPlanBundle(
+            submit_plan=None,
+            summary=None,
+            source="research_backtest",
+            authority="research_virtual_execution_planner",
+            execution_engine="research_virtual",
+            status="BLOCKED",
+            reason_code=block_reason or "research_no_submit_signal",
+        )
     if not allow_compatibility_fallback:
         return ResearchExecutionPlanBundle(
             submit_plan=None,
@@ -230,39 +245,64 @@ def _research_execution_plan_bundle(
 
 def _execution_plan_evidence(plan_bundle: ResearchExecutionPlanBundle | None) -> dict[str, object]:
     from bithumb_bot.canonical_decision import canonical_payload_hash
-    from bithumb_bot.promotion_provenance import build_typed_no_submit_proof
+    from bithumb_bot.promotion_provenance import (
+        PROMOTION_ARTIFACT_GRADE,
+        PROMOTION_AUTHORITY_PLANE,
+        PROMOTION_EXECUTION_EVIDENCE_SOURCE,
+        build_typed_no_submit_proof,
+    )
 
     submit_plan = None if plan_bundle is None else plan_bundle.submit_plan
     if submit_plan is None:
         reason_code = "" if plan_bundle is None else plan_bundle.reason_code
         final_action = "HOLD" if reason_code in {"", "research_no_submit_signal"} else "BLOCK_RESEARCH_NO_SUBMIT"
-        summary_payload = {
-            "final_action": final_action,
-            "submit_expected": False,
-            "pre_submit_proof_status": "not_required",
-            "block_reason": reason_code or "none",
-            "primary_submit_plan": None,
-            "execution_engine": "none",
-        }
+        summary_payload = (
+            plan_bundle.summary.as_dict()
+            if plan_bundle is not None and plan_bundle.summary is not None
+            else {
+                "final_action": final_action,
+                "submit_expected": False,
+                "pre_submit_proof_status": "not_required",
+                "block_reason": reason_code or "none",
+                "primary_submit_plan": None,
+                "execution_engine": "none",
+            }
+        )
         no_submit_proof = build_typed_no_submit_proof(summary_payload)
+        bundle_payload = None if plan_bundle is None else plan_bundle.as_dict()
+        typed_summary_present = plan_bundle is not None and plan_bundle.summary is not None
         return {
             "execution_summary_hash": canonical_payload_hash(summary_payload),
             "execution_submit_plan_hash": canonical_payload_hash(no_submit_proof),
-            "final_action": final_action,
+            "final_action": str(summary_payload.get("final_action") or final_action),
             "submit_expected": False,
-            "pre_submit_proof_status": "not_required",
-            "execution_block_reason": reason_code or "none",
-            "submit_plan_source": "none",
-            "submit_plan_authority": "none",
-            "execution_engine": "none",
+            "pre_submit_proof_status": str(summary_payload.get("pre_submit_proof_status") or "not_required"),
+            "execution_block_reason": str(summary_payload.get("block_reason") or reason_code or "none"),
+            "submit_plan_source": "typed_execution_planner" if typed_summary_present else "none",
+            "submit_plan_authority": "typed_execution_planner" if typed_summary_present else "none",
+            "execution_engine": str(summary_payload.get("execution_engine") or "none"),
+            "decision_authority_source": (
+                "DecisionEnvelope.strategy_decision" if typed_summary_present else ""
+            ),
             "execution_scope": "submit_plan_admission_only",
             "scope_badge": "SUBMIT_PLAN_EQUIVALENCE_ONLY",
             "execution_plan_bundle_present": plan_bundle is not None,
+            "execution_plan_bundle_hash": canonical_payload_hash(bundle_payload) if bundle_payload is not None else "",
+            "execution_plan_bundle_evidence": bundle_payload,
+            "execution_evidence_source": (
+                PROMOTION_EXECUTION_EVIDENCE_SOURCE if typed_summary_present else ""
+            ),
+            "typed_execution_summary_present": typed_summary_present,
+            "typed_execution_summary_evidence": summary_payload if typed_summary_present else None,
+            "typed_no_submit_proof": no_submit_proof if typed_summary_present else None,
+            "artifact_grade": PROMOTION_ARTIFACT_GRADE if typed_summary_present else "",
+            "authority_plane": PROMOTION_AUTHORITY_PLANE if typed_summary_present else "",
+            "promotion_rejection_reason": "",
             "execution_plan_status": "" if plan_bundle is None else plan_bundle.status,
             "execution_plan_reason_code": "" if plan_bundle is None else plan_bundle.reason_code,
-            "typed_execution_service": False,
+            "typed_execution_service": typed_summary_present,
             "typed_submit_plan": False,
-            "typed_execution_boundary": "none",
+            "typed_execution_boundary": "SignalExecutionRequest" if typed_summary_present else "none",
             "research_compatibility_execution_fallback": (
                 False if plan_bundle is None else bool(plan_bundle.compatibility_fallback)
             ),
@@ -289,6 +329,7 @@ def _execution_plan_evidence(plan_bundle: ResearchExecutionPlanBundle | None) ->
         "execution_engine": execution_engine,
     }
     plan_payload = submit_plan.as_final_payload()
+    bundle_payload = plan_bundle.as_dict()
     return {
         "execution_summary_hash": canonical_payload_hash(summary_payload),
         "execution_submit_plan_hash": canonical_payload_hash(plan_payload),
@@ -299,9 +340,19 @@ def _execution_plan_evidence(plan_bundle: ResearchExecutionPlanBundle | None) ->
         "submit_plan_source": submit_plan.source,
         "submit_plan_authority": submit_plan.authority,
         "execution_engine": execution_engine,
+        "decision_authority_source": "DecisionEnvelope.strategy_decision",
         "execution_scope": "submit_plan_admission_only",
         "scope_badge": "SUBMIT_PLAN_EQUIVALENCE_ONLY",
         "execution_plan_bundle_present": True,
+        "execution_plan_bundle_hash": canonical_payload_hash(bundle_payload),
+        "execution_plan_bundle_evidence": bundle_payload,
+        "execution_evidence_source": PROMOTION_EXECUTION_EVIDENCE_SOURCE,
+        "typed_execution_summary_present": plan_bundle.summary is not None,
+        "typed_execution_summary_evidence": summary_payload if plan_bundle.summary is not None else None,
+        "execution_submit_plan_evidence": plan_payload,
+        "artifact_grade": PROMOTION_ARTIFACT_GRADE,
+        "authority_plane": PROMOTION_AUTHORITY_PLANE,
+        "promotion_rejection_reason": "",
         "execution_plan_status": "PLANNED" if submit_plan.submit_expected else "BLOCKED",
         "execution_plan_reason_code": "none" if submit_plan.submit_expected else submit_plan.block_reason,
         "typed_execution_service": True,
@@ -421,9 +472,19 @@ def execute_research_signal_request(
         research_execution_context=research_execution_context,
     )
     return service.execute(
-        SignalExecutionRequest.from_typed(
-            typed_request,
+        SignalExecutionRequest(
+            signal=typed_request.signal,
+            ts=typed_request.ts,
+            market_price=typed_request.market_price,
+            strategy_name=typed_request.strategy_name,
+            decision_id=typed_request.decision_id,
+            decision_reason=typed_request.decision_reason,
+            exit_rule_name=typed_request.exit_rule_name,
+            execution_decision_summary=typed_request.execution_decision_summary,
+            execution_plan_bundle=typed_request.execution_plan_bundle,
             observability_payload=ExecutionObservabilityPayload({}),
+            research_execution_context=typed_request.research_execution_context,
+            observability_context={},
         )
     )
 

@@ -235,6 +235,31 @@ evidence is absent. Operators must not treat a completed in-process diagnostic
 run as implemented process isolation until each candidate/scenario/split has worker PID,
 exit, timeout/resource, seed, and terminal trace-status evidence.
 
+Research resource memory evidence is candidate-local. `max_rss_mb` is retained
+as the manifest field name, but reports declare `max_rss_mb_semantics` as
+`candidate_local_rss_delta_mb`; `current_rss_mb`, `baseline_rss_mb`, and
+`rss_delta_mb` are limit evidence, while `peak_rss_mb` is process high-water
+observability only. Memory is sampled at each resource-limit check event, which
+currently maps to the backtest candle/event limit check. This intentionally
+keeps memory checks aligned with the same execution events that can trip runtime
+or trade-count limits, and every split report includes the applied resource
+policy and memory sampling policy.
+
+Slow or resource-sensitive research tests are marked with `slow_research`,
+`memory_sensitive`, and `resource_guard`. The focused reproduction for the
+historical order-dependent high-water RSS regression is:
+
+```bash
+uv run pytest -q --tb=short --maxfail=1 \
+  tests/test_research_backtest_reproducibility.py::test_tiny_three_day_sma_backtest_completes_structurally \
+  tests/test_research_backtest_reproducibility.py::test_stress_report_is_candidate_order_independent \
+  tests/test_research_strategy_canary.py::test_buy_and_hold_full_research_backtest_report_contains_common_kernel_fields
+```
+
+It guards against process peak/high-water memory from earlier tests causing a
+later research candidate to fail even when current candidate-local RSS delta is
+within the configured budget.
+
 ## Cost Assumption Contract
 
 Production-bound manifests (`paper_candidate`, `live_dry_run_candidate`, and `small_live_candidate`) must define explicit execution scenarios with typed cost assumptions. At least one scenario must be a `base` cost assumption with a label, fee source, fee authority policy, slippage source, and `promotable_as_base=true`. Stress scenarios must be labeled as stress and are survival evidence only; they are not runtime base cost authority.

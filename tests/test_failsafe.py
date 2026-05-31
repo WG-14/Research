@@ -392,6 +392,58 @@ class _Rows:
         return [self._row]
 
 
+def _position_snapshot_from_context(
+    signal: str,
+    base_context: dict[str, object],
+) -> PositionSnapshot:
+    position_state = base_context.get("position_state")
+    normalized_exposure = (
+        position_state.get("normalized_exposure")
+        if isinstance(position_state, dict)
+        else None
+    )
+    if not isinstance(normalized_exposure, dict):
+        return PositionSnapshot(in_position=False, entry_allowed=True, exit_allowed=False)
+
+    open_exposure_qty = float(normalized_exposure.get("open_exposure_qty") or 0.0)
+    raw_total_asset_qty = float(normalized_exposure.get("raw_total_asset_qty") or 0.0)
+    dust_tracking_qty = float(normalized_exposure.get("dust_tracking_qty") or 0.0)
+    sellable_executable_lot_count = int(
+        normalized_exposure.get("sellable_executable_lot_count") or 0
+    )
+    exit_allowed = bool(normalized_exposure.get("exit_allowed"))
+    exit_block_reason = str(normalized_exposure.get("exit_block_reason") or "")
+    has_executable_exposure = sellable_executable_lot_count > 0
+    has_non_executable_residue = dust_tracking_qty > 0.0
+    has_any_position_residue = raw_total_asset_qty > 0.0 or open_exposure_qty > 0.0
+    has_dust_only_remainder = (
+        has_non_executable_residue
+        and not has_executable_exposure
+        and exit_block_reason == "dust_only_remainder"
+    )
+    terminal_state = "dust_only" if has_dust_only_remainder else "open_exposure" if has_executable_exposure else "flat"
+    return PositionSnapshot(
+        in_position=has_executable_exposure,
+        entry_allowed=not has_executable_exposure,
+        exit_allowed=exit_allowed,
+        exit_block_reason=exit_block_reason,
+        terminal_state=terminal_state,
+        qty_open=open_exposure_qty,
+        raw_qty_open=open_exposure_qty,
+        raw_total_asset_qty=raw_total_asset_qty,
+        open_lot_count=sellable_executable_lot_count,
+        dust_tracking_lot_count=1 if has_non_executable_residue else 0,
+        sellable_executable_lot_count=sellable_executable_lot_count,
+        dust_classification="harmless_dust" if has_dust_only_remainder else "",
+        dust_state=terminal_state if has_non_executable_residue else "",
+        effective_flat=not has_executable_exposure,
+        has_executable_exposure=has_executable_exposure,
+        has_any_position_residue=has_any_position_residue,
+        has_non_executable_residue=has_non_executable_residue,
+        has_dust_only_remainder=has_dust_only_remainder,
+    )
+
+
 class _RuntimeDecisionResult:
     def __init__(
         self,
@@ -402,6 +454,13 @@ class _RuntimeDecisionResult:
         reason: str | None = None,
         base_context: dict[str, object] | None = None,
     ):
+        self.base_context = {
+            "market_price": price,
+            "last_close": price,
+            "position_state": {"normalized_exposure": {"sellable_executable_lot_count": 0}},
+        }
+        if base_context is not None:
+            self.base_context.update(base_context)
         execution_intent = None
         if signal == "BUY":
             execution_intent = EntryExecutionIntent(
@@ -429,7 +488,7 @@ class _RuntimeDecisionResult:
             exit_evaluations=(),
             protective_exit_overrode_entry=False,
             exit_filter_suppression_prevented=False,
-            position_snapshot=PositionSnapshot(in_position=False, entry_allowed=True, exit_allowed=False),
+            position_snapshot=_position_snapshot_from_context(signal, self.base_context),
             execution_intent=execution_intent,
             entry_decision=object(),
             trace={"final_signal": signal},
@@ -438,13 +497,6 @@ class _RuntimeDecisionResult:
             policy_input_hash="sha256:failsafe-input",
             policy_decision_hash="sha256:failsafe-decision",
         )
-        self.base_context = {
-            "market_price": price,
-            "last_close": price,
-            "position_state": {"normalized_exposure": {"sellable_executable_lot_count": 0}},
-        }
-        if base_context is not None:
-            self.base_context.update(base_context)
         self.candle_ts = candle_ts
         self.market_price = price
         self.replay_fingerprint = {"schema_version": 1, "candle_ts": candle_ts}
@@ -588,7 +640,7 @@ def _prepare_run_loop(
 
     object.__setattr__(settings, "MODE", "live")
     object.__setattr__(settings, "LIVE_DRY_RUN", True)
-    object.__setattr__(settings, "STRATEGY_NAME", "safe_hold")
+    object.__setattr__(settings, "STRATEGY_NAME", "sma_with_filter")
     object.__setattr__(settings, "MAX_ORDER_KRW", 100000.0)
     object.__setattr__(settings, "MAX_DAILY_LOSS_KRW", 50000.0)
     object.__setattr__(settings, "MAX_DAILY_ORDER_COUNT", 10)
@@ -1811,18 +1863,15 @@ def test_live_real_order_missing_submit_plan_blocks_legacy_signal_fallback(caplo
         executor=_legacy_lot_native_executor,
         harmless_dust_recorder=lambda **_k: False,
     )
-    result = service.execute(
+    with pytest.raises(TypeError, match="decision_context_not_execution_authority"):
         SignalExecutionRequest(
             signal="BUY",
             ts=123,
             market_price=115_000_000.0,
             decision_context={"execution_decision": {}},
         )
-    )
 
-    assert result is None
     assert executor_calls == []
-    assert "live_real_order_missing_typed_execution_summary" in caplog.text
 
 
 def test_live_real_order_rejects_raw_dict_submit_plan_even_when_summary_present(caplog) -> None:
@@ -1888,7 +1937,7 @@ def test_live_real_order_rejects_dict_only_submit_plan_even_with_valid_shape(cap
         harmless_dust_recorder=lambda **_k: False,
     )
 
-    result = service.execute(
+    with pytest.raises(TypeError, match="decision_context_not_execution_authority"):
         SignalExecutionRequest(
             signal="BUY",
             ts=123,
@@ -1904,11 +1953,8 @@ def test_live_real_order_rejects_dict_only_submit_plan_even_with_valid_shape(cap
                 }
             },
         )
-    )
 
-    assert result is None
     assert executor_calls == []
-    assert "live_real_order_dict_only_execution_decision_not_authority" in caplog.text
 
 
 def test_live_real_order_rejects_typed_summary_serialized_context_mismatch(caplog) -> None:
@@ -2016,15 +2062,15 @@ def test_typed_submit_expectation_ignores_mutated_serialized_execution_context()
 @pytest.mark.parametrize(
     ("decision_context", "expected_reason"),
     [
-        ("not-a-context", "decision_context_schema_not_object"),
-        ({"execution_decision": "not-a-decision"}, "execution_decision_schema_not_object"),
+        ("not-a-context", "live_real_order_missing_typed_execution_summary"),
+        ({"execution_decision": "not-a-decision"}, "decision_context_not_execution_authority"),
         (
             {"execution_decision": {"target_submit_plan": "not-a-plan"}},
-            "live_real_order_missing_typed_execution_summary",
+            "decision_context_not_execution_authority",
         ),
         (
             {"execution_decision": {"residual_submit_plan": "not-a-plan"}},
-            "live_real_order_missing_typed_execution_summary",
+            "decision_context_not_execution_authority",
         ),
     ],
 )
@@ -2044,18 +2090,15 @@ def test_malformed_execution_context_blocks_legacy_signal_fallback(
         executor=lambda *_args, **kwargs: executor_calls.append(dict(kwargs)) or {"status": "unexpected"},
         harmless_dust_recorder=lambda **_k: False,
     )
-    result = service.execute(
+    with pytest.raises(TypeError, match=expected_reason):
         SignalExecutionRequest(
             signal="BUY",
             ts=123,
             market_price=115_000_000.0,
             decision_context=decision_context,
         )
-    )
 
-    assert result is None
     assert executor_calls == []
-    assert expected_reason in caplog.text
 
 
 def _target_state(*, exposure_krw: float) -> TargetPositionState:

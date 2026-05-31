@@ -6141,6 +6141,7 @@ def _load_restart_safety_checklist() -> list[tuple[str, bool, str]]:
 
 
 def cmd_restart_checklist() -> None:
+    maybe_clear_stale_initial_reconcile_halt()
     checklist = _load_restart_safety_checklist()
     blocked = [item for item in checklist if not item[1]]
     readiness_snapshot = compute_runtime_readiness_snapshot()

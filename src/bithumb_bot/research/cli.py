@@ -746,12 +746,30 @@ def _format_strategy_diagnostics_summary(summary: ResearchRunSummary) -> str:
 
 def _print_metrics_v2_summary(report: dict[str, object]) -> None:
     metrics = report.get("best_validation_metrics_v2")
+    if isinstance(metrics, dict) and (
+        metrics.get("metrics_status") == "unavailable" or metrics.get("metrics_v2_source") == "failure_fallback"
+    ):
+        print(
+            "  metrics_v2_summary="
+            f"status={metrics.get('metrics_status')} source={metrics.get('metrics_v2_source')}"
+        )
+        metrics = None
     if not isinstance(metrics, dict):
         candidates = report.get("candidates")
         if isinstance(candidates, list):
             for candidate in candidates:
                 if isinstance(candidate, dict) and candidate.get("acceptance_gate_result") == "PASS":
                     metrics = candidate.get("validation_metrics_v2")
+                    if isinstance(metrics, dict) and (
+                        metrics.get("metrics_status") == "unavailable"
+                        or metrics.get("metrics_v2_source") == "failure_fallback"
+                    ):
+                        print(
+                            "  metrics_v2_summary="
+                            f"status={metrics.get('metrics_status')} source={metrics.get('metrics_v2_source')}"
+                        )
+                        metrics = None
+                        continue
                     break
     if not isinstance(metrics, dict):
         return

@@ -72,8 +72,22 @@ _CANDIDATE_BEHAVIOR_RUNTIME_KEYS = {
     "wall_seconds",
     "cpu_seconds",
     "candles_per_second",
+    "rss_mb",
+    "current_rss_mb",
+    "peak_rss_mb",
+    "baseline_rss_mb",
+    "rss_delta_mb",
+    "memory_sample_source",
     "worker_hostname",
     "worker_pid",
+}
+_CANDIDATE_MEMORY_OBSERVABILITY_KEYS = {
+    "rss_mb",
+    "current_rss_mb",
+    "peak_rss_mb",
+    "baseline_rss_mb",
+    "rss_delta_mb",
+    "memory_sample_source",
 }
 
 
@@ -306,7 +320,7 @@ def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
     ):
         if candidate.get(key) is not None:
             profile[key] = candidate.get(key)
-    return profile
+    return _strip_candidate_memory_observability_fields(profile)
 
 
 def _exit_policy_has_current_stop_loss_schema(exit_policy: object) -> bool:
@@ -469,6 +483,20 @@ def _strip_candidate_behavior_runtime_fields(value: Any) -> Any:
         return [_strip_candidate_behavior_runtime_fields(item) for item in value]
     if isinstance(value, tuple):
         return [_strip_candidate_behavior_runtime_fields(item) for item in value]
+    return value
+
+
+def _strip_candidate_memory_observability_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _strip_candidate_memory_observability_fields(item)
+            for key, item in value.items()
+            if key not in _CANDIDATE_MEMORY_OBSERVABILITY_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_candidate_memory_observability_fields(item) for item in value]
+    if isinstance(value, tuple):
+        return [_strip_candidate_memory_observability_fields(item) for item in value]
     return value
 
 
@@ -810,6 +838,7 @@ def _extend_metrics_contract_reasons(
     *,
     prefix: str = "",
 ) -> None:
+    _extend_fallback_metrics_reasons(candidate, reasons, prefix=prefix)
     policy = candidate.get("metrics_gate_policy")
     policy_hash = candidate.get("metrics_gate_policy_hash")
     policy_required = bool(candidate.get("metrics_contract_required"))
@@ -868,6 +897,34 @@ def _extend_metrics_v2_presence_reasons(
         return
     if int(metrics_v2.get("metrics_schema_version") or 0) != METRICS_SCHEMA_VERSION:
         reasons.extend([f"{prefix}metrics_contract_missing", "metrics_contract_missing"])
+    if metrics_v2.get("metrics_status") == "unavailable" or metrics_v2.get("metrics_v2_source") == "failure_fallback":
+        reasons.extend([f"{prefix}metrics_v2_unavailable", "metrics_v2_unavailable"])
+    if bool(metrics_v2.get("candidate_failed_before_complete_metrics")):
+        reasons.extend(
+            [
+                f"{prefix}candidate_failed_before_complete_metrics",
+                "candidate_failed_before_complete_metrics",
+            ]
+        )
+
+
+def _extend_fallback_metrics_reasons(
+    candidate: dict[str, Any],
+    reasons: list[str],
+    *,
+    prefix: str = "",
+) -> None:
+    if bool(candidate.get("candidate_failed_before_complete_metrics")):
+        reasons.extend(
+            [
+                f"{prefix}candidate_failed_before_complete_metrics",
+                "candidate_failed_before_complete_metrics",
+            ]
+        )
+    if candidate.get("metrics_status") == "unavailable":
+        reasons.extend([f"{prefix}metrics_unavailable", "metrics_unavailable"])
+    if candidate.get("metrics_v2_source") == "failure_fallback":
+        reasons.extend([f"{prefix}metrics_failure_fallback", "metrics_failure_fallback"])
 
 
 def _extend_production_calibration_policy_reasons(
@@ -1913,6 +1970,20 @@ def _metrics_v2_compact(metrics: object, *, prefix: str) -> dict[str, object]:
             f"{prefix}_fee_drag_ratio_basis": None,
             f"{prefix}_slippage_drag_ratio": None,
             f"{prefix}_slippage_drag_ratio_basis": None,
+        }
+    if metrics.get("metrics_status") == "unavailable" or metrics.get("metrics_v2_source") == "failure_fallback":
+        return {
+            f"{prefix}_cagr_pct": None,
+            f"{prefix}_expectancy_per_trade_krw": None,
+            f"{prefix}_exposure_time_pct": None,
+            f"{prefix}_avg_holding_time_ms": None,
+            f"{prefix}_open_position_at_end": None,
+            f"{prefix}_fee_drag_ratio": None,
+            f"{prefix}_fee_drag_ratio_basis": None,
+            f"{prefix}_slippage_drag_ratio": None,
+            f"{prefix}_slippage_drag_ratio_basis": None,
+            f"{prefix}_metrics_status": metrics.get("metrics_status"),
+            f"{prefix}_metrics_v2_source": metrics.get("metrics_v2_source"),
         }
     return_risk = metrics.get("return_risk") if isinstance(metrics.get("return_risk"), dict) else {}
     trade_quality = metrics.get("trade_quality") if isinstance(metrics.get("trade_quality"), dict) else {}

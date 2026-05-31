@@ -328,6 +328,15 @@ class RuntimeResumeService:
                 open_orders_present, position_present = self.exposure_snapshot(int(time.time() * 1000))
             open_orders_present = bool(open_orders_present or state.halt_open_orders_present)
             position_present = bool(position_present or state.halt_position_present)
+            if not position_present:
+                conn = self.db_factory()
+                try:
+                    row = conn.execute("SELECT asset_qty FROM portfolio WHERE id=1").fetchone()
+                    position_present = bool(row is not None and abs(float(row["asset_qty"])) > 1e-12)
+                except Exception:
+                    position_present = True
+                finally:
+                    conn.close()
             dust_context = reconcile_dust_context(state.last_reconcile_metadata)
             is_risk_exposure_halt = (state.halt_reason_code or "") in RISK_EXPOSURE_HALT_REASON_CODES
             dust_exposure_only = bool(

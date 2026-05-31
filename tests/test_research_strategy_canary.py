@@ -313,6 +313,8 @@ def test_validation_protocol_has_no_buy_and_hold_specific_branch() -> None:
     assert "buy_and_hold_baseline" not in source
 
 
+@pytest.mark.slow_research
+@pytest.mark.memory_sensitive
 def test_buy_and_hold_full_research_backtest_report_contains_common_kernel_fields(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -335,6 +337,12 @@ def test_buy_and_hold_full_research_backtest_report_contains_common_kernel_field
     assert candidate["strategy_plugin_contract_hash"].startswith("sha256:")
     assert candidate["strategy_spec_hash"].startswith("sha256:")
     assert candidate["validation_metrics_v2"]["metrics_schema_version"] == 2
+    assert candidate["evaluation_status"] == "completed"
+    assert candidate["metrics_status"] == "complete"
+    assert candidate["metrics_v2_source"] == "computed"
+    assert candidate["candidate_failed_before_complete_metrics"] is False
+    assert candidate["validation_metrics_v2"]["metrics_status"] == "complete"
+    assert candidate["validation_metrics_v2"]["metrics_v2_source"] == "computed"
     assert candidate["validation_metrics_v2"]["cost_execution"]["filled_execution_count"] == 1
     assert candidate["validation_execution_event_summary"]["execution_attempt_count"] == 1
     assert candidate["validation_execution_event_summary"]["filled_execution_count"] == 1
@@ -345,6 +353,8 @@ def test_buy_and_hold_full_research_backtest_report_contains_common_kernel_field
     assert candidate["common_decision_behavior_hash"] == resource_usage["common_decision_behavior_hash"]
     assert candidate["strategy_behavior_hash"] == resource_usage["strategy_behavior_hash"]
     assert candidate["composite_behavior_hash_v2"] == resource_usage["composite_behavior_hash_v2"]
+    assert resource_usage["applied_resource_limits"]["max_rss_mb_semantics"] == "candidate_local_rss_delta_mb"
+    assert resource_usage["memory_sampling_policy"]["cadence"] == "per_resource_limit_check_event"
     assert candidate["strategy_diagnostics"]["strategy_diagnostics_namespace"] == "buy_and_hold_baseline"
     assert set(candidate["strategy_diagnostics"]["strategy_specific_diagnostics"]) == {"buy_and_hold_baseline"}
     assert candidate["validation_audit_trace_index"] is None

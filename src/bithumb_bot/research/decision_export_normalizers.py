@@ -4,6 +4,7 @@ from typing import Any
 
 from bithumb_bot.canonical_decision import canonical_payload_hash, export_research_decisions
 from bithumb_bot.strategy.market_regime import classify_sma_market_regime
+from .hashing import sha256_prefixed
 
 
 def decision_export_execution_timing_policy_hash() -> str:
@@ -20,9 +21,14 @@ def generic_promotion_grade_research_export_decisions(
     profile: dict[str, object],
     order_rules_hash: str,
 ) -> list[dict[str, object]]:
+    profile_hash = str(
+        profile.get("profile_content_hash")
+        or (raw_decisions[0].get("profile_content_hash") if raw_decisions else "")
+        or ""
+    )
     decisions = export_research_decisions(
         raw_decisions,
-        profile_content_hash=str(profile.get("profile_content_hash") or ""),
+        profile_content_hash=profile_hash,
         dataset_content_hash=snapshot.content_hash(),  # type: ignore[attr-defined]
         execution_timing_policy_hash=decision_export_execution_timing_policy_hash(),
     )
@@ -47,6 +53,28 @@ def generic_promotion_grade_research_export_decisions(
     aligned_decisions: list[dict[str, object]] = []
     for decision in decisions:
         decision["candidate_profile_hash"] = str(profile.get("candidate_profile_hash") or "")
+        decision["approved_profile_hash"] = profile_hash
+        decision["runtime_decision_request_hash"] = sha256_prefixed(
+            {
+                "source": "research_export_decision",
+                "market": decision.get("market"),
+                "interval": decision.get("interval"),
+                "candle_ts": decision.get("candle_ts"),
+                "strategy_name": decision.get("strategy_name"),
+                "profile_content_hash": profile_hash,
+            }
+        )
+        decision["runtime_strategy_set_manifest_hash"] = sha256_prefixed(
+            {
+                "runtime_strategy_set_manifest": {
+                    "strategy_name": str(decision.get("strategy_name") or ""),
+                    "strategy_instance_id": str(decision.get("strategy_instance_id") or ""),
+                    "market": str(decision.get("market") or ""),
+                    "interval": str(decision.get("interval") or ""),
+                    "source": "runtime_replay_single_strategy",
+                }
+            }
+        )
         decision["db_data_fingerprint"] = snapshot.content_hash()  # type: ignore[attr-defined]
         decision["candle_basis"] = "closed_candle"
         decision["decision_ts"] = None

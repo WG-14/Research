@@ -1461,6 +1461,12 @@ def _evaluate_candidates(
                 "walk_forward_gate_result": "PASS" if walk_forward and walk_forward["return_consistency_pass"] else None,
                 "scenario_acceptance_gate_result": gate_result,
                 "scenario_fail_reasons": fail_reasons,
+                "candidate_failed": bool(base.get("candidate_failed")),
+                "candidate_failed_before_complete_metrics": bool(base.get("candidate_failed_before_complete_metrics")),
+                "evaluation_status": base.get("evaluation_status"),
+                "metrics_status": base.get("metrics_status"),
+                "metrics_v2_source": base.get("metrics_v2_source"),
+                "failure_reason": base.get("failure_reason"),
                 "resource_guard": base.get("resource_guard"),
                 "failure_artifact_ref": base.get("failure_artifact_ref"),
                 "failure_artifact_path": base.get("failure_artifact_path"),
@@ -1674,6 +1680,12 @@ def _evaluate_candidates(
                 "validation_strategy_diagnostics": primary.get("validation_strategy_diagnostics"),
                 "final_holdout_strategy_diagnostics": primary.get("final_holdout_strategy_diagnostics"),
                 "strategy_diagnostics": primary.get("strategy_diagnostics"),
+                "candidate_failed": bool(primary.get("candidate_failed")),
+                "candidate_failed_before_complete_metrics": bool(primary.get("candidate_failed_before_complete_metrics")),
+                "evaluation_status": primary.get("evaluation_status"),
+                "metrics_status": primary.get("metrics_status"),
+                "metrics_v2_source": primary.get("metrics_v2_source"),
+                "failure_reason": primary.get("failure_reason"),
                 "resource_guard": primary.get("resource_guard"),
                 "failure_artifact_ref": primary.get("failure_artifact_ref"),
                 "failure_artifact_path": primary.get("failure_artifact_path"),
@@ -1986,6 +1998,11 @@ def _evaluate_candidate_base_result(
     return {
         "index": index,
         "candidate_id": param_candidate_id,
+        "candidate_failed": False,
+        "candidate_failed_before_complete_metrics": False,
+        "evaluation_status": "completed",
+        "metrics_status": "complete",
+        "metrics_v2_source": "computed",
         "parameter_values": params,
         "train_metrics": train.metrics.as_dict(),
         "validation_metrics": validation.metrics.as_dict(),
@@ -2130,7 +2147,16 @@ def _failed_candidate_base_result(
     resource_guard: dict[str, Any],
 ) -> dict[str, Any]:
     metrics = _failed_metrics_payload()
-    metrics_v2 = _failed_metrics_v2_payload()
+    evaluation_status = (
+        "resource_limited"
+        if reason == "candidate_resource_limit_exceeded"
+        or (
+            isinstance(resource_guard, dict)
+            and any(str(item).startswith("max_") for item in resource_guard.get("reasons") or [])
+        )
+        else "evaluation_failed"
+    )
+    metrics_v2 = _failed_metrics_v2_payload(evaluation_status=evaluation_status)
     split = str(resource_guard.get("split") or "unknown") if isinstance(resource_guard, dict) else "unknown"
     audit_index = resource_guard.get("audit_trace_index") if isinstance(resource_guard.get("audit_trace_index"), dict) else None
     return {
@@ -2158,6 +2184,10 @@ def _failed_candidate_base_result(
         "walk_forward_metrics": None,
         "warnings": [reason],
         "candidate_failed": True,
+        "candidate_failed_before_complete_metrics": True,
+        "evaluation_status": evaluation_status,
+        "metrics_status": "unavailable",
+        "metrics_v2_source": "failure_fallback",
         "failure_reason": reason,
         "resource_guard": resource_guard,
         "failed_split": split,
@@ -2312,9 +2342,13 @@ def _failed_metrics_payload() -> dict[str, Any]:
     }
 
 
-def _failed_metrics_v2_payload() -> dict[str, Any]:
+def _failed_metrics_v2_payload(*, evaluation_status: str = "evaluation_failed") -> dict[str, Any]:
     return {
         "metrics_schema_version": METRICS_SCHEMA_VERSION,
+        "evaluation_status": evaluation_status,
+        "metrics_status": "unavailable",
+        "metrics_v2_source": "failure_fallback",
+        "candidate_failed_before_complete_metrics": True,
         "return_risk": {
             "total_return_pct": 0.0,
             "cagr_pct": None,
@@ -2363,7 +2397,7 @@ def _failed_metrics_v2_payload() -> dict[str, Any]:
             "fee_drag_ratio_basis": "traded_notional",
             "slippage_drag_ratio_basis": "traded_notional",
         },
-        "limitation_reasons": ["candidate_failed_before_complete_metrics"],
+        "limitation_reasons": ["candidate_failed_before_complete_metrics", evaluation_status],
     }
 
 
@@ -2540,6 +2574,8 @@ def _metrics_v2_gate_reasons(*, gate, metrics_v2: dict[str, Any] | None, prefix:
         return [f"{prefix}metrics_v2_missing" if prefix else "metrics_v2_missing"]
     if int(metrics_v2.get("metrics_schema_version") or 0) != METRICS_SCHEMA_VERSION:
         return [f"{prefix}metrics_contract_missing" if prefix else "metrics_contract_missing"]
+    if metrics_v2.get("metrics_status") == "unavailable" or metrics_v2.get("metrics_v2_source") == "failure_fallback":
+        return [f"{prefix}metrics_v2_unavailable" if prefix else "metrics_v2_unavailable"]
     return_risk = metrics_v2.get("return_risk") if isinstance(metrics_v2.get("return_risk"), dict) else {}
     trade_quality = metrics_v2.get("trade_quality") if isinstance(metrics_v2.get("trade_quality"), dict) else {}
     time_exposure = metrics_v2.get("time_exposure") if isinstance(metrics_v2.get("time_exposure"), dict) else {}
@@ -2900,7 +2936,16 @@ def _worst_regime_metric(rows: Any, key: str) -> float | None:
 def _metrics_v2_payload(run: BacktestRun | None) -> dict[str, Any] | None:
     if run is None or run.metrics_v2 is None:
         return None
-    return run.metrics_v2.as_dict()
+    payload = run.metrics_v2.as_dict()
+    payload.update(
+        {
+            "evaluation_status": "completed",
+            "metrics_status": "complete",
+            "metrics_v2_source": "computed",
+            "candidate_failed_before_complete_metrics": False,
+        }
+    )
+    return payload
 
 
 def _report_payload(

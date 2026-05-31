@@ -450,6 +450,19 @@ def _portfolio_policy() -> dict[str, object]:
     }
 
 
+def _risk_policy() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "max_daily_loss_krw": 30_000,
+        "max_position_loss_pct": 10.0,
+        "max_daily_order_count": 20,
+        "kill_switch": False,
+        "max_open_positions": 1,
+        "unresolved_order_policy": "block",
+        "missing_policy": "fail_closed_for_promotion",
+    }
+
+
 def _statistical_validation() -> dict[str, object]:
     return {
         "required_for_promotion": True,
@@ -497,6 +510,7 @@ def _production_bound_manifest_payload(**overrides: object) -> dict[str, object]
             "deployment_tier": "paper_candidate",
             "parameter_space": _complete_runtime_bound_parameter_space(),
             "portfolio_policy": _portfolio_policy(),
+            "risk_policy": _risk_policy(),
             "statistical_validation": _statistical_validation(),
             "stress_suite": _stress_suite(),
             "final_selection": _final_selection(),

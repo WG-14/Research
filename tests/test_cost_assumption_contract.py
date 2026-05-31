@@ -50,6 +50,19 @@ def _portfolio_policy() -> dict[str, object]:
     }
 
 
+def _risk_policy() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "max_daily_loss_krw": 30_000,
+        "max_position_loss_pct": 10.0,
+        "max_daily_order_count": 20,
+        "kill_switch": False,
+        "max_open_positions": 1,
+        "unresolved_order_policy": "block",
+        "missing_policy": "fail_closed_for_promotion",
+    }
+
+
 def _manifest(*, deployment_tier: str = "paper_candidate") -> dict[str, object]:
     payload: dict[str, object] = {
         "experiment_id": "cost_contract_test",
@@ -109,6 +122,7 @@ def _manifest(*, deployment_tier: str = "paper_candidate") -> dict[str, object]:
     }
     if deployment_tier != "research_only":
         payload["portfolio_policy"] = _portfolio_policy()
+        payload["risk_policy"] = _risk_policy()
         payload["execution_timing"] = {
             "fill_reference_policy": "next_candle_open",
             "allow_same_candle_close_fill": False,

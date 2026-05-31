@@ -115,6 +115,29 @@ class ExecutionCoordinator:
             )
         expectation = self.resolve_submit_expectation(execution_decision_summary)
         if not expectation.submit_expected:
+            if execution_service is not None and signal == "SELL":
+                request = build_signal_execution_request(
+                    signal=authoritative_execution_signal_for_trade(
+                        decision_context,
+                        fallback_signal=signal or "HOLD",
+                    ),
+                    ts=candle_ts,
+                    market_price=float(market_price or 0.0),
+                    strategy_name=strategy_name,
+                    decision_id=decision_id,
+                    decision_reason=decision_reason,
+                    exit_rule_name=exit_rule_name,
+                    execution_decision_summary=execution_decision_summary,
+                    decision_context=decision_context,
+                    execution_plan_bundle=execution_plan_bundle,
+                )
+                suppressor = getattr(
+                    execution_service,
+                    "record_harmless_dust_suppression_if_applicable",
+                    None,
+                )
+                if callable(suppressor):
+                    suppressor(request)
             return ExecutionCycleResult(
                 candle_ts=candle_ts,
                 decision_id=decision_id,

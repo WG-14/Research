@@ -356,7 +356,41 @@ class BacktestEventProcessor:
             )
         else:
             outcome = None
-            execution_evidence = blocked_execution_evidence(risk_decision.reason_code)
+            policy_position = getattr(policy_decision, "position_snapshot", None)
+            if (
+                bool(strategy_envelope.provenance.get("promotion_grade_policy_required"))
+                and bool(getattr(policy_position, "has_executable_exposure", False))
+            ):
+                planning = self.execution_planner.plan(
+                    ExecutionPlanningRequest(
+                        candle=candle,
+                        event=event,
+                        ledger=self.ledger,
+                        strategy_name=self.strategy_plugin.name,
+                        action=action,
+                        decision_reason=risk_decision.reason_code,
+                        sellable_qty=prepared.sellable_qty,
+                        buy_fraction=self.buy_fraction,
+                        promotion_grade_policy_required=True,
+                        allow_execution_compatibility_fallback=bool(
+                            strategy_envelope.provenance.get("allow_execution_compatibility_fallback")
+                        ),
+                        policy_drives_execution=True,
+                        policy_decision=policy_decision,
+                    )
+                )
+                self.warnings.extend(planning.warnings)
+                execution_evidence = dict(planning.evidence)
+                planning_hash = canonical_payload_hash(execution_evidence)
+                self.trace_recorder.record_execution_planning(
+                    input_hash=risk.risk_gate_hash,
+                    execution_plan_hash=planning_hash,
+                    reason_code=str(
+                        execution_evidence.get("execution_plan_reason_code") or risk_decision.reason_code
+                    ),
+                )
+            else:
+                execution_evidence = blocked_execution_evidence(risk_decision.reason_code)
             execution_plan_hash = canonical_payload_hash(execution_evidence)
             fill_hash = canonical_payload_hash({})
         self.trace_recorder.record_execution(

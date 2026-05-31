@@ -468,6 +468,20 @@ class ResearchResourceLimits:
             "max_trades": self.max_trades,
             "max_equity_points_retained": self.max_equity_points_retained,
             "max_rss_mb": self.max_rss_mb,
+            "max_rss_mb_semantics": "candidate_local_rss_delta_mb",
+            "memory_sampling_policy": {
+                "cadence": "per_resource_limit_check_event",
+                "check_event": "backtest_candle_or_event_limit_check",
+                "current_rss_source": "procfs_status_vmrss_when_available",
+                "peak_rss_source": "getrusage_ru_maxrss_observability_only",
+                "limit_authority": "rss_delta_mb",
+            },
+            "memory_observability_fields": [
+                "current_rss_mb",
+                "peak_rss_mb",
+                "baseline_rss_mb",
+                "rss_delta_mb",
+            ],
         }
 
 
@@ -498,6 +512,11 @@ class ResearchExecutionPolicy:
             "work_unit": self.work_unit,
             "deterministic_merge_order": self.deterministic_merge_order,
             "resume": self.resume,
+            "isolation_semantics": (
+                "serial_in_process_shared_python_process"
+                if self.mode == "serial"
+                else "parallel_process_pool_per_worker_shared_within_worker"
+            ),
         }
 
 

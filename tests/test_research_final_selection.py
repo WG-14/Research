@@ -108,6 +108,50 @@ def _context() -> dict[str, object]:
     return {"dataset_quality_gate_status": "PASS", "statistical_gate_result": "PASS"}
 
 
+def test_final_selection_rejects_fallback_metrics_even_when_gate_is_pass() -> None:
+    candidate = _candidate("candidate_001")
+    candidate["candidate_failed_before_complete_metrics"] = True
+    candidate["metrics_status"] = "unavailable"
+    candidate["metrics_v2_source"] = "failure_fallback"
+    candidate["validation_metrics_v2"] = {
+        **candidate["validation_metrics_v2"],
+        "metrics_status": "unavailable",
+        "metrics_v2_source": "failure_fallback",
+        "candidate_failed_before_complete_metrics": True,
+    }
+    candidate["final_holdout_metrics_v2"] = {
+        **candidate["final_holdout_metrics_v2"],
+        "metrics_status": "unavailable",
+        "metrics_v2_source": "failure_fallback",
+        "candidate_failed_before_complete_metrics": True,
+    }
+
+    result = apply_final_selection_contract(
+        contract=_final_selection(),
+        candidates=[candidate],
+        report_context=_context(),
+        production_bound=True,
+    )
+
+    assert result["gate_result"] == "FAIL"
+    assert result["selected_candidate_id"] is None
+    reasons = result["candidate_final_scores"][0]["eligibility_reasons"]
+    assert "final_selection_candidate_failed_before_complete_metrics" in reasons
+    assert "final_selection_metrics_unavailable" in reasons
+    assert "final_selection_metrics_failure_fallback" in reasons
+
+
+def _risk_policy() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "max_daily_loss_krw": 50_000.0,
+        "max_daily_order_count": 20,
+        "max_position_loss_pct": 5.0,
+        "kill_switch": False,
+        "source": "manifest",
+    }
+
+
 def _manifest_payload() -> dict[str, object]:
     return {
         "experiment_id": "selection_contract_v1",
@@ -116,6 +160,7 @@ def _manifest_payload() -> dict[str, object]:
         "market": "KRW-BTC",
         "interval": "1m",
         "deployment_tier": "paper_candidate",
+        "risk_policy": _risk_policy(),
         "dataset": {
             "source": "sqlite_candles",
             "snapshot_id": "candles_v1",

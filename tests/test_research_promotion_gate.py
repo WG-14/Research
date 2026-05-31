@@ -2018,6 +2018,29 @@ def test_promotion_refuses_required_metrics_contract_when_schema_mismatches(tmp_
         promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
 
 
+def test_promotion_refuses_fallback_metrics_even_when_gate_is_pass(tmp_path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    fallback_metrics = {
+        **_metrics_v2_payload(),
+        "metrics_status": "unavailable",
+        "metrics_v2_source": "failure_fallback",
+        "candidate_failed_before_complete_metrics": True,
+    }
+    candidate = _candidate_with_required_metrics_contract(
+        acceptance_gate_result="PASS",
+        candidate_failed_before_complete_metrics=True,
+        metrics_status="unavailable",
+        metrics_v2_source="failure_fallback",
+        validation_metrics_v2=fallback_metrics,
+        final_holdout_metrics_v2=fallback_metrics,
+    )
+    candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+    _write_report(manager, candidate)
+
+    with pytest.raises(PromotionGateError, match="metrics_failure_fallback"):
+        promote_candidate(experiment_id="promo_exp", candidate_id="candidate_001", manager=manager)
+
+
 def test_promotion_refuses_metrics_gate_policy_hash_mismatch(tmp_path, monkeypatch) -> None:
     manager = _manager(tmp_path, monkeypatch)
     candidate = _candidate_with_required_metrics_contract(metrics_gate_policy_hash="sha256:tampered")

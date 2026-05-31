@@ -1203,7 +1203,7 @@ def compute_runtime_readiness_snapshot(conn=None) -> RuntimeReadinessSnapshot:
                 why_not="none",
                 operator_next_action="run_with_residual_inventory_tracking",
             )
-        residual_inventory_policy_allows_run = bool(stage == "RESIDUAL_INVENTORY_TRACKED")
+        residual_inventory_policy_allows_run = bool(tradeability.run_loop_allowed)
         residual_inventory_policy_allows_buy = bool(
             residual_inventory_policy_allows_run and tradeability.new_entry_allowed
         )

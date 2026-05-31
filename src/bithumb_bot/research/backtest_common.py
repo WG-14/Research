@@ -28,19 +28,6 @@ def _create_exit_rules(**kwargs: Any):
     return create_exit_rules(**kwargs)
 
 
-def _rss_mb() -> float | None:
-    try:
-        import resource
-
-        rss = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-    except Exception:
-        return None
-    # Linux reports KiB; macOS reports bytes. AWS Linux is the reference runtime.
-    if rss > 10_000_000:
-        return round(rss / (1024.0 * 1024.0), 3)
-    return round(rss / 1024.0, 3)
-
-
 def _regime_snapshot_value(snapshot: Any, key: str) -> str:
     if isinstance(snapshot, dict):
         return str(snapshot.get(key) or "unknown")

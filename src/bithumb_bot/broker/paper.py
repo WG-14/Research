@@ -31,12 +31,14 @@ from ..oms import (
     build_client_order_id,
     build_order_intent_key,
     claim_order_intent_dedup,
+    collect_risky_order_state,
     new_client_order_id,
     payload_fingerprint,
     record_submit_attempt,
     set_status,
     update_order_intent_dedup,
 )
+from ..runtime_risk_engine import _classify_unresolved_state
 from ..execution import apply_fill_and_trade, record_order_if_missing
 from .paper_execution import (
     ImmediateTopOfBookPaperAdapter,
@@ -442,6 +444,37 @@ def paper_execute(
     intent_key = ""
     try:
         init_portfolio(conn)
+        cash, qty = get_portfolio(conn)
+        unresolved_state = dict(
+            collect_risky_order_state(
+                conn,
+                now_ms=int(ts),
+                max_open_order_age_sec=int(settings.MAX_OPEN_ORDER_AGE_SEC),
+            )
+        )
+        unresolved_blocked, unresolved_reason_code, unresolved_reason = _classify_unresolved_state(
+            unresolved_state,
+            max_open_order_age_sec=int(settings.MAX_OPEN_ORDER_AGE_SEC),
+        )
+        if unresolved_blocked:
+            RUN_LOG.info(
+                format_log_kv(
+                    "[SKIP] unresolved order gate",
+                    mode=settings.MODE,
+                    symbol=market,
+                    signal=str(signal).upper(),
+                    side=str(signal).upper(),
+                    signal_ts=int(ts),
+                    reason_code=unresolved_reason_code,
+                    reason=unresolved_reason,
+                )
+            )
+            notify(
+                f"event=paper_order_skip mode={settings.MODE} symbol={market} signal={str(signal).upper()} "
+                f"reason_code={unresolved_reason_code} reason={unresolved_reason}"
+            )
+            conn.commit()
+            return None
         quote_context: _PaperQuoteContext | None = None
         if _get_fill_price.__module__ == __name__ and _get_fill_price.__name__ == "_get_fill_price":
             quote_context = _get_paper_quote_context(plan_side, market=market)
@@ -454,9 +487,8 @@ def paper_execute(
             fill_price = _get_fill_price(plan_side)
         if fill_price is None:
             return None
-        cash, qty = get_portfolio(conn)
         pre_submit_risk = RuntimeRiskEngineAdapter(conn).evaluate_pre_submit(
-            plan=SubmitPlan(side=str(signal).upper(), qty=0.0, source="paper_unresolved_order_gate"),
+            plan=SubmitPlan(side=str(signal).upper(), qty=0.0, source="paper_pre_submit"),
             ts_ms=int(ts),
             now_ms=int(ts),
             cash=float(cash),

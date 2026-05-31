@@ -255,5 +255,9 @@ The rendered units use `BITHUMB_ENV_FILE=@BITHUMB_ENV_FILE_LIVE@` so the env fil
   - `uv run pytest -q -m fast_regression`
 - Slow integration/live-like set:
   - `uv run pytest -q -m slow_integration`
+- Slow/resource-sensitive research checks:
+  - `uv run pytest -q -m "slow_research or memory_sensitive or resource_guard"`
+- Known research resource high-water RSS regression reproduction:
+  - `uv run pytest -q --tb=short --maxfail=1 tests/test_research_backtest_reproducibility.py::test_tiny_three_day_sma_backtest_completes_structurally tests/test_research_backtest_reproducibility.py::test_stress_report_is_candidate_order_independent tests/test_research_strategy_canary.py::test_buy_and_hold_full_research_backtest_report_contains_common_kernel_fields`
 
-Prefer the fast regression set first. Keep the slow set separate unless you are validating restart, recovery, or live-like execution paths.
+Prefer the fast regression set first. Keep the slow set separate unless you are validating restart, recovery, live-like execution paths, or research resource guard behavior. The three-test research command guards against process peak/high-water memory from earlier work affecting later candidate resource decisions.
