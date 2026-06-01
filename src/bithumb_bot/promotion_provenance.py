@@ -195,6 +195,7 @@ def validate_promotion_artifact(payload: dict[str, Any]) -> PromotionProvenanceV
         failures.append("canonical_promotion_legacy_contract_version")
     validation = validate_promotion_artifact_provenance(payload)
     failures.extend(validation.reason_codes)
+    failures.extend(_canonical_decision_failure_codes(payload))
     failures = sorted(set(failures))
     return PromotionProvenanceValidation(
         ok=not failures,
@@ -241,6 +242,34 @@ def promotion_provenance_failure_codes(
     if provenance.promotion_rejection_reason.strip():
         failures.append("canonical_promotion_rejection_reason_present")
     return sorted(set(failures))
+
+
+def _canonical_decision_failure_codes(payload: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    if str(payload.get("policy_materialization_mode") or "") == "research_exploratory":
+        failures.append("canonical_promotion_research_exploratory_materialization")
+    if payload.get("runtime_comparable") is False:
+        failures.append("canonical_promotion_runtime_comparable_false")
+    if payload.get("allow_execution_compatibility_fallback") is True:
+        failures.append("canonical_promotion_execution_compatibility_fallback")
+    for field_name in (
+        "policy_input_hash",
+        "policy_decision_hash",
+        "policy_contract_hash",
+        "decision_input_bundle_hash",
+        "snapshot_projector_hash",
+        "replay_fingerprint_hash",
+    ):
+        if not _valid_sha256_hash(str(payload.get(field_name) or "")):
+            failures.append(f"canonical_promotion_{field_name}_missing")
+    if not str(payload.get("snapshot_projector_version") or "").strip():
+        failures.append("canonical_promotion_snapshot_projector_version_missing")
+    provenance = payload.get("strategy_evaluation_provenance")
+    if not isinstance(provenance, dict):
+        failures.append("canonical_promotion_strategy_evaluation_provenance_missing")
+    elif provenance.get("decision_boundary") != "StrategyDecisionService.evaluate":
+        failures.append("canonical_promotion_strategy_evaluation_boundary_invalid")
+    return failures
 
 
 def build_typed_no_submit_proof(summary_payload: dict[str, Any]) -> dict[str, Any]:

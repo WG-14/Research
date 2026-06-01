@@ -584,6 +584,21 @@ class ExecutionPlanner:
             }
         )
         context.update(dict(planning_input.policy_hashes))
+        for key in (
+            "decision_input_bundle_hash",
+            "snapshot_projector_version",
+            "snapshot_projector_hash",
+            "market_snapshot_hash",
+            "position_snapshot_hash",
+            "execution_constraints_hash",
+            "policy_config_hash",
+            "exit_policy_config_hash",
+        ):
+            if str(context.get(key) or "").strip():
+                continue
+            value = replay_fingerprint.get(key)
+            if str(value or "").strip():
+                context[key] = value
         execution_intent = getattr(decision, "execution_intent", None)
         if execution_intent is not None and hasattr(execution_intent, "as_dict"):
             context["execution_intent"] = execution_intent.as_dict()

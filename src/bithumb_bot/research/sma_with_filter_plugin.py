@@ -171,20 +171,37 @@ def runtime_parameters_from_settings(cfg: object) -> dict[str, Any]:
 
 def decision_payload_adapter(
     payload: dict[str, object],
-    event: Any,
+    decision_or_artifact: Any,
 ) -> dict[str, object]:
     from bithumb_bot.canonical_decision import canonical_payload_hash
+    from bithumb_bot.strategy_policy_contract import StrategyDecisionV2
 
-    event_extra = event.extra_payload if isinstance(getattr(event, "extra_payload", None), dict) else {}
-    feature_snapshot = (
-        event.feature_snapshot if isinstance(getattr(event, "feature_snapshot", None), dict) else {}
-    )
-    prev_s = float(event_extra.get("prev_s", 0.0) or 0.0)
-    prev_l = float(event_extra.get("prev_l", 0.0) or 0.0)
-    curr_s = float(event_extra.get("curr_s", feature_snapshot.get("short_sma", 0.0)) or 0.0)
-    curr_l = float(event_extra.get("curr_l", feature_snapshot.get("long_sma", 0.0)) or 0.0)
-    gap_ratio = float(feature_snapshot.get("gap_ratio", event_extra.get("gap_ratio", 0.0)) or 0.0)
-    range_ratio = float(feature_snapshot.get("range_ratio", event_extra.get("range_ratio", 0.0)) or 0.0)
+    if isinstance(decision_or_artifact, StrategyDecisionV2):
+        decision = decision_or_artifact
+        trace = decision.as_trace()
+        market_trace = trace.get("market") if isinstance(trace.get("market"), dict) else {}
+        entry = decision.entry_decision
+        prev_s = float(market_trace.get("prev_s", 0.0) or 0.0)
+        prev_l = float(market_trace.get("prev_l", 0.0) or 0.0)
+        curr_s = float(market_trace.get("curr_s", 0.0) or 0.0)
+        curr_l = float(market_trace.get("curr_l", 0.0) or 0.0)
+        gap_ratio = float(entry.gap_ratio)
+        range_ratio = float(entry.volatility_ratio)
+        required_edge_ratio = float(entry.edge_filter_details.get("required_edge_ratio", 0.0))
+        authority = "StrategyDecisionV2"
+    elif isinstance(decision_or_artifact, dict) and "pure_policy_trace" in decision_or_artifact:
+        trace = decision_or_artifact.get("pure_policy_trace")
+        trace_payload = dict(trace) if isinstance(trace, dict) else {}
+        prev_s = float(trace_payload.get("prev_s", 0.0) or 0.0)
+        prev_l = float(trace_payload.get("prev_l", 0.0) or 0.0)
+        curr_s = float(trace_payload.get("curr_s", 0.0) or 0.0)
+        curr_l = float(trace_payload.get("curr_l", 0.0) or 0.0)
+        gap_ratio = float(decision_or_artifact.get("gap_ratio", 0.0) or 0.0)
+        range_ratio = float(decision_or_artifact.get("volatility_ratio", 0.0) or 0.0)
+        required_edge_ratio = float(decision_or_artifact.get("required_edge_ratio", 0.0) or 0.0)
+        authority = "canonical_decision_artifact"
+    else:
+        raise TypeError("sma_decision_payload_adapter_requires_typed_decision_artifact")
     payload.update(
         {
             "prev_s": prev_s,
@@ -194,7 +211,9 @@ def decision_payload_adapter(
             "gap_ratio": gap_ratio,
             "range_ratio": range_ratio,
             "expected_edge_ratio": gap_ratio,
-            "required_edge_ratio": float(event_extra.get("min_gap_ratio", 0.0) or 0.0),
+            "required_edge_ratio": required_edge_ratio,
+            "decision_payload_adapter_authority": authority,
+            "decision_payload_adapter_contract": "typed_decision_artifact_only",
             "feature_hash": canonical_payload_hash(
                 {
                     "prev_s": prev_s,
@@ -213,6 +232,8 @@ def decision_payload_adapter(
 
 
 def exit_signal_context(event: Any) -> dict[str, object]:
+    # Compatibility-only helper for exploratory risk-gate paths. Promotion-grade
+    # exit evaluation is owned by StrategyDecisionV2 trace/final assembly.
     event_extra = event.extra_payload if isinstance(getattr(event, "extra_payload", None), dict) else {}
     feature_snapshot = (
         event.feature_snapshot if isinstance(getattr(event, "feature_snapshot", None), dict) else {}
@@ -246,6 +267,8 @@ def exit_rule_factory(
     parameter_values: dict[str, Any],
     fee_rate: float,
 ) -> list[Any]:
+    # Compatibility-only exploratory factory. Promotion-grade paths use the
+    # typed final decision assembler and do not re-evaluate strategy exits here.
     from bithumb_bot.strategy.exit_rules import create_sma_exit_rules
 
     return create_sma_exit_rules(

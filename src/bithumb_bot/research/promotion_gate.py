@@ -533,6 +533,8 @@ def evaluate_candidate_for_promotion(candidate: dict[str, Any]) -> tuple[bool, l
     _extend_strategy_parameter_contract_reasons(candidate, reasons)
     _extend_candidate_regime_policy_reasons(candidate, reasons)
     _extend_execution_contract_reasons(candidate, reasons)
+    _extend_promotion_decision_contract_reasons(candidate, reasons)
+    _extend_production_bound_decision_evidence_reasons(candidate, reasons)
     if not _candidate_has_regime_policy(candidate):
         reasons.append("regime_policy_missing")
     return not reasons, reasons
@@ -571,6 +573,8 @@ def validate_backtest_candidate_for_promotion(candidate: dict[str, Any] | None) 
     _extend_strategy_parameter_contract_reasons(candidate, reasons, prefix="backtest_")
     _extend_candidate_regime_policy_reasons(candidate, reasons, prefix="backtest_")
     _extend_execution_contract_reasons(candidate, reasons, prefix="backtest_")
+    _extend_promotion_decision_contract_reasons(candidate, reasons, prefix="backtest_")
+    _extend_production_bound_decision_evidence_reasons(candidate, reasons, prefix="backtest_")
     if not _candidate_has_regime_policy(candidate):
         reasons.extend(["backtest_regime_policy_missing", "regime_policy_missing"])
     _extend_final_holdout_reasons(candidate, reasons, prefix="backtest_")
@@ -585,6 +589,109 @@ def validate_backtest_candidate_for_promotion(candidate: dict[str, Any] | None) 
     _extend_portfolio_policy_reasons(candidate, reasons, prefix="backtest_")
     _extend_probe_grade_reasons(candidate, reasons, prefix="backtest_")
     return not reasons, reasons
+
+
+def _extend_promotion_decision_contract_reasons(
+    candidate: dict[str, Any],
+    reasons: list[str],
+    *,
+    prefix: str = "",
+) -> None:
+    tracked_fields = (
+        "policy_materialization_mode",
+        "runtime_comparable",
+        "policy_input_hash",
+        "policy_decision_hash",
+        "policy_contract_hash",
+        "decision_input_bundle_hash",
+        "snapshot_projector_version",
+        "snapshot_projector_hash",
+        "strategy_evaluation_provenance",
+        "replay_fingerprint_hash",
+        "runtime_decision_request_hash",
+        "runtime_strategy_set_manifest_hash",
+        "approved_profile_hash",
+    )
+    if not is_production_bound_target(candidate.get("deployment_tier")) and not any(
+        key in candidate for key in tracked_fields
+    ):
+        return
+
+    def add(reason: str) -> None:
+        if prefix:
+            reasons.append(prefix + reason)
+        reasons.append(reason)
+
+    if str(candidate.get("policy_materialization_mode") or "") == "research_exploratory":
+        add("policy_materialization_mode_research_exploratory_not_promotion_grade")
+    if candidate.get("runtime_comparable") is False:
+        add("runtime_comparable_false_not_promotion_grade")
+    if candidate.get("compatibility_fallback") is True:
+        add("compatibility_fallback_not_promotion_grade")
+    if candidate.get("allow_execution_compatibility_fallback") is True:
+        add("execution_compatibility_fallback_not_promotion_grade")
+    for field_name in (
+        "policy_input_hash",
+        "policy_decision_hash",
+        "policy_contract_hash",
+        "decision_input_bundle_hash",
+        "snapshot_projector_version",
+        "snapshot_projector_hash",
+        "replay_fingerprint_hash",
+        "runtime_decision_request_hash",
+        "runtime_strategy_set_manifest_hash",
+        "approved_profile_hash",
+    ):
+        value = candidate.get(field_name)
+        if field_name.endswith("_hash"):
+            if not _valid_prefixed_hash(value):
+                add(field_name + "_missing")
+        elif not str(value or "").strip():
+            add(field_name + "_missing")
+    provenance = candidate.get("strategy_evaluation_provenance")
+    if not isinstance(provenance, dict):
+        add("strategy_evaluation_provenance_missing")
+    elif provenance.get("decision_boundary") != "StrategyDecisionService.evaluate":
+        add("strategy_evaluation_provenance_boundary_invalid")
+
+
+def _extend_production_bound_decision_evidence_reasons(
+    candidate: dict[str, Any],
+    reasons: list[str],
+    *,
+    prefix: str = "",
+) -> None:
+    if not is_production_bound_target(candidate.get("deployment_tier")):
+        return
+
+    def add(reason: str) -> None:
+        if prefix:
+            reasons.append(prefix + reason)
+        reasons.append(reason)
+
+    code_provenance = candidate.get("code_provenance")
+    if not isinstance(code_provenance, dict):
+        add("code_provenance_missing")
+    elif str(code_provenance.get("source") or "").strip().lower() == "unavailable":
+        add("code_provenance_unavailable")
+    for field_name in (
+        "strategy_parameters_hash",
+        "candidate_profile_hash",
+        "approved_profile_hash",
+        "fee_authority_hash",
+        "fee_model_hash",
+        "order_rules_hash",
+        "slippage_model_hash",
+    ):
+        if not _valid_prefixed_hash(candidate.get(field_name)):
+            add(field_name + "_missing")
+    if str(candidate.get("order_rules_hash") or "") == "sha256:" + "0" * 64:
+        add("order_rules_hash_empty")
+
+
+def _valid_prefixed_hash(value: object) -> bool:
+    raw = str(value or "")
+    return raw.startswith("sha256:") and len(raw) > len("sha256:")
 
 
 def _effective_policy_requirements(

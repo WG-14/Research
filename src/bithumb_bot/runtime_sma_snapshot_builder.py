@@ -28,8 +28,6 @@ from .research.strategy_spec import materialized_strategy_parameters_hash
 from .runtime_position_state_normalizer import (
     load_last_reconcile_metadata,
 )
-from .market_regime import classify_market_regime_from_arrays
-from .market_regime.thresholds import MarketRegimeThresholds
 from .runtime_sma_context import (
     build_entry_decision_context,
     build_position_gate_context,
@@ -39,7 +37,6 @@ from .runtime_sma_context import (
     live_armed_entry_fee_authority_blocks,
     resolve_strategy_fee_authority,
     safe_ratio,
-    sma,
 )
 from .strategy.base import PositionContext, StrategyDecision
 from .strategy.sma_policy_strategy import SmaWithFilterStrategy
@@ -503,13 +500,25 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
     volumes = [float(r[4]) if len(r) > 4 and r[4] is not None else 0.0 for r in rows]
     ts_list = [int(r[0]) for r in rows]
 
-    end_prev = len(closes) - 1
-    end_curr = len(closes)
-
-    prev_s = sma(closes, int(strategy.short_n), end_prev)
-    prev_l = sma(closes, int(strategy.long_n), end_prev)
-    curr_s = sma(closes, int(strategy.short_n), end_curr)
-    curr_l = sma(closes, int(strategy.long_n), end_curr)
+    projector = SmaWithFilterSnapshotProjector(assembly)
+    features = projector.project_features_from_arrays(
+        pair=strategy.pair,
+        interval=strategy.interval,
+        ts_list=ts_list,
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        materialized=materialized,
+        through_ts_ms=signal_through_ts_ms,
+        allow_initial_cross=True,
+    )
+    if features is None:
+        return None
+    prev_s = features.prev_s
+    prev_l = features.prev_l
+    curr_s = features.curr_s
+    curr_l = features.curr_l
 
     fee_authority = resolve_strategy_fee_authority(
         pair=strategy.pair,
@@ -532,48 +541,22 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
         slippage_bps=float(strategy.slippage_bps),
         entry_edge_buffer_ratio=float(strategy.entry_edge_buffer_ratio),
     )
-    if float(prev_s) > float(prev_l):
-        previous_cross_state = "above"
-    elif float(prev_s) < float(prev_l):
-        previous_cross_state = "below"
-    else:
-        previous_cross_state = "unknown"
-    vol_window_for_features = max(1, int(strategy.volatility_window))
-    overext_lookback_for_features = max(1, int(strategy.overextended_lookback))
-    market_regime_snapshot = classify_market_regime_from_arrays(
-        closes=closes,
-        highs=highs,
-        lows=lows,
-        volumes=volumes,
-        index=len(closes) - 1,
-        short_sma=float(curr_s),
-        long_sma=float(curr_l),
-        volatility_window=vol_window_for_features,
-        volume_window=max(1, int(getattr(strategy, "volume_window", 10))),
-        liquidity_window=max(1, int(getattr(strategy, "liquidity_window", 10))),
-        thresholds=MarketRegimeThresholds(
-            min_trend_strength_ratio=max(0.0, float(strategy.min_gap_ratio)),
-            low_volatility_ratio=max(0.0, float(strategy.min_volatility_ratio)),
-        ),
-        overextended_lookback=overext_lookback_for_features,
-        overextended_max_return_ratio=float(strategy.overextended_max_return_ratio),
-    ).as_dict()
     market_snapshot = assembly.build_market_snapshot(
         pair=strategy.pair,
         interval=strategy.interval,
-        candle_ts=int(ts_list[-1]),
-        closes=tuple(float(value) for value in closes),
-        prev_s=float(prev_s),
-        prev_l=float(prev_l),
-        curr_s=float(curr_s),
-        curr_l=float(curr_l),
+        candle_ts=features.candle_ts,
+        closes=features.closes,
+        prev_s=features.prev_s,
+        prev_l=features.prev_l,
+        curr_s=features.curr_s,
+        curr_l=features.curr_l,
         through_ts_ms=signal_through_ts_ms,
-        gap_ratio=abs((float(curr_s) - float(curr_l)) / float(curr_l)) if float(curr_l) != 0.0 else 0.0,
-        volatility_ratio=_rolling_close_range_ratio(closes, vol_window_for_features, len(closes) - 1),
-        overextended_ratio=_overextended_return_ratio(closes, overext_lookback_for_features, len(closes) - 1),
-        market_regime_snapshot=market_regime_snapshot,
-        previous_cross_state=previous_cross_state,
-        allow_initial_cross=previous_cross_state == "unknown",
+        gap_ratio=features.gap_ratio,
+        volatility_ratio=features.volatility_ratio,
+        overextended_ratio=features.overextended_ratio,
+        market_regime_snapshot=features.market_regime_snapshot,
+        previous_cross_state=features.previous_cross_state,
+        allow_initial_cross=features.allow_initial_cross,
     )
     position_snapshot = _policy_position_snapshot(position=position, exposure=exposure)
     policy_config = assembly.build_policy_config(
@@ -591,7 +574,6 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
         materialized,
         fee_rate_for_decision=fee_rate_for_decision,
     )
-    projector = SmaWithFilterSnapshotProjector(assembly)
     decision_input_bundle = projector.project_from_runtime_snapshots(
         strategy=strategy,
         materialized=materialized,
@@ -603,7 +585,8 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
         provenance={
             "candle_ts": int(ts_list[-1]),
             "through_ts_ms": int(signal_through_ts_ms),
-            "previous_cross_state": previous_cross_state,
+            "canonical_feature_projection": features.diagnostics_payload(),
+            "previous_cross_state": features.previous_cross_state,
         },
     )
     initial_replay_fingerprint = projector.build_replay_fingerprint(
@@ -1166,20 +1149,3 @@ def _latest_signal_close(
         return None
     return float(row[0])
 
-
-def _rolling_close_range_ratio(values: list[float], window: int, index: int) -> float:
-    window = max(1, int(window))
-    start = max(0, int(index) - window + 1)
-    subset = [float(value) for value in values[start : int(index) + 1]]
-    if not subset:
-        return 0.0
-    mean = sum(subset) / len(subset)
-    return ((max(subset) - min(subset)) / mean) if mean != 0.0 else 0.0
-
-
-def _overextended_return_ratio(values: list[float], lookback: int, index: int) -> float:
-    lookback = max(1, int(lookback))
-    if int(index) < lookback:
-        return 0.0
-    base = float(values[int(index) - lookback])
-    return abs((float(values[int(index)]) - base) / base) if base != 0.0 else 0.0

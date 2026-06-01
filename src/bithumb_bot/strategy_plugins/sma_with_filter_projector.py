@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from bithumb_bot.core.sma_policy import _stable_hash
+from bithumb_bot.market_regime import classify_market_regime_from_arrays
+from bithumb_bot.market_regime.thresholds import MarketRegimeThresholds
 from bithumb_bot.research.dataset_snapshot import DatasetSnapshot
 from bithumb_bot.research.strategy_spec import materialized_strategy_parameters_hash
 from bithumb_bot.strategy_decision_input import StrategyDecisionInputBundle
@@ -23,6 +25,82 @@ class SmaWithFilterProjectedDecisionInput:
     bundle: StrategyDecisionInputBundle
     rule_sources: dict[str, str]
     replay_fingerprint: dict[str, object]
+
+
+@dataclass(frozen=True)
+class PromotionDecisionSeed:
+    """Promotion-grade replay seed. It carries timing only, never signal authority."""
+
+    candle_index: int
+    candle_ts: int
+    decision_ts: int | None = None
+    source: str = "research_event_seed"
+
+    @classmethod
+    def from_research_event(
+        cls,
+        *,
+        event: Any,
+        candle_index: int,
+    ) -> "PromotionDecisionSeed":
+        return cls(
+            candle_index=int(candle_index),
+            candle_ts=int(getattr(event, "candle_ts")),
+            decision_ts=(
+                int(getattr(event, "decision_ts"))
+                if getattr(event, "decision_ts", None) is not None
+                else None
+            ),
+        )
+
+    def provenance_payload(self) -> dict[str, object]:
+        return {
+            "seed_contract": "PromotionDecisionSeed.v1",
+            "seed_source": self.source,
+            "candle_index": int(self.candle_index),
+            "candle_ts": int(self.candle_ts),
+            "decision_ts": self.decision_ts,
+            "event_signal_authority": "rejected",
+            "event_feature_authority": "rejected",
+        }
+
+
+@dataclass(frozen=True)
+class SmaWithFilterCanonicalFeatureProjection:
+    """Canonical SMA/filter/regime feature material for decision input projection."""
+
+    candle_index: int
+    candle_ts: int
+    through_ts_ms: int | None
+    closes: tuple[float, ...]
+    prev_s: float
+    prev_l: float
+    curr_s: float
+    curr_l: float
+    gap_ratio: float
+    volatility_ratio: float
+    overextended_ratio: float
+    previous_cross_state: str
+    allow_initial_cross: bool
+    market_regime_snapshot: dict[str, object]
+
+    def diagnostics_payload(self) -> dict[str, object]:
+        return {
+            "candle_index": self.candle_index,
+            "candle_ts": self.candle_ts,
+            "through_ts_ms": self.through_ts_ms,
+            "prev_s": self.prev_s,
+            "prev_l": self.prev_l,
+            "curr_s": self.curr_s,
+            "curr_l": self.curr_l,
+            "gap_ratio": self.gap_ratio,
+            "volatility_ratio": self.volatility_ratio,
+            "overextended_ratio": self.overextended_ratio,
+            "previous_cross_state": self.previous_cross_state,
+            "allow_initial_cross": self.allow_initial_cross,
+            "market_regime_snapshot": dict(self.market_regime_snapshot),
+            "feature_authority": "SmaWithFilterSnapshotProjector.project_features",
+        }
 
 
 class SmaWithFilterSnapshotProjector:
@@ -59,40 +137,38 @@ class SmaWithFilterSnapshotProjector:
         candidate_regime_policy: dict[str, object] | None,
         candidate_regime_policy_enforced: bool | None,
     ) -> SmaWithFilterProjectedDecisionInput | None:
-        event_extra = event.extra_payload if isinstance(getattr(event, "extra_payload", None), dict) else {}
-        feature_snapshot = (
-            event.feature_snapshot if isinstance(getattr(event, "feature_snapshot", None), dict) else {}
-        )
-        required_event_fields = ("prev_s", "prev_l", "curr_s", "curr_l", "prev_above")
-        if any(key not in event_extra for key in required_event_fields):
-            return None
-        if "gap_ratio" not in feature_snapshot or "range_ratio" not in feature_snapshot:
-            return None
-        candles = dataset.candles[: int(candle_index) + 1]
-        prev_above = event_extra.get("prev_above")
-        previous_cross_state = "unknown" if prev_above is None else "above" if bool(prev_above) else "below"
+        seed = PromotionDecisionSeed.from_research_event(event=event, candle_index=candle_index)
         materialized = self.assembly.materialize_parameters(
             {**dict(parameter_values), "BUY_FRACTION": buy_fraction},
             materialization_mode,
             fee_rate=fee_rate,
             slippage_bps=slippage_bps,
         )
+        features = self.project_features_from_dataset(
+            dataset=dataset,
+            candle_index=seed.candle_index,
+            materialized=materialized,
+            through_ts_ms=seed.candle_ts,
+            allow_initial_cross=True,
+        )
+        if features is None:
+            return None
         market = self.assembly.build_market_snapshot(
             pair=dataset.market,
             interval=dataset.interval,
-            candle_ts=int(event.candle_ts),
-            closes=tuple(float(item.close) for item in candles),
-            prev_s=float(event_extra.get("prev_s", 0.0) or 0.0),
-            prev_l=float(event_extra.get("prev_l", 0.0) or 0.0),
-            curr_s=float(event_extra.get("curr_s", 0.0) or 0.0),
-            curr_l=float(event_extra.get("curr_l", 0.0) or 0.0),
-            gap_ratio=float(feature_snapshot.get("gap_ratio", 0.0) or 0.0),
-            volatility_ratio=float(feature_snapshot.get("range_ratio", 0.0) or 0.0),
-            overextended_ratio=float(event_extra.get("overextended_ratio", 0.0) or 0.0),
-            market_regime_snapshot=dict(event_extra.get("regime_snapshot") or {}),
-            through_ts_ms=int(event.candle_ts),
-            previous_cross_state=previous_cross_state,
-            allow_initial_cross=False,
+            candle_ts=features.candle_ts,
+            closes=features.closes,
+            prev_s=features.prev_s,
+            prev_l=features.prev_l,
+            curr_s=features.curr_s,
+            curr_l=features.curr_l,
+            gap_ratio=features.gap_ratio,
+            volatility_ratio=features.volatility_ratio,
+            overextended_ratio=features.overextended_ratio,
+            market_regime_snapshot=features.market_regime_snapshot,
+            through_ts_ms=features.through_ts_ms,
+            previous_cross_state=features.previous_cross_state,
+            allow_initial_cross=features.allow_initial_cross,
         )
         strategy = self.assembly.build_strategy(
             materialized,
@@ -132,12 +208,12 @@ class SmaWithFilterSnapshotProjector:
         }
         materialized_hash = materialized_strategy_parameters_hash(dict(materialized.values))
         provenance = {
-            "projection_source": "research_event",
-            "candle_index": int(candle_index),
-            "candle_ts": int(event.candle_ts),
+            "projection_source": "promotion_decision_seed",
+            **seed.provenance_payload(),
             "runtime_comparable": bool(materialized.runtime_comparable),
             "policy_materialization_mode": materialized.mode.value,
             "candidate_regime_policy_enforced": candidate_regime_policy_enforced,
+            "canonical_feature_projection": features.diagnostics_payload(),
         }
         bundle = StrategyDecisionInputBundle.build(
             strategy_name=strategy.name,
@@ -155,8 +231,8 @@ class SmaWithFilterSnapshotProjector:
             strategy_name=strategy.name,
             pair=dataset.market,
             interval=dataset.interval,
-            candle_ts=int(event.candle_ts),
-            through_ts_ms=int(event.candle_ts),
+            candle_ts=features.candle_ts,
+            through_ts_ms=features.through_ts_ms,
             materialized=materialized,
             bundle=bundle,
             regime_version=str((market.market_regime_snapshot or {}).get("version") or ""),
@@ -167,6 +243,107 @@ class SmaWithFilterSnapshotProjector:
             bundle=bundle,
             rule_sources=rule_sources,
             replay_fingerprint=replay_fingerprint,
+        )
+
+    def project_features_from_dataset(
+        self,
+        *,
+        dataset: DatasetSnapshot,
+        candle_index: int,
+        materialized: MaterializedSmaWithFilterParameters,
+        through_ts_ms: int | None,
+        allow_initial_cross: bool,
+    ) -> SmaWithFilterCanonicalFeatureProjection | None:
+        candles = dataset.candles[: int(candle_index) + 1]
+        if not candles:
+            return None
+        return self.project_features_from_arrays(
+            pair=dataset.market,
+            interval=dataset.interval,
+            ts_list=[int(item.ts) for item in candles],
+            closes=[float(item.close) for item in candles],
+            highs=[float(item.high) for item in candles],
+            lows=[float(item.low) for item in candles],
+            volumes=[float(item.volume) for item in candles],
+            materialized=materialized,
+            candle_index=int(candle_index),
+            through_ts_ms=through_ts_ms,
+            allow_initial_cross=allow_initial_cross,
+        )
+
+    def project_features_from_arrays(
+        self,
+        *,
+        pair: str,
+        interval: str,
+        ts_list: list[int],
+        closes: list[float],
+        highs: list[float],
+        lows: list[float],
+        volumes: list[float],
+        materialized: MaterializedSmaWithFilterParameters,
+        candle_index: int | None = None,
+        through_ts_ms: int | None,
+        allow_initial_cross: bool,
+    ) -> SmaWithFilterCanonicalFeatureProjection | None:
+        del pair, interval
+        short_n = int(materialized.values["SMA_SHORT"])
+        long_n = int(materialized.values["SMA_LONG"])
+        if short_n <= 0 or long_n <= 0 or short_n >= long_n:
+            raise ValueError("sma_feature_projection_invalid_window")
+        if len(closes) < long_n + 1 or len(ts_list) != len(closes):
+            return None
+        end_prev = len(closes) - 1
+        end_curr = len(closes)
+        prev_s = _sma(closes, short_n, end_prev)
+        prev_l = _sma(closes, long_n, end_prev)
+        curr_s = _sma(closes, short_n, end_curr)
+        curr_l = _sma(closes, long_n, end_curr)
+        if prev_s > prev_l:
+            previous_cross_state = "above"
+        elif prev_s < prev_l:
+            previous_cross_state = "below"
+        else:
+            previous_cross_state = "unknown"
+        volatility_window = max(1, int(materialized.values["SMA_FILTER_VOL_WINDOW"]))
+        overextended_lookback = max(1, int(materialized.values["SMA_FILTER_OVEREXT_LOOKBACK"]))
+        overextended_max_return_ratio = float(materialized.values["SMA_FILTER_OVEREXT_MAX_RETURN_RATIO"])
+        min_gap_ratio = float(materialized.values["SMA_FILTER_GAP_MIN_RATIO"])
+        min_volatility_ratio = float(materialized.values["SMA_FILTER_VOL_MIN_RANGE_RATIO"])
+        index = len(closes) - 1
+        market_regime_snapshot = classify_market_regime_from_arrays(
+            closes=[float(value) for value in closes],
+            highs=[float(value) for value in highs],
+            lows=[float(value) for value in lows],
+            volumes=[float(value) for value in volumes],
+            index=index,
+            short_sma=float(curr_s),
+            long_sma=float(curr_l),
+            volatility_window=volatility_window,
+            volume_window=max(1, int(materialized.values.get("SMA_FILTER_VOLUME_WINDOW", 10))),
+            liquidity_window=max(1, int(materialized.values.get("SMA_FILTER_LIQUIDITY_WINDOW", 10))),
+            thresholds=MarketRegimeThresholds(
+                min_trend_strength_ratio=max(0.0, min_gap_ratio),
+                low_volatility_ratio=max(0.0, min_volatility_ratio),
+            ),
+            overextended_lookback=overextended_lookback,
+            overextended_max_return_ratio=overextended_max_return_ratio,
+        ).as_dict()
+        return SmaWithFilterCanonicalFeatureProjection(
+            candle_index=int(index if candle_index is None else candle_index),
+            candle_ts=int(ts_list[-1]),
+            through_ts_ms=None if through_ts_ms is None else int(through_ts_ms),
+            closes=tuple(float(value) for value in closes),
+            prev_s=float(prev_s),
+            prev_l=float(prev_l),
+            curr_s=float(curr_s),
+            curr_l=float(curr_l),
+            gap_ratio=abs((float(curr_s) - float(curr_l)) / float(curr_l)) if float(curr_l) != 0.0 else 0.0,
+            volatility_ratio=_rolling_close_range_ratio(closes, volatility_window, index),
+            overextended_ratio=_overextended_return_ratio(closes, overextended_lookback, index),
+            previous_cross_state=previous_cross_state,
+            allow_initial_cross=bool(allow_initial_cross and previous_cross_state == "unknown"),
+            market_regime_snapshot=market_regime_snapshot,
         )
 
     def project_from_runtime_snapshots(
@@ -270,4 +447,31 @@ def _coerce_bool(value: object) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-__all__ = ["SmaWithFilterProjectedDecisionInput", "SmaWithFilterSnapshotProjector"]
+def _sma(values: list[float], n: int, end: int) -> float:
+    return sum(float(value) for value in values[end - n : end]) / n
+
+
+def _rolling_close_range_ratio(values: list[float], window: int, index: int) -> float:
+    window = max(1, int(window))
+    start = max(0, int(index) - window + 1)
+    subset = [float(value) for value in values[start : int(index) + 1]]
+    if not subset:
+        return 0.0
+    mean = sum(subset) / len(subset)
+    return ((max(subset) - min(subset)) / mean) if mean != 0.0 else 0.0
+
+
+def _overextended_return_ratio(values: list[float], lookback: int, index: int) -> float:
+    lookback = max(1, int(lookback))
+    if int(index) < lookback:
+        return 0.0
+    base = float(values[int(index) - lookback])
+    return abs((float(values[int(index)]) - base) / base) if base != 0.0 else 0.0
+
+
+__all__ = [
+    "PromotionDecisionSeed",
+    "SmaWithFilterCanonicalFeatureProjection",
+    "SmaWithFilterProjectedDecisionInput",
+    "SmaWithFilterSnapshotProjector",
+]

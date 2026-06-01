@@ -115,9 +115,13 @@ class DecisionPayloadBuilder:
             exit_reason=risk_decision.exit_reason,
             exit_evaluations=[dict(item) for item in risk_decision.exit_evaluations],
         )
-        if strategy_plugin.decision_payload_adapter is not None:
-            payload = strategy_plugin.decision_payload_adapter(payload, event)
         promotion_grade = bool(getattr(strategy_plugin, "is_promotion_grade", False))
+        if strategy_plugin.decision_payload_adapter is not None:
+            if promotion_grade:
+                if policy_decision is not None:
+                    payload = strategy_plugin.decision_payload_adapter(payload, policy_decision)
+            else:
+                payload = strategy_plugin.decision_payload_adapter(payload, event)
         promotion_missing_reason = (
             ""
             if promotion_grade
@@ -169,6 +173,14 @@ class DecisionPayloadBuilder:
                 payload[key] = risk_payload[key]
         if "risk_decision" in risk_payload:
             payload["risk_decision"] = risk_payload["risk_decision"]
+        if strategy_plugin.name == "sma_with_filter" and "strategy_diagnostic_counts" not in payload:
+            from bithumb_bot.research.sma_with_filter_plugin import (
+                _diagnostic_count_defaults,
+                _diagnostic_counts,
+            )
+
+            payload["strategy_diagnostic_count_defaults"] = _diagnostic_count_defaults()
+            payload["strategy_diagnostic_counts"] = _diagnostic_counts(payload)
         if policy_decision is not None:
             payload["pure_policy_hash"] = policy_decision.policy_hash
             payload["policy_contract_hash"] = policy_decision.policy_contract_hash

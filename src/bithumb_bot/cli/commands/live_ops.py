@@ -10,7 +10,13 @@ from ._helpers import make_spec
 def _settings_default(name: str):
     from bithumb_bot.config import settings
 
-    return getattr(settings, name)
+    if hasattr(settings, name):
+        return getattr(settings, name)
+    if name in {"SMA_SHORT", "SMA_LONG"}:
+        from bithumb_bot.strategy_config import _sma_int
+
+        return _sma_int(name)
+    raise AttributeError(name)
 
 
 def _simple(function_name: str):

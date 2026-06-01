@@ -111,6 +111,7 @@ class DecisionEnvelope:
             }
         )
         context.update(self._policy_hashes_as_dict())
+        _attach_decision_projection_observability(context, _thaw_mapping(self.replay_fingerprint))
         if decision.execution_intent is not None:
             context["execution_intent"] = decision.execution_intent.as_dict()
         return context
@@ -125,3 +126,24 @@ class DecisionEnvelope:
             "replay_fingerprint_hash": sha256_prefixed(_thaw_mapping(self.replay_fingerprint)),
             **policy_hashes,
         }
+
+
+def _attach_decision_projection_observability(
+    context: dict[str, object],
+    replay_fingerprint: Mapping[str, object],
+) -> None:
+    for key in (
+        "decision_input_bundle_hash",
+        "snapshot_projector_version",
+        "snapshot_projector_hash",
+        "market_snapshot_hash",
+        "position_snapshot_hash",
+        "execution_constraints_hash",
+        "policy_config_hash",
+        "exit_policy_config_hash",
+    ):
+        if str(context.get(key) or "").strip():
+            continue
+        value = replay_fingerprint.get(key)
+        if str(value or "").strip():
+            context[key] = value

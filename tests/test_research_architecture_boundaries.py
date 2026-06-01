@@ -129,7 +129,9 @@ def test_sma_adapters_project_or_convert_without_final_decision_authority() -> N
     )
 
     assert "non_authoritative_event_adapter" in event_source
-    assert "authority\": \"historical_feature_serialization_only\"" in event_source
+    assert "promotion_decision_seed_only" in event_source
+    assert "\"prev_s\"" not in event_source
+    assert "\"gap_ratio\"" not in event_source
     assert "SmaWithFilterSnapshotProjector" in research_source
     assert "StrategyDecisionService().evaluate(" in research_source
     assert "evaluate_sma_final_decision(" not in research_source
@@ -139,7 +141,8 @@ def test_sma_adapters_project_or_convert_without_final_decision_authority() -> N
     assert "evaluate_sma_final_decision(" not in runtime_adapter_source
     assert "evaluate_sma_policy(" not in runtime_adapter_source
     assert "StrategyDecisionV2(" not in runtime_adapter_source
-    assert "StrategyDecisionV2(" not in payload_adapter_source
+    assert "StrategyDecisionV2" in payload_adapter_source
+    assert "sma_decision_payload_adapter_requires_typed_decision_artifact" in payload_adapter_source
     assert "final_signal" not in payload_adapter_source
 
 

@@ -600,6 +600,15 @@ class RuntimeDecisionRequestBuilder:
             )
         if spec.strategy_name == "safe_hold":
             return {}, spec.parameter_source or "runtime_builtin_no_parameters"
+        try:
+            plugin = resolve_research_strategy_plugin(spec.strategy_name)
+        except ResearchStrategyRegistryError:
+            plugin = None
+        if plugin is not None and plugin.runtime_parameter_adapter is not None:
+            return (
+                dict(plugin.runtime_parameter_adapter.from_settings(self.settings_obj)),
+                spec.parameter_source or "runtime_parameter_adapter_from_settings",
+            )
         raise RuntimeError(f"runtime_strategy_parameters_missing:{spec.strategy_name}")
 
     def _materialize_parameters(
