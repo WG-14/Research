@@ -1,4 +1,4 @@
-﻿import sqlite3
+import sqlite3
 from bithumb_bot.config import settings
 
 conn = sqlite3.connect(settings.DB_PATH)

@@ -1316,8 +1316,8 @@ class BithumbBroker:
         client_order_id = self._clean_identifier(row.get("client_order_id"))
         coid_alias = self._clean_identifier(row.get("coid"))
         if allow_coid_alias:
-            # v2/?ㅼ떆媛?MyOrder) 怨꾩뿴 payload?먯꽌??`coid`媛 client_order_id 蹂꾩묶?쇰줈 ?????덈떎.
-            # REST v1 ?쎄린 怨꾩빟(uuid/client_order_id)怨?異⑸룎???쇳븯湲??꾪빐 alias??opt-in 寃쎈줈?먯꽌留??댁꽍?쒕떎.
+            # MyOrder websocket payloads may expose `coid` as the client-order identifier.
+            # Keep the alias opt-in so REST v1 uuid/client_order_id semantics stay unambiguous.
             if client_order_id and coid_alias and client_order_id != coid_alias:
                 raise BrokerRejectError(
                     f"{context} client identifier mismatch: client_order_id={client_order_id} coid={coid_alias}"

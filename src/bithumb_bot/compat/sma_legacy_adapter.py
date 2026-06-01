@@ -564,7 +564,7 @@ class SmaCrossStrategy:
         # Legacy DB-bound compatibility path. Live mode rejects this strategy;
         # promotion-grade equivalence work should use sma_with_filter.
         if self.short_n >= self.long_n:
-            raise ValueError("short는 long보다 작아야 해. 예: short=7 long=30")
+            raise ValueError("short must be less than long; example: short=7 long=30")
 
         interval_sec = parse_interval_sec(self.interval)
         signal_through_ts_ms = through_ts_ms
@@ -673,7 +673,7 @@ class SmaCrossStrategy:
                 "gap_ratio": gap_ratio,
                 "required_edge_ratio": float(edge_filter_details["required_edge_ratio"]),
                 "is_weak_cross": bool(signal_strength_label == "weak"),
-                # NOTE: sma_cross는 단순 교차 전략이며, 실거래 우선 전략은 sma_with_filter다.
+                # NOTE: sma_cross is a simple crossover strategy; sma_with_filter is preferred for live work.
                 "preferred_live_strategy": "sma_with_filter",
             },
             "entry": _build_entry_decision_context(

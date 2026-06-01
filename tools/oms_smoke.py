@@ -57,7 +57,7 @@ def main() -> None:
         conn.close()
 
     if row is None:
-        raise SystemExit("No candles. 먼저 캔들을 쌓아야 함: uv run bithumb-bot sync")
+        raise SystemExit("No candles. Run `uv run bithumb-bot sync` before this smoke check.")
 
     ts = int(row["ts"])
     price = float(row["close"])

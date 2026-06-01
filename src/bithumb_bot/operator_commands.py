@@ -122,6 +122,11 @@ from .markets import canonical_market_with_raw
 from .position_state_snapshot import build_canonical_position_snapshot
 from .repair_plan import build_recovery_policy_from_report, build_repair_plan_preview_from_report
 from .reason_codes import DUST_RESIDUAL_UNSELLABLE
+from .messages import (
+    EXPLAIN_INSUFFICIENT_CANDLES,
+    SIGNAL_INSUFFICIENT_CANDLES,
+    STATUS_MISSING_CANDLE_DATA,
+)
 from .dust import build_dust_display_context, build_position_state_model, format_flat_start_reason_with_dust
 from .execution_service import build_execution_decision_summary
 from .strategy_performance import evaluate_strategy_performance_gate
@@ -305,7 +310,16 @@ def cmd_signal(short_n: int, long_n: int):
     r = compute_legacy_signal_for_diagnostics(conn, short_n, long_n)
     conn.close()
     if r is None:
-        print(f"[SIGNAL] ?????????? ???????繹먮끍???????????????????嫄????? ???????곗뿨????癲ル슢???? sync?????????????????")
+        need = long_n + 2
+        print(
+            SIGNAL_INSUFFICIENT_CANDLES.format(
+                "SIGNAL",
+                market=MARKET,
+                interval=INTERVAL,
+                required_closed_candles=need,
+                command_hint="uv run bithumb-bot sync",
+            )
+        )
         return
 
     raw_suffix = f" raw_symbol={RAW_SYMBOL}" if RAW_SYMBOL else ""
@@ -324,12 +338,20 @@ def cmd_explain(short_n: int, long_n: int):
     conn.close()
 
     if rows_closes is None:
-        print(f"[EXPLAIN] ?????????? ???????繹먮끍???????????????????嫄????? need={need}")
+        print(
+            EXPLAIN_INSUFFICIENT_CANDLES.format(
+                "EXPLAIN",
+                market=MARKET,
+                interval=INTERVAL,
+                required_closed_candles=need,
+                command_hint="uv run bithumb-bot sync",
+            )
+        )
         return
 
     rows, closes = rows_closes
     raw_suffix = f" raw_symbol={RAW_SYMBOL}" if RAW_SYMBOL else ""
-    print(f"[EXPLAIN {MARKET} {INTERVAL}{raw_suffix}] last {need} closes (???????")
+    print(f"[EXPLAIN {MARKET} {INTERVAL}{raw_suffix}] last {need} closed candles")
     for (ts, close) in rows:
         print(f"  {kst_str(int(ts))}  close={float(close):.2f}")
 
@@ -337,11 +359,11 @@ def cmd_explain(short_n: int, long_n: int):
     r = compute_legacy_signal_for_diagnostics(conn, short_n, long_n)
     conn.close()
     print("")
-    print("????????????????????")
-    print(f"  prev short SMA = ??????????됰Ŧ?????????{short_n}??close)")
-    print(f"  prev long  SMA = ??????????됰Ŧ?????????{long_n}??close)")
-    print(f"  curr short SMA = ????????????ш끽維뽳쭩?뱀땡???얩맪??{short_n}??close)")
-    print(f"  curr long  SMA = ????????????ш끽維뽳쭩?뱀땡???얩맪??{long_n}??close)")
+    print("SMA calculation windows")
+    print(f"  prev short SMA = average of the previous {short_n} closed candles")
+    print(f"  prev long  SMA = average of the previous {long_n} closed candles")
+    print(f"  curr short SMA = average of the current {short_n} closed candles")
+    print(f"  curr long  SMA = average of the current {long_n} closed candles")
     print("")
     print(f"  prev_s={r['prev_s']:.2f}, prev_l={r['prev_l']:.2f}")
     print(f"  curr_s={r['curr_s']:.2f}, curr_l={r['curr_l']:.2f}")
@@ -363,7 +385,14 @@ def cmd_status():
     conn.close()
 
     if row is None:
-        print("[STATUS] ??????????????????筌?? ???????곗뿨????癲ル슢???? sync ????????")
+        print(
+            STATUS_MISSING_CANDLE_DATA.format(
+                "STATUS",
+                market=MARKET,
+                interval=INTERVAL,
+                command_hint="uv run bithumb-bot sync",
+            )
+        )
         return
 
     last_close = float(row[0])

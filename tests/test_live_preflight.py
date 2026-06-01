@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import math
@@ -984,6 +984,14 @@ def test_live_execution_contract_emits_safe_env_metadata_and_lints(monkeypatch, 
     assert "paper_only_key_in_live_env:START_CASH_KRW" in summary["live_env_contract_lints"]
     assert "risky_live_limit:MAX_DAILY_ORDER_COUNT>=500" in summary["live_env_contract_lints"]
     assert "live_env_file_source_mismatch:BITHUMB_ENV_FILE!=BITHUMB_ENV_FILE_LIVE" in summary["live_env_contract_lints"]
+    config_contract = summary["config_contract"]
+    assert config_contract["config_schema_version"] == "config_spec_v1"
+    assert str(config_contract["config_spec_hash"]).startswith("sha256:")
+    assert str(config_contract["settings_effective_hash"]).startswith("sha256:")
+    assert "BUY_PRICE_NONE_MARKET_TO_PRICE_ALIAS_ENABLED" in config_contract["deprecated_env_keys"]
+    assert "BITHUMB_API_SECRET" in config_contract["settings_explicit_keys"]
+    assert "raw-key" not in str(config_contract)
+    assert "raw-secret" not in str(config_contract)
 
 
 def test_live_execution_contract_log_emits_redacted_fingerprint(
@@ -1011,6 +1019,9 @@ def test_live_execution_contract_log_emits_redacted_fingerprint(
     assert "candidate_profile_hash=" in caplog.text
     assert "manifest_hash=" in caplog.text
     assert "dataset_content_hash=" in caplog.text
+    assert "config_schema_version=config_spec_v1" in caplog.text
+    assert "config_spec_hash=sha256:" in caplog.text
+    assert "settings_effective_hash=sha256:" in caplog.text
     assert "secret-value-must-not-log" not in caplog.text
 
 
@@ -2144,7 +2155,7 @@ def test_accounts_preflight_auth_failure_is_classified(monkeypatch: pytest.Monke
         config.validate_live_mode_preflight(settings)
 
     msg = str(exc.value)
-    assert "?몄쬆 ?ㅽ뙣" in msg
+    assert "/v1/accounts REST snapshot preflight authentication failed" in msg
     assert "ACCOUNTS_AUTH_FAILED" in msg
 
 
@@ -2160,7 +2171,7 @@ def test_accounts_preflight_permission_failure_is_classified_as_auth_failure(mon
         config.validate_live_mode_preflight(settings)
 
     msg = str(exc.value)
-    assert "?몄쬆 ?ㅽ뙣" in msg
+    assert "/v1/accounts REST snapshot preflight authentication failed" in msg
     assert "ACCOUNTS_AUTH_FAILED" in msg
     assert "class=PERMISSION" in msg
 
@@ -2177,7 +2188,7 @@ def test_accounts_preflight_transport_failure_is_classified(monkeypatch: pytest.
         config.validate_live_mode_preflight(settings)
 
     msg = str(exc.value)
-    assert "transport ?ㅽ뙣" in msg
+    assert "/v1/accounts REST snapshot preflight transport failed" in msg
     assert "ACCOUNTS_TRANSPORT_FAILED" in msg
 
 
@@ -2193,6 +2204,6 @@ def test_accounts_preflight_unclassified_private_error_is_transport_failure(monk
         config.validate_live_mode_preflight(settings)
 
     msg = str(exc.value)
-    assert "transport ?ㅽ뙣" in msg
+    assert "/v1/accounts REST snapshot preflight transport failed" in msg
     assert "ACCOUNTS_TRANSPORT_FAILED" in msg
     assert "class=UNRECOVERABLE" in msg

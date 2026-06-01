@@ -11,4 +11,4 @@ def parse_interval_sec(interval: str) -> int:
         return int(interval[:-1]) * 60
     if interval.endswith("h"):
         return int(interval[:-1]) * 3600
-    raise ValueError(f"지원하지 않는 INTERVAL: {interval} (예: 1m, 5m, 1h)")
+    raise ValueError(f"unsupported INTERVAL: {interval} (examples: 1m, 5m, 1h)")

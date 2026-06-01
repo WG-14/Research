@@ -46,7 +46,7 @@ def test_recovery_attribution_signals_cover_restart_regression_scenarios(tmp_pat
 
     conn = ensure_db()
     try:
-        # 선행 reconcile 기준시각을 고정한다.
+        # Pin the previous reconcile reference time.
         runtime_state.record_reconcile_result(
             success=True,
             reason_code="RECONCILE_OK",
@@ -54,7 +54,7 @@ def test_recovery_attribution_signals_cover_restart_regression_scenarios(tmp_pat
             now_epoch_sec=1000.0,
         )
 
-        # 1) submit unknown 후 recovery: 복구 기반 degraded linkage
+        # 1) submit unknown then recovery: recovery-based degraded linkage
         _insert_lifecycle(
             conn,
             lifecycle_id=1,
@@ -62,7 +62,7 @@ def test_recovery_attribution_signals_cover_restart_regression_scenarios(tmp_pat
             entry_decision_id=None,
             entry_decision_linkage="degraded_recovery_submit_unknown",
         )
-        # 2) delayed fill discovery: 복구 기반 degraded linkage
+        # 2) delayed fill discovery: recovery-based degraded linkage
         _insert_lifecycle(
             conn,
             lifecycle_id=2,
@@ -70,7 +70,7 @@ def test_recovery_attribution_signals_cover_restart_regression_scenarios(tmp_pat
             entry_decision_id=None,
             entry_decision_linkage="degraded_recovery_delayed_fill",
         )
-        # 3) partial fill 후 restart: 정상 direct linkage
+        # 3) partial fill then restart: normal direct linkage
         _insert_lifecycle(
             conn,
             lifecycle_id=3,
@@ -78,7 +78,7 @@ def test_recovery_attribution_signals_cover_restart_regression_scenarios(tmp_pat
             entry_decision_id=3003,
             entry_decision_linkage="direct",
         )
-        # 4) legacy incomplete linkage row: legacy 공백 linkage
+        # 4) legacy incomplete linkage row: legacy blank linkage
         _insert_lifecycle(
             conn,
             lifecycle_id=4,

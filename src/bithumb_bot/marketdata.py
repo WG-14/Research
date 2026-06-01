@@ -52,7 +52,7 @@ def _get_with_retry(client: httpx.Client, path: str, params: dict[str, object] |
         try:
             resp = client.get(path, params=params)
 
-            # retryable status는 재시도
+            # Retry transient HTTP statuses.
             if resp.status_code in RETRYABLE_STATUS_CODES:
                 if attempt < MAX_HTTP_RETRIES:
                     notify(
@@ -67,7 +67,7 @@ def _get_with_retry(client: httpx.Client, path: str, params: dict[str, object] |
             return resp
 
         except httpx.RequestError as exc:
-            # 네트워크/타임아웃 등
+            # Retry network and timeout failures.
             last_error = exc
             if attempt >= MAX_HTTP_RETRIES:
                 break
@@ -78,7 +78,7 @@ def _get_with_retry(client: httpx.Client, path: str, params: dict[str, object] |
             _sleep_backoff(attempt)
 
         except httpx.HTTPStatusError as exc:
-            # raise_for_status()에서 나온 에러(대부분 non-retryable)
+            # Most raise_for_status failures are not retryable.
             code = exc.response.status_code if exc.response is not None else None
             if code in RETRYABLE_STATUS_CODES and attempt < MAX_HTTP_RETRIES:
                 last_error = exc

@@ -350,7 +350,7 @@ def build_sma_with_filter_runtime_decision_from_feature_snapshot(
     if not rows:
         return None
     if int(strategy.short_n) >= int(strategy.long_n):
-        raise ValueError("short는 long보다 작아야 해. 예: short=7 long=30")
+        raise ValueError("short must be less than long; example: short=7 long=30")
     assembly = SmaWithFilterPolicyAssembly()
     materialized = assembly.materialize_from_strategy(strategy, MaterializationMode.RUNTIME_REPLAY)
     closes = [float(row["close"]) for row in rows]
@@ -679,7 +679,7 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
     from .utils_time import parse_interval_sec
 
     if int(strategy.short_n) >= int(strategy.long_n):
-        raise ValueError("short는 long보다 작아야 해. 예: short=7 long=30")
+        raise ValueError("short must be less than long; example: short=7 long=30")
     assembly = SmaWithFilterPolicyAssembly()
     materialized = assembly.materialize_from_strategy(strategy, MaterializationMode.RUNTIME_REPLAY)
 

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 from pathlib import Path
 import sys
 
@@ -6,7 +6,7 @@ SKIP_PREFIXES = ("diff --git", "index ", "--- ", "+++ ", "@@")
 
 def undiff_text(text: str) -> str:
     lines = text.splitlines()
-    # git patch 형태가 아니면 그대로 둠
+    # Return non-patch text unchanged.
     if not lines or not lines[0].startswith("diff --git"):
         return text
 

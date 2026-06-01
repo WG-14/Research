@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import json
@@ -7,7 +7,7 @@ import os
 import logging
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from functools import lru_cache
 from pathlib import Path
 
@@ -23,6 +23,18 @@ from .markets import (
 from .market_catalog_snapshot import record_market_catalog_snapshot
 from .notifier import is_configured as notifier_is_configured
 from .paths import PathManager, PathPolicyError, validate_runtime_root_separation
+from .messages import (
+    ACCOUNTS_PREFLIGHT_AUTH_FAILED,
+    ACCOUNTS_PREFLIGHT_TRANSPORT_FAILED,
+    LIVE_DB_PATH_REQUIRED,
+)
+from .config_spec import (
+    CONFIG_SCHEMA_VERSION,
+    ENV_SPECS,
+    SPEC_BY_NAME,
+    config_spec_hash,
+    documentation_hash,
+)
 from .approved_profile import (
     approved_profile_path_from_env,
     expected_profile_modes_for_runtime,
@@ -37,7 +49,9 @@ try:
 except PathPolicyError as exc:
     raise ValueError(str(exc)) from exc
 LIVE_DB_PATH_REQUIRED_MSG = (
-    "DB_PATH must be explicitly set when MODE=live; live env 파일에 DB_PATH를 명시하라"
+    f"{LIVE_DB_PATH_REQUIRED.message} "
+    f"reason_code={LIVE_DB_PATH_REQUIRED.reason_code} "
+    f"action={LIVE_DB_PATH_REQUIRED.recommended_action}"
 )
 LIVE_SUBMIT_CONTRACT_PROFILE_V1 = "live_explicit_submit_plan_v1"
 LIVE_ORDER_RULE_FALLBACK_PROFILE_PERSISTED_SNAPSHOT_REQUIRED = "persisted_snapshot_required"
@@ -211,14 +225,20 @@ def validate_accounts_preflight(cfg: Settings) -> None:
         detail = str(exc)
         if code in {"AUTH_SIGN", "PERMISSION"}:
             raise AccountsPreflightValidationError(
-                "/v1/accounts REST snapshot preflight ?몄쬆 ?ㅽ뙣: "
-                f"reason=auth failure reason_code=ACCOUNTS_AUTH_FAILED class={code} summary={summary} "
+                f"{ACCOUNTS_PREFLIGHT_AUTH_FAILED.message} "
+                f"reason=auth_failure reason_code={ACCOUNTS_PREFLIGHT_AUTH_FAILED.reason_code} "
+                f"severity={ACCOUNTS_PREFLIGHT_AUTH_FAILED.severity} "
+                f"action={ACCOUNTS_PREFLIGHT_AUTH_FAILED.recommended_action} "
+                f"class={code} summary={summary} "
                 f"execution_mode={execution_mode} quote_currency={quote_currency} base_currency={base_currency} "
                 f"base_currency_missing_policy={base_missing_policy} detail={detail}"
             ) from exc
         raise AccountsPreflightValidationError(
-            "/v1/accounts REST snapshot preflight transport ?ㅽ뙣: "
-            f"reason=transport failure reason_code=ACCOUNTS_TRANSPORT_FAILED class={code} summary={summary} "
+            f"{ACCOUNTS_PREFLIGHT_TRANSPORT_FAILED.message} "
+            f"reason=transport_failure reason_code={ACCOUNTS_PREFLIGHT_TRANSPORT_FAILED.reason_code} "
+            f"severity={ACCOUNTS_PREFLIGHT_TRANSPORT_FAILED.severity} "
+            f"action={ACCOUNTS_PREFLIGHT_TRANSPORT_FAILED.recommended_action} "
+            f"class={code} summary={summary} "
             f"execution_mode={execution_mode} quote_currency={quote_currency} base_currency={base_currency} "
             f"base_currency_missing_policy={base_missing_policy} detail={detail}"
         ) from exc
@@ -684,7 +704,7 @@ class Settings:
     RESIDUAL_INVENTORY_MODE: str = os.getenv("RESIDUAL_INVENTORY_MODE", "block").strip().lower() or "block"
     RESIDUAL_LIVE_SELL_MODE: str = os.getenv("RESIDUAL_LIVE_SELL_MODE", "telemetry").strip().lower() or "telemetry"
     RESIDUAL_BUY_SIZING_MODE: str = os.getenv("RESIDUAL_BUY_SIZING_MODE", "telemetry").strip().lower() or "telemetry"
-    # 怨듯넻 湲곕낯 ?섏닔猷뚯쑉. ?댁쁺?먯꽌??LIVE/PAPER ?섏닔猷뚯쑉??媛곴컖 紐낆떆?쒕떎.
+    # Common fallback fee rate. Operators should set live and paper fee estimates explicitly.
     FEE_RATE: float = float(os.getenv("FEE_RATE", "0.0004"))
     # Live pretrade cost estimate fallback: LIVE_FEE_RATE_ESTIMATE > FEE_RATE > 0.0004.
     LIVE_FEE_RATE_ESTIMATE: float = parse_float_env(
@@ -701,7 +721,7 @@ class Settings:
             ),
         )
     )
-    # PAPER_FEE_RATE? ?숈씪 媛?湲곗〈 ???명솚??.
+    # Compatibility alias: PAPER_FEE_RATE_ESTIMATE resolves to PAPER_FEE_RATE.
     PAPER_FEE_RATE_ESTIMATE: float = PAPER_FEE_RATE
     SLIPPAGE_BPS: float = float(os.getenv("SLIPPAGE_BPS", "0"))
     PAPER_EXECUTION_MODEL: str = os.getenv("PAPER_EXECUTION_MODEL", "immediate").strip().lower() or "immediate"
@@ -750,8 +770,8 @@ class Settings:
     EXECUTION_SLIPPAGE_SOURCE: str = os.getenv("EXECUTION_SLIPPAGE_SOURCE", "").strip()
     EXECUTION_CALIBRATION_REQUIRED: bool = parse_bool_env("EXECUTION_CALIBRATION_REQUIRED", "false")
     EXECUTION_CALIBRATION_ARTIFACT_HASH: str = os.getenv("EXECUTION_CALIBRATION_ARTIFACT_HASH", "").strip()
-    # ?꾨왂 吏꾩엯 鍮꾩슜 ?꾪꽣?먯꽌 湲곕? ?щ━?쇱?瑜?異붿젙?????ъ슜?섎뒗 bps.
-    # ?곗꽑?쒖쐞:
+    # Strategy entry slippage estimate in basis points for entry cost filtering.
+    # Resolution order:
     #   STRATEGY_ENTRY_SLIPPAGE_BPS > MAX_MARKET_SLIPPAGE_BPS > SLIPPAGE_BPS > 0
     STRATEGY_ENTRY_SLIPPAGE_BPS: float = float(
         os.getenv(
@@ -1415,6 +1435,70 @@ def _safe_secret_hash_prefix(value: object) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
+def _bot_related_env_keys() -> set[str]:
+    prefixes = (
+        "BITHUMB_",
+        "LIVE_",
+        "PAPER_",
+        "SMA_",
+        "STRATEGY_",
+        "EXECUTION_",
+        "NOTIFIER_",
+        "NTFY_",
+        "TELEGRAM_",
+        "SLACK_",
+        "MARKET_",
+        "MAX_",
+        "MIN_",
+        "DB_",
+        "RUN_",
+        "DATA_",
+        "LOG_",
+        "BACKUP_",
+        "ARCHIVE_",
+        "ENV_",
+        "TARGET_",
+        "RESIDUAL_",
+    )
+    exact = {"MODE", "PAIR", "MARKET", "INTERVAL", "EVERY", "FEE_RATE", "BUY_FRACTION", "KILL_SWITCH"}
+    return {key for key in os.environ if key in exact or key.startswith(prefixes)}
+
+
+def config_contract_metadata(cfg: Settings) -> dict[str, object]:
+    settings_fields = {field.name for field in fields(Settings)}
+    declared_keys = set(SPEC_BY_NAME)
+    explicit_keys = sorted(key for key in declared_keys if os.getenv(key) not in (None, ""))
+    defaulted_keys = sorted(key for key in settings_fields & declared_keys if os.getenv(key) in (None, ""))
+    deprecated_env_keys = sorted(
+        key for key in explicit_keys if SPEC_BY_NAME[key].deprecated or SPEC_BY_NAME[key].ignored
+    )
+    unknown_env_keys = sorted(_bot_related_env_keys() - declared_keys)
+    secret_keys = {spec.name for spec in ENV_SPECS if spec.secret}
+    effective_payload: dict[str, object] = {}
+    for key in sorted(settings_fields & declared_keys):
+        value = getattr(cfg, key)
+        if key in secret_keys:
+            effective_payload[key] = {
+                "present": bool(str(value or "").strip()),
+                "length": len(str(value or "")),
+                "hash_prefix": _safe_secret_hash_prefix(value),
+            }
+        else:
+            effective_payload[key] = value
+    encoded = json.dumps(effective_payload, sort_keys=True, separators=(",", ":"), default=str, ensure_ascii=True)
+    docs_path = PROJECT_ROOT / "docs" / "config-reference.md"
+    return {
+        "config_schema_version": CONFIG_SCHEMA_VERSION,
+        "config_spec_hash": config_spec_hash(),
+        "settings_effective_hash": "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+        "settings_defaulted_keys": defaulted_keys,
+        "settings_explicit_keys": explicit_keys,
+        "unknown_env_keys": unknown_env_keys,
+        "deprecated_env_keys": deprecated_env_keys,
+        "generated_docs_hash": documentation_hash(docs_path),
+    }
+
+
 def _env_file_contract_metadata(env_summary: dict[str, object]) -> dict[str, object]:
     enriched = dict(env_summary or {})
     env_file = str(enriched.get("env_file") or "").strip()
@@ -1503,6 +1587,7 @@ def live_execution_contract_summary(
         expected_profile_mode_reason=mode_reason,
         verify_source_promotion=True,
     )
+    config_contract = config_contract_metadata(cfg)
     return {
         "mode": cfg.MODE,
         "pair": cfg.PAIR,
@@ -1524,6 +1609,7 @@ def live_execution_contract_summary(
         "explicit_env": explicit_env,
         "explicit_env_file": explicit_env_file,
         "live_env_contract_lints": list(live_env_contract_lints(cfg)),
+        "config_contract": config_contract,
         "managed_roots": managed_roots,
         "runtime_paths": runtime_paths,
     }
@@ -1551,6 +1637,7 @@ def log_live_execution_contract(
     explicit_env_file = summary.get("explicit_env_file") if isinstance(summary.get("explicit_env_file"), dict) else {}
     code_provenance = summary.get("code_provenance") if isinstance(summary.get("code_provenance"), dict) else {}
     approved_profile = summary.get("approved_profile") if isinstance(summary.get("approved_profile"), dict) else {}
+    config_contract = summary.get("config_contract") if isinstance(summary.get("config_contract"), dict) else {}
     logging.getLogger("bithumb_bot.run").info(
         format_log_kv(
             "[LIVE_EXECUTION_CONTRACT]",
@@ -1606,6 +1693,14 @@ def log_live_execution_contract(
             env_file_inode=explicit_env_file.get("inode"),
             env_file_hash_prefix=explicit_env_file.get("content_hash_prefix"),
             live_env_contract_lints=",".join(str(item) for item in summary.get("live_env_contract_lints") or []) or "none",
+            config_schema_version=config_contract.get("config_schema_version"),
+            config_spec_hash=config_contract.get("config_spec_hash"),
+            settings_effective_hash=config_contract.get("settings_effective_hash"),
+            settings_explicit_keys=",".join(str(item) for item in config_contract.get("settings_explicit_keys") or []) or "none",
+            settings_defaulted_keys=",".join(str(item) for item in config_contract.get("settings_defaulted_keys") or []) or "none",
+            unknown_env_keys=",".join(str(item) for item in config_contract.get("unknown_env_keys") or []) or "none",
+            deprecated_env_keys=",".join(str(item) for item in config_contract.get("deprecated_env_keys") or []) or "none",
+            generated_docs_hash=config_contract.get("generated_docs_hash"),
             env_root=roots.get("ENV_ROOT"),
             run_root=roots.get("RUN_ROOT"),
             data_root=roots.get("DATA_ROOT"),

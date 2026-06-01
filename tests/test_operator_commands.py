@@ -9301,3 +9301,68 @@ def test_direct_python_import_is_not_supported_config_check_path_documented():
     assert "config-dump --masked" in text
     assert "Direct Python imports" in text
     assert "do not run the CLI bootstrap path" in text
+def test_cmd_signal_no_data_output_is_clean_and_actionable(monkeypatch, capsys) -> None:
+    import bithumb_bot.operator_commands as commands
+
+    class _Conn:
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(commands, "ensure_db", lambda: _Conn())
+    monkeypatch.setattr(commands, "compute_legacy_signal_for_diagnostics", lambda *_args: None)
+
+    commands.cmd_signal(7, 30)
+
+    out = capsys.readouterr().out
+    assert "[SIGNAL]" in out
+    assert "reason_code=SIGNAL_INSUFFICIENT_CANDLES" in out
+    assert "uv run bithumb-bot sync" in out
+    assert not any(token in out for token in ("?" * 4, chr(0xFFFD)))
+
+
+def test_cmd_explain_no_data_output_is_clean_and_actionable(monkeypatch, capsys) -> None:
+    import bithumb_bot.operator_commands as commands
+
+    class _Conn:
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(commands, "ensure_db", lambda: _Conn())
+    monkeypatch.setattr(commands, "load_recent", lambda *_args: None)
+
+    commands.cmd_explain(7, 30)
+
+    out = capsys.readouterr().out
+    assert "[EXPLAIN]" in out
+    assert "reason_code=EXPLAIN_INSUFFICIENT_CANDLES" in out
+    assert "required_closed_candles=32" in out
+    assert "uv run bithumb-bot sync" in out
+    assert not any(token in out for token in ("?" * 4, chr(0xFFFD)))
+
+
+def test_cmd_status_missing_candle_output_is_clean_and_actionable(monkeypatch, capsys) -> None:
+    import bithumb_bot.operator_commands as commands
+
+    class _Cursor:
+        def fetchone(self):
+            return None
+
+    class _Conn:
+        def execute(self, *_args, **_kwargs):
+            return _Cursor()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(commands, "ensure_db", lambda: _Conn())
+    monkeypatch.setattr(commands, "init_portfolio", lambda _conn: None)
+    monkeypatch.setattr(commands, "get_portfolio_breakdown", lambda _conn: (0.0, 0.0, 0.0, 0.0))
+    monkeypatch.setattr(commands, "summarize_reserved_exit_qty", lambda *_args, **_kwargs: 0.0)
+
+    commands.cmd_status()
+
+    out = capsys.readouterr().out
+    assert "[STATUS]" in out
+    assert "reason_code=STATUS_MISSING_CANDLE_DATA" in out
+    assert "uv run bithumb-bot sync" in out
+    assert not any(token in out for token in ("?" * 4, chr(0xFFFD)))

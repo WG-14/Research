@@ -190,7 +190,7 @@ def test_fetch_ticker_batch_rejects_response_market_mismatch_strict() -> None:
 
 
 def test_ticker_contract_uses_markets_csv_string_input_without_private_auth() -> None:
-    """문서 계약: /v1/ticker는 markets CSV를 사용하고 public 호출이어야 한다."""
+    """API contract: /v1/ticker must use markets CSV input and remain a public call."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/ticker"

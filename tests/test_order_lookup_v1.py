@@ -25,8 +25,8 @@ def test_build_lookup_params_prefers_uuid_when_both_identifiers_provided() -> No
 
 
 def test_build_lookup_params_uses_uuid_even_when_client_order_id_is_invalid() -> None:
-    # 문서 계약: /v1/order는 uuid 또는 client_order_id 를 받지만,
-    # client_order_id validation은 uuid가 있어도 우회되지 않는다.
+    # API contract: /v1/order accepts uuid or client_order_id,
+    # client_order_id validation is not bypassed when uuid is present.
     with pytest.raises(BrokerRejectError, match="contains invalid characters"):
         build_lookup_params(client_order_id="invalid id", exchange_order_id="ex-1")
 

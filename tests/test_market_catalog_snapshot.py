@@ -64,7 +64,7 @@ def test_market_catalog_diff_detects_warning_and_listing_changes(tmp_path: Path,
         path_manager=manager,
         mode="paper",
         source="test",
-        markets=[MarketInfo(market="KRW-BTC", korean_name="비트코인", english_name="Bitcoin", market_warning="NONE")],
+        markets=[MarketInfo(market="KRW-BTC", korean_name="Bitcoin", english_name="Bitcoin", market_warning="NONE")],
     )
 
     record_market_catalog_snapshot(
@@ -72,8 +72,8 @@ def test_market_catalog_diff_detects_warning_and_listing_changes(tmp_path: Path,
         mode="paper",
         source="test",
         markets=[
-            MarketInfo(market="KRW-BTC", korean_name="비트코인", english_name="Bitcoin", market_warning="CAUTION"),
-            MarketInfo(market="KRW-ETH", korean_name="이더리움", english_name="Ethereum", market_warning="NONE"),
+            MarketInfo(market="KRW-BTC", korean_name="Bitcoin", english_name="Bitcoin", market_warning="CAUTION"),
+            MarketInfo(market="KRW-ETH", korean_name="Ethereum", english_name="Ethereum", market_warning="NONE"),
         ],
     )
 
@@ -96,8 +96,8 @@ def test_market_catalog_diff_detects_warning_and_listing_changes(tmp_path: Path,
         mode="paper",
         source="test",
         markets=[
-            MarketInfo(market="KRW-BTC", korean_name="비트코인", english_name="Bitcoin", market_warning="CAUTION"),
-            MarketInfo(market="KRW-ETH", korean_name="이더리움", english_name="Ethereum", market_warning="NONE"),
+            MarketInfo(market="KRW-BTC", korean_name="Bitcoin", english_name="Bitcoin", market_warning="CAUTION"),
+            MarketInfo(market="KRW-ETH", korean_name="Ethereum", english_name="Ethereum", market_warning="NONE"),
         ],
     )
     lines_after = [json.loads(line) for line in diff_path.read_text(encoding="utf-8").splitlines() if line.strip()]

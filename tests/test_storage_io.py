@@ -28,5 +28,5 @@ def test_write_json_atomic_replaces_content_atomically(tmp_path: Path) -> None:
 
 def test_write_text_atomic_creates_parent_and_utf8(tmp_path: Path) -> None:
     out = tmp_path / "logs" / "paper" / "audit" / "audit_2026-03-30.log"
-    write_text_atomic(out, "운영자 action=resume\n")
-    assert out.read_text(encoding="utf-8") == "운영자 action=resume\n"
+    write_text_atomic(out, "operator action=resume\n")
+    assert out.read_text(encoding="utf-8") == "operator action=resume\n"

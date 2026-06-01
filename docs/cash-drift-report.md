@@ -1,4 +1,4 @@
-﻿# Cash Drift Report
+# Cash Drift Report
 
 `cash-drift-report` is a read-only operator diagnostic for cash accounting drift.
 

@@ -38,7 +38,9 @@ def test_config_fail_fast_when_live_mode_missing_db_path(tmp_path: Path) -> None
     )
 
     assert proc.returncode != 0
-    assert "live env 파일에 DB_PATH를 명시하라" in (proc.stderr + proc.stdout)
+    output = proc.stderr + proc.stdout
+    assert "DB_PATH must be explicitly set when MODE=live" in output
+    assert "reason_code=LIVE_DB_PATH_REQUIRED" in output
 
 
 def test_config_keeps_paper_default_db_path_when_unset(tmp_path: Path) -> None:

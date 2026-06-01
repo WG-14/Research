@@ -99,11 +99,11 @@ def load_candles(limit: int | None):
 
 def backtest(short_n: int, long_n: int, entry: str):
     if short_n >= long_n:
-        raise ValueError("short는 long보다 작아야 해. 예: 2/5, 3/10, 7/30")
+        raise ValueError("short must be less than long; examples: 2/5, 3/10, 7/30")
 
     candles = load_candles(None)
     if len(candles) < long_n + 5:
-        raise RuntimeError(f"데이터 부족: candles={len(candles)} (long={long_n})")
+        raise RuntimeError(f"insufficient candle data: candles={len(candles)} (long={long_n})")
 
     cash = START_CASH_KRW
     qty = 0.0
@@ -112,7 +112,7 @@ def backtest(short_n: int, long_n: int, entry: str):
     closes = [c for _, c in candles]
     ts_list = [t for t, _ in candles]
 
-    # 준비: 초기 합
+    # Initialize rolling sums.
     s_sum = sum(closes[:short_n])
     l_sum = sum(closes[:long_n])
 
@@ -149,15 +149,15 @@ def backtest(short_n: int, long_n: int, entry: str):
         qty = 0.0
         trades.append((ts, "SELL", price, sell_qty, fee, cash, qty))
 
-    # 초기 상태(레짐이면 “처음부터 맞추기”가 가능)
+    # Initial state; regime entry can align immediately.
     prev_above = None
 
-    # i는 long_n-1 부터 시작하면, 그 시점에 long SMA가 정의됨
+    # Starting at long_n - 1 means the long SMA is defined.
     for i in range(long_n - 1, len(candles)):
         price = closes[i]
         ts = ts_list[i]
 
-        # 현재 SMA 계산
+        # Compute current SMA values.
         # short SMA
         if i == short_n - 1:
             pass
@@ -194,7 +194,7 @@ def backtest(short_n: int, long_n: int, entry: str):
         elif action == "SELL":
             do_sell(ts, price)
 
-        # equity/drawdown 업데이트
+        # Update equity and drawdown.
         equity = cash + qty * price
         if equity > peak:
             peak = equity

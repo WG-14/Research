@@ -120,6 +120,7 @@ def test_live_execution_contract_fingerprint_includes_explicit_env_provenance() 
 
     try:
         object.__setattr__(settings, "MODE", "live")
+        object.__setattr__(settings, "STRATEGY_NAME", "sma_with_filter")
         base_summary = live_execution_contract_summary(settings, env_summary=base_env)
         drifted_summary = live_execution_contract_summary(settings, env_summary=drifted_env)
     finally:
