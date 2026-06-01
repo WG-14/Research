@@ -28,7 +28,7 @@ from .research.strategy_spec import (
     runtime_bound_behavior_parameter_names,
 )
 from .runtime_strategy_decision import (
-    RuntimeDecisionAdapter,
+    PromotionRuntimeDecisionAdapter,
     RuntimeDecisionRequest,
     RuntimeStrategyDecisionResult,
     _attach_runtime_request_metadata,
@@ -1078,7 +1078,7 @@ def validate_runtime_decision_result_provenance(
         raise ValueError(f"runtime_strategy_candle_mismatch:{request.strategy_name}")
 
 
-RuntimeDecisionAdapterResolver = Callable[[str], RuntimeDecisionAdapter | None]
+RuntimeDecisionAdapterResolver = Callable[[str], PromotionRuntimeDecisionAdapter | None]
 
 
 @dataclass(frozen=True)
@@ -1094,7 +1094,7 @@ class RuntimeStrategyDecisionCollector:
         *,
         through_ts_ms: int | None,
     ) -> RuntimeStrategyDecisionResultBundle | None:
-        prepared: list[tuple[RuntimeStrategySpec, RuntimeDecisionAdapter, RuntimeDecisionRequest]] = []
+        prepared: list[tuple[RuntimeStrategySpec, PromotionRuntimeDecisionAdapter, RuntimeDecisionRequest]] = []
         materialized_specs: list[RuntimeStrategySpec] = []
         for spec in strategy_set.active_strategies:
             validate_live_strategy_selection(replace(settings, STRATEGY_NAME=spec.strategy_name))
@@ -1163,7 +1163,7 @@ class RuntimeStrategyDecisionCollector:
 
 def _decide_with_feature_snapshot(
     *,
-    adapter: RuntimeDecisionAdapter,
+    adapter: PromotionRuntimeDecisionAdapter,
     conn: object,
     request: RuntimeDecisionRequest,
     feature_snapshot: RuntimeFeatureSnapshot,

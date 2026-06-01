@@ -20,6 +20,7 @@ from bithumb_bot.decision_envelope import DecisionEnvelope
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
 from bithumb_bot.research.experiment_manifest import DateRange
 from bithumb_bot.research.strategy_registry import resolve_research_strategy_plugin
+from bithumb_bot.runtime_data_provider import RuntimeDataRequirementResolver, SQLiteRuntimeDataProvider
 
 
 def _seed_runtime_db(path: Path) -> int:
@@ -74,6 +75,29 @@ def _canary_snapshot() -> DatasetSnapshot:
     )
 
 
+def _decide_canary_snapshot(conn: sqlite3.Connection, request, adapter):
+    from bithumb_bot.runtime_strategy_set import RuntimeMarketScope, RuntimeStrategySet, RuntimeStrategySpec
+
+    spec = RuntimeStrategySpec(
+        "canary_non_sma",
+        pair=request.pair,
+        interval=request.interval,
+        parameters=dict(request.parameters),
+    )
+    strategy_set = RuntimeStrategySet(
+        strategies=(spec,),
+        source="unit_canary_snapshot",
+        market_scope=RuntimeMarketScope(pair=request.pair, interval=request.interval),
+    )
+    resolver = RuntimeDataRequirementResolver()
+    snapshot = SQLiteRuntimeDataProvider(conn, resolver=resolver).snapshot(
+        request,
+        resolver.resolve_for_strategy_set(strategy_set),
+    )
+    assert snapshot is not None
+    return adapter.decide_feature_snapshot(request, snapshot)
+
+
 def test_canary_non_sma_plugin_runtime_envelope_and_planner(tmp_path: Path) -> None:
     db_path = tmp_path / "paper.sqlite"
     through_ts = _seed_runtime_db(db_path)
@@ -95,7 +119,7 @@ def test_canary_non_sma_plugin_runtime_envelope_and_planner(tmp_path: Path) -> N
             ),
             through_ts_ms=through_ts,
         )
-        result = adapter.decide(conn, request)
+        result = _decide_canary_snapshot(conn, request, adapter)
 
         assert runtime_strategy_decision.is_runtime_strategy_decision_result(result)
         assert result is not None
@@ -167,7 +191,7 @@ def test_canary_non_sma_runtime_adapter_is_request_bound(tmp_path: Path) -> None
             ),
             through_ts_ms=1_700_000_600_000,
         )
-        result = CanaryNonSmaRuntimeDecisionAdapter().decide(conn, request)
+        result = _decide_canary_snapshot(conn, request, CanaryNonSmaRuntimeDecisionAdapter())
 
         assert result is not None
         assert result.decision.final_signal == "HOLD"
@@ -251,10 +275,9 @@ def test_canary_non_sma_pre_start_research_omission_policy_is_explicit_and_deter
             ),
             through_ts_ms=int(snapshot.candles[1].ts),
         )
-        runtime_result = runtime_strategy_decision.get_runtime_decision_adapter("canary_non_sma").decide(
-            conn,
-            request,
-        )
+        adapter = runtime_strategy_decision.get_runtime_decision_adapter("canary_non_sma")
+        assert adapter is not None
+        runtime_result = _decide_canary_snapshot(conn, request, adapter)
     finally:
         conn.close()
 

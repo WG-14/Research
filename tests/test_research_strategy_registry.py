@@ -77,7 +77,7 @@ def test_research_strategy_registry_resolves_sma_with_filter() -> None:
     assert {"name": "candles", "required": True} in plugin.contract_payload()["data_capability_contract"][
         "capabilities"
     ]
-    assert {"name": "top_of_book", "required": False} in plugin.contract_payload()["data_capability_contract"][
+    assert {"name": "orderbook_top", "required": False} in plugin.contract_payload()["data_capability_contract"][
         "capabilities"
     ]
 
@@ -115,16 +115,16 @@ def test_data_capability_requirement_contract_supports_required_optional_and_cov
     assert payload["required_data"] == ["candles"]
     assert payload["optional_data"] == ["top_of_book"]
     assert {"name": "candles", "required": True} in payload["capabilities"]
-    assert {"name": "top_of_book", "required": False} in payload["capabilities"]
+    assert {"name": "orderbook_top", "required": False} in payload["capabilities"]
     assert {
-        "name": "l2_depth_snapshot",
+        "name": "orderbook_depth",
         "required": True,
         "min_coverage_pct": 95.0,
         "evidence_level": "depth_walk",
         "source": "sqlite_orderbook_depth_snapshots",
         "notes": "required by depth-aware strategy",
     } in payload["capabilities"]
-    assert {"name": "trade_ticks", "required": False, "evidence_level": "tick_replay"} in payload[
+    assert {"name": "trades", "required": False, "evidence_level": "tick_replay"} in payload[
         "capabilities"
     ]
 
@@ -290,7 +290,7 @@ def test_required_data_preflight_fails_before_backtest_when_manifest_lacks_top_o
         }
     )
 
-    with pytest.raises(ResearchValidationError, match="research_data_requirement_top_of_book_missing"):
+    with pytest.raises(ResearchValidationError, match="research_data_capability_missing:orderbook_top"):
         _validate_strategy_data_requirements(manifest)
 
 
@@ -334,7 +334,7 @@ def test_required_l2_or_trade_tick_capability_fails_before_backtest(monkeypatch)
 
     with pytest.raises(
         ResearchValidationError,
-        match="research_data_capability_missing:l2_depth_snapshot,trade_ticks",
+        match="research_data_capability_missing:orderbook_depth,trades",
     ):
         _validate_strategy_data_requirements(manifest)
 

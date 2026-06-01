@@ -7,6 +7,11 @@ from types import MappingProxyType
 from typing import Any, Mapping, Protocol
 
 from .decision_equivalence import sha256_prefixed
+from .runtime_data_capabilities import (
+    RUNTIME_DATA_CAPABILITY_NAMES,
+    RUNTIME_DATA_CAPABILITY_TABLES,
+    normalize_runtime_data_capability,
+)
 from .research.strategy_registry import (
     DataCapabilityRequirement,
     ResearchStrategyDataRequirements,
@@ -18,53 +23,6 @@ RUNTIME_DATA_PROVIDER_NAME = "sqlite_runtime_data_provider"
 RUNTIME_DATA_PROVIDER_VERSION = "1"
 RUNTIME_DATA_CONTRACT_SCHEMA_VERSION = 1
 
-RUNTIME_DATA_CAPABILITY_NAMES = (
-    "candles",
-    "orderbook_top",
-    "orderbook_depth",
-    "trades",
-    "funding",
-    "open_interest",
-)
-
-_CAPABILITY_ALIASES = {
-    "candle": "candles",
-    "candles": "candles",
-    "ohlcv": "candles",
-    "top_of_book": "orderbook_top",
-    "orderbook_top": "orderbook_top",
-    "orderbook_top_snapshot": "orderbook_top",
-    "orderbook_top_snapshots": "orderbook_top",
-    "l2_depth_snapshot": "orderbook_depth",
-    "l2_depth": "orderbook_depth",
-    "depth": "orderbook_depth",
-    "orderbook_depth": "orderbook_depth",
-    "orderbook_depth_levels": "orderbook_depth",
-    "trade_ticks": "trades",
-    "trades": "trades",
-    "funding": "funding",
-    "funding_rates": "funding",
-    "open_interest": "open_interest",
-}
-
-_CAPABILITY_TABLES = {
-    "candles": ("candles",),
-    "orderbook_top": ("orderbook_top_snapshots",),
-    "orderbook_depth": ("orderbook_depth_levels",),
-    "trades": ("trades",),
-    "funding": ("funding",),
-    "open_interest": ("open_interest",),
-}
-
-
-def normalize_runtime_data_capability(name: str) -> str:
-    normalized = str(name or "").strip().lower()
-    normalized = normalized.replace("-", "_").replace(" ", "_")
-    if not normalized:
-        raise ValueError("runtime_data_capability_missing")
-    return _CAPABILITY_ALIASES.get(normalized, normalized)
-
-
 def runtime_data_provider_contract_payload() -> dict[str, object]:
     return {
         "schema_version": RUNTIME_DATA_CONTRACT_SCHEMA_VERSION,
@@ -72,7 +30,7 @@ def runtime_data_provider_contract_payload() -> dict[str, object]:
         "provider_version": RUNTIME_DATA_PROVIDER_VERSION,
         "capabilities": list(RUNTIME_DATA_CAPABILITY_NAMES),
         "capability_tables": {
-            name: list(_CAPABILITY_TABLES[name]) for name in RUNTIME_DATA_CAPABILITY_NAMES
+            name: list(RUNTIME_DATA_CAPABILITY_TABLES[name]) for name in RUNTIME_DATA_CAPABILITY_NAMES
         },
         "unsupported_required_capability_policy": "fail_closed",
         "optional_missing_policy": "warn_by_default",
@@ -98,6 +56,11 @@ class RuntimeDataCapabilityCoverage:
     min_coverage_pct: float | None = None
     expected_count: int | None = None
     closed_candle_required: bool = False
+    max_age_ms: int | None = None
+    min_rows: int | None = None
+    lookback_window_ms: int | None = None
+    min_density_pct: float | None = None
+    freshness_policy: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -113,6 +76,11 @@ class RuntimeDataCapabilityCoverage:
             "min_coverage_pct": self.min_coverage_pct,
             "expected_count": self.expected_count,
             "closed_candle_required": bool(self.closed_candle_required),
+            "max_age_ms": self.max_age_ms,
+            "min_rows": self.min_rows,
+            "lookback_window_ms": self.lookback_window_ms,
+            "min_density_pct": self.min_density_pct,
+            "freshness_policy": self.freshness_policy,
         }
 
 
@@ -291,6 +259,11 @@ class RuntimeDataRequirementResolver:
                 notes=capability.notes,
                 lookback_rows=capability.lookback_rows,
                 closed_candle_required=capability.closed_candle_required,
+                max_age_ms=capability.max_age_ms,
+                min_rows=capability.min_rows,
+                lookback_window_ms=capability.lookback_window_ms,
+                min_density_pct=capability.min_density_pct,
+                freshness_policy=capability.freshness_policy,
             )
             if strategy_name == "sma_with_filter" and normalized_name == "candles":
                 normalized_capability = self._sma_candle_requirement(
@@ -334,6 +307,11 @@ class RuntimeDataRequirementResolver:
             notes=capability.notes,
             lookback_rows=lookback_rows,
             closed_candle_required=True,
+            max_age_ms=capability.max_age_ms,
+            min_rows=capability.min_rows,
+            lookback_window_ms=capability.lookback_window_ms,
+            min_density_pct=capability.min_density_pct,
+            freshness_policy=capability.freshness_policy,
         )
 
 
@@ -620,7 +598,7 @@ class SQLiteRuntimeDataProvider:
         pair: str,
         through_ts_ms: int | None,
     ) -> dict[str, object] | None:
-        table = _CAPABILITY_TABLES[capability][0]
+        table = RUNTIME_DATA_CAPABILITY_TABLES[capability][0]
         columns = self._table_columns(table)
         if "ts" not in columns:
             return None
@@ -670,7 +648,8 @@ class SQLiteRuntimeDataProvider:
                 live_armed_entry_fee_authority_blocks,
                 resolve_strategy_fee_authority,
             )
-            from .runtime_sma_snapshot_builder import _load_position_context, _policy_position_snapshot
+            from .runtime_data_provider_sma import load_sma_position_context
+            from .runtime_sma_snapshot_builder import _policy_position_snapshot
         except Exception as exc:  # pragma: no cover - import errors surface as fail-closed runtime errors.
             raise RuntimeError(f"runtime_data_snapshot_provider_unavailable:sma_with_filter:{type(exc).__name__}") from exc
 
@@ -692,7 +671,7 @@ class SQLiteRuntimeDataProvider:
         candle_ts = int(latest["ts"])
         market_price = float(latest["close"])
         signal_context = {"strategy": strategy.name}
-        position, exposure, position_state, order_rules_snapshot = _load_position_context(
+        position, exposure, position_state, order_rules_snapshot = load_sma_position_context(
             self.conn,
             pair=strategy.pair,
             candle_ts=candle_ts,
@@ -769,6 +748,7 @@ class SQLiteRuntimeDataProvider:
             capability,
             pair=pair,
             through_ts_ms=through_ts_ms,
+            requirement=requirement,
         )
 
     def _candle_coverage(
@@ -863,8 +843,9 @@ class SQLiteRuntimeDataProvider:
         *,
         pair: str,
         through_ts_ms: int | None,
+        requirement: DataCapabilityRequirement | None = None,
     ) -> RuntimeDataCapabilityCoverage:
-        table = _CAPABILITY_TABLES[capability][0]
+        table = RUNTIME_DATA_CAPABILITY_TABLES[capability][0]
         if not self._table_exists(table):
             return RuntimeDataCapabilityCoverage(
                 capability=capability,
@@ -889,6 +870,22 @@ class SQLiteRuntimeDataProvider:
             where.append("ts<=?")
             params.append(int(through_ts_ms))
         clause = " WHERE " + " AND ".join(where) if where else ""
+        min_ts_for_window: int | None = None
+        if through_ts_ms is not None and requirement is not None and requirement.lookback_window_ms is not None:
+            min_ts_for_window = int(through_ts_ms) - int(requirement.lookback_window_ms)
+            where.append("ts>=?")
+            params.append(min_ts_for_window)
+            clause = " WHERE " + " AND ".join(where) if where else ""
+        if capability == "orderbook_depth":
+            return self._orderbook_depth_coverage(
+                table=table,
+                columns=columns,
+                clause=clause,
+                params=tuple(params),
+                capability=capability,
+                through_ts_ms=through_ts_ms,
+                requirement=requirement,
+            )
         row = self.conn.execute(
             f"SELECT COUNT(*), MIN(ts), MAX(ts) FROM {table}{clause}",
             tuple(params),
@@ -902,16 +899,247 @@ class SQLiteRuntimeDataProvider:
                 source_tables_or_streams=(table,),
                 reason=f"runtime_data_requirement_missing:{capability}",
             )
+        first_ts = int(row[1])
+        last_ts = int(row[2])
+        if capability == "orderbook_top":
+            malformed_reason = self._orderbook_top_malformed_reason(
+                table=table,
+                columns=columns,
+                clause=clause,
+                params=tuple(params),
+            )
+            if malformed_reason:
+                return RuntimeDataCapabilityCoverage(
+                    capability=capability,
+                    status="MALFORMED",
+                    row_count=count,
+                    first_ts=first_ts,
+                    last_ts=last_ts,
+                    selected_ts=last_ts,
+                    source_tables_or_streams=(table,),
+                    reason=malformed_reason,
+                )
+        stale_reason = self._stale_reason(
+            capability=capability,
+            selected_ts=last_ts,
+            through_ts_ms=through_ts_ms,
+            requirement=requirement,
+        )
+        if stale_reason:
+            return RuntimeDataCapabilityCoverage(
+                capability=capability,
+                status="STALE",
+                row_count=count,
+                first_ts=first_ts,
+                last_ts=last_ts,
+                selected_ts=last_ts,
+                source_tables_or_streams=(table,),
+                reason=stale_reason,
+                max_age_ms=None if requirement is None else requirement.max_age_ms,
+                freshness_policy=None if requirement is None else requirement.freshness_policy,
+            )
+        min_rows = self._required_min_rows(requirement)
+        coverage_pct = self._coverage_pct(count=count, expected_count=min_rows)
+        density_reason = self._density_reason(
+            capability=capability,
+            count=count,
+            requirement=requirement,
+            min_ts=min_ts_for_window,
+            max_ts=through_ts_ms,
+        )
+        if count < min_rows or density_reason:
+            return RuntimeDataCapabilityCoverage(
+                capability=capability,
+                status="INSUFFICIENT",
+                row_count=count,
+                first_ts=first_ts,
+                last_ts=last_ts,
+                selected_ts=last_ts,
+                coverage_pct=coverage_pct,
+                source_tables_or_streams=(table,),
+                reason=density_reason or f"runtime_data_coverage_below_threshold:{capability}",
+                expected_count=min_rows,
+                min_coverage_pct=None if requirement is None else requirement.min_coverage_pct,
+                min_rows=min_rows,
+                lookback_window_ms=None if requirement is None else requirement.lookback_window_ms,
+                min_density_pct=None if requirement is None else requirement.min_density_pct,
+            )
         return RuntimeDataCapabilityCoverage(
             capability=capability,
             status="PASS",
             row_count=count,
-            first_ts=int(row[1]),
-            last_ts=int(row[2]),
-            selected_ts=int(row[2]),
-            coverage_pct=100.0,
+            first_ts=first_ts,
+            last_ts=last_ts,
+            selected_ts=last_ts,
+            coverage_pct=coverage_pct,
             source_tables_or_streams=(table,),
+            expected_count=min_rows,
+            min_coverage_pct=None if requirement is None else requirement.min_coverage_pct,
+            max_age_ms=None if requirement is None else requirement.max_age_ms,
+            min_rows=min_rows,
+            lookback_window_ms=None if requirement is None else requirement.lookback_window_ms,
+            min_density_pct=None if requirement is None else requirement.min_density_pct,
+            freshness_policy=None if requirement is None else requirement.freshness_policy,
         )
+
+    def _orderbook_top_malformed_reason(
+        self,
+        *,
+        table: str,
+        columns: tuple[str, ...],
+        clause: str,
+        params: tuple[object, ...],
+    ) -> str | None:
+        if "bid_price" not in columns or "ask_price" not in columns:
+            return "runtime_data_malformed:orderbook_top"
+        row = self.conn.execute(
+            f"SELECT bid_price, ask_price FROM {table}{clause} ORDER BY ts DESC LIMIT 1",
+            params,
+        ).fetchone()
+        if row is None:
+            return "runtime_data_requirement_missing:orderbook_top"
+        bid = row["bid_price"] if hasattr(row, "keys") else row[0]
+        ask = row["ask_price"] if hasattr(row, "keys") else row[1]
+        try:
+            bid_f = float(bid)
+            ask_f = float(ask)
+        except (TypeError, ValueError):
+            return "runtime_data_malformed:orderbook_top"
+        if bid_f <= 0.0 or ask_f <= 0.0 or bid_f > ask_f:
+            return "runtime_data_malformed:orderbook_top"
+        return None
+
+    def _orderbook_depth_coverage(
+        self,
+        *,
+        table: str,
+        columns: tuple[str, ...],
+        clause: str,
+        params: tuple[object, ...],
+        capability: str,
+        through_ts_ms: int | None,
+        requirement: DataCapabilityRequirement | None,
+    ) -> RuntimeDataCapabilityCoverage:
+        if "side" not in columns:
+            return RuntimeDataCapabilityCoverage(
+                capability=capability,
+                status="MISSING",
+                source_tables_or_streams=(table,),
+                reason=f"runtime_data_requirement_missing:{capability}",
+            )
+        row = self.conn.execute(
+            f"""
+            SELECT COUNT(*) AS row_count, MIN(ts) AS first_ts, MAX(ts) AS last_ts,
+                   SUM(CASE WHEN side='bid' THEN 1 ELSE 0 END) AS bid_count,
+                   SUM(CASE WHEN side='ask' THEN 1 ELSE 0 END) AS ask_count
+            FROM {table}{clause}
+            """,
+            params,
+        ).fetchone()
+        count = int(row[0] or 0) if row is not None else 0
+        if count <= 0:
+            return RuntimeDataCapabilityCoverage(
+                capability=capability,
+                status="MISSING",
+                row_count=0,
+                source_tables_or_streams=(table,),
+                reason=f"runtime_data_requirement_missing:{capability}",
+            )
+        first_ts = int(row[1])
+        last_ts = int(row[2])
+        bid_count = int(row[3] or 0)
+        ask_count = int(row[4] or 0)
+        min_rows = self._required_min_rows(requirement)
+        if bid_count <= 0 or ask_count <= 0 or count < min_rows:
+            return RuntimeDataCapabilityCoverage(
+                capability=capability,
+                status="INSUFFICIENT",
+                row_count=count,
+                first_ts=first_ts,
+                last_ts=last_ts,
+                selected_ts=last_ts,
+                coverage_pct=self._coverage_pct(count=count, expected_count=min_rows),
+                source_tables_or_streams=(table,),
+                reason="runtime_data_depth_insufficient:orderbook_depth",
+                expected_count=min_rows,
+                min_rows=min_rows,
+            )
+        stale_reason = self._stale_reason(
+            capability=capability,
+            selected_ts=last_ts,
+            through_ts_ms=through_ts_ms,
+            requirement=requirement,
+        )
+        if stale_reason:
+            return RuntimeDataCapabilityCoverage(
+                capability=capability,
+                status="STALE",
+                row_count=count,
+                first_ts=first_ts,
+                last_ts=last_ts,
+                selected_ts=last_ts,
+                source_tables_or_streams=(table,),
+                reason=stale_reason,
+                max_age_ms=None if requirement is None else requirement.max_age_ms,
+            )
+        return RuntimeDataCapabilityCoverage(
+            capability=capability,
+            status="PASS",
+            row_count=count,
+            first_ts=first_ts,
+            last_ts=last_ts,
+            selected_ts=last_ts,
+            coverage_pct=self._coverage_pct(count=count, expected_count=min_rows),
+            source_tables_or_streams=(table,),
+            expected_count=min_rows,
+            min_rows=min_rows,
+        )
+
+    def _required_min_rows(self, requirement: DataCapabilityRequirement | None) -> int:
+        if requirement is None:
+            return 1
+        if requirement.min_rows is not None:
+            return int(requirement.min_rows)
+        if requirement.lookback_rows is not None:
+            return int(requirement.lookback_rows)
+        return 1
+
+    def _coverage_pct(self, *, count: int, expected_count: int) -> float:
+        return min(100.0, (float(count) / float(max(1, expected_count))) * 100.0)
+
+    def _stale_reason(
+        self,
+        *,
+        capability: str,
+        selected_ts: int,
+        through_ts_ms: int | None,
+        requirement: DataCapabilityRequirement | None,
+    ) -> str | None:
+        if through_ts_ms is None or requirement is None or requirement.max_age_ms is None:
+            return None
+        age_ms = int(through_ts_ms) - int(selected_ts)
+        if age_ms > int(requirement.max_age_ms):
+            return f"runtime_data_stale:{capability}"
+        return None
+
+    def _density_reason(
+        self,
+        *,
+        capability: str,
+        count: int,
+        requirement: DataCapabilityRequirement | None,
+        min_ts: int | None,
+        max_ts: int | None,
+    ) -> str | None:
+        if requirement is None or requirement.min_density_pct is None:
+            return None
+        expected = self._required_min_rows(requirement)
+        pct = self._coverage_pct(count=count, expected_count=expected)
+        if pct < float(requirement.min_density_pct):
+            return f"runtime_data_coverage_below_threshold:{capability}"
+        if min_ts is not None and max_ts is not None and count <= 0:
+            return f"runtime_data_coverage_below_threshold:{capability}"
+        return None
 
     def _latest_candle(
         self,

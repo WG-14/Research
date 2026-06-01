@@ -713,10 +713,7 @@ def test_promotion_collector_rejects_adapter_without_feature_snapshot_boundary()
 def test_sma_promotion_runtime_does_not_call_db_bound_adapter_fallback(monkeypatch) -> None:
     from bithumb_bot.runtime_adapters.sma_with_filter import SmaWithFilterRuntimeDecisionAdapter
 
-    def _forbidden_decide(self, conn, request):
-        raise AssertionError("SMA promotion runtime called DB-bound decide fallback")
-
-    monkeypatch.setattr(SmaWithFilterRuntimeDecisionAdapter, "decide", _forbidden_decide)
+    assert not hasattr(SmaWithFilterRuntimeDecisionAdapter, "decide")
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row

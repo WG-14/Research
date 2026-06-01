@@ -11,7 +11,10 @@ from bithumb_bot.research.strategy_registry import ResearchStrategyPlugin
 from bithumb_bot.research.strategy_registry import strategy_runtime_capability_issues
 from bithumb_bot.runtime_strategy_decision import get_runtime_decision_adapter
 from bithumb_bot.runtime_strategy_decision import is_runtime_strategy_decision_result
+from bithumb_bot.runtime_data_provider import RuntimeDataRequirementResolver, SQLiteRuntimeDataProvider
 from bithumb_bot.runtime_strategy_set import RuntimeDecisionRequestBuilder
+from bithumb_bot.runtime_strategy_set import RuntimeMarketScope
+from bithumb_bot.runtime_strategy_set import RuntimeStrategySet
 from bithumb_bot.runtime_strategy_set import RuntimeStrategySpec
 
 
@@ -166,7 +169,27 @@ def assert_live_eligible_contract(
         )
         adapter = get_runtime_decision_adapter(plugin.name)
         assert adapter is not None
-        result = adapter.decide(conn, request)
+        strategy_set = RuntimeStrategySet(
+            strategies=(
+                RuntimeStrategySpec(
+                    strategy_name=plugin.name,
+                    pair=pair,
+                    interval=interval,
+                    parameters=dict(params),
+                    approved_profile_hash="sha256:" + "a" * 64,
+                    runtime_contract_hash="sha256:" + "b" * 64,
+                ),
+            ),
+            source="strategy_contract_testing",
+            market_scope=RuntimeMarketScope(pair=pair, interval=interval),
+        )
+        resolver = RuntimeDataRequirementResolver()
+        feature_snapshot = SQLiteRuntimeDataProvider(conn, resolver=resolver).snapshot(
+            request,
+            resolver.resolve_for_strategy_set(strategy_set),
+        )
+        assert feature_snapshot is not None
+        result = adapter.decide_feature_snapshot(request, feature_snapshot)
     finally:
         conn.close()
 

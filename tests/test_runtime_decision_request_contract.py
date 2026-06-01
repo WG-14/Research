@@ -17,10 +17,12 @@ from bithumb_bot.decision_envelope import DecisionEnvelope
 from bithumb_bot.config import LiveModeValidationError, settings, validate_runtime_strategy_set_selection
 from bithumb_bot.run_loop_execution_planner import ExecutionPlanner
 from bithumb_bot.runtime_decision_contract import RuntimeStrategyPolicyHashes
+from bithumb_bot.runtime_data_provider import RuntimeDataRequirementResolver, SQLiteRuntimeDataProvider
 from bithumb_bot.runtime_adapters.safe_hold import SafeHoldRuntimeDecisionAdapter
 from bithumb_bot import runtime_strategy_decision
-from bithumb_bot.runtime_strategy_decision import RuntimeDecisionAdapter, RuntimeDecisionRequest
+from bithumb_bot.runtime_strategy_decision import PromotionRuntimeDecisionAdapter, RuntimeDecisionRequest
 from bithumb_bot.runtime_strategy_set import (
+    RuntimeMarketScope,
     RuntimeDecisionRequestBuilder,
     RuntimeStrategyDecisionCollector,
     RuntimeStrategyDecisionResultBundle,
@@ -143,6 +145,27 @@ def _conn() -> sqlite3.Connection:
     return conn
 
 
+def _decide_adapter_snapshot(conn: sqlite3.Connection, request: RuntimeDecisionRequest, adapter: object):
+    spec = RuntimeStrategySpec(
+        request.strategy_name,
+        pair=request.pair,
+        interval=request.interval,
+        parameters=dict(request.parameters),
+    )
+    strategy_set = RuntimeStrategySet(
+        source="unit_snapshot_adapter",
+        strategies=(spec,),
+        market_scope=RuntimeMarketScope(pair=request.pair, interval=request.interval),
+    )
+    resolver = RuntimeDataRequirementResolver()
+    snapshot = SQLiteRuntimeDataProvider(conn, resolver=resolver).snapshot(
+        request,
+        resolver.resolve_for_strategy_set(strategy_set),
+    )
+    assert snapshot is not None
+    return adapter.decide_feature_snapshot(request, snapshot)
+
+
 def _complete_sma_parameters(**overrides: object) -> dict[str, object]:
     params: dict[str, object] = {
         "SMA_SHORT": 2,
@@ -170,8 +193,10 @@ def _complete_sma_parameters(**overrides: object) -> dict[str, object]:
 
 
 def test_common_runtime_adapter_protocol_is_request_shaped() -> None:
-    params = inspect.signature(RuntimeDecisionAdapter.decide).parameters
+    params = inspect.signature(PromotionRuntimeDecisionAdapter.decide_feature_snapshot).parameters
     assert "request" in params
+    assert "feature_snapshot" in params
+    assert "conn" not in params
     assert "short_n" not in params
     assert "long_n" not in params
 
@@ -401,10 +426,18 @@ def test_non_sma_adapters_work_without_sma_parameters() -> None:
         ):
             assert "SMA_SHORT" not in request.parameters
             assert "SMA_LONG" not in request.parameters
-            result = adapter.decide(conn, request)
+            result = _decide_adapter_snapshot(conn, request, adapter)
             assert result is not None
-        assert SafeHoldRuntimeDecisionAdapter().decide(conn, safe_request).decision.final_signal == "HOLD"
-        assert CanaryNonSmaRuntimeDecisionAdapter().decide(conn, canary_request).decision.final_signal == "BUY"
+        assert _decide_adapter_snapshot(
+            conn,
+            safe_request,
+            SafeHoldRuntimeDecisionAdapter(),
+        ).decision.final_signal == "HOLD"
+        assert _decide_adapter_snapshot(
+            conn,
+            canary_request,
+            CanaryNonSmaRuntimeDecisionAdapter(),
+        ).decision.final_signal == "BUY"
     finally:
         conn.close()
 
@@ -972,7 +1005,7 @@ def test_persisted_decision_context_contains_request_metadata() -> None:
             _canary_spec(),
             through_ts_ms=1_700_000_180_000,
         )
-        result = CanaryNonSmaRuntimeDecisionAdapter().decide(conn, request)
+        result = _decide_adapter_snapshot(conn, request, CanaryNonSmaRuntimeDecisionAdapter())
         assert result is not None
         from bithumb_bot.runtime_strategy_decision import _attach_runtime_request_metadata
 
@@ -1306,7 +1339,11 @@ def test_new_strategy_plugin_runs_from_runtime_strategy_set_without_config_chang
         spec,
         through_ts_ms=1_700_000_180_000,
     )
-    result = CanaryNonSmaRuntimeDecisionAdapter().decide(_conn(), request)
+    conn = _conn()
+    try:
+        result = _decide_adapter_snapshot(conn, request, CanaryNonSmaRuntimeDecisionAdapter())
+    finally:
+        conn.close()
 
     assert request.strategy_name == "canary_non_sma"
     assert request.parameters["CANARY_ORDER_REASON"] == "runtime_set_only"

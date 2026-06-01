@@ -331,37 +331,6 @@ def _evaluate_safe_hold_decision(
 class SafeHoldRuntimeDecisionAdapter:
     strategy_name: str = SAFE_HOLD_STRATEGY_NAME
 
-    def decide(
-        self,
-        conn,
-        request,
-    ) -> RuntimeStrategyDecisionResult | None:
-        from bithumb_bot.runtime_strategy_set import RuntimeMarketScope, RuntimeStrategySet, RuntimeStrategySpec
-
-        pair = str(getattr(request, "pair", "") or settings.PAIR)
-        interval = str(getattr(request, "interval", "") or settings.INTERVAL)
-        spec = RuntimeStrategySpec(
-            strategy_name=SAFE_HOLD_STRATEGY_NAME,
-            pair=pair,
-            interval=interval,
-            parameters={},
-        )
-        strategy_set = RuntimeStrategySet(
-            strategies=(spec,),
-            source="safe_hold_compatibility_provider",
-            market_scope=RuntimeMarketScope(pair=pair, interval=interval),
-        )
-        resolver = RuntimeDataRequirementResolver()
-        provider = SQLiteRuntimeDataProvider(conn, resolver=resolver)
-        report = provider.preflight(strategy_set, through_ts_ms=request.through_ts_ms)
-        if not report.ok:
-            return None
-        requirements = resolver.resolve_for_strategy_set(strategy_set)
-        feature_snapshot = provider.snapshot(request, requirements)
-        if feature_snapshot is None:
-            return None
-        return self.decide_feature_snapshot(request, feature_snapshot)
-
     def decide_feature_snapshot(
         self,
         request,

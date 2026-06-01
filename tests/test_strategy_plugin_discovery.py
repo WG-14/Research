@@ -39,12 +39,12 @@ class _FakeEntryPoint:
 class _DynamicRuntimeDecisionAdapter:
     strategy_name: str = DYNAMIC_PLUGIN_NAME
 
-    def decide(
+    def decide_feature_snapshot(
         self,
-        conn: Any,
         request: Any,
+        feature_snapshot: Any,
     ) -> None:
-        del conn, request
+        del request, feature_snapshot
         return None
 
     def typed_authority_required(self) -> bool:

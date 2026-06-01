@@ -15,6 +15,7 @@ from .strategy_spec import (
     StrategySpec,
     materialize_strategy_parameters,
 )
+from ..runtime_data_capabilities import normalize_runtime_data_capability
 
 
 ResearchEventBuilder = Callable[..., tuple[ResearchDecisionEvent, ...]]
@@ -104,6 +105,11 @@ class DataCapabilityRequirement:
     notes: str | None = None
     lookback_rows: int | None = None
     closed_candle_required: bool = False
+    max_age_ms: int | None = None
+    min_rows: int | None = None
+    lookback_window_ms: int | None = None
+    min_density_pct: float | None = None
+    freshness_policy: str | None = None
 
     def __post_init__(self) -> None:
         normalized = str(self.name or "").strip().lower()
@@ -120,6 +126,19 @@ class DataCapabilityRequirement:
             if rows < 1:
                 raise ValueError("data capability lookback_rows must be positive")
             object.__setattr__(self, "lookback_rows", rows)
+        for field in ("max_age_ms", "min_rows", "lookback_window_ms"):
+            value = getattr(self, field)
+            if value is None:
+                continue
+            normalized_int = int(value)
+            if normalized_int < 1:
+                raise ValueError(f"data capability {field} must be positive")
+            object.__setattr__(self, field, normalized_int)
+        if self.min_density_pct is not None:
+            density = float(self.min_density_pct)
+            if density < 0.0 or density > 100.0:
+                raise ValueError("data capability min_density_pct must be between 0 and 100")
+            object.__setattr__(self, "min_density_pct", density)
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -138,6 +157,16 @@ class DataCapabilityRequirement:
             payload["lookback_rows"] = int(self.lookback_rows)
         if self.closed_candle_required:
             payload["closed_candle_required"] = True
+        if self.max_age_ms is not None:
+            payload["max_age_ms"] = int(self.max_age_ms)
+        if self.min_rows is not None:
+            payload["min_rows"] = int(self.min_rows)
+        if self.lookback_window_ms is not None:
+            payload["lookback_window_ms"] = int(self.lookback_window_ms)
+        if self.min_density_pct is not None:
+            payload["min_density_pct"] = float(self.min_density_pct)
+        if self.freshness_policy is not None:
+            payload["freshness_policy"] = str(self.freshness_policy)
         return payload
 
 
@@ -173,15 +202,30 @@ def normalized_data_capabilities(
 ) -> tuple[DataCapabilityRequirement, ...]:
     by_name: dict[str, DataCapabilityRequirement] = {}
     for raw_name in required_data:
-        name = str(raw_name).strip().lower()
+        name = normalize_runtime_data_capability(str(raw_name))
         if name:
             by_name[name] = DataCapabilityRequirement(name=name, required=True)
     for raw_name in optional_data:
-        name = str(raw_name).strip().lower()
+        name = normalize_runtime_data_capability(str(raw_name))
         if name and name not in by_name:
             by_name[name] = DataCapabilityRequirement(name=name, required=False)
     for capability in capabilities:
-        by_name[capability.name] = capability
+        normalized_name = normalize_runtime_data_capability(capability.name)
+        by_name[normalized_name] = DataCapabilityRequirement(
+            name=normalized_name,
+            required=capability.required,
+            min_coverage_pct=capability.min_coverage_pct,
+            evidence_level=capability.evidence_level,
+            source=capability.source,
+            notes=capability.notes,
+            lookback_rows=capability.lookback_rows,
+            closed_candle_required=capability.closed_candle_required,
+            max_age_ms=capability.max_age_ms,
+            min_rows=capability.min_rows,
+            lookback_window_ms=capability.lookback_window_ms,
+            min_density_pct=capability.min_density_pct,
+            freshness_policy=capability.freshness_policy,
+        )
     return tuple(by_name[name] for name in sorted(by_name))
 
 
@@ -630,12 +674,14 @@ def research_strategy_data_requirements(strategy_name: str) -> ResearchStrategyD
             required_data=("candles", "top_of_book"),
             capabilities=(
                 DataCapabilityRequirement(
-                    name="top_of_book",
+                    name="orderbook_top",
                     required=True,
                     min_coverage_pct=100.0,
                     evidence_level="best_bid_ask",
                     source="sqlite_orderbook_top_snapshots",
                     notes="private test hook for required top-of-book preflight",
+                    max_age_ms=120_000,
+                    freshness_policy="max_age",
                 ),
             ),
         )

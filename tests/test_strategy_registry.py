@@ -207,7 +207,7 @@ def test_compute_signal_routes_sma_with_filter_through_snapshot_orchestration(
             os.environ["DB_PATH"] = old_env_db_path
 
     assert result is not None
-    assert calls == ["sma_with_filter"]
+    assert calls == []
 
 
 def test_live_sma_with_filter_route_does_not_call_legacy_decide(

@@ -111,7 +111,7 @@ class RuntimeStrategyDecisionResult(Protocol):
     def as_legacy_dict(self) -> dict[str, object]: ...
 
 
-class RuntimeDecisionAdapter(Protocol):
+class LegacyDiagnosticRuntimeDecisionAdapter(Protocol):
     strategy_name: str
 
     def decide(
@@ -119,14 +119,6 @@ class RuntimeDecisionAdapter(Protocol):
         conn,
         request: RuntimeDecisionRequest,
     ) -> RuntimeStrategyDecisionResult | None: ...
-
-    def decide_feature_snapshot(
-        self,
-        request: RuntimeDecisionRequest,
-        feature_snapshot: RuntimeFeatureSnapshot,
-    ) -> RuntimeStrategyDecisionResult | None: ...
-
-    def typed_authority_required(self) -> bool: ...
 
 
 class PromotionRuntimeDecisionAdapter(Protocol):
@@ -141,9 +133,13 @@ class PromotionRuntimeDecisionAdapter(Protocol):
     def typed_authority_required(self) -> bool: ...
 
 
-RuntimeDecisionAdapterFactory = Callable[[], RuntimeDecisionAdapter]
+class RuntimeDecisionAdapter(PromotionRuntimeDecisionAdapter, Protocol):
+    """Deprecated alias for connection-free promotion adapters."""
 
-_DERIVED_RUNTIME_DECISION_ADAPTER_CACHE: dict[tuple[str, str, str], RuntimeDecisionAdapter] = {}
+
+RuntimeDecisionAdapterFactory = Callable[[], PromotionRuntimeDecisionAdapter]
+
+_DERIVED_RUNTIME_DECISION_ADAPTER_CACHE: dict[tuple[str, str, str], PromotionRuntimeDecisionAdapter] = {}
 
 
 def _normalize_name(name: str) -> str:
@@ -166,7 +162,7 @@ def list_runtime_decision_adapters() -> tuple[str, ...]:
     )
 
 
-def get_runtime_decision_adapter(name: str) -> RuntimeDecisionAdapter | None:
+def get_runtime_decision_adapter(name: str) -> PromotionRuntimeDecisionAdapter | None:
     from .research.strategy_registry import ResearchStrategyRegistryError, resolve_research_strategy_plugin
 
     key = _normalize_name(name)
@@ -190,6 +186,8 @@ def get_runtime_decision_adapter(name: str) -> RuntimeDecisionAdapter | None:
         raise RuntimeError(f"runtime_decision_adapter_name_mismatch:{plugin.name}:{adapter_name}")
     if not promotion_adapter_supports_feature_snapshot(adapter):
         raise RuntimeError(f"runtime_decision_feature_snapshot_required:{plugin.name}")
+    if _has_db_bound_decide_method(adapter):
+        raise RuntimeError(f"promotion_runtime_adapter_db_bound_decide_forbidden:{plugin.name}")
     _DERIVED_RUNTIME_DECISION_ADAPTER_CACHE.clear()
     _DERIVED_RUNTIME_DECISION_ADAPTER_CACHE[cache_key] = adapter
     return adapter
@@ -450,6 +448,10 @@ def _attach_runtime_request_metadata(
 
 def promotion_adapter_supports_feature_snapshot(adapter: object) -> bool:
     return callable(getattr(adapter, "decide_feature_snapshot", None))
+
+
+def _has_db_bound_decide_method(adapter: object) -> bool:
+    return callable(getattr(adapter, "decide", None))
 
 
 def _attach_runtime_feature_snapshot_metadata(

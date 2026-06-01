@@ -679,41 +679,6 @@ def _evaluate_canary_result(
 class CanaryNonSmaRuntimeDecisionAdapter:
     strategy_name: str = CANARY_NON_SMA_STRATEGY_NAME
 
-    def decide(
-        self,
-        conn: Any,
-        request: Any,
-    ) -> Any | None:
-        from bithumb_bot.runtime_strategy_set import RuntimeMarketScope, RuntimeStrategySet, RuntimeStrategySpec
-
-        pair = str(getattr(request, "pair", "") or "").strip()
-        interval = str(getattr(request, "interval", "") or "").strip()
-        if not pair:
-            raise ValueError("canary_runtime_request_pair_missing")
-        if not interval:
-            raise ValueError("canary_runtime_request_interval_missing")
-        spec = RuntimeStrategySpec(
-            strategy_name=CANARY_NON_SMA_STRATEGY_NAME,
-            pair=pair,
-            interval=interval,
-            parameters=dict(getattr(request, "parameters", {}) or {}),
-        )
-        strategy_set = RuntimeStrategySet(
-            strategies=(spec,),
-            source="canary_compatibility_provider",
-            market_scope=RuntimeMarketScope(pair=pair, interval=interval),
-        )
-        resolver = RuntimeDataRequirementResolver()
-        provider = SQLiteRuntimeDataProvider(conn, resolver=resolver)
-        report = provider.preflight(strategy_set, through_ts_ms=request.through_ts_ms)
-        if not report.ok:
-            return None
-        requirements = resolver.resolve_for_strategy_set(strategy_set)
-        feature_snapshot = provider.snapshot(request, requirements)
-        if feature_snapshot is None:
-            return None
-        return self.decide_feature_snapshot(request, feature_snapshot)
-
     def decide_feature_snapshot(
         self,
         request: Any,
@@ -768,10 +733,7 @@ class CanaryNonSmaRuntimeReplayStrategy:
             ),
             through_ts_ms=through_ts_ms,
         )
-        return CanaryNonSmaRuntimeDecisionAdapter().decide(
-            conn,
-            request,
-        )
+        return decide_canary_non_sma_for_diagnostics(conn, request)
 
     def build_replay_bundle(
         self,
@@ -851,6 +813,39 @@ def _canary_runtime_parameters_from_env(env: dict[str, str]) -> dict[str, Any]:
 
 def _canary_runtime_parameters_from_settings(_cfg: object) -> dict[str, Any]:
     return _normalize_canary_parameters({})
+
+
+def decide_canary_non_sma_for_diagnostics(conn: Any, request: Any) -> Any | None:
+    """Compatibility-only DB snapshot wrapper, excluded from promotion adapters."""
+    from bithumb_bot.runtime_strategy_set import RuntimeMarketScope, RuntimeStrategySet, RuntimeStrategySpec
+
+    pair = str(getattr(request, "pair", "") or "").strip()
+    interval = str(getattr(request, "interval", "") or "").strip()
+    if not pair:
+        raise ValueError("canary_runtime_request_pair_missing")
+    if not interval:
+        raise ValueError("canary_runtime_request_interval_missing")
+    spec = RuntimeStrategySpec(
+        strategy_name=CANARY_NON_SMA_STRATEGY_NAME,
+        pair=pair,
+        interval=interval,
+        parameters=dict(getattr(request, "parameters", {}) or {}),
+    )
+    strategy_set = RuntimeStrategySet(
+        strategies=(spec,),
+        source="canary_diagnostic_provider",
+        market_scope=RuntimeMarketScope(pair=pair, interval=interval),
+    )
+    resolver = RuntimeDataRequirementResolver()
+    provider = SQLiteRuntimeDataProvider(conn, resolver=resolver)
+    report = provider.preflight(strategy_set, through_ts_ms=request.through_ts_ms)
+    if not report.ok:
+        return None
+    requirements = resolver.resolve_for_strategy_set(strategy_set)
+    feature_snapshot = provider.snapshot(request, requirements)
+    if feature_snapshot is None:
+        return None
+    return CanaryNonSmaRuntimeDecisionAdapter().decide_feature_snapshot(request, feature_snapshot)
 
 
 @dataclass(frozen=True)

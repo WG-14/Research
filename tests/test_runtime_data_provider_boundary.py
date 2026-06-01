@@ -12,10 +12,12 @@ from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_schema
 from bithumb_bot.research.strategy_registry import TEST_TOP_OF_BOOK_REQUIRED_STRATEGY
 from bithumb_bot.runtime_data_provider import (
+    RuntimeStrategyDataRequirements,
     RuntimeDataRequirementResolver,
     SQLiteRuntimeDataProvider,
     normalize_runtime_data_capability,
 )
+from bithumb_bot.research.strategy_registry import DataCapabilityRequirement
 from bithumb_bot.runtime_strategy_set import (
     RuntimeDecisionRequestBuilder,
     RuntimeStrategyDecisionCollector,
@@ -143,6 +145,140 @@ def test_required_orderbook_top_strategy_fails_closed_when_snapshots_absent() ->
     assert report.ok is False
     assert "runtime_data_requirement_missing:orderbook_top" in report.reasons
     assert "orderbook_top" in report.as_dict()["capabilities_missing"]
+
+
+def test_required_orderbook_top_fails_when_stale_or_malformed() -> None:
+    conn = _conn()
+    requirements = RuntimeStrategyDataRequirements(
+        required=(
+            DataCapabilityRequirement("orderbook_top", max_age_ms=1_000),
+        ),
+        optional=(),
+        per_strategy={},
+    )
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO orderbook_top_snapshots
+            (ts, pair, bid_price, ask_price, spread_bps, source, observed_at_epoch_sec)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1_700_000_000_000, "KRW-BTC", 99.0, 101.0, 200.0, "unit", 1.0),
+        )
+        stale = SQLiteRuntimeDataProvider(conn).availability_report_for_requirements(
+            requirements,
+            pair="KRW-BTC",
+            interval="1m",
+            through_ts_ms=1_700_000_180_000,
+        )
+        conn.execute("DELETE FROM orderbook_top_snapshots")
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO orderbook_top_snapshots
+            (ts, pair, bid_price, ask_price, spread_bps, source, observed_at_epoch_sec)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1_700_000_180_000, "KRW-BTC", 0.0, 101.0, 200.0, "unit", 1.0),
+        )
+        malformed = SQLiteRuntimeDataProvider(conn).availability_report_for_requirements(
+            requirements,
+            pair="KRW-BTC",
+            interval="1m",
+            through_ts_ms=1_700_000_180_000,
+        )
+    finally:
+        conn.close()
+
+    assert "runtime_data_stale:orderbook_top" in stale.reasons
+    assert "runtime_data_malformed:orderbook_top" in malformed.reasons
+
+
+def test_required_orderbook_depth_fails_when_side_coverage_insufficient() -> None:
+    conn = _conn()
+    requirements = RuntimeStrategyDataRequirements(
+        required=(DataCapabilityRequirement("orderbook_depth", min_rows=2, max_age_ms=60_000),),
+        optional=(),
+        per_strategy={},
+    )
+    try:
+        conn.execute(
+            """
+            INSERT INTO orderbook_depth_levels(
+                ts, pair, side, level_index, price, size,
+                cumulative_size, cumulative_notional, source, observed_at_epoch_sec
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1_700_000_180_000, "KRW-BTC", "bid", 0, 99.0, 1.0, 1.0, 99.0, "unit", 1.0),
+        )
+        report = SQLiteRuntimeDataProvider(conn).availability_report_for_requirements(
+            requirements,
+            pair="KRW-BTC",
+            interval="1m",
+            through_ts_ms=1_700_000_180_000,
+        )
+    finally:
+        conn.close()
+
+    assert "runtime_data_depth_insufficient:orderbook_depth" in report.reasons
+
+
+def test_required_trades_fails_low_density() -> None:
+    conn = _conn()
+    requirements = RuntimeStrategyDataRequirements(
+        required=(
+            DataCapabilityRequirement(
+                "trades",
+                min_rows=3,
+                lookback_window_ms=180_000,
+                min_density_pct=100.0,
+            ),
+        ),
+        optional=(),
+        per_strategy={},
+    )
+    try:
+        conn.execute(
+            """
+            INSERT INTO trades(ts, pair, interval, side, price, qty, fee, cash_after, asset_after, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1_700_000_180_000, "KRW-BTC", "1m", "BUY", 100.0, 1.0, 0.0, 0.0, 1.0, "unit"),
+        )
+        report = SQLiteRuntimeDataProvider(conn).availability_report_for_requirements(
+            requirements,
+            pair="KRW-BTC",
+            interval="1m",
+            through_ts_ms=1_700_000_180_000,
+        )
+    finally:
+        conn.close()
+
+    assert "runtime_data_coverage_below_threshold:trades" in report.reasons
+
+
+def test_required_funding_and_open_interest_use_capability_reason_codes() -> None:
+    conn = _conn()
+    requirements = RuntimeStrategyDataRequirements(
+        required=(
+            DataCapabilityRequirement("funding", max_age_ms=60_000),
+            DataCapabilityRequirement("open_interest", max_age_ms=60_000),
+        ),
+        optional=(),
+        per_strategy={},
+    )
+    try:
+        report = SQLiteRuntimeDataProvider(conn).availability_report_for_requirements(
+            requirements,
+            pair="KRW-BTC",
+            interval="1m",
+            through_ts_ms=1_700_000_180_000,
+        )
+    finally:
+        conn.close()
+
+    assert "runtime_data_requirement_missing:funding" in report.reasons
+    assert "runtime_data_requirement_missing:open_interest" in report.reasons
 
 
 def test_sma_required_candle_lookback_insufficient_fails_with_stable_reason() -> None:
@@ -339,7 +475,23 @@ def test_live_like_runtime_manifest_rejects_failed_preflight() -> None:
 
 
 def test_strategy_plugin_and_runtime_adapter_modules_do_not_own_runtime_data_sql() -> None:
-    roots = (Path("src/bithumb_bot/strategy_plugins"), Path("src/bithumb_bot/runtime_adapters"))
+    roots = (
+        Path("src/bithumb_bot/strategy_plugins"),
+        Path("src/bithumb_bot/runtime_adapters"),
+        Path("src/bithumb_bot"),
+    )
+    scoped_files = {
+        Path("src/bithumb_bot/runtime_sma_snapshot_builder.py"),
+        Path("src/bithumb_bot/runtime_sma_snapshot.py"),
+        Path("src/bithumb_bot/runtime_strategy_decision.py"),
+        Path("src/bithumb_bot/runtime_strategy_set.py"),
+    }
+    allowed = {
+        Path("src/bithumb_bot/runtime_data_provider.py"),
+        Path("src/bithumb_bot/runtime_data_provider_sma.py"),
+        Path("src/bithumb_bot/runtime_data_access.py"),
+        Path("src/bithumb_bot/db_core.py"),
+    }
     forbidden_tables = {
         "candles",
         "orderbook_top_snapshots",
@@ -349,8 +501,16 @@ def test_strategy_plugin_and_runtime_adapter_modules_do_not_own_runtime_data_sql
         "open_interest",
     }
     violations: list[str] = []
+    seen: set[Path] = set()
     for root in roots:
         for path in root.rglob("*.py"):
+            if path in seen:
+                continue
+            seen.add(path)
+            if path not in scoped_files and not any(str(path).startswith(str(base)) for base in roots[:2]):
+                continue
+            if path in allowed:
+                continue
             source = path.read_text(encoding="utf-8")
             tree = ast.parse(source, filename=str(path))
             for node in ast.walk(tree):
