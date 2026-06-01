@@ -189,6 +189,10 @@ def test_entry_point_strategy_plugin_is_discovered(monkeypatch: pytest.MonkeyPat
     assert resolve_research_strategy_plugin(DYNAMIC_PLUGIN_NAME) is plugin
     assert plugin.contract_payload()["runtime_capabilities"] == {
         "schema_version": 1,
+        "research_supported": True,
+        "replay_decisions_supported": True,
+        "promotion_export_supported": True,
+        "runtime_decision_supported": True,
         "promotion_runtime_decisions_supported": True,
         "runtime_replay_supported": True,
         "research_only": False,

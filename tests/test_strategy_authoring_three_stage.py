@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
+import sys
 from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -118,6 +121,75 @@ def test_level_2_public_authoring_object_is_discoverable_from_entry_point(
     )
 
 
+def test_level_2_strict_runtime_rejects_legacy_parameter_fallbacks() -> None:
+    from bithumb_bot.config import settings
+    from bithumb_bot.runtime_strategy_set import RuntimeDecisionRequestBuilder
+    from bithumb_bot.runtime_strategy_set import RuntimeStrategySpec
+
+    builder = RuntimeDecisionRequestBuilder(
+        settings_obj=replace(
+            settings,
+            MODE="live",
+            STRATEGY_PARAMETERS_JSON='{"EXAMPLE_REPLAY_CLOSE_ABOVE": 100.5}',
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="strict_runtime_rejects_strategy_parameters_json_fallback"):
+        builder.build_for_spec(
+            RuntimeStrategySpec(
+                "replay_threshold",
+                pair="KRW-BTC",
+                interval="1m",
+            ),
+            through_ts_ms=None,
+        )
+
+
+def test_entry_point_scaffold_documents_and_verifies_level_1_and_level_2(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import bithumb_bot.strategy_plugins as strategy_plugins
+
+    pyproject = Path("examples/strategy_plugin_package/pyproject.toml").read_text(encoding="utf-8")
+    assert '[project.entry-points."bithumb_bot.strategy_plugins"]' in pyproject
+
+    module_path = Path("examples/strategy_plugin_package/example_strategy_plugin.py")
+    spec = importlib.util.spec_from_file_location("example_strategy_plugin", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["example_strategy_plugin"] = module
+    spec.loader.exec_module(module)
+
+    monkeypatch.setattr(
+        strategy_plugins.metadata,
+        "entry_points",
+        lambda: [
+            _FakeEntryPoint(
+                "example_research_only",
+                "example_strategy_plugin:LEVEL_1_RESEARCH_ONLY_PLUGIN",
+                module.LEVEL_1_RESEARCH_ONLY_PLUGIN,
+            ),
+            _FakeEntryPoint(
+                "example_replay_compatible",
+                "example_strategy_plugin:LEVEL_2_REPLAY_COMPATIBLE_PLUGIN",
+                module.LEVEL_2_REPLAY_COMPATIBLE_PLUGIN,
+            ),
+        ],
+    )
+
+    reload_research_strategy_plugins_for_tests(providers=(strategy_plugins.iter_entry_point_strategy_plugins,))
+
+    assert_research_only_contract(resolve_research_strategy_plugin("example_external_research_only"))
+    assert_replay_compatible_contract(
+        resolve_research_strategy_plugin("example_external_replay_compatible"),
+        dataset=_dataset(),
+        params={"EXAMPLE_REPLAY_CLOSE_ABOVE": 100.5},
+        tmp_path=tmp_path,
+    )
+
+
 def test_level_3_live_eligible_contract_helper_covers_canary_example(tmp_path: Path) -> None:
     plugin = resolve_research_strategy_plugin("canary_non_sma")
 
@@ -138,7 +210,6 @@ def test_new_strategy_plugins_do_not_directly_construct_internal_research_strate
     allowlisted_legacy = {
         "src/bithumb_bot/strategy_plugins/baseline_plugins.py",
         "src/bithumb_bot/strategy_plugins/safe_hold_plugin.py",
-        "src/bithumb_bot/strategy_plugins/sma_with_filter_plugin.py",
     }
     violations: list[str] = []
     root = Path("src/bithumb_bot/strategy_plugins")

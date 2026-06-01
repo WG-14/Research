@@ -20,6 +20,18 @@ Use this decision tree:
 
 New strategy PRs should normally be small. Level 1 usually needs one plugin file and one focused test file. Level 2 usually adds only the replay-compatible plugin file plus one focused replay contract test. Level 3 adds the explicit runtime adapter/policy assembly surface and focused live/promotion contract tests.
 
+Public contract helpers are available from `bithumb_bot.strategy_contract_testing`:
+
+- `assert_research_only_contract(plugin)` for Level 1
+- `assert_replay_compatible_contract(plugin, dataset, params, tmp_path)` for Level 2
+- `assert_live_eligible_contract(plugin, tmp_path, params, pair, interval)` for Level 3
+
+| Level | Required hooks | Forbidden vocabulary | Stable fail-closed reasons | Expected files | Test helper |
+| --- | --- | --- | --- | --- | --- |
+| Level 1 research-only | `StrategySpec`, `research_event_builder` or `decide_snapshot` | runtime adapter, approved profile, live dry-run, live real-order, promotion extension | `promotion_extension_missing`, `promotion_runtime_unsupported_for_strategy`, `runtime_replay_unsupported_for_strategy`, `live_dry_run_not_allowed_for_strategy` | one plugin file and one focused test file | `assert_research_only_contract` |
+| Level 2 replay-compatible | Level 1 hooks plus parameter schema, deterministic policy material, replay fingerprint material, read-only replay builder | `Settings` fields, `runtime_parameter_adapter.from_settings()`, approved profile requirement, live dry-run, live real-order | `replay_compatible_not_live_eligible`, `promotion_runtime_unsupported_for_strategy`, `runtime_decision_adapter_unsupported_for_strategy`, `live_real_order_not_allowed_for_strategy` | one replay plugin file and one focused replay contract test | `assert_replay_compatible_contract` |
+| Level 3 live-eligible | Level 1 hooks plus runtime decision adapter, policy assembly, approved-profile binding, execution intent contract, replay support, live capability declaration | direct `ResearchStrategyPlugin(...)` assembly in new strategy modules, strategy-specific common-engine branches, production legacy parameter fallback | strategy-specific capability reason, `approved_profile_required_for_strategy`, decision-equivalence/runtime-contract/profile validation reasons | plugin file plus focused promotion/runtime contract tests | `assert_live_eligible_contract` |
+
 ## Level 1: Fast Research Path
 
 Use `bithumb_bot.strategy_authoring.ResearchOnlyStrategyPlugin` or one of its helpers:
@@ -70,10 +82,13 @@ live dry-run capability, live real-order capability, production runtime
 parameter adapters, or execution intent for real orders. Default runtime
 capability is fail-closed for live:
 
+- `research_supported=true`
+- `replay_decisions_supported=true`
+- `promotion_export_supported=true`
+- `runtime_decision_supported=false`
 - `approved_profile_required=false`
 - `live_dry_run_allowed=false`
 - `live_real_order_allowed=false`
-- `runtime_decision_supported=false`
 
 `replay_threshold` is the minimal built-in template for this path. It shows pure
 threshold policy material, parameter schema validation, centralized replay
@@ -159,9 +174,13 @@ public authoring API for new strategy modules. Public authoring should use:
 `research.strategy_registry` owns normalized contract dataclasses, validation, registration, discovery, listing, resolving, and test reload behavior only. Built-in plugins are loaded through `bithumb_bot.strategy_plugins.iter_builtin_strategy_plugins()` using lazy imports.
 
 Existing `sma_with_filter`, `safe_hold`, and baseline direct
-`ResearchStrategyPlugin(...)` construction is allowlisted as legacy migration
-surface. New strategy plugin files are guarded by tests and should not directly
-construct the internal dataclass.
+`ResearchStrategyPlugin(...)` construction has been narrowed. `sma_with_filter`
+and `canary_non_sma` use the public Level 3 builder. `safe_hold` remains an
+explicit runtime fail-safe special case outside normal research parity. The
+baseline plugins remain allowlisted as baseline-only legacy because they are
+research comparators, not promotion/runtime strategies. New strategy plugin
+files are guarded by tests and should not directly construct the internal
+dataclass.
 
 ## StrategySpec Ownership
 
@@ -202,6 +221,36 @@ Level 3 live-eligible strategy tests should prove:
 - preserved decision, replay, runtime, policy, and profile hashes
 
 New strategy PRs should normally modify one plugin file and one focused test file. They should not add strategy-specific branches to common research or runtime gateway files.
+
+## Entry-Point Plugin Packages
+
+External packages register plugins through the `bithumb_bot.strategy_plugins`
+entry-point group. The entry point may return a single public authoring object,
+a callable that returns one, or an iterable of public authoring objects. It must
+not require editing common engine files.
+
+Minimal `pyproject.toml` shape:
+
+```toml
+[project.entry-points."bithumb_bot.strategy_plugins"]
+my_research_strategy = "my_package.my_strategy:RESEARCH_ONLY_PLUGIN"
+my_replay_strategy = "my_package.my_strategy:REPLAY_COMPATIBLE_PLUGIN"
+```
+
+The repository scaffold in `examples/strategy_plugin_package/` includes Level 1
+and Level 2 examples. Use the public contract helpers to verify discovery,
+registration, generic backtest behavior, deterministic runtime replay, and
+fail-closed live gates. Entry-point plugins should keep runtime artifacts out of
+the repository and should not add strategy-specific fields to `Settings`.
+
+## Canary Replay Sequence
+
+`canary_non_sma` intentionally omits research events before
+`CANARY_ORDER_START_INDEX`. Runtime replay over a pre-start candle emits `HOLD`.
+The equivalence interpretation is
+`pre_start_hold_omission_is_deterministic_and_not_replay_mismatch`; replay
+fingerprints and tests bind that policy so omission is explicit rather than an
+accidental mismatch.
 
 ## Compatibility
 

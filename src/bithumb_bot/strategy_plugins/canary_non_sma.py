@@ -806,8 +806,6 @@ def build_canary_non_sma_research_events(
 
     canary_parameters = _normalize_canary_parameters(parameter_values)
     start_index = max(0, int(canary_parameters["CANARY_ORDER_START_INDEX"]))
-    side = str(canary_parameters["CANARY_ORDER_SIDE"])
-    reason = str(canary_parameters["CANARY_ORDER_REASON"])
     timing_policy = execution_timing_policy or ExecutionTimingPolicy()
     events: list[ResearchDecisionEvent] = []
     for index, candle in enumerate(dataset.candles):
@@ -819,23 +817,22 @@ def build_canary_non_sma_research_events(
             "close": float(candle.close),
             "feature_family": "canary_close_only",
         }
-        action = side if index >= start_index else "HOLD"
+        material = _canary_policy_material(
+            pair=str(dataset.market),
+            interval=str(dataset.interval),
+            candle_ts=int(candle.ts),
+            market_price=float(candle.close),
+            candle_index=int(index),
+            parameters=dict(canary_parameters),
+        )
+        action = str(material["final_signal"])
+        final_reason = str(material["final_reason"])
         strategy_specific_payload = {
             "policy_contract_version": CANARY_NON_SMA_POLICY_CONTRACT_VERSION,
             "can_emit_order_intent": True,
             "live_real_order_allowed": False,
             "parameters": dict(canary_parameters),
         }
-        policy_contract_hash = sha256_prefixed(
-            {
-                "strategy_name": CANARY_NON_SMA_STRATEGY_NAME,
-                "policy_contract_version": CANARY_NON_SMA_POLICY_CONTRACT_VERSION,
-                "can_emit_order_intent": True,
-                "live_real_order_allowed": False,
-            }
-        )
-        policy_input_hash = sha256_prefixed(feature_snapshot)
-        policy_decision_hash = sha256_prefixed({"final_signal": action, "reason": reason})
         events.append(
             ResearchDecisionEvent(
                 candle_ts=int(candle.ts),
@@ -844,7 +841,7 @@ def build_canary_non_sma_research_events(
                 strategy_version=CANARY_NON_SMA_SPEC.strategy_version,
                 raw_signal=action,
                 final_signal=action,
-                reason=reason if action in {"BUY", "SELL"} else "canary_before_order_start_index",
+                reason=final_reason,
                 feature_snapshot=feature_snapshot,
                 strategy_diagnostics={
                     "schema_version": 1,
@@ -865,16 +862,12 @@ def build_canary_non_sma_research_events(
                 ),
                 extra_payload={
                     "strategy_specific_payload": strategy_specific_payload,
-                    "policy_contract_hash": policy_contract_hash,
-                    "policy_input_hash": policy_input_hash,
-                    "policy_decision_hash": policy_decision_hash,
-                    "replay_fingerprint": {
-                        "strategy_name": CANARY_NON_SMA_STRATEGY_NAME,
-                        "candle_ts": int(candle.ts),
-                        "policy_contract_hash": policy_contract_hash,
-                        "policy_input_hash": policy_input_hash,
-                        "policy_decision_hash": policy_decision_hash,
-                    },
+                    "pure_policy_hash": str(material["policy_hash"]),
+                    "policy_contract_hash": str(material["policy_contract_hash"]),
+                    "policy_input_hash": str(material["policy_input_hash"]),
+                    "policy_decision_hash": str(material["policy_decision_hash"]),
+                    "replay_fingerprint": dict(material["replay_fingerprint"]),
+                    "replay_fingerprint_hash": str(material["replay_fingerprint_hash"]),
                 },
             )
         )
@@ -952,19 +945,26 @@ def _canary_decision_payload_adapter(
     payload["policy_contract_hash"] = str(extra.get("policy_contract_hash") or "")
     payload["policy_input_hash"] = str(extra.get("policy_input_hash") or "")
     payload["policy_decision_hash"] = str(extra.get("policy_decision_hash") or "")
-    payload["pure_policy_hash"] = sha256_prefixed(
-        {
-            "policy_contract_hash": payload["policy_contract_hash"],
-            "policy_input_hash": payload["policy_input_hash"],
-            "policy_decision_hash": payload["policy_decision_hash"],
-        }
-    )
+    payload["pure_policy_hash"] = str(extra.get("pure_policy_hash") or "")
+    if not payload["pure_policy_hash"]:
+        # Legacy adapter fallback for historical research events only; new
+        # canary events carry the common StrategyDecisionEvidenceBuilder hash.
+        payload["pure_policy_hash"] = sha256_prefixed(
+            {
+                "policy_contract_hash": payload["policy_contract_hash"],
+                "policy_input_hash": payload["policy_input_hash"],
+                "policy_decision_hash": payload["policy_decision_hash"],
+            }
+        )
     payload["replay_fingerprint"] = (
         dict(extra.get("replay_fingerprint"))
         if isinstance(extra.get("replay_fingerprint"), dict)
         else {}
     )
-    payload["replay_fingerprint_hash"] = canonical_payload_hash(payload["replay_fingerprint"])
+    payload["replay_fingerprint_hash"] = str(
+        extra.get("replay_fingerprint_hash")
+        or canonical_payload_hash(payload["replay_fingerprint"])
+    )
     payload["market_regime"] = "not_evaluated"
     payload["regime_decision"] = "NOT_REQUIRED"
     payload["regime_block_reason"] = "none"

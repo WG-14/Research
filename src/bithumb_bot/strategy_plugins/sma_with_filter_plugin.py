@@ -14,6 +14,8 @@ from bithumb_bot.research.strategy_registry import (
 )
 from bithumb_bot.research.strategy_spec import SMA_WITH_FILTER_SPEC, materialize_strategy_parameters
 from bithumb_bot.strategy_authoring import PromotionGradeStrategyExtension
+from bithumb_bot.strategy_authoring import build_live_eligible_strategy_plugin
+from bithumb_bot.strategy_authoring import research_plugin_from_event_builder
 from bithumb_bot.strategy_plugins.sma_with_filter_events import build_sma_with_filter_research_events
 
 
@@ -124,28 +126,20 @@ _SMA_WITH_FILTER_PROMOTION_EXTENSION = PromotionGradeStrategyExtension(
 )
 
 
-SMA_WITH_FILTER_PLUGIN = ResearchStrategyPlugin(
-    name=SMA_WITH_FILTER_SPEC.strategy_name,
-    version=SMA_WITH_FILTER_SPEC.strategy_version,
+_SMA_WITH_FILTER_RESEARCH_PLUGIN = research_plugin_from_event_builder(
+    strategy_name=SMA_WITH_FILTER_SPEC.strategy_name,
     spec=SMA_WITH_FILTER_SPEC,
+    version=SMA_WITH_FILTER_SPEC.strategy_version,
     required_data=SMA_WITH_FILTER_SPEC.required_data,
     optional_data=SMA_WITH_FILTER_SPEC.optional_data,
-    runner=run_sma_with_filter_backtest,
-    research_event_builder=build_sma_with_filter_research_events,
-    research_parameter_materializer=materialize_sma_with_filter_research_parameters,
-    runtime_replay_builder=_SMA_WITH_FILTER_PROMOTION_EXTENSION.runtime_replay_builder,
-    runtime_parameter_adapter=_SMA_WITH_FILTER_PROMOTION_EXTENSION.runtime_parameter_adapter,
-    decision_contract_version=SMA_WITH_FILTER_SPEC.decision_contract_version,
+    build_research_events=build_sma_with_filter_research_events,
     diagnostics_namespace="sma_with_filter",
-    decision_payload_adapter=_SMA_WITH_FILTER_PROMOTION_EXTENSION.decision_payload_adapter,
-    exit_signal_context_builder=_SMA_WITH_FILTER_PROMOTION_EXTENSION.exit_signal_context_builder,
-    exit_rule_factory=_SMA_WITH_FILTER_PROMOTION_EXTENSION.exit_rule_factory,
-    research_policy_decision_builder=_SMA_WITH_FILTER_PROMOTION_EXTENSION.research_policy_decision_builder,
-    research_export_normalizer=_SMA_WITH_FILTER_PROMOTION_EXTENSION.research_export_normalizer,
-    runtime_decision_adapter_factory=_SMA_WITH_FILTER_PROMOTION_EXTENSION.runtime_decision_adapter_factory,
-    single_replay_bundle_builder=_SMA_WITH_FILTER_PROMOTION_EXTENSION.single_replay_bundle_builder,
-    policy_assembly_factory=_SMA_WITH_FILTER_PROMOTION_EXTENSION.policy_assembly_factory,
-    runtime_capabilities=_SMA_WITH_FILTER_PROMOTION_EXTENSION.runtime_capabilities(),
-    authoring_contract_kind="promotion_grade",
-    promotion_extension_payload=_SMA_WITH_FILTER_PROMOTION_EXTENSION.contract_payload(),
+    research_parameter_materializer=materialize_sma_with_filter_research_parameters,
 )
+
+
+SMA_WITH_FILTER_PLUGIN = build_live_eligible_strategy_plugin(
+    research=_SMA_WITH_FILTER_RESEARCH_PLUGIN,
+    extension=_SMA_WITH_FILTER_PROMOTION_EXTENSION,
+    runner=run_sma_with_filter_backtest,
+).to_research_strategy_plugin()

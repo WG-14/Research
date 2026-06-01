@@ -239,6 +239,10 @@ class StrategyRuntimeCapabilities:
     def as_dict(self) -> dict[str, Any]:
         return {
             "schema_version": 1,
+            "research_supported": bool(self.research_supported),
+            "replay_decisions_supported": bool(self.replay_decisions_supported),
+            "promotion_export_supported": bool(self.promotion_export_supported),
+            "runtime_decision_supported": bool(self.runtime_decision_supported),
             "promotion_runtime_decisions_supported": bool(self.promotion_runtime_decisions_supported),
             "runtime_replay_supported": bool(self.runtime_replay_supported),
             "research_only": bool(self.research_only),
@@ -314,13 +318,23 @@ class ResearchStrategyPlugin:
             "runner_qualname": self.runner.__qualname__,
             "research_runnable": bool(self.research_runnable),
             "authoring_contract_kind": self.authoring_contract_kind,
+            "authoring_level": _authoring_level_for_contract_kind(self.authoring_contract_kind),
+            "capability_level": _capability_level_for_runtime_capabilities(self.runtime_capabilities),
             "promotion_grade": self.is_promotion_grade,
+            "promotion_eligible": bool(self.runtime_capabilities.promotion_export_supported),
+            "runtime_decision_eligible": bool(self.runtime_capabilities.runtime_decision_supported),
+            "live_eligibility": {
+                "dry_run_allowed": bool(self.runtime_capabilities.live_dry_run_allowed),
+                "real_order_allowed": bool(self.runtime_capabilities.live_real_order_allowed),
+                "approved_profile_required": bool(self.runtime_capabilities.approved_profile_required),
+                "fail_closed_reason": self.runtime_capabilities.fail_closed_reason,
+            },
             "promotion_extension": self.promotion_extension_payload,
             "promotion_extension_missing_reason": (
                 None if self.is_promotion_grade else self.runtime_capabilities.fail_closed_reason
             ),
             "recommended_next_action": (
-                "none" if self.is_promotion_grade else "promote_strategy_contract"
+                _recommended_next_action_for_runtime_capabilities(self.runtime_capabilities)
             ),
             "research_event_builder_supported": self.research_event_builder is not None,
             "research_event_builder_module": (
@@ -520,6 +534,43 @@ def _legacy_inferred_runtime_capabilities(plugin: ResearchStrategyPlugin) -> Str
             else "legacy_plugin_capability_inferred_live_real_order_not_allowed"
         ),
     )
+
+
+def _authoring_level_for_contract_kind(kind: str) -> str:
+    normalized = str(kind or "").strip().lower()
+    if normalized == "research_only":
+        return "level_1_research_only"
+    if normalized == "replay_compatible":
+        return "level_2_replay_compatible"
+    if normalized in {"promotion_grade", "live_eligible"}:
+        return "level_3_live_eligible"
+    return "internal_legacy_normalized"
+
+
+def _capability_level_for_runtime_capabilities(capabilities: StrategyRuntimeCapabilities) -> str:
+    if capabilities.live_dry_run_allowed or capabilities.live_real_order_allowed:
+        return "live_eligible"
+    if capabilities.runtime_decision_supported:
+        return "runtime_decision"
+    if capabilities.replay_decisions_supported:
+        return "replay_compatible"
+    if capabilities.research_supported:
+        return "research_only"
+    return "unsupported"
+
+
+def _recommended_next_action_for_runtime_capabilities(
+    capabilities: StrategyRuntimeCapabilities,
+) -> str:
+    if capabilities.live_dry_run_allowed or capabilities.live_real_order_allowed:
+        return "none"
+    if capabilities.runtime_decision_supported:
+        return "none"
+    if capabilities.replay_decisions_supported and not capabilities.runtime_decision_supported:
+        return "add_live_eligible_contract_for_runtime_or_live"
+    if capabilities.research_supported:
+        return "promote_strategy_contract"
+    return "do_not_promote_runtime_special_case"
 
 
 def strategy_runtime_capability_issues(
