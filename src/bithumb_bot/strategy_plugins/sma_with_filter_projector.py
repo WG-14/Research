@@ -84,6 +84,26 @@ class SmaWithFilterCanonicalFeatureProjection:
     allow_initial_cross: bool
     market_regime_snapshot: dict[str, object]
 
+    def policy_input_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "candle_ts": int(self.candle_ts),
+            "prev_s": float(self.prev_s),
+            "prev_l": float(self.prev_l),
+            "curr_s": float(self.curr_s),
+            "curr_l": float(self.curr_l),
+            "gap_ratio": float(self.gap_ratio),
+            "volatility_ratio": float(self.volatility_ratio),
+            "overextended_ratio": float(self.overextended_ratio),
+            "previous_cross_state": str(self.previous_cross_state),
+            "allow_initial_cross": bool(self.allow_initial_cross),
+            "market_regime_snapshot": dict(self.market_regime_snapshot),
+        }
+
+    @property
+    def feature_hash(self) -> str:
+        return _stable_hash(self.policy_input_payload())
+
     def diagnostics_payload(self) -> dict[str, object]:
         return {
             "candle_index": self.candle_index,
@@ -99,6 +119,8 @@ class SmaWithFilterCanonicalFeatureProjection:
             "previous_cross_state": self.previous_cross_state,
             "allow_initial_cross": self.allow_initial_cross,
             "market_regime_snapshot": dict(self.market_regime_snapshot),
+            "market_feature_hash": self.feature_hash,
+            "canonical_feature_projection_hash": self.feature_hash,
             "feature_authority": "SmaWithFilterSnapshotProjector.project_features",
         }
 
@@ -194,18 +216,22 @@ class SmaWithFilterSnapshotProjector:
         )
         common_exit_rule_names = set(active_exit_policy.get("common_rules") or ())
         strategy_exit_rule_names = set(active_exit_policy.get("strategy_rules") or ())
-        rule_sources = {
-            name: (
-                "common_risk_and_plugin"
-                if name in common_exit_rule_names and name in strategy_exit_rule_names
-                else "common_risk"
-                if name in common_exit_rule_names
-                else "plugin"
-                if name in strategy_exit_rule_names
-                else "unknown"
-            )
-            for name in active_exit_policy.get("rules") or ()
-        }
+        rule_names = tuple(str(name).strip().lower() for name in active_exit_policy.get("rules") or () if str(name).strip())
+        if not common_exit_rule_names and not strategy_exit_rule_names:
+            rule_sources = _default_sma_exit_rule_sources(rule_names)
+        else:
+            rule_sources = {
+                name: (
+                    "common_risk_and_plugin"
+                    if name in common_exit_rule_names and name in strategy_exit_rule_names
+                    else "common_risk"
+                    if name in common_exit_rule_names
+                    else "plugin"
+                    if name in strategy_exit_rule_names
+                    else "unknown"
+                )
+                for name in rule_names
+            }
         materialized_hash = materialized_strategy_parameters_hash(dict(materialized.values))
         provenance = {
             "projection_source": "promotion_decision_seed",
@@ -213,8 +239,10 @@ class SmaWithFilterSnapshotProjector:
             "runtime_comparable": bool(materialized.runtime_comparable),
             "policy_materialization_mode": materialized.mode.value,
             "candidate_regime_policy_enforced": candidate_regime_policy_enforced,
-            "canonical_feature_projection": features.diagnostics_payload(),
-        }
+                "canonical_feature_projection": features.diagnostics_payload(),
+                "market_feature_hash": features.feature_hash,
+                "canonical_feature_projection_hash": features.feature_hash,
+            }
         bundle = StrategyDecisionInputBundle.build(
             strategy_name=strategy.name,
             market=market,
@@ -427,9 +455,13 @@ class SmaWithFilterSnapshotProjector:
         payload.update(
             {
                 "decision_input_bundle_hash": bundle.decision_input_bundle_hash,
+                "decision_input_contract_hash": bundle.decision_input_contract_hash,
+                "decision_input_bundle_payload_hash": bundle.decision_input_bundle_payload_hash,
                 "snapshot_projector_version": bundle.snapshot_projector_version,
                 "snapshot_projector_hash": bundle.snapshot_projector_hash,
                 "market_snapshot_hash": bundle.market_snapshot_hash,
+                "market_feature_hash": bundle.market_feature_hash,
+                "canonical_feature_projection_hash": bundle.market_feature_hash,
                 "position_snapshot_hash": bundle.position_snapshot_hash,
                 "execution_constraints_hash": bundle.execution_constraints_hash,
                 "policy_config_hash": bundle.policy_config_hash,
@@ -445,6 +477,13 @@ def _coerce_bool(value: object) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _default_sma_exit_rule_sources(rule_names: tuple[str, ...]) -> dict[str, str]:
+    return {
+        name: "common_risk" if name in {"stop_loss", "max_holding_time"} else "plugin"
+        for name in rule_names
+    }
 
 
 def _sma(values: list[float], n: int, end: int) -> float:

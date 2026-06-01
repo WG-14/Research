@@ -604,6 +604,9 @@ def _extend_promotion_decision_contract_reasons(
         "policy_decision_hash",
         "policy_contract_hash",
         "decision_input_bundle_hash",
+        "market_feature_hash",
+        "canonical_feature_projection_hash",
+        "final_exit_decision_input_hash",
         "snapshot_projector_version",
         "snapshot_projector_hash",
         "strategy_evaluation_provenance",
@@ -635,6 +638,7 @@ def _extend_promotion_decision_contract_reasons(
         "policy_decision_hash",
         "policy_contract_hash",
         "decision_input_bundle_hash",
+        "final_exit_decision_input_hash",
         "snapshot_projector_version",
         "snapshot_projector_hash",
         "replay_fingerprint_hash",
@@ -648,6 +652,11 @@ def _extend_promotion_decision_contract_reasons(
                 add(field_name + "_missing")
         elif not str(value or "").strip():
             add(field_name + "_missing")
+    if not (
+        _valid_prefixed_hash(candidate.get("market_feature_hash"))
+        or _valid_prefixed_hash(candidate.get("canonical_feature_projection_hash"))
+    ):
+        add("market_feature_hash_missing")
     provenance = candidate.get("strategy_evaluation_provenance")
     if not isinstance(provenance, dict):
         add("strategy_evaluation_provenance_missing")

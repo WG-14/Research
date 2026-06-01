@@ -6,6 +6,7 @@ from typing import Mapping
 
 from bithumb_bot.core.sma_policy import (
     _stable_hash,
+    _stable_market_feature_policy_input,
     _stable_market_policy_input,
     _stable_position_policy_input,
 )
@@ -50,11 +51,14 @@ class StrategyDecisionInputBundle:
     snapshot_projector_hash: str
     provenance: Mapping[str, object]
     market_snapshot_hash: str
+    market_feature_hash: str
     position_snapshot_hash: str
     config_hash: str
     execution_constraints_hash: str
     exit_policy_config_hash: str
     policy_config_hash: str
+    decision_input_contract_hash: str
+    decision_input_bundle_payload_hash: str
     decision_input_bundle_hash: str
 
     def __post_init__(self) -> None:
@@ -90,17 +94,20 @@ class StrategyDecisionInputBundle:
         provenance: Mapping[str, object] | None = None,
     ) -> "StrategyDecisionInputBundle":
         market_payload = _stable_market_policy_input(_policy_payload(market))
+        market_feature_payload = _stable_market_feature_policy_input(market_payload)
         position_payload = _stable_position_policy_input(position.policy_input_payload())
         config_payload = _policy_payload(config)
         execution_payload = execution_constraints.policy_input_payload()
         exit_payload = _policy_payload(exit_policy_config)
         component_hashes = {
             "market_snapshot_hash": _stable_hash(market_payload),
+            "market_feature_hash": _stable_hash(market_feature_payload),
             "position_snapshot_hash": _stable_hash(position_payload),
             "config_hash": _stable_hash(config_payload),
             "execution_constraints_hash": _stable_hash(execution_payload),
             "exit_policy_config_hash": _stable_hash(exit_payload),
         }
+        component_hashes["policy_config_hash"] = component_hashes["config_hash"]
         payload = {
             "schema_version": 1,
             "strategy_name": str(strategy_name or "").strip().lower(),
@@ -114,7 +121,12 @@ class StrategyDecisionInputBundle:
             "snapshot_projector_hash": str(snapshot_projector_hash),
             "component_hashes": component_hashes,
         }
-        decision_input_bundle_hash = _stable_hash(payload)
+        decision_input_contract_hash = _stable_hash(payload)
+        payload_with_provenance = {
+            **payload,
+            "stable_provenance": _stable_provenance(dict(provenance or {})),
+        }
+        decision_input_bundle_payload_hash = _stable_hash(payload_with_provenance)
         return cls(
             strategy_name=strategy_name,
             market=market,
@@ -127,12 +139,15 @@ class StrategyDecisionInputBundle:
             snapshot_projector_hash=str(snapshot_projector_hash),
             provenance=dict(provenance or {}),
             market_snapshot_hash=component_hashes["market_snapshot_hash"],
+            market_feature_hash=component_hashes["market_feature_hash"],
             position_snapshot_hash=component_hashes["position_snapshot_hash"],
             config_hash=component_hashes["config_hash"],
             execution_constraints_hash=component_hashes["execution_constraints_hash"],
             exit_policy_config_hash=component_hashes["exit_policy_config_hash"],
             policy_config_hash=component_hashes["config_hash"],
-            decision_input_bundle_hash=decision_input_bundle_hash,
+            decision_input_contract_hash=decision_input_contract_hash,
+            decision_input_bundle_payload_hash=decision_input_bundle_payload_hash,
+            decision_input_bundle_hash=decision_input_contract_hash,
         )
 
     def payload(self) -> dict[str, object]:
@@ -154,6 +169,7 @@ class StrategyDecisionInputBundle:
     def component_hashes(self) -> dict[str, str]:
         return {
             "market_snapshot_hash": self.market_snapshot_hash,
+            "market_feature_hash": self.market_feature_hash,
             "position_snapshot_hash": self.position_snapshot_hash,
             "config_hash": self.config_hash,
             "execution_constraints_hash": self.execution_constraints_hash,
@@ -163,7 +179,9 @@ class StrategyDecisionInputBundle:
 
     def observability_payload(self) -> dict[str, object]:
         return {
+            "decision_input_contract_hash": self.decision_input_contract_hash,
             "decision_input_bundle_hash": self.decision_input_bundle_hash,
+            "decision_input_bundle_payload_hash": self.decision_input_bundle_payload_hash,
             "snapshot_projector_version": self.snapshot_projector_version,
             "snapshot_projector_hash": self.snapshot_projector_hash,
             "materialized_parameters_hash": self.materialized_parameters_hash,

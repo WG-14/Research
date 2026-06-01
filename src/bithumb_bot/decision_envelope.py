@@ -134,9 +134,14 @@ def _attach_decision_projection_observability(
 ) -> None:
     for key in (
         "decision_input_bundle_hash",
+        "decision_input_contract_hash",
+        "decision_input_bundle_payload_hash",
         "snapshot_projector_version",
         "snapshot_projector_hash",
         "market_snapshot_hash",
+        "market_feature_hash",
+        "canonical_feature_projection_hash",
+        "final_exit_decision_input_hash",
         "position_snapshot_hash",
         "execution_constraints_hash",
         "policy_config_hash",

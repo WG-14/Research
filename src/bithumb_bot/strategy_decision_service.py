@@ -171,8 +171,15 @@ class StrategyDecisionService:
             replay_payload["policy_contract_hash"] = decision.policy_contract_hash
         if bundle is not None:
             replay_payload.update(bundle.observability_payload())
-        if "replay_fingerprint_hash" not in replay_payload:
-            replay_payload["replay_fingerprint_hash"] = sha256_prefixed(replay_payload)
+        decision_trace = decision.as_trace()
+        for key in ("final_exit_decision_input_hash",):
+            value = decision_trace.get(key)
+            if str(value or "").strip():
+                replay_payload[key] = value
+        replay_hash_payload = {
+            key: value for key, value in replay_payload.items() if key != "replay_fingerprint_hash"
+        }
+        replay_payload["replay_fingerprint_hash"] = sha256_prefixed(replay_hash_payload)
         provenance = {
             **dict(request.provenance),
             "strategy_name": request.strategy_name,
@@ -191,6 +198,10 @@ class StrategyDecisionService:
         }
         if bundle is not None:
             provenance.update(bundle.observability_payload())
+        for key in ("final_exit_decision_input_hash",):
+            value = decision_trace.get(key)
+            if str(value or "").strip():
+                provenance[key] = value
         if request.mode in self._PROMOTION_COMPARABLE_MODES and bool(
             provenance.get("compatibility_fallback")
         ):
@@ -235,6 +246,10 @@ class StrategyDecisionService:
             required_decision_fields.extend(
                 [
                     "decision_input_bundle_hash",
+                    "decision_input_contract_hash",
+                    "decision_input_bundle_payload_hash",
+                    "market_feature_hash",
+                    "final_exit_decision_input_hash",
                     "snapshot_projector_version",
                     "snapshot_projector_hash",
                 ]

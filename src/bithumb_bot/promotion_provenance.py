@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
-
-from .research.hashing import sha256_prefixed
 
 
 PROMOTION_ARTIFACT_GRADE = "promotion_candidate"
@@ -25,6 +24,11 @@ LEGACY_DECISION_AUTHORITY_SOURCES = frozenset(
         "compatibility_context",
     }
 )
+
+
+def sha256_prefixed(payload: Any) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -257,11 +261,17 @@ def _canonical_decision_failure_codes(payload: dict[str, Any]) -> list[str]:
         "policy_decision_hash",
         "policy_contract_hash",
         "decision_input_bundle_hash",
+        "final_exit_decision_input_hash",
         "snapshot_projector_hash",
         "replay_fingerprint_hash",
     ):
         if not _valid_sha256_hash(str(payload.get(field_name) or "")):
             failures.append(f"canonical_promotion_{field_name}_missing")
+    if not (
+        _valid_sha256_hash(str(payload.get("market_feature_hash") or ""))
+        or _valid_sha256_hash(str(payload.get("canonical_feature_projection_hash") or ""))
+    ):
+        failures.append("canonical_promotion_market_feature_hash_missing")
     if not str(payload.get("snapshot_projector_version") or "").strip():
         failures.append("canonical_promotion_snapshot_projector_version_missing")
     provenance = payload.get("strategy_evaluation_provenance")

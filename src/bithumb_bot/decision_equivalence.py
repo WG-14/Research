@@ -1029,8 +1029,23 @@ def _reason_for_field(field: str) -> str:
         return "decision_data_fingerprint_mismatch"
     if field == "strategy_behavior_hash":
         return "decision_strategy_behavior_hash_mismatch"
-    if field in {"feature_snapshot_hash", "feature_hash", "prev_s", "prev_l", "curr_s", "curr_l", "gap_ratio", "range_ratio", "expected_edge_ratio", "required_edge_ratio"}:
+    if field in {
+        "feature_snapshot_hash",
+        "feature_hash",
+        "market_feature_hash",
+        "canonical_feature_projection_hash",
+        "prev_s",
+        "prev_l",
+        "curr_s",
+        "curr_l",
+        "gap_ratio",
+        "range_ratio",
+        "expected_edge_ratio",
+        "required_edge_ratio",
+    }:
         return "decision_feature_mismatch"
+    if field == "final_exit_decision_input_hash":
+        return "decision_final_exit_input_mismatch"
     return f"decision_{field}_mismatch"
 
 

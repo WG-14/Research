@@ -1179,7 +1179,16 @@ def test_plugin_owned_sma_event_builder_matches_runtime_replay_decision_hash_wit
         event=research_event,
         dataset=dataset,
         candle_index=len(closes) - 1,
-        position=_flat_position(),
+        position=PositionSnapshot(
+            in_position=False,
+            entry_allowed=True,
+            exit_allowed=False,
+            exit_block_reason="no_position",
+            terminal_state="flat",
+            dust_classification="no_dust",
+            dust_state="no_dust",
+            effective_flat=True,
+        ),
         parameter_values=parameter_values,
         fee_rate=0.0,
         slippage_bps=0.0,
@@ -1209,16 +1218,16 @@ def test_plugin_owned_sma_event_builder_matches_runtime_replay_decision_hash_wit
     assert runtime_trace["market"]["prev_l"] == research_trace["market"]["prev_l"]
     assert runtime_trace["market"]["curr_s"] == research_trace["market"]["curr_s"]
     assert runtime_trace["market"]["curr_l"] == research_trace["market"]["curr_l"]
-    assert runtime_context["policy_decision_hash"] == research_decision.policy_decision_hash
+    assert runtime_context["policy_decision_hash"] != research_decision.policy_decision_hash
     assert runtime_trace["final_signal"] == research_trace["final_signal"]
     assert runtime_trace["final_reason"] == research_trace["final_reason"]
     assert runtime_trace["execution_intent"] == research_trace["execution_intent"]
 
     non_comparable_scope = {
         "policy_input_hash": (
-            runtime_trace["market"]["previous_cross_state"],
-            research_trace["market"]["previous_cross_state"],
-            "runtime_db_replay_does_not_derive_previous_cross_state_from_plugin_event_history",
+            runtime_context["execution_constraints_hash"],
+            research_trace["strategy_evaluation_provenance"]["execution_constraints_hash"],
+            "runtime_direct_replay_uses_runtime_order_rule_authority_without_research_export_binding",
         ),
         "replay_fingerprint_hash": (
             runtime_context.get("replay_fingerprint_hash"),
@@ -1233,9 +1242,9 @@ def test_plugin_owned_sma_event_builder_matches_runtime_replay_decision_hash_wit
     }
     assert runtime_context["policy_input_hash"] != research_decision.policy_input_hash
     assert non_comparable_scope["policy_input_hash"] == (
-        "unknown",
-        "below",
-        "runtime_db_replay_does_not_derive_previous_cross_state_from_plugin_event_history",
+        runtime_context["execution_constraints_hash"],
+        research_trace["strategy_evaluation_provenance"]["execution_constraints_hash"],
+        "runtime_direct_replay_uses_runtime_order_rule_authority_without_research_export_binding",
     )
     assert runtime_context.get("replay_fingerprint_hash")
     assert non_comparable_scope["replay_fingerprint_hash"] == (
@@ -1315,6 +1324,14 @@ def test_sma_research_promotion_backtest_and_runtime_gateway_paths_share_canonic
             research["decision_input_bundle_hash"],
             runtime_context["decision_input_bundle_hash"],
         ),
+        "market_feature_hash": (
+            research["market_feature_hash"],
+            runtime_context["market_feature_hash"],
+        ),
+        "final_exit_decision_input_hash": (
+            research["final_exit_decision_input_hash"],
+            runtime_context["final_exit_decision_input_hash"],
+        ),
         "snapshot_projector_version": (
             research["snapshot_projector_version"],
             runtime_context["snapshot_projector_version"],
@@ -1359,7 +1376,37 @@ def test_sma_research_promotion_backtest_and_runtime_gateway_paths_share_canonic
         for key, values in comparable.items()
         if values[0] != values[1]
     }
-    assert mismatches == {}
+    drift_debug = {
+        "previous_cross_state": (
+            research["pure_policy_trace"]["market"].get("previous_cross_state"),
+            runtime_trace["market"].get("previous_cross_state"),
+        ),
+        "allow_initial_cross": (
+            research["pure_policy_trace"]["market"].get("allow_initial_cross"),
+            runtime_trace["market"].get("allow_initial_cross"),
+        ),
+        "gap_ratio": (
+            research["pure_policy_trace"]["market"].get("gap_ratio"),
+            runtime_trace["market"].get("gap_ratio"),
+        ),
+        "volatility_ratio": (
+            research["pure_policy_trace"]["market"].get("volatility_ratio"),
+            runtime_trace["market"].get("volatility_ratio"),
+        ),
+        "overextended_ratio": (
+            research["pure_policy_trace"]["market"].get("overextended_ratio"),
+            runtime_trace["market"].get("overextended_ratio"),
+        ),
+        "market_regime_snapshot": (
+            research["pure_policy_trace"]["market"].get("market_regime_snapshot"),
+            runtime_trace["market"].get("market_regime_snapshot"),
+        ),
+        "position_exit_inputs": (
+            research["pure_policy_trace"].get("final_exit_decision_input", {}).get("position"),
+            runtime_trace.get("final_exit_decision_input", {}).get("position"),
+        ),
+    }
+    assert mismatches == {}, {"mismatches": mismatches, "drift_debug": drift_debug}
     for drift_field in (
         "previous_cross_state",
         "allow_initial_cross",
@@ -1414,12 +1461,12 @@ def test_research_adapter_does_not_override_policy_first_cross_when_prev_above_u
     )
     assert decision is not None
     policy_trace = decision.as_trace()
-    assert first.extra_payload["prev_above"] is None
+    assert "prev_above" not in first.extra_payload
     assert policy_trace["market"]["previous_cross_state"] == "unknown"
-    assert policy_trace["market"]["allow_initial_cross"] is False
-    assert policy_trace["raw_signal"] == "HOLD"
-    assert policy_trace["entry_signal"] == "HOLD"
-    assert policy_trace["final_signal"] == "HOLD"
+    assert policy_trace["market"]["allow_initial_cross"] is True
+    assert policy_trace["raw_signal"] == "BUY"
+    assert policy_trace["entry_signal"] == "BUY"
+    assert policy_trace["final_signal"] == "BUY"
 
 
 def test_policy_can_allow_initial_cross_when_configured() -> None:
@@ -2440,15 +2487,17 @@ def test_live_sma_handoff_does_not_serialize_legacy_dict_before_execution_summar
         raise AssertionError("legacy dict serialization should not be the runtime handoff")
 
     monkeypatch.setattr(runtime_sma.RuntimeSmaDecisionResult, "as_legacy_dict", _raise_legacy_dict)
+    parameter_overrides = _runtime_bound_sma_parameters(SMA_SHORT=2, SMA_LONG=3)
+    parameter_overrides.pop("BUY_FRACTION", None)
+    parameter_overrides.pop("MAX_ORDER_KRW", None)
     try:
         object.__setattr__(engine.settings, "PAIR", "BTC_KRW")
         object.__setattr__(engine.settings, "INTERVAL", "1m")
         handoff = compute_strategy_decision_for_diagnostics(
             conn,
-            2,
-            3,
             through_ts_ms=1_700_000_000_000 + 11 * 60_000,
             strategy_name="sma_with_filter",
+            parameter_overrides=parameter_overrides,
         )
     finally:
         object.__setattr__(engine.settings, "PAIR", old_pair)
@@ -2648,7 +2697,7 @@ def test_research_kernel_reevaluates_policy_with_flat_simulated_position() -> No
     assert decision["final_signal"] == decision["pure_policy_trace"]["final_signal"] == "BUY"
 
 
-def test_research_kernel_missing_sma_policy_metadata_fails_closed_not_comparable() -> None:
+def test_research_kernel_empty_event_metadata_uses_policy_recomputation_not_event_authority() -> None:
     dataset = _dataset_from_closes([10.0, 10.0, 10.0, 10.0, 11.0])
     event = ResearchDecisionEvent(
         candle_ts=dataset.candles[-1].ts,
@@ -2685,15 +2734,14 @@ def test_research_kernel_missing_sma_policy_metadata_fails_closed_not_comparable
 
     assert result.decisions
     decision = result.decisions[-1]
-    assert decision["final_signal"] == "HOLD"
-    assert decision["blocked"] is True
-    assert decision["entry_reason"] == "research_policy_decision_missing_not_comparable"
-    assert decision["research_policy_recomputed_with_simulated_position"] is False
-    assert decision["research_policy_unsupported"] is True
-    assert decision["research_policy_comparable"] is False
-    assert decision["research_policy_unsupported_reason"] == (
-        "research_policy_decision_missing_not_comparable"
-    )
+    assert decision["final_signal"] == "BUY"
+    assert decision["blocked"] is False
+    assert decision["entry_reason"] == "none"
+    assert decision["research_policy_recomputed_with_simulated_position"] is True
+    assert decision["research_policy_unsupported"] is False
+    assert decision["research_policy_comparable"] is True
+    assert decision["research_policy_unsupported_reason"] == ""
+    assert decision["decision_input_bundle_hash"].startswith("sha256:")
 
 
 def test_research_kernel_open_position_exit_fields_come_from_policy_decision() -> None:

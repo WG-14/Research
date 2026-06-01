@@ -637,7 +637,7 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
             strategy_config=policy_config,
             execution_constraints=execution_snapshot,
             exit_policy_config=exit_policy_config,
-            rule_sources={},
+            rule_sources=_default_sma_exit_rule_sources(exit_policy_config),
             approved_profile_hash=approved_profile_hash,
             runtime_contract_hash=str(request_metadata.get("runtime_contract_hash") or "") or None,
             plugin_contract_hash=str(request_metadata.get("plugin_contract_hash") or "") or None,
@@ -874,10 +874,15 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
         "policy_input_hash": final_policy_decision.policy_input_hash,
         "policy_decision_hash": final_policy_decision.policy_decision_hash,
         "decision_input_bundle_hash": decision_input_bundle.decision_input_bundle_hash,
+        "decision_input_contract_hash": decision_input_bundle.decision_input_contract_hash,
+        "decision_input_bundle_payload_hash": decision_input_bundle.decision_input_bundle_payload_hash,
         "snapshot_projector_version": decision_input_bundle.snapshot_projector_version,
         "snapshot_projector_hash": decision_input_bundle.snapshot_projector_hash,
         "materialized_parameters_hash": decision_input_bundle.materialized_parameters_hash,
         "market_snapshot_hash": decision_input_bundle.market_snapshot_hash,
+        "market_feature_hash": decision_input_bundle.market_feature_hash,
+        "canonical_feature_projection_hash": decision_input_bundle.market_feature_hash,
+        "final_exit_decision_input_hash": final_policy_decision.as_trace().get("final_exit_decision_input_hash"),
         "position_snapshot_hash": decision_input_bundle.position_snapshot_hash,
         "execution_constraints_hash": decision_input_bundle.execution_constraints_hash,
         "policy_config_hash": decision_input_bundle.policy_config_hash,
@@ -967,6 +972,19 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
             if base_signal == "BUY" and (blocked_filters or market_regime_triggered or candidate_regime_triggered)
             else base_signal
         ),
+        "decision_type_authority": "diagnostic_non_authoritative",
+        "signal_observability_authority": "StrategyDecisionV2_non_authoritative_projection",
+        "strategy_diagnostics": {
+            "decision_type": (
+                "BLOCKED_ENTRY"
+                if base_signal == "BUY" and (blocked_filters or market_regime_triggered or candidate_regime_triggered)
+                else base_signal
+            ),
+            "raw_signal": base_signal,
+            "final_signal": final_policy_decision.final_signal,
+            "blocked_filter_count": len(blocked_filters),
+            "authority": "diagnostic_non_authoritative",
+        },
         "blocked_filters": blocked_filters,
         "gap_ratio": gap_ratio,
         "cost_floor_ratio": float(edge_filter_details["cost_floor_ratio"]),
@@ -1125,6 +1143,17 @@ def _resolve_signal_through_ts_ms(*, interval: str, through_ts_ms: int | None) -
     return int(signal_through_ts_ms)
 
 
+def _default_sma_exit_rule_sources(exit_policy_config: object) -> dict[str, str]:
+    return {
+        name: "common_risk" if name in {"stop_loss", "max_holding_time"} else "plugin"
+        for name in (
+            str(item).strip().lower()
+            for item in getattr(exit_policy_config, "rule_names", ())
+            if str(item).strip()
+        )
+    }
+
+
 def _latest_signal_close(
     conn: sqlite3.Connection,
     *,
@@ -1148,4 +1177,3 @@ def _latest_signal_close(
     if row is None or row[0] is None:
         return None
     return float(row[0])
-

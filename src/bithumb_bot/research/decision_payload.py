@@ -181,6 +181,7 @@ class DecisionPayloadBuilder:
 
             payload["strategy_diagnostic_count_defaults"] = _diagnostic_count_defaults()
             payload["strategy_diagnostic_counts"] = _diagnostic_counts(payload)
+            payload["strategy_diagnostic_counts_authority"] = "diagnostic_non_authoritative"
         if policy_decision is not None:
             payload["pure_policy_hash"] = policy_decision.policy_hash
             payload["policy_contract_hash"] = policy_decision.policy_contract_hash
@@ -190,10 +191,15 @@ class DecisionPayloadBuilder:
             trace = policy_decision.as_trace()
             for key in (
                 "decision_input_bundle_hash",
+                "decision_input_contract_hash",
+                "decision_input_bundle_payload_hash",
                 "snapshot_projector_version",
                 "snapshot_projector_hash",
                 "materialized_parameters_hash",
                 "market_snapshot_hash",
+                "market_feature_hash",
+                "canonical_feature_projection_hash",
+                "final_exit_decision_input_hash",
                 "position_snapshot_hash",
                 "execution_constraints_hash",
                 "policy_config_hash",

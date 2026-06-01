@@ -83,6 +83,24 @@ def _stable_market_policy_input(payload: dict[str, object]) -> dict[str, object]
             "curr_l",
             "previous_cross_state",
             "allow_initial_cross",
+            "gap_ratio",
+            "volatility_ratio",
+            "overextended_ratio",
+            "market_regime_snapshot",
+        )
+    }
+
+
+def _stable_market_feature_policy_input(payload: dict[str, object]) -> dict[str, object]:
+    return {
+        key: payload.get(key)
+        for key in (
+            "gap_ratio",
+            "volatility_ratio",
+            "overextended_ratio",
+            "market_regime_snapshot",
+            "previous_cross_state",
+            "allow_initial_cross",
         )
     }
 

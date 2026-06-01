@@ -79,6 +79,11 @@ COMMON_CANONICAL_DECISION_FIELDS_V2 = (
     "policy_decision_hash",
     "replay_fingerprint_hash",
     "decision_input_bundle_hash",
+    "decision_input_contract_hash",
+    "decision_input_bundle_payload_hash",
+    "market_feature_hash",
+    "canonical_feature_projection_hash",
+    "final_exit_decision_input_hash",
     "snapshot_projector_version",
     "snapshot_projector_hash",
     "runtime_decision_request_hash",
@@ -202,6 +207,8 @@ PROMOTION_REQUIRED_CANONICAL_FIELDS = (
     "execution_engine",
     "feature_snapshot_hash",
     "strategy_behavior_hash",
+    "market_feature_hash",
+    "final_exit_decision_input_hash",
 )
 LEGACY_PROMOTION_REQUIRED_CANONICAL_FIELDS_V1 = (
     "decision_contract_version",
@@ -477,6 +484,8 @@ def _promotion_artifact_provenance_failures(
         "canonical_promotion_runtime_decision_request_hash_missing": "runtime_decision_request_hash",
         "canonical_promotion_runtime_strategy_set_manifest_hash_missing": "runtime_strategy_set_manifest_hash",
         "canonical_promotion_approved_profile_hash_missing": "approved_profile_hash",
+        "canonical_promotion_market_feature_hash_missing": "market_feature_hash",
+        "canonical_promotion_final_exit_decision_input_hash_missing": "final_exit_decision_input_hash",
         "canonical_promotion_legacy_context_authority": "decision_authority_source",
         "canonical_promotion_runtime_replay_planning_error": "runtime_replay_planning_error",
         "canonical_promotion_typed_execution_provenance_missing": "execution_evidence_source",
@@ -622,6 +631,15 @@ def runtime_decision_to_canonical_event(
         "policy_input_hash": str(context.get("policy_input_hash") or ""),
         "policy_decision_hash": str(context.get("policy_decision_hash") or ""),
         "decision_input_bundle_hash": str(context.get("decision_input_bundle_hash") or ""),
+        "decision_input_contract_hash": str(context.get("decision_input_contract_hash") or ""),
+        "decision_input_bundle_payload_hash": str(context.get("decision_input_bundle_payload_hash") or ""),
+        "market_feature_hash": str(
+            context.get("market_feature_hash") or context.get("canonical_feature_projection_hash") or ""
+        ),
+        "canonical_feature_projection_hash": str(
+            context.get("canonical_feature_projection_hash") or context.get("market_feature_hash") or ""
+        ),
+        "final_exit_decision_input_hash": str(context.get("final_exit_decision_input_hash") or ""),
         "snapshot_projector_version": str(context.get("snapshot_projector_version") or ""),
         "snapshot_projector_hash": str(context.get("snapshot_projector_hash") or ""),
         "replay_fingerprint_hash": canonical_payload_hash(context.get("replay_fingerprint") or {}),
@@ -766,6 +784,11 @@ def research_decision_to_canonical_event(
     payload["policy_input_hash"] = str(payload.get("policy_input_hash") or "")
     payload["policy_decision_hash"] = str(payload.get("policy_decision_hash") or "")
     payload["decision_input_bundle_hash"] = str(payload.get("decision_input_bundle_hash") or "")
+    payload["decision_input_contract_hash"] = str(payload.get("decision_input_contract_hash") or "")
+    payload["decision_input_bundle_payload_hash"] = str(payload.get("decision_input_bundle_payload_hash") or "")
+    payload["market_feature_hash"] = str(payload.get("market_feature_hash") or payload.get("canonical_feature_projection_hash") or "")
+    payload["canonical_feature_projection_hash"] = str(payload.get("canonical_feature_projection_hash") or payload.get("market_feature_hash") or "")
+    payload["final_exit_decision_input_hash"] = str(payload.get("final_exit_decision_input_hash") or "")
     payload["snapshot_projector_version"] = str(payload.get("snapshot_projector_version") or "")
     payload["snapshot_projector_hash"] = str(payload.get("snapshot_projector_hash") or "")
     payload["runtime_decision_request_hash"] = str(payload.get("runtime_decision_request_hash") or "")

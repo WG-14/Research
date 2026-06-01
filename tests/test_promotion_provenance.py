@@ -37,6 +37,8 @@ def _typed_payload(**overrides: object) -> dict[str, object]:
             "policy_decision_hash": HASH,
             "policy_contract_hash": HASH,
             "decision_input_bundle_hash": HASH,
+            "market_feature_hash": HASH,
+            "final_exit_decision_input_hash": HASH,
             "snapshot_projector_version": "sma_with_filter_snapshot_projector_v1",
             "snapshot_projector_hash": HASH,
             "strategy_evaluation_provenance": {
@@ -180,6 +182,20 @@ def test_canonical_promotion_rejects_compatibility_fallback_context() -> None:
     assert "canonical_promotion_compatibility_fallback" in result.reason_codes
     assert "canonical_promotion_typed_execution_provenance_missing" in result.reason_codes
     assert "canonical_promotion_typed_authority_plane_missing" in result.reason_codes
+
+
+def test_canonical_promotion_rejects_missing_new_input_contract_hashes() -> None:
+    result = validate_promotion_artifact(
+        _typed_payload(
+            market_feature_hash="",
+            canonical_feature_projection_hash="",
+            final_exit_decision_input_hash="",
+        )
+    )
+
+    assert result.ok is False
+    assert "canonical_promotion_market_feature_hash_missing" in result.reason_codes
+    assert "canonical_promotion_final_exit_decision_input_hash_missing" in result.reason_codes
 
 
 def test_promotion_provenance_rejects_malformed_execution_hashes() -> None:

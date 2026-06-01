@@ -12,6 +12,7 @@ from bithumb_bot.core.sma_policy import (
     SmaPolicyConfig,
     StrategyDecisionV2,
     _stable_hash,
+    _stable_market_policy_input,
     _stable_position_terminal_state,
     evaluate_sma_policy,
 )
@@ -118,9 +119,19 @@ def evaluate_sma_final_decision(
         else None
     )
     exit_policy_payload = exit_policy_config.policy_input_payload()
+    final_exit_decision_input_payload = _stable_exit_decision_input_payload(
+        market=market,
+        position=position,
+        entry_policy_input_hash=entry_decision.policy_input_hash,
+        exit_policy_payload=exit_policy_payload,
+        rule_sources=rule_sources,
+    )
+    final_exit_decision_input_hash = _stable_hash(final_exit_decision_input_payload)
     policy_input_hash = _stable_hash(
         {
             "entry_policy_input_hash": entry_decision.policy_input_hash,
+            "final_exit_decision_input_hash": final_exit_decision_input_hash,
+            "final_exit_decision_input": final_exit_decision_input_payload,
             "exit_policy": exit_policy_payload,
             "exit_policy_hash": _stable_hash(exit_policy_payload),
             "execution_sizing": (
@@ -142,6 +153,8 @@ def evaluate_sma_final_decision(
             "exit_reason": exit_reason,
             "exit_policy": exit_policy_payload,
             "exit_policy_hash": _stable_hash(exit_policy_payload),
+            "final_exit_decision_input": final_exit_decision_input_payload,
+            "final_exit_decision_input_hash": final_exit_decision_input_hash,
             "exit_rule": exit_rule,
             "exit_evaluations": [dict(item) for item in exit_evaluations],
             "final_signal": final_signal,
@@ -174,6 +187,7 @@ def evaluate_sma_final_decision(
             "protective_exit_overrode_entry": protective_exit_overrode_entry,
             "exit_filter_suppression_prevented": exit_filter_suppression_prevented,
             "position_terminal_state": _stable_position_terminal_state(position.terminal_state),
+            "final_exit_decision_input_hash": final_exit_decision_input_hash,
             "execution_intent": execution_intent,
         }
     )
@@ -196,6 +210,52 @@ def evaluate_sma_final_decision(
         policy_input_hash=policy_input_hash,
         policy_decision_hash=policy_decision_hash,
     )
+
+
+def _stable_exit_decision_input_payload(
+    *,
+    market: MarketWindow,
+    position: PositionSnapshot,
+    entry_policy_input_hash: str,
+    exit_policy_payload: dict[str, object],
+    rule_sources: dict[str, str] | None,
+) -> dict[str, object]:
+    market_payload = _stable_market_policy_input(market.policy_input_payload())
+    return {
+        "schema_version": 1,
+        "entry_policy_input_hash": str(entry_policy_input_hash),
+        "market": market_payload,
+        "position": {
+            "in_position": bool(position.in_position),
+            "exit_allowed": bool(position.exit_allowed),
+            "exit_block_reason": str(position.exit_block_reason or ""),
+            "terminal_state": _stable_position_terminal_state(position.terminal_state),
+            "entry_ts": position.entry_ts,
+            "entry_price": position.entry_price,
+            "qty_open": float(position.qty_open),
+            "holding_time_sec": float(position.holding_time_sec),
+            "unrealized_pnl": float(position.unrealized_pnl),
+            "unrealized_pnl_ratio": float(position.unrealized_pnl_ratio),
+            "raw_qty_open": float(position.raw_qty_open),
+            "raw_total_asset_qty": float(position.raw_total_asset_qty),
+            "open_lot_count": int(position.open_lot_count),
+            "dust_tracking_lot_count": int(position.dust_tracking_lot_count),
+            "reserved_exit_lot_count": int(position.reserved_exit_lot_count),
+            "sellable_executable_lot_count": int(position.sellable_executable_lot_count),
+            "dust_classification": str(position.dust_classification or ""),
+            "dust_state": str(position.dust_state or ""),
+            "effective_flat": bool(position.effective_flat),
+            "has_executable_exposure": bool(position.has_executable_exposure),
+            "has_any_position_residue": bool(position.has_any_position_residue),
+            "has_non_executable_residue": bool(position.has_non_executable_residue),
+            "has_dust_only_remainder": bool(position.has_dust_only_remainder),
+        },
+        "exit_policy_hash": _stable_hash(exit_policy_payload),
+        "rule_sources": {
+            str(key): str(value)
+            for key, value in sorted(dict(rule_sources or {}).items(), key=lambda item: str(item[0]))
+        },
+    }
 
 
 def _execution_intent(
