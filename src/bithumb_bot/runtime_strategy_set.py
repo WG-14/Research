@@ -32,8 +32,10 @@ from .runtime_strategy_decision import (
     RuntimeDecisionRequest,
     RuntimeStrategyDecisionResult,
     _attach_runtime_request_metadata,
+    _attach_runtime_feature_snapshot_metadata,
     get_runtime_decision_adapter,
     is_runtime_strategy_decision_result,
+    promotion_adapter_supports_feature_snapshot,
     production_runtime_strategy_missing_error,
 )
 from .runtime_data_provider import (
@@ -995,6 +997,16 @@ def _runtime_result_replay_metadata(result: RuntimeStrategyDecisionResult) -> di
         "runtime_contract_hash": base.get("runtime_contract_hash"),
         "plugin_contract_hash": base.get("plugin_contract_hash"),
         "through_ts_ms": base.get("through_ts_ms"),
+        "runtime_data_contract_hash": base.get("runtime_data_contract_hash")
+        or replay_payload.get("runtime_data_contract_hash"),
+        "provider_contract_hash": base.get("provider_contract_hash")
+        or replay_payload.get("provider_contract_hash"),
+        "runtime_data_availability_report_hash": base.get("runtime_data_availability_report_hash")
+        or replay_payload.get("runtime_data_availability_report_hash"),
+        "source_schema_hash": base.get("source_schema_hash")
+        or replay_payload.get("source_schema_hash"),
+        "feature_snapshot_hash": base.get("feature_snapshot_hash")
+        or replay_payload.get("feature_snapshot_hash"),
         "replay_fingerprint_hash": sha256_prefixed(replay_payload),
     }
 
@@ -1082,14 +1094,8 @@ class RuntimeStrategyDecisionCollector:
         *,
         through_ts_ms: int | None,
     ) -> RuntimeStrategyDecisionResultBundle | None:
-        results: list[RuntimeStrategyDecisionResult] = []
-        data_provider = SQLiteRuntimeDataProvider(conn, resolver=self.requirement_resolver)
-        data_availability_report = data_provider.preflight(
-            strategy_set,
-            through_ts_ms=through_ts_ms,
-        )
-        if not data_availability_report.ok:
-            raise RuntimeError(";".join(data_availability_report.reasons))
+        prepared: list[tuple[RuntimeStrategySpec, RuntimeDecisionAdapter, RuntimeDecisionRequest]] = []
+        materialized_specs: list[RuntimeStrategySpec] = []
         for spec in strategy_set.active_strategies:
             validate_live_strategy_selection(replace(settings, STRATEGY_NAME=spec.strategy_name))
             adapter = self.adapter_resolver(spec.strategy_name)
@@ -1101,6 +1107,33 @@ class RuntimeStrategyDecisionCollector:
                     f"runtime_decision_adapter_name_mismatch:{spec.strategy_name}:{adapter_name}"
                 )
             request = self.request_builder.build_for_spec(spec, through_ts_ms=through_ts_ms)
+            if not promotion_adapter_supports_feature_snapshot(adapter):
+                raise RuntimeError(f"runtime_decision_feature_snapshot_required:{spec.strategy_name}")
+            materialized_spec = replace(
+                spec,
+                parameters=dict(request.parameters),
+                parameter_source=request.parameter_source,
+                approved_profile_path=request.approved_profile_path,
+                approved_profile_hash=request.approved_profile_hash,
+                runtime_contract_hash=request.runtime_contract_hash,
+                strategy_version=request.strategy_version,
+            )
+            materialized_specs.append(materialized_spec)
+            prepared.append((materialized_spec, adapter, request))
+        materialized_strategy_set = RuntimeStrategySet(
+            strategies=tuple(materialized_specs),
+            source=strategy_set.source,
+            market_scope=strategy_set.market_scope,
+        )
+        results: list[RuntimeStrategyDecisionResult] = []
+        data_provider = SQLiteRuntimeDataProvider(conn, resolver=self.requirement_resolver)
+        data_availability_report = data_provider.preflight(
+            materialized_strategy_set,
+            through_ts_ms=through_ts_ms,
+        )
+        if not data_availability_report.ok:
+            raise RuntimeError(";".join(data_availability_report.reasons))
+        for spec, adapter, request in prepared:
             requirements = self.requirement_resolver.resolve_for_strategy_set(
                 RuntimeStrategySet(strategies=(spec,), source=strategy_set.source, market_scope=strategy_set.market_scope)
             )
@@ -1117,6 +1150,7 @@ class RuntimeStrategyDecisionCollector:
                 return None
             if not is_runtime_strategy_decision_result(result):
                 raise TypeError(f"typed_runtime_decision_required:{spec.strategy_name}")
+            _attach_runtime_feature_snapshot_metadata(result, feature_snapshot)
             _attach_runtime_request_metadata(result, request)
             validate_runtime_decision_result_provenance(result, request)
             results.append(result)
@@ -1134,10 +1168,11 @@ def _decide_with_feature_snapshot(
     request: RuntimeDecisionRequest,
     feature_snapshot: RuntimeFeatureSnapshot,
 ) -> RuntimeStrategyDecisionResult | None:
+    del conn
     feature_decider = getattr(adapter, "decide_feature_snapshot", None)
     if callable(feature_decider):
         return feature_decider(request, feature_snapshot)
-    return adapter.decide(conn, request)
+    raise RuntimeError(f"runtime_decision_feature_snapshot_required:{request.strategy_name}")
 
 
 @dataclass(frozen=True)
@@ -1345,6 +1380,11 @@ def normalized_runtime_strategy_set_manifest(
                 "runtime_strategy_manifest_legacy_compatibility_rejected:"
                 + ",".join(legacy_instances)
             )
+        if data_availability_report is None:
+            raise RuntimeError("runtime_data_preflight_not_evaluated")
+        if data_availability_report.status in {"", "FAIL", "NOT_EVALUATED"} or not data_availability_report.ok:
+            reasons = ",".join(data_availability_report.reasons) or "runtime_data_preflight_failed"
+            raise RuntimeError(f"runtime_data_preflight_gate_failed:{data_availability_report.status}:{reasons}")
     run_start_requests = tuple(
         builder.build_for_spec(spec, through_ts_ms=None)
         for spec in resolved.active_strategies

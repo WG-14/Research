@@ -102,6 +102,8 @@ class DataCapabilityRequirement:
     evidence_level: str | None = None
     source: str | None = None
     notes: str | None = None
+    lookback_rows: int | None = None
+    closed_candle_required: bool = False
 
     def __post_init__(self) -> None:
         normalized = str(self.name or "").strip().lower()
@@ -113,6 +115,11 @@ class DataCapabilityRequirement:
             if coverage < 0.0 or coverage > 100.0:
                 raise ValueError("data capability min_coverage_pct must be between 0 and 100")
             object.__setattr__(self, "min_coverage_pct", coverage)
+        if self.lookback_rows is not None:
+            rows = int(self.lookback_rows)
+            if rows < 1:
+                raise ValueError("data capability lookback_rows must be positive")
+            object.__setattr__(self, "lookback_rows", rows)
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -127,6 +134,10 @@ class DataCapabilityRequirement:
             payload["source"] = str(self.source)
         if self.notes is not None:
             payload["notes"] = str(self.notes)
+        if self.lookback_rows is not None:
+            payload["lookback_rows"] = int(self.lookback_rows)
+        if self.closed_candle_required:
+            payload["closed_candle_required"] = True
         return payload
 
 

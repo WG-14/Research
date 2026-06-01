@@ -129,6 +129,18 @@ class RuntimeDecisionAdapter(Protocol):
     def typed_authority_required(self) -> bool: ...
 
 
+class PromotionRuntimeDecisionAdapter(Protocol):
+    strategy_name: str
+
+    def decide_feature_snapshot(
+        self,
+        request: RuntimeDecisionRequest,
+        feature_snapshot: RuntimeFeatureSnapshot,
+    ) -> RuntimeStrategyDecisionResult | None: ...
+
+    def typed_authority_required(self) -> bool: ...
+
+
 RuntimeDecisionAdapterFactory = Callable[[], RuntimeDecisionAdapter]
 
 _DERIVED_RUNTIME_DECISION_ADAPTER_CACHE: dict[tuple[str, str, str], RuntimeDecisionAdapter] = {}
@@ -176,6 +188,8 @@ def get_runtime_decision_adapter(name: str) -> RuntimeDecisionAdapter | None:
     adapter_name = _normalize_name(getattr(adapter, "strategy_name", ""))
     if adapter_name != plugin.name:
         raise RuntimeError(f"runtime_decision_adapter_name_mismatch:{plugin.name}:{adapter_name}")
+    if not promotion_adapter_supports_feature_snapshot(adapter):
+        raise RuntimeError(f"runtime_decision_feature_snapshot_required:{plugin.name}")
     _DERIVED_RUNTIME_DECISION_ADAPTER_CACHE.clear()
     _DERIVED_RUNTIME_DECISION_ADAPTER_CACHE[cache_key] = adapter
     return adapter
@@ -285,6 +299,15 @@ class DecisionRunner:
             spec,
             through_ts_ms=through_ts_ms,
         )
+        materialized_spec = replace(
+            spec,
+            parameters=dict(request.parameters),
+            parameter_source=request.parameter_source,
+            approved_profile_path=request.approved_profile_path,
+            approved_profile_hash=request.approved_profile_hash,
+            runtime_contract_hash=request.runtime_contract_hash,
+            strategy_version=request.strategy_version,
+        )
         from .runtime_data_provider import (
             RuntimeDataRequirementResolver,
             SQLiteRuntimeDataProvider,
@@ -292,9 +315,9 @@ class DecisionRunner:
 
         provider = SQLiteRuntimeDataProvider(conn)
         strategy_set = RuntimeStrategySet(
-            strategies=(spec,),
+            strategies=(materialized_spec,),
             source="DecisionRunner",
-            market_scope=RuntimeMarketScope(pair=spec.pair, interval=spec.interval),
+            market_scope=RuntimeMarketScope(pair=materialized_spec.pair, interval=materialized_spec.interval),
         )
         requirements = RuntimeDataRequirementResolver().resolve_for_strategy_set(strategy_set)
         preflight = provider.preflight(
@@ -307,11 +330,11 @@ class DecisionRunner:
         if feature_snapshot is None:
             return None
         feature_decider = getattr(adapter, "decide_feature_snapshot", None)
-        if callable(feature_decider):
-            result = feature_decider(request, feature_snapshot)
-        else:
-            result = adapter.decide(conn, request)
+        if not callable(feature_decider):
+            raise RuntimeError(f"runtime_decision_feature_snapshot_required:{selected_strategy_name}")
+        result = feature_decider(request, feature_snapshot)
         if result is not None:
+            _attach_runtime_feature_snapshot_metadata(result, feature_snapshot)
             _attach_runtime_request_metadata(result, request)
         return result
 
@@ -423,3 +446,28 @@ def _attach_runtime_request_metadata(
                 "strategy_parameters_hash": request.strategy_parameters_hash,
             }
         )
+
+
+def promotion_adapter_supports_feature_snapshot(adapter: object) -> bool:
+    return callable(getattr(adapter, "decide_feature_snapshot", None))
+
+
+def _attach_runtime_feature_snapshot_metadata(
+    result: RuntimeStrategyDecisionResult,
+    feature_snapshot: RuntimeFeatureSnapshot,
+) -> None:
+    payload = feature_snapshot.as_dict()
+    fields = {
+        "runtime_data_contract_hash": payload.get("runtime_data_contract_hash"),
+        "provider_contract_hash": payload.get("provider_contract_hash"),
+        "runtime_data_availability_report_hash": payload.get("runtime_data_availability_report_hash"),
+        "source_schema_hash": payload.get("source_schema_hash"),
+        "feature_snapshot_hash": payload.get("feature_snapshot_hash"),
+        "market_snapshot_hash": payload.get("market_snapshot_hash"),
+    }
+    if isinstance(result.base_context, dict):
+        result.base_context.update(fields)
+    if isinstance(result.replay_fingerprint, dict):
+        result.replay_fingerprint.update(fields)
+    if isinstance(result.boundary, dict):
+        result.boundary.update(fields)

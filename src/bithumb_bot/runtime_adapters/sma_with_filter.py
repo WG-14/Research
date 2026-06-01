@@ -9,6 +9,7 @@ from bithumb_bot.runtime_sma_snapshot_builder import (
     RuntimeSmaDecisionResult,
     _latest_signal_close,
     _resolve_signal_through_ts_ms,
+    build_sma_with_filter_runtime_decision_from_feature_snapshot,
 )
 from bithumb_bot.runtime_strategy_decision import RuntimeStrategyDecisionResult
 from bithumb_bot.strategy_plugins.sma_with_filter_assembly import (
@@ -187,6 +188,10 @@ class SmaWithFilterRuntimeDecisionAdapter:
         conn,
         request,
     ) -> RuntimeStrategyDecisionResult | None:
+        """Compatibility/diagnostic DB-bound decision path.
+
+        Promotion runtime callers must use ``decide_feature_snapshot``.
+        """
         runtime_instance = getattr(request, "runtime_strategy_spec", None)
         runtime_adapter_config = (
             dict(getattr(runtime_instance, "runtime_adapter_config", {}) or {})
@@ -214,6 +219,34 @@ class SmaWithFilterRuntimeDecisionAdapter:
             conn,
             strategy,
             through_ts_ms=request.through_ts_ms,
+            boundary_telemetry=boundary_telemetry,
+        )
+
+    def decide_feature_snapshot(
+        self,
+        request,
+        feature_snapshot,
+    ) -> RuntimeStrategyDecisionResult | None:
+        runtime_instance = getattr(request, "runtime_strategy_spec", None)
+        runtime_adapter_config = (
+            dict(getattr(runtime_instance, "runtime_adapter_config", {}) or {})
+            if runtime_instance is not None
+            else {}
+        )
+        candidate_regime_policy = (
+            dict(runtime_adapter_config.get("candidate_regime_policy"))
+            if isinstance(runtime_adapter_config.get("candidate_regime_policy"), dict)
+            else None
+        )
+        strategy = SmaWithFilterRuntimeConfig.from_runtime_request(request).build_strategy(
+            candidate_regime_policy=candidate_regime_policy,
+        )
+        if not isinstance(strategy, SmaWithFilterStrategy):
+            raise RuntimeError(f"strategy_policy_invalid:{self.strategy_name}")
+        boundary_telemetry = request.observability_fields() if hasattr(request, "observability_fields") else {}
+        return build_sma_with_filter_runtime_decision_from_feature_snapshot(
+            strategy,
+            feature_snapshot,
             boundary_telemetry=boundary_telemetry,
         )
 

@@ -13,7 +13,7 @@ from bithumb_bot import config
 from bithumb_bot import engine as engine_module
 from bithumb_bot import profile_cli
 from bithumb_bot.config import settings
-from bithumb_bot.db_core import ensure_db
+from bithumb_bot.db_core import ensure_db, ensure_schema
 from bithumb_bot.runtime_decision_service import (
     compute_legacy_signal_for_diagnostics as compute_signal,
 )
@@ -235,25 +235,29 @@ def test_live_sma_with_filter_route_does_not_call_legacy_decide(
         raising=False,
     )
     snapshot_calls: list[str] = []
-    normalization_calls: list[str] = []
+    def _provider_sma_payload(self, *, request, candle_rows):
+        return {
+            "strategy": "sma_with_filter",
+            "candles": list(candle_rows or ()),
+            "runtime_snapshot_provider_contract": "unit",
+            "payload_hash": "sha256:" + "1" * 64,
+        }
 
-    def _normalize_before_decision(_conn, strategy, *, through_ts_ms=None, normalizer=None):
-        normalization_calls.append(strategy.name)
-        return 0
-
-    def _snapshot_boundary(_conn, strategy, *, through_ts_ms=None):
-        snapshot_calls.append(strategy.name)
+    def _feature_snapshot_boundary(self, request, feature_snapshot):
+        snapshot_calls.append(request.strategy_name)
         return None
 
+    import bithumb_bot.runtime_data_provider as runtime_data_provider
+
     monkeypatch.setattr(
-        runtime_sma_adapter,
-        "normalize_position_state_before_strategy_decision",
-        _normalize_before_decision,
+        runtime_data_provider.SQLiteRuntimeDataProvider,
+        "_sma_with_filter_runtime_payload",
+        _provider_sma_payload,
     )
     monkeypatch.setattr(
-        runtime_sma_adapter,
-        "decide_sma_with_filter_runtime_snapshot_from_db",
-        _snapshot_boundary,
+        runtime_sma_adapter.SmaWithFilterRuntimeDecisionAdapter,
+        "decide_feature_snapshot",
+        _feature_snapshot_boundary,
     )
     import bithumb_bot.runtime_strategy_set as runtime_strategy_set
 
@@ -307,7 +311,6 @@ def test_live_sma_with_filter_route_does_not_call_legacy_decide(
             os.environ["DB_PATH"] = old_env_db_path
 
     assert result is None
-    assert normalization_calls == ["sma_with_filter"]
     assert snapshot_calls == ["sma_with_filter"]
 
 
@@ -317,8 +320,8 @@ def test_collector_injection_exposes_typed_strategy_decision_boundary() -> None:
     class _UnitAdapter:
         strategy_name = "canary_non_sma"
 
-        def decide(self, conn, request):
-            del conn
+        def decide_feature_snapshot(self, request, feature_snapshot):
+            del feature_snapshot
             calls.append((request.strategy_name, request.through_ts_ms))
             return None
 
@@ -332,6 +335,15 @@ def test_collector_injection_exposes_typed_strategy_decision_boundary() -> None:
     )
 
     with sqlite3.connect(":memory:") as conn:
+        ensure_schema(conn)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO candles(ts, pair, interval, open, high, low, close, volume)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (123, settings.PAIR, settings.INTERVAL, 10.0, 10.0, 10.0, 10.0, 1.0),
+        )
+        conn.commit()
         result = RuntimeStrategyDecisionCollector(
             adapter_resolver=lambda strategy_name: (
                 _UnitAdapter() if str(strategy_name).strip().lower() == "canary_non_sma" else None

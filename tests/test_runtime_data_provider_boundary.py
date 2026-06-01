@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import ast
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_schema
 from bithumb_bot.research.strategy_registry import TEST_TOP_OF_BOOK_REQUIRED_STRATEGY
 from bithumb_bot.runtime_data_provider import (
@@ -142,11 +145,102 @@ def test_required_orderbook_top_strategy_fails_closed_when_snapshots_absent() ->
     assert "orderbook_top" in report.as_dict()["capabilities_missing"]
 
 
+def test_sma_required_candle_lookback_insufficient_fails_with_stable_reason() -> None:
+    conn = _conn()
+    strategy_set = RuntimeStrategySet(
+        source="unit",
+        strategies=(
+            RuntimeStrategySpec(
+                "sma_with_filter",
+                pair="KRW-BTC",
+                interval="1m",
+                parameters={
+                    "SMA_LONG": 10,
+                    "SMA_FILTER_VOL_WINDOW": 2,
+                    "SMA_FILTER_OVEREXT_LOOKBACK": 1,
+                },
+            ),
+        ),
+    )
+    try:
+        report = SQLiteRuntimeDataProvider(conn).preflight(
+            strategy_set,
+            through_ts_ms=1_700_000_180_000,
+        )
+    finally:
+        conn.close()
+
+    assert report.ok is False
+    assert "runtime_data_lookback_insufficient:candles" in report.reasons
+    coverage = report.as_dict()["coverage_by_capability"]["candles"]
+    assert coverage["expected_count"] == 12
+    assert coverage["coverage_pct"] < 100.0
+
+
+def test_required_non_candle_capability_snapshot_materializes_evidence_payload() -> None:
+    conn = _conn()
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO orderbook_top_snapshots
+        (ts, pair, bid_price, ask_price, spread_bps, source, observed_at_epoch_sec)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (1_700_000_180_000, "KRW-BTC", 99.0, 101.0, 200.0, "unit", 1_700_000_180.0),
+    )
+    conn.commit()
+    strategy_set = RuntimeStrategySet(
+        source="unit",
+        strategies=(
+            RuntimeStrategySpec(
+                TEST_TOP_OF_BOOK_REQUIRED_STRATEGY,
+                pair="KRW-BTC",
+                interval="1m",
+                parameters={},
+            ),
+        ),
+    )
+    resolver = RuntimeDataRequirementResolver()
+    provider = SQLiteRuntimeDataProvider(conn, resolver=resolver)
+    try:
+        report = provider.preflight(strategy_set, through_ts_ms=1_700_000_180_000)
+        request = SimpleNamespace(
+            strategy_name=TEST_TOP_OF_BOOK_REQUIRED_STRATEGY,
+            pair="KRW-BTC",
+            interval="1m",
+            through_ts_ms=1_700_000_180_000,
+        )
+        snapshot = provider.snapshot(
+            request,
+            resolver.resolve_for_strategy_set(strategy_set),
+        )
+    finally:
+        conn.close()
+
+    assert report.ok is True
+    assert snapshot is not None
+    orderbook = snapshot.feature_payload["capabilities"]["orderbook_top"]
+    assert orderbook["selected_timestamp"] == 1_700_000_180_000
+    assert orderbook["source_table_or_stream"] == "orderbook_top_snapshots"
+    assert orderbook["payload_hash"].startswith("sha256:")
+    assert orderbook["evidence_payload"]["bid_price"] == 99.0
+
+
 def test_optional_orderbook_top_missing_is_warning_not_failure() -> None:
     conn = _conn()
     strategy_set = RuntimeStrategySet(
         source="unit",
-        strategies=(RuntimeStrategySpec("sma_with_filter", pair="KRW-BTC", interval="1m"),),
+        strategies=(
+            RuntimeStrategySpec(
+                "sma_with_filter",
+                pair="KRW-BTC",
+                interval="1m",
+                parameters={
+                    "SMA_LONG": 2,
+                    "SMA_FILTER_VOL_WINDOW": 2,
+                    "SMA_FILTER_OVEREXT_LOOKBACK": 1,
+                },
+            ),
+        ),
     )
     try:
         report = SQLiteRuntimeDataProvider(conn).preflight(
@@ -182,6 +276,13 @@ def test_canary_runtime_decision_uses_provider_snapshot_provenance() -> None:
     assert result.replay_fingerprint["feature_snapshot_hash"] == result.base_context["feature_snapshot_hash"]
     assert bundle.data_availability_report is not None
     assert bundle.data_availability_report.report_hash.startswith("sha256:")
+    replay_metadata = bundle.as_dict()["results"][0]
+    assert replay_metadata["feature_snapshot_hash"] == result.base_context["feature_snapshot_hash"]
+    assert replay_metadata["runtime_data_availability_report_hash"] == (
+        bundle.data_availability_report.report_hash
+    )
+    assert replay_metadata["provider_contract_hash"] == result.base_context["provider_contract_hash"]
+    assert replay_metadata["source_schema_hash"] == result.base_context["source_schema_hash"]
 
 
 def test_runtime_strategy_set_manifest_includes_provider_evidence() -> None:
@@ -205,6 +306,36 @@ def test_runtime_strategy_set_manifest_includes_provider_evidence() -> None:
     assert manifest["provider_contract_hash"].startswith("sha256:")
     assert manifest["runtime_data_db_schema_fingerprint"].startswith("sha256:")
     assert manifest["coverage_by_strategy"]
+
+
+def test_live_like_runtime_manifest_rejects_not_evaluated_preflight() -> None:
+    strategy_set = RuntimeStrategySet(source="unit", strategies=(_canary_spec(),))
+
+    with pytest.raises(RuntimeError, match="runtime_data_preflight_not_evaluated"):
+        normalized_runtime_strategy_set_manifest(
+            strategy_set=strategy_set,
+            settings_obj=replace(settings, LIVE_DRY_RUN=True),
+            data_availability_report=None,
+        )
+
+
+def test_live_like_runtime_manifest_rejects_failed_preflight() -> None:
+    conn = _conn(with_candles=False)
+    strategy_set = RuntimeStrategySet(source="unit", strategies=(_canary_spec(),))
+    try:
+        report = SQLiteRuntimeDataProvider(conn).preflight(
+            strategy_set,
+            through_ts_ms=1_700_000_180_000,
+        )
+    finally:
+        conn.close()
+
+    with pytest.raises(RuntimeError, match="runtime_data_preflight_gate_failed:FAIL"):
+        normalized_runtime_strategy_set_manifest(
+            strategy_set=strategy_set,
+            settings_obj=replace(settings, LIVE_DRY_RUN=True),
+            data_availability_report=report,
+        )
 
 
 def test_strategy_plugin_and_runtime_adapter_modules_do_not_own_runtime_data_sql() -> None:

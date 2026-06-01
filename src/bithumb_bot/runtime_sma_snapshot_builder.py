@@ -4,6 +4,7 @@ import sqlite3
 import time
 from copy import deepcopy
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 from .broker.order_rules import get_effective_order_rules
@@ -449,6 +450,362 @@ def _policy_position_snapshot(
         has_any_position_residue=bool(exposure.has_any_position_residue),
         has_non_executable_residue=bool(exposure.has_non_executable_residue),
         has_dust_only_remainder=bool(exposure.has_dust_only_remainder),
+    )
+
+
+def _namespace_from_mapping(payload: dict[str, object]) -> SimpleNamespace:
+    converted = {
+        key: (
+            _namespace_from_mapping(value)
+            if isinstance(value, dict)
+            else value
+        )
+        for key, value in dict(payload).items()
+    }
+    return SimpleNamespace(**converted)
+
+
+def _position_state_proxy(payload: dict[str, object]) -> SimpleNamespace:
+    normalized = dict(payload.get("normalized_exposure") or {})
+    operator = dict(payload.get("operator_diagnostics") or {})
+    normalized.setdefault("dust_operator_view", _namespace_from_mapping(operator))
+    exposure = _namespace_from_mapping(normalized)
+    if not hasattr(exposure, "dust_operator_view"):
+        object.__setattr__(exposure, "dust_operator_view", _namespace_from_mapping(operator))
+
+    class _PositionStateProxy(SimpleNamespace):
+        def as_dict(self) -> dict[str, object]:
+            return dict(payload)
+
+    return _PositionStateProxy(normalized_exposure=exposure)
+
+
+def build_sma_with_filter_runtime_decision_from_feature_snapshot(
+    strategy: object,
+    feature_snapshot: object,
+    *,
+    boundary_telemetry: dict[str, object] | None = None,
+) -> RuntimeSmaDecisionResult | None:
+    """Build the promotion SMA decision from RuntimeFeatureSnapshot material only."""
+    payload = feature_snapshot.as_dict() if hasattr(feature_snapshot, "as_dict") else {}
+    feature_payload = payload.get("feature_payload") if isinstance(payload, dict) else {}
+    if not isinstance(feature_payload, dict):
+        return None
+    runtime_payload = feature_payload.get("sma_with_filter")
+    if not isinstance(runtime_payload, dict):
+        return None
+    rows = [dict(item) for item in runtime_payload.get("candles") or () if isinstance(item, dict)]
+    if not rows:
+        return None
+    if int(strategy.short_n) >= int(strategy.long_n):
+        raise ValueError("short는 long보다 작아야 해. 예: short=7 long=30")
+    assembly = SmaWithFilterPolicyAssembly()
+    materialized = assembly.materialize_from_strategy(strategy, MaterializationMode.RUNTIME_REPLAY)
+    closes = [float(row["close"]) for row in rows]
+    highs = [float(row.get("high", row["close"]) if row.get("high") is not None else row["close"]) for row in rows]
+    lows = [float(row.get("low", row["close"]) if row.get("low") is not None else row["close"]) for row in rows]
+    volumes = [float(row.get("volume", 0.0) or 0.0) for row in rows]
+    ts_list = [int(row["ts"]) for row in rows]
+    signal_through_ts_ms = payload.get("through_ts_ms")
+    projector = SmaWithFilterSnapshotProjector(assembly)
+    features = projector.project_features_from_arrays(
+        pair=strategy.pair,
+        interval=strategy.interval,
+        ts_list=ts_list,
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        materialized=materialized,
+        through_ts_ms=None if signal_through_ts_ms is None else int(signal_through_ts_ms),
+        allow_initial_cross=True,
+    )
+    if features is None:
+        return None
+    position_payload = runtime_payload.get("position_context")
+    position_snapshot_payload = runtime_payload.get("position_snapshot")
+    position_state_payload = runtime_payload.get("position_state")
+    if not isinstance(position_payload, dict) or not isinstance(position_snapshot_payload, dict):
+        return None
+    if not isinstance(position_state_payload, dict):
+        return None
+    position = PositionContext(**position_payload)
+    position_snapshot = PositionSnapshot(**position_snapshot_payload)
+    position_state = _position_state_proxy(position_state_payload)
+    exposure = position_state.normalized_exposure
+    order_rules_snapshot = (
+        dict(runtime_payload.get("order_rules"))
+        if isinstance(runtime_payload.get("order_rules"), dict)
+        else {}
+    )
+    fee_authority_payload = (
+        dict(runtime_payload.get("fee_authority"))
+        if isinstance(runtime_payload.get("fee_authority"), dict)
+        else {}
+    )
+    fee_rate_for_decision = float(runtime_payload.get("fee_rate_for_decision") or 0.0)
+    signal_context = {
+        "strategy": strategy.name,
+        "prev_s": features.prev_s,
+        "prev_l": features.prev_l,
+        "curr_s": features.curr_s,
+        "curr_l": features.curr_l,
+    }
+    market_snapshot = assembly.build_market_snapshot(
+        pair=strategy.pair,
+        interval=strategy.interval,
+        candle_ts=features.candle_ts,
+        closes=features.closes,
+        prev_s=features.prev_s,
+        prev_l=features.prev_l,
+        curr_s=features.curr_s,
+        curr_l=features.curr_l,
+        through_ts_ms=None if signal_through_ts_ms is None else int(signal_through_ts_ms),
+        gap_ratio=features.gap_ratio,
+        volatility_ratio=features.volatility_ratio,
+        overextended_ratio=features.overextended_ratio,
+        market_regime_snapshot=features.market_regime_snapshot,
+        previous_cross_state=features.previous_cross_state,
+        allow_initial_cross=features.allow_initial_cross,
+    )
+    policy_config = assembly.build_policy_config(
+        materialized,
+        strategy,
+        candidate_regime_policy=strategy.candidate_regime_policy,
+    )
+    execution_snapshot = assembly.build_execution_snapshot_from_payloads(
+        fee_rate_for_decision=fee_rate_for_decision,
+        fee_authority_degraded_blocks_entry=bool(runtime_payload.get("fee_authority_degraded_blocks_entry")),
+        fee_authority=fee_authority_payload,
+        order_rules=order_rules_snapshot,
+    )
+    exit_policy_config = assembly.build_exit_policy_config(
+        materialized,
+        fee_rate_for_decision=fee_rate_for_decision,
+    )
+    decision_input_bundle = projector.project_from_runtime_projection(
+        projection=SmaWithFilterRuntimeProjectionResult(
+            strategy=strategy,
+            materialized=materialized,
+            market=market_snapshot,
+            position=position_snapshot,
+            config=policy_config,
+            execution_constraints=execution_snapshot,
+            exit_policy_config=exit_policy_config,
+            provenance={
+                "candle_ts": int(ts_list[-1]),
+                "through_ts_ms": None if signal_through_ts_ms is None else int(signal_through_ts_ms),
+                "canonical_feature_projection": features.diagnostics_payload(),
+                "previous_cross_state": features.previous_cross_state,
+                "provider_contract_hash": payload.get("provider_contract_hash"),
+                "runtime_data_availability_report_hash": payload.get("runtime_data_availability_report_hash"),
+                "feature_snapshot_hash": payload.get("feature_snapshot_hash"),
+                "source_schema_hash": payload.get("source_schema_hash"),
+            },
+        ),
+    )
+    initial_replay_fingerprint = projector.build_replay_fingerprint(
+        strategy_name=strategy.name,
+        pair=strategy.pair,
+        interval=strategy.interval,
+        candle_ts=int(ts_list[-1]),
+        through_ts_ms=None if signal_through_ts_ms is None else int(signal_through_ts_ms),
+        materialized=materialized,
+        bundle=decision_input_bundle,
+        regime_version=str((market_snapshot.market_regime_snapshot or {}).get("version") or ""),
+    )
+    request_metadata = {
+        **dict(boundary_telemetry or {}),
+        "feature_snapshot_hash": payload.get("feature_snapshot_hash"),
+        "market_snapshot_hash": payload.get("market_snapshot_hash"),
+        "runtime_data_contract_hash": payload.get("runtime_data_contract_hash"),
+        "provider_contract_hash": payload.get("provider_contract_hash"),
+        "runtime_data_availability_report_hash": payload.get("runtime_data_availability_report_hash"),
+        "source_schema_hash": payload.get("source_schema_hash"),
+    }
+    strategy_parameters_hash = str(
+        request_metadata.get("strategy_parameters_hash")
+        or materialized_strategy_parameters_hash(dict(materialized.values))
+    )
+    approved_profile_hash = (
+        str(request_metadata.get("approved_profile_hash") or "")
+        or (
+            strategy.candidate_regime_policy.get("strategy_profile_hash")
+            if isinstance(strategy.candidate_regime_policy, dict)
+            else ""
+        )
+        or None
+    )
+    policy_strategy = (
+        strategy
+        if isinstance(strategy, SmaWithFilterStrategy)
+        else assembly.build_strategy(
+            materialized,
+            pair=strategy.pair,
+            interval=strategy.interval,
+            candidate_regime_policy=strategy.candidate_regime_policy,
+        )
+    )
+    final_policy_result = StrategyDecisionService().evaluate(
+        StrategyEvaluationRequest(
+            strategy_name=strategy.name,
+            strategy_instance_id=(
+                str(request_metadata.get("strategy_instance_id") or "")
+                or f"{strategy.name}:runtime_replay"
+            ),
+            mode="runtime_replay",
+            strategy_policy=policy_strategy,
+            market_snapshot=market_snapshot,
+            position_snapshot=position_snapshot,
+            strategy_config=policy_config,
+            execution_constraints=execution_snapshot,
+            exit_policy_config=exit_policy_config,
+            rule_sources=_default_sma_exit_rule_sources(exit_policy_config),
+            approved_profile_hash=approved_profile_hash,
+            runtime_contract_hash=str(request_metadata.get("runtime_contract_hash") or "") or None,
+            plugin_contract_hash=str(request_metadata.get("plugin_contract_hash") or "") or None,
+            request_hash=str(request_metadata.get("runtime_decision_request_hash") or "") or None,
+            provenance={
+                **request_metadata,
+                "decision_boundary": "StrategyDecisionService.evaluate",
+                "snapshot_builder": "RuntimeDataProvider.RuntimeFeatureSnapshot",
+                "runtime_feature_snapshot": payload,
+                "strategy_parameters_hash": strategy_parameters_hash,
+                "replay_fingerprint": initial_replay_fingerprint,
+                "approved_profile_hash_unavailable_reason": "runtime_snapshot_no_approved_profile_hash"
+                if not approved_profile_hash
+                else "",
+                "plugin_contract_hash_unavailable_reason": "runtime_snapshot_direct_call"
+                if not request_metadata.get("plugin_contract_hash")
+                else "",
+                "runtime_contract_hash_unavailable_reason": "runtime_snapshot_direct_call"
+                if not request_metadata.get("runtime_contract_hash")
+                else "",
+                "runtime_decision_request_hash_unavailable_reason": "runtime_snapshot_direct_call"
+                if not request_metadata.get("runtime_decision_request_hash")
+                else "",
+                "code_provenance": {
+                    "policy_module": policy_strategy.__class__.__module__,
+                    "policy_class": policy_strategy.__class__.__name__,
+                },
+            },
+            decision_input_bundle=decision_input_bundle,
+        )
+    )
+    final_policy_decision = final_policy_result.decision
+    entry_decision = final_policy_decision.entry_decision
+    blocked_filters = list(final_policy_decision.blocked_filters)
+    base_signal = final_policy_decision.raw_signal
+    base_reason = final_policy_decision.raw_reason
+    entry_signal = final_policy_decision.entry_signal
+    entry_reason = final_policy_decision.entry_reason
+    edge_filter_details = entry_decision.edge_filter_details
+    replay_fingerprint = dict(final_policy_result.replay_fingerprint)
+    base_context = {
+        **request_metadata,
+        "ts": ts_list[-1],
+        "last_close": float(closes[-1]),
+        "market_price": float(closes[-1]),
+        "strategy": strategy.name,
+        "pair": strategy.pair,
+        "interval": strategy.interval,
+        "base_signal": base_signal,
+        "base_reason": base_reason,
+        "entry_signal": entry_signal,
+        "entry_reason": entry_reason,
+        "pure_policy_hash": final_policy_decision.policy_hash,
+        "pure_policy_trace": final_policy_decision.as_trace(),
+        "policy_contract_hash": final_policy_decision.policy_contract_hash,
+        "policy_input_hash": final_policy_decision.policy_input_hash,
+        "policy_decision_hash": final_policy_decision.policy_decision_hash,
+        "decision_input_bundle_hash": decision_input_bundle.decision_input_bundle_hash,
+        "decision_input_contract_hash": decision_input_bundle.decision_input_contract_hash,
+        "decision_input_bundle_payload_hash": decision_input_bundle.decision_input_bundle_payload_hash,
+        "snapshot_projector_version": decision_input_bundle.snapshot_projector_version,
+        "snapshot_projector_hash": decision_input_bundle.snapshot_projector_hash,
+        "materialized_parameters_hash": decision_input_bundle.materialized_parameters_hash,
+        "parameter_sources": dict(materialized.sources),
+        "runtime_comparable": bool(materialized.runtime_comparable),
+        "materialization_mode": materialized.mode.value,
+        "policy_materialization_mode": materialized.mode.value,
+        "legacy_defaults_used": list(materialized.legacy_defaults_used),
+        "market_snapshot_hash": decision_input_bundle.market_snapshot_hash,
+        "market_feature_hash": decision_input_bundle.market_feature_hash,
+        "canonical_feature_projection_hash": decision_input_bundle.market_feature_hash,
+        "final_exit_decision_input_hash": final_policy_decision.as_trace().get("final_exit_decision_input_hash"),
+        "position_snapshot_hash": decision_input_bundle.position_snapshot_hash,
+        "execution_constraints_hash": decision_input_bundle.execution_constraints_hash,
+        "policy_config_hash": decision_input_bundle.policy_config_hash,
+        "exit_policy_config_hash": decision_input_bundle.exit_policy_config_hash,
+        "strategy_evaluation_provenance": dict(final_policy_result.provenance),
+        "replay_fingerprint_hash": final_policy_result.replay_fingerprint_hash,
+        "prev_s": features.prev_s,
+        "prev_l": features.prev_l,
+        "curr_s": features.curr_s,
+        "curr_l": features.curr_l,
+        "features": {
+            "prev_s": features.prev_s,
+            "prev_l": features.prev_l,
+            "curr_s": features.curr_s,
+            "curr_l": features.curr_l,
+            "sma_gap_ratio": entry_decision.gap_ratio,
+            "volatility_range_ratio": entry_decision.volatility_ratio,
+            "overextended_abs_return_ratio": entry_decision.overextended_ratio,
+            "base_signal": base_signal,
+            "base_reason": base_reason,
+        },
+        "order_rules": order_rules_snapshot,
+        "position_gate": build_position_gate_context(exposure, order_rules=order_rules_snapshot),
+        "position_state": build_position_state_context(position_state),
+        "fee_authority": fee_authority_payload,
+        "filters": {
+            "cost_edge": {
+                "enabled": bool(edge_filter_details["enabled"]),
+                "configured_enabled": bool(edge_filter_details["configured_enabled"]),
+                "signal_eligible": bool(edge_filter_details["signal_eligible"]),
+                "passed": not bool(edge_filter_details["blocked"]),
+                "value": float(edge_filter_details["expected_edge_ratio"]),
+                "threshold": float(edge_filter_details["required_edge_ratio"]),
+                "cost_floor_ratio": float(edge_filter_details["cost_floor_ratio"]),
+                "roundtrip_fee_ratio": float(edge_filter_details["roundtrip_fee_ratio"]),
+                "slippage_ratio": float(edge_filter_details["slippage_ratio"]),
+                "buffer_ratio": float(edge_filter_details["buffer_ratio"]),
+                "min_expected_edge_ratio": float(edge_filter_details["min_expected_edge_ratio"]),
+                "fee_authority_source": fee_authority_payload.get("fee_source"),
+                "fee_authority_degraded": bool(fee_authority_payload.get("degraded", False)),
+            },
+        },
+        "blocked_filters": blocked_filters,
+        "entry": build_entry_decision_context(
+            pair=strategy.pair,
+            base_signal=base_signal,
+            base_reason=base_reason,
+            entry_signal=entry_signal,
+            entry_reason=entry_reason,
+            buy_fraction=float(strategy.buy_fraction),
+            max_order_krw=float(strategy.max_order_krw),
+        ),
+        "replay_fingerprint": replay_fingerprint,
+    }
+    boundary = {
+        "normalization_boundary": "runtime_data_provider.position_snapshot_materialization",
+        "normalization_updated_count": None,
+        "post_normalization_read_only_guard": None,
+        "post_decision_total_changes_delta": None,
+        "decision_boundary_phase": "feature_snapshot_decision",
+        **request_metadata,
+    }
+    base_context.update(boundary)
+    return RuntimeSmaDecisionResult(
+        decision=final_policy_decision,
+        base_context=base_context,
+        position=position,
+        exposure=exposure,
+        position_state=position_state,
+        candle_ts=int(ts_list[-1]),
+        market_price=float(closes[-1]),
+        replay_fingerprint=replay_fingerprint,
+        boundary=boundary,
     )
 
 

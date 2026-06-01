@@ -260,8 +260,8 @@ def test_collector_passes_runtime_decision_request() -> None:
     class _Adapter:
         strategy_name = "canary_non_sma"
 
-        def decide(self, conn: Any, request: RuntimeDecisionRequest):
-            del conn
+        def decide_feature_snapshot(self, request: RuntimeDecisionRequest, feature_snapshot: Any):
+            del feature_snapshot
             received.append(request)
             return _RuntimeResult(self.strategy_name)
 
@@ -293,8 +293,8 @@ def test_runtime_decision_entrypoint_accepts_generic_parameter_overrides(
     class _Adapter:
         strategy_name = "canary_non_sma"
 
-        def decide(self, conn: Any, request: RuntimeDecisionRequest):
-            del conn
+        def decide_feature_snapshot(self, request: RuntimeDecisionRequest, feature_snapshot: Any):
+            del feature_snapshot
             received.append(request)
             return _RuntimeResult(self.strategy_name)
 
@@ -367,8 +367,8 @@ def test_collector_rejects_dict_returning_adapter() -> None:
     class _Adapter:
         strategy_name = "canary_non_sma"
 
-        def decide(self, conn: Any, request: RuntimeDecisionRequest):
-            del conn, request
+        def decide_feature_snapshot(self, request: RuntimeDecisionRequest, feature_snapshot: Any):
+            del request, feature_snapshot
             return {"signal": "BUY", "reason": "legacy dict"}
 
         def typed_authority_required(self) -> bool:
@@ -425,8 +425,8 @@ def test_multi_strategy_parameters_are_independent(monkeypatch: pytest.MonkeyPat
         def __init__(self, strategy_name: str) -> None:
             self.strategy_name = strategy_name
 
-        def decide(self, conn: Any, request: RuntimeDecisionRequest):
-            del conn
+        def decide_feature_snapshot(self, request: RuntimeDecisionRequest, feature_snapshot: Any):
+            del feature_snapshot
             received[self.strategy_name] = request
             return _RuntimeResult(self.strategy_name)
 
@@ -436,7 +436,15 @@ def test_multi_strategy_parameters_are_independent(monkeypatch: pytest.MonkeyPat
     strategy_set = RuntimeStrategySet(
         source="unit",
         strategies=(
-            RuntimeStrategySpec("sma_with_filter", parameters=_complete_sma_parameters(SMA_SHORT=7, SMA_LONG=30)),
+            RuntimeStrategySpec(
+                "sma_with_filter",
+                parameters=_complete_sma_parameters(
+                    SMA_SHORT=1,
+                    SMA_LONG=2,
+                    SMA_FILTER_VOL_WINDOW=1,
+                    SMA_FILTER_OVEREXT_LOOKBACK=1,
+                ),
+            ),
             RuntimeStrategySpec(
                 "canary_non_sma",
                 parameters={
@@ -457,9 +465,9 @@ def test_multi_strategy_parameters_are_independent(monkeypatch: pytest.MonkeyPat
     ).collect(_conn(), strategy_set, through_ts_ms=1_700_000_180_000)
 
     assert set(received) == {"sma_with_filter", "canary_non_sma"}
-    assert received["sma_with_filter"].parameters["SMA_SHORT"] == 7
-    assert received["sma_with_filter"].parameters["SMA_LONG"] == 30
-    assert dict(received["sma_with_filter"].parameters_raw)["SMA_SHORT"] == 7
+    assert received["sma_with_filter"].parameters["SMA_SHORT"] == 1
+    assert received["sma_with_filter"].parameters["SMA_LONG"] == 2
+    assert dict(received["sma_with_filter"].parameters_raw)["SMA_SHORT"] == 1
     assert dict(received["sma_with_filter"].parameters_materialized) == dict(received["sma_with_filter"].parameters)
     assert dict(received["canary_non_sma"].parameters) == {
         "CANARY_ORDER_START_INDEX": 0,
@@ -590,7 +598,8 @@ def test_approved_profile_mismatch_fails_before_adapter(monkeypatch: pytest.Monk
     class _Adapter:
         strategy_name = "canary_non_sma"
 
-        def decide(self, conn: Any, request: RuntimeDecisionRequest):
+        def decide_feature_snapshot(self, request: RuntimeDecisionRequest, feature_snapshot: Any):
+            del request, feature_snapshot
             nonlocal called
             called = True
             return None

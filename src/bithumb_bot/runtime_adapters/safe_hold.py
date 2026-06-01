@@ -212,6 +212,8 @@ def _evaluate_safe_hold_decision(
                 "runtime_data_availability_report_hash"
             ),
             "provider_contract_hash": runtime_feature_snapshot.get("provider_contract_hash"),
+            "runtime_data_contract_hash": runtime_feature_snapshot.get("runtime_data_contract_hash"),
+            "source_schema_hash": runtime_feature_snapshot.get("source_schema_hash"),
         }
     )
     boundary = {
@@ -232,6 +234,8 @@ def _evaluate_safe_hold_decision(
             "runtime_data_availability_report_hash"
         ),
         "provider_contract_hash": runtime_feature_snapshot.get("provider_contract_hash"),
+        "runtime_data_contract_hash": runtime_feature_snapshot.get("runtime_data_contract_hash"),
+        "source_schema_hash": runtime_feature_snapshot.get("source_schema_hash"),
         "replay_fingerprint": replay_fingerprint,
         "strategy_parameters_hash": request_fields.get("strategy_parameters_hash") or sha256_prefixed({}),
         "approved_profile_hash_unavailable_reason": "safe_hold_approved_profile_not_required",
@@ -297,6 +301,12 @@ def _evaluate_safe_hold_decision(
         "runtime_feature_snapshot": dict(runtime_feature_snapshot),
         "feature_snapshot_hash": runtime_feature_snapshot.get("feature_snapshot_hash"),
         "market_snapshot_hash": runtime_feature_snapshot.get("market_snapshot_hash"),
+        "runtime_data_contract_hash": runtime_feature_snapshot.get("runtime_data_contract_hash"),
+        "runtime_data_availability_report_hash": runtime_feature_snapshot.get(
+            "runtime_data_availability_report_hash"
+        ),
+        "provider_contract_hash": runtime_feature_snapshot.get("provider_contract_hash"),
+        "source_schema_hash": runtime_feature_snapshot.get("source_schema_hash"),
         **request_fields,
     }
     return SafeHoldRuntimeDecisionResult(

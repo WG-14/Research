@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import asdict
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping, Protocol
@@ -95,6 +96,8 @@ class RuntimeDataCapabilityCoverage:
     source_tables_or_streams: tuple[str, ...] = ()
     reason: str | None = None
     min_coverage_pct: float | None = None
+    expected_count: int | None = None
+    closed_candle_required: bool = False
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -108,6 +111,8 @@ class RuntimeDataCapabilityCoverage:
             "source_tables_or_streams": list(self.source_tables_or_streams),
             "reason": self.reason,
             "min_coverage_pct": self.min_coverage_pct,
+            "expected_count": self.expected_count,
+            "closed_candle_required": bool(self.closed_candle_required),
         }
 
 
@@ -236,7 +241,11 @@ class RuntimeDataRequirementResolver:
                 except Exception:
                     instance_id = strategy_name
             research_requirements = research_strategy_data_requirements(strategy_name)
-            normalized = self._normalize_research_requirements(research_requirements)
+            normalized = self._normalize_research_requirements(
+                research_requirements,
+                spec=spec,
+                strategy_name=strategy_name,
+            )
             strategy_required = []
             strategy_optional = []
             for capability in normalized.required:
@@ -265,6 +274,9 @@ class RuntimeDataRequirementResolver:
     def _normalize_research_requirements(
         self,
         requirements: ResearchStrategyDataRequirements,
+        *,
+        spec: object | None = None,
+        strategy_name: str = "",
     ) -> RuntimeStrategyDataRequirements:
         required: dict[str, DataCapabilityRequirement] = {}
         optional: dict[str, DataCapabilityRequirement] = {}
@@ -277,7 +289,14 @@ class RuntimeDataRequirementResolver:
                 evidence_level=capability.evidence_level,
                 source=capability.source,
                 notes=capability.notes,
+                lookback_rows=capability.lookback_rows,
+                closed_candle_required=capability.closed_candle_required,
             )
+            if strategy_name == "sma_with_filter" and normalized_name == "candles":
+                normalized_capability = self._sma_candle_requirement(
+                    normalized_capability,
+                    spec=spec,
+                )
             if normalized_capability.required:
                 required[normalized_name] = normalized_capability
                 optional.pop(normalized_name, None)
@@ -287,6 +306,34 @@ class RuntimeDataRequirementResolver:
             required=tuple(required[name] for name in sorted(required)),
             optional=tuple(optional[name] for name in sorted(optional)),
             per_strategy={},
+        )
+
+    def _sma_candle_requirement(
+        self,
+        capability: DataCapabilityRequirement,
+        *,
+        spec: object | None,
+    ) -> DataCapabilityRequirement:
+        params = dict(getattr(spec, "parameters", {}) or {}) if spec is not None else {}
+        def _int_param(name: str, default: int) -> int:
+            try:
+                return int(params.get(name, default))
+            except (TypeError, ValueError):
+                return default
+
+        long_n = _int_param("SMA_LONG", 30)
+        vol_window = _int_param("SMA_FILTER_VOL_WINDOW", 10)
+        overext_lookback = _int_param("SMA_FILTER_OVEREXT_LOOKBACK", 3)
+        lookback_rows = max(long_n + 2, vol_window, overext_lookback + 1)
+        return DataCapabilityRequirement(
+            name=capability.name,
+            required=capability.required,
+            min_coverage_pct=capability.min_coverage_pct if capability.min_coverage_pct is not None else 100.0,
+            evidence_level=capability.evidence_level,
+            source=capability.source,
+            notes=capability.notes,
+            lookback_rows=lookback_rows,
+            closed_candle_required=True,
         )
 
 
@@ -323,9 +370,13 @@ class SQLiteRuntimeDataProvider:
         interval: str,
         through_ts_ms: int | None,
     ) -> RuntimeDataAvailabilityReport:
+        requirement_by_name = {
+            item.name: item for item in tuple(requirements.required) + tuple(requirements.optional)
+        }
         coverage = {
             capability: self._coverage_for_capability(
                 capability,
+                requirement=requirement_by_name.get(capability),
                 pair=pair,
                 interval=interval,
                 through_ts_ms=through_ts_ms,
@@ -412,11 +463,38 @@ class SQLiteRuntimeDataProvider:
         if not report.ok:
             return None
         feature_payload: dict[str, object] = {}
+        capability_snapshots: dict[str, object] = {}
         if "candles" in requirements.all_names:
+            candle_requirement = next(
+                (item for item in tuple(requirements.required) + tuple(requirements.optional) if item.name == "candles"),
+                None,
+            )
+            candle_rows = self._candle_rows(
+                pair=pair,
+                interval=interval,
+                through_ts_ms=through_ts_ms,
+                limit=None if candle_requirement is None else candle_requirement.lookback_rows,
+            )
+            if candle_requirement is not None and len(candle_rows) < int(candle_requirement.lookback_rows or 1):
+                return None
             candle = self._latest_candle(pair=pair, interval=interval, through_ts_ms=through_ts_ms)
             if candle is None:
                 return None
             candle_ts, close, candle_index = candle
+            candle_payload = {
+                "selected_timestamp": int(candle_ts),
+                "selected_ts": int(candle_ts),
+                "staleness_ms": (
+                    None
+                    if through_ts_ms is None
+                    else max(0, int(through_ts_ms) - int(candle_ts))
+                ),
+                "source_table_or_stream": "candles",
+                "source_tables_or_streams": ["candles"],
+                "rows": candle_rows,
+            }
+            candle_payload["payload_hash"] = sha256_prefixed(candle_payload)
+            capability_snapshots["candles"] = candle_payload
             feature_payload.update(
                 {
                     "candle_ts": int(candle_ts),
@@ -430,6 +508,33 @@ class SQLiteRuntimeDataProvider:
                     },
                 }
             )
+        for capability in requirements.all_names:
+            if capability == "candles":
+                continue
+            snapshot = self._generic_capability_snapshot(
+                capability,
+                pair=pair,
+                through_ts_ms=through_ts_ms,
+            )
+            if snapshot is None:
+                if capability in requirements.required_names:
+                    return None
+                continue
+            capability_snapshots[capability] = snapshot
+        if capability_snapshots:
+            feature_payload["capabilities"] = capability_snapshots
+        if str(getattr(request, "strategy_name", "") or "").strip().lower() == "sma_with_filter":
+            sma_payload = self._sma_with_filter_runtime_payload(
+                request=request,
+                candle_rows=(
+                    dict(capability_snapshots.get("candles") or {}).get("rows")
+                    if isinstance(capability_snapshots.get("candles"), Mapping)
+                    else None
+                ),
+            )
+            if sma_payload is None:
+                return None
+            feature_payload["sma_with_filter"] = sma_payload
         decision_candle_ts = (
             int(feature_payload["candle_ts"])
             if "candle_ts" in feature_payload
@@ -458,6 +563,7 @@ class SQLiteRuntimeDataProvider:
             "provider_name": self.provider_name,
             "provider_version": self.provider_version,
             "provider_contract_hash": self.provider_contract_hash,
+            "runtime_data_contract_hash": requirements.content_hash(),
             "runtime_data_availability_report_hash": report.report_hash,
             "staleness_ms": (
                 None
@@ -469,6 +575,151 @@ class SQLiteRuntimeDataProvider:
         payload["market_snapshot_hash"] = sha256_prefixed(market_material)
         payload["feature_snapshot_hash"] = sha256_prefixed(payload)
         return RuntimeFeatureSnapshot(payload)
+
+    def _candle_rows(
+        self,
+        *,
+        pair: str,
+        interval: str,
+        through_ts_ms: int | None,
+        limit: int | None,
+    ) -> list[dict[str, object]]:
+        columns = self._table_columns("candles")
+        if not columns:
+            return []
+        select_columns = [name for name in ("ts", "open", "high", "low", "close", "volume") if name in columns]
+        if "ts" not in select_columns or "close" not in select_columns:
+            return []
+        query = f"SELECT {', '.join(select_columns)} FROM candles WHERE pair=? AND interval=?"
+        params: list[object] = [pair, interval]
+        if through_ts_ms is not None:
+            query += " AND ts<=?"
+            params.append(int(through_ts_ms))
+        query += " ORDER BY ts DESC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(int(limit))
+        rows = self.conn.execute(query, tuple(params)).fetchall()
+        payload = [
+            {
+                name: (
+                    int(row[name]) if name == "ts" and hasattr(row, "keys") else row[name]
+                )
+                for name in select_columns
+            }
+            if hasattr(row, "keys")
+            else {name: row[idx] for idx, name in enumerate(select_columns)}
+            for row in rows
+        ]
+        return list(reversed(payload))
+
+    def _generic_capability_snapshot(
+        self,
+        capability: str,
+        *,
+        pair: str,
+        through_ts_ms: int | None,
+    ) -> dict[str, object] | None:
+        table = _CAPABILITY_TABLES[capability][0]
+        columns = self._table_columns(table)
+        if "ts" not in columns:
+            return None
+        where = []
+        params: list[object] = []
+        if "pair" in columns and pair:
+            where.append("pair=?")
+            params.append(pair)
+        if through_ts_ms is not None:
+            where.append("ts<=?")
+            params.append(int(through_ts_ms))
+        clause = " WHERE " + " AND ".join(where) if where else ""
+        row = self.conn.execute(
+            f"SELECT * FROM {table}{clause} ORDER BY ts DESC LIMIT 1",
+            tuple(params),
+        ).fetchone()
+        if row is None:
+            return None
+        payload = {name: row[name] if hasattr(row, "keys") else row[idx] for idx, name in enumerate(columns)}
+        selected_ts = int(payload.get("ts") or 0)
+        material = {
+            "selected_timestamp": selected_ts,
+            "selected_ts": selected_ts,
+            "staleness_ms": (
+                None if through_ts_ms is None else max(0, int(through_ts_ms) - selected_ts)
+            ),
+            "source_table_or_stream": table,
+            "source_tables_or_streams": [table],
+            "evidence_payload": payload,
+        }
+        material["payload_hash"] = sha256_prefixed(material)
+        return material
+
+    def _sma_with_filter_runtime_payload(
+        self,
+        *,
+        request: object,
+        candle_rows: object,
+    ) -> dict[str, object] | None:
+        rows = [dict(item) for item in candle_rows] if isinstance(candle_rows, list) else []
+        if not rows:
+            return None
+        try:
+            from .runtime_adapters.sma_with_filter import SmaWithFilterRuntimeConfig
+            from .runtime_sma_context import (
+                fee_authority_context,
+                live_armed_entry_fee_authority_blocks,
+                resolve_strategy_fee_authority,
+            )
+            from .runtime_sma_snapshot_builder import _load_position_context, _policy_position_snapshot
+        except Exception as exc:  # pragma: no cover - import errors surface as fail-closed runtime errors.
+            raise RuntimeError(f"runtime_data_snapshot_provider_unavailable:sma_with_filter:{type(exc).__name__}") from exc
+
+        runtime_instance = getattr(request, "runtime_strategy_spec", None)
+        runtime_adapter_config = (
+            dict(getattr(runtime_instance, "runtime_adapter_config", {}) or {})
+            if runtime_instance is not None
+            else {}
+        )
+        candidate_regime_policy = (
+            dict(runtime_adapter_config.get("candidate_regime_policy"))
+            if isinstance(runtime_adapter_config.get("candidate_regime_policy"), dict)
+            else None
+        )
+        strategy = SmaWithFilterRuntimeConfig.from_runtime_request(request).build_strategy(
+            candidate_regime_policy=candidate_regime_policy,
+        )
+        latest = rows[-1]
+        candle_ts = int(latest["ts"])
+        market_price = float(latest["close"])
+        signal_context = {"strategy": strategy.name}
+        position, exposure, position_state, order_rules_snapshot = _load_position_context(
+            self.conn,
+            pair=strategy.pair,
+            candle_ts=candle_ts,
+            market_price=market_price,
+            signal_context=signal_context,
+            slippage_bps=float(strategy.slippage_bps),
+            entry_edge_buffer_ratio=float(strategy.entry_edge_buffer_ratio),
+        )
+        fee_authority = resolve_strategy_fee_authority(
+            pair=strategy.pair,
+            config_fallback_fee_rate=float(strategy.live_fee_rate_estimate),
+        )
+        position_snapshot = _policy_position_snapshot(position=position, exposure=exposure)
+        payload = {
+            "strategy": strategy.name,
+            "candles": rows,
+            "position_context": position.as_dict(),
+            "position_snapshot": asdict(position_snapshot),
+            "position_state": position_state.as_dict(),
+            "order_rules": order_rules_snapshot,
+            "fee_authority": fee_authority_context(fee_authority),
+            "fee_rate_for_decision": float(fee_authority.taker_roundtrip_fee_rate / 2),
+            "fee_authority_degraded_blocks_entry": live_armed_entry_fee_authority_blocks(fee_authority),
+            "runtime_snapshot_provider_contract": "RuntimeFeatureSnapshot.sma_with_filter.v1",
+        }
+        payload["payload_hash"] = sha256_prefixed(payload)
+        return payload
 
     def _per_strategy_status(
         self,
@@ -496,6 +747,7 @@ class SQLiteRuntimeDataProvider:
         self,
         capability: str,
         *,
+        requirement: DataCapabilityRequirement | None = None,
         pair: str,
         interval: str,
         through_ts_ms: int | None,
@@ -507,7 +759,12 @@ class SQLiteRuntimeDataProvider:
                 reason=f"runtime_data_capability_unsupported:{capability}",
             )
         if capability == "candles":
-            return self._candle_coverage(pair=pair, interval=interval, through_ts_ms=through_ts_ms)
+            return self._candle_coverage(
+                pair=pair,
+                interval=interval,
+                through_ts_ms=through_ts_ms,
+                requirement=requirement,
+            )
         return self._generic_ts_coverage(
             capability,
             pair=pair,
@@ -520,6 +777,7 @@ class SQLiteRuntimeDataProvider:
         pair: str,
         interval: str,
         through_ts_ms: int | None,
+        requirement: DataCapabilityRequirement | None = None,
     ) -> RuntimeDataCapabilityCoverage:
         table = "candles"
         if not self._table_exists(table):
@@ -546,9 +804,45 @@ class SQLiteRuntimeDataProvider:
                 row_count=0,
                 source_tables_or_streams=(table,),
                 reason="runtime_data_requirement_missing:candles",
+                expected_count=(
+                    None if requirement is None or requirement.lookback_rows is None else int(requirement.lookback_rows)
+                ),
+                closed_candle_required=bool(requirement.closed_candle_required if requirement else False),
             )
         first_ts = int(row[1])
         last_ts = int(row[2])
+        expected_count = int(requirement.lookback_rows or 1) if requirement is not None else 1
+        coverage_pct = min(100.0, (float(count) / float(expected_count)) * 100.0)
+        if requirement is not None and requirement.closed_candle_required and through_ts_ms is not None:
+            selected = self._latest_candle(pair=pair, interval=interval, through_ts_ms=through_ts_ms)
+            if selected is None:
+                return RuntimeDataCapabilityCoverage(
+                    capability="candles",
+                    status="MISSING",
+                    row_count=count,
+                    first_ts=first_ts,
+                    last_ts=last_ts,
+                    source_tables_or_streams=(table,),
+                    reason="runtime_data_closed_candle_unavailable:candles",
+                    expected_count=expected_count,
+                    coverage_pct=coverage_pct,
+                    closed_candle_required=True,
+                )
+        if count < expected_count:
+            return RuntimeDataCapabilityCoverage(
+                capability="candles",
+                status="INSUFFICIENT",
+                row_count=count,
+                first_ts=first_ts,
+                last_ts=last_ts,
+                selected_ts=last_ts,
+                coverage_pct=coverage_pct,
+                source_tables_or_streams=(table,),
+                reason="runtime_data_lookback_insufficient:candles",
+                expected_count=expected_count,
+                min_coverage_pct=None if requirement is None else requirement.min_coverage_pct,
+                closed_candle_required=bool(requirement.closed_candle_required if requirement else False),
+            )
         return RuntimeDataCapabilityCoverage(
             capability="candles",
             status="PASS",
@@ -556,8 +850,11 @@ class SQLiteRuntimeDataProvider:
             first_ts=first_ts,
             last_ts=last_ts,
             selected_ts=last_ts,
-            coverage_pct=100.0,
+            coverage_pct=coverage_pct,
             source_tables_or_streams=(table,),
+            expected_count=expected_count,
+            min_coverage_pct=None if requirement is None else requirement.min_coverage_pct,
+            closed_candle_required=bool(requirement.closed_candle_required if requirement else False),
         )
 
     def _generic_ts_coverage(

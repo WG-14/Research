@@ -617,7 +617,7 @@ def test_runtime_decision_gateway_accepts_explicit_collector_adapter_resolver_wi
     class _UnitPromotionAdapter:
         strategy_name = "canary_non_sma"
 
-        def decide(self, conn, request):
+        def decide_feature_snapshot(self, request, feature_snapshot):
             calls.append((request.strategy_name, request.through_ts_ms))
             return _generic_runtime_result(strategy_name=self.strategy_name)
 
@@ -666,6 +666,79 @@ def test_runtime_decision_gateway_accepts_explicit_collector_adapter_resolver_wi
     assert isinstance(result, _GenericRuntimeDecisionResult)
     assert result.decision.strategy_name == "canary_non_sma"
     assert calls == [("canary_non_sma", 1_700_003_000_000)]
+
+
+def test_promotion_collector_rejects_adapter_without_feature_snapshot_boundary() -> None:
+    class _DbBoundOnlyAdapter:
+        strategy_name = "canary_non_sma"
+
+        def decide(self, conn, request):
+            raise AssertionError("db-bound fallback must not execute")
+
+        def typed_authority_required(self) -> bool:
+            return True
+
+    from bithumb_bot.runtime_strategy_set import (
+        RuntimeStrategyDecisionCollector,
+        RuntimeStrategySet,
+        RuntimeStrategySpec,
+    )
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        _insert_candles(
+            conn,
+            pair=settings.PAIR,
+            interval=settings.INTERVAL,
+            base_ts=1_700_001_000_000,
+        )
+        conn.commit()
+        with pytest.raises(RuntimeError, match="runtime_decision_feature_snapshot_required:canary_non_sma"):
+            RuntimeStrategyDecisionCollector(
+                adapter_resolver=lambda _strategy_name: _DbBoundOnlyAdapter(),
+            ).collect(
+                conn,
+                RuntimeStrategySet(
+                    source="unit",
+                    strategies=(RuntimeStrategySpec("canary_non_sma"),),
+                ),
+                through_ts_ms=1_700_003_000_000,
+            )
+    finally:
+        conn.close()
+
+
+def test_sma_promotion_runtime_does_not_call_db_bound_adapter_fallback(monkeypatch) -> None:
+    from bithumb_bot.runtime_adapters.sma_with_filter import SmaWithFilterRuntimeDecisionAdapter
+
+    def _forbidden_decide(self, conn, request):
+        raise AssertionError("SMA promotion runtime called DB-bound decide fallback")
+
+    monkeypatch.setattr(SmaWithFilterRuntimeDecisionAdapter, "decide", _forbidden_decide)
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        _insert_candles(
+            conn,
+            pair=settings.PAIR,
+            interval=settings.INTERVAL,
+            base_ts=1_700_001_000_000,
+        )
+        conn.commit()
+        result = runtime_compat.compute_strategy_decision_snapshot(
+            conn,
+            through_ts_ms=1_700_001_000_000 + 39 * 60_000,
+            strategy_name="sma_with_filter",
+        )
+    finally:
+        conn.close()
+
+    assert result is not None
+    assert result.base_context["feature_snapshot_hash"].startswith("sha256:")
 
 
 def test_unregistered_runtime_strategy_fails_closed_without_legacy_fallback() -> None:

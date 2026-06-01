@@ -509,6 +509,8 @@ def _evaluate_canary_result(
                 "runtime_data_availability_report_hash"
             ),
             "provider_contract_hash": runtime_feature_snapshot.get("provider_contract_hash"),
+            "runtime_data_contract_hash": runtime_feature_snapshot.get("runtime_data_contract_hash"),
+            "source_schema_hash": runtime_feature_snapshot.get("source_schema_hash"),
         }
     )
     boundary = {
@@ -541,6 +543,8 @@ def _evaluate_canary_result(
             "runtime_data_availability_report_hash"
         ),
         "provider_contract_hash": runtime_feature_snapshot.get("provider_contract_hash"),
+        "runtime_data_contract_hash": runtime_feature_snapshot.get("runtime_data_contract_hash"),
+        "source_schema_hash": runtime_feature_snapshot.get("source_schema_hash"),
         "replay_fingerprint": replay_fingerprint,
         "strategy_parameters_hash": request_fields.get("strategy_parameters_hash")
         or sha256_prefixed(dict(resolved)),
@@ -620,6 +624,8 @@ def _evaluate_canary_result(
             "runtime_data_availability_report_hash"
         ),
         "provider_contract_hash": runtime_feature_snapshot.get("provider_contract_hash"),
+        "runtime_data_contract_hash": runtime_feature_snapshot.get("runtime_data_contract_hash"),
+        "source_schema_hash": runtime_feature_snapshot.get("source_schema_hash"),
         "strategy_specific_payload": strategy_specific_payload,
         "strategy_diagnostics": {
             "schema_version": 1,
