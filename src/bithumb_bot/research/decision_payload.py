@@ -151,6 +151,7 @@ class DecisionPayloadBuilder:
                 "research_policy_unsupported": bool(strategy_envelope.unsupported_reason),
                 "research_policy_unsupported_reason": strategy_envelope.unsupported_reason,
                 "research_policy_comparable": not bool(strategy_envelope.unsupported_reason),
+                "runtime_comparable": bool(strategy_envelope.provenance.get("runtime_comparable")),
             }
         )
         risk_payload = risk_decision.payload if isinstance(risk_decision.payload, dict) else {}
@@ -175,6 +176,20 @@ class DecisionPayloadBuilder:
             payload["policy_decision_hash"] = policy_decision.policy_decision_hash
             payload["pure_policy_trace"] = policy_decision.as_trace()
             trace = policy_decision.as_trace()
+            for key in (
+                "decision_input_bundle_hash",
+                "snapshot_projector_version",
+                "snapshot_projector_hash",
+                "materialized_parameters_hash",
+                "market_snapshot_hash",
+                "position_snapshot_hash",
+                "execution_constraints_hash",
+                "policy_config_hash",
+                "exit_policy_config_hash",
+                "replay_fingerprint_hash",
+            ):
+                if str(trace.get(key) or "").strip():
+                    payload[key] = trace[key]
             service_provenance = trace.get("strategy_evaluation_provenance")
             if isinstance(service_provenance, dict):
                 payload["strategy_evaluation_provenance"] = dict(service_provenance)

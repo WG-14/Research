@@ -8,6 +8,9 @@ from bithumb_bot.strategy_plugins.sma_with_filter_assembly import (
     MaterializationMode,
     SmaWithFilterPolicyAssembly,
 )
+from bithumb_bot.strategy_plugins.sma_with_filter_projector import (
+    SmaWithFilterSnapshotProjector,
+)
 from bithumb_bot.strategy_decision_service import StrategyDecisionService, StrategyEvaluationRequest
 from bithumb_bot.research.strategy_spec import materialized_strategy_parameters_hash
 
@@ -277,73 +280,26 @@ def research_policy_decision_builder(
     candidate_regime_policy: dict[str, object] | None = None,
     candidate_regime_policy_enforced: bool | None = None,
 ) -> Any:
-    event_extra = event.extra_payload if isinstance(getattr(event, "extra_payload", None), dict) else {}
-    feature_snapshot = (
-        event.feature_snapshot if isinstance(getattr(event, "feature_snapshot", None), dict) else {}
-    )
-    required_event_fields = ("prev_s", "prev_l", "curr_s", "curr_l", "prev_above")
-    if any(key not in event_extra for key in required_event_fields):
-        return None
-    if "gap_ratio" not in feature_snapshot or "range_ratio" not in feature_snapshot:
-        return None
-    candles = dataset.candles[: candle_index + 1]
-    prev_above = event_extra.get("prev_above")
-    previous_cross_state = "unknown" if prev_above is None else "above" if bool(prev_above) else "below"
-    assembly = SmaWithFilterPolicyAssembly()
-    materialized = assembly.materialize_parameters(
-        {**dict(parameter_values), "BUY_FRACTION": buy_fraction},
-        materialization_mode,
+    projector = SmaWithFilterSnapshotProjector(SmaWithFilterPolicyAssembly())
+    projected = projector.project_from_research_event(
+        event=event,
+        dataset=dataset,
+        candle_index=candle_index,
+        position=position,
+        parameter_values=parameter_values,
         fee_rate=fee_rate,
         slippage_bps=slippage_bps,
-    )
-    market = assembly.build_market_snapshot(
-        pair=dataset.market,
-        interval=dataset.interval,
-        candle_ts=int(event.candle_ts),
-        closes=tuple(float(item.close) for item in candles),
-        prev_s=float(event_extra.get("prev_s", 0.0) or 0.0),
-        prev_l=float(event_extra.get("prev_l", 0.0) or 0.0),
-        curr_s=float(event_extra.get("curr_s", 0.0) or 0.0),
-        curr_l=float(event_extra.get("curr_l", 0.0) or 0.0),
-        gap_ratio=float(feature_snapshot.get("gap_ratio", 0.0) or 0.0),
-        volatility_ratio=float(feature_snapshot.get("range_ratio", 0.0) or 0.0),
-        overextended_ratio=float(event_extra.get("overextended_ratio", 0.0) or 0.0),
-        market_regime_snapshot=dict(event_extra.get("regime_snapshot") or {}),
-        through_ts_ms=int(event.candle_ts),
-        previous_cross_state=previous_cross_state,
-        allow_initial_cross=False,
-    )
-    strategy = assembly.build_strategy(
-        materialized,
-        pair=dataset.market,
-        interval=dataset.interval,
-        candidate_regime_policy=candidate_regime_policy,
-    )
-    config = assembly.build_policy_config(
-        materialized,
-        strategy,
+        active_exit_policy=active_exit_policy,
+        buy_fraction=buy_fraction,
+        materialization_mode=materialization_mode,
         candidate_regime_policy=candidate_regime_policy,
         candidate_regime_policy_enforced=candidate_regime_policy_enforced,
     )
-    exit_policy_config = assembly.build_exit_policy_config(
-        materialized,
-        fee_rate_for_decision=float(materialized.values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate),
-    )
-    common_exit_rule_names = set(active_exit_policy.get("common_rules") or ())
-    strategy_exit_rule_names = set(active_exit_policy.get("strategy_rules") or ())
-    rule_sources = {
-        name: (
-            "common_risk_and_plugin"
-            if name in common_exit_rule_names and name in strategy_exit_rule_names
-            else "common_risk"
-            if name in common_exit_rule_names
-            else "plugin"
-            if name in strategy_exit_rule_names
-            else "unknown"
-        )
-        for name in active_exit_policy.get("rules") or ()
-    }
-    fee = float(materialized.values.get("LIVE_FEE_RATE_ESTIMATE") or fee_rate)
+    if projected is None:
+        return None
+    materialized = projected.materialized
+    strategy = projected.strategy
+    bundle = projected.bundle
     strategy_parameters_hash = materialized_strategy_parameters_hash(dict(materialized.values))
     approved_profile_hash = (
         candidate_regime_policy.get("strategy_profile_hash")
@@ -360,25 +316,22 @@ def research_policy_decision_builder(
                 else materialization_mode
             ),
             strategy_policy=strategy,
-            market_snapshot=market,
-            position_snapshot=position,
-            strategy_config=config,
-            execution_constraints=assembly.build_execution_snapshot(
-                materialized,
-                pair=dataset.market,
-                fee_rate_for_decision=fee,
-            ),
-            exit_policy_config=exit_policy_config,
-            rule_sources=rule_sources,
+            market_snapshot=bundle.market,
+            position_snapshot=bundle.position,
+            strategy_config=bundle.config,
+            execution_constraints=bundle.execution_constraints,
+            exit_policy_config=bundle.exit_policy_config,
+            rule_sources=projected.rule_sources,
             approved_profile_hash=approved_profile_hash,
             runtime_contract_hash=None,
             plugin_contract_hash=None,
             request_hash=None,
             provenance={
                 "decision_boundary": "StrategyDecisionService.evaluate",
-                "snapshot_builder": "research.sma_with_filter_plugin",
+                "snapshot_builder": "SmaWithFilterSnapshotProjector",
                 "candle_ts": int(event.candle_ts),
                 "strategy_parameters_hash": strategy_parameters_hash,
+                "replay_fingerprint": projected.replay_fingerprint,
                 "approved_profile_hash_unavailable_reason": "research_candidate_profile_not_supplied"
                 if not approved_profile_hash
                 else "",
@@ -390,10 +343,12 @@ def research_policy_decision_builder(
                     "policy_class": strategy.__class__.__name__,
                 },
             },
+            decision_input_bundle=bundle,
         )
     )
     result.decision.trace["strategy_evaluation_provenance"] = dict(result.provenance)
     result.decision.trace["replay_fingerprint_hash"] = result.replay_fingerprint_hash
+    result.decision.trace.update(bundle.observability_payload())
     return result.decision
 
 

@@ -10,6 +10,7 @@ from .strategy_policy_contract import (
     PositionSnapshot,
     StrategyDecisionV2,
 )
+from .strategy_decision_input import StrategyDecisionInputBundle
 
 
 class StrategyPolicyLike(Protocol):
@@ -44,6 +45,7 @@ class StrategyEvaluationRequest:
     plugin_contract_hash: str | None
     request_hash: str | None
     provenance: Mapping[str, object]
+    decision_input_bundle: StrategyDecisionInputBundle | None = None
 
     def __post_init__(self) -> None:
         name = str(self.strategy_name or "").strip().lower()
@@ -117,12 +119,36 @@ class StrategyDecisionService:
         policy_name = str(getattr(request.strategy_policy, "name", "") or "").strip().lower()
         if policy_name and policy_name != request.strategy_name:
             raise ValueError(f"strategy_evaluation_policy_strategy_mismatch:{request.strategy_name}:{policy_name}")
+        bundle = request.decision_input_bundle
+        if (
+            request.strategy_name == "sma_with_filter"
+            and request.mode in self._PROMOTION_COMPARABLE_MODES
+            and bundle is None
+        ):
+            raise ValueError("strategy_evaluation_decision_input_bundle_missing:sma_with_filter")
+        if bundle is not None:
+            if bundle.strategy_name != request.strategy_name:
+                raise ValueError(
+                    "strategy_evaluation_decision_input_bundle_strategy_mismatch:"
+                    f"{request.strategy_name}:{bundle.strategy_name}"
+                )
+            market_snapshot = bundle.market
+            position_snapshot = bundle.position
+            strategy_config = bundle.config
+            execution_constraints = bundle.execution_constraints
+            exit_policy_config = bundle.exit_policy_config
+        else:
+            market_snapshot = request.market_snapshot
+            position_snapshot = request.position_snapshot
+            strategy_config = request.strategy_config
+            execution_constraints = request.execution_constraints
+            exit_policy_config = request.exit_policy_config
         decision = request.strategy_policy.decide_snapshot(
-            market=request.market_snapshot,
-            position=request.position_snapshot,
-            config=request.strategy_config,
-            execution_context=request.execution_constraints,
-            exit_policy_config=request.exit_policy_config,
+            market=market_snapshot,
+            position=position_snapshot,
+            config=strategy_config,
+            execution_context=execution_constraints,
+            exit_policy_config=exit_policy_config,
             rule_sources=dict(request.rule_sources),
         )
         if not isinstance(decision, StrategyDecisionV2):
@@ -143,6 +169,8 @@ class StrategyDecisionService:
             replay_payload["policy_decision_hash"] = decision.policy_decision_hash
         if "policy_contract_hash" not in replay_payload:
             replay_payload["policy_contract_hash"] = decision.policy_contract_hash
+        if bundle is not None:
+            replay_payload.update(bundle.observability_payload())
         if "replay_fingerprint_hash" not in replay_payload:
             replay_payload["replay_fingerprint_hash"] = sha256_prefixed(replay_payload)
         provenance = {
@@ -161,6 +189,12 @@ class StrategyDecisionService:
             "replay_fingerprint_hash": replay_payload["replay_fingerprint_hash"],
             "decision_boundary": "StrategyDecisionService.evaluate",
         }
+        if bundle is not None:
+            provenance.update(bundle.observability_payload())
+        if request.mode in self._PROMOTION_COMPARABLE_MODES and bool(
+            provenance.get("compatibility_fallback")
+        ):
+            raise ValueError(f"strategy_evaluation_compatibility_fallback_rejected:{request.strategy_name}")
         self._validate_promotion_provenance(request=request, provenance=provenance)
         return StrategyEvaluationResult(
             decision=decision,
@@ -189,14 +223,23 @@ class StrategyDecisionService:
             if str(provenance.get(reason_key) or "").strip():
                 continue
             missing.append(field_name)
-        for field_name in (
+        required_decision_fields = [
             "policy_input_hash",
             "policy_decision_hash",
             "policy_contract_hash",
             "replay_fingerprint_hash",
             "strategy_evaluation_mode",
             "decision_boundary",
-        ):
+        ]
+        if request.strategy_name == "sma_with_filter":
+            required_decision_fields.extend(
+                [
+                    "decision_input_bundle_hash",
+                    "snapshot_projector_version",
+                    "snapshot_projector_hash",
+                ]
+            )
+        for field_name in required_decision_fields:
             if not str(provenance.get(field_name) or "").strip():
                 missing.append(field_name)
         if missing:

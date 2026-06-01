@@ -163,6 +163,7 @@ class DefaultStrategyEvaluator:
             "exit_signal": exit_signal,
             "blocked_filters": blocked_filters,
             "policy_materialization_mode": policy_materialization_mode,
+            "runtime_comparable": bool(policy_materialization_mode != "research_exploratory" and policy_decision is not None),
             "promotion_grade_policy_required": promotion_grade_policy_required,
             "allows_legacy_event_first_exit_policy": allows_legacy_event_first_exit_policy,
             "evaluates_exit_policy": evaluates_exit_policy,

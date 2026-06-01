@@ -22,11 +22,14 @@ from .strategy_plugins.sma_with_filter_assembly import (
     MaterializationMode,
     SmaWithFilterPolicyAssembly,
 )
+from .strategy_plugins.sma_with_filter_projector import SmaWithFilterSnapshotProjector
 from .strategy_decision_service import StrategyDecisionService, StrategyEvaluationRequest
 from .research.strategy_spec import materialized_strategy_parameters_hash
 from .runtime_position_state_normalizer import (
     load_last_reconcile_metadata,
 )
+from .market_regime import classify_market_regime_from_arrays
+from .market_regime.thresholds import MarketRegimeThresholds
 from .runtime_sma_context import (
     build_entry_decision_context,
     build_position_gate_context,
@@ -227,7 +230,15 @@ def _load_signal_rows(
     interval: str,
     through_ts_ms: int | None,
 ) -> list[sqlite3.Row | tuple[Any, ...]]:
-    query = "SELECT ts, close FROM candles WHERE pair=? AND interval=?"
+    columns = {
+        str(item[0])
+        for item in (conn.execute("SELECT * FROM candles LIMIT 0").description or ())
+    }
+    optional_columns = [
+        name for name in ("high", "low", "volume") if name in columns
+    ]
+    select_columns = ["ts", "close", *optional_columns]
+    query = f"SELECT {', '.join(select_columns)} FROM candles WHERE pair=? AND interval=?"
     params: list[object] = [pair, interval]
     if through_ts_ms is not None:
         query += " AND ts <= ?"
@@ -487,6 +498,9 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
         return None
 
     closes = [float(r[1]) for r in rows]
+    highs = [float(r[2]) if len(r) > 2 and r[2] is not None else float(r[1]) for r in rows]
+    lows = [float(r[3]) if len(r) > 3 and r[3] is not None else float(r[1]) for r in rows]
+    volumes = [float(r[4]) if len(r) > 4 and r[4] is not None else 0.0 for r in rows]
     ts_list = [int(r[0]) for r in rows]
 
     end_prev = len(closes) - 1
@@ -524,6 +538,26 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
         previous_cross_state = "below"
     else:
         previous_cross_state = "unknown"
+    vol_window_for_features = max(1, int(strategy.volatility_window))
+    overext_lookback_for_features = max(1, int(strategy.overextended_lookback))
+    market_regime_snapshot = classify_market_regime_from_arrays(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        index=len(closes) - 1,
+        short_sma=float(curr_s),
+        long_sma=float(curr_l),
+        volatility_window=vol_window_for_features,
+        volume_window=max(1, int(getattr(strategy, "volume_window", 10))),
+        liquidity_window=max(1, int(getattr(strategy, "liquidity_window", 10))),
+        thresholds=MarketRegimeThresholds(
+            min_trend_strength_ratio=max(0.0, float(strategy.min_gap_ratio)),
+            low_volatility_ratio=max(0.0, float(strategy.min_volatility_ratio)),
+        ),
+        overextended_lookback=overext_lookback_for_features,
+        overextended_max_return_ratio=float(strategy.overextended_max_return_ratio),
+    ).as_dict()
     market_snapshot = assembly.build_market_snapshot(
         pair=strategy.pair,
         interval=strategy.interval,
@@ -534,6 +568,10 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
         curr_s=float(curr_s),
         curr_l=float(curr_l),
         through_ts_ms=signal_through_ts_ms,
+        gap_ratio=abs((float(curr_s) - float(curr_l)) / float(curr_l)) if float(curr_l) != 0.0 else 0.0,
+        volatility_ratio=_rolling_close_range_ratio(closes, vol_window_for_features, len(closes) - 1),
+        overextended_ratio=_overextended_return_ratio(closes, overext_lookback_for_features, len(closes) - 1),
+        market_regime_snapshot=market_regime_snapshot,
         previous_cross_state=previous_cross_state,
         allow_initial_cross=previous_cross_state == "unknown",
     )
@@ -552,6 +590,31 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
     exit_policy_config = assembly.build_exit_policy_config(
         materialized,
         fee_rate_for_decision=fee_rate_for_decision,
+    )
+    projector = SmaWithFilterSnapshotProjector(assembly)
+    decision_input_bundle = projector.project_from_runtime_snapshots(
+        strategy=strategy,
+        materialized=materialized,
+        market=market_snapshot,
+        position=position_snapshot,
+        config=policy_config,
+        execution_constraints=execution_snapshot,
+        exit_policy_config=exit_policy_config,
+        provenance={
+            "candle_ts": int(ts_list[-1]),
+            "through_ts_ms": int(signal_through_ts_ms),
+            "previous_cross_state": previous_cross_state,
+        },
+    )
+    initial_replay_fingerprint = projector.build_replay_fingerprint(
+        strategy_name=strategy.name,
+        pair=strategy.pair,
+        interval=strategy.interval,
+        candle_ts=int(ts_list[-1]),
+        through_ts_ms=None if signal_through_ts_ms is None else int(signal_through_ts_ms),
+        materialized=materialized,
+        bundle=decision_input_bundle,
+        regime_version=str((market_snapshot.market_regime_snapshot or {}).get("version") or ""),
     )
     policy_strategy = (
         strategy
@@ -599,8 +662,9 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
             provenance={
                 **request_metadata,
                 "decision_boundary": "StrategyDecisionService.evaluate",
-                "snapshot_builder": "runtime_sma_snapshot_builder",
+                "snapshot_builder": "SmaWithFilterSnapshotProjector",
                 "strategy_parameters_hash": strategy_parameters_hash,
+                "replay_fingerprint": initial_replay_fingerprint,
                 "approved_profile_hash_unavailable_reason": "runtime_snapshot_no_approved_profile_hash"
                 if not approved_profile_hash
                 else "",
@@ -618,6 +682,7 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
                     "policy_class": policy_strategy.__class__.__name__,
                 },
             },
+            decision_input_bundle=decision_input_bundle,
         )
     )
     final_policy_decision = final_policy_result.decision
@@ -825,6 +890,15 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
         "policy_contract_hash": final_policy_decision.policy_contract_hash,
         "policy_input_hash": final_policy_decision.policy_input_hash,
         "policy_decision_hash": final_policy_decision.policy_decision_hash,
+        "decision_input_bundle_hash": decision_input_bundle.decision_input_bundle_hash,
+        "snapshot_projector_version": decision_input_bundle.snapshot_projector_version,
+        "snapshot_projector_hash": decision_input_bundle.snapshot_projector_hash,
+        "materialized_parameters_hash": decision_input_bundle.materialized_parameters_hash,
+        "market_snapshot_hash": decision_input_bundle.market_snapshot_hash,
+        "position_snapshot_hash": decision_input_bundle.position_snapshot_hash,
+        "execution_constraints_hash": decision_input_bundle.execution_constraints_hash,
+        "policy_config_hash": decision_input_bundle.policy_config_hash,
+        "exit_policy_config_hash": decision_input_bundle.exit_policy_config_hash,
         "strategy_evaluation_provenance": dict(final_policy_result.provenance),
         "replay_fingerprint_hash": final_policy_result.replay_fingerprint_hash,
         "prev_s": prev_s,
@@ -937,43 +1011,7 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
             "raw_filter_blocked": bool(raw_filter_would_block),
         },
     }
-    thresholds = {
-        "sma_filter_gap_min_ratio": float(strategy.min_gap_ratio),
-        "sma_filter_vol_window": int(vol_window),
-        "sma_filter_vol_min_range_ratio": float(strategy.min_volatility_ratio),
-        "sma_filter_overext_lookback": int(overext_lookback),
-        "sma_filter_overext_max_return_ratio": float(strategy.overextended_max_return_ratio),
-        "sma_cost_edge_enabled": bool(strategy.cost_edge_enabled),
-        "sma_cost_edge_min_ratio": float(strategy.cost_edge_min_ratio),
-        "strategy_min_expected_edge_ratio": float(policy_config.strategy_min_expected_edge_ratio),
-        "entry_edge_buffer_ratio": float(strategy.entry_edge_buffer_ratio),
-        "market_regime_enabled": bool(strategy.market_regime_enabled),
-        "candidate_regime_policy_configured": bool(candidate_regime_decision.get("regime_policy_present")),
-        **policy_config.candidate_regime_policy_status,
-    }
-    policy_input_payload = assembly.policy_input_payload(
-        materialized=materialized,
-        market=market_snapshot,
-        position=position_snapshot,
-        policy_config=policy_config,
-        execution_context=execution_snapshot,
-        exit_policy_config=exit_policy_config,
-    )
-    replay_fingerprint = assembly.build_replay_fingerprint_payload(
-        strategy_name=strategy.name,
-        pair=strategy.pair,
-        interval=strategy.interval,
-        candle_ts=int(ts_list[-1]),
-        through_ts_ms=None if signal_through_ts_ms is None else int(signal_through_ts_ms),
-        materialized=materialized,
-        thresholds=thresholds,
-        fee_authority=fee_authority_context(fee_authority),
-        slippage_bps=float(strategy.slippage_bps),
-        regime_version=str(market_regime.get("version") or ""),
-        policy_input_payload=policy_input_payload,
-        policy_input_hash=final_policy_decision.policy_input_hash,
-        exit_policy_hash=str(policy_input_payload["exit_policy_hash"]),
-    )
+    replay_fingerprint = dict(final_policy_result.replay_fingerprint)
     base_context["replay_fingerprint"] = replay_fingerprint
     boundary = {
         "normalization_boundary": "engine.normalize_position_state_before_strategy_decision",
@@ -1127,3 +1165,21 @@ def _latest_signal_close(
     if row is None or row[0] is None:
         return None
     return float(row[0])
+
+
+def _rolling_close_range_ratio(values: list[float], window: int, index: int) -> float:
+    window = max(1, int(window))
+    start = max(0, int(index) - window + 1)
+    subset = [float(value) for value in values[start : int(index) + 1]]
+    if not subset:
+        return 0.0
+    mean = sum(subset) / len(subset)
+    return ((max(subset) - min(subset)) / mean) if mean != 0.0 else 0.0
+
+
+def _overextended_return_ratio(values: list[float], lookback: int, index: int) -> float:
+    lookback = max(1, int(lookback))
+    if int(index) < lookback:
+        return 0.0
+    base = float(values[int(index) - lookback])
+    return abs((float(values[int(index)]) - base) / base) if base != 0.0 else 0.0

@@ -117,6 +117,32 @@ def test_default_backtest_authority_calls_live_inside_stage_classes() -> None:
     assert "SignalExecutionRequest(" not in loop_source
 
 
+def test_sma_adapters_project_or_convert_without_final_decision_authority() -> None:
+    event_source = _source("src/bithumb_bot/strategy_plugins/sma_with_filter_events.py")
+    research_source = _source("src/bithumb_bot/research/sma_with_filter_plugin.py")
+    runtime_adapter_source = _source("src/bithumb_bot/runtime_adapters/sma_with_filter.py")
+    payload_adapter_source = inspect.getsource(
+        __import__(
+            "bithumb_bot.research.sma_with_filter_plugin",
+            fromlist=["decision_payload_adapter"],
+        ).decision_payload_adapter
+    )
+
+    assert "non_authoritative_event_adapter" in event_source
+    assert "authority\": \"historical_feature_serialization_only\"" in event_source
+    assert "SmaWithFilterSnapshotProjector" in research_source
+    assert "StrategyDecisionService().evaluate(" in research_source
+    assert "evaluate_sma_final_decision(" not in research_source
+    assert "evaluate_sma_policy(" not in research_source
+    assert "StrategyDecisionV2(" not in research_source
+    assert "decide_sma_with_filter_runtime_snapshot_from_db(" in runtime_adapter_source
+    assert "evaluate_sma_final_decision(" not in runtime_adapter_source
+    assert "evaluate_sma_policy(" not in runtime_adapter_source
+    assert "StrategyDecisionV2(" not in runtime_adapter_source
+    assert "StrategyDecisionV2(" not in payload_adapter_source
+    assert "final_signal" not in payload_adapter_source
+
+
 def test_backtest_stage_protocols_match_default_stage_contracts() -> None:
     stages_source = _source("src/bithumb_bot/research/backtest_stages.py")
 

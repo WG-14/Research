@@ -1,0 +1,195 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Mapping
+
+from bithumb_bot.core.sma_policy import (
+    _stable_hash,
+    _stable_market_policy_input,
+    _stable_position_policy_input,
+)
+from bithumb_bot.strategy_policy_contract import (
+    ExecutionConstraintSnapshot,
+    PositionSnapshot,
+)
+
+
+TRANSIENT_PROVENANCE_FIELDS = frozenset(
+    {
+        "created_at",
+        "created_at_ms",
+        "created_at_sec",
+        "decision_ts",
+        "evaluated_at",
+        "evaluated_at_ms",
+        "generated_at",
+        "generated_at_ms",
+        "now",
+        "now_ms",
+        "timestamp",
+        "timestamp_ms",
+        "wall_clock",
+        "wall_clock_ms",
+    }
+)
+
+
+@dataclass(frozen=True)
+class StrategyDecisionInputBundle:
+    """Canonical typed input material for promotion-grade strategy decisions."""
+
+    strategy_name: str
+    market: object
+    position: PositionSnapshot
+    config: object
+    execution_constraints: ExecutionConstraintSnapshot
+    exit_policy_config: object | None
+    materialized_parameters_hash: str
+    snapshot_projector_version: str
+    snapshot_projector_hash: str
+    provenance: Mapping[str, object]
+    market_snapshot_hash: str
+    position_snapshot_hash: str
+    config_hash: str
+    execution_constraints_hash: str
+    exit_policy_config_hash: str
+    policy_config_hash: str
+    decision_input_bundle_hash: str
+
+    def __post_init__(self) -> None:
+        strategy_name = str(self.strategy_name or "").strip().lower()
+        if not strategy_name:
+            raise ValueError("strategy_decision_input_bundle_strategy_name_missing")
+        if not str(self.materialized_parameters_hash or "").startswith("sha256:"):
+            raise ValueError("strategy_decision_input_bundle_materialized_parameters_hash_missing")
+        if not str(self.snapshot_projector_version or "").strip():
+            raise ValueError("strategy_decision_input_bundle_projector_version_missing")
+        if not str(self.snapshot_projector_hash or "").startswith("sha256:"):
+            raise ValueError("strategy_decision_input_bundle_projector_hash_missing")
+        object.__setattr__(self, "strategy_name", strategy_name)
+        object.__setattr__(
+            self,
+            "provenance",
+            MappingProxyType({str(key): value for key, value in dict(self.provenance or {}).items()}),
+        )
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        strategy_name: str,
+        market: object,
+        position: PositionSnapshot,
+        config: object,
+        execution_constraints: ExecutionConstraintSnapshot,
+        exit_policy_config: object | None,
+        materialized_parameters_hash: str,
+        snapshot_projector_version: str,
+        snapshot_projector_hash: str,
+        provenance: Mapping[str, object] | None = None,
+    ) -> "StrategyDecisionInputBundle":
+        market_payload = _stable_market_policy_input(_policy_payload(market))
+        position_payload = _stable_position_policy_input(position.policy_input_payload())
+        config_payload = _policy_payload(config)
+        execution_payload = execution_constraints.policy_input_payload()
+        exit_payload = _policy_payload(exit_policy_config)
+        component_hashes = {
+            "market_snapshot_hash": _stable_hash(market_payload),
+            "position_snapshot_hash": _stable_hash(position_payload),
+            "config_hash": _stable_hash(config_payload),
+            "execution_constraints_hash": _stable_hash(execution_payload),
+            "exit_policy_config_hash": _stable_hash(exit_payload),
+        }
+        payload = {
+            "schema_version": 1,
+            "strategy_name": str(strategy_name or "").strip().lower(),
+            "market": market_payload,
+            "position": position_payload,
+            "config": config_payload,
+            "execution_constraints": execution_payload,
+            "exit_policy_config": exit_payload,
+            "materialized_parameters_hash": str(materialized_parameters_hash),
+            "snapshot_projector_version": str(snapshot_projector_version),
+            "snapshot_projector_hash": str(snapshot_projector_hash),
+            "component_hashes": component_hashes,
+        }
+        decision_input_bundle_hash = _stable_hash(payload)
+        return cls(
+            strategy_name=strategy_name,
+            market=market,
+            position=position,
+            config=config,
+            execution_constraints=execution_constraints,
+            exit_policy_config=exit_policy_config,
+            materialized_parameters_hash=str(materialized_parameters_hash),
+            snapshot_projector_version=str(snapshot_projector_version),
+            snapshot_projector_hash=str(snapshot_projector_hash),
+            provenance=dict(provenance or {}),
+            market_snapshot_hash=component_hashes["market_snapshot_hash"],
+            position_snapshot_hash=component_hashes["position_snapshot_hash"],
+            config_hash=component_hashes["config_hash"],
+            execution_constraints_hash=component_hashes["execution_constraints_hash"],
+            exit_policy_config_hash=component_hashes["exit_policy_config_hash"],
+            policy_config_hash=component_hashes["config_hash"],
+            decision_input_bundle_hash=decision_input_bundle_hash,
+        )
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "strategy_name": self.strategy_name,
+            "market": _stable_market_policy_input(_policy_payload(self.market)),
+            "position": _stable_position_policy_input(self.position.policy_input_payload()),
+            "config": _policy_payload(self.config),
+            "execution_constraints": self.execution_constraints.policy_input_payload(),
+            "exit_policy_config": _policy_payload(self.exit_policy_config),
+            "materialized_parameters_hash": self.materialized_parameters_hash,
+            "snapshot_projector_version": self.snapshot_projector_version,
+            "snapshot_projector_hash": self.snapshot_projector_hash,
+            "component_hashes": self.component_hashes(),
+            "stable_provenance": _stable_provenance(dict(self.provenance)),
+        }
+
+    def component_hashes(self) -> dict[str, str]:
+        return {
+            "market_snapshot_hash": self.market_snapshot_hash,
+            "position_snapshot_hash": self.position_snapshot_hash,
+            "config_hash": self.config_hash,
+            "execution_constraints_hash": self.execution_constraints_hash,
+            "exit_policy_config_hash": self.exit_policy_config_hash,
+            "policy_config_hash": self.policy_config_hash,
+        }
+
+    def observability_payload(self) -> dict[str, object]:
+        return {
+            "decision_input_bundle_hash": self.decision_input_bundle_hash,
+            "snapshot_projector_version": self.snapshot_projector_version,
+            "snapshot_projector_hash": self.snapshot_projector_hash,
+            "materialized_parameters_hash": self.materialized_parameters_hash,
+            **self.component_hashes(),
+        }
+
+
+def _policy_payload(value: object) -> dict[str, object]:
+    if value is None:
+        return {}
+    payload_method = getattr(value, "policy_input_payload", None)
+    if callable(payload_method):
+        payload = payload_method()
+        if isinstance(payload, dict):
+            return dict(payload)
+    if isinstance(value, Mapping):
+        return dict(value)
+    raise TypeError(f"strategy_decision_input_bundle_policy_payload_unsupported:{type(value).__name__}")
+
+
+def _stable_provenance(payload: dict[str, object]) -> dict[str, object]:
+    return {
+        str(key): value
+        for key, value in sorted(payload.items())
+        if str(key) not in TRANSIENT_PROVENANCE_FIELDS
+    }
+
+
+__all__ = ["StrategyDecisionInputBundle"]

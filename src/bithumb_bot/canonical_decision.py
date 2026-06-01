@@ -78,6 +78,9 @@ COMMON_CANONICAL_DECISION_FIELDS_V2 = (
     "policy_input_hash",
     "policy_decision_hash",
     "replay_fingerprint_hash",
+    "decision_input_bundle_hash",
+    "snapshot_projector_version",
+    "snapshot_projector_hash",
     "runtime_decision_request_hash",
     "runtime_strategy_set_manifest_hash",
     "approved_profile_hash",
@@ -618,6 +621,9 @@ def runtime_decision_to_canonical_event(
         "policy_contract_hash": str(context.get("policy_contract_hash") or ""),
         "policy_input_hash": str(context.get("policy_input_hash") or ""),
         "policy_decision_hash": str(context.get("policy_decision_hash") or ""),
+        "decision_input_bundle_hash": str(context.get("decision_input_bundle_hash") or ""),
+        "snapshot_projector_version": str(context.get("snapshot_projector_version") or ""),
+        "snapshot_projector_hash": str(context.get("snapshot_projector_hash") or ""),
         "replay_fingerprint_hash": canonical_payload_hash(context.get("replay_fingerprint") or {}),
         "runtime_decision_request_hash": str(
             context.get("runtime_decision_request_hash")
@@ -759,6 +765,9 @@ def research_decision_to_canonical_event(
     payload["policy_contract_hash"] = str(payload.get("policy_contract_hash") or "")
     payload["policy_input_hash"] = str(payload.get("policy_input_hash") or "")
     payload["policy_decision_hash"] = str(payload.get("policy_decision_hash") or "")
+    payload["decision_input_bundle_hash"] = str(payload.get("decision_input_bundle_hash") or "")
+    payload["snapshot_projector_version"] = str(payload.get("snapshot_projector_version") or "")
+    payload["snapshot_projector_hash"] = str(payload.get("snapshot_projector_hash") or "")
     payload["runtime_decision_request_hash"] = str(payload.get("runtime_decision_request_hash") or "")
     payload["runtime_strategy_set_manifest_hash"] = str(payload.get("runtime_strategy_set_manifest_hash") or "")
     payload["approved_profile_hash"] = str(payload.get("approved_profile_hash") or "")

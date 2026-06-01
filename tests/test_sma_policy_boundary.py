@@ -33,6 +33,10 @@ from bithumb_bot.strategy_plugins.sma_with_filter_assembly import (
     MaterializationMode,
     SmaWithFilterPolicyAssembly,
 )
+from bithumb_bot.strategy_decision_service import (
+    StrategyDecisionService,
+    StrategyEvaluationRequest,
+)
 from bithumb_bot.research.strategy_spec import runtime_bound_behavior_parameter_names
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
 from bithumb_bot.research.decision_event import ResearchDecisionEvent
@@ -339,6 +343,53 @@ def test_candidate_regime_policy_missing_fails_closed_in_comparable_modes() -> N
     assert status["candidate_regime_policy_loaded"] is False
     assert status["candidate_regime_policy_valid"] is False
     assert status["candidate_regime_policy_verification_status"] == "fail_closed_missing"
+
+
+def test_sma_promotion_service_requires_canonical_decision_input_bundle() -> None:
+    assembly = SmaWithFilterPolicyAssembly()
+    materialized = assembly.materialize_parameters(
+        _runtime_bound_sma_parameters(SMA_MARKET_REGIME_ENABLED=False),
+        MaterializationMode.RESEARCH_PROMOTION,
+    )
+    strategy = assembly.build_strategy(
+        materialized,
+        pair="BTC_KRW",
+        interval="1m",
+        candidate_regime_policy=_allowing_policy(),
+    )
+    with pytest.raises(ValueError, match="strategy_evaluation_decision_input_bundle_missing:sma_with_filter"):
+        StrategyDecisionService().evaluate(
+            StrategyEvaluationRequest(
+                strategy_name="sma_with_filter",
+                strategy_instance_id="unit",
+                mode="research_promotion",
+                strategy_policy=strategy,
+                market_snapshot=_market_window(),
+                position_snapshot=_flat_position(),
+                strategy_config=assembly.build_policy_config(
+                    materialized,
+                    strategy,
+                    candidate_regime_policy=_allowing_policy(),
+                ),
+                execution_constraints=ExecutionConstraintSnapshot(fee_rate_for_decision=0.0),
+                exit_policy_config=assembly.build_exit_policy_config(
+                    materialized,
+                    fee_rate_for_decision=0.0,
+                ),
+                rule_sources={},
+                approved_profile_hash=None,
+                runtime_contract_hash=None,
+                plugin_contract_hash=None,
+                request_hash=None,
+                provenance={
+                    "strategy_parameters_hash": "sha256:unit",
+                    "approved_profile_hash_unavailable_reason": "unit",
+                    "runtime_contract_hash_unavailable_reason": "unit",
+                    "plugin_contract_hash_unavailable_reason": "unit",
+                    "runtime_decision_request_hash_unavailable_reason": "unit",
+                },
+            )
+        )
 
 
 def test_candidate_regime_policy_blocks_buy_equally_in_promotion_and_runtime_replay() -> None:
@@ -879,6 +930,9 @@ def _build_candle_db(closes: list[float]) -> sqlite3.Connection:
             ts INTEGER NOT NULL,
             pair TEXT NOT NULL,
             interval TEXT NOT NULL,
+            high REAL,
+            low REAL,
+            volume REAL,
             close REAL NOT NULL
         )
         """
@@ -886,8 +940,8 @@ def _build_candle_db(closes: list[float]) -> sqlite3.Connection:
     base_ts = 1_700_000_000_000
     for idx, close in enumerate(closes):
         conn.execute(
-            "INSERT INTO candles(ts, pair, interval, close) VALUES (?, ?, ?, ?)",
-            (base_ts + idx * 60_000, "BTC_KRW", "1m", close),
+            "INSERT INTO candles(ts, pair, interval, high, low, volume, close) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (base_ts + idx * 60_000, "BTC_KRW", "1m", close, close, 1.0, close),
         )
     conn.commit()
     return conn
@@ -1257,6 +1311,32 @@ def test_sma_research_promotion_backtest_and_runtime_gateway_paths_share_canonic
         "policy_input_hash": (research["policy_input_hash"], runtime_context["policy_input_hash"]),
         "policy_decision_hash": (research["policy_decision_hash"], runtime_context["policy_decision_hash"]),
         "policy_contract_hash": (research["policy_contract_hash"], runtime_context["policy_contract_hash"]),
+        "decision_input_bundle_hash": (
+            research["decision_input_bundle_hash"],
+            runtime_context["decision_input_bundle_hash"],
+        ),
+        "snapshot_projector_version": (
+            research["snapshot_projector_version"],
+            runtime_context["snapshot_projector_version"],
+        ),
+        "snapshot_projector_hash": (
+            research["snapshot_projector_hash"],
+            runtime_context["snapshot_projector_hash"],
+        ),
+        "market_snapshot_hash": (research["market_snapshot_hash"], runtime_context["market_snapshot_hash"]),
+        "position_snapshot_hash": (
+            research["position_snapshot_hash"],
+            runtime_context["position_snapshot_hash"],
+        ),
+        "execution_constraints_hash": (
+            research["execution_constraints_hash"],
+            runtime_context["execution_constraints_hash"],
+        ),
+        "policy_config_hash": (research["policy_config_hash"], runtime_context["policy_config_hash"]),
+        "exit_policy_config_hash": (
+            research["exit_policy_config_hash"],
+            runtime_context["exit_policy_config_hash"],
+        ),
         "final_signal": (research["final_signal"], runtime_trace["final_signal"]),
         "final_reason": (research["pure_policy_trace"]["final_reason"], runtime_trace["final_reason"]),
         "execution_intent": (research["execution_intent_v2"], runtime_trace["execution_intent"]),
@@ -1280,6 +1360,15 @@ def test_sma_research_promotion_backtest_and_runtime_gateway_paths_share_canonic
         if values[0] != values[1]
     }
     assert mismatches == {}
+    for drift_field in (
+        "previous_cross_state",
+        "allow_initial_cross",
+        "gap_ratio",
+        "volatility_ratio",
+        "overextended_ratio",
+        "market_regime_snapshot",
+    ):
+        assert research["pure_policy_trace"]["market"][drift_field] == runtime_trace["market"][drift_field]
     assert research["execution_submit_plan_hash"]
     assert runtime_context["replay_fingerprint_hash"]
 
