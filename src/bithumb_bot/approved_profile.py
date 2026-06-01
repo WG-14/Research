@@ -335,6 +335,10 @@ def verify_promotion_artifact(payload: dict[str, Any]) -> dict[str, Any]:
             "research_compatibility_execution_fallback"
         ) is True:
             raise ApprovedProfileError(f"{source_name}_compatibility_fallback_not_promotion_grade")
+        if source.get("allow_execution_compatibility_fallback") is True:
+            raise ApprovedProfileError(f"{source_name}_execution_compatibility_fallback_not_promotion_grade")
+        if str(source.get("policy_materialization_mode") or "").strip() == "research_exploratory":
+            raise ApprovedProfileError(f"{source_name}_research_exploratory_not_promotion_grade")
         if source.get("promotion_grade") is False:
             raise ApprovedProfileError(f"{source_name}_promotion_grade_false")
         if payload_has_promotion_provenance_markers(source):

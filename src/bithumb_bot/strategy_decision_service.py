@@ -264,6 +264,48 @@ class StrategyDecisionService:
                 + ":"
                 + ",".join(sorted(set(missing)))
             )
+        if request.mode == "live_real_order":
+            self._validate_live_real_order_provenance(provenance)
+
+    def _validate_live_real_order_provenance(self, provenance: Mapping[str, object]) -> None:
+        missing: list[str] = []
+        for field_name in (
+            "policy_input_hash",
+            "policy_decision_hash",
+            "policy_contract_hash",
+            "decision_input_bundle_hash",
+            "snapshot_projector_hash",
+            "replay_fingerprint_hash",
+            "strategy_parameters_hash",
+            "approved_profile_hash",
+            "plugin_contract_hash",
+            "runtime_contract_hash",
+            "runtime_decision_request_hash",
+        ):
+            if not str(provenance.get(field_name) or "").strip():
+                missing.append(field_name)
+        if not (
+            str(provenance.get("fee_authority_hash") or "").strip()
+            or str(provenance.get("fee_authority_payload_hash") or "").strip()
+        ):
+            missing.append("fee_authority_hash")
+        if not (
+            str(provenance.get("order_rules_hash") or "").strip()
+            or str(provenance.get("order_rules_payload_hash") or "").strip()
+        ):
+            missing.append("order_rules_hash")
+        unavailable = sorted(
+            key
+            for key, value in provenance.items()
+            if str(key).endswith("_unavailable_reason") and str(value or "").strip()
+        )
+        if unavailable:
+            missing.extend(unavailable)
+        if missing:
+            raise ValueError(
+                "strategy_evaluation_live_real_order_provenance_missing:"
+                + ",".join(sorted(set(missing)))
+            )
 
 
 __all__ = [

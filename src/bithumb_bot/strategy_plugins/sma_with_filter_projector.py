@@ -28,6 +28,63 @@ class SmaWithFilterProjectedDecisionInput:
 
 
 @dataclass(frozen=True)
+class SmaWithFilterRuntimeProjectionResult:
+    """Validated runtime-side projection material before bundle construction.
+
+    Runtime replay may assemble position/fee/order-rule snapshots from DB state,
+    but those snapshots are admitted to the canonical bundle only through this
+    projector-owned contract. The evidence hashes here are non-authoritative
+    observability; the typed snapshots remain the service inputs.
+    """
+
+    strategy: object
+    materialized: MaterializedSmaWithFilterParameters
+    market: object
+    position: PositionSnapshot
+    config: object
+    execution_constraints: object
+    exit_policy_config: object
+    provenance: dict[str, object]
+    source_contract: str = "SmaWithFilterRuntimeProjectionResult.v1"
+
+    def __post_init__(self) -> None:
+        if not bool(self.materialized.runtime_comparable):
+            raise ValueError("sma_runtime_projection_not_runtime_comparable")
+        if self.materialized.mode is not MaterializationMode.RUNTIME_REPLAY:
+            raise ValueError("sma_runtime_projection_materialization_mode_invalid")
+        if not str(getattr(self.strategy, "name", "") or "").strip():
+            raise ValueError("sma_runtime_projection_strategy_missing")
+        if not isinstance(self.position, PositionSnapshot):
+            raise TypeError("sma_runtime_projection_position_snapshot_invalid")
+        policy_payload = getattr(self.config, "policy_input_payload", None)
+        if not callable(policy_payload):
+            raise TypeError("sma_runtime_projection_policy_config_invalid")
+        execution_payload = getattr(self.execution_constraints, "policy_input_payload", None)
+        if not callable(execution_payload):
+            raise TypeError("sma_runtime_projection_execution_constraints_invalid")
+        exit_payload = getattr(self.exit_policy_config, "policy_input_payload", None)
+        if not callable(exit_payload):
+            raise TypeError("sma_runtime_projection_exit_policy_config_invalid")
+
+    def evidence_payload(self, *, projector_version: str, projector_hash: str) -> dict[str, object]:
+        return {
+            "source_contract": self.source_contract,
+            "snapshot_projector_version": projector_version,
+            "snapshot_projector_hash": projector_hash,
+            "market_snapshot_hash": _stable_hash(self.market.policy_input_payload()),
+            "position_snapshot_hash": _stable_hash(self.position.policy_input_payload()),
+            "execution_constraints_hash": _stable_hash(
+                self.execution_constraints.policy_input_payload()
+            ),
+            "policy_config_hash": _stable_hash(self.config.policy_input_payload()),
+            "exit_policy_config_hash": _stable_hash(self.exit_policy_config.policy_input_payload()),
+            "materialized_parameters_hash": materialized_strategy_parameters_hash(
+                dict(self.materialized.values)
+            ),
+        }
+
+
+@dataclass(frozen=True)
 class PromotionDecisionSeed:
     """Promotion-grade replay seed. It carries timing only, never signal authority."""
 
@@ -374,33 +431,31 @@ class SmaWithFilterSnapshotProjector:
             market_regime_snapshot=market_regime_snapshot,
         )
 
-    def project_from_runtime_snapshots(
+    def project_from_runtime_projection(
         self,
         *,
-        strategy: object,
-        materialized: MaterializedSmaWithFilterParameters,
-        market: object,
-        position: PositionSnapshot,
-        config: object,
-        execution_constraints: object,
-        exit_policy_config: object,
-        provenance: dict[str, object] | None = None,
+        projection: SmaWithFilterRuntimeProjectionResult,
     ) -> StrategyDecisionInputBundle:
+        evidence = projection.evidence_payload(
+            projector_version=self.version,
+            projector_hash=self.projector_hash,
+        )
         return StrategyDecisionInputBundle.build(
-            strategy_name=str(getattr(strategy, "name", "sma_with_filter")),
-            market=market,
-            position=position,
-            config=config,
-            execution_constraints=execution_constraints,
-            exit_policy_config=exit_policy_config,
-            materialized_parameters_hash=materialized_strategy_parameters_hash(dict(materialized.values)),
+            strategy_name=str(getattr(projection.strategy, "name", "sma_with_filter")),
+            market=projection.market,
+            position=projection.position,
+            config=projection.config,
+            execution_constraints=projection.execution_constraints,
+            exit_policy_config=projection.exit_policy_config,
+            materialized_parameters_hash=str(evidence["materialized_parameters_hash"]),
             snapshot_projector_version=self.version,
             snapshot_projector_hash=self.projector_hash,
             provenance={
-                "projection_source": "runtime_snapshot",
-                "runtime_comparable": bool(materialized.runtime_comparable),
-                "policy_materialization_mode": materialized.mode.value,
-                **dict(provenance or {}),
+                "projection_source": "validated_runtime_projection",
+                "runtime_comparable": bool(projection.materialized.runtime_comparable),
+                "policy_materialization_mode": projection.materialized.mode.value,
+                "runtime_projection_evidence": evidence,
+                **dict(projection.provenance or {}),
             },
         )
 
@@ -512,5 +567,6 @@ __all__ = [
     "PromotionDecisionSeed",
     "SmaWithFilterCanonicalFeatureProjection",
     "SmaWithFilterProjectedDecisionInput",
+    "SmaWithFilterRuntimeProjectionResult",
     "SmaWithFilterSnapshotProjector",
 ]

@@ -427,6 +427,20 @@ def test_promotion_artifact_rejects_research_compatibility_fallback_marker() -> 
         verify_promotion_artifact(promotion)
 
 
+def test_promotion_artifact_rejects_execution_compatibility_fallback_marker() -> None:
+    promotion = _promotion(allow_execution_compatibility_fallback=True)
+
+    with pytest.raises(ApprovedProfileError, match="promotion_execution_compatibility_fallback_not_promotion_grade"):
+        verify_promotion_artifact(promotion)
+
+
+def test_promotion_artifact_rejects_research_exploratory_materialization() -> None:
+    promotion = _promotion(policy_materialization_mode="research_exploratory")
+
+    with pytest.raises(ApprovedProfileError, match="promotion_research_exploratory_not_promotion_grade"):
+        verify_promotion_artifact(promotion)
+
+
 def test_promotion_artifact_rejects_promotion_grade_false_marker() -> None:
     promotion = _promotion(promotion_grade=False)
 

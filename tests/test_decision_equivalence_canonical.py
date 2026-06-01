@@ -158,11 +158,19 @@ def _decision_v2(**overrides: object) -> dict[str, object]:
             "policy_decision_hash": VALID_SHA256,
             "policy_contract_hash": VALID_SHA256,
             "replay_fingerprint_hash": VALID_SHA256,
+            "fee_authority_hash": VALID_SHA256,
+            "fee_model_hash": VALID_SHA256,
+            "order_rules_hash": VALID_SHA256,
             "decision_input_bundle_hash": VALID_SHA256,
             "decision_input_contract_hash": VALID_SHA256,
             "decision_input_bundle_payload_hash": VALID_SHA256,
+            "market_snapshot_hash": VALID_SHA256,
             "market_feature_hash": VALID_SHA256,
             "canonical_feature_projection_hash": VALID_SHA256,
+            "position_snapshot_hash": VALID_SHA256,
+            "execution_constraints_hash": VALID_SHA256,
+            "policy_config_hash": VALID_SHA256,
+            "exit_policy_config_hash": VALID_SHA256,
             "final_exit_decision_input_hash": VALID_SHA256,
             "snapshot_projector_version": "sma_with_filter_snapshot_projector_v1",
             "snapshot_projector_hash": VALID_SHA256,
@@ -207,6 +215,12 @@ def _decision_v2(**overrides: object) -> dict[str, object]:
         }
     )
     payload.update(overrides)
+    if "position_authority" not in overrides:
+        authority = dict(payload.get("position_authority") or {})
+        authority["position_state_hash"] = payload["position_state_hash"]
+        authority["order_rules_hash"] = payload["order_rules_hash"]
+        authority["fee_authority_hash"] = payload["fee_authority_hash"]
+        payload["position_authority"] = authority
     return payload
 
 
@@ -492,8 +506,8 @@ def test_canonical_v2_feature_drift_exposes_structured_diagnostics() -> None:
     assert diagnostics["research"]["position_terminal_state"] == "flat"
     assert diagnostics["research"]["position_effective_flat"] is True
     assert diagnostics["research"]["position_dust_state"] == "flat"
-    assert diagnostics["research"]["fee_authority_hash"] == "sha256:fee_authority"
-    assert diagnostics["research"]["order_rules_hash"] == "sha256:order_rules"
+    assert diagnostics["research"]["fee_authority_hash"] == VALID_SHA256
+    assert diagnostics["research"]["order_rules_hash"] == VALID_SHA256
     assert diagnostics["research"]["execution_intent"]["side"] == "BUY"
     assert diagnostics["runtime"]["final_signal"] == "BUY"
     assert diagnostics["research"]["policy_input_hash"] == VALID_SHA256
@@ -521,6 +535,34 @@ def test_canonical_v2_policy_hash_mismatches_have_explicit_reasons(
 
     assert result.ok is False
     assert reason in result.report["reason_codes"]
+
+
+@pytest.mark.parametrize(
+    ("field", "reason"),
+    [
+        ("decision_input_bundle_hash", "decision_input_bundle_hash_mismatch"),
+        ("decision_input_contract_hash", "decision_input_bundle_hash_mismatch"),
+        ("decision_input_bundle_payload_hash", "decision_input_bundle_hash_mismatch"),
+        ("market_snapshot_hash", "decision_feature_mismatch"),
+        ("market_feature_hash", "decision_feature_mismatch"),
+        ("position_snapshot_hash", "decision_position_dust_mismatch"),
+        ("execution_constraints_hash", "decision_execution_constraints_mismatch"),
+        ("policy_config_hash", "decision_policy_config_mismatch"),
+        ("exit_policy_config_hash", "decision_exit_policy_config_mismatch"),
+    ],
+)
+def test_canonical_v2_full_bundle_component_hash_mismatches_have_explicit_reasons(
+    field: str,
+    reason: str,
+) -> None:
+    result = _compare(
+        _decision_v2(**{field: "sha256:" + "1" * 64}),
+        _decision_v2(**{field: "sha256:" + "2" * 64}),
+    )
+
+    assert result.ok is False
+    assert reason in result.report["reason_codes"]
+    assert field in result.report["comparison_fields"]
 
 
 @pytest.mark.parametrize(

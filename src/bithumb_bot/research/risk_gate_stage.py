@@ -285,9 +285,14 @@ class DefaultRiskGate:
         exit_rule = str((event.exit_intent or {}).get("exit_rule") or "") if event.exit_intent else ""
         exit_reason = str((event.exit_intent or {}).get("exit_reason") or "") if event.exit_intent else ""
         evaluates_exit_policy = bool(strategy_envelope.provenance.get("evaluates_exit_policy"))
+        research_exploratory_compatibility = (
+            str(strategy_envelope.provenance.get("policy_materialization_mode") or "")
+            == "research_exploratory"
+        )
         if (
             evaluates_exit_policy
             and strategy_decision is None
+            and research_exploratory_compatibility
             and not unsupported_reason
             and risk_decision.status == "ALLOW"
         ):

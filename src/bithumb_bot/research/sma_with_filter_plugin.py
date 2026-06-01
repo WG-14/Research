@@ -372,6 +372,15 @@ def research_policy_decision_builder(
     result.decision.trace["strategy_evaluation_provenance"] = dict(result.provenance)
     result.decision.trace["replay_fingerprint_hash"] = result.replay_fingerprint_hash
     result.decision.trace.update(bundle.observability_payload())
+    result.decision.trace.update(
+        {
+            "parameter_sources": dict(materialized.sources),
+            "runtime_comparable": bool(materialized.runtime_comparable),
+            "materialization_mode": materialized.mode.value,
+            "policy_materialization_mode": materialized.mode.value,
+            "legacy_defaults_used": list(materialized.legacy_defaults_used),
+        }
+    )
     return result.decision
 
 

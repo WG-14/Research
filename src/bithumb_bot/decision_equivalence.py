@@ -79,7 +79,6 @@ CANONICAL_EQUIVALENCE_FIELDS_V2 = tuple(
         "market_regime",
         "regime_decision",
         "regime_block_reason",
-        "decision_input_bundle_payload_hash",
     }
 )
 CANONICAL_EQUIVALENCE_FIELDS = CANONICAL_EQUIVALENCE_FIELDS_V2
@@ -154,6 +153,14 @@ DECISION_EQUIVALENCE_POLICY_INPUT_COVERAGE_FIELDS = (
     "candle_ts",
     "through_ts_ms",
     "decision_input_bundle_hash",
+    "decision_input_contract_hash",
+    "decision_input_bundle_payload_hash",
+    "market_snapshot_hash",
+    "market_feature_hash",
+    "position_snapshot_hash",
+    "execution_constraints_hash",
+    "policy_config_hash",
+    "exit_policy_config_hash",
     "policy_input_hash",
     "policy_decision_hash",
     "policy_contract_hash",
@@ -1099,11 +1106,16 @@ def _drift_diagnostics(research: dict[str, Any], runtime: dict[str, Any]) -> dic
             "volatility_ratio": pick(payload, "volatility_ratio", "range_ratio"),
             "overextended_ratio": pick(payload, "overextended_ratio", "overextended_abs_return_ratio"),
             "market_regime_snapshot": pick(payload, "market_regime_snapshot", "current_market_regime_snapshot"),
+            "candidate_regime_policy_status": pick(payload, "candidate_regime_policy_status"),
+            "candidate_regime_decision": pick(payload, "candidate_regime_decision"),
+            "candidate_regime_triggered": pick(payload, "candidate_regime_triggered"),
             "position_terminal_state": position_authority.get("terminal_state") or payload.get("terminal_state"),
             "position_effective_flat": payload.get("effective_flat"),
             "position_dust_state": payload.get("dust_state"),
+            "has_executable_exposure": payload.get("has_executable_exposure"),
             "fee_authority_hash": payload.get("fee_authority_hash"),
             "fee_authority": payload.get("fee_authority"),
+            "fee_rate_for_decision": pick(payload, "fee_rate_for_decision"),
             "order_rules_hash": payload.get("order_rules_hash"),
             "order_rules": payload.get("order_rules"),
             "execution_intent": payload.get("execution_intent")
@@ -1223,6 +1235,22 @@ def _reason_for_field(field: str) -> str:
         return "policy_input_hash_mismatch"
     if field == "policy_decision_hash":
         return "policy_decision_hash_mismatch"
+    if field in {
+        "decision_input_bundle_hash",
+        "decision_input_contract_hash",
+        "decision_input_bundle_payload_hash",
+    }:
+        return "decision_input_bundle_hash_mismatch"
+    if field in {"market_snapshot_hash", "market_feature_hash", "canonical_feature_projection_hash"}:
+        return "decision_feature_mismatch"
+    if field == "position_snapshot_hash":
+        return "decision_position_dust_mismatch"
+    if field == "execution_constraints_hash":
+        return "decision_execution_constraints_mismatch"
+    if field == "policy_config_hash":
+        return "decision_policy_config_mismatch"
+    if field == "exit_policy_config_hash":
+        return "decision_exit_policy_config_mismatch"
     if field in {"profile_content_hash", "candidate_profile_hash"}:
         return "decision_profile_hash_mismatch"
     if field in {"dataset_content_hash", "db_data_fingerprint"}:

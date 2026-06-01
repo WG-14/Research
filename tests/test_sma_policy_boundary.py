@@ -26,6 +26,7 @@ from bithumb_bot.strategy_plugins.sma_with_filter_events import (
 )
 from bithumb_bot.research.backtest_engine import run_sma_backtest
 from bithumb_bot.research import backtest_kernel
+from bithumb_bot.research import risk_gate_stage
 from bithumb_bot.research import sma_with_filter_plugin
 from bithumb_bot.research.backtest_runner import run_plugin_backtest
 from bithumb_bot.research.backtest_types import BacktestRunContext
@@ -37,6 +38,7 @@ from bithumb_bot.strategy_decision_service import (
     StrategyDecisionService,
     StrategyEvaluationRequest,
 )
+from bithumb_bot.strategy_decision_input import StrategyDecisionInputBundle
 from bithumb_bot.research.strategy_spec import runtime_bound_behavior_parameter_names
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
 from bithumb_bot.research.decision_event import ResearchDecisionEvent
@@ -392,6 +394,75 @@ def test_sma_promotion_service_requires_canonical_decision_input_bundle() -> Non
         )
 
 
+def test_live_real_order_service_rejects_unavailable_provenance_before_submit_authority() -> None:
+    assembly = SmaWithFilterPolicyAssembly()
+    materialized = assembly.materialize_parameters(
+        _runtime_bound_sma_parameters(SMA_MARKET_REGIME_ENABLED=False),
+        MaterializationMode.LIVE_REAL_ORDER,
+    )
+    strategy = assembly.build_strategy(
+        materialized,
+        pair="BTC_KRW",
+        interval="1m",
+        candidate_regime_policy=_allowing_policy(),
+    )
+    market = _market_window()
+    position = _flat_position()
+    config = assembly.build_policy_config(
+        materialized,
+        strategy,
+        candidate_regime_policy=_allowing_policy(),
+    )
+    execution = ExecutionConstraintSnapshot(
+        fee_rate_for_decision=0.0,
+        fee_authority={"source": "unit"},
+        order_rules={"source": "unit"},
+    )
+    exit_config = assembly.build_exit_policy_config(materialized, fee_rate_for_decision=0.0)
+    bundle = StrategyDecisionInputBundle.build(
+        strategy_name="sma_with_filter",
+        market=market,
+        position=position,
+        config=config,
+        execution_constraints=execution,
+        exit_policy_config=exit_config,
+        materialized_parameters_hash="sha256:" + "a" * 64,
+        snapshot_projector_version="sma_with_filter_snapshot_projector_v1",
+        snapshot_projector_hash="sha256:" + "b" * 64,
+        provenance={"unit": True},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="strategy_evaluation_live_real_order_provenance_missing:.*plugin_contract_hash_unavailable_reason",
+    ):
+        StrategyDecisionService().evaluate(
+            StrategyEvaluationRequest(
+                strategy_name="sma_with_filter",
+                strategy_instance_id="unit",
+                mode="live_real_order",
+                strategy_policy=strategy,
+                market_snapshot=market,
+                position_snapshot=position,
+                strategy_config=config,
+                execution_constraints=execution,
+                exit_policy_config=exit_config,
+                rule_sources={},
+                approved_profile_hash="sha256:" + "c" * 64,
+                runtime_contract_hash="sha256:" + "d" * 64,
+                plugin_contract_hash="sha256:" + "e" * 64,
+                request_hash="sha256:" + "f" * 64,
+                provenance={
+                    "strategy_parameters_hash": "sha256:" + "1" * 64,
+                    "fee_authority_hash": "sha256:" + "2" * 64,
+                    "order_rules_hash": "sha256:" + "3" * 64,
+                    "plugin_contract_hash_unavailable_reason": "diagnostic_forbidden_in_live_real_order",
+                },
+                decision_input_bundle=bundle,
+            )
+        )
+
+
 def test_candidate_regime_policy_blocks_buy_equally_in_promotion_and_runtime_replay() -> None:
     assembly = SmaWithFilterPolicyAssembly()
     params = _runtime_bound_sma_parameters(SMA_MARKET_REGIME_ENABLED=False)
@@ -592,6 +663,80 @@ def test_sma_assembly_authority_is_plugin_owned() -> None:
     shim_source = shim_path.read_text()
     assert "Compatibility import" in shim_source
     assert "from bithumb_bot.strategy_plugins.sma_with_filter_assembly import" in shim_source
+
+
+def test_promotion_grade_plugin_isolates_legacy_exit_callbacks_to_exploratory_scope() -> None:
+    contract = SMA_WITH_FILTER_PLUGIN.contract_payload()
+
+    assert contract["decision_payload_adapter_authority_scope"] == (
+        "transform_strategy_decision_v2_or_verified_canonical_artifact_only"
+    )
+    assert contract["exit_signal_context_builder_authority_scope"] == (
+        "research_exploratory_compatibility_only"
+    )
+    assert contract["exit_rule_factory_authority_scope"] == (
+        "research_exploratory_compatibility_only"
+    )
+
+
+def test_promotion_runtime_paper_live_paths_do_not_call_exploratory_exit_callbacks() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    guarded = (
+        repo_root / "src/bithumb_bot/research/backtest_stage_runner.py",
+        repo_root / "src/bithumb_bot/research/strategy_evaluator_stage.py",
+        repo_root / "src/bithumb_bot/runtime_sma_snapshot_builder.py",
+        repo_root / "src/bithumb_bot/runtime_adapters/sma_with_filter.py",
+        repo_root / "src/bithumb_bot/runtime/decision_coordinator.py",
+        repo_root / "src/bithumb_bot/runtime/runner.py",
+        repo_root / "src/bithumb_bot/run_loop_execution_planner.py",
+        repo_root / "src/bithumb_bot/execution_service.py",
+    )
+    forbidden_attrs = {"exit_signal_context_builder", "exit_rule_factory"}
+    violations: list[str] = []
+    for path in guarded:
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in forbidden_attrs:
+                violations.append(f"{path.relative_to(repo_root)}:{node.attr}")
+
+    assert violations == []
+
+
+def test_adapter_and_builder_layers_do_not_recreate_sma_signal_authority() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    guarded = (
+        repo_root / "src/bithumb_bot/runtime_adapters/sma_with_filter.py",
+        repo_root / "src/bithumb_bot/runtime_sma_snapshot_builder.py",
+        repo_root / "src/bithumb_bot/research/sma_with_filter_plugin.py",
+        repo_root / "src/bithumb_bot/research/strategy_evaluator_stage.py",
+    )
+    violations: list[str] = []
+    for path in guarded:
+        source = path.read_text()
+        if "curr_s > curr_l" in source:
+            violations.append(f"{path.relative_to(repo_root)}:curr_s > curr_l")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr == "evaluate":
+                    owner = getattr(node.func.value, "id", "")
+                    if owner == "rule":
+                        violations.append(f"{path.relative_to(repo_root)}:rule.evaluate")
+            if isinstance(node, ast.Assign):
+                targets = [
+                    target.id for target in node.targets if isinstance(target, ast.Name)
+                ]
+                if "final_signal" in targets:
+                    violations.append(f"{path.relative_to(repo_root)}:assign final_signal")
+
+    assert violations == []
+
+
+def test_risk_gate_legacy_exit_reevaluation_is_research_exploratory_only() -> None:
+    source = inspect.getsource(risk_gate_stage.DefaultRiskGate)
+    assert "research_exploratory_compatibility" in source
+    assert '== "research_exploratory"' in source
+    assert "and research_exploratory_compatibility" in source
 
 
 def test_evaluate_sma_policy_has_no_runtime_dependency_imports_or_side_effect_surfaces() -> None:
@@ -1324,6 +1469,14 @@ def test_sma_research_promotion_backtest_and_runtime_gateway_paths_share_canonic
             research["decision_input_bundle_hash"],
             runtime_context["decision_input_bundle_hash"],
         ),
+        "decision_input_contract_hash": (
+            research["decision_input_contract_hash"],
+            runtime_context["decision_input_contract_hash"],
+        ),
+        "decision_input_bundle_payload_hash": (
+            research["decision_input_bundle_payload_hash"],
+            runtime_context["decision_input_bundle_payload_hash"],
+        ),
         "market_feature_hash": (
             research["market_feature_hash"],
             runtime_context["market_feature_hash"],
@@ -1400,6 +1553,18 @@ def test_sma_research_promotion_backtest_and_runtime_gateway_paths_share_canonic
         "market_regime_snapshot": (
             research["pure_policy_trace"]["market"].get("market_regime_snapshot"),
             runtime_trace["market"].get("market_regime_snapshot"),
+        ),
+        "candidate_regime_policy_status": (
+            research["pure_policy_trace"]["config"].get("candidate_regime_policy_status"),
+            runtime_trace["config"].get("candidate_regime_policy_status"),
+        ),
+        "candidate_regime_decision": (
+            research["pure_policy_trace"].get("entry", {}).get("candidate_regime_decision"),
+            runtime_trace.get("entry", {}).get("candidate_regime_decision"),
+        ),
+        "candidate_regime_triggered": (
+            research["pure_policy_trace"].get("entry", {}).get("candidate_regime_triggered"),
+            runtime_trace.get("entry", {}).get("candidate_regime_triggered"),
         ),
         "position_exit_inputs": (
             research["pure_policy_trace"].get("final_exit_decision_input", {}).get("position"),

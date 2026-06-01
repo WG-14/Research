@@ -351,6 +351,11 @@ class ResearchStrategyPlugin:
             "decision_contract_version": self.decision_contract_version,
             "diagnostics_namespace": self.diagnostics_namespace,
             "decision_payload_adapter_supported": self.decision_payload_adapter is not None,
+            "decision_payload_adapter_authority_scope": (
+                "transform_strategy_decision_v2_or_verified_canonical_artifact_only"
+                if self.decision_payload_adapter is not None
+                else "unsupported"
+            ),
             "decision_payload_adapter_module": (
                 self.decision_payload_adapter.__module__ if self.decision_payload_adapter is not None else None
             ),
@@ -358,6 +363,11 @@ class ResearchStrategyPlugin:
                 self.decision_payload_adapter.__qualname__ if self.decision_payload_adapter is not None else None
             ),
             "exit_signal_context_builder_supported": self.exit_signal_context_builder is not None,
+            "exit_signal_context_builder_authority_scope": (
+                "research_exploratory_compatibility_only"
+                if self.exit_signal_context_builder is not None
+                else "unsupported"
+            ),
             "exit_signal_context_builder_module": (
                 self.exit_signal_context_builder.__module__ if self.exit_signal_context_builder is not None else None
             ),
@@ -367,6 +377,11 @@ class ResearchStrategyPlugin:
                 else None
             ),
             "exit_rule_factory_supported": self.exit_rule_factory is not None,
+            "exit_rule_factory_authority_scope": (
+                "research_exploratory_compatibility_only"
+                if self.exit_rule_factory is not None
+                else "unsupported"
+            ),
             "exit_rule_factory_module": (
                 self.exit_rule_factory.__module__ if self.exit_rule_factory is not None else None
             ),

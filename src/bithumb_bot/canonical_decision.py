@@ -81,8 +81,13 @@ COMMON_CANONICAL_DECISION_FIELDS_V2 = (
     "decision_input_bundle_hash",
     "decision_input_contract_hash",
     "decision_input_bundle_payload_hash",
+    "market_snapshot_hash",
     "market_feature_hash",
     "canonical_feature_projection_hash",
+    "position_snapshot_hash",
+    "execution_constraints_hash",
+    "policy_config_hash",
+    "exit_policy_config_hash",
     "final_exit_decision_input_hash",
     "snapshot_projector_version",
     "snapshot_projector_hash",
@@ -633,12 +638,17 @@ def runtime_decision_to_canonical_event(
         "decision_input_bundle_hash": str(context.get("decision_input_bundle_hash") or ""),
         "decision_input_contract_hash": str(context.get("decision_input_contract_hash") or ""),
         "decision_input_bundle_payload_hash": str(context.get("decision_input_bundle_payload_hash") or ""),
+        "market_snapshot_hash": str(context.get("market_snapshot_hash") or ""),
         "market_feature_hash": str(
             context.get("market_feature_hash") or context.get("canonical_feature_projection_hash") or ""
         ),
         "canonical_feature_projection_hash": str(
             context.get("canonical_feature_projection_hash") or context.get("market_feature_hash") or ""
         ),
+        "position_snapshot_hash": str(context.get("position_snapshot_hash") or ""),
+        "execution_constraints_hash": str(context.get("execution_constraints_hash") or ""),
+        "policy_config_hash": str(context.get("policy_config_hash") or ""),
+        "exit_policy_config_hash": str(context.get("exit_policy_config_hash") or ""),
         "final_exit_decision_input_hash": str(context.get("final_exit_decision_input_hash") or ""),
         "snapshot_projector_version": str(context.get("snapshot_projector_version") or ""),
         "snapshot_projector_hash": str(context.get("snapshot_projector_hash") or ""),
@@ -786,8 +796,13 @@ def research_decision_to_canonical_event(
     payload["decision_input_bundle_hash"] = str(payload.get("decision_input_bundle_hash") or "")
     payload["decision_input_contract_hash"] = str(payload.get("decision_input_contract_hash") or "")
     payload["decision_input_bundle_payload_hash"] = str(payload.get("decision_input_bundle_payload_hash") or "")
+    payload["market_snapshot_hash"] = str(payload.get("market_snapshot_hash") or "")
     payload["market_feature_hash"] = str(payload.get("market_feature_hash") or payload.get("canonical_feature_projection_hash") or "")
     payload["canonical_feature_projection_hash"] = str(payload.get("canonical_feature_projection_hash") or payload.get("market_feature_hash") or "")
+    payload["position_snapshot_hash"] = str(payload.get("position_snapshot_hash") or "")
+    payload["execution_constraints_hash"] = str(payload.get("execution_constraints_hash") or "")
+    payload["policy_config_hash"] = str(payload.get("policy_config_hash") or "")
+    payload["exit_policy_config_hash"] = str(payload.get("exit_policy_config_hash") or "")
     payload["final_exit_decision_input_hash"] = str(payload.get("final_exit_decision_input_hash") or "")
     payload["snapshot_projector_version"] = str(payload.get("snapshot_projector_version") or "")
     payload["snapshot_projector_hash"] = str(payload.get("snapshot_projector_hash") or "")

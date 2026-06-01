@@ -23,6 +23,7 @@ from .strategy_plugins.sma_with_filter_assembly import (
     SmaWithFilterPolicyAssembly,
 )
 from .strategy_plugins.sma_with_filter_projector import SmaWithFilterSnapshotProjector
+from .strategy_plugins.sma_with_filter_projector import SmaWithFilterRuntimeProjectionResult
 from .strategy_decision_service import StrategyDecisionService, StrategyEvaluationRequest
 from .research.strategy_spec import materialized_strategy_parameters_hash
 from .runtime_position_state_normalizer import (
@@ -574,20 +575,22 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
         materialized,
         fee_rate_for_decision=fee_rate_for_decision,
     )
-    decision_input_bundle = projector.project_from_runtime_snapshots(
-        strategy=strategy,
-        materialized=materialized,
-        market=market_snapshot,
-        position=position_snapshot,
-        config=policy_config,
-        execution_constraints=execution_snapshot,
-        exit_policy_config=exit_policy_config,
-        provenance={
-            "candle_ts": int(ts_list[-1]),
-            "through_ts_ms": int(signal_through_ts_ms),
-            "canonical_feature_projection": features.diagnostics_payload(),
-            "previous_cross_state": features.previous_cross_state,
-        },
+    decision_input_bundle = projector.project_from_runtime_projection(
+        projection=SmaWithFilterRuntimeProjectionResult(
+            strategy=strategy,
+            materialized=materialized,
+            market=market_snapshot,
+            position=position_snapshot,
+            config=policy_config,
+            execution_constraints=execution_snapshot,
+            exit_policy_config=exit_policy_config,
+            provenance={
+                "candle_ts": int(ts_list[-1]),
+                "through_ts_ms": int(signal_through_ts_ms),
+                "canonical_feature_projection": features.diagnostics_payload(),
+                "previous_cross_state": features.previous_cross_state,
+            },
+        ),
     )
     initial_replay_fingerprint = projector.build_replay_fingerprint(
         strategy_name=strategy.name,
@@ -879,6 +882,11 @@ def _build_sma_with_filter_runtime_decision_from_normalized_db_readonly_impl(
         "snapshot_projector_version": decision_input_bundle.snapshot_projector_version,
         "snapshot_projector_hash": decision_input_bundle.snapshot_projector_hash,
         "materialized_parameters_hash": decision_input_bundle.materialized_parameters_hash,
+        "parameter_sources": dict(materialized.sources),
+        "runtime_comparable": bool(materialized.runtime_comparable),
+        "materialization_mode": materialized.mode.value,
+        "policy_materialization_mode": materialized.mode.value,
+        "legacy_defaults_used": list(materialized.legacy_defaults_used),
         "market_snapshot_hash": decision_input_bundle.market_snapshot_hash,
         "market_feature_hash": decision_input_bundle.market_feature_hash,
         "canonical_feature_projection_hash": decision_input_bundle.market_feature_hash,

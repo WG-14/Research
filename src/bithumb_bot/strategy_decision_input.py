@@ -32,6 +32,21 @@ TRANSIENT_PROVENANCE_FIELDS = frozenset(
         "timestamp_ms",
         "wall_clock",
         "wall_clock_ms",
+        "candle_index",
+        "through_ts_ms",
+        "projection_source",
+        "seed_contract",
+        "seed_source",
+        "source_contract",
+        "snapshot_builder",
+        "event_signal_authority",
+        "event_feature_authority",
+        "runtime_projection_evidence",
+        "policy_materialization_mode",
+        "candidate_regime_policy_enforced",
+        "previous_cross_state",
+        "canonical_feature_projection_hash",
+        "market_feature_hash",
     }
 )
 
