@@ -13,6 +13,7 @@ from bithumb_bot.broker.base import BrokerBalance, BrokerOrder, BrokerRejectErro
 from bithumb_bot.broker.balance_source import _default_flat_start_safety_check
 from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_db
+from bithumb_bot.decision_equivalence import sha256_prefixed
 from bithumb_bot.engine import run_loop
 from bithumb_bot.runtime_compat import get_health_status
 from bithumb_bot.execution_service import (
@@ -29,6 +30,43 @@ from bithumb_bot.marketdata import _get_with_retry
 from bithumb_bot.public_api_orderbook import BestQuote
 from bithumb_bot.strategy_policy_contract import EntryExecutionIntent, PositionSnapshot, StrategyDecisionV2
 from bithumb_bot.target_position import TargetPositionState
+
+
+def _unit_runtime_strategy_set_manifest(**_kwargs):
+    payload = {
+        "schema_version": 1,
+        "authority_label": "RuntimeStrategySetManifest",
+        "authority_scope": "operator_reproducibility_manifest",
+        "source": "unit",
+        "runtime_pair": "KRW-BTC",
+        "runtime_interval": "1m",
+        "single_pair_runtime_enforced": True,
+        "market_scope": {
+            "schema_version": 1,
+            "mode": "single_pair",
+            "pair": "KRW-BTC",
+            "interval": "1m",
+        },
+        "multi_strategy_enabled": False,
+        "active_strategy_count": 1,
+        "active_strategy_pairs": ["KRW-BTC"],
+        "active_strategy_intervals": ["1m"],
+        "active_instances": [
+            {
+                "strategy_instance_id": "unit",
+                "strategy_name": "sma_with_filter",
+                "parameter_source": "runtime_strategy_spec",
+                "legacy_compatibility_used": False,
+                "runtime_decision_request_hash": "sha256:unit-request",
+                "runtime_decision_request_hash_scope": "run_start_blueprint_through_ts_null",
+            }
+        ],
+        "strategy_instance_profile_bindings": [],
+        "execution_config_hash": "sha256:unit-execution",
+        "risk_config_hash": "sha256:unit-risk",
+    }
+    payload["runtime_strategy_set_manifest_hash"] = sha256_prefixed(payload)
+    return payload
 
 
 def _submit_plan_payload(plan: object | None) -> dict[str, object]:
@@ -172,6 +210,12 @@ class _LoopConn:
         self.asset_qty = float(asset_qty)
         self.marked_recovery_required = 0
         self.target_state = target_state
+        self.runtime_strategy_set_manifest_rows: dict[str, dict[str, object]] = {}
+        self.runtime_strategy_decision_bundle_rows: dict[str, dict[str, object]] = {}
+        self.runtime_strategy_decision_result_rows: dict[tuple[int, str], dict[str, object]] = {}
+        self.portfolio_allocation_rows: dict[str, dict[str, object]] = {}
+        self.portfolio_target_rows: dict[str, dict[str, object]] = {}
+        self.execution_plan_rows: dict[tuple[int, str], dict[str, object]] = {}
 
     def execute(self, query, params=None):
         q = " ".join(str(query).split())
@@ -218,6 +262,131 @@ class _LoopConn:
                 created_from_signal=str(params[11] if len(params) > 11 else ""),
             )
             return _Rows(None, rowcount=1)
+
+        if "INSERT OR IGNORE INTO runtime_strategy_set_manifest" in q:
+            assert params is not None
+            manifest_hash = str(params[0])
+            if manifest_hash not in self.runtime_strategy_set_manifest_rows:
+                self.runtime_strategy_set_manifest_rows[manifest_hash] = {
+                    "id": len(self.runtime_strategy_set_manifest_rows) + 1,
+                    "manifest_hash": manifest_hash,
+                    "source": params[1],
+                    "market_scope_json": params[2],
+                    "active_strategy_count": params[3],
+                    "single_pair_runtime_enforced": params[4],
+                    "execution_config_hash": params[5],
+                    "risk_config_hash": params[6],
+                    "manifest_json": params[7],
+                    "created_ts": params[8],
+                }
+            return _Rows(None, rowcount=1)
+
+        if "SELECT id FROM runtime_strategy_set_manifest WHERE manifest_hash=?" in q:
+            assert params is not None
+            row = self.runtime_strategy_set_manifest_rows.get(str(params[0]))
+            return _Rows(None if row is None else {"id": row["id"]})
+
+        if "INSERT OR IGNORE INTO runtime_strategy_decision_bundle" in q:
+            assert params is not None
+            bundle_hash = str(params[5])
+            if bundle_hash not in self.runtime_strategy_decision_bundle_rows:
+                self.runtime_strategy_decision_bundle_rows[bundle_hash] = {
+                    "id": len(self.runtime_strategy_decision_bundle_rows) + 1,
+                    "runtime_strategy_set_manifest_id": params[3],
+                    "strategy_set_manifest_hash": params[4],
+                }
+            return _Rows(None, rowcount=1)
+
+        if "SELECT id FROM runtime_strategy_decision_bundle WHERE bundle_hash=?" in q:
+            assert params is not None
+            row = self.runtime_strategy_decision_bundle_rows.get(str(params[0]))
+            return _Rows(None if row is None else {"id": row["id"]})
+
+        if "INSERT OR IGNORE INTO runtime_strategy_decision_result" in q:
+            assert params is not None
+            key = (int(params[0]), str(params[1]))
+            if key not in self.runtime_strategy_decision_result_rows:
+                self.runtime_strategy_decision_result_rows[key] = {
+                    "id": len(self.runtime_strategy_decision_result_rows) + 1,
+                }
+            return _Rows(None, rowcount=1)
+
+        if "SELECT id FROM runtime_strategy_decision_result WHERE bundle_id=? AND strategy_instance_id=?" in q:
+            assert params is not None
+            row = self.runtime_strategy_decision_result_rows.get((int(params[0]), str(params[1])))
+            return _Rows(None if row is None else {"id": row["id"]})
+
+        if "SELECT runtime_strategy_set_manifest_id, strategy_set_manifest_hash FROM runtime_strategy_decision_bundle WHERE id=?" in q:
+            assert params is not None
+            row = next(
+                (
+                    item
+                    for item in self.runtime_strategy_decision_bundle_rows.values()
+                    if int(item["id"]) == int(params[0])
+                ),
+                None,
+            )
+            return _Rows(row)
+
+        if "INSERT OR IGNORE INTO portfolio_allocation_decision" in q:
+            assert params is not None
+            allocation_hash = str(params[3])
+            if allocation_hash not in self.portfolio_allocation_rows:
+                self.portfolio_allocation_rows[allocation_hash] = {
+                    "id": len(self.portfolio_allocation_rows) + 1,
+                    "runtime_strategy_set_manifest_id": params[1],
+                    "runtime_strategy_set_manifest_hash": params[2],
+                }
+            return _Rows(None, rowcount=1)
+
+        if "SELECT id FROM portfolio_allocation_decision WHERE allocation_decision_hash=?" in q:
+            assert params is not None
+            row = self.portfolio_allocation_rows.get(str(params[0]))
+            return _Rows(None if row is None else {"id": row["id"]})
+
+        if "INSERT OR IGNORE INTO strategy_contribution" in q:
+            return _Rows(None, rowcount=1)
+
+        if "INSERT OR IGNORE INTO portfolio_target" in q:
+            assert params is not None
+            target_hash = str(params[6])
+            if target_hash not in self.portfolio_target_rows:
+                self.portfolio_target_rows[target_hash] = {
+                    "id": len(self.portfolio_target_rows) + 1,
+                    "pair": params[1],
+                }
+            return _Rows(None, rowcount=1)
+
+        if "SELECT id FROM portfolio_target WHERE final_portfolio_target_hash=?" in q:
+            assert params is not None
+            row = self.portfolio_target_rows.get(str(params[0]))
+            return _Rows(None if row is None else {"id": row["id"]})
+
+        if "SELECT runtime_strategy_set_manifest_id, runtime_strategy_set_manifest_hash FROM portfolio_allocation_decision WHERE id=?" in q:
+            assert params is not None
+            row = next(
+                (
+                    item
+                    for item in self.portfolio_allocation_rows.values()
+                    if int(item["id"]) == int(params[0])
+                ),
+                None,
+            )
+            return _Rows(row)
+
+        if "INSERT OR IGNORE INTO execution_plan" in q:
+            assert params is not None
+            key = (int(params[0]), str(params[4]))
+            if key not in self.execution_plan_rows:
+                self.execution_plan_rows[key] = {
+                    "id": len(self.execution_plan_rows) + 1,
+                }
+            return _Rows(None, rowcount=1)
+
+        if "SELECT id FROM execution_plan WHERE allocation_id=? AND execution_plan_bundle_hash=?" in q:
+            assert params is not None
+            row = self.execution_plan_rows.get((int(params[0]), str(params[1])))
+            return _Rows(None if row is None else {"id": row["id"]})
 
         if "FROM candles" in q:
             return _Rows({"ts": 10_000, "close": 100.0})
@@ -661,7 +830,7 @@ def _prepare_run_loop(
     monkeypatch.setattr("bithumb_bot.engine.validate_market_runtime", lambda _cfg: None)
     monkeypatch.setattr(
         "bithumb_bot.engine.normalized_runtime_strategy_set_manifest",
-        lambda **_kwargs: {"runtime_strategy_set_manifest_hash": "sha256:unit-runtime-strategy-set"},
+        _unit_runtime_strategy_set_manifest,
     )
     monkeypatch.setattr(
         "bithumb_bot.run_loop_execution_planner.runtime_strategy_set_manifest_hash",

@@ -3108,6 +3108,10 @@ def record_runtime_strategy_decision_bundle(
     pair: str,
     interval: str,
     created_ts: int,
+    settings_obj: object | None = None,
+    manifest_payload: Mapping[str, Any] | None = None,
+    runtime_strategy_set_manifest_id: int | None = None,
+    runtime_strategy_set_manifest_hash: str | None = None,
 ) -> dict[str, Any]:
     """Persist typed runtime strategy results as first-class replay artifacts."""
     bundle_hash = str(result_bundle.content_hash())
@@ -3116,7 +3120,15 @@ def record_runtime_strategy_decision_bundle(
         conn,
         strategy_set=strategy_set,
         created_ts=created_ts,
+        settings_obj=settings_obj,
+        manifest_payload=manifest_payload,
     )
+    expected_manifest_hash = str(runtime_strategy_set_manifest_hash or "").strip()
+    if expected_manifest_hash and expected_manifest_hash != str(manifest_refs["runtime_strategy_set_manifest_hash"]):
+        raise RuntimeError("runtime_strategy_set_manifest_hash_mismatch")
+    expected_manifest_id = runtime_strategy_set_manifest_id
+    if expected_manifest_id is not None and int(expected_manifest_id) != int(manifest_refs["runtime_strategy_set_manifest_id"]):
+        raise RuntimeError("runtime_strategy_set_manifest_hash_mismatch")
     strategy_set_manifest_hash = str(manifest_refs["runtime_strategy_set_manifest_hash"])
     results = tuple(getattr(result_bundle, "results"))
     conn.execute(
@@ -3210,15 +3222,30 @@ def record_runtime_strategy_decision_bundle(
 def record_runtime_strategy_set_manifest(
     conn: sqlite3.Connection,
     *,
-    strategy_set: object,
+    strategy_set: object | None = None,
     created_ts: int,
+    settings_obj: object | None = None,
+    manifest_payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     from .runtime_strategy_set import normalized_runtime_strategy_set_manifest
 
-    manifest = normalized_runtime_strategy_set_manifest(strategy_set=strategy_set)
+    if manifest_payload is not None:
+        manifest = dict(manifest_payload)
+    else:
+        if strategy_set is None:
+            raise RuntimeError("runtime_strategy_set_manifest_source_missing")
+        manifest = normalized_runtime_strategy_set_manifest(
+            strategy_set=strategy_set,
+            **({} if settings_obj is None else {"settings_obj": settings_obj}),
+        )
     manifest_hash = str(manifest.get("runtime_strategy_set_manifest_hash") or "")
     if not manifest_hash:
         raise RuntimeError("runtime_strategy_set_manifest_hash_missing")
+    hash_payload = dict(manifest)
+    recorded = str(hash_payload.pop("runtime_strategy_set_manifest_hash", "") or "")
+    replayed = sha256_prefixed(hash_payload)
+    if recorded != replayed or manifest_hash != replayed:
+        raise RuntimeError("runtime_strategy_set_manifest_hash_mismatch")
     market_scope = manifest.get("market_scope")
     conn.execute(
         """

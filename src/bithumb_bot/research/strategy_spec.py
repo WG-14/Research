@@ -43,14 +43,9 @@ class StrategyParameterSchema:
 
     def validate(self, value: object) -> None:
         if self.value_type == "int":
-            if isinstance(value, bool):
+            if isinstance(value, bool) or not isinstance(value, int):
                 raise StrategySpecError(f"{self.name} must be int")
-            try:
-                numeric = int(value)
-            except (TypeError, ValueError) as exc:
-                raise StrategySpecError(f"{self.name} must be int") from exc
-            if float(numeric) != float(value):
-                raise StrategySpecError(f"{self.name} must be int")
+            numeric = int(value)
             comparable: float | str | bool = float(numeric)
         elif self.value_type == "float":
             try:
@@ -204,6 +199,47 @@ SMA_WITH_FILTER_SPEC = StrategySpec(
         "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": 0.0,
         "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": 0.0,
     },
+    parameter_schema=(
+        StrategyParameterSchema("SMA_SHORT", "int", required=True, min_value=1, unit="candles"),
+        StrategyParameterSchema("SMA_LONG", "int", required=True, min_value=1, unit="candles"),
+        StrategyParameterSchema("SMA_FILTER_GAP_MIN_RATIO", "float", min_value=0.0, unit="price_ratio"),
+        StrategyParameterSchema("SMA_FILTER_VOL_WINDOW", "int", min_value=1, unit="candles"),
+        StrategyParameterSchema("SMA_FILTER_VOL_MIN_RANGE_RATIO", "float", min_value=0.0, unit="price_range_ratio"),
+        StrategyParameterSchema(
+            "SMA_FILTER_VOLUME_WINDOW",
+            "int",
+            min_value=1,
+            unit="candles",
+            runtime_bound=False,
+            behavior_affecting=False,
+        ),
+        StrategyParameterSchema(
+            "SMA_FILTER_LIQUIDITY_WINDOW",
+            "int",
+            min_value=1,
+            unit="candles",
+            runtime_bound=False,
+            behavior_affecting=False,
+        ),
+        StrategyParameterSchema("SMA_FILTER_OVEREXT_LOOKBACK", "int", min_value=1, unit="candles"),
+        StrategyParameterSchema("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO", "float", min_value=0.0, unit="return_ratio"),
+        StrategyParameterSchema("SMA_MARKET_REGIME_ENABLED", "bool", unit="enabled_flag"),
+        StrategyParameterSchema("SMA_COST_EDGE_ENABLED", "bool", unit="enabled_flag"),
+        StrategyParameterSchema("SMA_COST_EDGE_MIN_RATIO", "float", min_value=0.0, unit="edge_ratio"),
+        StrategyParameterSchema("ENTRY_EDGE_BUFFER_RATIO", "float", min_value=0.0, unit="edge_ratio"),
+        StrategyParameterSchema("STRATEGY_MIN_EXPECTED_EDGE_RATIO", "float", min_value=0.0, unit="edge_ratio"),
+        StrategyParameterSchema("STRATEGY_ENTRY_SLIPPAGE_BPS", "float", min_value=0.0, unit="basis_points"),
+        StrategyParameterSchema("LIVE_FEE_RATE_ESTIMATE", "float", min_value=0.0, unit="fee_ratio"),
+        StrategyParameterSchema(
+            "STRATEGY_EXIT_RULES",
+            "str",
+            unit="comma_separated_exit_rule_names",
+        ),
+        StrategyParameterSchema("STRATEGY_EXIT_STOP_LOSS_RATIO", "float", min_value=0.0, unit="unrealized_pnl_ratio"),
+        StrategyParameterSchema("STRATEGY_EXIT_MAX_HOLDING_MIN", "int", min_value=0, unit="minutes"),
+        StrategyParameterSchema("STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO", "float", min_value=0.0, unit="pnl_ratio"),
+        StrategyParameterSchema("STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO", "float", min_value=0.0, unit="pnl_ratio"),
+    ),
     decision_contract_version="research_sma_decision_contract.v3_entry_exit_risk_exit",
     required_data=("candles",),
     optional_data=("top_of_book",),
@@ -448,6 +484,9 @@ def _normalize_exit_rule_names(raw: str) -> tuple[str, ...]:
 
 def _validate_exit_policy_parameter_values(parameter_space: dict[str, tuple[object, ...]]) -> None:
     rules_values = parameter_space.get("STRATEGY_EXIT_RULES")
+    if rules_values is not None:
+        for raw_rules in rules_values:
+            _validate_exit_rule_names(raw_rules)
     ratio_values = parameter_space.get("STRATEGY_EXIT_STOP_LOSS_RATIO")
     if ratio_values is None:
         return
@@ -469,6 +508,7 @@ def _validate_exit_policy_materialized_values(values: dict[str, Any]) -> None:
         "STRATEGY_EXIT_STOP_LOSS_RATIO",
         values.get("STRATEGY_EXIT_STOP_LOSS_RATIO", 0.0),
     )
+    _validate_exit_rule_names(values.get("STRATEGY_EXIT_RULES") or "")
     rules = _normalize_exit_rule_names(str(values.get("STRATEGY_EXIT_RULES") or ""))
     if stop_loss_ratio > 0.0 and "stop_loss" not in rules:
         raise StrategySpecError(
@@ -484,3 +524,15 @@ def _non_negative_float(name: str, value: object) -> float:
     if not math.isfinite(resolved) or resolved < 0.0:
         raise StrategySpecError(f"{name} must be a finite value >= 0, got {value!r}")
     return resolved
+
+
+def _validate_exit_rule_names(raw: object) -> None:
+    if not isinstance(raw, str):
+        raise StrategySpecError("STRATEGY_EXIT_RULES must be str")
+    supported = {"stop_loss", "opposite_cross", "max_holding_time"}
+    rules = _normalize_exit_rule_names(raw)
+    unsupported = sorted(set(rules) - supported)
+    if unsupported:
+        raise StrategySpecError(
+            "STRATEGY_EXIT_RULES contains unsupported rule(s): " + ",".join(unsupported)
+        )

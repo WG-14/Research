@@ -8,6 +8,7 @@ import pytest
 
 from bithumb_bot.approved_profile import build_approved_profile
 from bithumb_bot.config import settings
+from bithumb_bot.decision_equivalence import compute_decision_equivalence_hash
 from bithumb_bot.execution_reality_contract import build_execution_reality_contract
 from bithumb_bot.research.hashing import content_hash_payload, sha256_prefixed
 from bithumb_bot.research.promotion_gate import build_candidate_profile
@@ -283,6 +284,80 @@ def _write_paper_profile(tmp_path: Path, *, sma_short: int) -> Path:
         "blocked_live_regimes": ["downtrend_normal_vol_unknown"],
     }
     candidate_hash = sha256_prefixed(build_candidate_profile(candidate))
+    decision_report = {
+        "schema_version": 2,
+        "comparison_contract_version": "canonical_decision_v2",
+        "canonical_schema": True,
+        "canonical_v2_schema": True,
+        "legacy_schema": False,
+        "promotion_grade_comparison": True,
+        "ok": True,
+        "outcome": "PASS_POSITIVE_EQUIVALENCE",
+        "reason_codes": [],
+        "profile_content_hash": candidate_hash,
+        "market": str(settings.PAIR),
+        "interval": str(settings.INTERVAL),
+        "data_fingerprint": candidate["dataset_content_hash"],
+        "dataset_content_hash": candidate["dataset_content_hash"],
+        "research_decision_count": 1,
+        "runtime_decision_count": 1,
+        "matched_decision_count": 1,
+        "mismatched_decision_count": 0,
+        "mismatch_count": 0,
+        "missing_research_decisions": [],
+        "missing_runtime_decisions": [],
+        "mismatches": [],
+        "canonical_missing_field_count": 0,
+        "canonical_missing_fields_by_decision": {},
+        "canonical_incomplete_decision_count": 0,
+        "canonical_validation": [],
+        "binding_validation": [],
+        "artifact_binding_validation": [],
+        "research_export_content_hash": "sha256:research",
+        "runtime_export_content_hash": "sha256:runtime",
+        "research_export_source": "research",
+        "runtime_export_source": "runtime_replay",
+        "research_export_path": str((tmp_path / "research_decisions.json").resolve()),
+        "runtime_export_path": str((tmp_path / "runtime_decisions.json").resolve()),
+        "research_strategy_plugin_contract_hash": strategy_plugin.contract_hash(),
+        "runtime_strategy_plugin_contract_hash": strategy_plugin.contract_hash(),
+        "strategy_decision_contract_version": strategy_plugin.decision_contract_version,
+        "repo_owned_export_artifacts": True,
+        "legacy_or_unverified_export": False,
+        "post_export_canonical_artifact_equivalence": True,
+        "claims_scope": {
+            "positive_equivalence_state_classes": ["flat_no_dust_no_position"],
+            "unsupported_state_classes": [],
+            "promotion_claim": "positive_decision_equivalence_for_explicitly_modeled_state_classes_only",
+            "full_lifecycle_equivalence_supported": False,
+            "submit_plan_equivalence_supported": True,
+            "signal_equivalence_supported": True,
+            "execution_plan_equivalence_supported": True,
+            "position_lifecycle_equivalence_supported": False,
+            "fail_closed_unmodeled_state_count": 0,
+        },
+        "execution_equivalence": {
+            "submit_plan_equivalence_supported": True,
+            "submit_plan_equivalence_ok": True,
+        },
+        "state_coverage_matrix": {
+            "flat_no_dust_no_position": {
+                "research_decision_count": 1,
+                "runtime_decision_count": 1,
+                "positive_equivalence_supported": True,
+                "fail_closed_expected": False,
+                "supported_decision_count": 2,
+                "unsupported_decision_count": 0,
+                "mismatch_count": 0,
+                "representative_reason_codes": [],
+            }
+        },
+        "policy_input_hash_coverage": {"ok": True, "checked_decision_count": 2, "missing_by_decision": {}},
+        "execution_plan_coverage": {"ok": True, "checked_decision_count": 2, "missing_by_decision": {}},
+    }
+    decision_report["content_hash"] = compute_decision_equivalence_hash(decision_report)
+    decision_report_path = tmp_path / "decision_equivalence_report.json"
+    write_json_atomic(decision_report_path, decision_report)
     promotion = {
         "strategy_name": "sma_with_filter",
         "strategy_profile_source_experiment": "paper-exp",
@@ -302,6 +377,9 @@ def _write_paper_profile(tmp_path: Path, *, sma_short: int) -> Path:
             "blocked_regimes": ["downtrend_normal_vol_unknown"],
             "missing_policy_behavior": "fail_closed",
         },
+        "decision_equivalence_report_path": str(decision_report_path.resolve()),
+        "decision_equivalence_content_hash": decision_report["content_hash"],
+        "decision_equivalence_status": "verified",
         "generated_at": "2026-05-04T00:00:00+00:00",
     }
     promotion["content_hash"] = sha256_prefixed(content_hash_payload(promotion))

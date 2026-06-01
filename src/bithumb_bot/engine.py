@@ -153,11 +153,12 @@ def _sync_runtime_patch_points() -> None:
         current_cancel if current_cancel is not original_cancel else None
     )
 
-    def coordinator_factory() -> object:
+    def coordinator_factory(**kwargs: object) -> object:
         factory_class = getattr(coordinator, "DecisionCoordinator")
         return factory_class(
             db_factory=_module_attr("ensure_db"),
             decision_gateway_factory=_module_attr("RuntimeDecisionGateway"),
+            **kwargs,
         )
 
     runner.DecisionCoordinator = coordinator_factory

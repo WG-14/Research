@@ -1178,6 +1178,53 @@ def test_strategy_spec_validates_type_range_enum_and_units() -> None:
         )
 
 
+def test_sma_strategy_spec_validates_type_range_enum_and_units() -> None:
+    spec = strategy_spec_for_name("sma_with_filter")
+    schema = {item.name: item.as_dict() for item in spec.parameter_schema}
+
+    runtime_bound = set(spec.behavior_affecting_parameter_names) - set(spec.research_only_parameter_names)
+    assert runtime_bound <= set(schema)
+    assert schema["SMA_SHORT"]["type"] == "int"
+    assert schema["SMA_SHORT"]["min"] == 1
+    assert schema["SMA_SHORT"]["unit"] == "candles"
+    assert schema["SMA_MARKET_REGIME_ENABLED"]["type"] == "bool"
+    assert schema["STRATEGY_ENTRY_SLIPPAGE_BPS"]["min"] == 0.0
+    assert schema["STRATEGY_ENTRY_SLIPPAGE_BPS"]["unit"] == "basis_points"
+    assert schema["LIVE_FEE_RATE_ESTIMATE"]["unit"] == "fee_ratio"
+    materialize_strategy_parameters("sma_with_filter", _complete_sma_parameters())
+    with pytest.raises(StrategySpecError, match="STRATEGY_EXIT_RULES"):
+        materialize_strategy_parameters(
+            "sma_with_filter",
+            _complete_sma_parameters(STRATEGY_EXIT_RULES="opposite_cross,unsupported_exit"),
+        )
+
+
+def test_sma_strategy_spec_rejects_invalid_runtime_bound_parameter_type() -> None:
+    with pytest.raises(StrategySpecError, match="SMA_MARKET_REGIME_ENABLED"):
+        materialize_strategy_parameters(
+            "sma_with_filter",
+            _complete_sma_parameters(SMA_MARKET_REGIME_ENABLED="true"),
+        )
+    with pytest.raises(StrategySpecError, match="SMA_SHORT"):
+        materialize_strategy_parameters(
+            "sma_with_filter",
+            _complete_sma_parameters(SMA_SHORT="2"),
+        )
+
+
+def test_sma_strategy_spec_rejects_invalid_runtime_bound_parameter_range() -> None:
+    with pytest.raises(StrategySpecError, match="SMA_SHORT"):
+        materialize_strategy_parameters(
+            "sma_with_filter",
+            _complete_sma_parameters(SMA_SHORT=0),
+        )
+    with pytest.raises(StrategySpecError, match="LIVE_FEE_RATE_ESTIMATE"):
+        materialize_strategy_parameters(
+            "sma_with_filter",
+            _complete_sma_parameters(LIVE_FEE_RATE_ESTIMATE=-0.0001),
+        )
+
+
 def test_strict_runtime_rejects_global_strategy_parameters_json_fallback() -> None:
     cfg = replace(
         settings,
@@ -1208,6 +1255,22 @@ def test_strict_runtime_rejects_plugin_from_settings_fallback() -> None:
             RuntimeStrategySpec("canary_non_sma", pair="KRW-BTC", interval="1m"),
             through_ts_ms=1_700_000_180_000,
         )
+
+
+def test_live_like_runtime_manifest_rejects_legacy_compatibility_used() -> None:
+    cfg = replace(
+        settings,
+        MODE="paper",
+        LIVE_DRY_RUN=True,
+        STRATEGY_PARAMETERS_JSON=json.dumps(_complete_canary_parameters()),
+    )
+    strategy_set = RuntimeStrategySet(
+        source="unit",
+        strategies=(RuntimeStrategySpec("canary_non_sma", pair="KRW-BTC", interval="1m"),),
+    )
+
+    with pytest.raises(RuntimeError, match="runtime_strategy_manifest_legacy_compatibility_rejected"):
+        normalized_runtime_strategy_set_manifest(strategy_set=strategy_set, settings_obj=cfg)
 
 
 def test_new_strategy_plugin_runs_from_runtime_strategy_set_without_config_change(tmp_path: Path) -> None:

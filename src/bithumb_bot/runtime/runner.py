@@ -28,7 +28,7 @@ from ..runtime_strategy_set import (
     normalized_runtime_strategy_set_manifest,
 )
 from ..broker.bithumb import BithumbBroker, build_broker_with_auth_diagnostics
-from ..db_core import ensure_db
+from ..db_core import ensure_db, record_runtime_strategy_set_manifest
 from ..runtime_data_access import (
     count_open_orders as _count_open_orders,
     latest_order_identifiers as _latest_order_identifiers,
@@ -258,6 +258,27 @@ def _restart_readiness_service() -> RestartReadinessService:
 
 def _run_loop_uses_target_delta() -> bool:
     return run_loop_uses_target_delta()
+
+
+def _persist_run_start_runtime_strategy_set_manifest(
+    *,
+    runtime_strategy_set: object,
+    manifest_payload: dict[str, object],
+    created_ts: int,
+) -> dict[str, object]:
+    conn = ensure_db()
+    try:
+        refs = record_runtime_strategy_set_manifest(
+            conn,
+            strategy_set=runtime_strategy_set,
+            manifest_payload=manifest_payload,
+            settings_obj=settings,
+            created_ts=created_ts,
+        )
+        conn.commit()
+        return refs
+    finally:
+        conn.close()
 
 
 def _load_previous_target_exposure_for_run_loop(conn) -> float | None:
@@ -1048,6 +1069,17 @@ def run_loop() -> None:
             raise
     validate_runtime_strategy_set_selection(settings)
     validate_live_mode_preflight(settings)
+    runtime_strategy_set = active_runtime_strategy_set()
+    runtime_strategy_set_manifest = normalized_runtime_strategy_set_manifest(
+        strategy_set=runtime_strategy_set,
+        settings_obj=settings,
+    )
+    run_start_manifest_refs = _persist_run_start_runtime_strategy_set_manifest(
+        runtime_strategy_set=runtime_strategy_set,
+        manifest_payload=runtime_strategy_set_manifest,
+        created_ts=int(time.time() * 1000),
+    )
+    runtime_strategy_set_hash = str(run_start_manifest_refs["runtime_strategy_set_manifest_hash"])
 
     startup_result = _startup_controller().prepare_runtime_start(
         live_mode=settings.MODE == "live"
@@ -1146,19 +1178,17 @@ def run_loop() -> None:
     notification_adapter = NotificationAdapter(_operator_notification_service())
     runtime_events = RuntimeOperatorEventComposer(settings.PAIR)
     runtime_checkpoint = RuntimeCheckpoint(symbol=settings.PAIR, interval=settings.INTERVAL)
-    decision_coordinator = DecisionCoordinator()
+    decision_coordinator = DecisionCoordinator(
+        run_start_manifest_payload=runtime_strategy_set_manifest,
+        run_start_manifest_id=int(run_start_manifest_refs["runtime_strategy_set_manifest_id"]),
+        run_start_manifest_hash=runtime_strategy_set_hash,
+    )
     execution_coordinator = ExecutionCoordinator(
         str(getattr(settings, "EXECUTION_ENGINE", "lot_native") or "lot_native")
     )
     safety_controller = _safety_controller()
 
     sec = parse_interval_sec(settings.INTERVAL)
-    runtime_strategy_set = active_runtime_strategy_set()
-    runtime_strategy_set_manifest = normalized_runtime_strategy_set_manifest(
-        strategy_set=runtime_strategy_set,
-        settings_obj=settings,
-    )
-    runtime_strategy_set_hash = str(runtime_strategy_set_manifest["runtime_strategy_set_manifest_hash"])
     _log_loop_event(
         logging.INFO,
         "[RUN] loop_start",

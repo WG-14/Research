@@ -31,7 +31,7 @@ from bithumb_bot.recovery import (
     reconcile_with_broker,
 )
 import bithumb_bot.recovery as recovery_module
-from tests.test_failsafe import _set_live_runtime_paths
+from tests.test_failsafe import _set_live_runtime_paths, _unit_runtime_strategy_set_manifest
 
 
 pytestmark = pytest.mark.slow_integration
@@ -3403,7 +3403,7 @@ def _patch_single_tick_run_loop(monkeypatch) -> None:
     monkeypatch.setattr("bithumb_bot.engine.validate_live_mode_preflight", lambda _cfg: None)
     monkeypatch.setattr(
         "bithumb_bot.engine.normalized_runtime_strategy_set_manifest",
-        lambda **_kwargs: {"runtime_strategy_set_manifest_hash": "sha256:unit-runtime-strategy-set"},
+        _unit_runtime_strategy_set_manifest,
     )
     current_db_path = Path(settings.DB_PATH).resolve()
     _set_live_runtime_paths(
@@ -3412,6 +3412,7 @@ def _patch_single_tick_run_loop(monkeypatch) -> None:
         db_path=current_db_path,
     )
     object.__setattr__(settings, "MODE", "live")
+    object.__setattr__(settings, "STRATEGY_NAME", "sma_with_filter")
     object.__setattr__(settings, "KILL_SWITCH", False)
     object.__setattr__(settings, "INTERVAL", "1m")
     object.__setattr__(settings, "OPEN_ORDER_RECONCILE_MIN_INTERVAL_SEC", 30)

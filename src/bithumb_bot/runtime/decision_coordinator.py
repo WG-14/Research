@@ -175,6 +175,9 @@ class DecisionCycleResult:
 class DecisionCoordinator:
     db_factory: Callable[[], object] = ensure_db
     decision_gateway_factory: Callable[[], RuntimeDecisionGateway] = RuntimeDecisionGateway
+    run_start_manifest_payload: dict[str, object] | None = None
+    run_start_manifest_id: int | None = None
+    run_start_manifest_hash: str | None = None
 
     def decide_cycle(
         self,
@@ -248,6 +251,10 @@ class DecisionCoordinator:
                 pair=str(settings.PAIR),
                 interval=str(settings.INTERVAL),
                 created_ts=updated_ts,
+                settings_obj=settings,
+                manifest_payload=self.run_start_manifest_payload,
+                runtime_strategy_set_manifest_id=self.run_start_manifest_id,
+                runtime_strategy_set_manifest_hash=self.run_start_manifest_hash,
             )
             context.update(bundle_refs)
             allocation_payload = context.get("portfolio_allocation_decision")

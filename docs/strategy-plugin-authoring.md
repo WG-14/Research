@@ -74,7 +74,9 @@ promotion-grade strategy must accept parameters from an approved profile or from
 `RuntimeStrategySpec.parameters`; `runtime_parameter_adapter.from_settings()` is
 paper legacy compatibility only and must not be required for strict runtime
 operation. New strategies should not add strategy-specific fields to
-`Settings`.
+`Settings`. `STRATEGY_PARAMETERS_JSON` is the same paper legacy compatibility
+surface; it is not production authority for promotion, live dry-run, or live
+real-order runtime.
 
 Structured runtime selection uses `RUNTIME_STRATEGY_SET_JSON` with
 `market_scope.mode="single_pair"` for the current runtime. Every active strategy

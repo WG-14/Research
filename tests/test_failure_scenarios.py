@@ -13,7 +13,7 @@ from bithumb_bot.runtime_compat import evaluate_startup_safety_gate
 from bithumb_bot.execution import apply_fill_and_trade, record_order_if_missing
 from bithumb_bot.oms import set_exchange_order_id, set_status
 from bithumb_bot.recovery import reconcile_with_broker
-from tests.test_failsafe import _prepare_run_loop, _set_live_runtime_paths
+from tests.test_failsafe import _prepare_run_loop, _set_live_runtime_paths, _unit_runtime_strategy_set_manifest
 
 
 @pytest.fixture
@@ -112,7 +112,7 @@ def _patch_single_tick_live_loop(monkeypatch) -> None:
     monkeypatch.setattr("bithumb_bot.engine.validate_runtime_strategy_set_selection", lambda _cfg: None)
     monkeypatch.setattr(
         "bithumb_bot.engine.normalized_runtime_strategy_set_manifest",
-        lambda **_kwargs: {"runtime_strategy_set_manifest_hash": "sha256:unit-runtime-strategy-set"},
+        _unit_runtime_strategy_set_manifest,
     )
     monkeypatch.setattr("bithumb_bot.engine.validate_market_runtime", lambda _cfg: None)
     current_db_path = Path(settings.DB_PATH).resolve()

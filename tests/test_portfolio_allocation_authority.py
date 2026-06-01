@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -49,11 +49,13 @@ from bithumb_bot.strategy_preference import (
 from bithumb_bot.runtime_strategy_set import (
     derive_strategy_instance_id,
     RuntimeDecisionRequestBuilder,
+    RuntimeMarketScope,
     RuntimeStrategyDecisionCollector,
     RuntimeStrategyDecisionResultBundle,
     RuntimeStrategySet,
     RuntimeStrategySetResolver,
     RuntimeStrategySpec,
+    normalized_runtime_strategy_set_manifest,
 )
 from bithumb_bot.strategy_policy_contract import EntryExecutionIntent, PositionSnapshot, StrategyDecisionV2
 
@@ -1131,6 +1133,155 @@ def test_runtime_manifest_is_persisted_at_run_start(tmp_path) -> None:
         assert row is not None
         assert row["manifest_hash"] == refs["runtime_strategy_set_manifest_hash"]
         assert replay_runtime_strategy_set_manifest(conn, int(refs["runtime_strategy_set_manifest_id"])) == refs["runtime_strategy_set_manifest_hash"]
+    finally:
+        conn.close()
+
+
+def test_run_start_persists_runtime_strategy_set_manifest_before_first_decision(tmp_path) -> None:
+    conn = ensure_db(str(tmp_path / "run_start_manifest.sqlite"))
+    try:
+        strategy_set = RuntimeStrategySet(
+            source="unit",
+            strategies=(RuntimeStrategySpec("safe_hold", strategy_instance_id="hold"),),
+        )
+        manifest = normalized_runtime_strategy_set_manifest(strategy_set=strategy_set, settings_obj=settings)
+
+        refs = record_runtime_strategy_set_manifest(
+            conn,
+            strategy_set=strategy_set,
+            manifest_payload=manifest,
+            settings_obj=settings,
+            created_ts=111,
+        )
+
+        assert refs["runtime_strategy_set_manifest_hash"] == manifest["runtime_strategy_set_manifest_hash"]
+        assert conn.execute("SELECT COUNT(*) FROM runtime_strategy_decision_bundle").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM runtime_strategy_set_manifest").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_startup_blocked_run_still_records_strategy_set_manifest(tmp_path) -> None:
+    conn = ensure_db(str(tmp_path / "startup_blocked_manifest.sqlite"))
+    try:
+        strategy_set = RuntimeStrategySet(
+            source="unit",
+            strategies=(RuntimeStrategySpec("safe_hold", strategy_instance_id="hold"),),
+        )
+        manifest = normalized_runtime_strategy_set_manifest(strategy_set=strategy_set, settings_obj=settings)
+
+        refs = record_runtime_strategy_set_manifest(
+            conn,
+            strategy_set=strategy_set,
+            manifest_payload=manifest,
+            settings_obj=settings,
+            created_ts=222,
+        )
+
+        assert replay_runtime_strategy_set_manifest(
+            conn,
+            int(refs["runtime_strategy_set_manifest_id"]),
+        ) == manifest["runtime_strategy_set_manifest_hash"]
+        assert conn.execute("SELECT COUNT(*) FROM runtime_strategy_decision_bundle").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_decision_bundle_reuses_run_start_manifest_hash(tmp_path) -> None:
+    spec = RuntimeStrategySpec("safe_hold", strategy_instance_id="hold")
+    strategy_set = RuntimeStrategySet(source="unit", strategies=(spec,))
+    manifest = normalized_runtime_strategy_set_manifest(strategy_set=strategy_set, settings_obj=settings)
+    bundle = RuntimeStrategyDecisionResultBundle(
+        strategy_set=strategy_set,
+        results=(_runtime_result("HOLD", "safe_hold", spec=spec),),
+    )
+    conn = ensure_db(str(tmp_path / "bundle_reuses_manifest.sqlite"))
+    try:
+        run_start_refs = record_runtime_strategy_set_manifest(
+            conn,
+            strategy_set=strategy_set,
+            manifest_payload=manifest,
+            settings_obj=settings,
+            created_ts=333,
+        )
+
+        bundle_refs = record_runtime_strategy_decision_bundle(
+            conn,
+            result_bundle=bundle,
+            pair="KRW-BTC",
+            interval="1m",
+            created_ts=444,
+            manifest_payload=manifest,
+            settings_obj=settings,
+            runtime_strategy_set_manifest_id=int(run_start_refs["runtime_strategy_set_manifest_id"]),
+            runtime_strategy_set_manifest_hash=str(run_start_refs["runtime_strategy_set_manifest_hash"]),
+        )
+
+        assert bundle_refs["runtime_strategy_set_manifest_id"] == run_start_refs["runtime_strategy_set_manifest_id"]
+        assert bundle_refs["runtime_strategy_set_manifest_hash"] == run_start_refs["runtime_strategy_set_manifest_hash"]
+        assert conn.execute("SELECT COUNT(*) FROM runtime_strategy_set_manifest").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_record_runtime_strategy_set_manifest_uses_explicit_settings_context(tmp_path) -> None:
+    cfg = replace(settings, INTERVAL="3m")
+    strategy_set = RuntimeStrategySet(
+        source="unit",
+        market_scope=RuntimeMarketScope(pair=str(cfg.PAIR), interval="3m"),
+        strategies=(RuntimeStrategySpec("safe_hold", strategy_instance_id="hold", interval="3m"),),
+    )
+    conn = ensure_db(str(tmp_path / "explicit_settings_manifest.sqlite"))
+    try:
+        refs = record_runtime_strategy_set_manifest(
+            conn,
+            strategy_set=strategy_set,
+            settings_obj=cfg,
+            created_ts=555,
+        )
+
+        row = conn.execute(
+            "SELECT manifest_json FROM runtime_strategy_set_manifest WHERE id=?",
+            (refs["runtime_strategy_set_manifest_id"],),
+        ).fetchone()
+        assert '"runtime_interval":"3m"' in row["manifest_json"]
+        assert refs["runtime_strategy_set_manifest_hash"] == replay_runtime_strategy_set_manifest(
+            conn,
+            int(refs["runtime_strategy_set_manifest_id"]),
+        )
+    finally:
+        conn.close()
+
+
+def test_runtime_manifest_hash_mismatch_between_run_start_and_bundle_fails_closed(tmp_path) -> None:
+    spec = RuntimeStrategySpec("safe_hold", strategy_instance_id="hold")
+    strategy_set = RuntimeStrategySet(source="unit", strategies=(spec,))
+    manifest = normalized_runtime_strategy_set_manifest(strategy_set=strategy_set, settings_obj=settings)
+    bundle = RuntimeStrategyDecisionResultBundle(
+        strategy_set=strategy_set,
+        results=(_runtime_result("HOLD", "safe_hold", spec=spec),),
+    )
+    conn = ensure_db(str(tmp_path / "manifest_mismatch.sqlite"))
+    try:
+        record_runtime_strategy_set_manifest(
+            conn,
+            strategy_set=strategy_set,
+            manifest_payload=manifest,
+            settings_obj=settings,
+            created_ts=666,
+        )
+
+        with pytest.raises(RuntimeError, match="runtime_strategy_set_manifest_hash_mismatch"):
+            record_runtime_strategy_decision_bundle(
+                conn,
+                result_bundle=bundle,
+                pair="KRW-BTC",
+                interval="1m",
+                created_ts=777,
+                manifest_payload=manifest,
+                settings_obj=settings,
+                runtime_strategy_set_manifest_hash="sha256:wrong",
+            )
     finally:
         conn.close()
 

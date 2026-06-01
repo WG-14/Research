@@ -1267,6 +1267,22 @@ def normalized_runtime_strategy_set_manifest(
         raise RuntimeError("; ".join(market_issues))
     builder = RuntimeDecisionRequestBuilder(settings_obj=settings_obj)
     active_instances = tuple(builder.materialize_instance(spec) for spec in resolved.active_strategies)
+    live_like_runtime = (
+        str(getattr(settings_obj, "MODE", "") or "").strip().lower() == "live"
+        or bool(getattr(settings_obj, "LIVE_DRY_RUN", False))
+    )
+    if live_like_runtime:
+        legacy_instances = [
+            instance.strategy_instance_id
+            for instance in active_instances
+            if bool(instance.legacy_compatibility_used)
+            or str(instance.parameter_source or "").strip() == "paper_legacy_compat"
+        ]
+        if legacy_instances:
+            raise RuntimeError(
+                "runtime_strategy_manifest_legacy_compatibility_rejected:"
+                + ",".join(legacy_instances)
+            )
     run_start_requests = tuple(
         builder.build_for_spec(spec, through_ts_ms=None)
         for spec in resolved.active_strategies

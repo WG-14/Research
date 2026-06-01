@@ -176,6 +176,13 @@ def normalized_data_capabilities(
 
 @dataclass(frozen=True)
 class RuntimeParameterAdapter:
+    """Legacy runtime parameter compatibility adapter.
+
+    `from_settings` is paper_legacy_compat_only. Promotion, live dry-run, and
+    live real-order runtime authority must come from approved profiles or
+    structured runtime strategy specs, not settings-derived strategy fields.
+    """
+
     from_env: RuntimeEnvParameterExtractor
     from_settings: RuntimeSettingsParameterExtractor
     env_keys: tuple[str, ...] = ()
@@ -321,6 +328,8 @@ class ResearchStrategyPlugin:
                 self.runtime_replay_builder.__qualname__ if self.runtime_replay_builder is not None else None
             ),
             "runtime_parameter_adapter_supported": self.runtime_parameter_adapter is not None,
+            "runtime_parameter_adapter_authority_scope": "paper_legacy_compat_only",
+            "strategy_parameters_json_fallback_authority_scope": "paper_legacy_compat_only",
             "runtime_parameter_env_keys": (
                 list(self.runtime_parameter_adapter.env_keys)
                 if self.runtime_parameter_adapter is not None
