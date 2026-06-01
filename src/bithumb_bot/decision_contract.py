@@ -45,40 +45,6 @@ def select_primary_block(reasons: list[tuple[str, str]]) -> tuple[str | None, st
     return reasons[0]
 
 
-def build_replay_fingerprint(
-    *,
-    strategy_name: str,
-    pair: str,
-    interval: str,
-    candle_ts: int | None,
-    through_ts_ms: int | None,
-    short_n: int,
-    long_n: int,
-    thresholds: dict[str, object],
-    fee_authority: dict[str, object],
-    slippage_bps: float,
-    regime_version: str,
-    order_sizing: dict[str, object] | None = None,
-) -> dict[str, object]:
-    return {
-        "strategy_name": str(strategy_name),
-        "strategy_version": "sma_with_filter_v2_entry_exit_channel_split",
-        "decision_contract_version": DECISION_CONTRACT_VERSION,
-        "pair": str(pair),
-        "interval": str(interval),
-        "candle_ts": None if candle_ts is None else int(candle_ts),
-        "through_ts_ms": None if through_ts_ms is None else int(through_ts_ms),
-        "sma_short": int(short_n),
-        "sma_long": int(long_n),
-        "regime_feature_version": str(regime_version),
-        "thresholds": dict(thresholds),
-        "fee_authority_source": _text(fee_authority.get("fee_source"), default="unknown"),
-        "fee_authority_degraded": bool(fee_authority.get("degraded", False)),
-        "slippage_bps": float(slippage_bps),
-        "order_sizing": dict(order_sizing or {}),
-    }
-
-
 def build_signal_flow(
     *,
     context: dict[str, object],

@@ -60,8 +60,6 @@ APPROVED_PROFILE_SELECTOR_ENV = "APPROVED_STRATEGY_PROFILE_PATH"
 SUPPORTED_DECISION_EQUIVALENCE_CONTRACTS = frozenset(
     {"canonical_decision_v1", "canonical_decision_v2"}
 )
-LEGACY_DEFAULT_RUNTIME_STRATEGY = "sma_" + "with_filter"
-
 def strategy_parameter_env_keys_for_profile(profile: dict[str, Any]) -> tuple[str, ...]:
     strategy_name = str(profile.get("strategy_name") or "").strip()
     if not strategy_name:
@@ -71,27 +69,11 @@ def strategy_parameter_env_keys_for_profile(profile: dict[str, Any]) -> tuple[st
 
 def strategy_parameter_env_keys_for_env(env: dict[str, str]) -> tuple[str, ...]:
     strategy_name = str(env.get("STRATEGY_NAME") or "").strip()
-    mode = str(env.get("MODE") or "paper").strip() or "paper"
-    live_dry_run = str(env.get("LIVE_DRY_RUN") or "true").strip() or "true"
-    live_real_order_armed = str(env.get("LIVE_REAL_ORDER_ARMED") or "false").strip() or "false"
-    if not strategy_name and _live_like_runtime_requires_explicit_strategy(
-        mode=mode,
-        live_dry_run=live_dry_run,
-        live_real_order_armed=live_real_order_armed,
-    ):
-        raise ApprovedProfileError("runtime_strategy_name_required_for_live_like_mode")
     if not strategy_name:
-        strategy_name = LEGACY_DEFAULT_RUNTIME_STRATEGY
+        raise ApprovedProfileError("runtime_strategy_name_required")
     return runtime_strategy_parameter_env_keys(strategy_name)
 
 
-LEGACY_SMA_STRATEGY_PARAMETER_ENV_KEYS = runtime_strategy_parameter_env_keys(
-    LEGACY_DEFAULT_RUNTIME_STRATEGY
-)
-# Deprecated compatibility alias for older callers that imported the SMA env-key tuple directly.
-# Generic runtime/profile verification must resolve keys through strategy_parameter_env_keys_for_*()
-# or runtime_strategy_parameter_env_keys(strategy_name).
-STRATEGY_PARAMETER_ENV_KEYS = LEGACY_SMA_STRATEGY_PARAMETER_ENV_KEYS
 COST_MODEL_ENV_KEYS = (
     "LIVE_FEE_RATE_ESTIMATE",
     "PAPER_FEE_RATE",
@@ -483,7 +465,9 @@ def _strategy_parameters_from_promotion(payload: dict[str, Any]) -> dict[str, ob
         parameters = profile.get("parameter_values")
     if not isinstance(parameters, dict):
         raise ApprovedProfileError("promotion_parameter_values_missing")
-    strategy_name = str(payload.get("strategy_name") or profile.get("strategy_name") or LEGACY_DEFAULT_RUNTIME_STRATEGY)
+    strategy_name = str(payload.get("strategy_name") or profile.get("strategy_name") or "").strip()
+    if not strategy_name:
+        raise ApprovedProfileError("promotion_strategy_name_missing")
     return _runtime_bound_strategy_parameters(strategy_name, dict(parameters))
 
 
@@ -653,12 +637,12 @@ def build_approved_profile(
             _strategy_parameters_from_promotion(verified_promotion)
         ),
         "strategy_parameter_source_map": _runtime_bound_strategy_parameters(
-            str(verified_promotion.get("strategy_name") or LEGACY_DEFAULT_RUNTIME_STRATEGY),
+            str(verified_promotion.get("strategy_name") or ""),
             (
                 dict(promotion_source.get("strategy_parameter_source_map"))
                 if isinstance(promotion_source.get("strategy_parameter_source_map"), dict)
                 else strategy_parameter_source_map(
-                    str(verified_promotion.get("strategy_name") or LEGACY_DEFAULT_RUNTIME_STRATEGY),
+                    str(verified_promotion.get("strategy_name") or ""),
                     dict(
                         promotion_source.get("parameter_values_raw")
                         or promotion_source.get("parameter_values")
@@ -1253,18 +1237,16 @@ def runtime_contract_from_env_values(env: dict[str, str]) -> dict[str, Any]:
     mode = _value("MODE", default="paper")
     live_dry_run = _value("LIVE_DRY_RUN", default="true")
     live_real_order_armed = _value("LIVE_REAL_ORDER_ARMED", default="false")
-    if not raw_strategy_name and _live_like_runtime_requires_explicit_strategy(
-        mode=mode,
-        live_dry_run=live_dry_run,
-        live_real_order_armed=live_real_order_armed,
-    ):
-        raise ApprovedProfileError("runtime_strategy_name_required_for_live_like_mode")
-    # Backward-compatibility default for existing paper/runtime env files.
-    # Unsupported or non-runtime-capable explicit strategy names still fail closed below.
-    strategy_name = raw_strategy_name or LEGACY_DEFAULT_RUNTIME_STRATEGY
-    strategy_name_default_source = (
-        "explicit_env" if raw_strategy_name else "backward_compatibility_sma_default"
-    )
+    if raw_strategy_name:
+        strategy_name = raw_strategy_name
+        strategy_name_default_source = "explicit_env"
+    else:
+        strategy_name, strategy_name_default_source = _explicit_legacy_default_strategy_for_contract(
+            mode=mode,
+            live_dry_run=live_dry_run,
+            live_real_order_armed=live_real_order_armed,
+            compat_enabled=_bool_value(env.get("LEGACY_DEFAULT_STRATEGY_COMPAT")),
+        )
     _require_runtime_replay_supported_strategy(strategy_name)
     strategy_parameters = runtime_strategy_parameters_from_env(strategy_name, env)
     runtime = {
@@ -1313,18 +1295,16 @@ def runtime_contract_from_settings(cfg: object) -> dict[str, Any]:
     live_dry_run = bool(getattr(cfg, "LIVE_DRY_RUN", True))
     live_real_order_armed = bool(getattr(cfg, "LIVE_REAL_ORDER_ARMED", False))
     raw_strategy_name = str(getattr(cfg, "STRATEGY_NAME", "") or "").strip()
-    if not raw_strategy_name and _live_like_runtime_requires_explicit_strategy(
-        mode=mode,
-        live_dry_run=live_dry_run,
-        live_real_order_armed=live_real_order_armed,
-    ):
-        raise ApprovedProfileError("runtime_strategy_name_required_for_live_like_mode")
-    # Backward-compatibility default for existing paper/runtime settings objects.
-    # Unsupported or non-runtime-capable explicit strategy names still fail closed below.
-    strategy_name = raw_strategy_name or LEGACY_DEFAULT_RUNTIME_STRATEGY
-    strategy_name_default_source = (
-        "explicit_settings" if raw_strategy_name else "backward_compatibility_sma_default"
-    )
+    if raw_strategy_name:
+        strategy_name = raw_strategy_name
+        strategy_name_default_source = "explicit_settings"
+    else:
+        strategy_name, strategy_name_default_source = _explicit_legacy_default_strategy_for_contract(
+            mode=mode,
+            live_dry_run=live_dry_run,
+            live_real_order_armed=live_real_order_armed,
+            compat_enabled=bool(getattr(cfg, "LEGACY_DEFAULT_STRATEGY_COMPAT", False)),
+        )
     _require_runtime_replay_supported_strategy(strategy_name)
     strategy_parameters = runtime_strategy_parameters_from_settings(strategy_name, cfg)
     runtime = {
@@ -1380,6 +1360,30 @@ def _live_like_runtime_requires_explicit_strategy(
     if normalized_mode != "live":
         return False
     return _bool_value(live_dry_run) or _bool_value(live_real_order_armed)
+
+
+def _explicit_legacy_default_strategy_for_contract(
+    *,
+    mode: object,
+    live_dry_run: object,
+    live_real_order_armed: object,
+    compat_enabled: bool,
+) -> tuple[str, str]:
+    if not compat_enabled:
+        raise ApprovedProfileError("runtime_strategy_name_required")
+    from .compat.sma_runtime_compat import (
+        explicit_legacy_contract_source_label,
+        legacy_default_strategy_allowed_for_contract,
+        legacy_default_strategy_name,
+    )
+
+    if not legacy_default_strategy_allowed_for_contract(
+        mode=mode,
+        live_dry_run=live_dry_run,
+        live_real_order_armed=live_real_order_armed,
+    ):
+        raise ApprovedProfileError("legacy_default_strategy_compat_not_allowed_for_live_like_mode")
+    return legacy_default_strategy_name(), explicit_legacy_contract_source_label()
 
 
 def _execution_contract_from_env_values(env: dict[str, str]) -> dict[str, Any] | None:
@@ -1603,7 +1607,17 @@ def _compare_behavior_parameter_coverage(
     profile_params: dict[str, Any],
     runtime_params: dict[str, Any],
 ) -> None:
-    strategy_name = str(profile.get("strategy_name") or runtime.get("strategy_name") or LEGACY_DEFAULT_RUNTIME_STRATEGY)
+    strategy_name = str(profile.get("strategy_name") or runtime.get("strategy_name") or "").strip()
+    if not strategy_name:
+        mismatches.append(
+            {
+                "field": "strategy_name",
+                "expected": "explicit_strategy_name",
+                "actual": None,
+                "reason": "runtime_strategy_name_required",
+            }
+        )
+        return
     required = sorted(runtime_bound_behavior_parameter_names(strategy_name))
     for key in required:
         if key not in profile_params:

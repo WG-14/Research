@@ -15,6 +15,7 @@ from bithumb_bot.research.hashing import content_hash_payload, sha256_prefixed
 from bithumb_bot.research.promotion_gate import build_candidate_profile
 from bithumb_bot.research.strategy_registry import resolve_research_strategy_plugin
 from bithumb_bot.research.strategy_spec import materialized_strategy_parameters_hash
+from bithumb_bot.strategy_config import _sma_default, _sma_int
 from bithumb_bot.runtime_strategy_set import RuntimeDecisionRequestBuilder, RuntimeStrategySpec
 from bithumb_bot.storage_io import write_json_atomic
 from bithumb_bot.broker import order_rules
@@ -57,15 +58,6 @@ def _restore_settings():
         "APPROVED_STRATEGY_PROFILE_PATH": settings.APPROVED_STRATEGY_PROFILE_PATH,
         "STRATEGY_APPROVED_PROFILE_PATH": settings.STRATEGY_APPROVED_PROFILE_PATH,
         "STRATEGY_NAME": settings.STRATEGY_NAME,
-        "SMA_SHORT": settings.SMA_SHORT,
-        "SMA_LONG": settings.SMA_LONG,
-        "SMA_FILTER_GAP_MIN_RATIO": settings.SMA_FILTER_GAP_MIN_RATIO,
-        "SMA_FILTER_VOL_WINDOW": settings.SMA_FILTER_VOL_WINDOW,
-        "SMA_FILTER_VOL_MIN_RANGE_RATIO": settings.SMA_FILTER_VOL_MIN_RANGE_RATIO,
-        "SMA_FILTER_OVEREXT_LOOKBACK": settings.SMA_FILTER_OVEREXT_LOOKBACK,
-        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": settings.SMA_FILTER_OVEREXT_MAX_RETURN_RATIO,
-        "SMA_COST_EDGE_ENABLED": settings.SMA_COST_EDGE_ENABLED,
-        "SMA_COST_EDGE_MIN_RATIO": settings.SMA_COST_EDGE_MIN_RATIO,
         "ENTRY_EDGE_BUFFER_RATIO": settings.ENTRY_EDGE_BUFFER_RATIO,
         "STRATEGY_MIN_EXPECTED_EDGE_RATIO": settings.STRATEGY_MIN_EXPECTED_EDGE_RATIO,
         "STRATEGY_EXIT_RULES": settings.STRATEGY_EXIT_RULES,
@@ -251,15 +243,15 @@ def _set_matching_runtime_execution_contract_settings() -> None:
 
 def _candidate_profile_for_current_settings() -> dict[str, object]:
     return {
-        "SMA_SHORT": int(settings.SMA_SHORT),
-        "SMA_LONG": int(settings.SMA_LONG),
-        "SMA_FILTER_GAP_MIN_RATIO": float(settings.SMA_FILTER_GAP_MIN_RATIO),
-        "SMA_FILTER_VOL_WINDOW": int(settings.SMA_FILTER_VOL_WINDOW),
-        "SMA_FILTER_VOL_MIN_RANGE_RATIO": float(settings.SMA_FILTER_VOL_MIN_RANGE_RATIO),
-        "SMA_FILTER_OVEREXT_LOOKBACK": int(settings.SMA_FILTER_OVEREXT_LOOKBACK),
-        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": float(settings.SMA_FILTER_OVEREXT_MAX_RETURN_RATIO),
-        "SMA_COST_EDGE_ENABLED": bool(settings.SMA_COST_EDGE_ENABLED),
-        "SMA_COST_EDGE_MIN_RATIO": float(settings.SMA_COST_EDGE_MIN_RATIO),
+        "SMA_SHORT": _sma_int("SMA_SHORT"),
+        "SMA_LONG": _sma_int("SMA_LONG"),
+        "SMA_FILTER_GAP_MIN_RATIO": float(_sma_default("SMA_FILTER_GAP_MIN_RATIO")),
+        "SMA_FILTER_VOL_WINDOW": int(_sma_default("SMA_FILTER_VOL_WINDOW")),
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": float(_sma_default("SMA_FILTER_VOL_MIN_RANGE_RATIO")),
+        "SMA_FILTER_OVEREXT_LOOKBACK": int(_sma_default("SMA_FILTER_OVEREXT_LOOKBACK")),
+        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": float(_sma_default("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO")),
+        "SMA_COST_EDGE_ENABLED": bool(_sma_default("SMA_COST_EDGE_ENABLED")),
+        "SMA_COST_EDGE_MIN_RATIO": float(_sma_default("SMA_COST_EDGE_MIN_RATIO")),
         "ENTRY_EDGE_BUFFER_RATIO": float(settings.ENTRY_EDGE_BUFFER_RATIO),
         "STRATEGY_MIN_EXPECTED_EDGE_RATIO": float(settings.STRATEGY_MIN_EXPECTED_EDGE_RATIO),
         "STRATEGY_EXIT_RULES": str(settings.STRATEGY_EXIT_RULES),
@@ -611,7 +603,7 @@ def test_live_armed_preflight_rejects_profile_env_mismatch(
     _set_valid_live_defaults(monkeypatch)
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
-    profile_path = _write_live_profile(tmp_path, mode="small_live", sma_short=int(settings.SMA_SHORT) + 1)
+    profile_path = _write_live_profile(tmp_path, mode="small_live", sma_short=_sma_int("SMA_SHORT") + 1)
     object.__setattr__(settings, "APPROVED_STRATEGY_PROFILE_PATH", str(profile_path))
 
     with pytest.raises(config.LiveModeValidationError) as exc:

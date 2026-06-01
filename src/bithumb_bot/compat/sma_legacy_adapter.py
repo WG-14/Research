@@ -26,6 +26,8 @@ from ..fee_authority import (
 from ..strategy_config import (
     SmaStrategyConfig,
     normalize_exit_rule_names,
+    _sma_default,
+    _sma_int,
     sma_strategy_config_from_settings,
 )
 from ..runtime_position_state_normalizer import load_last_reconcile_metadata
@@ -726,17 +728,17 @@ class LegacySmaWithFilterDbAdapter:
     long_n: int
     pair: str = settings.PAIR
     interval: str = settings.INTERVAL
-    min_gap_ratio: float = settings.SMA_FILTER_GAP_MIN_RATIO
-    volatility_window: int = settings.SMA_FILTER_VOL_WINDOW
-    min_volatility_ratio: float = settings.SMA_FILTER_VOL_MIN_RANGE_RATIO
-    overextended_lookback: int = settings.SMA_FILTER_OVEREXT_LOOKBACK
-    overextended_max_return_ratio: float = settings.SMA_FILTER_OVEREXT_MAX_RETURN_RATIO
+    min_gap_ratio: float = float(_sma_default("SMA_FILTER_GAP_MIN_RATIO"))
+    volatility_window: int = int(_sma_default("SMA_FILTER_VOL_WINDOW"))
+    min_volatility_ratio: float = float(_sma_default("SMA_FILTER_VOL_MIN_RANGE_RATIO"))
+    overextended_lookback: int = int(_sma_default("SMA_FILTER_OVEREXT_LOOKBACK"))
+    overextended_max_return_ratio: float = float(_sma_default("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO"))
     slippage_bps: float = settings.STRATEGY_ENTRY_SLIPPAGE_BPS
     live_fee_rate_estimate: float = settings.LIVE_FEE_RATE_ESTIMATE
     entry_edge_buffer_ratio: float = settings.ENTRY_EDGE_BUFFER_RATIO
-    cost_edge_enabled: bool = settings.SMA_COST_EDGE_ENABLED
-    cost_edge_min_ratio: float = settings.SMA_COST_EDGE_MIN_RATIO
-    market_regime_enabled: bool = settings.SMA_MARKET_REGIME_ENABLED
+    cost_edge_enabled: bool = bool(_sma_default("SMA_COST_EDGE_ENABLED"))
+    cost_edge_min_ratio: float = float(_sma_default("SMA_COST_EDGE_MIN_RATIO"))
+    market_regime_enabled: bool = bool(_sma_default("SMA_MARKET_REGIME_ENABLED"))
     exit_rule_names: list[str] = field(
         default_factory=lambda: _resolve_exit_rule_names(settings.STRATEGY_EXIT_RULES)
     )
@@ -871,8 +873,8 @@ def create_sma_strategy(
 ) -> SmaCrossStrategy:
     settings_config = sma_strategy_config_from_settings(short_n=short_n, long_n=long_n)
     config = SmaStrategyConfig(
-        short_n=int(settings.SMA_SHORT if short_n is None else short_n),
-        long_n=int(settings.SMA_LONG if long_n is None else long_n),
+        short_n=int(_sma_int("SMA_SHORT") if short_n is None else short_n),
+        long_n=int(_sma_int("SMA_LONG") if long_n is None else long_n),
         pair=settings_config.pair if pair is None else str(pair),
         interval=settings_config.interval if interval is None else str(interval),
         exit_rule_names=(
@@ -951,28 +953,28 @@ def create_legacy_sma_with_filter_db_adapter(
 ) -> LegacySmaWithFilterDbAdapter:
     settings_config = sma_strategy_config_from_settings(short_n=short_n, long_n=long_n)
     return LegacySmaWithFilterDbAdapter(
-        short_n=int(settings.SMA_SHORT if short_n is None else short_n),
-        long_n=int(settings.SMA_LONG if long_n is None else long_n),
+        short_n=int(_sma_int("SMA_SHORT") if short_n is None else short_n),
+        long_n=int(_sma_int("SMA_LONG") if long_n is None else long_n),
         pair=settings.PAIR if pair is None else str(pair),
         interval=settings.INTERVAL if interval is None else str(interval),
         min_gap_ratio=float(
-            settings.SMA_FILTER_GAP_MIN_RATIO if min_gap_ratio is None else min_gap_ratio
+            _sma_default("SMA_FILTER_GAP_MIN_RATIO") if min_gap_ratio is None else min_gap_ratio
         ),
         volatility_window=int(
-            settings.SMA_FILTER_VOL_WINDOW if volatility_window is None else volatility_window
+            _sma_default("SMA_FILTER_VOL_WINDOW") if volatility_window is None else volatility_window
         ),
         min_volatility_ratio=float(
-            settings.SMA_FILTER_VOL_MIN_RANGE_RATIO
+            _sma_default("SMA_FILTER_VOL_MIN_RANGE_RATIO")
             if min_volatility_ratio is None
             else min_volatility_ratio
         ),
         overextended_lookback=int(
-            settings.SMA_FILTER_OVEREXT_LOOKBACK
+            _sma_default("SMA_FILTER_OVEREXT_LOOKBACK")
             if overextended_lookback is None
             else overextended_lookback
         ),
         overextended_max_return_ratio=float(
-            settings.SMA_FILTER_OVEREXT_MAX_RETURN_RATIO
+            _sma_default("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO")
             if overextended_max_return_ratio is None
             else overextended_max_return_ratio
         ),
@@ -990,11 +992,11 @@ def create_legacy_sma_with_filter_db_adapter(
             else entry_edge_buffer_ratio
         ),
         cost_edge_enabled=(
-            bool(settings.SMA_COST_EDGE_ENABLED) if cost_edge_enabled is None else bool(cost_edge_enabled)
+            bool(_sma_default("SMA_COST_EDGE_ENABLED")) if cost_edge_enabled is None else bool(cost_edge_enabled)
         ),
         cost_edge_min_ratio=float(
             (
-                settings.SMA_COST_EDGE_MIN_RATIO
+                _sma_default("SMA_COST_EDGE_MIN_RATIO")
                 if cost_edge_min_ratio is None and strategy_min_expected_edge_ratio is None
                 else strategy_min_expected_edge_ratio
                 if cost_edge_min_ratio is None
@@ -1002,7 +1004,7 @@ def create_legacy_sma_with_filter_db_adapter(
             )
         ),
         market_regime_enabled=(
-            bool(settings.SMA_MARKET_REGIME_ENABLED)
+            bool(_sma_default("SMA_MARKET_REGIME_ENABLED"))
             if market_regime_enabled is None
             else bool(market_regime_enabled)
         ),

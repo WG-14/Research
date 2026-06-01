@@ -119,17 +119,39 @@ def runtime_parameters_from_env(env: dict[str, str]) -> dict[str, Any]:
 
 
 def runtime_parameters_from_settings(cfg: object) -> dict[str, Any]:
+    from bithumb_bot.strategy_config import _sma_default, _sma_int
+
     return {
-        "SMA_SHORT": int(getattr(cfg, "SMA_SHORT")),
-        "SMA_LONG": int(getattr(cfg, "SMA_LONG")),
-        "SMA_FILTER_GAP_MIN_RATIO": float(getattr(cfg, "SMA_FILTER_GAP_MIN_RATIO")),
-        "SMA_FILTER_VOL_WINDOW": int(getattr(cfg, "SMA_FILTER_VOL_WINDOW")),
-        "SMA_FILTER_VOL_MIN_RANGE_RATIO": float(getattr(cfg, "SMA_FILTER_VOL_MIN_RANGE_RATIO")),
-        "SMA_FILTER_OVEREXT_LOOKBACK": int(getattr(cfg, "SMA_FILTER_OVEREXT_LOOKBACK")),
-        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": float(getattr(cfg, "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO")),
-        "SMA_MARKET_REGIME_ENABLED": bool(getattr(cfg, "SMA_MARKET_REGIME_ENABLED", True)),
-        "SMA_COST_EDGE_ENABLED": bool(getattr(cfg, "SMA_COST_EDGE_ENABLED")),
-        "SMA_COST_EDGE_MIN_RATIO": float(getattr(cfg, "SMA_COST_EDGE_MIN_RATIO")),
+        "SMA_SHORT": int(getattr(cfg, "SMA_SHORT", _sma_int("SMA_SHORT"))),
+        "SMA_LONG": int(getattr(cfg, "SMA_LONG", _sma_int("SMA_LONG"))),
+        "SMA_FILTER_GAP_MIN_RATIO": float(
+            getattr(cfg, "SMA_FILTER_GAP_MIN_RATIO", _sma_default("SMA_FILTER_GAP_MIN_RATIO"))
+        ),
+        "SMA_FILTER_VOL_WINDOW": int(
+            getattr(cfg, "SMA_FILTER_VOL_WINDOW", _sma_default("SMA_FILTER_VOL_WINDOW"))
+        ),
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": float(
+            getattr(cfg, "SMA_FILTER_VOL_MIN_RANGE_RATIO", _sma_default("SMA_FILTER_VOL_MIN_RANGE_RATIO"))
+        ),
+        "SMA_FILTER_OVEREXT_LOOKBACK": int(
+            getattr(cfg, "SMA_FILTER_OVEREXT_LOOKBACK", _sma_default("SMA_FILTER_OVEREXT_LOOKBACK"))
+        ),
+        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": float(
+            getattr(
+                cfg,
+                "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO",
+                _sma_default("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO"),
+            )
+        ),
+        "SMA_MARKET_REGIME_ENABLED": bool(
+            getattr(cfg, "SMA_MARKET_REGIME_ENABLED", _sma_default("SMA_MARKET_REGIME_ENABLED"))
+        ),
+        "SMA_COST_EDGE_ENABLED": bool(
+            getattr(cfg, "SMA_COST_EDGE_ENABLED", _sma_default("SMA_COST_EDGE_ENABLED"))
+        ),
+        "SMA_COST_EDGE_MIN_RATIO": float(
+            getattr(cfg, "SMA_COST_EDGE_MIN_RATIO", _sma_default("SMA_COST_EDGE_MIN_RATIO"))
+        ),
         "ENTRY_EDGE_BUFFER_RATIO": float(getattr(cfg, "ENTRY_EDGE_BUFFER_RATIO")),
         "STRATEGY_MIN_EXPECTED_EDGE_RATIO": float(getattr(cfg, "STRATEGY_MIN_EXPECTED_EDGE_RATIO")),
         "STRATEGY_ENTRY_SLIPPAGE_BPS": float(getattr(cfg, "STRATEGY_ENTRY_SLIPPAGE_BPS")),

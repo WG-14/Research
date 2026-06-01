@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -11,6 +12,7 @@ from .approved_profile import (
     verify_profile_against_runtime,
 )
 from .config import settings
+from .research.strategy_spec import SMA_WITH_FILTER_SPEC
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,31 @@ def normalize_exit_rule_names(raw: str | Iterable[object]) -> tuple[str, ...]:
     return tuple(str(token).strip().lower() for token in values if str(token).strip())
 
 
+def _sma_default(name: str) -> object:
+    if name == "SMA_SHORT":
+        return 7
+    if name == "SMA_LONG":
+        return 30
+    return SMA_WITH_FILTER_SPEC.default_parameters[name]
+
+
+def _sma_env_value(name: str) -> str | None:
+    configured = getattr(settings, name, None)
+    if configured is not None:
+        return str(configured)
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return None
+    return str(raw)
+
+
+def _sma_int(name: str) -> int:
+    raw = _sma_env_value(name)
+    if raw is None:
+        return int(_sma_default(name))
+    return int(raw)
+
+
 def sma_strategy_config_from_settings(
     *,
     short_n: int | None = None,
@@ -56,8 +83,8 @@ def sma_strategy_config_from_settings(
         approved_profile_path=approved_profile_selector,
     )
     return SmaStrategyConfig(
-        short_n=int(settings.SMA_SHORT if short_n is None else short_n),
-        long_n=int(settings.SMA_LONG if long_n is None else long_n),
+        short_n=int(_sma_int("SMA_SHORT") if short_n is None else short_n),
+        long_n=int(_sma_int("SMA_LONG") if long_n is None else long_n),
         pair=str(settings.PAIR),
         interval=str(settings.INTERVAL),
         exit_rule_names=normalize_exit_rule_names(settings.STRATEGY_EXIT_RULES),
@@ -108,7 +135,13 @@ def _candidate_regime_policy_from_configured_profile(
             "legacy_profile_selector_env": LEGACY_PROFILE_SELECTOR_ENV,
         }
     if raw_path == approved_profile_path:
-        runtime = runtime_contract_from_settings(settings)
+        from dataclasses import replace
+        from .compat.sma_runtime_compat import legacy_default_strategy_name
+
+        runtime_settings = settings
+        if not str(getattr(runtime_settings, "STRATEGY_NAME", "") or "").strip():
+            runtime_settings = replace(runtime_settings, STRATEGY_NAME=legacy_default_strategy_name())
+        runtime = runtime_contract_from_settings(runtime_settings)
         expected_modes, mode_reason = expected_profile_modes_for_runtime(runtime)
         result = verify_profile_against_runtime(
             profile_path=raw_path,

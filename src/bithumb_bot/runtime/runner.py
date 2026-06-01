@@ -10,7 +10,6 @@ from dataclasses import replace
 from functools import partial
 
 from ..config import (
-    DEFAULT_RUNTIME_STRATEGY,
     MarketPreflightValidationError,
     settings,
     validate_live_mode_preflight,
@@ -1152,7 +1151,9 @@ def run_loop() -> None:
         strategy_source=(
             "env:STRATEGY_NAME"
             if os.getenv("STRATEGY_NAME") not in (None, "")
-            else f"default:{DEFAULT_RUNTIME_STRATEGY}"
+            else "explicit_legacy_default_compat"
+            if os.getenv("LEGACY_DEFAULT_STRATEGY_COMPAT") not in (None, "")
+            else "missing_strategy_name"
         ),
         runtime_strategy_set_source=runtime_strategy_set.source,
         runtime_strategy_set_hash=runtime_strategy_set_hash,

@@ -105,6 +105,24 @@ def _adapter_resolver(adapters: dict[str, object]):
     return _resolve
 
 
+def _complete_canary_parameters(**overrides: object) -> dict[str, object]:
+    params: dict[str, object] = {
+        "CANARY_ORDER_START_INDEX": 0,
+        "CANARY_ORDER_SIDE": "BUY",
+        "CANARY_ORDER_REASON": "unit_canary",
+    }
+    params.update(overrides)
+    return params
+
+
+def _canary_spec(**overrides: object) -> RuntimeStrategySpec:
+    return RuntimeStrategySpec(
+        "canary_non_sma",
+        parameters=_complete_canary_parameters(),
+        **overrides,
+    )
+
+
 def _conn() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -195,23 +213,43 @@ def test_production_runtime_modules_have_no_test_only_adapter_registry() -> None
 
 def test_generic_runtime_and_fingerprint_modules_do_not_embed_sma_diagnostics() -> None:
     forbidden = {
-        "diagnostic_" + "sma_windows",
-        "SMA_" + "SHORT",
-        "SMA_" + "LONG",
-        "SMA_" + "FILTER_",
-        "SMA_" + "COST_EDGE_",
-        "sma_" + "with_filter",
-        "runtime_adapters." + "sma_with_filter",
-        "runtime_" + "sma_snapshot",
-        "strategy." + "sma",
+        "diagnostic_sma_windows",
+        "SMA_",
+        "sma_with_filter",
+        "runtime_adapters.sma_with_filter",
+        "runtime_sma_snapshot",
+        "strategy.sma",
+        "short_n",
+        "long_n",
+        "sma_short",
+        "sma_long",
+        "settings_compat",
     }
     for path in (
+        Path("src/bithumb_bot/config.py"),
         Path("src/bithumb_bot/approved_profile.py"),
         Path("src/bithumb_bot/runtime_strategy_decision.py"),
+        Path("src/bithumb_bot/runtime_strategy_set.py"),
         Path("src/bithumb_bot/experiment_fingerprint.py"),
+        Path("src/bithumb_bot/decision_contract.py"),
+        Path("src/bithumb_bot/runtime_decision_service.py"),
+        Path("src/bithumb_bot/runtime/decision_coordinator.py"),
+        Path("src/bithumb_bot/runtime/runner.py"),
+        Path("src/bithumb_bot/engine.py"),
     ):
         source = path.read_text(encoding="utf-8-sig")
         assert {token for token in forbidden if token in source} == set()
+        tree = ast.parse(source)
+        literals: set[str] = set()
+        names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                literals.add(node.value)
+            elif isinstance(node, ast.Name):
+                names.add(node.id)
+            elif isinstance(node, ast.arg):
+                names.add(node.arg)
+        assert {token for token in forbidden if token in literals or token in names} == set()
 
 
 def test_collector_passes_runtime_decision_request() -> None:
@@ -230,7 +268,7 @@ def test_collector_passes_runtime_decision_request() -> None:
 
     strategy_set = RuntimeStrategySet(
         source="unit",
-        strategies=(RuntimeStrategySpec("canary_non_sma"),),
+        strategies=(_canary_spec(),),
     )
     bundle = RuntimeStrategyDecisionCollector(
         adapter_resolver=_adapter_resolver({"canary_non_sma": _Adapter()}),
@@ -339,7 +377,7 @@ def test_collector_rejects_dict_returning_adapter() -> None:
             adapter_resolver=_adapter_resolver({"canary_non_sma": _Adapter()}),
         ).collect(
             _conn(),
-            RuntimeStrategySet(source="unit", strategies=(RuntimeStrategySpec("canary_non_sma"),)),
+            RuntimeStrategySet(source="unit", strategies=(_canary_spec(),)),
             through_ts_ms=1_700_000_180_000,
         )
 
@@ -352,7 +390,7 @@ def test_non_sma_adapters_work_without_sma_parameters() -> None:
             through_ts_ms=1_700_000_180_000,
         )
         canary_request = RuntimeDecisionRequestBuilder().build_for_spec(
-            RuntimeStrategySpec("canary_non_sma"),
+            _canary_spec(),
             through_ts_ms=1_700_000_180_000,
         )
         for request, adapter in (
@@ -920,7 +958,7 @@ def test_persisted_decision_context_contains_request_metadata() -> None:
     conn = _conn()
     try:
         request = RuntimeDecisionRequestBuilder().build_for_spec(
-            RuntimeStrategySpec("canary_non_sma"),
+            _canary_spec(),
             through_ts_ms=1_700_000_180_000,
         )
         result = CanaryNonSmaRuntimeDecisionAdapter().decide(conn, request)
@@ -931,7 +969,7 @@ def test_persisted_decision_context_contains_request_metadata() -> None:
         result_bundle = RuntimeStrategyDecisionResultBundle(
             strategy_set=RuntimeStrategySet(
                 source="unit",
-                strategies=(RuntimeStrategySpec("canary_non_sma"),),
+                strategies=(_canary_spec(),),
             ),
             results=(result,),
         )
@@ -972,9 +1010,6 @@ def test_sma_runtime_config_uses_request_parameters_not_global_settings() -> Non
     )
 
     original_values = {
-        "SMA_SHORT": settings.SMA_SHORT,
-        "SMA_LONG": settings.SMA_LONG,
-        "SMA_FILTER_GAP_MIN_RATIO": settings.SMA_FILTER_GAP_MIN_RATIO,
         "STRATEGY_EXIT_MAX_HOLDING_MIN": settings.STRATEGY_EXIT_MAX_HOLDING_MIN,
         "LIVE_FEE_RATE_ESTIMATE": settings.LIVE_FEE_RATE_ESTIMATE,
         "STRATEGY_ENTRY_SLIPPAGE_BPS": settings.STRATEGY_ENTRY_SLIPPAGE_BPS,
@@ -1035,14 +1070,24 @@ def test_sma_runtime_replay_strategy_fails_closed_for_incomplete_profile() -> No
         build_runtime_replay_strategy(profile)
 
 
-def test_settings_compat_parameter_source_is_explicit() -> None:
-    request = RuntimeDecisionRequestBuilder().build_for_spec(
+def test_missing_runtime_parameters_fail_closed_without_settings_compat() -> None:
+    with pytest.raises(RuntimeError, match="runtime_strategy_parameters_missing:canary_non_sma"):
+        RuntimeDecisionRequestBuilder().build_for_spec(
+            RuntimeStrategySpec("canary_non_sma", pair="KRW-BTC", interval="1m"),
+            through_ts_ms=1_700_000_180_000,
+        )
+
+
+def test_request_builder_uses_strategy_parameters_json_source() -> None:
+    cfg = replace(settings, STRATEGY_PARAMETERS_JSON=json.dumps(_complete_canary_parameters()))
+
+    request = RuntimeDecisionRequestBuilder(settings_obj=cfg).build_for_spec(
         RuntimeStrategySpec("canary_non_sma", pair="KRW-BTC", interval="1m"),
         through_ts_ms=1_700_000_180_000,
     )
 
-    assert request.parameter_source == "settings_compat"
-    assert request.observability_fields()["parameter_source"] == "settings_compat"
+    assert request.parameter_source == "strategy_parameters_json"
+    assert dict(request.parameters) == _complete_canary_parameters()
 
 
 def test_promotion_runtime_paths_do_not_import_legacy_sma_settings_config() -> None:
@@ -1083,16 +1128,6 @@ def test_settings_strategy_specific_fields_are_legacy_allowlisted() -> None:
         for target in (node.target,)
     }
     legacy_strategy_specific = {
-        "SMA_SHORT",
-        "SMA_LONG",
-        "SMA_FILTER_GAP_MIN_RATIO",
-        "SMA_FILTER_VOL_WINDOW",
-        "SMA_FILTER_VOL_MIN_RANGE_RATIO",
-        "SMA_FILTER_OVEREXT_LOOKBACK",
-        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO",
-        "SMA_COST_EDGE_ENABLED",
-        "SMA_COST_EDGE_MIN_RATIO",
-        "SMA_MARKET_REGIME_ENABLED",
         "STRATEGY_EXIT_RULES",
         "STRATEGY_EXIT_STOP_LOSS_RATIO",
         "STRATEGY_EXIT_MAX_HOLDING_MIN",
@@ -1126,11 +1161,7 @@ def test_settings_strategy_specific_fields_are_legacy_allowlisted() -> None:
         and name not in legacy_strategy_specific
         and name not in generic_strategy_runtime
     )
-    unexpected_sma = sorted(
-        name
-        for name in field_names
-        if name.startswith("SMA_") and name not in legacy_strategy_specific
-    )
+    unexpected_sma = sorted(name for name in field_names if name.startswith("SMA_"))
 
     assert unexpected_prefixed == []
     assert unexpected_strategy == []

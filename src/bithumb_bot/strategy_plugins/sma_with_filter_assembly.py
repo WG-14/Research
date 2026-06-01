@@ -513,9 +513,7 @@ class SmaWithFilterPolicyAssembly:
         policy_input_hash: str,
         exit_policy_hash: str,
     ) -> dict[str, object]:
-        from bithumb_bot.decision_contract import build_replay_fingerprint
-
-        payload = build_replay_fingerprint(
+        payload = build_sma_with_filter_replay_fingerprint(
             strategy_name=strategy_name,
             pair=pair,
             interval=interval,
@@ -542,6 +540,43 @@ class SmaWithFilterPolicyAssembly:
         payload["exit_policy_hash"] = exit_policy_hash
         payload["materialized_parameters_hash"] = _stable_hash(materialized.materialized_payload())
         return payload
+
+
+def build_sma_with_filter_replay_fingerprint(
+    *,
+    strategy_name: str,
+    pair: str,
+    interval: str,
+    candle_ts: int | None,
+    through_ts_ms: int | None,
+    short_n: int,
+    long_n: int,
+    thresholds: dict[str, object],
+    fee_authority: dict[str, object],
+    slippage_bps: float,
+    regime_version: str,
+    order_sizing: dict[str, object] | None = None,
+) -> dict[str, object]:
+    from bithumb_bot.decision_contract import DECISION_CONTRACT_VERSION
+
+    fee_source = str(fee_authority.get("fee_source") or "unknown").strip() or "unknown"
+    return {
+        "strategy_name": str(strategy_name),
+        "strategy_version": "sma_with_filter_v2_entry_exit_channel_split",
+        "decision_contract_version": DECISION_CONTRACT_VERSION,
+        "pair": str(pair),
+        "interval": str(interval),
+        "candle_ts": None if candle_ts is None else int(candle_ts),
+        "through_ts_ms": None if through_ts_ms is None else int(through_ts_ms),
+        "sma_short": int(short_n),
+        "sma_long": int(long_n),
+        "regime_feature_version": str(regime_version),
+        "thresholds": dict(thresholds),
+        "fee_authority_source": fee_source,
+        "fee_authority_degraded": bool(fee_authority.get("degraded", False)),
+        "slippage_bps": float(slippage_bps),
+        "order_sizing": dict(order_sizing or {}),
+    }
 
 
 def _mode(mode: MaterializationMode | str) -> MaterializationMode:

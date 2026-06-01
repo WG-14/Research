@@ -8,8 +8,6 @@ import pytest
 
 from bithumb_bot.approved_profile import (
     ApprovedProfileError,
-    LEGACY_SMA_STRATEGY_PARAMETER_ENV_KEYS,
-    STRATEGY_PARAMETER_ENV_KEYS,
     build_approved_profile,
     compute_approved_profile_hash,
     compute_file_content_hash,
@@ -30,6 +28,7 @@ from bithumb_bot.approved_profile import (
     verify_promotion_artifact,
     write_approved_profile_atomic,
 )
+from bithumb_bot.compat.sma_runtime_compat import legacy_sma_strategy_parameter_env_keys
 from bithumb_bot.evidence_chain import (
     EvidenceValidationError,
     build_candidate_regime_policy_equivalence_evidence,
@@ -1519,15 +1518,15 @@ def test_strategy_parameter_env_keys_include_sma_market_regime_enabled() -> None
     )
 
 
-def test_legacy_sma_strategy_parameter_env_keys_are_not_generic_source_of_truth() -> None:
-    assert STRATEGY_PARAMETER_ENV_KEYS == LEGACY_SMA_STRATEGY_PARAMETER_ENV_KEYS
-    assert "SMA_SHORT" in LEGACY_SMA_STRATEGY_PARAMETER_ENV_KEYS
-    assert strategy_parameter_env_keys_for_env(
-        {"STRATEGY_NAME": "canary_non_sma"}
-    ) != LEGACY_SMA_STRATEGY_PARAMETER_ENV_KEYS
+def test_legacy_sma_strategy_parameter_env_keys_are_compat_only() -> None:
+    legacy_keys = legacy_sma_strategy_parameter_env_keys()
+    assert "SMA_SHORT" in legacy_keys
+    assert strategy_parameter_env_keys_for_env({"STRATEGY_NAME": "canary_non_sma"}) != legacy_keys
+    with pytest.raises(ApprovedProfileError, match="runtime_strategy_name_required"):
+        strategy_parameter_env_keys_for_env({})
     source = inspect.getsource(runtime_contract_from_env_values)
     assert "STRATEGY_PARAMETER_ENV_KEYS" not in source
-    assert "LEGACY_SMA_STRATEGY_PARAMETER_ENV_KEYS" not in source
+    assert "legacy_sma_strategy_parameter_env_keys" not in source
 
 
 def test_candidate_profile_contains_raw_and_effective_strategy_parameters() -> None:
@@ -1660,7 +1659,14 @@ def test_runtime_profile_diff_rejects_missing_behavior_affecting_runtime_key(tmp
 def test_profile_runtime_diff_detects_sma_market_regime_enabled_default_drift(tmp_path: Path) -> None:
     profile_path = _write_profile_with_source(tmp_path)
     profile = load_approved_profile(profile_path)
-    runtime = runtime_contract_from_env_values({"SMA_SHORT": "2", "SMA_LONG": "4", "SMA_MARKET_REGIME_ENABLED": "false"})
+    runtime = runtime_contract_from_env_values(
+        {
+            "STRATEGY_NAME": "sma_with_filter",
+            "SMA_SHORT": "2",
+            "SMA_LONG": "4",
+            "SMA_MARKET_REGIME_ENABLED": "false",
+        }
+    )
     runtime["execution_reality_contract"] = profile["execution_reality_contract"]
     runtime["execution_capability_contract"] = profile["execution_capability_contract"]
     runtime["cost_model"] = {"fee_rate": "0.0025", "slippage_bps": "50"}
@@ -1674,18 +1680,35 @@ def test_profile_runtime_diff_detects_sma_market_regime_enabled_default_drift(tm
     )
 
 
-def test_runtime_contract_missing_strategy_name_uses_sma_compatibility_default() -> None:
-    runtime = runtime_contract_from_env_values({"SMA_SHORT": "2", "SMA_LONG": "4"})
+def test_runtime_contract_missing_strategy_name_fails_without_explicit_compat() -> None:
+    with pytest.raises(ApprovedProfileError, match="runtime_strategy_name_required"):
+        runtime_contract_from_env_values({"SMA_SHORT": "2", "SMA_LONG": "4"})
+
+
+def test_runtime_contract_missing_strategy_name_uses_explicit_legacy_compat_only() -> None:
+    runtime = runtime_contract_from_env_values(
+        {"LEGACY_DEFAULT_STRATEGY_COMPAT": "true", "SMA_SHORT": "2", "SMA_LONG": "4"}
+    )
 
     assert runtime["strategy_name"] == "sma_with_filter"
-    assert runtime["strategy_name_default_source"] == "backward_compatibility_sma_default"
+    assert runtime["strategy_name_default_source"] == "explicit_legacy_sma_compat"
     assert runtime["strategy_parameters"]["SMA_SHORT"] == "2"
     assert runtime["exit_policy"]["strategy_name"] == "sma_with_filter"
 
 
 def test_runtime_contract_live_like_env_requires_explicit_strategy_name() -> None:
-    with pytest.raises(ApprovedProfileError, match="runtime_strategy_name_required_for_live_like_mode"):
+    with pytest.raises(ApprovedProfileError, match="runtime_strategy_name_required"):
         runtime_contract_from_env_values({"MODE": "live", "LIVE_DRY_RUN": "true", "SMA_SHORT": "2", "SMA_LONG": "4"})
+    with pytest.raises(ApprovedProfileError, match="legacy_default_strategy_compat_not_allowed_for_live_like_mode"):
+        runtime_contract_from_env_values(
+            {
+                "MODE": "live",
+                "LIVE_DRY_RUN": "true",
+                "LEGACY_DEFAULT_STRATEGY_COMPAT": "true",
+                "SMA_SHORT": "2",
+                "SMA_LONG": "4",
+            }
+        )
 
     runtime = runtime_contract_from_env_values(
         {
@@ -1710,7 +1733,7 @@ def test_runtime_contract_live_like_settings_requires_explicit_strategy_name() -
         STRATEGY_APPROVED_PROFILE_PATH = ""
         STRATEGY_NAME = ""
 
-    with pytest.raises(ApprovedProfileError, match="runtime_strategy_name_required_for_live_like_mode"):
+    with pytest.raises(ApprovedProfileError, match="runtime_strategy_name_required"):
         runtime_contract_from_settings(Cfg)
 
 

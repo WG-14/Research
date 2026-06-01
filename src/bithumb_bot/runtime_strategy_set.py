@@ -20,7 +20,6 @@ from .decision_equivalence import sha256_prefixed
 from .research.strategy_registry import (
     ResearchStrategyRegistryError,
     resolve_research_strategy_plugin,
-    runtime_strategy_parameters_from_settings,
 )
 from .research.strategy_spec import (
     exit_policy_from_parameters,
@@ -587,12 +586,21 @@ class RuntimeDecisionRequestBuilder:
     def _parameters_for_spec(self, spec: RuntimeStrategySpec) -> tuple[dict[str, object], str]:
         if spec.parameters:
             return dict(spec.parameters), spec.parameter_source or "runtime_strategy_spec"
+        raw_json = str(getattr(self.settings_obj, "STRATEGY_PARAMETERS_JSON", "") or "").strip()
+        if raw_json:
+            try:
+                payload = json.loads(raw_json)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"strategy_parameters_json_invalid:{exc}") from exc
+            if not isinstance(payload, Mapping):
+                raise RuntimeError("strategy_parameters_json_must_be_object")
+            return (
+                {str(key): value for key, value in payload.items()},
+                spec.parameter_source or "strategy_parameters_json",
+            )
         if spec.strategy_name == "safe_hold":
             return {}, spec.parameter_source or "runtime_builtin_no_parameters"
-        return (
-            runtime_strategy_parameters_from_settings(spec.strategy_name, self.settings_obj),
-            spec.parameter_source or "settings_compat",
-        )
+        raise RuntimeError(f"runtime_strategy_parameters_missing:{spec.strategy_name}")
 
     def _materialize_parameters(
         self,

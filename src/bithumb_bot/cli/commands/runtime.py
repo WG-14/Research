@@ -105,8 +105,10 @@ def _runtime_strategy_set_dump(args: argparse.Namespace, context) -> int:
 
 
 def _build_window_parser(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--short", type=int, default=_settings_default("SMA_SHORT"))
-    parser.add_argument("--long", type=int, default=_settings_default("SMA_LONG"))
+    from bithumb_bot.strategy_config import _sma_int
+
+    parser.add_argument("--short", type=int, default=_sma_int("SMA_SHORT"))
+    parser.add_argument("--long", type=int, default=_sma_int("SMA_LONG"))
 
 
 def _limit(default: int):

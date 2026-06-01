@@ -57,7 +57,6 @@ PAPER_ONLY_ENV_KEYS = (
     "PAPER_EXECUTION_ORDER_FAILURE_RATE",
 )
 ALLOWED_RUNTIME_MODES = ("paper", "live")
-DEFAULT_RUNTIME_STRATEGY = "sma_with_filter"
 DEFAULT_CANONICAL_MARKET = "KRW-BTC"
 LEGACY_V1_ORDER_SCAN_ENV_KEYS = (
     "BITHUMB_V1_ORDER_SCAN_MARKET",
@@ -326,7 +325,11 @@ def resolve_db_path_from_env(mode: str) -> str:
 def resolve_strategy_name_from_env() -> str:
     raw = os.getenv("STRATEGY_NAME")
     normalized = str(raw or "").strip().lower()
-    return normalized or DEFAULT_RUNTIME_STRATEGY
+    if normalized:
+        return normalized
+    from .compat.sma_runtime_compat import strategy_name_from_legacy_compat_env
+
+    return strategy_name_from_legacy_compat_env()
 
 
 def validate_live_strategy_selection(cfg: Settings) -> None:
@@ -359,7 +362,6 @@ def validate_runtime_strategy_set_selection(cfg: Settings) -> None:
     from .research.strategy_registry import (
         ResearchStrategyRegistryError,
         resolve_research_strategy_plugin,
-        runtime_strategy_parameters_from_settings,
         strategy_runtime_capability_issues,
     )
     from .runtime_strategy_decision import get_runtime_decision_adapter
@@ -430,13 +432,6 @@ def validate_runtime_strategy_set_selection(cfg: Settings) -> None:
                 )
         elif spec.strategy_name == "safe_hold":
             pass
-        else:
-            try:
-                runtime_strategy_parameters_from_settings(spec.strategy_name, cfg)
-            except Exception as exc:
-                issues.append(
-                    f"{spec.strategy_name}:runtime_strategy_parameters_invalid:{type(exc).__name__}:{exc}"
-                )
 
         try:
             adapter = get_runtime_decision_adapter(spec.strategy_name)
@@ -579,32 +574,12 @@ class Settings:
     EVERY: int = int(os.getenv("EVERY", "60"))  # seconds
 
     # strategy
-    # ?댁쁺 湲곕낯 ?꾨왂? ?꾪꽣 ?ы븿 sma_with_filter瑜?沅뚯옣.
-    # STRATEGY_NAME ?섍꼍蹂?섎줈 ?꾨왂 ?대쫫??紐낆떆?곸쑝濡??좏깮?쒕떎.
     STRATEGY_NAME: str = resolve_strategy_name_from_env()
     ACTIVE_STRATEGIES: str = os.getenv("ACTIVE_STRATEGIES", "").strip()
     RUNTIME_STRATEGY_SET_JSON: str = os.getenv("RUNTIME_STRATEGY_SET_JSON", "").strip()
     STRATEGY_PARAMETERS_JSON: str = os.getenv("STRATEGY_PARAMETERS_JSON", "").strip()
-    SMA_SHORT: int = int(os.getenv("SMA_SHORT", "7"))
-    SMA_LONG: int = int(os.getenv("SMA_LONG", "30"))
     COOLDOWN_MIN: int = int(os.getenv("COOLDOWN_MIN", "1"))
     MIN_GAP: float = float(os.getenv("MIN_GAP", "0.0003"))
-    # ?ㅺ굅???섏닔猷??щ━?쇱? ?섍꼍?먯꽌 怨쇰룄???붿쭊?낆쓣 以꾩씠湲??꾪븳 蹂댁닔??湲곕낯 ?꾧퀎媛?
-    SMA_FILTER_GAP_MIN_RATIO: float = float(os.getenv("SMA_FILTER_GAP_MIN_RATIO", "0.0012"))
-    SMA_FILTER_VOL_WINDOW: int = int(os.getenv("SMA_FILTER_VOL_WINDOW", "10"))
-    SMA_FILTER_VOL_MIN_RANGE_RATIO: float = float(
-        os.getenv("SMA_FILTER_VOL_MIN_RANGE_RATIO", "0.003")
-    )
-    SMA_FILTER_OVEREXT_LOOKBACK: int = int(os.getenv("SMA_FILTER_OVEREXT_LOOKBACK", "3"))
-    SMA_FILTER_OVEREXT_MAX_RETURN_RATIO: float = float(
-        os.getenv("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO", "0.02")
-    )
-    SMA_COST_EDGE_ENABLED: bool = parse_bool_env_strict("SMA_COST_EDGE_ENABLED", "true")
-    SMA_COST_EDGE_MIN_RATIO: float = parse_non_negative_float_env(
-        "SMA_COST_EDGE_MIN_RATIO",
-        os.getenv("STRATEGY_MIN_EXPECTED_EDGE_RATIO", "0"),
-    )
-    SMA_MARKET_REGIME_ENABLED: bool = parse_bool_env_strict("SMA_MARKET_REGIME_ENABLED", "true")
     ENTRY_EDGE_BUFFER_RATIO: float = parse_float_env("ENTRY_EDGE_BUFFER_RATIO", "0.0005")
     STRATEGY_MIN_EXPECTED_EDGE_RATIO: float = parse_float_env(
         "STRATEGY_MIN_EXPECTED_EDGE_RATIO", "0"
@@ -1243,11 +1218,6 @@ def validate_live_mode_preflight(cfg: Settings) -> None:
             "notifier must be enabled and configured with at least one delivery target "
             "(NTFY_TOPIC, NOTIFIER_WEBHOOK_URL, SLACK_WEBHOOK_URL, or TELEGRAM_BOT_TOKEN+TELEGRAM_CHAT_ID) when MODE=live"
         )
-    if not cfg.SMA_COST_EDGE_ENABLED:
-        LOG.warning(
-            "live preflight warning: SMA_COST_EDGE_ENABLED=false (cost-edge entry block disabled for sma_with_filter)"
-        )
-
     from .broker.order_rules import (
         get_effective_order_rules,
         optional_rule_source_warnings,

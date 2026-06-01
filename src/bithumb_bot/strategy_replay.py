@@ -12,7 +12,7 @@ from .decision_attribution import (
     DecisionAttributionSummary,
     summarize_decision_attributions,
 )
-from .decision_contract import apply_decision_contract, build_replay_fingerprint
+from .decision_contract import apply_decision_contract
 from .market_regime import evaluate_live_regime_policy
 from .compat.sma_legacy_adapter import (
     _base_signal,
@@ -23,6 +23,7 @@ from .compat.sma_legacy_adapter import (
 )
 from .strategy.market_regime import classify_sma_market_regime
 from .strategy_config import SmaStrategyConfig
+from .strategy_plugins.sma_with_filter_assembly import build_sma_with_filter_replay_fingerprint
 
 
 @dataclass(frozen=True)
@@ -309,7 +310,7 @@ def _replay_decision_context(
                 "requires_execution_sizing": True,
             },
         },
-        "replay_fingerprint": build_replay_fingerprint(
+        "replay_fingerprint": build_sma_with_filter_replay_fingerprint(
             strategy_name="sma_replay",
             pair=strategy_config.pair,
             interval=strategy_config.interval,

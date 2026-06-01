@@ -19,6 +19,8 @@ from bithumb_bot.research.strategy_spec import (
 )
 from bithumb_bot.compat.sma_legacy_adapter import SmaCrossStrategy, create_sma_strategy
 from bithumb_bot.strategy_config import (
+    _sma_default,
+    _sma_int,
     normalize_exit_rule_names,
     sma_strategy_config_from_settings,
 )
@@ -90,8 +92,6 @@ def test_research_only_strategy_params_allowed_for_research_only_if_documented()
 @pytest.fixture
 def settings_guard():
     names = (
-        "SMA_SHORT",
-        "SMA_LONG",
         "MODE",
         "LIVE_DRY_RUN",
         "LIVE_REAL_ORDER_ARMED",
@@ -106,7 +106,6 @@ def settings_guard():
         "LIVE_FEE_RATE_ESTIMATE",
         "ENTRY_EDGE_BUFFER_RATIO",
         "STRATEGY_MIN_EXPECTED_EDGE_RATIO",
-        "SMA_MARKET_REGIME_ENABLED",
         "BUY_FRACTION",
         "MAX_ORDER_KRW",
         "APPROVED_STRATEGY_PROFILE_PATH",
@@ -168,15 +167,15 @@ def _write_paper_profile(tmp_path: Path, *, sma_short: int) -> Path:
     strategy_plugin = resolve_research_strategy_plugin("sma_with_filter")
     parameters = {
         "SMA_SHORT": sma_short,
-        "SMA_LONG": int(settings.SMA_LONG),
-        "SMA_FILTER_GAP_MIN_RATIO": float(settings.SMA_FILTER_GAP_MIN_RATIO),
-        "SMA_FILTER_VOL_WINDOW": int(settings.SMA_FILTER_VOL_WINDOW),
-        "SMA_FILTER_VOL_MIN_RANGE_RATIO": float(settings.SMA_FILTER_VOL_MIN_RANGE_RATIO),
-        "SMA_FILTER_OVEREXT_LOOKBACK": int(settings.SMA_FILTER_OVEREXT_LOOKBACK),
-        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": float(settings.SMA_FILTER_OVEREXT_MAX_RETURN_RATIO),
-        "SMA_MARKET_REGIME_ENABLED": bool(settings.SMA_MARKET_REGIME_ENABLED),
-        "SMA_COST_EDGE_ENABLED": bool(settings.SMA_COST_EDGE_ENABLED),
-        "SMA_COST_EDGE_MIN_RATIO": float(settings.SMA_COST_EDGE_MIN_RATIO),
+        "SMA_LONG": _sma_int("SMA_LONG"),
+        "SMA_FILTER_GAP_MIN_RATIO": float(_sma_default("SMA_FILTER_GAP_MIN_RATIO")),
+        "SMA_FILTER_VOL_WINDOW": int(_sma_default("SMA_FILTER_VOL_WINDOW")),
+        "SMA_FILTER_VOL_MIN_RANGE_RATIO": float(_sma_default("SMA_FILTER_VOL_MIN_RANGE_RATIO")),
+        "SMA_FILTER_OVEREXT_LOOKBACK": int(_sma_default("SMA_FILTER_OVEREXT_LOOKBACK")),
+        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": float(_sma_default("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO")),
+        "SMA_MARKET_REGIME_ENABLED": bool(_sma_default("SMA_MARKET_REGIME_ENABLED")),
+        "SMA_COST_EDGE_ENABLED": bool(_sma_default("SMA_COST_EDGE_ENABLED")),
+        "SMA_COST_EDGE_MIN_RATIO": float(_sma_default("SMA_COST_EDGE_MIN_RATIO")),
         "ENTRY_EDGE_BUFFER_RATIO": float(settings.ENTRY_EDGE_BUFFER_RATIO),
         "STRATEGY_MIN_EXPECTED_EDGE_RATIO": float(settings.STRATEGY_MIN_EXPECTED_EDGE_RATIO),
         "STRATEGY_EXIT_RULES": str(settings.STRATEGY_EXIT_RULES),

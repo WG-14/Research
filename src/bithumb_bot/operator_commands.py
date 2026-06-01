@@ -200,8 +200,10 @@ MARKET, RAW_SYMBOL = canonical_market_with_raw(PAIR)
 INTERVAL = settings.INTERVAL
 EVERY = settings.EVERY
 
-SMA_SHORT = settings.SMA_SHORT
-SMA_LONG = settings.SMA_LONG
+from .strategy_config import _sma_int
+
+SMA_SHORT = _sma_int("SMA_SHORT")
+SMA_LONG = _sma_int("SMA_LONG")
 COOLDOWN_MIN = settings.COOLDOWN_MIN
 MIN_GAP = settings.MIN_GAP
 
