@@ -112,11 +112,404 @@ from .safety_controller import (
     SafetyController,
 )
 from .startup_controller import StartupController
+from .app_container import RuntimeAppContainer, persist_run_start_manifests
 
 FAILSAFE_RETRY_DELAY_SEC = 180
 RUN_LOG = logging.getLogger("bithumb_bot.run")
 _LEGACY_ENGINE_ATTEMPT_OPEN_ORDER_CANCELLATION = None
 _ORIGINAL_OPERATOR_NOTIFICATION_SERVICE_FACTORY = operator_notification_service
+
+
+class Runner:
+    def __init__(self, container: RuntimeAppContainer):
+        self.container = container
+        self.fail_count = 0
+        self.max_fails = 5
+        self.last_open_order_reconcile_at: float | None = None
+        self.last_market_runtime_check_at: float | None = None
+        self.broker = None
+        self.runtime_strategy_set = None
+        self.execution_service = None
+        self.runtime_checkpoint: RuntimeCheckpoint | None = None
+        self.runtime_events: RuntimeOperatorEventComposer | None = None
+        self._started = False
+        self._blocked = False
+
+    def _record_artifact(self, cycle_id: str, **kwargs: object) -> RuntimeCycleArtifact:
+        artifact = self.container.artifact_sink(
+            cycle_id=cycle_id,
+            runtime_dependency_manifest_hash=self.container.runtime_dependency_manifest_hash,
+            **kwargs,
+        )
+        RUN_LOG.info(format_log_kv("[RUN] runtime_cycle_artifact", **artifact.as_dict()))
+        return artifact
+
+    def _prepare_runtime_start(self) -> None:
+        c = self.container
+        configure_runtime_logging()
+        if c.settings_obj.MODE != "live":
+            c.validate_market_preflight(c.settings_obj)
+        c.validate_runtime_strategy_set_selection(c.settings_obj)
+        c.validate_live_mode_preflight(c.settings_obj)
+        started = persist_run_start_manifests(c, created_ts=int(c.clock() * 1000))
+        self.container = started
+        c = self.container
+        self.runtime_strategy_set = c.runtime_strategy_set
+        startup_result = c.startup_controller.prepare_runtime_start(
+            live_mode=c.settings_obj.MODE == "live"
+        )
+        startup_notification_hashes = list(startup_result.as_dict().get("operator_event_hashes", []))
+        if startup_result.operator_event:
+            c.notification_adapter.send_event(startup_result.operator_event)
+        self._record_artifact(
+            "startup",
+            candle_ts=None,
+            startup_state=startup_result.status,
+            readiness_hash=startup_result.as_dict()["decision_hash"],
+            notification_event_hashes=startup_notification_hashes,
+            state_transition_hash=(
+                startup_result.as_dict().get("halt_transition", {}).get("decision_hash")
+                if isinstance(startup_result.as_dict().get("halt_transition"), dict)
+                else None
+            ),
+        )
+        if startup_result.status == "BLOCKED":
+            _log_loop_event(
+                logging.WARNING,
+                "[RUN] startup_blocked",
+                symbol=c.settings_obj.PAIR,
+                interval=c.settings_obj.INTERVAL,
+                reason=startup_result.startup_gate_reason or startup_result.reason_code or "startup blocked",
+                startup_result_hash=startup_result.as_dict()["decision_hash"],
+            )
+            self._blocked = True
+            self._started = True
+            return
+        self.broker = startup_result.broker
+        self.runtime_checkpoint = RuntimeCheckpoint(symbol=c.settings_obj.PAIR, interval=c.settings_obj.INTERVAL)
+        self.runtime_events = RuntimeOperatorEventComposer(c.settings_obj.PAIR)
+        self.execution_service = c.execution_service_factory(
+            mode=c.settings_obj.MODE,
+            broker=self.broker,
+            paper_executor=c.paper_executor,
+            live_executor=c.live_executor,
+            harmless_dust_recorder=c.harmless_dust_recorder,
+        )
+        _log_loop_event(
+            logging.INFO,
+            "[RUN] loop_start",
+            symbol=c.settings_obj.PAIR,
+            interval=c.settings_obj.INTERVAL,
+            every_sec=c.interval_parser(c.settings_obj.INTERVAL),
+            strategy=c.settings_obj.STRATEGY_NAME,
+            runtime_strategy_set_source=getattr(self.runtime_strategy_set, "source", "-"),
+            runtime_strategy_set_hash=c.runtime_strategy_set_manifest_hash,
+            runtime_dependency_manifest_hash=c.runtime_dependency_manifest_hash,
+        )
+        self._started = True
+
+    def run_forever(self) -> None:
+        if not self._started:
+            self._prepare_runtime_start()
+        if self._blocked:
+            return
+        sec = self.container.interval_parser(self.container.settings_obj.INTERVAL)
+        try:
+            while True:
+                tick_now = self.container.clock()
+                self.container.scheduler.sleep(sec - (tick_now % sec) + 2)
+                self.run_one_cycle()
+        except KeyboardInterrupt:
+            _log_loop_event(
+                logging.INFO,
+                "[RUN] stopped",
+                symbol=self.container.settings_obj.PAIR,
+                interval=self.container.settings_obj.INTERVAL,
+                reason="stopped by user (Ctrl+C)",
+            )
+
+    def run_one_cycle(self) -> RuntimeCycleArtifact | None:
+        if not self._started:
+            self._prepare_runtime_start()
+        if self._blocked:
+            return None
+        c = self.container
+        assert self.runtime_checkpoint is not None
+        assert self.runtime_events is not None
+        sec = c.interval_parser(c.settings_obj.INTERVAL)
+        now = c.clock()
+        state = runtime_state.snapshot()
+        if (not state.trading_enabled) and state.retry_at_epoch_sec:
+            if math.isinf(state.retry_at_epoch_sec):
+                _log_loop_event(
+                    logging.WARNING,
+                    "[RUN] halted_exit",
+                    symbol=c.settings_obj.PAIR,
+                    interval=c.settings_obj.INTERVAL,
+                    reason="trading halted indefinitely",
+                )
+                return None
+            if now < state.retry_at_epoch_sec:
+                _log_loop_event(
+                    logging.WARNING,
+                    "[RUN] failsafe_pause",
+                    symbol=c.settings_obj.PAIR,
+                    interval=c.settings_obj.INTERVAL,
+                    wait_sec=max(0, int(state.retry_at_epoch_sec - now)),
+                    reason="retry window not reached",
+                )
+                return None
+            runtime_state.enable_trading()
+            c.notification_adapter.send_event(self.runtime_events.event("failsafe_retry_window_reached"))
+
+        try:
+            c.market_sync(quiet=True)
+            sync_observed_epoch_sec = c.clock()
+            conn = c.db_factory()
+            try:
+                row = c.candle_reader(
+                    conn,
+                    pair=c.settings_obj.PAIR,
+                    interval=c.settings_obj.INTERVAL,
+                )
+                closed_row, incomplete_ts = c.closed_candle_selector(
+                    conn,
+                    pair=c.settings_obj.PAIR,
+                    interval=c.settings_obj.INTERVAL,
+                    interval_sec=sec,
+                    now_ms=int(sync_observed_epoch_sec * 1000),
+                )
+            finally:
+                conn.close()
+            if row is None:
+                runtime_state.set_last_candle_observation(
+                    status="missing_after_sync",
+                    age_sec=None,
+                    sync_epoch_sec=sync_observed_epoch_sec,
+                    candle_ts_ms=None,
+                    detail="sync completed but latest candle row was not found",
+                )
+                event = self.runtime_events.event("no_candles_after_sync")
+                c.notification_adapter.send_event(event)
+                return self._record_artifact(
+                    "skip:no_candles",
+                    candle_ts=None,
+                    startup_state="READY",
+                    notification_event_hashes=[event.get("event_hash")],
+                )
+            last_ts = int(row["ts"]) if hasattr(row, "keys") else int(row[0])
+            last_close = float(row["close"] if hasattr(row, "keys") else row[1])
+            candle_age_sec = max(0.0, (c.clock() * 1000 - last_ts) / 1000)
+            runtime_state.set_last_candle_observation(
+                status="ok",
+                age_sec=candle_age_sec,
+                sync_epoch_sec=sync_observed_epoch_sec,
+                candle_ts_ms=last_ts,
+                detail=(
+                    None
+                    if incomplete_ts is None
+                    else f"latest candle ts={incomplete_ts} still open; using latest fully closed candle"
+                ),
+            )
+            self.fail_count = 0
+            runtime_state.set_error_count(self.fail_count)
+        except Exception as exc:
+            self.fail_count += 1
+            runtime_state.set_error_count(self.fail_count)
+            sync_event = self.runtime_events.event(
+                "sync_failed",
+                fail_count=self.fail_count,
+                max_fails=self.max_fails,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            c.notification_adapter.send_event(sync_event)
+            hashes = [sync_event.get("event_hash")]
+            if self.fail_count >= self.max_fails:
+                retry_at = c.clock() + FAILSAFE_RETRY_DELAY_SEC
+                pause_trading_until(retry_at)
+                pause_event = self.runtime_events.event("failsafe_pause_enabled", retry_at_epoch_sec=retry_at)
+                c.notification_adapter.send_event(pause_event)
+                hashes.append(pause_event.get("event_hash"))
+            return self._record_artifact(
+                "skip:sync_failed",
+                candle_ts=None,
+                startup_state="READY",
+                notification_event_hashes=hashes,
+            )
+
+        stale_cutoff_sec = sec * 2
+        if candle_age_sec > stale_cutoff_sec:
+            event = self.runtime_events.event(
+                "stale_candle_detected",
+                age_sec=candle_age_sec,
+                stale_cutoff_sec=stale_cutoff_sec,
+            )
+            c.notification_adapter.send_event(event)
+            return self._record_artifact(
+                "skip:stale_candle",
+                candle_ts=last_ts,
+                startup_state="READY",
+                notification_event_hashes=[event.get("event_hash")],
+            )
+
+        market_safety_result = c.safety_controller.evaluate_market_runtime(
+            settings_obj=c.settings_obj,
+            now_epoch_sec=now,
+            last_market_runtime_check_at=self.last_market_runtime_check_at,
+            validate_market_runtime=c.validate_market_runtime,
+            validation_error_type=c.market_validation_error_type,
+        )
+        if market_safety_result.last_market_runtime_check_at is not None:
+            self.last_market_runtime_check_at = market_safety_result.last_market_runtime_check_at
+        if market_safety_result.blocked:
+            market_safety_result = _apply_runtime_safety_decision(c.safety_controller, market_safety_result)
+            _dispatch_runtime_safety_notifications(c.notification_adapter, market_safety_result)
+            safety_hash = (
+                market_safety_result.safety_decision.as_dict()["decision_hash"]
+                if market_safety_result.safety_decision is not None
+                else None
+            )
+            return self._record_artifact(
+                market_safety_result.cycle_id or "halt:market_runtime",
+                candle_ts=last_ts,
+                startup_state="READY",
+                safety_decision_hash=safety_hash,
+                state_transition_hash=market_safety_result.state_transition_hash,
+                notification_event_hashes=market_safety_result.notification_event_hashes,
+            )
+
+        safety_result = c.safety_controller.evaluate_runtime_safety(
+            settings_obj=c.settings_obj,
+            broker=self.broker,
+            now_epoch_sec=now,
+            last_close=float(last_close),
+            last_open_order_reconcile_at=self.last_open_order_reconcile_at,
+            portfolio_cash_qty_with_position_state=c.portfolio_cash_qty_with_position_state,
+            db_factory=c.db_factory,
+            open_order_snapshot=c.open_order_snapshot,
+            mark_open_orders_recovery_required=c.mark_open_orders_recovery_required,
+            reconcile_with_broker=c.reconcile_with_broker,
+        )
+        self.last_open_order_reconcile_at = safety_result.last_open_order_reconcile_at
+        if safety_result.blocked:
+            safety_result = _apply_runtime_safety_decision(c.safety_controller, safety_result)
+            _dispatch_runtime_safety_notifications(c.notification_adapter, safety_result)
+            safety_hash = (
+                safety_result.safety_decision.as_dict()["decision_hash"]
+                if safety_result.safety_decision is not None
+                else None
+            )
+            return self._record_artifact(
+                safety_result.cycle_id or "safety:block",
+                candle_ts=last_ts,
+                startup_state="READY",
+                safety_decision_hash=safety_hash,
+                state_transition_hash=safety_result.state_transition_hash,
+                notification_event_hashes=safety_result.notification_event_hashes,
+            )
+
+        checkpoint_decision = self.runtime_checkpoint.evaluate_closed_candle(
+            closed_row=closed_row,
+            incomplete_ts=incomplete_ts,
+            last_processed_candle_ts_ms=runtime_state.snapshot().last_processed_candle_ts_ms,
+            close_guard_ms=_close_guard_ms(sec),
+        )
+        if not checkpoint_decision.allowed:
+            return self._record_artifact(
+                checkpoint_decision.cycle_id,
+                candle_ts=checkpoint_decision.candle_ts,
+                startup_state="READY",
+            )
+        closed_candle_ts_ms = int(checkpoint_decision.candle_ts or 0)
+        decision_result = c.decision_coordinator.decide_cycle(
+            runtime_strategy_set=self.runtime_strategy_set,
+            candle_ts=closed_candle_ts_ms,
+            updated_ts=int(now * 1000),
+        )
+        if decision_result.persistence_status == "insufficient_signal_history":
+            return self._record_artifact(
+                "skip:insufficient_signal_history",
+                candle_ts=closed_candle_ts_ms,
+                startup_state="READY",
+            )
+        execution_result = c.execution_coordinator.execute_cycle(
+            candle_ts=decision_result.candle_ts,
+            decision_id=decision_result.decision_id,
+            signal=str(decision_result.signal or "HOLD"),
+            market_price=float(decision_result.market_price or 0.0),
+            strategy_name=decision_result.strategy_name,
+            decision_reason=decision_result.reason,
+            exit_rule_name=decision_result.exit_rule_name,
+            decision_context=decision_result.decision_context,
+            execution_plan_bundle=decision_result.execution_plan_bundle,
+            execution_decision_summary=decision_result.execution_decision_summary,
+            execution_service=self.execution_service,
+            post_trade_reconcile=(
+                (lambda: c.reconcile_with_broker(self.broker))
+                if c.settings_obj.MODE == "live" and self.broker is not None
+                else None
+            ),
+            input_hash=decision_result.as_dict()["decision_hash"],
+            execution_plan_bundle_hash=decision_result.execution_plan_bundle_hash,
+        )
+        if execution_result.mark_processed_allowed:
+            self.runtime_checkpoint.apply(candle_ts_ms=decision_result.candle_ts, now_epoch_sec=now)
+        artifact = self._record_artifact(
+            "checkpoint:processed",
+            candle_ts=decision_result.candle_ts,
+            startup_state="READY",
+            strategy_decision_hash=decision_result.strategy_decision_hash,
+            runtime_strategy_decision_bundle_id=decision_result.runtime_strategy_decision_bundle_id,
+            runtime_strategy_decision_bundle_hash=decision_result.runtime_strategy_decision_bundle_hash,
+            portfolio_allocation_decision_id=decision_result.portfolio_allocation_decision_id,
+            portfolio_allocation_decision_hash=decision_result.portfolio_allocation_decision_hash,
+            portfolio_target_id=decision_result.portfolio_target_id,
+            portfolio_target_hash=decision_result.portfolio_target_hash,
+            strategy_contribution_hash=decision_result.strategy_contribution_hash,
+            execution_plan_id=decision_result.execution_plan_id,
+            execution_plan_bundle_hash=decision_result.execution_plan_bundle_hash,
+            execution_submit_plan_hash=decision_result.execution_submit_plan_hash,
+            execution_result_hash=execution_result.as_dict()["decision_hash"],
+        )
+        if execution_result.halt_transition:
+            halt_reason_code = str(execution_result.halt_transition.get("reason_code") or execution_result.planning_status)
+            halt_reason = str(execution_result.halt_transition.get("evidence", {}).get("error") or halt_reason_code)
+            decision = c.safety_controller.evaluate_halt(
+                _halt_reason(halt_reason_code, halt_reason),
+                unresolved=True,
+            )
+            transition = c.safety_controller.apply(decision)
+            decision = type(decision)(
+                action=decision.action,
+                reason_code=decision.reason_code,
+                reason=decision.reason,
+                unresolved=decision.unresolved,
+                attempt_flatten=decision.attempt_flatten,
+                state_transition=transition,
+                operator_event=decision.operator_event,
+                input_hash=decision.input_hash,
+                evidence_hash=decision.evidence_hash,
+                decision_hash=decision.decision_hash,
+                evidence=decision.evidence,
+            )
+            _dispatch_safety_decision(c.notification_adapter, decision)
+            event = self.runtime_events.execution_failure_from_transition(execution_result.halt_transition)
+            c.notification_adapter.send_event(event)
+            return self._record_artifact(
+                f"halt:{execution_result.planning_status}",
+                candle_ts=decision_result.candle_ts,
+                startup_state="READY",
+                strategy_decision_hash=decision_result.strategy_decision_hash,
+                runtime_strategy_decision_bundle_hash=decision_result.runtime_strategy_decision_bundle_hash,
+                execution_result_hash=execution_result.as_dict()["decision_hash"],
+                safety_decision_hash=decision.as_dict()["decision_hash"],
+                state_transition_hash=decision.as_dict()["state_transition"].get("decision_hash"),
+                notification_event_hashes=[
+                    *decision.as_dict().get("operator_event_hashes", []),
+                    event.get("event_hash"),
+                ],
+            )
+        return artifact
 
 
 def _record_runtime_cycle_artifact(
@@ -1734,3 +2127,9 @@ def run_loop() -> None:
     finally:
         _LEGACY_ENGINE_ATTEMPT_OPEN_ORDER_CANCELLATION = None
         operator_notification_service = _ORIGINAL_OPERATOR_NOTIFICATION_SERVICE_FACTORY
+
+
+def run_loop() -> None:
+    from .app_container import create_default_runtime_app
+
+    create_default_runtime_app(settings).runner.run_forever()

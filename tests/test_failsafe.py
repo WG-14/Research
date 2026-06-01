@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,13 +10,15 @@ import pytest
 
 from bithumb_bot import engine as engine_module
 from bithumb_bot import runtime_state
+from bithumb_bot.compat import engine_legacy as engine_legacy_module
 from bithumb_bot.broker.base import BrokerBalance, BrokerOrder, BrokerRejectError
 from bithumb_bot.broker.balance_source import _default_flat_start_safety_check
 from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_db
 from bithumb_bot.decision_equivalence import sha256_prefixed
-from bithumb_bot.engine import run_loop
 from bithumb_bot.runtime_compat import get_health_status
+from bithumb_bot.runtime.app_container import create_default_runtime_app
+from bithumb_bot.runtime.runner import Runner
 from bithumb_bot.execution_service import (
     ExecutionDecisionSummary,
     ExecutionSubmitPlan,
@@ -30,6 +33,102 @@ from bithumb_bot.marketdata import _get_with_retry
 from bithumb_bot.public_api_orderbook import BestQuote
 from bithumb_bot.strategy_policy_contract import EntryExecutionIntent, PositionSnapshot, StrategyDecisionV2
 from bithumb_bot.target_position import TargetPositionState
+
+_RUN_LOOP_RUNNER: Runner | None = None
+
+
+def run_loop() -> None:
+    assert _RUN_LOOP_RUNNER is not None
+    _apply_legacy_test_overrides(_RUN_LOOP_RUNNER)
+    _RUN_LOOP_RUNNER.run_one_cycle()
+
+
+def _apply_legacy_test_overrides(runner: Runner) -> None:
+    import bithumb_bot.recovery as recovery_module
+    import bithumb_bot.runtime.safety_controller as safety_controller_module
+
+    app = runner.container
+    safety_controller_module.evaluate_daily_loss_breach = engine_legacy_module.evaluate_daily_loss_breach
+    safety_controller_module.evaluate_position_loss_breach = engine_legacy_module.evaluate_position_loss_breach
+
+    class _NotifyProxy:
+        def send_event(self, event_name: str, **fields: object) -> None:
+            import bithumb_bot.notifier as notifier_module
+
+            payload = " ".join([f"event={event_name}", *(f"{k}={v}" for k, v in fields.items())])
+            notifier_module.notify(payload)
+            if engine_legacy_module.notify is not notifier_module.notify:
+                engine_legacy_module.notify(payload)
+
+        def send_message(self, message: str) -> None:
+            import bithumb_bot.notifier as notifier_module
+
+            notifier_module.notify(message)
+            if engine_legacy_module.notify is not notifier_module.notify:
+                engine_legacy_module.notify(message)
+
+    notification_service = _NotifyProxy()
+    safety_controller = replace(
+        app.safety_controller,
+        flatten_position=lambda **kwargs: engine_legacy_module.flatten_btc_position(**kwargs),
+        legacy_cancel_open_orders=getattr(engine_legacy_module, "_attempt_open_order_cancellation", None),
+    )
+    runner.container = replace(
+        app,
+        live_executor=engine_legacy_module.live_execute_signal,
+        paper_executor=engine_legacy_module.paper_execute,
+        harmless_dust_recorder=engine_legacy_module.record_harmless_dust_exit_suppression,
+        validate_market_runtime=engine_legacy_module.validate_market_runtime,
+        interval_parser=engine_legacy_module.parse_interval_sec,
+        market_sync=engine_legacy_module.cmd_sync,
+        notification_service=notification_service,
+        notification_adapter=app.notification_adapter.__class__(notification_service),
+        safety_controller=safety_controller,
+        startup_controller=replace(
+            app.startup_controller,
+            startup_gate_evaluator=engine_legacy_module.evaluate_startup_safety_gate,
+            broker_factory=engine_legacy_module.BithumbBroker,
+            initial_reconcile=recovery_module.reconcile_with_broker,
+            halt_on_startup_failure=lambda *, reason_code, reason, unresolved: safety_controller.apply(
+                safety_controller.evaluate_halt(
+                    runner_module_halt_reason(reason_code, reason),
+                    unresolved=bool(unresolved),
+                )
+            ),
+        ),
+        broker_factory=engine_legacy_module.BithumbBroker,
+        reconcile_with_broker=recovery_module.reconcile_with_broker,
+    )
+    runner.execution_service = runner.container.execution_service_factory(
+        mode=runner.container.settings_obj.MODE,
+        broker=runner.broker,
+        paper_executor=runner.container.paper_executor,
+        live_executor=runner.container.live_executor,
+        harmless_dust_recorder=runner.container.harmless_dust_recorder,
+    )
+
+
+def runner_module_halt_reason(reason_code: str, reason: str):
+    from bithumb_bot.runtime.safety_controller import HaltReason
+
+    return HaltReason(reason_code, reason)
+
+
+class _NoSleepScheduler:
+    def sleep(self, _seconds: float) -> None:
+        return None
+
+
+class _Notifications:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, object]]] = []
+        self.messages: list[str] = []
+
+    def send_event(self, event_name: str, **fields: object) -> None:
+        self.events.append((event_name, fields))
+
+    def send_message(self, message: str) -> None:
+        self.messages.append(message)
 
 
 def _unit_runtime_strategy_set_manifest(**_kwargs):
@@ -82,7 +181,7 @@ def _submit_plan_payload(plan: object | None) -> dict[str, object]:
 def _isolated_db(tmp_path):
     from bithumb_bot.config import settings as current_settings
     import bithumb_bot.db_core as db_core_module
-    import bithumb_bot.engine as engine_settings_module
+    import bithumb_bot.compat.engine_legacy as engine_settings_module
     import bithumb_bot.execution_service as execution_service_module
     import bithumb_bot.operator_commands as operator_commands_module
     import bithumb_bot.run_loop_execution_planner as run_loop_execution_planner_module
@@ -210,6 +309,7 @@ class _LoopConn:
         self.asset_qty = float(asset_qty)
         self.marked_recovery_required = 0
         self.target_state = target_state
+        self.runtime_dependency_manifest_rows: dict[str, dict[str, object]] = {}
         self.runtime_strategy_set_manifest_rows: dict[str, dict[str, object]] = {}
         self.runtime_strategy_decision_bundle_rows: dict[str, dict[str, object]] = {}
         self.runtime_strategy_decision_result_rows: dict[tuple[int, str], dict[str, object]] = {}
@@ -284,6 +384,21 @@ class _LoopConn:
         if "SELECT id FROM runtime_strategy_set_manifest WHERE manifest_hash=?" in q:
             assert params is not None
             row = self.runtime_strategy_set_manifest_rows.get(str(params[0]))
+            return _Rows(None if row is None else {"id": row["id"]})
+
+        if "INSERT OR IGNORE INTO runtime_dependency_manifest" in q:
+            assert params is not None
+            manifest_hash = str(params[0])
+            if manifest_hash not in self.runtime_dependency_manifest_rows:
+                self.runtime_dependency_manifest_rows[manifest_hash] = {
+                    "id": len(self.runtime_dependency_manifest_rows) + 1,
+                    "manifest_hash": manifest_hash,
+                }
+            return _Rows(None, rowcount=1)
+
+        if "SELECT id FROM runtime_dependency_manifest WHERE manifest_hash=?" in q:
+            assert params is not None
+            row = self.runtime_dependency_manifest_rows.get(str(params[0]))
             return _Rows(None if row is None else {"id": row["id"]})
 
         if "INSERT OR IGNORE INTO runtime_strategy_decision_bundle" in q:
@@ -701,7 +816,10 @@ class _RuntimeDecisionBundle:
         return "sha256:unit-runtime-decision-bundle"
 
 
-def _install_runtime_gateway(monkeypatch, result_factory) -> None:
+def _install_runtime_gateway(monkeypatch_or_factory, result_factory=None):
+    global _RUN_LOOP_RUNNER
+    if result_factory is None:
+        result_factory = monkeypatch_or_factory
     class _Gateway:
         def decide_bundle(self, conn, *, strategy_set=None, through_ts_ms=None):
             from bithumb_bot.runtime_strategy_set import derive_strategy_instance_id
@@ -741,7 +859,15 @@ def _install_runtime_gateway(monkeypatch, result_factory) -> None:
             )
             return _RuntimeDecisionBundle(result, strategy_set)
 
-    monkeypatch.setattr("bithumb_bot.engine.RuntimeDecisionGateway", _Gateway)
+    if _RUN_LOOP_RUNNER is not None:
+        _RUN_LOOP_RUNNER.container = replace(
+            _RUN_LOOP_RUNNER.container,
+            decision_coordinator=replace(
+                _RUN_LOOP_RUNNER.container.decision_coordinator,
+                decision_gateway_factory=_Gateway,
+            ),
+        )
+    return _Gateway
 
 
 def _runtime_result_from_payload(payload: dict[str, object]) -> _RuntimeDecisionResult:
@@ -786,15 +912,13 @@ def _prepare_run_loop(
     asset_qty: float = 0.0,
     target_state: TargetPositionState | None = None,
 ):
+    global _RUN_LOOP_RUNNER
     monkeypatch.setattr("bithumb_bot.config.notifier_is_configured", lambda: True)
     runtime_state.enable_trading()
     runtime_state.set_error_count(0)
     runtime_state.set_last_candle_age_sec(None)
     runtime_state.set_startup_gate_reason(None)
-    runtime_state._STATE.last_processed_candle_ts_ms = None  # type: ignore[attr-defined]
-    runtime_state._STATE.last_candle_ts_ms = None  # type: ignore[attr-defined]
-    runtime_state._STATE.last_candle_status = None  # type: ignore[attr-defined]
-    runtime_state._STATE.last_candle_status_detail = None  # type: ignore[attr-defined]
+    runtime_state.reset_candle_processing_state()
 
     resolved_db_path = str(Path(settings.DB_PATH).resolve())
     monkeypatch.setenv("DB_PATH", resolved_db_path)
@@ -825,25 +949,30 @@ def _prepare_run_loop(
     object.__setattr__(settings, "MIN_ORDER_NOTIONAL_KRW", 5000.0)
     object.__setattr__(settings, "LIVE_ORDER_MAX_QTY_DECIMALS", 8)
 
-    monkeypatch.setattr("bithumb_bot.engine.validate_live_mode_preflight", lambda _cfg: None)
-    monkeypatch.setattr("bithumb_bot.engine.validate_runtime_strategy_set_selection", lambda _cfg: None)
-    monkeypatch.setattr("bithumb_bot.engine.validate_market_runtime", lambda _cfg: None)
-    monkeypatch.setattr(
-        "bithumb_bot.engine.normalized_runtime_strategy_set_manifest",
-        _unit_runtime_strategy_set_manifest,
-    )
+    validate_live_mode_preflight = lambda _cfg: None
+    validate_runtime_strategy_set_selection = lambda _cfg: None
+    validate_market_runtime = lambda _cfg: None
+    runtime_strategy_set_manifest_provider = _unit_runtime_strategy_set_manifest
     monkeypatch.setattr(
         "bithumb_bot.run_loop_execution_planner.runtime_strategy_set_manifest_hash",
         lambda _strategy_set: "sha256:unit-runtime-strategy-set",
     )
-    monkeypatch.setattr("bithumb_bot.engine.parse_interval_sec", lambda _: 1)
-    monkeypatch.setattr("bithumb_bot.engine.cmd_sync", lambda quiet=True: None)
+    interval_parser = lambda _: 1
+    market_sync = lambda quiet=True: None
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.validate_market_runtime", validate_market_runtime)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.parse_interval_sec", interval_parser)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.cmd_sync", market_sync)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.BithumbBroker", lambda: _DummyBroker())
     monkeypatch.setattr(
-        "bithumb_bot.engine._select_latest_closed_candle",
-        lambda _conn, **_kwargs: ({"ts": 9000, "close": 100.0}, None),
+        "bithumb_bot.compat.engine_legacy.evaluate_daily_loss_breach",
+        lambda *_args, **_kwargs: (False, "ok"),
     )
-    _install_runtime_gateway(
-        monkeypatch,
+    monkeypatch.setattr(
+        "bithumb_bot.compat.engine_legacy.evaluate_position_loss_breach",
+        lambda *_args, **_kwargs: (False, "ok"),
+    )
+    closed_candle_selector = lambda _conn, **_kwargs: ({"ts": 9000, "close": 100.0}, None)
+    gateway_factory = _install_runtime_gateway(
         lambda _conn, **_kwargs: _RuntimeDecisionResult(signal="BUY", candle_ts=9000),
     )
 
@@ -852,31 +981,50 @@ def _prepare_run_loop(
         asset_qty=asset_qty,
         target_state=target_state,
     )
-    monkeypatch.setattr("bithumb_bot.engine.ensure_db", lambda: loop_conn)
     monkeypatch.setattr("bithumb_bot.runtime_data_access.ensure_db", lambda: loop_conn)
     monkeypatch.setattr("bithumb_bot.flatten.ensure_db", lambda: loop_conn)
     monkeypatch.setattr("bithumb_bot.flatten.init_portfolio", lambda _conn: None)
-    monkeypatch.setattr("bithumb_bot.engine.BithumbBroker", lambda: _DummyBroker())
+    broker_factory = lambda: _DummyBroker()
     monkeypatch.setattr(
-        "bithumb_bot.engine.evaluate_daily_loss_breach",
+        "bithumb_bot.runtime.safety_controller.evaluate_daily_loss_breach",
         lambda *_args, **_kwargs: (False, "ok"),
     )
     monkeypatch.setattr(
-        "bithumb_bot.engine.evaluate_position_loss_breach",
+        "bithumb_bot.runtime.safety_controller.evaluate_position_loss_breach",
         lambda *_args, **_kwargs: (False, "ok"),
     )
 
-    ticks = iter([10.0, 11.0])
-    monkeypatch.setattr("bithumb_bot.engine.time.time", lambda: next(ticks, 11.0))
-
-    sleeps = {"n": 0}
-
-    def _sleep(_sec: float):
-        sleeps["n"] += 1
-        if sleeps["n"] >= 2:
-            raise KeyboardInterrupt
-
-    monkeypatch.setattr("bithumb_bot.engine.time.sleep", _sleep)
+    ticks = iter([10.0, 11.0, 11.0, 11.0, 11.0, 11.0])
+    clock = lambda: next(ticks, 11.0)
+    app = create_default_runtime_app(settings)
+    notifications = _Notifications()
+    app = replace(
+        app,
+        db_factory=lambda: loop_conn,
+        clock=clock,
+        scheduler=_NoSleepScheduler(),
+        broker_factory=broker_factory,
+        market_sync=market_sync,
+        candle_reader=lambda _conn, **_kwargs: {"ts": 9000, "close": 100.0},
+        closed_candle_selector=closed_candle_selector,
+        notification_service=notifications,
+        notification_adapter=app.notification_adapter.__class__(notifications),
+        validate_live_mode_preflight=validate_live_mode_preflight,
+        validate_runtime_strategy_set_selection=validate_runtime_strategy_set_selection,
+        validate_market_runtime=validate_market_runtime,
+        interval_parser=interval_parser,
+        runtime_strategy_set_manifest_provider=runtime_strategy_set_manifest_provider,
+    )
+    app = replace(
+        app,
+        decision_coordinator=replace(
+            app.decision_coordinator,
+            db_factory=lambda: loop_conn,
+            decision_gateway_factory=gateway_factory,
+        ),
+        startup_controller=replace(app.startup_controller, broker_factory=broker_factory),
+    )
+    _RUN_LOOP_RUNNER = Runner(app)
     return loop_conn
 
 
@@ -885,7 +1033,7 @@ def test_run_loop_live_broker_error_halts_instead_of_crash(monkeypatch):
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
     monkeypatch.setattr(
-        "bithumb_bot.engine.live_execute_signal",
+        "bithumb_bot.compat.engine_legacy.live_execute_signal",
         lambda broker, signal, ts, px: (_ for _ in ()).throw(BrokerRejectError("reject")),
     )
 
@@ -960,7 +1108,7 @@ def test_run_loop_surfaces_market_preflight_error_during_live_startup(monkeypatc
         raise ValueError("market gate")
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
-    monkeypatch.setattr("bithumb_bot.engine.validate_market_runtime", _market_runtime)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.validate_market_runtime", _market_runtime)
 
     with pytest.raises(Exception) as exc:
         run_loop()
@@ -983,7 +1131,7 @@ def test_run_loop_reconcile_error_halts_instead_of_crash(monkeypatch):
             raise RuntimeError("reconcile boom")
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", _reconcile, raising=False)
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", lambda broker, signal, ts, px: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", lambda broker, signal, ts, px: None)
 
     run_loop()
 
@@ -1017,7 +1165,7 @@ def test_run_loop_periodically_reconciles_when_open_order_exists(monkeypatch):
         calls["n"] += 1
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", _reconcile, raising=False)
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", lambda *_args, **_kwargs: None)
 
     run_loop()
 
@@ -1029,7 +1177,7 @@ def test_run_loop_stale_open_order_halts_and_marks_recovery_required(monkeypatch
     object.__setattr__(settings, "MAX_OPEN_ORDER_AGE_SEC", 5)
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", lambda *_args, **_kwargs: None)
 
     run_loop()
 
@@ -1054,7 +1202,7 @@ def test_run_loop_unresolved_open_order_blocks_new_trading(monkeypatch):
     def _live_execute(*_args, **_kwargs):
         called["n"] += 1
 
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", _live_execute)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", _live_execute)
 
     run_loop()
 
@@ -1076,10 +1224,10 @@ def test_run_loop_startup_recovery_gate_halts_when_unresolved_state_exists(monke
     def _live_execute(*_args, **_kwargs):
         called["n"] += 1
 
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", _live_execute)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", _live_execute)
 
     notifications: list[str] = []
-    monkeypatch.setattr("bithumb_bot.engine.notify", lambda msg: notifications.append(msg))
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.notify", lambda msg: notifications.append(msg))
 
     run_loop()
 
@@ -1118,7 +1266,7 @@ def test_run_loop_startup_safety_gate_halts_when_unresolved_open_order_exists(mo
     _prepare_run_loop(monkeypatch)
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", lambda *_args, **_kwargs: None)
 
     run_loop()
 
@@ -1140,7 +1288,7 @@ def test_run_loop_startup_recovery_gate_allows_clean_startup(monkeypatch, tmp_pa
     def _live_execute(*_args, **_kwargs):
         called["n"] += 1
 
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", _live_execute)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", _live_execute)
 
     run_loop()
 
@@ -1179,11 +1327,11 @@ def test_run_loop_live_harmless_dust_sell_suppresses_before_live_execution(monke
 
     suppression_calls: list[dict[str, object]] = []
     monkeypatch.setattr(
-        "bithumb_bot.engine.record_harmless_dust_exit_suppression",
+        "bithumb_bot.compat.engine_legacy.record_harmless_dust_exit_suppression",
         lambda **kwargs: suppression_calls.append(kwargs) or True,
     )
     monkeypatch.setattr(
-        "bithumb_bot.engine.live_execute_signal",
+        "bithumb_bot.compat.engine_legacy.live_execute_signal",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not reach live execution")),
     )
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
@@ -1261,11 +1409,11 @@ def test_run_loop_live_sell_does_not_presuppress_when_canonical_sell_authority_i
     suppression_calls: list[dict[str, object]] = []
     live_calls = {"n": 0}
     monkeypatch.setattr(
-        "bithumb_bot.engine.record_harmless_dust_exit_suppression",
+        "bithumb_bot.compat.engine_legacy.record_harmless_dust_exit_suppression",
         lambda **kwargs: suppression_calls.append(kwargs) or True,
     )
     monkeypatch.setattr(
-        "bithumb_bot.engine.live_execute_signal",
+        "bithumb_bot.compat.engine_legacy.live_execute_signal",
         lambda *_args, **_kwargs: live_calls.__setitem__("n", live_calls["n"] + 1) or None,
     )
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
@@ -2424,7 +2572,7 @@ def test_run_loop_target_delta_persisted_target_state_reaches_live_execution(
     object.__setattr__(settings, "RESIDUAL_LIVE_SELL_MODE", "telemetry")
     object.__setattr__(settings, "TARGET_EXPOSURE_KRW", None)
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
-    monkeypatch.setattr("bithumb_bot.engine.evaluate_startup_safety_gate", lambda: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.evaluate_startup_safety_gate", lambda: None)
     _install_runtime_gateway(
         monkeypatch,
         lambda _conn, **_kwargs: _runtime_result_from_payload(
@@ -2467,8 +2615,8 @@ def test_run_loop_target_delta_persisted_target_state_reaches_live_execution(
         )
         return None
 
-    monkeypatch.setattr("bithumb_bot.engine.record_strategy_decision", _record_strategy_decision)
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", _capture_live_execution)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.record_strategy_decision", _record_strategy_decision)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", _capture_live_execution)
 
     run_loop()
 
@@ -2524,7 +2672,7 @@ def test_run_loop_target_delta_missing_target_holding_btc_adopts_without_closeou
     object.__setattr__(settings, "RESIDUAL_LIVE_SELL_MODE", "telemetry")
     object.__setattr__(settings, "TARGET_EXPOSURE_KRW", None)
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
-    monkeypatch.setattr("bithumb_bot.engine.evaluate_startup_safety_gate", lambda: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.evaluate_startup_safety_gate", lambda: None)
     _install_runtime_gateway(
         monkeypatch,
         lambda _conn, **_kwargs: _runtime_result_from_payload(
@@ -2546,11 +2694,11 @@ def test_run_loop_target_delta_missing_target_holding_btc_adopts_without_closeou
 
     recorded_contexts: list[dict[str, object]] = []
     monkeypatch.setattr(
-        "bithumb_bot.engine.record_strategy_decision",
+        "bithumb_bot.compat.engine_legacy.record_strategy_decision",
         lambda _conn, **kwargs: recorded_contexts.append(dict(kwargs["context"])) or 42,
     )
     monkeypatch.setattr(
-        "bithumb_bot.engine.live_execute_signal",
+        "bithumb_bot.compat.engine_legacy.live_execute_signal",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("startup adoption must not submit")),
     )
 
@@ -2596,7 +2744,7 @@ def test_run_loop_target_delta_adopted_target_strategy_sell_submits_delta_sell(m
     object.__setattr__(settings, "EXECUTION_ENGINE", "target_delta")
     object.__setattr__(settings, "RESIDUAL_LIVE_SELL_MODE", "telemetry")
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
-    monkeypatch.setattr("bithumb_bot.engine.evaluate_startup_safety_gate", lambda: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.evaluate_startup_safety_gate", lambda: None)
     _install_runtime_gateway(
         monkeypatch,
         lambda _conn, **_kwargs: _runtime_result_from_payload(
@@ -2616,9 +2764,9 @@ def test_run_loop_target_delta_adopted_target_strategy_sell_submits_delta_sell(m
         lambda _conn: SimpleNamespace(as_dict=lambda: _target_delta_readiness(broker_qty=0.0004998)),
     )
     executor_calls: list[dict[str, object]] = []
-    monkeypatch.setattr("bithumb_bot.engine.record_strategy_decision", lambda _conn, **_kwargs: 42)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.record_strategy_decision", lambda _conn, **_kwargs: 42)
     monkeypatch.setattr(
-        "bithumb_bot.engine.live_execute_signal",
+        "bithumb_bot.compat.engine_legacy.live_execute_signal",
         lambda _broker, side, ts, market_price, **kwargs: executor_calls.append(
             {"side": side, "execution_submit_plan": kwargs.get("execution_submit_plan")}
         ),
@@ -2830,7 +2978,7 @@ def test_run_loop_kill_switch_halts_with_risk_open_reason_and_cancel_attempt(mon
     object.__setattr__(settings, "KILL_SWITCH", True)
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", lambda *_args, **_kwargs: None)
 
     cancel_calls = {"n": 0}
 
@@ -2839,11 +2987,11 @@ def test_run_loop_kill_switch_halts_with_risk_open_reason_and_cancel_attempt(mon
         assert trigger == "kill-switch"
         return True
 
-    monkeypatch.setattr("bithumb_bot.engine._attempt_open_order_cancellation", _cancel)
-    monkeypatch.setattr("bithumb_bot.engine._get_exposure_snapshot", lambda _now_ms: (False, True))
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy._attempt_open_order_cancellation", _cancel)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy._get_exposure_snapshot", lambda _now_ms: (False, True))
 
     notifications: list[str] = []
-    monkeypatch.setattr("bithumb_bot.engine.notify", lambda msg: notifications.append(msg))
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.notify", lambda msg: notifications.append(msg))
 
     run_loop()
 
@@ -2868,8 +3016,8 @@ def test_run_loop_kill_switch_liquidate_with_open_position_triggers_flatten(monk
     object.__setattr__(settings, "KILL_SWITCH", True)
     object.__setattr__(settings, "KILL_SWITCH_LIQUIDATE", True)
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("bithumb_bot.engine._get_exposure_snapshot", lambda _now_ms: (False, True))
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy._get_exposure_snapshot", lambda _now_ms: (False, True))
 
     run_loop()
 
@@ -2887,7 +3035,7 @@ def test_run_loop_kill_switch_liquidate_with_no_position_enters_safe_halt(monkey
     object.__setattr__(settings, "KILL_SWITCH", True)
     object.__setattr__(settings, "KILL_SWITCH_LIQUIDATE", True)
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", lambda *_args, **_kwargs: None)
 
     run_loop()
 
@@ -2905,9 +3053,9 @@ def test_run_loop_kill_switch_liquidate_flatten_failure_is_persisted(monkeypatch
     object.__setattr__(settings, "KILL_SWITCH_LIQUIDATE", True)
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("bithumb_bot.engine._get_exposure_snapshot", lambda _now_ms: (False, True))
-    monkeypatch.setattr("bithumb_bot.engine.BithumbBroker", lambda: _FlattenFailBroker())
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy._get_exposure_snapshot", lambda _now_ms: (False, True))
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.BithumbBroker", lambda: _FlattenFailBroker())
     monkeypatch.setattr("bithumb_bot.flatten.fetch_orderbook_top", lambda _pair: BestQuote(market="KRW-BTC", bid_price=100_000_000.0, ask_price=100_010_000.0))
     monkeypatch.setattr(
         "bithumb_bot.broker.live.fetch_orderbook_top",
@@ -2930,13 +3078,13 @@ def test_run_loop_daily_loss_breach_halts_persistently(monkeypatch):
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
     monkeypatch.setattr(
-        "bithumb_bot.engine.evaluate_daily_loss_breach",
+        "bithumb_bot.compat.engine_legacy.evaluate_daily_loss_breach",
         lambda *_args, **_kwargs: (True, "daily loss limit exceeded (60,000/50,000 KRW)"),
     )
 
     called = {"n": 0}
     monkeypatch.setattr(
-        "bithumb_bot.engine.live_execute_signal",
+        "bithumb_bot.compat.engine_legacy.live_execute_signal",
         lambda *_args, **_kwargs: called.__setitem__("n", called["n"] + 1),
     )
 
@@ -2957,7 +3105,7 @@ def test_run_loop_daily_loss_breach_attempts_open_order_cancel(monkeypatch):
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
     monkeypatch.setattr(
-        "bithumb_bot.engine.evaluate_daily_loss_breach",
+        "bithumb_bot.compat.engine_legacy.evaluate_daily_loss_breach",
         lambda *_args, **_kwargs: (True, "daily loss limit exceeded (60,000/50,000 KRW)"),
     )
 
@@ -2969,15 +3117,15 @@ def test_run_loop_daily_loss_breach_attempts_open_order_cancel(monkeypatch):
         assert trigger == "daily-loss-halt"
         return True
 
-    monkeypatch.setattr("bithumb_bot.engine._attempt_open_order_cancellation", _cancel)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy._attempt_open_order_cancellation", _cancel)
     monkeypatch.setattr(
-        "bithumb_bot.engine.flatten_btc_position",
+        "bithumb_bot.compat.engine_legacy.flatten_btc_position",
         lambda *_args, **_kwargs: (
             flatten_calls.__setitem__("n", flatten_calls["n"] + 1)
             or {"status": "dry_run", "qty": 0.02}
         ),
     )
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", lambda *_args, **_kwargs: None)
 
     run_loop()
 
@@ -2990,13 +3138,13 @@ def test_run_loop_daily_loss_breach_has_no_auto_resume(monkeypatch):
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
     monkeypatch.setattr(
-        "bithumb_bot.engine.evaluate_daily_loss_breach",
+        "bithumb_bot.compat.engine_legacy.evaluate_daily_loss_breach",
         lambda *_args, **_kwargs: (True, "daily loss limit exceeded (60,000/50,000 KRW)"),
     )
 
     notifications: list[str] = []
-    monkeypatch.setattr("bithumb_bot.engine.notify", lambda msg: notifications.append(msg))
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.notify", lambda msg: notifications.append(msg))
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", lambda *_args, **_kwargs: None)
 
     run_loop()
 
@@ -3018,11 +3166,11 @@ def test_run_loop_stale_open_order_emits_recovery_and_cancel_failure_alerts(monk
     object.__setattr__(settings, "MAX_OPEN_ORDER_AGE_SEC", 5)
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("bithumb_bot.engine._attempt_open_order_cancellation", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy._attempt_open_order_cancellation", lambda *_args, **_kwargs: False)
 
     notifications: list[str] = []
-    monkeypatch.setattr("bithumb_bot.engine.notify", lambda msg: notifications.append(msg))
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.notify", lambda msg: notifications.append(msg))
 
     run_loop()
 
@@ -3209,8 +3357,10 @@ def _response(status_code: int) -> httpx.Response:
 
 
 def test_get_with_retry_retries_on_429(monkeypatch):
+    import bithumb_bot.marketdata as marketdata_module
+
     sleeps: list[float] = []
-    monkeypatch.setattr("bithumb_bot.marketdata.time.sleep", lambda sec: sleeps.append(sec))
+    monkeypatch.setattr(marketdata_module.time, "sleep", lambda sec: sleeps.append(sec))
     monkeypatch.setattr("bithumb_bot.marketdata.random.uniform", lambda a, b: 0.0)
 
     client = _DummyClient([_response(429), _response(503), _response(200)])
@@ -3269,13 +3419,13 @@ def test_run_loop_position_loss_breach_triggers_halt(monkeypatch):
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
     monkeypatch.setattr(
-        "bithumb_bot.engine.evaluate_position_loss_breach",
+        "bithumb_bot.compat.engine_legacy.evaluate_position_loss_breach",
         lambda *_args, **_kwargs: (True, "position loss threshold breached (8.00%/5.00%, entry=100, mark=92)"),
     )
 
     flatten_calls = {"n": 0}
     monkeypatch.setattr(
-        "bithumb_bot.engine.flatten_btc_position",
+        "bithumb_bot.compat.engine_legacy.flatten_btc_position",
         lambda *_args, **_kwargs: (
             flatten_calls.__setitem__("n", flatten_calls["n"] + 1)
             or {"status": "dry_run", "qty": 0.03}
@@ -3326,8 +3476,8 @@ def test_run_loop_position_loss_breach_uses_executable_exposure_qty(monkeypatch)
         return False, "ok"
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
-    monkeypatch.setattr("bithumb_bot.engine.evaluate_position_loss_breach", _capture_position_loss_breach)
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.evaluate_position_loss_breach", _capture_position_loss_breach)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", lambda *_args, **_kwargs: None)
 
     run_loop()
 
@@ -3340,10 +3490,10 @@ def test_run_loop_daily_loss_breach_with_no_position_records_no_position_flatten
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
     monkeypatch.setattr(
-        "bithumb_bot.engine.evaluate_daily_loss_breach",
+        "bithumb_bot.compat.engine_legacy.evaluate_daily_loss_breach",
         lambda *_args, **_kwargs: (True, "daily loss limit exceeded (60,000/50,000 KRW)"),
     )
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", lambda *_args, **_kwargs: None)
 
     run_loop()
 
@@ -3359,11 +3509,11 @@ def test_run_loop_position_loss_breach_flatten_failure_marks_unresolved(monkeypa
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
     monkeypatch.setattr(
-        "bithumb_bot.engine.evaluate_position_loss_breach",
+        "bithumb_bot.compat.engine_legacy.evaluate_position_loss_breach",
         lambda *_args, **_kwargs: (True, "position loss threshold breached (8.00%/5.00%, entry=100, mark=92)"),
     )
-    monkeypatch.setattr("bithumb_bot.engine.live_execute_signal", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("bithumb_bot.engine.BithumbBroker", lambda: _FlattenFailBroker())
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.live_execute_signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.BithumbBroker", lambda: _FlattenFailBroker())
     monkeypatch.setattr("bithumb_bot.flatten.fetch_orderbook_top", lambda _pair: BestQuote(market="KRW-BTC", bid_price=100_000_000.0, ask_price=100_010_000.0))
     monkeypatch.setattr(
         "bithumb_bot.broker.live.fetch_orderbook_top",
@@ -3383,13 +3533,13 @@ def test_run_loop_position_loss_breach_blocks_new_orders(monkeypatch):
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
     monkeypatch.setattr(
-        "bithumb_bot.engine.evaluate_position_loss_breach",
+        "bithumb_bot.compat.engine_legacy.evaluate_position_loss_breach",
         lambda *_args, **_kwargs: (True, "position loss threshold breached (8.00%/5.00%, entry=100, mark=92)"),
     )
 
     called = {"n": 0}
     monkeypatch.setattr(
-        "bithumb_bot.engine.live_execute_signal",
+        "bithumb_bot.compat.engine_legacy.live_execute_signal",
         lambda *_args, **_kwargs: called.__setitem__("n", called["n"] + 1),
     )
 
@@ -3403,12 +3553,12 @@ def test_run_loop_position_loss_breach_sends_halt_notification(monkeypatch):
 
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
     monkeypatch.setattr(
-        "bithumb_bot.engine.evaluate_position_loss_breach",
+        "bithumb_bot.compat.engine_legacy.evaluate_position_loss_breach",
         lambda *_args, **_kwargs: (True, "position loss threshold breached (8.00%/5.00%, entry=100, mark=92)"),
     )
 
     notifications: list[str] = []
-    monkeypatch.setattr("bithumb_bot.engine.notify", lambda msg: notifications.append(msg))
+    monkeypatch.setattr("bithumb_bot.compat.engine_legacy.notify", lambda msg: notifications.append(msg))
 
     run_loop()
 

@@ -884,6 +884,27 @@ def _strategy_decision_experiment_context(*, strategy_name: str) -> dict[str, An
 def _ensure_multi_strategy_artifact_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS runtime_dependency_manifest (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            manifest_hash TEXT NOT NULL UNIQUE,
+            mode TEXT NOT NULL,
+            execution_engine TEXT NOT NULL,
+            broker_factory_identity TEXT NOT NULL,
+            execution_service_identity TEXT NOT NULL,
+            notification_service_identity TEXT NOT NULL,
+            manifest_json TEXT NOT NULL,
+            created_ts INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_runtime_dependency_manifest_hash
+        ON runtime_dependency_manifest(manifest_hash)
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS runtime_strategy_set_manifest (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             manifest_hash TEXT NOT NULL UNIQUE,
@@ -3277,6 +3298,53 @@ def record_runtime_strategy_set_manifest(
     return {
         "runtime_strategy_set_manifest_id": int(row["id"]),
         "runtime_strategy_set_manifest_hash": manifest_hash,
+    }
+
+
+def record_runtime_dependency_manifest(
+    conn: sqlite3.Connection,
+    *,
+    manifest_payload: Mapping[str, Any],
+    created_ts: int,
+) -> dict[str, Any]:
+    manifest = dict(manifest_payload)
+    manifest_hash = str(manifest.get("runtime_dependency_manifest_hash") or "")
+    if not manifest_hash:
+        raise RuntimeError("runtime_dependency_manifest_hash_missing")
+    hash_payload = dict(manifest)
+    recorded = str(hash_payload.pop("runtime_dependency_manifest_hash", "") or "")
+    replayed = sha256_prefixed(hash_payload)
+    if recorded != replayed or manifest_hash != replayed:
+        raise RuntimeError("runtime_dependency_manifest_hash_mismatch")
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO runtime_dependency_manifest(
+            manifest_hash, mode, execution_engine, broker_factory_identity,
+            execution_service_identity, notification_service_identity,
+            manifest_json, created_ts
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            manifest_hash,
+            str(manifest.get("mode") or ""),
+            str(manifest.get("execution_engine") or ""),
+            str(manifest.get("broker_factory_identity") or ""),
+            str(manifest.get("execution_service_identity") or ""),
+            str(manifest.get("notification_service_identity") or ""),
+            _json_dumps_stable(manifest),
+            int(created_ts),
+        ),
+    )
+    row = conn.execute(
+        "SELECT id FROM runtime_dependency_manifest WHERE manifest_hash=?",
+        (manifest_hash,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("runtime_dependency_manifest_persist_failed")
+    return {
+        "runtime_dependency_manifest_id": int(row["id"]),
+        "runtime_dependency_manifest_hash": manifest_hash,
     }
 
 

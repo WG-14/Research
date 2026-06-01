@@ -793,6 +793,16 @@ def set_last_candle_observation(
         _persist_state(_STATE)
 
 
+def reset_candle_processing_state() -> None:
+    with _LOCK:
+        _sync_state_from_persisted_locked()
+        _STATE.last_processed_candle_ts_ms = None
+        _STATE.last_candle_ts_ms = None
+        _STATE.last_candle_status = "waiting_first_sync"
+        _STATE.last_candle_status_detail = None
+        _persist_state(_STATE)
+
+
 
 
 def mark_processed_candle(*, candle_ts_ms: int, now_epoch_sec: float | None = None) -> None:

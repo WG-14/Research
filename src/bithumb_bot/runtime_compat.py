@@ -27,13 +27,14 @@ from .runtime.runner import (
     build_signal_execution_request,
     compute_strategy_decision_snapshot,
     evaluate_restart_readiness,
+    get_stale_risk_state_mismatch_halt_diagnostics,
+    maybe_clear_stale_initial_reconcile_halt,
+)
+from .runtime.public_api import (
     evaluate_resume_eligibility,
     evaluate_startup_safety_gate,
     get_health_status,
-    get_stale_risk_state_mismatch_halt_diagnostics,
-    maybe_clear_stale_initial_reconcile_halt,
     perform_panic_stop_cleanup,
-    run_loop as _runner_run_loop,
 )
 
 
@@ -45,10 +46,9 @@ def resolve_typed_execution_submit_expectation(summary):
 
 
 def run_loop() -> None:
-    from . import engine
+    from .runtime.app_container import create_default_runtime_app
 
-    engine._sync_runtime_patch_points()
-    _runner_run_loop()
+    create_default_runtime_app(settings).runner.run_forever()
 
 
 __all__ = [

@@ -163,6 +163,57 @@ class StartupResult:
 
 
 @dataclass(frozen=True)
+class RuntimeDependencyManifest:
+    schema_version: int
+    source_revision: str | None
+    settings_hash: str
+    env_summary_hash: str | None
+    env_file_source: str | None
+    mode: str
+    live_dry_run: bool
+    live_real_order_armed: bool
+    execution_engine: str
+    broker_factory_identity: str
+    private_api_submit_boundary_identity: str
+    decision_gateway_identity: str
+    execution_service_identity: str
+    notification_service_identity: str
+    flatten_service_identity: str
+    clock_identity: str
+    scheduler_identity: str
+    compat_override_enabled: bool
+    legacy_patch_points_enabled: bool
+    runtime_strategy_set_manifest_hash: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        payload = {
+            "artifact_type": "runtime_dependency_manifest",
+            "schema_version": self.schema_version,
+            "source_revision": self.source_revision,
+            "settings_hash": self.settings_hash,
+            "env_summary_hash": self.env_summary_hash,
+            "env_file_source": self.env_file_source,
+            "mode": self.mode,
+            "LIVE_DRY_RUN": bool(self.live_dry_run),
+            "LIVE_REAL_ORDER_ARMED": bool(self.live_real_order_armed),
+            "execution_engine": self.execution_engine,
+            "broker_factory_identity": self.broker_factory_identity,
+            "private_api_submit_boundary_identity": self.private_api_submit_boundary_identity,
+            "decision_gateway_identity": self.decision_gateway_identity,
+            "execution_service_identity": self.execution_service_identity,
+            "notification_service_identity": self.notification_service_identity,
+            "flatten_service_identity": self.flatten_service_identity,
+            "clock_identity": self.clock_identity,
+            "scheduler_identity": self.scheduler_identity,
+            "compat_override_enabled": bool(self.compat_override_enabled),
+            "legacy_patch_points_enabled": bool(self.legacy_patch_points_enabled),
+            "runtime_strategy_set_manifest_hash": self.runtime_strategy_set_manifest_hash,
+        }
+        payload["runtime_dependency_manifest_hash"] = _stable_hash(payload)
+        return payload
+
+
+@dataclass(frozen=True)
 class RuntimeCycleArtifact:
     cycle_id: str
     candle_ts: int | None
@@ -183,6 +234,7 @@ class RuntimeCycleArtifact:
     safety_decision_hash: str | None = None
     recovery_decision_hash: str | None = None
     state_transition_hash: str | None = None
+    runtime_dependency_manifest_hash: str | None = None
     notification_event_hashes: Sequence[str] = ()
 
     def as_dict(self) -> dict[str, Any]:
@@ -208,6 +260,7 @@ class RuntimeCycleArtifact:
             "safety_decision_hash": self.safety_decision_hash,
             "recovery_decision_hash": self.recovery_decision_hash,
             "state_transition_hash": self.state_transition_hash,
+            "runtime_dependency_manifest_hash": self.runtime_dependency_manifest_hash,
             "notification_event_hashes": list(self.notification_event_hashes),
         }
         payload["input_hash"] = _stable_hash(
@@ -231,6 +284,7 @@ class RuntimeCycleArtifact:
                 "safety_decision_hash": self.safety_decision_hash,
                 "recovery_decision_hash": self.recovery_decision_hash,
                 "state_transition_hash": self.state_transition_hash,
+                "runtime_dependency_manifest_hash": self.runtime_dependency_manifest_hash,
                 "notification_event_hashes": list(self.notification_event_hashes),
             }
         )
@@ -241,6 +295,7 @@ class RuntimeCycleArtifact:
 __all__ = [
     "RecoveryClearance",
     "RuntimeCycleArtifact",
+    "RuntimeDependencyManifest",
     "SafetyDecision",
     "StartupResult",
     "StateTransitionResult",

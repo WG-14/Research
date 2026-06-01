@@ -173,8 +173,17 @@ class DecisionCycleResult:
 
 @dataclass(frozen=True)
 class DecisionCoordinator:
+    settings_obj: object = settings
     db_factory: Callable[[], object] = ensure_db
     decision_gateway_factory: Callable[[], RuntimeDecisionGateway] = RuntimeDecisionGateway
+    planner_factory: Callable[..., object] = run_loop_execution_planner
+    target_state_resolver: Callable[..., object] = resolve_target_position_state_for_run_loop
+    persistence_context_builder: Callable[..., object] = prepare_strategy_decision_persistence_context
+    record_runtime_strategy_decision_bundle_fn: Callable[..., dict[str, object]] = record_runtime_strategy_decision_bundle
+    record_portfolio_allocation_decision_fn: Callable[..., dict[str, object]] = record_portfolio_allocation_decision
+    record_execution_plan_fn: Callable[..., dict[str, object]] = record_execution_plan
+    record_strategy_decision_fn: Callable[..., int] = record_strategy_decision
+    target_position_state_persister: Callable[..., bool] = persist_target_position_state_for_run_loop
     run_start_manifest_payload: dict[str, object] | None = None
     run_start_manifest_id: int | None = None
     run_start_manifest_hash: str | None = None
@@ -235,9 +244,9 @@ class DecisionCoordinator:
         exit_rule_name: str | None = None
         persistence_status = "not_attempted"
         try:
-            planner = run_loop_execution_planner(
-                target_state_resolver=resolve_target_position_state_for_run_loop,
-                persistence_context_builder=prepare_strategy_decision_persistence_context,
+            planner = self.planner_factory(
+                target_state_resolver=self.target_state_resolver,
+                persistence_context_builder=self.persistence_context_builder,
             )
             planning_bundle = planner.plan_runtime_strategy_results(
                 conn,
@@ -245,13 +254,13 @@ class DecisionCoordinator:
                 updated_ts=updated_ts,
             )
             context = dict(planning_bundle.persistence_context)
-            bundle_refs = record_runtime_strategy_decision_bundle(
+            bundle_refs = self.record_runtime_strategy_decision_bundle_fn(
                 conn,
                 result_bundle=typed_bundle,
-                pair=str(settings.PAIR),
-                interval=str(settings.INTERVAL),
+                pair=str(self.settings_obj.PAIR),
+                interval=str(self.settings_obj.INTERVAL),
                 created_ts=updated_ts,
-                settings_obj=settings,
+                settings_obj=self.settings_obj,
                 manifest_payload=self.run_start_manifest_payload,
                 runtime_strategy_set_manifest_id=self.run_start_manifest_id,
                 runtime_strategy_set_manifest_hash=self.run_start_manifest_hash,
@@ -260,13 +269,13 @@ class DecisionCoordinator:
             allocation_payload = context.get("portfolio_allocation_decision")
             if not isinstance(allocation_payload, dict):
                 raise RuntimeError("portfolio_allocation_decision_missing")
-            allocation_refs = record_portfolio_allocation_decision(
+            allocation_refs = self.record_portfolio_allocation_decision_fn(
                 conn,
                 bundle_id=int(bundle_refs["runtime_strategy_decision_bundle_id"]),
                 allocation_decision=allocation_payload,
             )
             context.update(allocation_refs)
-            execution_refs = record_execution_plan(
+            execution_refs = self.record_execution_plan_fn(
                 conn,
                 allocation_id=int(allocation_refs["portfolio_allocation_decision_id"]),
                 portfolio_target_hash=str(allocation_refs.get("portfolio_target_hash") or ""),
@@ -306,7 +315,7 @@ class DecisionCoordinator:
             market_price_raw = context.get("last_close")
             confidence_raw = context.get("confidence")
             execution_decision = dict(context["execution_decision"])  # type: ignore[arg-type]
-            decision_id = record_strategy_decision(
+            decision_id = self.record_strategy_decision_fn(
                 conn,
                 decision_ts=updated_ts,
                 strategy_name=strategy_name,
@@ -323,7 +332,7 @@ class DecisionCoordinator:
                 strategy_decision_projection_type=context.get("strategy_decision_projection_type"),
                 strategy_decisions_authority=context.get("strategy_decisions_authority"),
             )
-            persist_target_position_state_for_run_loop(
+            self.target_position_state_persister(
                 conn,
                 execution_decision=execution_decision,
                 signal=signal,

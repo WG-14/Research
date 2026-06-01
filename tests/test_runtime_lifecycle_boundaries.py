@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import inspect
 import ast
+import textwrap
 from dataclasses import dataclass
 
 from bithumb_bot import engine
 from bithumb_bot import runtime_state
 from bithumb_bot.runtime import runner
+from bithumb_bot.runtime.app_container import build_runtime_dependency_manifest, create_default_runtime_app
+from bithumb_bot.runtime.public_api import RuntimeHealthQuery, RuntimeResumeQuery
 from bithumb_bot.runtime.execution_coordinator import ExecutionCoordinator
 from bithumb_bot.runtime.cleanup_revalidation import CleanupRevalidationResult, CleanupRevalidationService
 from bithumb_bot.runtime.execution_coordinator import ExecutionCycleResult
@@ -103,16 +106,16 @@ def test_engine_does_not_reexport_runtime_private_helpers() -> None:
 
 def test_engine_imports_only_runner_or_public_facade() -> None:
     source = inspect.getsource(engine)
-    tree = ast.parse(source)
+    tree = ast.parse(textwrap.dedent(source))
     imports = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
     modules = {node.module for node in imports}
-    assert modules <= {"__future__", "config", "runtime.runner"}
+    assert modules <= {"__future__", "config", "runtime.app_container"}
     for node in imports:
-        if node.module == "runtime.runner":
-            assert [alias.name for alias in node.names] == ["run_loop"]
+        if node.module == "runtime.app_container":
+            assert [alias.name for alias in node.names] == ["create_default_runtime_app"]
         if node.module == "config":
             assert [alias.name for alias in node.names] == ["settings"]
-    assert "from .runtime.runner import (" not in source
+    assert "create_default_runtime_app(settings).runner.run_forever()" in source
     assert "_attempt_open_order_cancellation" not in source
     assert "_revalidate_cleanup_state_after_failure" not in source
 
@@ -128,7 +131,7 @@ def test_runner_does_not_compose_operator_notifications() -> None:
 
 
 def test_runner_only_coordinates_controllers() -> None:
-    source = inspect.getsource(runner.run_loop)
+    source = inspect.getsource(runner.Runner.run_one_cycle)
     assert "prepare_runtime_start(" in source
     assert ".decide_cycle(" in source
     assert ".evaluate_runtime_safety(" in source
@@ -145,7 +148,7 @@ def test_runner_only_coordinates_controllers() -> None:
         "evaluate_position_loss_breach(",
     }:
         assert forbidden not in source
-    tree = ast.parse(source)
+    tree = ast.parse(textwrap.dedent(source))
     direct_composer_calls = [
         node for node in ast.walk(tree)
         if isinstance(node, ast.Call)
@@ -156,7 +159,7 @@ def test_runner_only_coordinates_controllers() -> None:
 
 
 def test_runner_does_not_own_startup_gate_branches() -> None:
-    source = inspect.getsource(runner.run_loop)
+    source = inspect.getsource(runner.Runner._prepare_runtime_start)
     assert "prepare_runtime_start" in source
     assert "_startup_gate_allows_process_auto_recovery" not in source
     assert "startup_gate_blocked" not in source
@@ -170,14 +173,14 @@ def test_runner_does_not_shadow_controller_owned_reason_code_sets() -> None:
 
 
 def test_runner_does_not_call_runtime_state_halt_mutators_directly() -> None:
-    source = inspect.getsource(runner.run_loop)
+    source = inspect.getsource(runner.Runner.run_one_cycle)
     assert "runtime_state.enter_halt(" not in source
     assert "runtime_state.disable_trading_until(" not in source
     assert "runtime_state.mark_processed_candle(" not in source
 
 
 def test_runner_does_not_directly_submit_orders_or_reconcile_post_trade() -> None:
-    source = inspect.getsource(runner.run_loop)
+    source = inspect.getsource(runner.Runner.run_one_cycle)
     assert "execution_service.execute(" not in source
     assert "build_signal_execution_request(" not in source
     assert "except BrokerError" not in source
@@ -187,7 +190,7 @@ def test_runner_does_not_directly_submit_orders_or_reconcile_post_trade() -> Non
 
 
 def test_runner_does_not_own_safety_policy_branches() -> None:
-    source = inspect.getsource(runner.run_loop)
+    source = inspect.getsource(runner.Runner.run_one_cycle)
     for forbidden in {
         "KILL_SWITCH",
         "KILL_SWITCH_LIQUIDATE",
@@ -210,14 +213,14 @@ def test_runner_does_not_own_cleanup_revalidation_policy() -> None:
 
 
 def test_runner_applies_safety_decision_after_evaluation() -> None:
-    source = inspect.getsource(runner.run_loop)
+    source = inspect.getsource(runner.Runner.run_one_cycle)
     assert ".evaluate_runtime_safety(" in source
-    assert "_apply_runtime_safety_decision(safety_controller, safety_result)" in source
-    assert "_apply_runtime_safety_decision(safety_controller, market_safety_result)" in source
+    assert "_apply_runtime_safety_decision(c.safety_controller, safety_result)" in source
+    assert "_apply_runtime_safety_decision(c.safety_controller, market_safety_result)" in source
 
 
 def test_execution_coordinator_execute_cycle_is_used_by_runner() -> None:
-    source = inspect.getsource(runner.run_loop)
+    source = inspect.getsource(runner.Runner.run_one_cycle)
     assert ".execute_cycle(" in source
     assert ".resolve_submit_expectation(" not in source
     assert ".target_delta_submit_expected(" not in source
@@ -651,9 +654,73 @@ def test_operator_event_composer_owns_operator_action_fields() -> None:
 
 
 def test_runner_does_not_create_market_runtime_halt_reason_codes() -> None:
-    source = inspect.getsource(runner.run_loop)
+    source = inspect.getsource(runner.Runner.run_one_cycle)
     assert "MARKET_RUNTIME_POLICY_INVALID" not in source
     assert "MARKET_RUNTIME_CONTRACT_FAILED" not in source
+
+
+def test_default_runtime_app_exposes_explicit_container_interface() -> None:
+    app = create_default_runtime_app()
+    assert app.db_factory is not None
+    assert app.clock is not None
+    assert app.scheduler is not None
+    assert app.decision_coordinator is not None
+    assert app.execution_coordinator is not None
+    assert app.safety_controller is not None
+    assert app.startup_controller is not None
+    assert app.runtime_dependency_manifest_provider is not None
+    assert hasattr(app.runner, "run_one_cycle")
+
+
+def test_runtime_dependency_manifest_hash_changes_with_wiring() -> None:
+    class _Settings:
+        MODE = "live"
+        LIVE_DRY_RUN = True
+        LIVE_REAL_ORDER_ARMED = False
+        EXECUTION_ENGINE = "lot_native"
+        PAIR = "KRW-BTC"
+        INTERVAL = "1m"
+        STRATEGY_NAME = "safe_hold"
+        MAX_ORDER_KRW = 1
+        MAX_DAILY_LOSS_KRW = 1
+        MAX_DAILY_ORDER_COUNT = 1
+
+    def broker_a():
+        return object()
+
+    def broker_b():
+        return object()
+
+    common = dict(
+        settings_obj=_Settings(),
+        decision_gateway=object,
+        execution_service_factory=object,
+        notification_service=_Notifications(),
+        flatten_service=object,
+        clock=lambda: 1.0,
+        scheduler=object(),
+        runtime_strategy_set_manifest_hash="sha256:strategy",
+    )
+    a = build_runtime_dependency_manifest(broker_factory=broker_a, **common).as_dict()
+    b = build_runtime_dependency_manifest(broker_factory=broker_b, **common).as_dict()
+    assert a["runtime_dependency_manifest_hash"] != b["runtime_dependency_manifest_hash"]
+
+
+def test_read_only_runtime_queries_do_not_mutate_state() -> None:
+    state = runtime_state.RuntimeState(halt_new_orders_blocked=True, halt_reason_code="HALTED")
+    mutations: list[str] = []
+    health = RuntimeHealthQuery(state_snapshot=lambda: state).get_status()
+
+    class _Gate:
+        def resume_eligibility(self):
+            return False, []
+
+    allowed, blockers = RuntimeResumeQuery(lambda: _Gate()).evaluate_eligibility()
+
+    assert health["halt_reason_code"] == "HALTED"
+    assert allowed is False
+    assert blockers == []
+    assert mutations == []
 
 
 def test_operator_event_composer_has_no_runtime_state_side_effects() -> None:

@@ -10,7 +10,7 @@ import sqlite3
 import pytest
 
 from bithumb_bot import config
-from bithumb_bot import engine as engine_module
+from bithumb_bot.compat import engine_legacy as engine_module
 from bithumb_bot import profile_cli
 from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_db, ensure_schema
