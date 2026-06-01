@@ -145,9 +145,22 @@ REQUIRED_RUNTIME_TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "candle_ts",
         "pair",
         "interval",
+        "runtime_strategy_set_manifest_id",
         "strategy_set_manifest_hash",
         "bundle_hash",
         "result_count",
+        "created_ts",
+    ),
+    "runtime_strategy_set_manifest": (
+        "id",
+        "manifest_hash",
+        "source",
+        "market_scope_json",
+        "active_strategy_count",
+        "single_pair_runtime_enforced",
+        "execution_config_hash",
+        "risk_config_hash",
+        "manifest_json",
         "created_ts",
     ),
     "runtime_strategy_decision_result": (
@@ -173,6 +186,8 @@ REQUIRED_RUNTIME_TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
     "portfolio_allocation_decision": (
         "id",
         "bundle_id",
+        "runtime_strategy_set_manifest_id",
+        "runtime_strategy_set_manifest_hash",
         "allocation_decision_hash",
         "allocation_input_hash",
         "allocator_config_hash",
@@ -215,6 +230,8 @@ REQUIRED_RUNTIME_TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
     "execution_plan": (
         "id",
         "allocation_id",
+        "runtime_strategy_set_manifest_id",
+        "runtime_strategy_set_manifest_hash",
         "portfolio_target_hash",
         "execution_plan_bundle_hash",
         "execution_submit_plan_hash",
@@ -867,18 +884,43 @@ def _strategy_decision_experiment_context(*, strategy_name: str) -> dict[str, An
 def _ensure_multi_strategy_artifact_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS runtime_strategy_set_manifest (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            manifest_hash TEXT NOT NULL UNIQUE,
+            source TEXT NOT NULL,
+            market_scope_json TEXT NOT NULL DEFAULT '{}',
+            active_strategy_count INTEGER NOT NULL,
+            single_pair_runtime_enforced INTEGER NOT NULL,
+            execution_config_hash TEXT,
+            risk_config_hash TEXT,
+            manifest_json TEXT NOT NULL,
+            created_ts INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_runtime_strategy_set_manifest_hash
+        ON runtime_strategy_set_manifest(manifest_hash)
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS runtime_strategy_decision_bundle (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             candle_ts INTEGER NOT NULL,
             pair TEXT NOT NULL,
             interval TEXT NOT NULL,
+            runtime_strategy_set_manifest_id INTEGER,
             strategy_set_manifest_hash TEXT NOT NULL,
             bundle_hash TEXT NOT NULL UNIQUE,
             result_count INTEGER NOT NULL,
-            created_ts INTEGER NOT NULL
+            created_ts INTEGER NOT NULL,
+            FOREIGN KEY(runtime_strategy_set_manifest_id) REFERENCES runtime_strategy_set_manifest(id)
         )
         """
     )
+    _ensure_column(conn, "runtime_strategy_decision_bundle", "runtime_strategy_set_manifest_id", "runtime_strategy_set_manifest_id INTEGER")
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_runtime_strategy_bundle_candle
@@ -968,6 +1010,8 @@ def _ensure_multi_strategy_artifact_schema(conn: sqlite3.Connection) -> None:
         "allocation_decision_json",
         "allocation_decision_json TEXT NOT NULL DEFAULT '{}'",
     )
+    _ensure_column(conn, "portfolio_allocation_decision", "runtime_strategy_set_manifest_id", "runtime_strategy_set_manifest_id INTEGER")
+    _ensure_column(conn, "portfolio_allocation_decision", "runtime_strategy_set_manifest_hash", "runtime_strategy_set_manifest_hash TEXT")
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_portfolio_allocation_hash
@@ -1081,6 +1125,8 @@ def _ensure_multi_strategy_artifact_schema(conn: sqlite3.Connection) -> None:
         "execution_plan_bundle_json",
         "execution_plan_bundle_json TEXT NOT NULL DEFAULT '{}'",
     )
+    _ensure_column(conn, "execution_plan", "runtime_strategy_set_manifest_id", "runtime_strategy_set_manifest_id INTEGER")
+    _ensure_column(conn, "execution_plan", "runtime_strategy_set_manifest_hash", "runtime_strategy_set_manifest_hash TEXT")
     _ensure_column(conn, "execution_plan", "execution_submit_plan_json", "execution_submit_plan_json TEXT")
     _ensure_column(conn, "execution_plan", "submit_plan_side", "submit_plan_side TEXT")
     _ensure_column(conn, "execution_plan", "submit_plan_qty", "submit_plan_qty REAL")
@@ -3066,22 +3112,27 @@ def record_runtime_strategy_decision_bundle(
     """Persist typed runtime strategy results as first-class replay artifacts."""
     bundle_hash = str(result_bundle.content_hash())
     strategy_set = getattr(result_bundle, "strategy_set")
-    strategy_set_manifest_hash = str(
-        result_bundle.as_dict().get("runtime_strategy_set_manifest_hash")
+    manifest_refs = record_runtime_strategy_set_manifest(
+        conn,
+        strategy_set=strategy_set,
+        created_ts=created_ts,
     )
+    strategy_set_manifest_hash = str(manifest_refs["runtime_strategy_set_manifest_hash"])
     results = tuple(getattr(result_bundle, "results"))
     conn.execute(
         """
         INSERT OR IGNORE INTO runtime_strategy_decision_bundle(
-            candle_ts, pair, interval, strategy_set_manifest_hash, bundle_hash,
+            candle_ts, pair, interval, runtime_strategy_set_manifest_id,
+            strategy_set_manifest_hash, bundle_hash,
             result_count, created_ts
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             int(getattr(result_bundle, "candle_ts")),
             str(pair),
             str(interval),
+            int(manifest_refs["runtime_strategy_set_manifest_id"]),
             strategy_set_manifest_hash,
             bundle_hash,
             len(results),
@@ -3151,7 +3202,54 @@ def record_runtime_strategy_decision_bundle(
         "runtime_strategy_decision_bundle_hash": bundle_hash,
         "runtime_strategy_decision_result_ids": result_ids,
         "runtime_strategy_set_manifest_hash": strategy_set_manifest_hash,
+        "runtime_strategy_set_manifest_id": manifest_refs["runtime_strategy_set_manifest_id"],
         "runtime_strategy_set_source": str(getattr(strategy_set, "source", "")),
+    }
+
+
+def record_runtime_strategy_set_manifest(
+    conn: sqlite3.Connection,
+    *,
+    strategy_set: object,
+    created_ts: int,
+) -> dict[str, Any]:
+    from .runtime_strategy_set import normalized_runtime_strategy_set_manifest
+
+    manifest = normalized_runtime_strategy_set_manifest(strategy_set=strategy_set)
+    manifest_hash = str(manifest.get("runtime_strategy_set_manifest_hash") or "")
+    if not manifest_hash:
+        raise RuntimeError("runtime_strategy_set_manifest_hash_missing")
+    market_scope = manifest.get("market_scope")
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO runtime_strategy_set_manifest(
+            manifest_hash, source, market_scope_json, active_strategy_count,
+            single_pair_runtime_enforced, execution_config_hash, risk_config_hash,
+            manifest_json, created_ts
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            manifest_hash,
+            str(manifest.get("source") or ""),
+            _json_dumps_stable(market_scope if isinstance(market_scope, dict) else {}),
+            int(manifest.get("active_strategy_count") or 0),
+            1 if bool(manifest.get("single_pair_runtime_enforced")) else 0,
+            str(manifest.get("execution_config_hash") or ""),
+            str(manifest.get("risk_config_hash") or ""),
+            _json_dumps_stable(manifest),
+            int(created_ts),
+        ),
+    )
+    row = conn.execute(
+        "SELECT id FROM runtime_strategy_set_manifest WHERE manifest_hash=?",
+        (manifest_hash,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("runtime_strategy_set_manifest_persist_failed")
+    return {
+        "runtime_strategy_set_manifest_id": int(row["id"]),
+        "runtime_strategy_set_manifest_hash": manifest_hash,
     }
 
 
@@ -3178,18 +3276,32 @@ def record_portfolio_allocation_decision(
             selected_signal = str(target_conflict.get("selected_signal") or "")
             raw_priority = target_conflict.get("selected_priority")
             selected_priority = None if raw_priority is None else int(raw_priority)
+    bundle_manifest_row = conn.execute(
+        "SELECT runtime_strategy_set_manifest_id, strategy_set_manifest_hash FROM runtime_strategy_decision_bundle WHERE id=?",
+        (int(bundle_id),),
+    ).fetchone()
+    manifest_id = None if bundle_manifest_row is None else bundle_manifest_row["runtime_strategy_set_manifest_id"]
+    manifest_hash = "" if bundle_manifest_row is None else str(bundle_manifest_row["strategy_set_manifest_hash"] or "")
+    allocation_decision = {
+        **allocation_decision,
+        "runtime_strategy_set_manifest_id": manifest_id,
+        "runtime_strategy_set_manifest_hash": manifest_hash,
+    }
     conn.execute(
         """
         INSERT OR IGNORE INTO portfolio_allocation_decision(
-            bundle_id, allocation_decision_hash, allocation_input_hash,
+            bundle_id, runtime_strategy_set_manifest_id, runtime_strategy_set_manifest_hash,
+            allocation_decision_hash, allocation_input_hash,
             allocator_config_hash, strategy_contribution_hash, selected_signal,
             selected_priority, authoritative, primary_block_reason, reason,
             conflict_resolution_json, allocation_decision_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             int(bundle_id),
+            manifest_id,
+            manifest_hash,
             allocation_hash,
             str(allocation_decision.get("allocation_input_hash") or ""),
             str(allocation_decision.get("allocator_config_hash") or ""),
@@ -3279,6 +3391,8 @@ def record_portfolio_allocation_decision(
         "portfolio_target_ids": target_ids,
         "portfolio_target_id": next(iter(target_ids.values()), None),
         "portfolio_target_hash": str(first_target.get("final_portfolio_target_hash") or ""),
+        "runtime_strategy_set_manifest_id": manifest_id,
+        "runtime_strategy_set_manifest_hash": manifest_hash,
     }
 
 
@@ -3300,19 +3414,36 @@ def record_execution_plan(
         status_text = str(status.status)
     elif isinstance(bundle_payload.get("status"), dict):
         status_text = str(bundle_payload["status"].get("status") or "")
+    allocation_manifest_row = conn.execute(
+        """
+        SELECT runtime_strategy_set_manifest_id, runtime_strategy_set_manifest_hash
+        FROM portfolio_allocation_decision WHERE id=?
+        """,
+        (int(allocation_id),),
+    ).fetchone()
+    manifest_id = None if allocation_manifest_row is None else allocation_manifest_row["runtime_strategy_set_manifest_id"]
+    manifest_hash = "" if allocation_manifest_row is None else str(allocation_manifest_row["runtime_strategy_set_manifest_hash"] or "")
+    bundle_payload = {
+        **bundle_payload,
+        "runtime_strategy_set_manifest_id": manifest_id,
+        "runtime_strategy_set_manifest_hash": manifest_hash,
+    }
     conn.execute(
         """
         INSERT OR IGNORE INTO execution_plan(
-            allocation_id, portfolio_target_hash, execution_plan_bundle_hash,
+            allocation_id, runtime_strategy_set_manifest_id, runtime_strategy_set_manifest_hash,
+            portfolio_target_hash, execution_plan_bundle_hash,
             execution_submit_plan_hash, submit_plan_side, submit_plan_qty,
             submit_plan_notional_krw, submit_plan_idempotency_key, submit_plan_source,
             submit_plan_authority, submit_expected, final_action, block_reason,
             status, execution_plan_bundle_json, execution_submit_plan_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             int(allocation_id),
+            manifest_id,
+            manifest_hash,
             portfolio_target_hash,
             bundle_hash,
             submit_hash,
@@ -3343,6 +3474,8 @@ def record_execution_plan(
         "execution_plan_id": int(row["id"]),
         "execution_plan_bundle_hash": bundle_hash,
         "execution_submit_plan_hash": submit_hash,
+        "runtime_strategy_set_manifest_id": manifest_id,
+        "runtime_strategy_set_manifest_hash": manifest_hash,
     }
 
 
@@ -3355,10 +3488,52 @@ def replay_allocation_decision_hash(conn: sqlite3.Connection, allocation_id: int
         raise RuntimeError("portfolio_allocation_decision_not_found")
     payload = _json_loads_object(str(row["allocation_decision_json"]))
     recorded = str(payload.pop("allocation_decision_hash", "") or "")
+    payload.pop("runtime_strategy_set_manifest_id", None)
+    payload.pop("runtime_strategy_set_manifest_hash", None)
     replayed = sha256_prefixed(payload)
     if recorded and recorded != replayed:
         raise RuntimeError("portfolio_allocation_decision_hash_mismatch")
     return replayed
+
+
+def replay_runtime_strategy_set_manifest(conn: sqlite3.Connection, manifest_id: int) -> str:
+    row = conn.execute(
+        "SELECT manifest_hash, manifest_json FROM runtime_strategy_set_manifest WHERE id=?",
+        (int(manifest_id),),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("runtime_strategy_set_manifest_not_found")
+    payload = _json_loads_object(str(row["manifest_json"]))
+    recorded = str(payload.pop("runtime_strategy_set_manifest_hash", "") or "")
+    replayed = sha256_prefixed(payload)
+    if recorded and recorded != replayed:
+        raise RuntimeError("runtime_strategy_set_manifest_hash_mismatch")
+    stored = str(row["manifest_hash"] or "")
+    if stored and stored != replayed:
+        raise RuntimeError("runtime_strategy_set_manifest_record_hash_mismatch")
+    return replayed
+
+
+def replay_manifest_request_hashes(conn: sqlite3.Connection, manifest_id: int) -> dict[str, str]:
+    row = conn.execute(
+        "SELECT manifest_json FROM runtime_strategy_set_manifest WHERE id=?",
+        (int(manifest_id),),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("runtime_strategy_set_manifest_not_found")
+    manifest = _json_loads_object(str(row["manifest_json"]))
+    instances = manifest.get("active_instances")
+    if not isinstance(instances, list) or not instances:
+        raise RuntimeError("runtime_strategy_set_manifest_instances_missing")
+    result: dict[str, str] = {}
+    for instance in instances:
+        if not isinstance(instance, dict):
+            raise RuntimeError("runtime_strategy_set_manifest_instance_invalid")
+        instance_id = str(instance.get("strategy_instance_id") or "")
+        if not instance_id:
+            raise RuntimeError("runtime_strategy_set_manifest_instance_missing")
+        result[instance_id] = str(instance.get("strategy_parameters_hash") or "")
+    return result
 
 
 def replay_portfolio_target_hash(conn: sqlite3.Connection, portfolio_target_id: int) -> str:
@@ -3406,7 +3581,10 @@ def _strategy_contribution_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "desired_exposure_krw": row["desired_exposure_krw"],
         "risk_budget_krw": row["risk_budget_krw"],
         "max_target_exposure_krw": row["risk_budget_krw"],
-        "risk_budget_semantics": "deprecated_alias_for_max_target_exposure_cap",
+        "pre_cap_weighted_target_exposure_krw": None,
+        "exposure_cap_applied": False,
+        "exposure_cap_source": "none",
+        "risk_budget_semantics": "max_target_exposure_cap",
         "reason": str(row["reason"] or ""),
     }
     raw_json = str(row["contribution_json"] or "").strip()
@@ -3416,7 +3594,13 @@ def _strategy_contribution_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
         except json.JSONDecodeError:
             stored_payload = None
         if isinstance(stored_payload, dict):
-            for key in ("max_target_exposure_krw", "risk_budget_semantics"):
+            for key in (
+                "max_target_exposure_krw",
+                "pre_cap_weighted_target_exposure_krw",
+                "exposure_cap_applied",
+                "exposure_cap_source",
+                "risk_budget_semantics",
+            ):
                 payload[key] = stored_payload.get(key, payload[key])
     return payload
 
@@ -3427,6 +3611,10 @@ def _portfolio_target_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "pair": str(row["pair"] or ""),
         "target_exposure_krw": row["target_exposure_krw"],
         "max_target_exposure_krw": row["target_exposure_krw"],
+        "pre_cap_weighted_target_exposure_krw": None,
+        "exposure_cap_krw": None,
+        "exposure_cap_applied": False,
+        "exposure_cap_source": "none",
         "target_qty": row["target_qty"],
         "allocator_policy_name": "",
         "allocator_policy_version": "",
@@ -3437,7 +3625,7 @@ def _portfolio_target_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "conflict_resolution": _json_loads_object(str(row["conflict_resolution_json"] or "{}")),
         "authoritative": bool(row["authoritative"]),
         "fail_closed_reason": str(row["fail_closed_reason"] or ""),
-        "risk_budget_semantics": "risk_budget_krw_is_deprecated_alias_for_max_target_exposure_krw",
+        "risk_budget_semantics": "max_target_exposure_cap",
     }
     target_json = _json_loads_object(str(row["target_json"] or "{}"))
     for key in (
@@ -3448,6 +3636,10 @@ def _portfolio_target_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "allocation_input_hash",
         "reason",
         "max_target_exposure_krw",
+        "pre_cap_weighted_target_exposure_krw",
+        "exposure_cap_krw",
+        "exposure_cap_applied",
+        "exposure_cap_source",
         "risk_budget_semantics",
     ):
         payload[key] = target_json.get(key, payload[key])
@@ -3547,6 +3739,7 @@ def rebuild_allocation_decision_from_bundle(
         "reason": str(allocation["reason"] or ""),
         "authoritative": bool(allocation["authoritative"]),
         "primary_block_reason": str(allocation["primary_block_reason"] or ""),
+        "risk_budget_semantics": "max_target_exposure_cap",
     }
     payload["allocation_decision_hash"] = sha256_prefixed(payload)
     recorded = str(allocation["allocation_decision_hash"] or "")

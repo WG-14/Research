@@ -52,6 +52,17 @@ class RuntimeDecisionRequest:
         )
 
     def observability_fields(self) -> dict[str, object]:
+        spec = self.runtime_strategy_spec
+        authority_audit = (
+            spec.parameter_authority_audit
+            if hasattr(spec, "parameter_authority_audit")
+            else {}
+        )
+        legacy_used = (
+            bool(spec.legacy_compatibility_used)
+            if hasattr(spec, "legacy_compatibility_used")
+            else False
+        )
         return {
             "strategy_instance_id": self.strategy_instance_id,
             "strategy_name": self.strategy_name,
@@ -69,6 +80,8 @@ class RuntimeDecisionRequest:
             "runtime_decision_request_hash": self.request_hash,
             "request_hash": self.request_hash,
             "parameter_source": self.parameter_source,
+            "parameter_authority_audit": dict(authority_audit or {}),
+            "legacy_parameter_compatibility_used": legacy_used,
         }
 
     def as_dict(self) -> dict[str, object]:

@@ -21,6 +21,10 @@ class StrategyContribution:
     risk_budget_krw: float | None
     max_target_exposure_krw: float | None
     reason: str
+    pre_cap_weighted_target_exposure_krw: float | None = None
+    exposure_cap_applied: bool = False
+    exposure_cap_source: str = "none"
+    risk_budget_semantics: str = "max_target_exposure_cap"
     schema_version: int = 1
 
     def as_dict(self) -> dict[str, object]:
@@ -36,7 +40,10 @@ class StrategyContribution:
             "desired_exposure_krw": self.desired_exposure_krw,
             "risk_budget_krw": self.risk_budget_krw,
             "max_target_exposure_krw": self.max_target_exposure_krw,
-            "risk_budget_semantics": "deprecated_alias_for_max_target_exposure_cap",
+            "pre_cap_weighted_target_exposure_krw": self.pre_cap_weighted_target_exposure_krw,
+            "exposure_cap_applied": bool(self.exposure_cap_applied),
+            "exposure_cap_source": self.exposure_cap_source,
+            "risk_budget_semantics": self.risk_budget_semantics,
             "reason": self.reason,
         }
 
@@ -152,6 +159,7 @@ class PortfolioAllocationDecision:
             "reason": self.reason,
             "authoritative": bool(self.authoritative),
             "primary_block_reason": self.primary_block_reason,
+            "risk_budget_semantics": "max_target_exposure_cap",
         }
         payload["allocation_decision_hash"] = sha256_prefixed(
             {key: value for key, value in payload.items() if key != "allocation_decision_hash"}
@@ -247,7 +255,7 @@ class PortfolioAllocator:
             preference_hash=preference.content_hash(),
             desired_exposure_krw=preference.desired_exposure_krw,
             risk_budget_krw=preference.risk_budget_krw,
-            max_target_exposure_krw=preference.risk_budget_krw,
+            max_target_exposure_krw=preference.max_target_exposure_krw,
             reason=preference.reason,
         )
 
@@ -291,7 +299,8 @@ class PortfolioAllocator:
         conflict_resolution["selected_signal"] = selected_signal
         if selected_signal == "BUY":
             buy_contributions = tuple(item for item in top if item.signal_direction == "BUY")
-            target_exposure = self._buy_target_exposure(buy_contributions)
+            target_exposure, cap_audit = self._buy_target_exposure(buy_contributions)
+            conflict_resolution.update(cap_audit)
             reason = "buy_weighted_target_from_allocator"
         elif selected_signal == "SELL":
             target_exposure = 0.0
@@ -337,9 +346,16 @@ class PortfolioAllocator:
             fail_closed_reason="none",
         )
 
-    def _buy_target_exposure(self, contributions: tuple[StrategyContribution, ...]) -> float:
+    def _buy_target_exposure(self, contributions: tuple[StrategyContribution, ...]) -> tuple[float, dict[str, object]]:
         if not contributions:
-            return max(0.0, float(self.config.target_exposure_krw))
+            target = max(0.0, float(self.config.target_exposure_krw))
+            return target, {
+                "pre_cap_weighted_target_exposure_krw": target,
+                "exposure_cap_krw": None,
+                "exposure_cap_applied": False,
+                "exposure_cap_source": "none",
+                "risk_budget_semantics": "max_target_exposure_cap",
+            }
         weighted_total = 0.0
         weight_total = 0.0
         exposure_cap_total = 0.0
@@ -353,13 +369,23 @@ class PortfolioAllocator:
             )
             weighted_total += exposure * weight
             weight_total += weight
-            if item.risk_budget_krw is not None:
+            if item.max_target_exposure_krw is not None:
                 exposure_cap_present = True
-                exposure_cap_total += max(0.0, float(item.risk_budget_krw))
+                exposure_cap_total += max(0.0, float(item.max_target_exposure_krw))
         target = weighted_total / weight_total if weight_total > 0.0 else 0.0
+        pre_cap = target
+        cap_applied = False
         if exposure_cap_present:
-            target = min(target, exposure_cap_total)
-        return max(0.0, float(target))
+            capped = min(target, exposure_cap_total)
+            cap_applied = capped < target
+            target = capped
+        return max(0.0, float(target)), {
+            "pre_cap_weighted_target_exposure_krw": max(0.0, float(pre_cap)),
+            "exposure_cap_krw": exposure_cap_total if exposure_cap_present else None,
+            "exposure_cap_applied": cap_applied,
+            "exposure_cap_source": "max_target_exposure_krw" if exposure_cap_present else "none",
+            "risk_budget_semantics": "max_target_exposure_cap",
+        }
 
     def _blocked_decision(
         self,

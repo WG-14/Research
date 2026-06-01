@@ -9,7 +9,11 @@ from bithumb_bot.research.strategy_registry import (
     ResearchStrategyPlugin,
     RuntimeParameterAdapter,
 )
-from bithumb_bot.research.strategy_spec import StrategySpec, materialize_strategy_parameters
+from bithumb_bot.research.strategy_spec import (
+    StrategyParameterSchema,
+    StrategySpec,
+    materialize_strategy_parameters,
+)
 from bithumb_bot.runtime_decision_contract import RuntimeStrategyPolicyHashes
 from bithumb_bot.strategy_authoring import PromotionGradeStrategyExtension
 from bithumb_bot.strategy_decision_service import StrategyDecisionService, StrategyEvaluationRequest
@@ -61,6 +65,53 @@ CANARY_NON_SMA_SPEC = StrategySpec(
             "reason": "architecture canary proves promotion-grade replay without live real-order authority",
         },
     },
+    parameter_schema=(
+        StrategyParameterSchema(
+            name="CANARY_ORDER_START_INDEX",
+            value_type="int",
+            min_value=0,
+            unit="candle_index",
+            required=True,
+            runtime_bound=True,
+            behavior_affecting=True,
+        ),
+        StrategyParameterSchema(
+            name="CANARY_ORDER_SIDE",
+            value_type="str",
+            enum=("BUY", "SELL", "HOLD"),
+            unit="signal",
+            required=True,
+            runtime_bound=True,
+            behavior_affecting=True,
+        ),
+        StrategyParameterSchema(
+            name="CANARY_ORDER_REASON",
+            value_type="str",
+            unit="reason",
+            required=True,
+            runtime_bound=True,
+            behavior_affecting=True,
+        ),
+        StrategyParameterSchema(
+            name="CANARY_DECISION_START_INDEX",
+            value_type="int",
+            min_value=0,
+            unit="candle_index",
+            runtime_bound=False,
+            behavior_affecting=False,
+            deprecated_keys=("CANARY_ORDER_START_INDEX",),
+            migration_rule="use CANARY_ORDER_START_INDEX",
+        ),
+        StrategyParameterSchema(
+            name="CANARY_REASON",
+            value_type="str",
+            unit="reason",
+            runtime_bound=False,
+            behavior_affecting=False,
+            deprecated_keys=("CANARY_ORDER_REASON",),
+            migration_rule="use CANARY_ORDER_REASON",
+        ),
+    ),
 )
 
 

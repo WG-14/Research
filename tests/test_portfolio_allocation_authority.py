@@ -14,6 +14,7 @@ from bithumb_bot.db_core import (
     record_execution_plan,
     record_portfolio_allocation_decision,
     record_runtime_strategy_decision_bundle,
+    record_runtime_strategy_set_manifest,
     record_strategy_decision,
     replay_allocation_decision_hash,
     replay_allocation_decision_from_bundle,
@@ -21,6 +22,7 @@ from bithumb_bot.db_core import (
     replay_execution_submit_plan_hash,
     replay_portfolio_target_from_allocation,
     replay_portfolio_target_hash,
+    replay_runtime_strategy_set_manifest,
 )
 from bithumb_bot.config import settings
 from bithumb_bot.execution_service import (
@@ -521,13 +523,62 @@ def test_risk_budget_is_not_silent_exposure_cap_without_declared_semantics() -> 
     assert target is not None
     assert target.target_exposure_krw == pytest.approx(60_000.0)
     payload = decision.as_dict()
-    assert payload["targets"][0]["risk_budget_semantics"] == (
-        "risk_budget_krw_is_deprecated_alias_for_max_target_exposure_krw"
-    )
+    assert payload["risk_budget_semantics"] == "max_target_exposure_cap"
+    assert payload["targets"][0]["risk_budget_semantics"] == "max_target_exposure_cap"
     assert payload["contributions"][0]["max_target_exposure_krw"] == pytest.approx(60_000.0)
-    assert payload["contributions"][0]["risk_budget_semantics"] == (
-        "deprecated_alias_for_max_target_exposure_cap"
+    assert payload["contributions"][0]["risk_budget_semantics"] == "max_target_exposure_cap"
+    assert payload["targets"][0]["pre_cap_weighted_target_exposure_krw"] == pytest.approx(100_000.0)
+    assert payload["targets"][0]["exposure_cap_krw"] == pytest.approx(60_000.0)
+    assert payload["targets"][0]["exposure_cap_applied"] is True
+
+
+def test_exposure_cap_alias_preserves_legacy_risk_budget_krw() -> None:
+    preference = strategy_decision_to_preference(
+        _decision(final_signal="BUY", strategy_name="strategy_a"),
+        pair="KRW-BTC",
+        desired_exposure_krw=100_000.0,
+        risk_budget_krw=25_000.0,
     )
+
+    assert preference.max_target_exposure_krw == pytest.approx(25_000.0)
+    decision = _allocate((preference,))
+    contribution = decision.as_dict()["contributions"][0]
+    assert contribution["max_target_exposure_krw"] == pytest.approx(25_000.0)
+    assert contribution["risk_budget_krw"] == pytest.approx(25_000.0)
+
+
+def test_allocator_records_risk_budget_semantics() -> None:
+    decision = _allocate(
+        (
+            strategy_decision_to_preference(
+                _decision(final_signal="BUY", strategy_name="strategy_a"),
+                pair="KRW-BTC",
+                desired_exposure_krw=80_000.0,
+                max_target_exposure_krw=50_000.0,
+            ),
+        )
+    )
+    payload = decision.as_dict()
+
+    assert payload["risk_budget_semantics"] == "max_target_exposure_cap"
+    assert payload["targets"][0]["exposure_cap_source"] == "max_target_exposure_krw"
+    assert payload["targets"][0]["risk_budget_semantics"] == "max_target_exposure_cap"
+
+
+def test_exposure_cap_limits_buy_target_with_declared_semantics() -> None:
+    preference = strategy_decision_to_preference(
+        _decision(final_signal="BUY", strategy_name="strategy_a"),
+        pair="KRW-BTC",
+        desired_exposure_krw=120_000.0,
+        max_target_exposure_krw=30_000.0,
+    )
+    decision = _allocate((preference,))
+    target = decision.target_for_pair("KRW-BTC")
+
+    assert target is not None
+    assert target.target_exposure_krw == pytest.approx(30_000.0)
+    assert target.as_dict()["exposure_cap_applied"] is True
+    assert target.as_dict()["risk_budget_semantics"] == "max_target_exposure_cap"
 
 
 def test_target_delta_typed_planning_uses_allocator_portfolio_target(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1062,6 +1113,120 @@ def test_multi_strategy_artifacts_persist_and_replay_without_strategy_context_js
             rebuild_allocation_decision_from_bundle(
                 conn, int(bundle_refs["runtime_strategy_decision_bundle_id"])
             )
+    finally:
+        conn.close()
+
+
+def test_runtime_manifest_is_persisted_at_run_start(tmp_path) -> None:
+    conn = ensure_db(str(tmp_path / "manifest.sqlite"))
+    try:
+        strategy_set = RuntimeStrategySet(
+            source="unit",
+            strategies=(RuntimeStrategySpec("safe_hold", strategy_instance_id="hold"),),
+        )
+        refs = record_runtime_strategy_set_manifest(conn, strategy_set=strategy_set, created_ts=123)
+        row = conn.execute("SELECT * FROM runtime_strategy_set_manifest WHERE id=?", (refs["runtime_strategy_set_manifest_id"],)).fetchone()
+
+        assert row is not None
+        assert row["manifest_hash"] == refs["runtime_strategy_set_manifest_hash"]
+        assert replay_runtime_strategy_set_manifest(conn, int(refs["runtime_strategy_set_manifest_id"])) == refs["runtime_strategy_set_manifest_hash"]
+    finally:
+        conn.close()
+
+
+def test_allocation_and_execution_plan_link_to_same_manifest_hash(tmp_path) -> None:
+    from bithumb_bot.run_loop_execution_planner import ExecutionPlanner
+
+    old_engine = settings.EXECUTION_ENGINE
+    try:
+        object.__setattr__(settings, "EXECUTION_ENGINE", "target_delta")
+        planner = ExecutionPlanner(
+            readiness_snapshot_builder=lambda _conn: _Readiness(_readiness(broker_qty=0.0)),
+            target_state_resolver=lambda *_args, **_kwargs: {
+                "previous_target_exposure_krw": 0.0,
+                "target_policy_metadata": {"target_origin": "runtime_state"},
+            },
+        )
+        spec = RuntimeStrategySpec("canary_non_sma", priority=10, desired_exposure_krw=70_000.0)
+        bundle = RuntimeStrategyDecisionResultBundle(
+            strategy_set=RuntimeStrategySet(source="unit", strategies=(spec,)),
+            results=(_runtime_result("BUY", "canary_non_sma", spec=spec),),
+        )
+        plan = planner.plan_runtime_strategy_results(object(), bundle, updated_ts=456)
+    finally:
+        object.__setattr__(settings, "EXECUTION_ENGINE", old_engine)
+
+    conn = ensure_db(str(tmp_path / "manifest_chain.sqlite"))
+    try:
+        bundle_refs = record_runtime_strategy_decision_bundle(
+            conn, result_bundle=bundle, pair="KRW-BTC", interval="1m", created_ts=456
+        )
+        allocation_refs = record_portfolio_allocation_decision(
+            conn,
+            bundle_id=int(bundle_refs["runtime_strategy_decision_bundle_id"]),
+            allocation_decision=plan.persistence_context["portfolio_allocation_decision"],  # type: ignore[arg-type]
+        )
+        execution_refs = record_execution_plan(
+            conn,
+            allocation_id=int(allocation_refs["portfolio_allocation_decision_id"]),
+            portfolio_target_hash=str(allocation_refs["portfolio_target_hash"]),
+            execution_plan_bundle=plan,
+        )
+
+        assert allocation_refs["runtime_strategy_set_manifest_hash"] == bundle_refs["runtime_strategy_set_manifest_hash"]
+        assert execution_refs["runtime_strategy_set_manifest_hash"] == bundle_refs["runtime_strategy_set_manifest_hash"]
+        allocation_json = conn.execute(
+            "SELECT allocation_decision_json FROM portfolio_allocation_decision WHERE id=?",
+            (allocation_refs["portfolio_allocation_decision_id"],),
+        ).fetchone()[0]
+        execution_json = conn.execute(
+            "SELECT execution_plan_bundle_json FROM execution_plan WHERE id=?",
+            (execution_refs["execution_plan_id"],),
+        ).fetchone()[0]
+        assert bundle_refs["runtime_strategy_set_manifest_hash"] in allocation_json
+        assert bundle_refs["runtime_strategy_set_manifest_hash"] in execution_json
+    finally:
+        conn.close()
+
+
+def test_manifest_contains_execution_and_risk_config_hashes(tmp_path) -> None:
+    conn = ensure_db(str(tmp_path / "manifest_hashes.sqlite"))
+    try:
+        strategy_set = RuntimeStrategySet(
+            source="unit",
+            strategies=(RuntimeStrategySpec("safe_hold", strategy_instance_id="hold"),),
+        )
+        refs = record_runtime_strategy_set_manifest(conn, strategy_set=strategy_set, created_ts=123)
+        row = conn.execute(
+            "SELECT execution_config_hash, risk_config_hash FROM runtime_strategy_set_manifest WHERE id=?",
+            (refs["runtime_strategy_set_manifest_id"],),
+        ).fetchone()
+
+        assert str(row["execution_config_hash"]).startswith("sha256:")
+        assert str(row["risk_config_hash"]).startswith("sha256:")
+    finally:
+        conn.close()
+
+
+def test_replay_fails_when_manifest_strategy_instance_is_missing(tmp_path) -> None:
+    conn = ensure_db(str(tmp_path / "manifest_missing.sqlite"))
+    try:
+        conn.execute(
+            """
+            INSERT INTO runtime_strategy_set_manifest(
+                manifest_hash, source, market_scope_json, active_strategy_count,
+                single_pair_runtime_enforced, execution_config_hash, risk_config_hash,
+                manifest_json, created_ts
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("sha256:bad", "unit", "{}", 1, 1, "sha256:e", "sha256:r", '{"active_instances":[]}', 123),
+        )
+        manifest_id = conn.execute("SELECT id FROM runtime_strategy_set_manifest").fetchone()[0]
+        from bithumb_bot.db_core import replay_manifest_request_hashes
+
+        with pytest.raises(RuntimeError, match="runtime_strategy_set_manifest_instances_missing"):
+            replay_manifest_request_hashes(conn, int(manifest_id))
     finally:
         conn.close()
 

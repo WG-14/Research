@@ -13,6 +13,73 @@ class StrategySpecError(ValueError):
 
 
 @dataclass(frozen=True)
+class StrategyParameterSchema:
+    name: str
+    value_type: str
+    required: bool = False
+    min_value: float | None = None
+    max_value: float | None = None
+    enum: tuple[object, ...] = ()
+    unit: str = ""
+    runtime_bound: bool = True
+    behavior_affecting: bool = True
+    deprecated_keys: tuple[str, ...] = ()
+    migration_rule: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "type": self.value_type,
+            "required": bool(self.required),
+            "min": self.min_value,
+            "max": self.max_value,
+            "enum": list(self.enum),
+            "unit": self.unit,
+            "runtime_bound": bool(self.runtime_bound),
+            "behavior_affecting": bool(self.behavior_affecting),
+            "deprecated_keys": list(self.deprecated_keys),
+            "migration_rule": self.migration_rule,
+        }
+
+    def validate(self, value: object) -> None:
+        if self.value_type == "int":
+            if isinstance(value, bool):
+                raise StrategySpecError(f"{self.name} must be int")
+            try:
+                numeric = int(value)
+            except (TypeError, ValueError) as exc:
+                raise StrategySpecError(f"{self.name} must be int") from exc
+            if float(numeric) != float(value):
+                raise StrategySpecError(f"{self.name} must be int")
+            comparable: float | str | bool = float(numeric)
+        elif self.value_type == "float":
+            try:
+                numeric_float = float(value)
+            except (TypeError, ValueError) as exc:
+                raise StrategySpecError(f"{self.name} must be float") from exc
+            if not math.isfinite(numeric_float):
+                raise StrategySpecError(f"{self.name} must be finite")
+            comparable = numeric_float
+        elif self.value_type == "bool":
+            if not isinstance(value, bool):
+                raise StrategySpecError(f"{self.name} must be bool")
+            comparable = bool(value)
+        elif self.value_type == "str":
+            if not isinstance(value, str):
+                raise StrategySpecError(f"{self.name} must be str")
+            comparable = value
+        else:
+            raise StrategySpecError(f"{self.name} has unsupported schema type:{self.value_type}")
+        if self.enum and value not in self.enum:
+            raise StrategySpecError(f"{self.name} must be one of {','.join(map(str, self.enum))}")
+        if isinstance(comparable, float):
+            if self.min_value is not None and comparable < float(self.min_value):
+                raise StrategySpecError(f"{self.name} must be >= {self.min_value}")
+            if self.max_value is not None and comparable > float(self.max_value):
+                raise StrategySpecError(f"{self.name} must be <= {self.max_value}")
+
+
+@dataclass(frozen=True)
 class StrategySpec:
     strategy_name: str
     strategy_version: str
@@ -26,6 +93,7 @@ class StrategySpec:
     required_data: tuple[str, ...]
     optional_data: tuple[str, ...]
     exit_policy_schema: dict[str, Any]
+    parameter_schema: tuple[StrategyParameterSchema, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -41,7 +109,22 @@ class StrategySpec:
             "required_data": list(self.required_data),
             "optional_data": list(self.optional_data),
             "exit_policy_schema": dict(self.exit_policy_schema),
+            "parameter_schema": [item.as_dict() for item in self.parameter_schema],
         }
+
+    def validate_parameters(self, parameter_values: dict[str, Any]) -> None:
+        schemas = {item.name: item for item in self.parameter_schema}
+        for schema in schemas.values():
+            if schema.required and schema.name not in parameter_values:
+                raise StrategySpecError(f"missing required strategy parameter(s): {schema.name}")
+        if schemas:
+            unknown = sorted(set(parameter_values) - set(self.accepted_parameter_names))
+            if unknown:
+                raise StrategySpecError(f"unknown strategy parameter(s): {','.join(unknown)}")
+        for name, value in parameter_values.items():
+            schema = schemas.get(name)
+            if schema is not None:
+                schema.validate(value)
 
     def spec_hash(self) -> str:
         return sha256_prefixed(self.as_dict())
@@ -281,6 +364,7 @@ def materialize_strategy_parameters(
 ) -> dict[str, Any]:
     spec = strategy_spec_for_name(strategy_name)
     values = {**spec.default_parameters, **dict(parameter_values)}
+    spec.validate_parameters(values)
     if (
         fee_rate is not None
         and "LIVE_FEE_RATE_ESTIMATE" in spec.accepted_parameter_names

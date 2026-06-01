@@ -25,12 +25,14 @@ from bithumb_bot.runtime_strategy_set import (
     RuntimeStrategyDecisionCollector,
     RuntimeStrategyDecisionResultBundle,
     RuntimeStrategySet,
+    RuntimeStrategySetResolver,
     RuntimeStrategySpec,
     normalized_runtime_strategy_set_manifest,
+    validate_runtime_strategy_set_profile_binding,
 )
 from bithumb_bot.strategy_plugins.canary_non_sma import CanaryNonSmaRuntimeDecisionAdapter
 from bithumb_bot.runtime_adapters.sma_with_filter import SmaWithFilterRuntimeConfig
-from bithumb_bot.research.strategy_spec import strategy_spec_for_name
+from bithumb_bot.research.strategy_spec import StrategySpecError, materialize_strategy_parameters, strategy_spec_for_name
 from bithumb_bot.strategy_policy_contract import PositionSnapshot, StrategyDecisionV2
 
 
@@ -321,7 +323,7 @@ def test_runtime_decision_entrypoint_accepts_generic_parameter_overrides(
 
     assert result is not None
     request = received[0]
-    assert request.parameter_source == "runtime_override"
+    assert request.parameter_source == "runtime_strategy_spec"
     assert request.parameters["CANARY_ORDER_REASON"] == "override_reason"
     fields = request.observability_fields()
     assert fields["strategy_parameters_hash"] == request.strategy_parameters_hash
@@ -681,9 +683,9 @@ def test_request_builder_uses_strict_profile_parameters_when_profile_configured(
     assert request.parameters["SMA_LONG"] == profile_params["SMA_LONG"]
     assert dict(request.parameters_raw) == profile_params
     assert dict(request.parameters_materialized) == dict(request.parameters)
-    assert request.parameter_source == "strict_profile"
+    assert request.parameter_source == "approved_profile"
     assert request.approved_profile_hash == "sha256:profile"
-    assert request.observability_fields()["parameter_source"] == "strict_profile"
+    assert request.observability_fields()["parameter_source"] == "approved_profile"
 
 
 def test_two_approved_profiles_are_spec_bound_not_global_settings_bound(
@@ -1010,6 +1012,9 @@ def test_sma_runtime_config_uses_request_parameters_not_global_settings() -> Non
     )
 
     original_values = {
+        "SMA_SHORT": getattr(settings, "SMA_SHORT", None),
+        "SMA_LONG": getattr(settings, "SMA_LONG", None),
+        "SMA_FILTER_GAP_MIN_RATIO": getattr(settings, "SMA_FILTER_GAP_MIN_RATIO", None),
         "STRATEGY_EXIT_MAX_HOLDING_MIN": settings.STRATEGY_EXIT_MAX_HOLDING_MIN,
         "LIVE_FEE_RATE_ESTIMATE": settings.LIVE_FEE_RATE_ESTIMATE,
         "STRATEGY_ENTRY_SLIPPAGE_BPS": settings.STRATEGY_ENTRY_SLIPPAGE_BPS,
@@ -1025,7 +1030,10 @@ def test_sma_runtime_config_uses_request_parameters_not_global_settings() -> Non
         strategy = config.build_strategy()
     finally:
         for key, value in original_values.items():
-            object.__setattr__(settings, key, value)
+            if value is None and hasattr(settings, key):
+                object.__delattr__(settings, key)
+            else:
+                object.__setattr__(settings, key, value)
 
     assert strategy.short_n == 2
     assert strategy.long_n == 5
@@ -1076,7 +1084,7 @@ def test_missing_runtime_parameters_use_audited_paper_legacy_settings_compat() -
         through_ts_ms=1_700_000_180_000,
     )
 
-    assert request.parameter_source == "paper_legacy_compat:runtime_parameter_adapter_from_settings"
+    assert request.parameter_source == "paper_legacy_compat"
     assert request.runtime_strategy_spec.legacy_compatibility_used is True
     assert request.runtime_strategy_spec.parameter_authority_audit["legacy_fallback"] == (
         "runtime_parameter_adapter.from_settings"
@@ -1091,9 +1099,83 @@ def test_request_builder_uses_strategy_parameters_json_source() -> None:
         through_ts_ms=1_700_000_180_000,
     )
 
-    assert request.parameter_source == "paper_legacy_compat:strategy_parameters_json"
+    assert request.parameter_source == "paper_legacy_compat"
     assert request.runtime_strategy_spec.legacy_compatibility_used is True
     assert dict(request.parameters) == _complete_canary_parameters()
+
+
+def test_runtime_decision_request_parameter_source_is_normalized() -> None:
+    request = RuntimeDecisionRequestBuilder().build_for_spec(
+        RuntimeStrategySpec(
+            "canary_non_sma",
+            pair="KRW-BTC",
+            interval="1m",
+            parameter_source="runtime_override",
+            parameters=_complete_canary_parameters(),
+        ),
+        through_ts_ms=1_700_000_180_000,
+    )
+
+    assert request.parameter_source == "runtime_strategy_spec"
+    assert request.observability_fields()["parameter_source"] == "runtime_strategy_spec"
+    assert request.runtime_strategy_spec.parameter_authority_audit["authority"] == "runtime_strategy_spec"
+
+
+def test_paper_legacy_compat_is_explicit_when_fallback_is_used() -> None:
+    cfg = replace(settings, MODE="paper", STRATEGY_PARAMETERS_JSON=json.dumps(_complete_canary_parameters()))
+
+    request = RuntimeDecisionRequestBuilder(settings_obj=cfg).build_for_spec(
+        RuntimeStrategySpec("canary_non_sma", pair="KRW-BTC", interval="1m"),
+        through_ts_ms=1_700_000_180_000,
+    )
+
+    assert request.parameter_source == "paper_legacy_compat"
+    assert request.runtime_strategy_spec.legacy_compatibility_used is True
+    assert request.runtime_strategy_spec.parameter_authority_audit["authority"] == "paper_legacy_compat"
+    assert request.runtime_strategy_spec.parameter_authority_audit["legacy_fallback"] == "STRATEGY_PARAMETERS_JSON"
+
+
+def test_runtime_strategy_spec_parameters_are_authoritative_without_settings_fallback() -> None:
+    cfg = replace(
+        settings,
+        MODE="live",
+        LIVE_DRY_RUN=True,
+        STRATEGY_PARAMETERS_JSON=json.dumps(_complete_canary_parameters(CANARY_ORDER_REASON="settings")),
+    )
+
+    request = RuntimeDecisionRequestBuilder(settings_obj=cfg).build_for_spec(
+        RuntimeStrategySpec(
+            "canary_non_sma",
+            pair="KRW-BTC",
+            interval="1m",
+            parameters=_complete_canary_parameters(CANARY_ORDER_REASON="spec"),
+        ),
+        through_ts_ms=1_700_000_180_000,
+    )
+
+    assert request.parameter_source == "runtime_strategy_spec"
+    assert request.parameters["CANARY_ORDER_REASON"] == "spec"
+
+
+def test_strategy_spec_validates_type_range_enum_and_units() -> None:
+    spec = strategy_spec_for_name("canary_non_sma")
+    schema = {item.name: item.as_dict() for item in spec.parameter_schema}
+
+    assert schema["CANARY_ORDER_START_INDEX"]["type"] == "int"
+    assert schema["CANARY_ORDER_START_INDEX"]["min"] == 0
+    assert schema["CANARY_ORDER_START_INDEX"]["unit"] == "candle_index"
+    assert schema["CANARY_ORDER_SIDE"]["enum"] == ["BUY", "SELL", "HOLD"]
+    materialize_strategy_parameters("canary_non_sma", _complete_canary_parameters())
+    with pytest.raises(StrategySpecError, match="CANARY_ORDER_START_INDEX"):
+        materialize_strategy_parameters(
+            "canary_non_sma",
+            _complete_canary_parameters(CANARY_ORDER_START_INDEX=-1),
+        )
+    with pytest.raises(StrategySpecError, match="CANARY_ORDER_SIDE"):
+        materialize_strategy_parameters(
+            "canary_non_sma",
+            _complete_canary_parameters(CANARY_ORDER_SIDE="WAIT"),
+        )
 
 
 def test_strict_runtime_rejects_global_strategy_parameters_json_fallback() -> None:
@@ -1186,6 +1268,42 @@ def test_strategy_specific_settings_extension_uses_generic_json_not_new_fields()
     assert "STRATEGY_PARAMETERS_JSON" in source
 
 
+def test_config_has_no_strategy_specific_parameter_prefix_for_new_strategy() -> None:
+    source = Path("src/bithumb_bot/config.py").read_text(encoding="utf-8")
+
+    assert "CANARY_ORDER_START_INDEX" not in source
+    assert "CANARY_ORDER_SIDE" not in source
+    assert "CANARY_ORDER_REASON" not in source
+
+
+def test_new_strategy_plugin_materializes_without_settings_attribute() -> None:
+    cfg = replace(settings, STRATEGY_PARAMETERS_JSON="")
+    request = RuntimeDecisionRequestBuilder(settings_obj=cfg).build_for_spec(
+        RuntimeStrategySpec(
+            "canary_non_sma",
+            parameters=_complete_canary_parameters(CANARY_ORDER_REASON="no_settings_attribute"),
+        ),
+        through_ts_ms=1_700_000_180_000,
+    )
+
+    assert request.parameter_source == "runtime_strategy_spec"
+    assert request.parameters["CANARY_ORDER_REASON"] == "no_settings_attribute"
+    assert not hasattr(cfg, "CANARY_ORDER_REASON")
+
+
+def test_promotion_strategy_does_not_require_from_settings_for_strict_runtime() -> None:
+    source = Path("src/bithumb_bot/research/strategy_registry.py").read_text(encoding="utf-8")
+
+    assert "strategy promotion runtime capability missing parameter adapter" not in source
+    request = RuntimeDecisionRequestBuilder(
+        settings_obj=replace(settings, MODE="live", LIVE_DRY_RUN=True, STRATEGY_PARAMETERS_JSON="")
+    ).build_for_spec(
+        RuntimeStrategySpec("canary_non_sma", parameters=_complete_canary_parameters()),
+        through_ts_ms=1_700_000_180_000,
+    )
+    assert request.parameter_source == "runtime_strategy_spec"
+
+
 def test_settings_strategy_specific_fields_are_legacy_allowlisted() -> None:
     source = Path("src/bithumb_bot/config.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(source)
@@ -1265,6 +1383,7 @@ def test_runtime_strategy_set_preflight_rejects_pair_mismatch() -> None:
         PAIR="KRW-BTC",
         RUNTIME_STRATEGY_SET_JSON=json.dumps(
             {
+                "market_scope": {"mode": "single_pair", "pair": "KRW-BTC", "interval": "1m"},
                 "strategies": [
                     {
                         "strategy_name": "safe_hold",
@@ -1280,6 +1399,174 @@ def test_runtime_strategy_set_preflight_rejects_pair_mismatch() -> None:
         validate_runtime_strategy_set_selection(cfg)
     assert exc.type.__name__ == "LiveModeValidationError"
     assert "runtime_strategy_pair_mismatch" in str(exc.value)
+
+
+def test_runtime_strategy_set_requires_market_scope_for_structured_contract() -> None:
+    cfg = replace(
+        settings,
+        RUNTIME_STRATEGY_SET_JSON=json.dumps({"strategies": [{"strategy_name": "safe_hold"}]}),
+    )
+
+    with pytest.raises(ValueError, match="runtime_strategy_set_market_scope_required"):
+        RuntimeStrategySetResolver(settings_obj=cfg).resolve()
+
+
+def test_runtime_strategy_set_rejects_multi_pair_until_pair_scoped_runtime_exists() -> None:
+    cfg = replace(
+        settings,
+        PAIR="KRW-BTC",
+        INTERVAL="1m",
+        RUNTIME_STRATEGY_SET_JSON=json.dumps(
+            {
+                "market_scope": {"mode": "single_pair", "pair": "KRW-BTC", "interval": "1m"},
+                "strategies": [
+                    {"strategy_name": "safe_hold", "strategy_instance_id": "btc", "pair": "KRW-BTC"},
+                    {"strategy_name": "safe_hold", "strategy_instance_id": "eth", "pair": "KRW-ETH"},
+                ],
+            }
+        ),
+    )
+
+    with pytest.raises(LiveModeValidationError) as exc:
+        validate_runtime_strategy_set_selection(cfg)
+    assert "multi_pair_runtime_unsupported" in str(exc.value)
+
+
+def test_market_scope_pair_must_match_settings_pair() -> None:
+    cfg = replace(
+        settings,
+        PAIR="KRW-BTC",
+        INTERVAL="1m",
+        RUNTIME_STRATEGY_SET_JSON=json.dumps(
+            {
+                "market_scope": {"mode": "single_pair", "pair": "KRW-ETH", "interval": "1m"},
+                "strategies": [{"strategy_name": "safe_hold", "pair": "KRW-ETH"}],
+            }
+        ),
+    )
+
+    with pytest.raises(LiveModeValidationError) as exc:
+        validate_runtime_strategy_set_selection(cfg)
+    assert "multi_pair_runtime_unsupported" in str(exc.value)
+    assert "market_scope_pair=KRW-ETH" in str(exc.value)
+
+
+def test_strategy_pair_mismatch_reports_multi_pair_runtime_unsupported() -> None:
+    cfg = replace(
+        settings,
+        PAIR="KRW-BTC",
+        INTERVAL="1m",
+        RUNTIME_STRATEGY_SET_JSON=json.dumps(
+            {
+                "market_scope": {"mode": "single_pair", "pair": "KRW-BTC", "interval": "1m"},
+                "strategies": [{"strategy_name": "safe_hold", "pair": "KRW-ETH"}],
+            }
+        ),
+    )
+
+    with pytest.raises(LiveModeValidationError) as exc:
+        validate_runtime_strategy_set_selection(cfg)
+    assert "runtime_strategy_pair_mismatch:multi_pair_runtime_unsupported" in str(exc.value)
+
+
+def test_single_pair_runtime_manifest_declares_market_scope() -> None:
+    strategy_set = RuntimeStrategySet(
+        source="unit",
+        market_scope=None,
+        strategies=(RuntimeStrategySpec("safe_hold", pair="KRW-BTC", interval="1m"),),
+    )
+    manifest = normalized_runtime_strategy_set_manifest(strategy_set=strategy_set)
+
+    assert manifest["single_pair_runtime_enforced"] is True
+    assert manifest["market_scope"]["mode"] == "single_pair"
+    assert manifest["market_scope"]["pair"] == "KRW-BTC"
+
+
+def test_single_strategy_allows_global_profile_selector_when_hash_matches() -> None:
+    cfg = replace(
+        settings,
+        MODE="live",
+        APPROVED_STRATEGY_PROFILE_PATH="/runtime/profile.json",
+        STRATEGY_APPROVED_PROFILE_PATH="",
+    )
+    strategy_set = RuntimeStrategySet(
+        source="unit",
+        strategies=(RuntimeStrategySpec("safe_hold", strategy_instance_id="only"),),
+    )
+
+    assert validate_runtime_strategy_set_profile_binding(strategy_set, cfg) == ()
+
+
+def test_multi_strategy_profile_hash_mapping_is_manifested(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bithumb_bot import runtime_strategy_set
+
+    profiles = {
+        "/runtime/left.json": {
+            "profile_mode": "paper",
+            "profile_content_hash": "sha256:left",
+            "strategy_parameters": {},
+        },
+        "/runtime/right.json": {
+            "profile_mode": "paper",
+            "profile_content_hash": "sha256:right",
+            "strategy_parameters": {},
+        },
+    }
+    monkeypatch.setattr(runtime_strategy_set, "load_approved_profile", lambda path: profiles[str(path)])
+    monkeypatch.setattr(runtime_strategy_set, "diff_profile_to_runtime", lambda *args, **kwargs: ())
+    strategy_set = RuntimeStrategySet(
+        source="unit",
+        strategies=(
+            RuntimeStrategySpec(
+                "safe_hold",
+                strategy_instance_id="left",
+                approved_profile_path="/runtime/left.json",
+                approved_profile_hash="sha256:left",
+            ),
+            RuntimeStrategySpec(
+                "safe_hold",
+                strategy_instance_id="right",
+                approved_profile_path="/runtime/right.json",
+                approved_profile_hash="sha256:right",
+            ),
+        ),
+    )
+    manifest = normalized_runtime_strategy_set_manifest(strategy_set=strategy_set)
+
+    bindings = {
+        item["strategy_instance_id"]: item
+        for item in manifest["strategy_instance_profile_bindings"]
+    }
+    assert bindings["left"]["approved_profile_path"] == "/runtime/left.json"
+    assert bindings["left"]["approved_profile_hash"] == "sha256:left"
+    assert bindings["right"]["approved_profile_path"] == "/runtime/right.json"
+    assert bindings["right"]["approved_profile_hash"] == "sha256:right"
+
+
+def test_profile_selection_authority_is_audited_per_instance(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bithumb_bot import runtime_strategy_set
+
+    monkeypatch.setattr(
+        runtime_strategy_set,
+        "load_approved_profile",
+        lambda path: {
+            "profile_mode": "paper",
+            "profile_content_hash": "sha256:audited",
+            "strategy_parameters": _complete_canary_parameters(),
+        },
+    )
+    monkeypatch.setattr(runtime_strategy_set, "diff_profile_to_runtime", lambda *args, **kwargs: ())
+    spec = RuntimeStrategySpec(
+        "canary_non_sma",
+        strategy_instance_id="audited",
+        approved_profile_path="/runtime/audited.json",
+        approved_profile_hash="sha256:audited",
+    )
+    instance = RuntimeDecisionRequestBuilder().materialize_instance(spec)
+
+    assert instance.parameter_authority_audit["authority"] == "approved_profile"
+    assert instance.approved_profile_path == "/runtime/audited.json"
+    assert instance.approved_profile_hash == "sha256:audited"
 
 
 def _live_single_strategy_cfg(
@@ -1470,6 +1757,7 @@ def test_live_like_single_strategy_name_preflight_accepts_valid_approved_profile
         "",
         json.dumps(
             {
+                "market_scope": {"mode": "single_pair", "pair": "KRW-BTC", "interval": "1m"},
                 "strategies": [
                     {
                         "strategy_name": "sma_with_filter",
@@ -1632,6 +1920,7 @@ def test_runtime_strategy_set_dump_cli_validates_and_prints_manifest(
         "RUNTIME_STRATEGY_SET_JSON",
         json.dumps(
             {
+                "market_scope": {"mode": "single_pair", "pair": "KRW-BTC", "interval": "1m"},
                 "strategies": [
                     {
                         "strategy_name": "safe_hold",
@@ -1659,7 +1948,12 @@ def test_runtime_strategy_set_lint_cli_fails_on_pair_mismatch(
 
     monkeypatch.setenv(
         "RUNTIME_STRATEGY_SET_JSON",
-        json.dumps({"strategies": [{"strategy_name": "safe_hold", "pair": "KRW-ETH"}]}),
+        json.dumps(
+            {
+                "market_scope": {"mode": "single_pair", "pair": "KRW-BTC", "interval": "1m"},
+                "strategies": [{"strategy_name": "safe_hold", "pair": "KRW-ETH"}],
+            }
+        ),
     )
     cfg = replace(settings, MODE="paper", PAIR="KRW-BTC", RUNTIME_STRATEGY_SET_JSON=os.environ["RUNTIME_STRATEGY_SET_JSON"])
 

@@ -452,6 +452,8 @@ class RuntimeStrategySetResolver:
         payload = json.loads(raw_json)
         market_scope_payload: Mapping[str, object] = {}
         if isinstance(payload, Mapping):
+            if "market_scope" not in payload:
+                raise ValueError("runtime_strategy_set_market_scope_required")
             raw_scope = payload.get("market_scope", {})
             if raw_scope is not None and not isinstance(raw_scope, Mapping):
                 raise ValueError("runtime_market_scope_must_be_object")
@@ -548,7 +550,7 @@ class ParameterAuthorityResolver:
     ) -> ParameterAuthority:
         if profile is not None:
             raw_parameters = dict(profile["strategy_parameters"])
-            parameter_source = spec.parameter_source or "strict_profile"
+            parameter_source = "approved_profile"
             legacy_used = False
             audit = {
                 "authority": "approved_profile",
@@ -577,7 +579,7 @@ class ParameterAuthorityResolver:
         spec: RuntimeStrategySpec,
     ) -> tuple[dict[str, object], str, bool, dict[str, object]]:
         if spec.parameters:
-            source = spec.parameter_source or "runtime_strategy_spec"
+            source = "runtime_strategy_spec"
             return (
                 dict(spec.parameters),
                 source,
@@ -589,7 +591,7 @@ class ParameterAuthorityResolver:
                 },
             )
         if spec.strategy_name == "safe_hold":
-            source = spec.parameter_source or "runtime_builtin_no_parameters"
+            source = "runtime_strategy_spec"
             return (
                 {},
                 source,
@@ -617,7 +619,7 @@ class ParameterAuthorityResolver:
                 raise RuntimeError(f"strategy_parameters_json_invalid:{exc}") from exc
             if not isinstance(payload, Mapping):
                 raise RuntimeError("strategy_parameters_json_must_be_object")
-            source = "paper_legacy_compat:strategy_parameters_json"
+            source = "paper_legacy_compat"
             return (
                 {str(key): value for key, value in payload.items()},
                 source,
@@ -640,7 +642,7 @@ class ParameterAuthorityResolver:
                     f"{spec.strategy_name};"
                     f"strict_runtime_rejects_plugin_from_settings_fallback:{spec.strategy_name}"
                 )
-            source = "paper_legacy_compat:runtime_parameter_adapter_from_settings"
+            source = "paper_legacy_compat"
             return (
                 dict(plugin.runtime_parameter_adapter.from_settings(self.settings_obj)),
                 source,
@@ -685,7 +687,13 @@ class ParameterAuthorityResolver:
         return parameters
 
     def _strict_runtime_mode(self) -> bool:
-        return str(getattr(self.settings_obj, "MODE", "") or "").strip().lower() == "live"
+        if str(getattr(self.settings_obj, "MODE", "") or "").strip().lower() == "live":
+            return True
+        if str(getattr(self.settings_obj, "APPROVED_STRATEGY_PROFILE_PATH", "") or "").strip():
+            return True
+        if str(getattr(self.settings_obj, "STRATEGY_APPROVED_PROFILE_PATH", "") or "").strip():
+            return True
+        return False
 
 
 @dataclass(frozen=True)

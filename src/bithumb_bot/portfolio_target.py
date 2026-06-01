@@ -45,6 +45,12 @@ class PortfolioTarget:
             "pair": self.pair,
             "target_exposure_krw": self.target_exposure_krw,
             "max_target_exposure_krw": self.target_exposure_krw,
+            "pre_cap_weighted_target_exposure_krw": self.conflict_resolution.get(
+                "pre_cap_weighted_target_exposure_krw"
+            ),
+            "exposure_cap_krw": self.conflict_resolution.get("exposure_cap_krw"),
+            "exposure_cap_applied": bool(self.conflict_resolution.get("exposure_cap_applied", False)),
+            "exposure_cap_source": self.conflict_resolution.get("exposure_cap_source", "none"),
             "target_qty": self.target_qty,
             "allocator_policy_name": self.allocator_policy_name,
             "allocator_policy_version": self.allocator_policy_version,
@@ -55,7 +61,7 @@ class PortfolioTarget:
             "conflict_resolution": dict(self.conflict_resolution),
             "authoritative": bool(self.authoritative),
             "fail_closed_reason": self.fail_closed_reason,
-            "risk_budget_semantics": "risk_budget_krw_is_deprecated_alias_for_max_target_exposure_krw",
+            "risk_budget_semantics": "max_target_exposure_cap",
         }
 
     def content_hash(self) -> str:

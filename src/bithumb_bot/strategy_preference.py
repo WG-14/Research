@@ -48,6 +48,7 @@ class StrategyPreference:
     desired_weight: float | None = None
     confidence: float | None = None
     horizon: str = ""
+    max_target_exposure_krw: float | None = None
     risk_budget_krw: float | None = None
     policy_hash: str = ""
     policy_contract_hash: str = ""
@@ -68,7 +69,11 @@ class StrategyPreference:
         object.__setattr__(self, "desired_exposure_krw", _optional_float(self.desired_exposure_krw))
         object.__setattr__(self, "desired_weight", _optional_float(self.desired_weight))
         object.__setattr__(self, "confidence", _optional_float(self.confidence))
+        max_target_exposure = _optional_float(self.max_target_exposure_krw)
         object.__setattr__(self, "risk_budget_krw", _optional_float(self.risk_budget_krw))
+        if max_target_exposure is None:
+            max_target_exposure = self.risk_budget_krw
+        object.__setattr__(self, "max_target_exposure_krw", max_target_exposure)
         object.__setattr__(
             self,
             "execution_intent_hint",
@@ -92,7 +97,9 @@ class StrategyPreference:
             "desired_weight": self.desired_weight,
             "confidence": self.confidence,
             "horizon": self.horizon,
+            "max_target_exposure_krw": self.max_target_exposure_krw,
             "risk_budget_krw": self.risk_budget_krw,
+            "risk_budget_semantics": "risk_budget_krw_is_deprecated_alias_for_max_target_exposure_krw",
             "reason": self.reason,
             "policy_hash": self.policy_hash,
             "policy_contract_hash": self.policy_contract_hash,
@@ -146,6 +153,7 @@ def strategy_decision_to_preference(
     desired_exposure_krw: float | None = None,
     desired_weight: float | None = None,
     risk_budget_krw: float | None = None,
+    max_target_exposure_krw: float | None = None,
     horizon: str = "",
     confidence: float | None = None,
     metadata: Mapping[str, object] | None = None,
@@ -169,6 +177,7 @@ def strategy_decision_to_preference(
         reason=decision.final_reason,
         desired_exposure_krw=desired_exposure_krw,
         desired_weight=desired_weight,
+        max_target_exposure_krw=max_target_exposure_krw,
         risk_budget_krw=risk_budget_krw,
         horizon=horizon,
         confidence=confidence,

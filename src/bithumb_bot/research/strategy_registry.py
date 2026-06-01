@@ -261,8 +261,6 @@ class ResearchStrategyPlugin:
         if self.runtime_capabilities.runtime_replay_supported != (self.runtime_replay_builder is not None):
             raise ValueError(f"strategy runtime replay capability mismatch: {self.name}")
         if self.runtime_capabilities.promotion_runtime_decisions_supported:
-            if self.runtime_parameter_adapter is None:
-                raise ValueError(f"strategy promotion runtime capability missing parameter adapter: {self.name}")
             if self.runtime_decision_adapter_factory is None:
                 raise ValueError(f"strategy promotion runtime capability missing adapter: {self.name}")
             if self.policy_assembly_factory is None:
@@ -447,9 +445,8 @@ class ResearchStrategyPlugin:
                 "promotion_runtime_decisions_supported": bool(
                     self.runtime_capabilities.promotion_runtime_decisions_supported
                 ),
-                "runtime_parameter_adapter_required": bool(
-                    self.runtime_capabilities.promotion_runtime_decisions_supported
-                ),
+                "runtime_parameter_adapter_required": False,
+                "runtime_parameter_adapter_authority_scope": "paper_legacy_compat_only",
                 "runtime_decision_adapter_required": bool(
                     self.runtime_capabilities.promotion_runtime_decisions_supported
                 ),
@@ -470,7 +467,6 @@ class ResearchStrategyPlugin:
             return True
         return (
             bool(self.runtime_capabilities.promotion_runtime_decisions_supported)
-            and self.runtime_parameter_adapter is not None
             and self.runtime_decision_adapter_factory is not None
             and self.policy_assembly_factory is not None
         )
