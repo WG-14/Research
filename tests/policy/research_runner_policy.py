@@ -7,15 +7,20 @@ from pathlib import Path
 from typing import Iterable
 
 
-EXPENSIVE_RESEARCH_MARKERS = {
-    "research_e2e",
-    "audit_e2e",
-    "walk_forward_e2e",
-    "parallel_e2e",
-    "slow_research",
-    "nightly",
-    "memory_sensitive",
-}
+DEFAULT_FAST_EXCLUDED_RESEARCH_MARKERS = frozenset(
+    {
+        "research_kernel",
+        "research_e2e",
+        "audit_e2e",
+        "walk_forward_e2e",
+        "parallel_e2e",
+        "slow_research",
+        "nightly",
+        "memory_sensitive",
+    }
+)
+
+EXPENSIVE_RESEARCH_MARKERS = DEFAULT_FAST_EXCLUDED_RESEARCH_MARKERS
 
 PRODUCTION_RESEARCH_ENTRYPOINTS = {
     "run_research_backtest",
@@ -160,7 +165,7 @@ def discover_policy_violations(
             )
 
     for call in kernel_calls:
-        if call.markers & (EXPENSIVE_RESEARCH_MARKERS | {"research_kernel"}):
+        if call.markers & DEFAULT_FAST_EXCLUDED_RESEARCH_MARKERS:
             continue
         violations.append(
             f"{call.path}:{call.line}:{call.test_name} calls {call.entrypoint} without research_kernel, "

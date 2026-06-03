@@ -39,7 +39,7 @@ markers = [
     "unit: isolated unit tests without external research execution",
     "contract: payload, hash, gate, and schema contract tests with fake or direct lower-level inputs",
     "integration: multi-module tests expected to stay below E2E runtime",
-    "research_kernel: real strategy/backtest kernel tests",
+    "research_kernel: real strategy/backtest kernel tests excluded from default-fast validation",
     "research_e2e: real research backtest pipeline tests",
     "audit_e2e: real research backtest tests with complete external audit binding",
     "walk_forward_e2e: real research walk-forward pipeline tests",

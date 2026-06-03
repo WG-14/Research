@@ -2,8 +2,8 @@
 set -u
 set -o pipefail
 
-FAST_MARKER_EXPR="not research_e2e and not audit_e2e and not walk_forward_e2e and not parallel_e2e and not nightly and not slow_research and not memory_sensitive"
-RESEARCH_NIGHTLY_MARKER_EXPR="research_e2e or audit_e2e or walk_forward_e2e or parallel_e2e or nightly or slow_research or memory_sensitive"
+FAST_MARKER_EXPR="not research_kernel and not research_e2e and not audit_e2e and not walk_forward_e2e and not parallel_e2e and not nightly and not slow_research and not memory_sensitive"
+RESEARCH_NIGHTLY_MARKER_EXPR="research_kernel or research_e2e or audit_e2e or walk_forward_e2e or parallel_e2e or nightly or slow_research or memory_sensitive"
 
 run() {
   local title="$1"

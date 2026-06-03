@@ -22,10 +22,11 @@ The default PR fast-suite gate is:
 ```
 
 It runs the static research runner marker/inventory policy check and then runs
-pytest excluding `research_e2e`, `audit_e2e`, `walk_forward_e2e`,
-`parallel_e2e`, `nightly`, `slow_research`, and `memory_sensitive`, with
-duration reporting enabled. The fast script also parses the reported durations
-and fails default-fast tests over the configured fast threshold.
+pytest excluding `research_kernel`, `research_e2e`, `audit_e2e`,
+`walk_forward_e2e`, `parallel_e2e`, `nightly`, `slow_research`, and
+`memory_sensitive`, with duration reporting enabled. The fast script also parses
+the reported durations and fails default-fast tests over the configured fast
+threshold.
 
 The dedicated research/nightly pytest suite is:
 
@@ -39,8 +40,8 @@ memory-sensitive checks. It must also avoid production research evaluators and
 unbounded strategy/kernel tick loops; direct kernel tests in the fast suite must
 stay bounded in-memory micro-kernel contracts. Run research E2E/nightly
 validation through `scripts/run_research_nightly_tests.sh`, which includes
-`research_e2e`, `audit_e2e`, `walk_forward_e2e`, `parallel_e2e`, `nightly`,
-`slow_research`, and `memory_sensitive`.
+`research_kernel`, `research_e2e`, `audit_e2e`, `walk_forward_e2e`,
+`parallel_e2e`, `nightly`, `slow_research`, and `memory_sensitive`.
 
 Selector-less full pytest is long-running/full validation and is not the
 default PR check. Use the dedicated pytest pipeline for full-suite repair or

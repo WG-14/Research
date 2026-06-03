@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from tests.factories.research_reports import assert_fast_research_workload, minimal_research_report
-from tests.policy.research_runner_policy import discover_policy_violations, load_inventory
+from tests.policy.research_runner_policy import (
+    DEFAULT_FAST_EXCLUDED_RESEARCH_MARKERS,
+    discover_policy_violations,
+    load_inventory,
+)
 
 
 def test_direct_production_research_entrypoints_have_expensive_markers() -> None:
@@ -407,6 +411,9 @@ def test_allowlisted_small_fixture_helper_is_bounded():
 
 
 def test_policy_allows_marked_unbounded_real_kernel_calls(tmp_path: Path) -> None:
+    assert "research_kernel" in DEFAULT_FAST_EXCLUDED_RESEARCH_MARKERS
+    assert "slow_research" in DEFAULT_FAST_EXCLUDED_RESEARCH_MARKERS
+
     test_root = tmp_path / "tests"
     test_root.mkdir()
     test_file = test_root / "test_marked_kernel.py"
@@ -414,6 +421,9 @@ def test_policy_allows_marked_unbounded_real_kernel_calls(tmp_path: Path) -> Non
         """
 import pytest
 from bithumb_bot.research.backtest_engine import run_sma_backtest
+
+def test_unmarked_unbounded_call_is_rejected():
+    run_sma_backtest(dataset=load_dataset_split(manifest=None, split_name="train"), parameter_values={}, fee_rate=0.0, slippage_bps=0.0)
 
 @pytest.mark.research_kernel
 def test_research_kernel_marker_allows_unbounded_call():
@@ -429,7 +439,9 @@ def test_expensive_marker_allows_unbounded_call():
 
     violations = discover_policy_violations(test_root, inventory_path=inventory)
 
-    assert violations == []
+    assert any("test_unmarked_unbounded_call_is_rejected calls run_sma_backtest" in violation for violation in violations)
+    assert not any("test_research_kernel_marker_allows_unbounded_call" in violation for violation in violations)
+    assert not any("test_expensive_marker_allows_unbounded_call" in violation for violation in violations)
 
 
 def test_policy_requires_excluded_marker_for_disabled_fast_budget(tmp_path: Path) -> None:

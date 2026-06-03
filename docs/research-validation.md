@@ -303,6 +303,9 @@ research/nightly pytest tier.
 
 Marker meaning follows the execution boundary:
 
+- `research_kernel`: real strategy/backtest kernel tests. This marker is
+  excluded from default-fast validation and included in the research/nightly
+  tier.
 - `research_e2e`: real production backtest evaluator or full research
   orchestration.
 - `audit_e2e`: complete external audit persistence or binding exercised through
@@ -347,9 +350,15 @@ specific markers such as `research_kernel`, `research_e2e`, `audit_e2e`,
 `run_stage_owned_decision_event_backtest` are allowed in the fast suite only for
 bounded in-memory micro-kernel contracts with explicit `DatasetSnapshot` or
 small fixture helpers. Unbounded or full-kernel expansion must carry
-`research_kernel` or a default-fast-excluded marker, and any
+`research_kernel` or another default-fast-excluded marker, and any
 `_run_contract_research_backtest(enforce_fast_budget=False)` use must carry a
 default-fast-excluded marker such as `slow_research` or `nightly`.
+Default-fast validation must not include unbounded strategy/backtest tick loops.
+Because `research_kernel` is a research/nightly-tier marker, its current
+duration visibility comes from the `--durations` output emitted by
+`scripts/run_research_nightly_tests.sh`. The separate
+`tests/policy/research_e2e_inventory.json` duration ratchet remains scoped to
+inventoried production research E2E tests.
 
 The focused reproduction for the historical order-dependent high-water RSS
 regression is:
