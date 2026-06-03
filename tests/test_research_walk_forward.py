@@ -21,6 +21,7 @@ from bithumb_bot.research.validation_protocol import (
     run_research_walk_forward,
 )
 from bithumb_bot.storage_io import write_json_atomic
+from tests.factories.research_reports import DeterministicResearchEvaluator
 
 
 class _SnapshotStub:
@@ -268,7 +269,7 @@ def test_insufficient_windows_fails_clearly(tmp_path, monkeypatch) -> None:
         )
 
 
-@pytest.mark.walk_forward_e2e
+@pytest.mark.contract
 def test_walk_forward_report_persists_artifact_discovery_metadata(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -279,6 +280,7 @@ def test_walk_forward_report_persists_artifact_discovery_metadata(tmp_path, monk
         db_path=db_path,
         manager=manager,
         generated_at="2026-05-03T00:00:00+00:00",
+        candidate_evaluator=DeterministicResearchEvaluator(),
     )
 
     persisted = json.loads(Path(report["artifact_paths"]["report_path"]).read_text(encoding="utf-8"))
@@ -288,6 +290,8 @@ def test_walk_forward_report_persists_artifact_discovery_metadata(tmp_path, monk
     assert persisted["artifact_refs"]["candidate_events"] == "derived/research/walk_unit/candidate_events.jsonl"
     assert persisted["artifact_refs"]["candidate_results_dir"] == "derived/research/walk_unit/candidate_results"
     assert persisted["artifact_refs"]["candidate_failures_dir"] == "derived/research/walk_unit/candidate_failures"
+    assert persisted["execution_observability"]["production_evaluator_used"] is False
+    assert persisted["execution_observability"]["contract_evaluator_used"] is True
 
 
 def test_repeated_positive_test_windows_pass_aggregate_walk_forward(monkeypatch) -> None:

@@ -384,7 +384,13 @@ def minimal_research_report(**overrides: Any) -> dict[str, Any]:
     return payload
 
 
-def assert_fast_research_workload(report: dict[str, Any], *, max_strategy_runs: int = 3) -> None:
+def assert_fast_research_workload(
+    report: dict[str, Any],
+    *,
+    max_strategy_runs: int = 3,
+    max_tick_events: int = 10_000,
+    max_matrix_size: int = 3,
+) -> None:
     estimate = report.get("workload_estimate")
     if not isinstance(estimate, dict):
         execution_plan = report.get("execution_plan")
@@ -403,5 +409,12 @@ def assert_fast_research_workload(report: dict[str, Any], *, max_strategy_runs: 
     ):
         assert key in estimate, f"research workload_estimate missing {key}"
     assert int(estimate["estimated_strategy_runs"]) <= max_strategy_runs
+    assert int(estimate["estimated_tick_events"]) <= max_tick_events
     assert estimate.get("audit_mode") != "complete_external"
     assert int(estimate.get("walk_forward_window_count") or 0) == 0
+    matrix_size = (
+        int(estimate["candidate_count"])
+        * int(estimate["scenario_count"])
+        * int(estimate["split_count"])
+    )
+    assert matrix_size <= max_matrix_size

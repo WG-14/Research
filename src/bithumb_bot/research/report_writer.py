@@ -67,6 +67,22 @@ def research_artifact_paths(paths: ResearchReportPaths) -> dict[str, str]:
     }
 
 
+def finalize_research_report_payload(
+    *,
+    manager: PathManager,
+    experiment_id: str,
+    report_name: str,
+    payload: dict[str, Any],
+) -> tuple[ResearchReportPaths, dict[str, Any], str]:
+    paths = research_paths(manager, experiment_id, report_name)
+    report_payload = dict(payload)
+    report_payload["artifact_refs"] = research_artifact_refs(paths, manager=manager)
+    report_payload["artifact_paths"] = research_artifact_paths(paths)
+    content_hash = sha256_prefixed(report_content_hash_payload(report_payload))
+    report_payload["content_hash"] = content_hash
+    return paths, report_payload, content_hash
+
+
 def write_research_report(
     *,
     manager: PathManager,
@@ -74,12 +90,12 @@ def write_research_report(
     report_name: str,
     payload: dict[str, Any],
 ) -> tuple[ResearchReportPaths, str]:
-    paths = research_paths(manager, experiment_id, report_name)
-    report_payload = dict(payload)
-    report_payload.setdefault("artifact_refs", research_artifact_refs(paths, manager=manager))
-    report_payload.setdefault("artifact_paths", research_artifact_paths(paths))
-    content_hash = sha256_prefixed(report_content_hash_payload(report_payload))
-    report_payload["content_hash"] = content_hash
+    paths, report_payload, content_hash = finalize_research_report_payload(
+        manager=manager,
+        experiment_id=experiment_id,
+        report_name=report_name,
+        payload=payload,
+    )
     write_json_atomic(paths.derived_path, {"candidates": report_payload.get("candidates", [])})
     write_json_atomic(paths.report_path, report_payload)
     return paths, content_hash

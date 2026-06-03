@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -81,7 +82,7 @@ from .metrics_gate_policy import metrics_gate_policy_from_acceptance_gate, metri
 from .metrics_contract import METRICS_SCHEMA_VERSION
 from .parameter_space import candidate_id, iter_parameter_candidates
 from .promotion_gate import build_candidate_behavior_profile, build_candidate_profile
-from .report_writer import research_artifact_paths, research_artifact_refs, write_research_report
+from .report_writer import write_research_report
 from bithumb_bot.storage_io import append_jsonl, write_json_atomic
 from .statistical_selection import (
     PROMOTION_GRADE_GENERATION_UNAVAILABLE_WARNING,
@@ -840,18 +841,16 @@ def run_research_backtest(
         candidate_count=len(candidates),
     )
     stage_started = time.perf_counter()
-    paths, content_hash = write_research_report(
+    stage_timings.append(_stage_timing("report_write", stage_started, candidate_count=len(candidates)))
+    paths, _content_hash = write_research_report(
         manager=manager,
         experiment_id=manifest.experiment_id,
         report_name="backtest",
         payload=report,
     )
-    stage_timings.append(_stage_timing("report_write", stage_started, candidate_count=len(candidates)))
-    report["content_hash"] = content_hash
-    report["artifact_refs"] = research_artifact_refs(paths, manager=manager)
-    report["artifact_paths"] = research_artifact_paths(paths)
-    report["execution_observability"] = execution_observability
-    write_json_atomic(paths.report_path, report)
+    persisted_report = json.loads(paths.report_path.read_text(encoding="utf-8"))
+    report.clear()
+    report.update(persisted_report)
     _emit_progress(
         progress_callback,
         stage="complete",
@@ -1030,18 +1029,16 @@ def run_research_walk_forward(
         candidate_count=len(candidates),
     )
     stage_started = time.perf_counter()
-    paths, content_hash = write_research_report(
+    stage_timings.append(_stage_timing("report_write", stage_started, candidate_count=len(candidates)))
+    paths, _content_hash = write_research_report(
         manager=manager,
         experiment_id=manifest.experiment_id,
         report_name="walk_forward",
         payload=report,
     )
-    stage_timings.append(_stage_timing("report_write", stage_started, candidate_count=len(candidates)))
-    report["content_hash"] = content_hash
-    report["artifact_refs"] = research_artifact_refs(paths, manager=manager)
-    report["artifact_paths"] = research_artifact_paths(paths)
-    report["execution_observability"] = execution_observability
-    write_json_atomic(paths.report_path, report)
+    persisted_report = json.loads(paths.report_path.read_text(encoding="utf-8"))
+    report.clear()
+    report.update(persisted_report)
     _emit_progress(
         progress_callback,
         stage="complete",

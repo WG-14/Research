@@ -18,7 +18,7 @@ python3 -m pytest tests/test_operator_commands.py::test_cmd_signal_no_data_outpu
 The default PR fast-suite gate is:
 
 ```bash
-uv run pytest -q -m "not research_e2e and not nightly and not audit_e2e and not walk_forward_e2e and not parallel_e2e and not memory_sensitive"
+uv run pytest -q -m "not research_e2e and not audit_e2e and not walk_forward_e2e and not parallel_e2e and not nightly and not slow_research and not memory_sensitive"
 ```
 
 The script form is:

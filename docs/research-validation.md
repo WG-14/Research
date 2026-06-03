@@ -273,10 +273,18 @@ or trade-count limits, and every split report includes the applied resource
 policy and memory sampling policy.
 
 Default PR validation excludes real research E2E, complete-external audit E2E,
-walk-forward E2E, serial/parallel E2E, nightly, and memory-sensitive tests:
+walk-forward E2E, serial/parallel E2E, nightly, slow research, and
+memory-sensitive tests:
 
 ```bash
-uv run pytest -q -m "not research_e2e and not nightly and not audit_e2e and not walk_forward_e2e and not parallel_e2e and not memory_sensitive"
+uv run pytest -q -m "not research_e2e and not audit_e2e and not walk_forward_e2e and not parallel_e2e and not nightly and not slow_research and not memory_sensitive"
+```
+
+Dedicated research/nightly validation collects the intentionally expensive
+research pipeline tests:
+
+```bash
+uv run pytest -q -m "research_e2e or audit_e2e or walk_forward_e2e or parallel_e2e or nightly or slow_research"
 ```
 
 Research tests that run real strategy/kernel or full research pipeline work use
