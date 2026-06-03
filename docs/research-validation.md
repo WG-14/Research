@@ -258,6 +258,16 @@ specific markers such as `research_kernel`, `research_e2e`, `audit_e2e`,
 `resource_guard`. The focused reproduction for the historical order-dependent
 high-water RSS regression is:
 
+Marker meaning follows the execution boundary. `research_e2e`,
+`audit_e2e`, `walk_forward_e2e`, and `parallel_e2e` are reserved for tests
+that exercise the real production evaluator or real research kernel boundary.
+Tests that use `DeterministicResearchEvaluator`, `_run_contract_research_*`,
+report factories, payload factories, `AuditTraceScope`, or other fake/lower
+level inputs are contract or integration tests. Fast contract research tests
+must assert the exposed workload budget; larger fake-evaluator contract checks
+must also carry a marker excluded by the default fast command, such as
+`nightly`, rather than borrowing a real E2E marker.
+
 ```bash
 uv run pytest -q --tb=short --maxfail=1 \
   tests/test_research_backtest_reproducibility.py::test_tiny_three_day_sma_backtest_completes_structurally \

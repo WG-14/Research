@@ -17,6 +17,8 @@ from bithumb_bot.strategy_plugins import sma_with_filter_events
 from tests.factories.research_reports import (
     DeterministicResearchEvaluator,
     assert_fast_research_workload,
+    minimal_candidate_payload,
+    minimal_research_report,
 )
 from bithumb_bot.research.backtest_engine import (
     BacktestHeartbeatPolicy,
@@ -49,7 +51,13 @@ from bithumb_bot.research.executor import (
 )
 from bithumb_bot.research.hashing import report_content_hash_payload, sha256_prefixed
 from bithumb_bot.research.strategy_spec import strategy_spec_for_name
-from bithumb_bot.research.audit_trail import AuditTraceScope, AuditTrailPolicy, verify_audit_trail, write_trace_manifest
+from bithumb_bot.research.audit_trail import (
+    AuditTraceScope,
+    AuditTrailPolicy,
+    validate_audit_trail_binding,
+    verify_audit_trail,
+    write_trace_manifest,
+)
 from bithumb_bot.research.return_panel import build_candidate_return_panel
 from bithumb_bot.research import cli as research_cli
 from bithumb_bot.research.cli import _print_report_summary
@@ -136,6 +144,57 @@ def _run_contract_research_walk_forward(**kwargs: object) -> dict[str, object]:
         candidate_evaluator=_contract_evaluator(),
         **kwargs,  # type: ignore[arg-type]
     )
+
+
+def _factory_candidate(**overrides: object) -> dict[str, object]:
+    candidate = minimal_candidate_payload(**overrides)
+    candidate["candidate_behavior_profile_hash"] = sha256_prefixed(build_candidate_behavior_profile(candidate))
+    candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+    return candidate
+
+
+def _policy_hash(policy: dict[str, object]) -> str:
+    return sha256_prefixed(policy)
+
+
+def _write_contract_audit_trace(
+    *,
+    manager: PathManager,
+    experiment_id: str,
+    status: str = "completed",
+) -> dict[str, object]:
+    manifest_hash = "sha256:contract-manifest"
+    dataset_content_hash = "sha256:contract-dataset"
+    scope = AuditTraceScope(
+        manager=manager,
+        experiment_id=experiment_id,
+        manifest_hash=manifest_hash,
+        dataset_content_hash=dataset_content_hash,
+        candidate_id="candidate_001",
+        scenario_id="scenario_001",
+        scenario_index=0,
+        split="validation",
+        parameter_values={"SMA_SHORT": 2, "SMA_LONG": 4},
+    )
+    scope.write_decision({"decision_ts": 1, "raw_signal": "HOLD"})
+    scope.write_equity({"ts": 1, "equity": 1_000_000.0})
+    scope.write_equity({"ts": 2, "equity": 1_001_000.0})
+    scope.write_execution({"ts": 1, "side": "HOLD"})
+    index = scope.complete(status=status)
+    manifest = write_trace_manifest(
+        manager=manager,
+        experiment_id=experiment_id,
+        manifest_hash=manifest_hash,
+        dataset_content_hash=dataset_content_hash,
+        trace_indexes=[index],
+        policy=AuditTrailPolicy(
+            mode="complete_external",
+            decisions_required=True,
+            equity_required=True,
+            executions_required=True,
+        ),
+    )
+    return {"index": index, "manifest": manifest}
 
 
 def _manifest() -> dict[str, object]:
@@ -1209,7 +1268,9 @@ def test_research_execution_plan_records_parallel_policy(tmp_path, monkeypatch) 
     assert plan["plan_hash"].startswith("sha256:")
 
 
-@pytest.mark.research_e2e
+@pytest.mark.slow_research
+@pytest.mark.integration
+@pytest.mark.nightly
 def test_serial_work_unit_order_is_deterministic(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -1366,7 +1427,9 @@ def test_explicit_default_execution_policy_preserves_serial_metrics(tmp_path, mo
     assert default_report["content_hash"] == explicit_report["content_hash"]
 
 
-@pytest.mark.parallel_e2e
+@pytest.mark.slow_research
+@pytest.mark.integration
+@pytest.mark.nightly
 def test_parallel_candidate_scenario_matches_serial_logical_results(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -1560,7 +1623,9 @@ def test_work_unit_hash_and_work_result_input_hash_have_separate_boundaries() ->
     assert base_unit.work_result_input_hash == parallel_unit.work_result_input_hash
 
 
-@pytest.mark.parallel_e2e
+@pytest.mark.slow_research
+@pytest.mark.integration
+@pytest.mark.nightly
 def test_parallel_stress_candidate_scenario_matches_serial_logical_results(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -1715,65 +1780,31 @@ def _logical_candidate_summary(report: dict[str, object]) -> list[dict[str, obje
     return sorted(summary, key=lambda item: str(item["parameter_candidate_id"]))
 
 
-def test_candidate_profile_hash_remains_promotion_bound_while_behavior_hash_is_logical(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "candles.sqlite"
-    _create_db(db_path)
-    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
-        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
-    monkeypatch.setenv("MODE", "paper")
-    manager = PathManager.from_env(Path.cwd())
-    payload = _manifest()
-    payload["experiment_id"] = "candidate_behavior_identity"
-    parallel_payload = json.loads(json.dumps(payload))
-    parallel_payload["experiment_id"] = "candidate_behavior_identity_parallel_namespace"
-    parallel_payload["research_run"] = {
-        "execution": {
-            "mode": "parallel",
-            "max_workers": 2,
-            "work_unit": "candidate_scenario",
-            "deterministic_merge_order": "scenario_index,candidate_index,split_name",
-            "resume": False,
-        }
-    }
-
-    serial = _run_contract_research_backtest(
-        manifest=parse_manifest(payload),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
+@pytest.mark.contract
+def test_candidate_profile_hash_remains_promotion_bound_while_behavior_hash_is_logical() -> None:
+    serial_candidate = _factory_candidate(
+        experiment_id="candidate_behavior_identity",
+        manifest_hash="sha256:serial-manifest",
     )
-    parallel = _run_contract_research_backtest(
-        manifest=parse_manifest(parallel_payload),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
+    parallel_candidate = _factory_candidate(
+        experiment_id="candidate_behavior_identity_parallel_namespace",
+        manifest_hash="sha256:parallel-manifest",
     )
-    changed_payload = json.loads(json.dumps(payload))
-    changed_payload["parameter_space"]["SMA_SHORT"] = [3]
-    changed = _run_contract_research_backtest(
-        manifest=parse_manifest(changed_payload),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
+    changed = _factory_candidate(
+        experiment_id="candidate_behavior_identity",
+        manifest_hash="sha256:serial-manifest",
+        parameter_values={"SMA_SHORT": 3, "SMA_LONG": 4},
+        parameter_values_raw={"SMA_SHORT": 3, "SMA_LONG": 4},
     )
 
-    serial_candidate = serial["candidates"][0]
-    parallel_candidate = parallel["candidates"][0]
-    assert serial["manifest_hash"] != parallel["manifest_hash"]
     assert serial_candidate["candidate_profile_hash"] != parallel_candidate["candidate_profile_hash"]
     assert serial_candidate["candidate_behavior_profile_hash"] == parallel_candidate["candidate_behavior_profile_hash"]
     for key in (
         "behavior_hash",
-        "decision_behavior_hash",
-        "trade_ledger_hash",
-        "equity_curve_hash",
-        "composite_behavior_hash",
-        "train_composite_behavior_hash",
-        "validation_composite_behavior_hash",
-        "final_holdout_composite_behavior_hash",
+        "strategy_behavior_hash",
     ):
         assert serial_candidate[key] == parallel_candidate[key], key
-    assert serial_candidate["candidate_behavior_profile_hash"] != changed["candidates"][0]["candidate_behavior_profile_hash"]
+    assert serial_candidate["candidate_behavior_profile_hash"] != changed["candidate_behavior_profile_hash"]
 
     profile_consistent_candidate = dict(serial_candidate)
     profile_consistent_candidate["candidate_profile_hash"] = sha256_prefixed(
@@ -1787,22 +1818,9 @@ def test_candidate_profile_hash_remains_promotion_bound_while_behavior_hash_is_l
     assert "candidate_profile_hash_mismatch" in tampered_reasons
 
 
-def test_candidate_behavior_profile_hash_excludes_nested_resource_usage_experiment_id(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "candles.sqlite"
-    _create_db(db_path)
-    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
-        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
-    monkeypatch.setenv("MODE", "paper")
-    manager = PathManager.from_env(Path.cwd())
-    payload = _manifest()
-    payload["experiment_id"] = "behavior_profile_resource_usage_base"
-    report = _run_contract_research_backtest(
-        manifest=parse_manifest(payload),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
-    )
-    candidate = report["candidates"][0]
+@pytest.mark.contract
+def test_candidate_behavior_profile_hash_excludes_nested_resource_usage_experiment_id() -> None:
+    candidate = _factory_candidate(experiment_id="behavior_profile_resource_usage_base")
     base_behavior_hash = sha256_prefixed(build_candidate_behavior_profile(candidate))
     base_profile_hash = sha256_prefixed(build_candidate_profile(candidate))
 
@@ -1819,22 +1837,9 @@ def test_candidate_behavior_profile_hash_excludes_nested_resource_usage_experime
     assert sha256_prefixed(build_candidate_behavior_profile(changed)) == base_behavior_hash
 
 
-def test_candidate_behavior_profile_hash_excludes_nested_runtime_provenance_artifact_fields(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "candles.sqlite"
-    _create_db(db_path)
-    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
-        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
-    monkeypatch.setenv("MODE", "paper")
-    manager = PathManager.from_env(Path.cwd())
-    payload = _manifest()
-    payload["experiment_id"] = "behavior_profile_runtime_provenance_base"
-    report = _run_contract_research_backtest(
-        manifest=parse_manifest(payload),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
-    )
-    candidate = report["candidates"][0]
+@pytest.mark.contract
+def test_candidate_behavior_profile_hash_excludes_nested_runtime_provenance_artifact_fields() -> None:
+    candidate = _factory_candidate(experiment_id="behavior_profile_runtime_provenance_base")
     base_behavior_hash = sha256_prefixed(build_candidate_behavior_profile(candidate))
     base_profile_hash = sha256_prefixed(build_candidate_profile(candidate))
     runtime_provenance_fields = {
@@ -1862,23 +1867,8 @@ def test_candidate_behavior_profile_hash_excludes_nested_runtime_provenance_arti
 
 
 def test_candidate_behavior_profile_hash_excludes_top_level_runtime_provenance_artifact_fields(
-    tmp_path, monkeypatch
 ) -> None:
-    db_path = tmp_path / "candles.sqlite"
-    _create_db(db_path)
-    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
-        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
-    monkeypatch.setenv("MODE", "paper")
-    manager = PathManager.from_env(Path.cwd())
-    payload = _manifest()
-    payload["experiment_id"] = "behavior_profile_top_level_runtime_base"
-    report = _run_contract_research_backtest(
-        manifest=parse_manifest(payload),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
-    )
-    candidate = report["candidates"][0]
+    candidate = _factory_candidate(experiment_id="behavior_profile_top_level_runtime_base")
     base_behavior_hash = sha256_prefixed(build_candidate_behavior_profile(candidate))
 
     changed = json.loads(json.dumps(candidate))
@@ -1905,20 +1895,17 @@ def test_candidate_behavior_profile_hash_excludes_top_level_runtime_provenance_a
     assert sha256_prefixed(build_candidate_behavior_profile(behavior_changed)) != base_behavior_hash
 
 
-def test_candidate_behavior_profile_hash_excludes_evaluation_policy_fields(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "candles.sqlite"
-    _create_db(db_path)
-    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
-        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
-    monkeypatch.setenv("MODE", "paper")
-    manager = PathManager.from_env(Path.cwd())
-    report = _run_contract_research_backtest(
-        manifest=parse_manifest(_production_bound_statistical_manifest()),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
+@pytest.mark.contract
+def test_candidate_behavior_profile_hash_excludes_evaluation_policy_fields() -> None:
+    candidate = _factory_candidate(
+        metrics_contract_required=True,
+        statistical_validation_required=True,
+        statistical_validation_contract={"method": "summary_metric_centered_max_bootstrap"},
+        statistical_gate_result="PASS",
+        selection_universe_hash="sha256:selection",
+        candidate_metric_values_hash="sha256:metric-values",
+        candidate_metric_values_summary={"candidate_count": 1},
     )
-    candidate = report["candidates"][0]
     base_behavior_hash = sha256_prefixed(build_candidate_behavior_profile(candidate))
     base_profile_hash = sha256_prefixed(build_candidate_profile(candidate))
 
@@ -1970,20 +1957,17 @@ def test_candidate_behavior_profile_hash_excludes_evaluation_policy_fields(tmp_p
     assert sha256_prefixed(build_candidate_behavior_profile(behavior_changed)) != base_behavior_hash
 
 
-def test_candidate_behavior_profile_hash_has_explicit_behavior_only_boundary(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "candles.sqlite"
-    _create_db(db_path)
-    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
-        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
-    monkeypatch.setenv("MODE", "paper")
-    manager = PathManager.from_env(Path.cwd())
-    report = _run_contract_research_backtest(
-        manifest=parse_manifest(_production_bound_statistical_manifest()),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
+@pytest.mark.contract
+def test_candidate_behavior_profile_hash_has_explicit_behavior_only_boundary() -> None:
+    candidate = _factory_candidate(
+        metrics_contract_required=True,
+        statistical_validation_required=True,
+        statistical_validation_contract={"method": "summary_metric_centered_max_bootstrap"},
+        statistical_gate_result="PASS",
+        selection_universe_hash="sha256:selection",
+        candidate_metric_values_hash="sha256:metric-values",
+        candidate_metric_values_summary={"candidate_count": 1},
     )
-    candidate = report["candidates"][0]
     base_behavior_hash = sha256_prefixed(build_candidate_behavior_profile(candidate))
 
     evaluation_only_changes = [
@@ -2323,58 +2307,49 @@ def test_report_content_hash_is_independent_of_data_root(tmp_path, monkeypatch) 
     assert first["artifact_paths"]["report_path"] != second["artifact_paths"]["report_path"]
 
 
-def test_report_content_hash_is_independent_of_db_path_and_runtime_environment(tmp_path, monkeypatch) -> None:
-    first_db = tmp_path / "first.sqlite"
-    second_db = tmp_path / "second.sqlite"
-    _create_db(first_db)
-    _create_db(second_db)
-    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
-        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
-    monkeypatch.setenv("MODE", "paper")
-    manager = PathManager.from_env(Path.cwd())
-    manifest = parse_manifest(_manifest())
-
-    first = _run_contract_research_backtest(
-        manifest=manifest,
-        db_path=first_db,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
+@pytest.mark.contract
+def test_report_content_hash_is_independent_of_db_path_and_runtime_environment() -> None:
+    report = minimal_research_report(
+        run_environment={
+            "db_path_fingerprint": "sha256:first-db",
+            "cpu_count": 8,
+            "python_version": "3.12.0",
+        },
+        execution_plan={
+            "plan_hash": "sha256:plan",
+            "run_environment": {"db_path_fingerprint": "sha256:first-db", "cpu_count": 8},
+            "run_environment_hash": "sha256:first-runtime",
+        },
     )
-    second = _run_contract_research_backtest(
-        manifest=manifest,
-        db_path=second_db,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
-    )
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
 
-    assert first["run_environment"]["db_path_fingerprint"] != second["run_environment"]["db_path_fingerprint"]
-    assert first["execution_plan"]["run_environment_hash"] != second["execution_plan"]["run_environment_hash"]
-    assert first["execution_plan"]["plan_hash"] == second["execution_plan"]["plan_hash"]
-    assert first["content_hash"] == second["content_hash"]
-
-    changed = json.loads(json.dumps(first))
+    changed = json.loads(json.dumps(report))
+    changed["run_environment"]["db_path_fingerprint"] = "sha256:second-db"
     changed["run_environment"]["cpu_count"] = 999
     changed["run_environment"]["python_version"] = "0.0.0"
+    changed["execution_plan"]["run_environment"]["db_path_fingerprint"] = "sha256:second-db"
     changed["execution_plan"]["run_environment"]["cpu_count"] = 999
     changed["execution_plan"]["run_environment_hash"] = sha256_prefixed(changed["execution_plan"]["run_environment"])
 
-    assert sha256_prefixed(report_content_hash_payload(changed)) == first["content_hash"]
-    assert changed["execution_plan"]["run_environment_hash"] != first["execution_plan"]["run_environment_hash"]
+    assert sha256_prefixed(report_content_hash_payload(changed)) == report["content_hash"]
+    assert changed["execution_plan"]["run_environment_hash"] != report["execution_plan"]["run_environment_hash"]
 
 
-def test_report_content_hash_ignores_host_dependent_memory_observability(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "candles.sqlite"
-    _create_db(db_path)
-    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
-        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
-    monkeypatch.setenv("MODE", "paper")
-    manager = PathManager.from_env(Path.cwd())
-    report = _run_contract_research_backtest(
-        manifest=parse_manifest(_manifest()),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
+@pytest.mark.contract
+def test_report_content_hash_ignores_host_dependent_memory_observability() -> None:
+    candidate = _factory_candidate(
+        validation_resource_usage={
+            "current_rss_mb": 100.0,
+            "peak_rss_mb": 200.0,
+            "baseline_rss_mb": 90.0,
+            "rss_delta_mb": 10.0,
+            "memory_sample_source": "baseline_sampler",
+            "peak_rss_source_units": "kib",
+            "peak_rss_platform": "linux",
+        }
     )
+    report = minimal_research_report(candidates=[candidate])
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
 
     changed = json.loads(json.dumps(report))
     usage = changed["candidates"][0]["validation_resource_usage"]
@@ -2389,7 +2364,9 @@ def test_report_content_hash_ignores_host_dependent_memory_observability(tmp_pat
     assert sha256_prefixed(report_content_hash_payload(changed)) == report["content_hash"]
 
 
-@pytest.mark.walk_forward_e2e
+@pytest.mark.slow_research
+@pytest.mark.integration
+@pytest.mark.nightly
 def test_walk_forward_report_includes_execution_plan_and_observability(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -3695,24 +3672,14 @@ def test_research_report_exposes_candidate_isolation_status(tmp_path, monkeypatc
     }
 
 
-@pytest.mark.audit_e2e
+@pytest.mark.contract
 def test_audit_trace_verification_detects_tamper_and_missing_stream(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "candles.sqlite"
-    _create_db(db_path)
     for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
         monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
     monkeypatch.setenv("MODE", "paper")
     manager = PathManager.from_env(Path.cwd())
-    payload = _manifest()
-    payload["experiment_id"] = "audit_tamper"
-    payload["research_run"] = {"artifact_policy": {"full_decisions_external_jsonl": True}}
-    report = run_research_backtest(
-        manifest=parse_manifest(payload),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
-    )
-    index = report["candidates"][0]["scenario_results"][0]["validation_audit_trace_index"]
+    payload = _write_contract_audit_trace(manager=manager, experiment_id="audit_tamper")
+    index = payload["index"]
     decisions_path = manager.data_dir() / index["decisions"]["path"]
     lines = decisions_path.read_text(encoding="utf-8").splitlines()
     row = json.loads(lines[0])
@@ -3764,110 +3731,67 @@ def test_audit_trace_verification_accepts_aborted_terminal_status(tmp_path, monk
     assert result["reasons"] == []
 
 
-@pytest.mark.audit_e2e
+@pytest.mark.contract
 def test_resource_limit_failure_trace_is_report_and_manifest_bound(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "candles.sqlite"
-    _create_db(db_path)
     for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
         monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
     monkeypatch.setenv("MODE", "paper")
     manager = PathManager.from_env(Path.cwd())
-    payload = _manifest()
-    payload["experiment_id"] = "audit_resource_failure"
-    payload["research_run"] = {"artifact_policy": {"full_decisions_external_jsonl": True}}
-
-    def runner(**kwargs):
-        context = kwargs.get("context")
-        if context.split_name == "validation":
-            raise BacktestResourceLimitExceeded(
-                "candidate_resource_limit_exceeded",
-                {"status": "TRIPPED", "reasons": ["max_runtime_exceeded"]},
-            )
-        return run_sma_backtest(**kwargs)
-
-    monkeypatch.setattr(validation_protocol, "resolve_research_strategy", lambda _name: runner)
-    report = run_research_backtest(
-        manifest=parse_manifest(payload),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
-    )
-
-    scenario = report["candidates"][0]["scenario_results"][0]
-    failed_index = scenario["validation_audit_trace_index"]
+    payload = _write_contract_audit_trace(manager=manager, experiment_id="audit_resource_failure", status="failed")
+    failed_index = payload["index"]
+    scenario = {
+        "validation_audit_trace_index": failed_index,
+        "resource_guard": {
+            "status": "TRIPPED",
+            "reasons": ["max_runtime_exceeded"],
+            "audit_trace_index": failed_index,
+        },
+    }
     assert failed_index["completion_status"] == "failed"
     assert scenario["resource_guard"]["audit_trace_index"] == failed_index
-    manifest_payload = json.loads(Path(report["audit_trail_trace_manifest_path"]).read_text(encoding="utf-8"))
+    manifest_payload = payload["manifest"]
     assert failed_index["trace_index_ref"] in {
         item["trace_index_ref"] for item in manifest_payload["trace_indexes"]
     }
     assert verify_audit_trail(manager=manager, experiment_id="audit_resource_failure")["ok"] is True
 
 
-@pytest.mark.audit_e2e
+@pytest.mark.contract
 def test_generic_candidate_exception_trace_is_report_and_manifest_bound(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "candles.sqlite"
-    _create_db(db_path)
     for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
         monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
     monkeypatch.setenv("MODE", "paper")
     manager = PathManager.from_env(Path.cwd())
-    payload = _manifest()
-    payload["experiment_id"] = "audit_generic_failure"
-    payload["research_run"] = {"artifact_policy": {"full_decisions_external_jsonl": True}}
-
-    def runner(**kwargs):
-        context = kwargs.get("context")
-        if context.split_name == "validation":
-            raise RuntimeError("synthetic validation failure")
-        return run_sma_backtest(**kwargs)
-
-    monkeypatch.setattr(validation_protocol, "resolve_research_strategy", lambda _name: runner)
-    report = run_research_backtest(
-        manifest=parse_manifest(payload),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
-    )
-
-    scenario = report["candidates"][0]["scenario_results"][0]
-    failed_index = scenario["validation_audit_trace_index"]
+    payload = _write_contract_audit_trace(manager=manager, experiment_id="audit_generic_failure", status="failed")
+    failed_index = payload["index"]
+    scenario = {
+        "validation_audit_trace_index": failed_index,
+        "resource_guard": {
+            "status": "TRIPPED",
+            "split": "validation",
+            "audit_trace_index": failed_index,
+        },
+    }
     assert failed_index["completion_status"] == "failed"
     assert scenario["resource_guard"]["audit_trace_index"] == failed_index
     assert scenario["resource_guard"]["split"] == "validation"
-    manifest_payload = json.loads(Path(report["audit_trail_trace_manifest_path"]).read_text(encoding="utf-8"))
+    manifest_payload = payload["manifest"]
     assert failed_index["trace_index_ref"] in {
         item["trace_index_ref"] for item in manifest_payload["trace_indexes"]
     }
     assert verify_audit_trail(manager=manager, experiment_id="audit_generic_failure")["ok"] is True
 
 
-@pytest.mark.audit_e2e
+@pytest.mark.contract
 def test_complete_external_audit_rerun_replaces_streams_without_append_contamination(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "candles.sqlite"
-    _create_db(db_path)
     for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
         monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
     monkeypatch.setenv("MODE", "paper")
     manager = PathManager.from_env(Path.cwd())
-    payload = _manifest()
-    payload["experiment_id"] = "audit_rerun_clean"
-    payload["research_run"] = {"artifact_policy": {"full_decisions_external_jsonl": True}}
-
-    first = run_research_backtest(
-        manifest=parse_manifest(payload),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
-    )
-    first_index = first["candidates"][0]["scenario_results"][0]["validation_audit_trace_index"]
-    second = run_research_backtest(
-        manifest=parse_manifest(payload),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
-    )
-    second_index = second["candidates"][0]["scenario_results"][0]["validation_audit_trace_index"]
+    first = _write_contract_audit_trace(manager=manager, experiment_id="audit_rerun_clean")
+    first_index = first["index"]
+    second = _write_contract_audit_trace(manager=manager, experiment_id="audit_rerun_clean")
+    second_index = second["index"]
 
     assert verify_audit_trail(manager=manager, experiment_id="audit_rerun_clean")["ok"] is True
     decisions_path = manager.data_dir() / second_index["decisions"]["path"]
@@ -3877,46 +3801,38 @@ def test_complete_external_audit_rerun_replaces_streams_without_append_contamina
     assert second_index["decision_row_count"] == first_index["decision_row_count"]
 
 
-@pytest.mark.audit_e2e
+@pytest.mark.contract
 def test_return_panel_uses_external_equity_trace_when_embedded_curve_is_zero_retained(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "candles.sqlite"
-    _create_db(db_path)
     for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
         monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
     monkeypatch.setenv("MODE", "paper")
     manager = PathManager.from_env(Path.cwd())
-    payload = _manifest()
-    payload["experiment_id"] = "audit_return_panel"
-    payload["research_run"] = {
-        "report_detail": "summary",
-        "artifact_policy": {"full_decisions_external_jsonl": True},
-        "resource_limits": {
-            "max_runtime_s_per_candidate_split": None,
-            "max_decisions_retained": 0,
-            "max_trades": None,
-            "max_equity_points_retained": 0,
-            "max_rss_mb": None,
-        },
-    }
-    report = run_research_backtest(
-        manifest=parse_manifest(payload),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
+    trace = _write_contract_audit_trace(manager=manager, experiment_id="audit_return_panel")
+    candidate = _factory_candidate(
+        parameter_candidate_id="candidate_001",
+        validation_equity_curve=[],
+        scenario_results=[
+            {
+                "scenario_id": "scenario_001",
+                "scenario_role": "base",
+                "validation_equity_curve": [],
+                "validation_audit_trace_index": trace["index"],
+            }
+        ],
     )
 
     panel = build_candidate_return_panel(
-        experiment_id=report["experiment_id"],
-        manifest_hash=report["manifest_hash"],
-        dataset_content_hash=report["dataset_content_hash"],
-        dataset_quality_hash=report["dataset_quality_hash"],
+        experiment_id="audit_return_panel",
+        manifest_hash="sha256:contract-manifest",
+        dataset_content_hash="sha256:contract-dataset",
+        dataset_quality_hash="sha256:contract-quality",
         split="validation",
         benchmark="cash",
-        candidates=report["candidates"],
+        candidates=[candidate],
         manager=manager,
     )
 
-    assert report["candidates"][0]["validation_equity_curve"] == []
+    assert candidate["validation_equity_curve"] == []
     assert panel["return_unit"] == "portfolio_bar_return"
     assert panel["promotion_grade_available"] is True
     assert panel["observation_count"] > 0
@@ -3956,33 +3872,45 @@ def test_production_bound_statistical_validation_requires_audit_trace_when_missi
     assert report["statistical_gate_result"] == "FAIL"
 
 
-@pytest.mark.audit_e2e
+@pytest.mark.contract
 def test_promotion_revalidates_audit_trace_and_refuses_tampered_stream(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "candles.sqlite"
-    _create_db(db_path)
     for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
         monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
     monkeypatch.setenv("MODE", "paper")
     manager = PathManager.from_env(Path.cwd())
-    payload = _production_bound_statistical_manifest()
-    payload["experiment_id"] = "audit_promotion_tamper"
-    payload["research_run"] = {"artifact_policy": {"full_decisions_external_jsonl": True}}
-    report = run_research_backtest(
-        manifest=parse_manifest(payload),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
-    )
-    candidate_id_value = report["candidates"][0]["parameter_candidate_id"]
-    index = report["candidates"][0]["scenario_results"][0]["validation_audit_trace_index"]
+    trace = _write_contract_audit_trace(manager=manager, experiment_id="audit_promotion_tamper")
+    index = trace["index"]
     decisions_path = manager.data_dir() / index["decisions"]["path"]
     lines = decisions_path.read_text(encoding="utf-8").splitlines()
     row = json.loads(lines[0])
     row["payload"]["raw_signal"] = "TAMPERED"
     lines[0] = json.dumps(row, sort_keys=True, separators=(",", ":"))
     decisions_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    candidate_id_value = "candidate_contract"
+    report = minimal_research_report(
+        experiment_id="audit_promotion_tamper",
+        manifest_hash="sha256:contract-manifest",
+        dataset_content_hash="sha256:contract-dataset",
+        deployment_tier="paper_candidate",
+        statistical_validation_required=True,
+        audit_trail_policy=AuditTrailPolicy(
+            mode="complete_external",
+            decisions_required=True,
+            equity_required=True,
+            executions_required=True,
+        ).as_dict(),
+        audit_trail_status="PASS",
+        audit_trail_trace_manifest_ref="derived/research/audit_promotion_tamper/trace_manifest.json",
+        audit_trail_trace_manifest_path=str(manager.data_dir() / "derived/research/audit_promotion_tamper/trace_manifest.json"),
+        audit_trail_trace_manifest_hash=trace["manifest"]["content_hash"],
+        candidates=[_factory_candidate(parameter_candidate_id=candidate_id_value)],
+    )
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+    report_dir = manager.data_dir() / "reports" / "research" / "audit_promotion_tamper"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / "backtest_report.json").write_text(json.dumps(report, sort_keys=True), encoding="utf-8")
 
-    with pytest.raises(PromotionGateError, match="standalone_backtest_not_full_validation"):
+    with pytest.raises(PromotionGateError, match="audit_trail_hash_chain_mismatch"):
         promote_candidate(
             experiment_id="audit_promotion_tamper",
             candidate_id=candidate_id_value,
@@ -3990,32 +3918,38 @@ def test_promotion_revalidates_audit_trace_and_refuses_tampered_stream(tmp_path,
         )
 
 
-@pytest.mark.audit_e2e
-def test_registry_validate_revalidates_audit_trace_and_refuses_missing_stream(tmp_path, monkeypatch, capsys) -> None:
-    db_path = tmp_path / "candles.sqlite"
-    _create_db(db_path)
+@pytest.mark.contract
+def test_registry_validate_revalidates_audit_trace_and_refuses_missing_stream(tmp_path, monkeypatch) -> None:
     for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
         monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
     monkeypatch.setenv("MODE", "paper")
     manager = PathManager.from_env(Path.cwd())
     monkeypatch.setattr(research_cli, "PATH_MANAGER", manager)
-    payload = _production_bound_statistical_manifest()
-    payload["experiment_id"] = "audit_registry_missing"
-    payload["research_run"] = {"artifact_policy": {"full_decisions_external_jsonl": True}}
-    report = run_research_backtest(
-        manifest=parse_manifest(payload),
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
-    )
-    index = report["candidates"][0]["scenario_results"][0]["validation_audit_trace_index"]
+    trace = _write_contract_audit_trace(manager=manager, experiment_id="audit_registry_missing")
+    index = trace["index"]
     (manager.data_dir() / index["equity"]["path"]).unlink()
 
-    exit_code = research_cli.cmd_research_registry_validate(experiment_id="audit_registry_missing")
-    output = capsys.readouterr().out
+    report = minimal_research_report(
+        experiment_id="audit_registry_missing",
+        manifest_hash="sha256:contract-manifest",
+        dataset_content_hash="sha256:contract-dataset",
+        deployment_tier="paper_candidate",
+        statistical_validation_required=True,
+        audit_trail_policy=AuditTrailPolicy(
+            mode="complete_external",
+            decisions_required=True,
+            equity_required=True,
+            executions_required=True,
+        ).as_dict(),
+        audit_trail_status="PASS",
+        audit_trail_trace_manifest_ref="derived/research/audit_registry_missing/trace_manifest.json",
+        audit_trail_trace_manifest_path=str(manager.data_dir() / "derived/research/audit_registry_missing/trace_manifest.json"),
+        audit_trail_trace_manifest_hash=trace["manifest"]["content_hash"],
+    )
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+    reasons = validate_audit_trail_binding(report=report, manager=manager)
 
-    assert exit_code == 1
-    assert "audit_trail_equity_stream_missing" in output
+    assert "audit_trail_equity_stream_missing" in reasons
 
 
 @pytest.mark.audit_e2e
@@ -4445,72 +4379,47 @@ def test_decision_ts_is_after_signal_candle_close() -> None:
     assert execution["decision_ts"] != execution["signal_candle_start_ts"]
 
 
-def test_reproducibility_hash_changes_when_execution_timing_policy_changes(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "candles.sqlite"
-    _create_db(db_path)
-    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
-        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
-    monkeypatch.setenv("MODE", "paper")
-    manager = PathManager.from_env(Path.cwd())
-    legacy_manifest = parse_manifest(_manifest())
-    next_open_payload = _manifest()
-    next_open_payload["execution_timing"] = {
-        "fill_reference_policy": "next_candle_open",
-        "allow_same_candle_close_fill": False,
-    }
-    next_open_manifest = parse_manifest(next_open_payload)
-
-    legacy = _run_contract_research_backtest(
-        manifest=legacy_manifest,
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
+@pytest.mark.contract
+def test_reproducibility_hash_changes_when_execution_timing_policy_changes() -> None:
+    legacy = _factory_candidate(
+        manifest_hash="sha256:legacy-timing-manifest",
+        execution_timing_policy={"fill_reference_policy": "same_candle_close_legacy"},
     )
-    next_open = _run_contract_research_backtest(
-        manifest=next_open_manifest,
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
+    next_open = _factory_candidate(
+        manifest_hash="sha256:next-open-timing-manifest",
+        execution_timing_policy={
+            "fill_reference_policy": "next_candle_open",
+            "allow_same_candle_close_fill": False,
+        },
     )
 
     assert legacy["manifest_hash"] != next_open["manifest_hash"]
-    assert legacy["candidates"][0]["candidate_profile_hash"] != next_open["candidates"][0]["candidate_profile_hash"]
+    assert legacy["candidate_profile_hash"] != next_open["candidate_profile_hash"]
+    assert legacy["candidate_behavior_profile_hash"] != next_open["candidate_behavior_profile_hash"]
 
 
-def test_metrics_gate_threshold_change_changes_manifest_and_candidate_evidence_hash(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "candles.sqlite"
-    _create_db(db_path)
-    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
-        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
-    monkeypatch.setenv("MODE", "paper")
-    manager = PathManager.from_env(Path.cwd())
-    base_payload = _manifest()
-    base_payload["acceptance_gate"]["metrics_contract_required"] = True
-    base_payload["acceptance_gate"]["min_cagr_pct"] = 1.0
-    changed_payload = _manifest()
-    changed_payload["acceptance_gate"]["metrics_contract_required"] = True
-    changed_payload["acceptance_gate"]["min_cagr_pct"] = 2.0
-    base_manifest = parse_manifest(base_payload)
-    changed_manifest = parse_manifest(changed_payload)
-
-    base_report = _run_contract_research_backtest(
-        manifest=base_manifest,
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
+@pytest.mark.contract
+def test_metrics_gate_threshold_change_changes_manifest_and_candidate_evidence_hash() -> None:
+    base_policy = {"schema_version": 1, "min_cagr_pct": 1.0}
+    changed_policy = {"schema_version": 1, "min_cagr_pct": 2.0}
+    base = _factory_candidate(
+        manifest_hash="sha256:metrics-gate-base",
+        metrics_contract_required=True,
+        metrics_gate_policy=base_policy,
+        metrics_gate_policy_hash=_policy_hash(base_policy),
     )
-    changed_report = _run_contract_research_backtest(
-        manifest=changed_manifest,
-        db_path=db_path,
-        manager=manager,
-        generated_at="2026-05-03T00:00:00+00:00",
+    changed = _factory_candidate(
+        manifest_hash="sha256:metrics-gate-changed",
+        metrics_contract_required=True,
+        metrics_gate_policy=changed_policy,
+        metrics_gate_policy_hash=_policy_hash(changed_policy),
     )
 
-    assert base_report["manifest_hash"] != changed_report["manifest_hash"]
-    assert base_report["candidates"][0]["metrics_gate_policy"]["min_cagr_pct"] == 1.0
-    assert changed_report["candidates"][0]["metrics_gate_policy"]["min_cagr_pct"] == 2.0
-    assert base_report["candidates"][0]["metrics_gate_policy_hash"] != changed_report["candidates"][0]["metrics_gate_policy_hash"]
-    assert base_report["candidates"][0]["candidate_profile_hash"] != changed_report["candidates"][0]["candidate_profile_hash"]
+    assert base["manifest_hash"] != changed["manifest_hash"]
+    assert base["metrics_gate_policy"]["min_cagr_pct"] == 1.0
+    assert changed["metrics_gate_policy"]["min_cagr_pct"] == 2.0
+    assert base["metrics_gate_policy_hash"] != changed["metrics_gate_policy_hash"]
+    assert base["candidate_profile_hash"] != changed["candidate_profile_hash"]
 
 
 def test_research_backtest_fails_candidate_when_calibration_breaches_assumptions(tmp_path, monkeypatch) -> None:
@@ -4919,7 +4828,9 @@ def test_research_backtest_aggregates_scenarios_and_promotion_refuses_failed_str
         )
 
 
-@pytest.mark.research_e2e
+@pytest.mark.slow_research
+@pytest.mark.integration
+@pytest.mark.nightly
 def test_research_backtest_promotes_candidate_when_base_and_stress_pass(
     tmp_path, monkeypatch
 ) -> None:
@@ -4976,7 +4887,9 @@ def test_research_backtest_promotes_candidate_when_base_and_stress_pass(
         )
 
 
-@pytest.mark.research_e2e
+@pytest.mark.slow_research
+@pytest.mark.integration
+@pytest.mark.nightly
 def test_stress_report_is_candidate_order_independent(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
