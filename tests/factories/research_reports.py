@@ -376,9 +376,20 @@ def minimal_research_report(**overrides: Any) -> dict[str, Any]:
             "audit_mode": "summary_only",
             "report_detail": "summary",
             "full_decisions_external_jsonl": False,
+            "estimated_audit_stream_rows": 0,
+            "estimated_artifact_write_count": 2,
+            "estimated_hash_payload_bytes": 4096,
+            "estimated_snapshot_hash_count": 1,
+            "uses_production_evaluator": False,
+            "uses_real_parallel_executor": False,
         },
         "audit_trail_policy": {"mode": "summary_only"},
         "audit_trail_status": "DISABLED",
+        "execution_observability": {
+            "production_evaluator_used": False,
+            "contract_evaluator_used": True,
+            "parallel_executor_used": False,
+        },
         "content_hash": sha256_prefixed({"report": "contract"}),
     }
     payload.update(overrides)
@@ -395,6 +406,12 @@ def assert_fast_research_workload(
     allow_complete_external_audit: bool = False,
     allow_full_report_detail: bool = False,
     allow_full_decisions_external_jsonl: bool = False,
+    max_audit_stream_rows: int = 0,
+    max_artifact_write_count: int = 4,
+    max_hash_payload_bytes: int = 1_000_000,
+    max_snapshot_hash_count: int = 3,
+    allow_production_evaluator: bool = False,
+    allow_real_parallel_executor: bool = False,
 ) -> None:
     estimate = report.get("workload_estimate")
     if not isinstance(estimate, dict):
@@ -411,6 +428,13 @@ def assert_fast_research_workload(
         "approx_snapshot_candle_count",
         "audit_mode",
         "report_detail",
+        "full_decisions_external_jsonl",
+        "estimated_audit_stream_rows",
+        "estimated_artifact_write_count",
+        "estimated_hash_payload_bytes",
+        "estimated_snapshot_hash_count",
+        "uses_production_evaluator",
+        "uses_real_parallel_executor",
     ):
         assert key in estimate, f"research workload_estimate missing {key}"
     assert int(estimate["estimated_strategy_runs"]) <= max_strategy_runs
@@ -422,6 +446,14 @@ def assert_fast_research_workload(
         assert estimate.get("report_detail") == "summary"
     if not allow_full_decisions_external_jsonl:
         assert estimate.get("full_decisions_external_jsonl") is not True
+    assert int(estimate["estimated_audit_stream_rows"]) <= max_audit_stream_rows
+    assert int(estimate["estimated_artifact_write_count"]) <= max_artifact_write_count
+    assert int(estimate["estimated_hash_payload_bytes"]) <= max_hash_payload_bytes
+    assert int(estimate["estimated_snapshot_hash_count"]) <= max_snapshot_hash_count
+    if not allow_production_evaluator:
+        assert estimate.get("uses_production_evaluator") is not True
+    if not allow_real_parallel_executor:
+        assert estimate.get("uses_real_parallel_executor") is not True
     matrix_size = (
         int(estimate["candidate_count"])
         * int(estimate["scenario_count"])

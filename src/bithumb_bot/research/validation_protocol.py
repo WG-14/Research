@@ -118,6 +118,8 @@ TOP_OF_BOOK_OPERATOR_NEXT_ACTION = (
 )
 ProgressCallback = Callable[[dict[str, Any]], None]
 _CANDIDATE_SCENARIO_WORKER_CONTEXT: dict[str, Any] | None = None
+FAST_TEST_TIER_ENV = "BITHUMB_TEST_TIER"
+FAST_TEST_TIER_VALUE = "fast"
 
 
 @dataclass(frozen=True)
@@ -624,6 +626,20 @@ def _candidate_evaluator_kind(candidate_evaluator: CandidateScenarioEvaluator | 
     return "production_evaluator" if candidate_evaluator is None else "injected_contract_evaluator"
 
 
+def _fast_test_tier_active() -> bool:
+    return os.environ.get(FAST_TEST_TIER_ENV, "").strip().lower() == FAST_TEST_TIER_VALUE
+
+
+def _enforce_fast_tier_research_runner_policy(
+    *,
+    candidate_evaluator: CandidateScenarioEvaluator | None,
+    entrypoint: str,
+) -> None:
+    if not _fast_test_tier_active() or candidate_evaluator is not None:
+        return
+    raise ResearchValidationError(f"{entrypoint}_production_evaluator_blocked_in_fast_test_tier")
+
+
 def _execution_boundary_observability(
     *,
     manifest: ExperimentManifest,
@@ -693,6 +709,10 @@ def run_research_backtest(
     progress_callback: ProgressCallback | None = None,
     candidate_evaluator: CandidateScenarioEvaluator | None = None,
 ) -> dict[str, Any]:
+    _enforce_fast_tier_research_runner_policy(
+        candidate_evaluator=candidate_evaluator,
+        entrypoint="run_research_backtest",
+    )
     started = time.perf_counter()
     stage_timings: list[dict[str, Any]] = []
     work_unit_observability: list[dict[str, Any]] = []
@@ -873,6 +893,10 @@ def run_research_walk_forward(
     progress_callback: ProgressCallback | None = None,
     candidate_evaluator: CandidateScenarioEvaluator | None = None,
 ) -> dict[str, Any]:
+    _enforce_fast_tier_research_runner_policy(
+        candidate_evaluator=candidate_evaluator,
+        entrypoint="run_research_walk_forward",
+    )
     started = time.perf_counter()
     stage_timings: list[dict[str, Any]] = []
     work_unit_observability: list[dict[str, Any]] = []
@@ -3656,27 +3680,13 @@ def _report_payload(
         "research_run": manifest.research_run.as_dict(),
         "execution_policy": manifest.research_run.execution.as_dict(),
         "execution_plan": execution_plan.as_dict() if execution_plan is not None else None,
-        "workload_estimate": (
-            execution_plan.payload.get("workload_estimate")
-            if execution_plan is not None
-            else {
-                "candidate_count": len(candidates),
-                "scenario_count": len(manifest.execution_model.scenarios),
-                "split_count": len(snapshots),
-                "walk_forward_window_count": 0,
-                "estimated_strategy_runs": _estimated_strategy_runs(
-                    candidate_count=len(candidates),
-                    scenario_count=len(manifest.execution_model.scenarios),
-                    split_count=len(snapshots),
-                    include_walk_forward=report_kind == "walk_forward",
-                    walk_forward_split_count=sum(1 for snapshot in snapshots if snapshot.split_name.startswith("window_")),
-                ),
-                "estimated_tick_events": sum(len(snapshot.candles) for snapshot in snapshots),
-                "approx_snapshot_candle_count": sum(len(snapshot.candles) for snapshot in snapshots),
-                "audit_mode": manifest.research_run.audit_trail.mode,
-                "report_detail": manifest.research_run.report_detail,
-                "full_decisions_external_jsonl": manifest.research_run.artifact_policy.full_decisions_external_jsonl,
-            }
+        "workload_estimate": _report_workload_estimate(
+            manifest=manifest,
+            snapshots=snapshots,
+            candidates=candidates,
+            report_kind=report_kind,
+            execution_plan=execution_plan,
+            execution_observability=execution_observability,
         ),
         "run_environment": (
             execution_plan.payload.get("run_environment")
@@ -3868,6 +3878,71 @@ def _report_payload(
             payload["promotion_eligibility_gate_result"] = "FAIL"
             payload["gate_result"] = "FAIL"
     return payload
+
+
+def _report_workload_estimate(
+    *,
+    manifest: ExperimentManifest,
+    snapshots: tuple[DatasetSnapshot, ...],
+    candidates: list[dict[str, Any]],
+    report_kind: str,
+    execution_plan: ResearchExecutionPlan | None,
+    execution_observability: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if execution_plan is not None and isinstance(execution_plan.payload.get("workload_estimate"), dict):
+        estimate = dict(execution_plan.payload["workload_estimate"])
+    else:
+        snapshot_candles = sum(len(snapshot.candles) for snapshot in snapshots)
+        scenario_count = len(manifest.execution_model.scenarios)
+        split_count = len(snapshots)
+        work_unit_count = len(candidates) * scenario_count
+        audit_mode = manifest.research_run.audit_trail.mode
+        full_decisions = manifest.research_run.artifact_policy.full_decisions_external_jsonl
+        estimate = {
+            "schema_version": 1,
+            "candidate_count": len(candidates),
+            "scenario_count": scenario_count,
+            "split_count": split_count,
+            "walk_forward_window_count": sum(
+                1 for snapshot in snapshots if snapshot.split_name.startswith("window_")
+            )
+            // 2,
+            "estimated_strategy_runs": _estimated_strategy_runs(
+                candidate_count=len(candidates),
+                scenario_count=scenario_count,
+                split_count=split_count,
+                include_walk_forward=report_kind == "walk_forward",
+                walk_forward_split_count=sum(1 for snapshot in snapshots if snapshot.split_name.startswith("window_")),
+            ),
+            "estimated_tick_events": snapshot_candles,
+            "approx_snapshot_candle_count": snapshot_candles,
+            "audit_mode": audit_mode,
+            "report_detail": manifest.research_run.report_detail,
+            "full_decisions_external_jsonl": full_decisions,
+            "estimated_audit_stream_rows": (
+                snapshot_candles * len(candidates) * scenario_count * 3
+                if audit_mode == "complete_external"
+                else 0
+            ),
+            "estimated_artifact_write_count": (
+                3
+                + work_unit_count
+                + (
+                    1 + work_unit_count * split_count * 3
+                    if audit_mode == "complete_external"
+                    else 0
+                )
+                + (work_unit_count * split_count if full_decisions else 0)
+            ),
+            "estimated_hash_payload_bytes": snapshot_candles * 128 + work_unit_count * split_count * 512 + 4096,
+            "estimated_snapshot_hash_count": split_count,
+            "uses_production_evaluator": None,
+            "uses_real_parallel_executor": None,
+        }
+    if isinstance(execution_observability, dict):
+        estimate["uses_production_evaluator"] = bool(execution_observability.get("production_evaluator_used"))
+        estimate["uses_real_parallel_executor"] = bool(execution_observability.get("parallel_executor_used"))
+    return estimate
 
 
 def _subprocess_candidate_isolation_status(

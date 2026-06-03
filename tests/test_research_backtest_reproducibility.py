@@ -159,6 +159,14 @@ def _run_contract_research_walk_forward(**kwargs: object) -> dict[str, object]:
     return report
 
 
+def _call_production_research_backtest(**kwargs: object) -> dict[str, object]:
+    return run_research_backtest(**kwargs)  # type: ignore[arg-type]
+
+
+def _call_production_research_walk_forward(**kwargs: object) -> dict[str, object]:
+    return run_research_walk_forward(**kwargs)  # type: ignore[arg-type]
+
+
 def _factory_candidate(**overrides: object) -> dict[str, object]:
     candidate = minimal_candidate_payload(**overrides)
     candidate["candidate_behavior_profile_hash"] = sha256_prefixed(build_candidate_behavior_profile(candidate))
@@ -1203,6 +1211,65 @@ def test_contract_research_backtest_wrapper_enforces_fast_budget(tmp_path, monke
         )
 
 
+def test_fast_tier_blocks_production_research_runners_before_io(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("BITHUMB_TEST_TIER", "fast")
+    monkeypatch.setenv("MODE", "paper")
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    manager = PathManager.from_env(Path.cwd())
+    manifest = parse_manifest(_manifest())
+
+    def fail_if_loaded(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("dataset loading must not start in fast-tier production-evaluator guard test")
+
+    monkeypatch.setattr(validation_protocol, "load_dataset_split", fail_if_loaded)
+    monkeypatch.setattr(validation_protocol, "_load_walk_forward_snapshots", fail_if_loaded)
+
+    with pytest.raises(ResearchValidationError, match="run_research_backtest_production_evaluator_blocked"):
+        _call_production_research_backtest(
+            manifest=manifest,
+            db_path=tmp_path / "missing.sqlite",
+            manager=manager,
+            generated_at="2026-05-03T00:00:00+00:00",
+        )
+
+    walk_payload = _manifest()
+    walk_payload["walk_forward"] = {
+        "train_window_days": 1,
+        "test_window_days": 1,
+        "step_days": 1,
+        "min_windows": 1,
+    }
+    with pytest.raises(ResearchValidationError, match="run_research_walk_forward_production_evaluator_blocked"):
+        _call_production_research_walk_forward(
+            manifest=parse_manifest(walk_payload),
+            db_path=tmp_path / "missing.sqlite",
+            manager=manager,
+            generated_at="2026-05-03T00:00:00+00:00",
+        )
+
+
+def test_fast_tier_allows_bounded_contract_evaluator_path(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("BITHUMB_TEST_TIER", "fast")
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+
+    report = _run_contract_research_backtest(
+        manifest=parse_manifest(_manifest()),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    assert report["workload_estimate"]["uses_production_evaluator"] is False
+    assert report["workload_estimate"]["uses_real_parallel_executor"] is False
+    assert report["execution_observability"]["contract_evaluator_used"] is True
+
+
 def test_research_execution_plan_counts_multiple_candidates_and_scenarios(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -1245,6 +1312,21 @@ def test_research_execution_plan_counts_multiple_candidates_and_scenarios(tmp_pa
     assert plan["dataset_candles"] == 4320
     assert plan["estimated_candles"] == 4320
     assert plan["estimated_candle_evaluations"] == 17280
+    assert plan["workload_estimate"]["candidate_count"] == 2
+    assert plan["workload_estimate"]["scenario_count"] == 2
+    assert plan["workload_estimate"]["split_count"] == 3
+    assert plan["workload_estimate"]["walk_forward_window_count"] == 0
+    assert plan["workload_estimate"]["estimated_strategy_runs"] == 12
+    assert plan["workload_estimate"]["estimated_tick_events"] == 17280
+    assert plan["workload_estimate"]["audit_mode"] == "summary_only"
+    assert plan["workload_estimate"]["report_detail"] == "summary"
+    assert plan["workload_estimate"]["full_decisions_external_jsonl"] is False
+    assert plan["workload_estimate"]["estimated_audit_stream_rows"] == 0
+    assert plan["workload_estimate"]["estimated_artifact_write_count"] == 7
+    assert plan["workload_estimate"]["estimated_hash_payload_bytes"] > 0
+    assert plan["workload_estimate"]["estimated_snapshot_hash_count"] == 3
+    assert plan["workload_estimate"]["uses_production_evaluator"] is None
+    assert plan["workload_estimate"]["uses_real_parallel_executor"] is None
     assert plan["deterministic_merge_order"] == "scenario_index,candidate_index,split_name"
     assert plan["plan_hash"] == later_plan["plan_hash"]
 

@@ -20,7 +20,7 @@ from bithumb_bot.research.validation_protocol import (
 )
 from bithumb_bot.research.report_writer import write_research_report
 from bithumb_bot.storage_io import write_json_atomic
-from tests.factories.research_reports import minimal_research_report
+from tests.factories.research_reports import assert_fast_research_workload, minimal_research_report
 
 
 class _SnapshotStub:
@@ -239,8 +239,10 @@ def test_walk_forward_report_persists_artifact_discovery_metadata(tmp_path, monk
         execution_observability={
             "production_evaluator_used": False,
             "contract_evaluator_used": True,
+            "parallel_executor_used": False,
         },
     )
+    assert_fast_research_workload(payload)
 
     paths, content_hash = write_research_report(
         manager=manager,

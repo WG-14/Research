@@ -126,6 +126,27 @@ def build_research_execution_plan(
         "audit_mode": manifest.research_run.audit_trail.mode,
         "report_detail": manifest.research_run.report_detail,
         "full_decisions_external_jsonl": manifest.research_run.artifact_policy.full_decisions_external_jsonl,
+        "estimated_audit_stream_rows": _estimated_audit_stream_rows(
+            audit_mode=manifest.research_run.audit_trail.mode,
+            dataset_candles=dataset_candles,
+            candidate_count=len(candidates),
+            scenario_count=len(manifest.execution_model.scenarios),
+        ),
+        "estimated_artifact_write_count": _estimated_artifact_write_count(
+            audit_mode=manifest.research_run.audit_trail.mode,
+            full_decisions_external_jsonl=manifest.research_run.artifact_policy.full_decisions_external_jsonl,
+            work_unit_count=len(candidates) * len(manifest.execution_model.scenarios),
+            split_count=split_count,
+        ),
+        "estimated_hash_payload_bytes": _estimated_hash_payload_bytes(
+            dataset_candles=dataset_candles,
+            candidate_count=len(candidates),
+            scenario_count=len(manifest.execution_model.scenarios),
+            split_count=split_count,
+        ),
+        "estimated_snapshot_hash_count": len(snapshots),
+        "uses_production_evaluator": None,
+        "uses_real_parallel_executor": None,
     }
     plan["execution_plan_hash"] = sha256_prefixed(_logical_plan_payload(plan))
     plan["plan_hash"] = plan["execution_plan_hash"]
@@ -247,3 +268,46 @@ def _ordered_split_names(snapshots: dict[str, DatasetSnapshot]) -> list[str]:
                 window_names.append(split_name)
     remaining = sorted(name for name in snapshots if name not in set(preferred) | set(window_names))
     return preferred + window_names + remaining
+
+
+def _estimated_audit_stream_rows(
+    *,
+    audit_mode: str,
+    dataset_candles: int,
+    candidate_count: int,
+    scenario_count: int,
+) -> int:
+    if audit_mode != "complete_external":
+        return 0
+    return int(dataset_candles) * int(candidate_count) * int(scenario_count) * 3
+
+
+def _estimated_artifact_write_count(
+    *,
+    audit_mode: str,
+    full_decisions_external_jsonl: bool,
+    work_unit_count: int,
+    split_count: int,
+) -> int:
+    report_and_derived = 2
+    candidate_event_stream = 1
+    candidate_result_files = int(work_unit_count)
+    audit_files = 0
+    if audit_mode == "complete_external":
+        audit_files = 1 + int(work_unit_count) * int(split_count) * 3
+    decision_jsonl = int(work_unit_count) * int(split_count) if full_decisions_external_jsonl else 0
+    return report_and_derived + candidate_event_stream + candidate_result_files + audit_files + decision_jsonl
+
+
+def _estimated_hash_payload_bytes(
+    *,
+    dataset_candles: int,
+    candidate_count: int,
+    scenario_count: int,
+    split_count: int,
+) -> int:
+    return (
+        int(dataset_candles) * 128
+        + int(candidate_count) * int(scenario_count) * int(split_count) * 512
+        + 4096
+    )

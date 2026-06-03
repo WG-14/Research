@@ -42,6 +42,11 @@ APPROVED_CONTRACT_HELPERS = {
     "_run_contract_research_walk_forward",
 }
 
+APPROVED_FAST_TIER_GUARD_HELPERS = {
+    "_call_production_research_backtest",
+    "_call_production_research_walk_forward",
+}
+
 INVENTORY_PATH = Path("tests/policy/research_e2e_inventory.json")
 
 SMALL_IN_MEMORY_DATASET_HELPERS = {
@@ -282,7 +287,11 @@ def validate_contract_helpers(test_root: Path) -> list[str]:
             ]
             if not direct_runner_calls:
                 continue
-            if node.name not in APPROVED_CONTRACT_HELPERS and not node.name.startswith("test_"):
+            if (
+                node.name not in APPROVED_CONTRACT_HELPERS
+                and node.name not in APPROVED_FAST_TIER_GUARD_HELPERS
+                and not node.name.startswith("test_")
+            ):
                 violations.append(
                     f"{display_path}:{node.lineno}:{node.name} wraps a production research runner but is not approved"
                 )

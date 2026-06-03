@@ -559,3 +559,37 @@ def test_fast_research_workload_budget_rejects_full_report_detail_and_full_decis
     jsonl_report["workload_estimate"]["full_decisions_external_jsonl"] = True
     with pytest.raises(AssertionError):
         assert_fast_research_workload(jsonl_report)
+
+
+def test_fast_research_workload_budget_rejects_secondary_audit_artifact_and_hash_growth() -> None:
+    audit_report = minimal_research_report()
+    audit_report["workload_estimate"]["estimated_audit_stream_rows"] = 1
+    with pytest.raises(AssertionError):
+        assert_fast_research_workload(audit_report)
+
+    artifact_report = minimal_research_report()
+    artifact_report["workload_estimate"]["estimated_artifact_write_count"] = 5
+    with pytest.raises(AssertionError):
+        assert_fast_research_workload(artifact_report)
+
+    hash_report = minimal_research_report()
+    hash_report["workload_estimate"]["estimated_hash_payload_bytes"] = 1_000_001
+    with pytest.raises(AssertionError):
+        assert_fast_research_workload(hash_report)
+
+    snapshot_report = minimal_research_report()
+    snapshot_report["workload_estimate"]["estimated_snapshot_hash_count"] = 4
+    with pytest.raises(AssertionError):
+        assert_fast_research_workload(snapshot_report)
+
+
+def test_fast_research_workload_budget_rejects_production_evaluator_and_real_parallel_executor() -> None:
+    production_report = minimal_research_report()
+    production_report["workload_estimate"]["uses_production_evaluator"] = True
+    with pytest.raises(AssertionError):
+        assert_fast_research_workload(production_report)
+
+    parallel_report = minimal_research_report()
+    parallel_report["workload_estimate"]["uses_real_parallel_executor"] = True
+    with pytest.raises(AssertionError):
+        assert_fast_research_workload(parallel_report)
