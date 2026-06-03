@@ -200,6 +200,148 @@ def test_same_function_derived_snapshot_is_bounded():
     assert violations == []
 
 
+def test_policy_allows_small_literal_range_generated_candles(tmp_path: Path) -> None:
+    test_root = tmp_path / "tests"
+    test_root.mkdir()
+    test_file = test_root / "test_small_range_snapshot.py"
+    test_file.write_text(
+        """
+from bithumb_bot.research.backtest_engine import run_sma_backtest
+from bithumb_bot.research.dataset_snapshot import DatasetSnapshot
+
+def test_range_stop_literal_is_bounded():
+    run_sma_backtest(
+        dataset=DatasetSnapshot(candles=tuple(object() for i in range(3))),
+        parameter_values={},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+    )
+
+def test_range_start_stop_step_literals_are_bounded():
+    candles = [object() for i in range(1, 9, 2)]
+    dataset = DatasetSnapshot(candles=candles)
+    run_sma_backtest(dataset=dataset, parameter_values={}, fee_rate=0.0, slippage_bps=0.0)
+
+def test_enumerated_small_literal_range_is_bounded():
+    dataset = DatasetSnapshot(candles=tuple(object() for i, _ in enumerate(range(3))))
+    run_sma_backtest(dataset=dataset, parameter_values={}, fee_rate=0.0, slippage_bps=0.0)
+""",
+        encoding="utf-8",
+    )
+    inventory = _write_inventory(tmp_path / "inventory.json", [])
+
+    violations = discover_policy_violations(test_root, inventory_path=inventory)
+
+    assert violations == []
+
+
+def test_policy_rejects_large_range_generated_candle_sources(tmp_path: Path) -> None:
+    test_root = tmp_path / "tests"
+    test_root.mkdir()
+    test_file = test_root / "test_large_range_snapshot.py"
+    test_file.write_text(
+        """
+from bithumb_bot.research.backtest_engine import run_sma_backtest
+from bithumb_bot.research.dataset_snapshot import DatasetSnapshot
+
+def test_large_literal_range_is_not_bounded():
+    run_sma_backtest(
+        dataset=DatasetSnapshot(candles=tuple(object() for i in range(1000000))),
+        parameter_values={},
+        fee_rate=0.0,
+        slippage_bps=0.0,
+    )
+
+def test_large_start_stop_step_range_is_not_bounded():
+    dataset = DatasetSnapshot(candles=[object() for i in range(0, 1000, 2)])
+    run_sma_backtest(dataset=dataset, parameter_values={}, fee_rate=0.0, slippage_bps=0.0)
+""",
+        encoding="utf-8",
+    )
+    inventory = _write_inventory(tmp_path / "inventory.json", [])
+
+    violations = discover_policy_violations(test_root, inventory_path=inventory)
+
+    assert any("test_large_literal_range_is_not_bounded calls run_sma_backtest" in violation for violation in violations)
+    assert any("test_large_start_stop_step_range_is_not_bounded calls run_sma_backtest" in violation for violation in violations)
+
+
+def test_policy_rejects_unknown_range_generated_candle_sources(tmp_path: Path) -> None:
+    test_root = tmp_path / "tests"
+    test_root.mkdir()
+    test_file = test_root / "test_unknown_range_snapshot.py"
+    test_file.write_text(
+        """
+from bithumb_bot.research.backtest_engine import run_sma_backtest
+from bithumb_bot.research.dataset_snapshot import DatasetSnapshot
+
+def test_range_name_is_not_bounded():
+    n = 3
+    dataset = DatasetSnapshot(candles=tuple(object() for i in range(n)))
+    run_sma_backtest(dataset=dataset, parameter_values={}, fee_rate=0.0, slippage_bps=0.0)
+
+def test_range_expression_is_not_bounded():
+    days = 30
+    dataset = DatasetSnapshot(candles=tuple(object() for i in range(days * 1440)))
+    run_sma_backtest(dataset=dataset, parameter_values={}, fee_rate=0.0, slippage_bps=0.0)
+
+def test_range_len_call_is_not_bounded():
+    big_source = load_big_source()
+    dataset = DatasetSnapshot(candles=tuple(object() for i in range(len(big_source))))
+    run_sma_backtest(dataset=dataset, parameter_values={}, fee_rate=0.0, slippage_bps=0.0)
+
+def test_zero_step_range_is_not_bounded():
+    dataset = DatasetSnapshot(candles=tuple(object() for i in range(0, 10, 0)))
+    run_sma_backtest(dataset=dataset, parameter_values={}, fee_rate=0.0, slippage_bps=0.0)
+""",
+        encoding="utf-8",
+    )
+    inventory = _write_inventory(tmp_path / "inventory.json", [])
+
+    violations = discover_policy_violations(test_root, inventory_path=inventory)
+
+    assert any("test_range_name_is_not_bounded calls run_sma_backtest" in violation for violation in violations)
+    assert any("test_range_expression_is_not_bounded calls run_sma_backtest" in violation for violation in violations)
+    assert any("test_range_len_call_is_not_bounded calls run_sma_backtest" in violation for violation in violations)
+    assert any("test_zero_step_range_is_not_bounded calls run_sma_backtest" in violation for violation in violations)
+
+
+def test_policy_rejects_intermediate_variables_from_large_or_unknown_ranges(tmp_path: Path) -> None:
+    test_root = tmp_path / "tests"
+    test_root.mkdir()
+    test_file = test_root / "test_intermediate_range_snapshot.py"
+    test_file.write_text(
+        """
+from bithumb_bot.research.backtest_engine import run_sma_backtest
+from bithumb_bot.research.dataset_snapshot import DatasetSnapshot
+
+def test_intermediate_large_range_candles_are_not_bounded():
+    candles = tuple(object() for i in range(1000000))
+    dataset = DatasetSnapshot(candles=candles)
+    run_sma_backtest(dataset=dataset, parameter_values={}, fee_rate=0.0, slippage_bps=0.0)
+
+def test_intermediate_unknown_range_candles_are_not_bounded():
+    n = 3
+    candles = [object() for i in range(n)]
+    dataset = DatasetSnapshot(candles=candles)
+    run_sma_backtest(dataset=dataset, parameter_values={}, fee_rate=0.0, slippage_bps=0.0)
+""",
+        encoding="utf-8",
+    )
+    inventory = _write_inventory(tmp_path / "inventory.json", [])
+
+    violations = discover_policy_violations(test_root, inventory_path=inventory)
+
+    assert any(
+        "test_intermediate_large_range_candles_are_not_bounded calls run_sma_backtest" in violation
+        for violation in violations
+    )
+    assert any(
+        "test_intermediate_unknown_range_candles_are_not_bounded calls run_sma_backtest" in violation
+        for violation in violations
+    )
+
+
 def test_policy_allows_explicit_small_fixture_helper(tmp_path: Path) -> None:
     test_root = tmp_path / "tests"
     test_root.mkdir()

@@ -55,6 +55,8 @@ PATH_SCOPED_SMALL_IN_MEMORY_DATASET_HELPERS = {
     Path("tests/test_research_strategy_canary.py"): {"_dataset"},
 }
 
+MAX_STATIC_MICRO_KERNEL_CANDLE_TICK_COUNT = 128
+
 
 @dataclass(frozen=True)
 class RunnerCall:
@@ -502,6 +504,8 @@ def _is_bounded_candles_expr(node: ast.AST, bounded_candle_names: set[str]) -> b
         return _listcomp_iterates_bounded_literal(node, bounded_candle_names)
     if isinstance(node, ast.Call):
         name = _call_name(node)
+        if name == "range":
+            return _static_range_length(node) is not None
         if name == "tuple" and len(node.args) == 1:
             return _is_bounded_candles_expr(node.args[0], bounded_candle_names)
         if name == "list" and len(node.args) == 1:
@@ -528,10 +532,41 @@ def _generator_iterates_bounded_literal(
         return False
     name = _call_name(generator.iter)
     if name == "range":
-        return True
+        return _static_range_length(generator.iter) is not None
     if name == "enumerate" and len(generator.iter.args) == 1:
         return _is_bounded_candles_expr(generator.iter.args[0], bounded_candle_names)
     return False
+
+
+def _static_range_length(node: ast.Call) -> int | None:
+    if _call_name(node) != "range" or node.keywords:
+        return None
+    if len(node.args) == 1:
+        start = 0
+        stop = _static_int_literal(node.args[0])
+        step = 1
+    elif len(node.args) == 2:
+        start = _static_int_literal(node.args[0])
+        stop = _static_int_literal(node.args[1])
+        step = 1
+    elif len(node.args) == 3:
+        start = _static_int_literal(node.args[0])
+        stop = _static_int_literal(node.args[1])
+        step = _static_int_literal(node.args[2])
+    else:
+        return None
+    if start is None or stop is None or step is None or step <= 0:
+        return None
+    length = max(0, (stop - start + step - 1) // step)
+    if length > MAX_STATIC_MICRO_KERNEL_CANDLE_TICK_COUNT:
+        return None
+    return length
+
+
+def _static_int_literal(node: ast.AST) -> int | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+        return node.value
+    return None
 
 
 def _dict_has_bounded_dataset(node: ast.AST, bounded_names: set[str], small_fixture_helpers: set[str]) -> bool:
