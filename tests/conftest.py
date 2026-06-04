@@ -140,14 +140,28 @@ def test_run_workspace(request: pytest.FixtureRequest) -> TestRunWorkspace:
         run_id=workspace_run_id(),
         suite_name=workspace_suite_name(),
         node_name=request.node.nodeid,
+        max_total_bytes=int(os.environ.get("BITHUMB_PYTEST_WORKSPACE_MAX_TOTAL_BYTES", str(256 * 1024 * 1024))),
+        max_single_file_bytes=int(os.environ.get("BITHUMB_PYTEST_WORKSPACE_MAX_SINGLE_FILE_BYTES", str(32 * 1024 * 1024))),
     )
     yield workspace
     failed = bool(getattr(request.node, "rep_call", None) and request.node.rep_call.failed)
-    if workspace.keep_on_failure and failed:
+    keep_requested = os.environ.get("KEEP_BITHUMB_TEST_ARTIFACTS") == "1"
+    status = workspace.budget_status()
+    over_budget = not bool(status["ok"])
+    if workspace.keep_on_failure and (failed or over_budget):
+        print(workspace.format_summary(), file=sys.stderr)
+        if over_budget and not failed:
+            pytest.fail(f"pytest workspace budget exceeded: {status['violations']}")
         return
-    if os.environ.get("KEEP_BITHUMB_TEST_ARTIFACTS") == "1":
+    if keep_requested:
+        print(workspace.format_summary(), file=sys.stderr)
         return
-    shutil.rmtree(workspace.root, ignore_errors=True)
+    try:
+        if over_budget:
+            print(workspace.format_summary(), file=sys.stderr)
+            pytest.fail(f"pytest workspace budget exceeded: {status['violations']}")
+    finally:
+        shutil.rmtree(workspace.root, ignore_errors=True)
 
 
 @pytest.fixture

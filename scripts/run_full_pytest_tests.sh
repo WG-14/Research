@@ -6,6 +6,7 @@ cd "$PROJECT_ROOT"
 source "$PROJECT_ROOT/scripts/lib/pytest_workspace.sh"
 
 bithumb_pytest_setup_workspace "full"
+export BITHUMB_PYTEST_SUMMARY_ON_SUCCESS=1
 status=0
 trap 'status=$?; bithumb_pytest_cleanup_workspace "$status"; exit "$status"' EXIT
 

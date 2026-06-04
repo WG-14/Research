@@ -795,6 +795,7 @@ def test_fast_research_workload_budget_rejects_secondary_audit_artifact_and_hash
         "estimated_audit_stream_rows",
         "estimated_artifact_write_count",
         "estimated_hash_payload_bytes",
+        "estimated_artifact_bytes",
         "estimated_snapshot_hash_count",
     ],
 )
@@ -813,6 +814,7 @@ def test_fast_research_workload_budget_rejects_unknown_secondary_numeric_costs(f
         "estimated_audit_stream_rows",
         "estimated_artifact_write_count",
         "estimated_hash_payload_bytes",
+        "estimated_artifact_bytes",
         "estimated_snapshot_hash_count",
     ],
 )

@@ -291,8 +291,9 @@ evaluator or unbounded full strategy tick loops.
 
 The fast script also creates a repository-external pytest workspace via
 `scripts/lib/pytest_workspace.sh`. Successful runs clean that workspace by
-default; `KEEP_BITHUMB_TEST_ARTIFACTS=1` preserves it and prints an artifact
-summary.
+default; failures and `KEEP_BITHUMB_TEST_ARTIFACTS=1` preserve it and print an
+artifact summary. The full runner sets `BITHUMB_PYTEST_SUMMARY_ON_SUCCESS=1`,
+so it prints the size summary before successful cleanup.
 
 Dedicated research/nightly validation collects the intentionally expensive
 research pipeline tests and emits CI-friendly duration data:
@@ -306,11 +307,14 @@ This is the dedicated research/nightly pytest suite. Do not confuse it with
 may commit, push, and run EC2 smoke verification. The Codex pipeline is not the
 research/nightly pytest tier.
 
-Research/nightly validation runs `scripts/check_research_workload_budget.py`
-before pytest. The gate uses `ResearchExecutionPlan.workload_estimate` style
-fields such as estimated tick events, audit stream rows, artifact write count,
-and hash payload bytes so oversized artifact-producing workloads fail before
-expensive execution starts.
+Research/nightly and full validation run
+`scripts/check_research_workload_budget.py` before pytest. Suite limits live in
+`tests/policy/research_workload_budget_policy.json`; update that file when a
+reviewed suite budget changes. The gate compares
+`ResearchExecutionPlan.workload_estimate` style fields for estimated tick
+events, audit stream rows, artifact write count, hash payload bytes, artifact
+bytes, and artifact file count. It compares estimate fields only; manifest
+resource-limit fields such as `max_artifact_bytes` are not observed workload.
 
 Full-suite pytest validation should use:
 
@@ -323,6 +327,24 @@ path. Use the dedicated full pytest script or a later full pytest pipeline so
 pytest temporary data, WSL cleanup, and research artifact summaries are managed.
 Workspace controls are `BITHUMB_PYTEST_WORKSPACE_ROOT`,
 `BITHUMB_PYTEST_RUN_ID`, and `KEEP_BITHUMB_TEST_ARTIFACTS`.
+
+Research-run artifacts use run-wide accounting. A single research artifact
+context covers `data/<mode>/derived/research/<experiment_id>` and
+`data/<mode>/reports/research/<experiment_id>` for one experiment. Candidate
+journals, candidate result/failure evidence, report JSON, audit trace JSONL,
+trace indexes, and trace manifests share the same byte/file budget. Audit
+stream row and byte limits are audit-stream sub-limits inside that same run
+budget. Budget overages fail fast with structured reason, observed value,
+configured limit, and path when available; they are not converted to
+observability warnings in real pipeline paths.
+
+Safe read-only diagnostics:
+
+```bash
+./scripts/check_repo_runtime_artifacts.sh
+uv run python scripts/check_research_workload_budget.py --suite research-nightly
+du -sb "${BITHUMB_PYTEST_WORKSPACE_ROOT:-/tmp/bithumb-bot-pytest-${USER:-user}}" 2>/dev/null || true
+```
 
 Marker meaning follows the execution boundary:
 

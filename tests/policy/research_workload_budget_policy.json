@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "description": "Suite-level preflight budgets for research workload estimates. Values are limits for estimated work, not runtime artifact policy declarations.",
+  "suites": {
+    "fast": {
+      "max_estimated_tick_events": 25000,
+      "max_estimated_audit_stream_rows": 0,
+      "max_estimated_artifact_write_count": 250,
+      "max_estimated_hash_payload_bytes": 2000000,
+      "max_estimated_artifact_bytes": 67108864,
+      "max_estimated_artifact_file_count": 500
+    },
+    "research-nightly": {
+      "max_estimated_tick_events": 2500000,
+      "max_estimated_audit_stream_rows": 250000,
+      "max_estimated_artifact_write_count": 20000,
+      "max_estimated_hash_payload_bytes": 268435456,
+      "max_estimated_artifact_bytes": 536870912,
+      "max_estimated_artifact_file_count": 25000
+    },
+    "full": {
+      "max_estimated_tick_events": 3000000,
+      "max_estimated_audit_stream_rows": 250000,
+      "max_estimated_artifact_write_count": 25000,
+      "max_estimated_hash_payload_bytes": 335544320,
+      "max_estimated_artifact_bytes": 805306368,
+      "max_estimated_artifact_file_count": 30000
+    }
+  }
+}

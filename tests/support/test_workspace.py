@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,80 @@ class TestRunWorkspace:
             keep_on_failure=bool(keep_on_failure),
             created_at=datetime.now(timezone.utc).isoformat(),
         )
+
+    def total_workspace_bytes(self) -> int:
+        if not self.root.exists():
+            return 0
+        total = 0
+        for path in self.root.rglob("*"):
+            if path.is_file():
+                total += path.stat().st_size
+        return total
+
+    def largest_file_size(self) -> int:
+        largest = 0
+        for item in self.largest_files(limit=1):
+            largest = int(item["bytes"])
+        return largest
+
+    def largest_files(self, *, limit: int = 10) -> list[dict[str, Any]]:
+        if not self.root.exists():
+            return []
+        files = []
+        for path in self.root.rglob("*"):
+            if path.is_file():
+                files.append({"path": str(path.resolve()), "bytes": path.stat().st_size})
+        return sorted(files, key=lambda item: int(item["bytes"]), reverse=True)[:limit]
+
+    def budget_status(self) -> dict[str, Any]:
+        total = self.total_workspace_bytes()
+        largest = self.largest_file_size()
+        violations = []
+        if total > self.max_total_bytes:
+            violations.append(
+                {
+                    "reason": "pytest_workspace_total_bytes_exceeded",
+                    "observed": total,
+                    "limit": self.max_total_bytes,
+                    "path": str(self.root),
+                }
+            )
+        if largest > self.max_single_file_bytes:
+            violations.append(
+                {
+                    "reason": "pytest_workspace_single_file_bytes_exceeded",
+                    "observed": largest,
+                    "limit": self.max_single_file_bytes,
+                    "path": str(self.root),
+                }
+            )
+        return {
+            "root": str(self.root),
+            "total_bytes": total,
+            "largest_file_bytes": largest,
+            "max_total_bytes": self.max_total_bytes,
+            "max_single_file_bytes": self.max_single_file_bytes,
+            "ok": not violations,
+            "violations": violations,
+        }
+
+    def format_summary(self) -> str:
+        status = self.budget_status()
+        lines = [
+            (
+                f"pytest workspace root={status['root']} total_bytes={status['total_bytes']} "
+                f"largest_file_bytes={status['largest_file_bytes']} ok={status['ok']}"
+            )
+        ]
+        for item in self.largest_files(limit=10):
+            lines.append(f"pytest workspace large_file_bytes={item['bytes']} path={item['path']}")
+        for violation in status["violations"]:
+            lines.append(
+                "pytest workspace budget_violation "
+                f"reason={violation['reason']} observed={violation['observed']} "
+                f"limit={violation['limit']} path={violation['path']}"
+            )
+        return "\n".join(lines)
 
 
 def workspace_base_root() -> Path:

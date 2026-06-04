@@ -7,6 +7,7 @@ from bithumb_bot.canonical_decision import canonical_payload_hash
 from bithumb_bot.market_regime import aggregate_regime_coverage, aggregate_regime_performance
 
 from . import backtest_support as support
+from .artifact_store import ArtifactBudgetExceeded
 from .metrics_contract import build_metrics_v2
 
 
@@ -190,6 +191,8 @@ def _complete_audit_trace_observability(
 ) -> dict[str, object] | None:
     try:
         return support.complete_audit_trace(run_context, status=status)
+    except ArtifactBudgetExceeded:
+        raise
     except Exception:
         warnings.append("audit_trace_completion_observability_failed")
         return {"status": "audit_trace_completion_observability_failed"}

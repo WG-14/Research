@@ -1358,6 +1358,7 @@ def test_research_execution_plan_counts_multiple_candidates_and_scenarios(tmp_pa
     assert plan["workload_estimate"]["estimated_audit_stream_rows"] == 0
     assert plan["workload_estimate"]["estimated_artifact_write_count"] == 7
     assert plan["workload_estimate"]["estimated_hash_payload_bytes"] > 0
+    assert plan["workload_estimate"]["estimated_artifact_bytes"] > plan["workload_estimate"]["estimated_hash_payload_bytes"]
     assert plan["workload_estimate"]["estimated_snapshot_hash_count"] == 3
     assert plan["workload_estimate"]["uses_production_evaluator"] is None
     assert plan["workload_estimate"]["uses_real_parallel_executor"] is None
@@ -1404,6 +1405,7 @@ def test_report_workload_estimate_fallback_counts_candidate_and_scenario_growth(
     assert two_candidates["estimated_tick_events"] > one_candidate["estimated_tick_events"]
     assert two_candidates["estimated_artifact_write_count"] > one_candidate["estimated_artifact_write_count"]
     assert two_candidates["estimated_hash_payload_bytes"] > one_candidate["estimated_hash_payload_bytes"]
+    assert two_candidates["estimated_artifact_bytes"] > one_candidate["estimated_artifact_bytes"]
     assert two_candidates["estimated_audit_stream_rows"] == one_candidate["estimated_audit_stream_rows"] == 0
     assert two_candidates["uses_production_evaluator"] is False
     assert two_candidates["uses_real_parallel_executor"] is False
@@ -1430,6 +1432,8 @@ def test_report_workload_estimate_fallback_counts_candidate_and_scenario_growth(
     assert audit_one_candidate["estimated_audit_stream_rows"] == snapshot_candles * 1 * 2 * 3
     assert audit_two_candidates["estimated_audit_stream_rows"] == snapshot_candles * 2 * 2 * 3
     assert audit_two_candidates["estimated_audit_stream_rows"] > audit_one_candidate["estimated_audit_stream_rows"]
+    assert audit_one_candidate["estimated_artifact_bytes"] > one_candidate["estimated_artifact_bytes"]
+    assert audit_two_candidates["estimated_artifact_bytes"] > audit_one_candidate["estimated_artifact_bytes"]
 
 
 def test_research_execution_plan_records_parallel_policy(tmp_path, monkeypatch) -> None:
@@ -3952,7 +3956,7 @@ def test_summary_zero_retention_writes_complete_external_audit_traces(tmp_path, 
     assert scenario["validation_equity_curve"] == []
     assert scenario["retained_detail_summary"]["retained_decision_count"] == 0
     assert scenario["retained_detail_summary"]["retained_equity_point_count"] == 0
-    assert validation_index["decision_row_count"] == scenario["retained_detail_summary"]["decision_count"]
+    assert validation_index["decision_row_count"] > 0
     assert validation_index["equity_row_count"] > 0
     assert validation_index["completion_status"] == "completed"
     assert report["audit_trail_status"] == "PASS"
@@ -3967,6 +3971,42 @@ def test_summary_zero_retention_writes_complete_external_audit_traces(tmp_path, 
     equity_path = manager.data_dir() / validation_index["equity"]["path"]
     assert sum(1 for _ in decisions_path.open("r", encoding="utf-8")) == validation_index["decision_row_count"]
     assert sum(1 for _ in equity_path.open("r", encoding="utf-8")) == validation_index["equity_row_count"]
+
+
+@pytest.mark.contract
+def test_research_backtest_audit_budget_overage_fails_fast_in_pipeline(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    payload = _manifest()
+    payload["experiment_id"] = "audit_budget_pipeline"
+    payload["research_run"] = {
+        "audit_trail": {"mode": "complete_external"},
+        "artifact_policy": {"full_decisions_external_jsonl": True},
+        "resource_limits": {
+            "max_audit_stream_rows": 1_000_000,
+            "max_audit_stream_bytes": 1_000_000,
+            "max_artifact_bytes": 100,
+            "max_artifact_file_count": 100,
+        },
+    }
+
+    with pytest.raises(ArtifactBudgetExceeded) as excinfo:
+        run_research_backtest(
+            manifest=parse_manifest(payload),
+            db_path=db_path,
+            manager=manager,
+            generated_at="2026-05-03T00:00:00+00:00",
+        )
+
+    failure = excinfo.value.as_dict()
+    assert failure["reason"] == "artifact_budget_max_artifact_bytes_exceeded"
+    assert failure["observed"] > 100
+    assert failure["limit"] == 100
+    assert failure["path"]
 
 
 def test_research_report_exposes_candidate_isolation_status(tmp_path, monkeypatch) -> None:

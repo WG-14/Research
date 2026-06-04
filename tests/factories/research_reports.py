@@ -382,6 +382,7 @@ def minimal_research_report(**overrides: Any) -> dict[str, Any]:
             "estimated_audit_stream_rows": 0,
             "estimated_artifact_write_count": 2,
             "estimated_hash_payload_bytes": 4096,
+            "estimated_artifact_bytes": 32768,
             "estimated_snapshot_hash_count": 1,
             "uses_production_evaluator": False,
             "uses_real_parallel_executor": False,
@@ -435,6 +436,7 @@ def assert_fast_research_workload(
         "estimated_audit_stream_rows",
         "estimated_artifact_write_count",
         "estimated_hash_payload_bytes",
+        "estimated_artifact_bytes",
         "estimated_snapshot_hash_count",
         "uses_production_evaluator",
         "uses_real_parallel_executor",
@@ -461,6 +463,7 @@ def assert_fast_research_workload(
         assert estimate.get("full_decisions_external_jsonl") is not True
     assert required_int("estimated_audit_stream_rows") <= max_audit_stream_rows
     assert required_int("estimated_artifact_write_count") <= max_artifact_write_count
+    required_int("estimated_artifact_bytes")
     estimated_hash_payload_bytes = required_int("estimated_hash_payload_bytes")
     assert estimated_hash_payload_bytes <= max_hash_payload_bytes, (
         "research workload_estimate estimated_hash_payload_bytes exceeded budget: "

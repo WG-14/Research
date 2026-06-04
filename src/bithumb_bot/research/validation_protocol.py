@@ -43,7 +43,7 @@ from .audit_trail import (
     write_trace_manifest,
     trace_manifest_path,
 )
-from .artifact_store import ArtifactBudget
+from .artifact_store import ArtifactBudget, ResearchArtifactContext
 from .deployment_policy import is_production_bound_target, validate_production_calibration_policy
 from .execution_calibration import compare_calibration_to_scenario
 from .execution_model import DepthWalkExecutionModel, FixedBpsExecutionModel, StressExecutionModel, model_params_hash
@@ -54,6 +54,7 @@ from .execution_plan import (
     ResearchWorkUnit,
     build_research_execution_plan,
     build_research_work_unit,
+    _estimated_artifact_bytes,
 )
 from .executor import (
     ResearchWorkResult,
@@ -84,7 +85,6 @@ from .metrics_contract import METRICS_SCHEMA_VERSION
 from .parameter_space import candidate_id, iter_parameter_candidates
 from .promotion_gate import build_candidate_behavior_profile, build_candidate_profile
 from .report_writer import write_research_report
-from bithumb_bot.storage_io import append_jsonl, write_json_atomic
 from .statistical_selection import (
     PROMOTION_GRADE_GENERATION_UNAVAILABLE_WARNING,
     build_statistical_selection_evidence,
@@ -138,6 +138,7 @@ class EvaluationContext:
     scenario_index: int
     scenario_id: str
     progress_callback: ProgressCallback | None = None
+    artifact_context: ResearchArtifactContext | None = None
     worker_pid: int | None = None
 
 
@@ -176,6 +177,7 @@ def _task_from_evaluation_context(*, work_unit: ResearchWorkUnit, context: Evalu
         "scenario": context.scenario,
         "scenario_index": context.scenario_index,
         "scenario_id": context.scenario_id,
+        "artifact_context": context.artifact_context,
         "work_unit": work_unit,
     }
 
@@ -218,6 +220,7 @@ def _evaluate_candidate_scenario_task(
     simulation_seed_scope_hash = str(task.get("simulation_seed_scope_hash") or manifest_hash)
     include_walk_forward = bool(task["include_walk_forward"])
     work_unit = task["work_unit"]
+    artifact_context = task.get("artifact_context")
     raw_candidate_count = int(task["raw_candidate_count"])
     param_candidate_id = candidate_id(params, index)
     worker_observability: list[dict[str, Any]] = []
@@ -239,6 +242,7 @@ def _evaluate_candidate_scenario_task(
             work_unit=work_unit,
             work_unit_observability=worker_observability,
             progress_callback=progress_callback,
+            artifact_context=artifact_context if isinstance(artifact_context, ResearchArtifactContext) else None,
         )
         observability = worker_observability[-1] if worker_observability else {}
         if worker_pid is not None:
@@ -533,10 +537,16 @@ def _append_candidate_event(
     manager: PathManager,
     manifest: ExperimentManifest,
     event: dict[str, Any],
+    artifact_context: ResearchArtifactContext | None = None,
 ) -> None:
     if not manifest.research_run.artifact_policy.candidate_journal:
         return
-    append_jsonl(
+    store = artifact_context or ResearchArtifactContext(
+        manager=manager,
+        experiment_id=manifest.experiment_id,
+        budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
+    )
+    store.append_jsonl(
         _candidate_events_path(manager, manifest.experiment_id),
         {"experiment_id": manifest.experiment_id, "manifest_hash": manifest.manifest_hash(), **event},
     )
@@ -553,6 +563,7 @@ def _backtest_context(
     dataset_content_hash: str,
     parameter_values: dict[str, Any],
     progress_callback: ProgressCallback | None,
+    artifact_context: ResearchArtifactContext | None = None,
 ) -> BacktestRunContext:
     limits = manifest.research_run.resource_limits
     heartbeat = manifest.research_run.heartbeat
@@ -571,6 +582,7 @@ def _backtest_context(
             split=split_name,
             parameter_values=parameter_values,
             artifact_budget=_artifact_budget_from_limits(limits),
+            artifact_context=artifact_context,
         )
     context_progress_callback = None
     if progress_callback is not None or manager is not None:
@@ -579,6 +591,7 @@ def _backtest_context(
             manager=manager,
             manifest=manifest,
             event=event,
+            artifact_context=artifact_context,
         )
     return BacktestRunContext(
         experiment_id=manifest.experiment_id,
@@ -618,10 +631,11 @@ def _progress_and_journal(
     manager: PathManager | None,
     manifest: ExperimentManifest | None,
     event: dict[str, Any],
+    artifact_context: ResearchArtifactContext | None = None,
 ) -> None:
     _emit_progress(callback, **event)
     if manager is not None and manifest is not None and event.get("stage") in {"heartbeat", "candidate_start", "candidate_failure", "candidate_complete"}:
-        _append_candidate_event(manager=manager, manifest=manifest, event=event)
+        _append_candidate_event(manager=manager, manifest=manifest, event=event, artifact_context=artifact_context)
 
 
 def _validate_parallel_research_run_policy(manifest: ExperimentManifest) -> None:
@@ -737,6 +751,11 @@ def run_research_backtest(
     )
     _validate_parallel_research_run_policy(manifest)
     _validate_strategy_data_requirements(manifest)
+    artifact_context = ResearchArtifactContext(
+        manager=manager,
+        experiment_id=manifest.experiment_id,
+        budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
+    )
     snapshots = {}
     for split_name in ("train", "validation"):
         stage_started = time.perf_counter()
@@ -839,6 +858,7 @@ def run_research_backtest(
         work_unit_observability=work_unit_observability,
         progress_callback=progress_callback,
         candidate_evaluator=candidate_evaluator,
+        artifact_context=artifact_context,
     )
     candidates = evaluation.candidates
     stage_timings.append(_stage_timing("candidate_evaluation", stage_started, candidate_count=len(candidates)))
@@ -864,6 +884,7 @@ def run_research_backtest(
         experiment_registry_reservation=experiment_registry_reservation,
         execution_plan=execution_plan,
         execution_observability=execution_observability,
+        artifact_context=artifact_context,
     )
     _emit_progress(
         progress_callback,
@@ -878,7 +899,7 @@ def run_research_backtest(
         experiment_id=manifest.experiment_id,
         report_name="backtest",
         payload=report,
-        artifact_budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
+        artifact_context=artifact_context,
     )
     persisted_report = json.loads(paths.report_path.read_text(encoding="utf-8"))
     report.clear()
@@ -923,6 +944,11 @@ def run_research_walk_forward(
         raise ResearchValidationError("walk_forward_missing")
     _validate_parallel_research_run_policy(manifest)
     _validate_strategy_data_requirements(manifest)
+    artifact_context = ResearchArtifactContext(
+        manager=manager,
+        experiment_id=manifest.experiment_id,
+        budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
+    )
     windows = _rolling_walk_forward_windows(manifest)
     if len(windows) < manifest.walk_forward.min_windows:
         raise ResearchValidationError(
@@ -1032,6 +1058,7 @@ def run_research_walk_forward(
         work_unit_observability=work_unit_observability,
         progress_callback=progress_callback,
         candidate_evaluator=candidate_evaluator,
+        artifact_context=artifact_context,
     )
     candidates = evaluation.candidates
     stage_timings.append(_stage_timing("candidate_evaluation", stage_started, candidate_count=len(candidates)))
@@ -1057,6 +1084,7 @@ def run_research_walk_forward(
         experiment_registry_reservation=experiment_registry_reservation,
         execution_plan=execution_plan,
         execution_observability=execution_observability,
+        artifact_context=artifact_context,
     )
     _emit_progress(
         progress_callback,
@@ -1071,7 +1099,7 @@ def run_research_walk_forward(
         experiment_id=manifest.experiment_id,
         report_name="walk_forward",
         payload=report,
-        artifact_budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
+        artifact_context=artifact_context,
     )
     persisted_report = json.loads(paths.report_path.read_text(encoding="utf-8"))
     report.clear()
@@ -1098,6 +1126,7 @@ def _evaluate_candidates(
     work_unit_observability: list[dict[str, Any]] | None = None,
     progress_callback: ProgressCallback | None = None,
     candidate_evaluator: CandidateScenarioEvaluator | None = None,
+    artifact_context: ResearchArtifactContext | None = None,
 ) -> CandidateEvaluationResult:
     raw_candidates = iter_parameter_candidates(manifest.parameter_space)
     aggregates: dict[str, dict[str, Any]] = {}
@@ -1178,6 +1207,7 @@ def _evaluate_candidates(
             _append_candidate_event(
                 manager=manager,
                 manifest=manifest,
+                artifact_context=artifact_context,
                 event={
                     "stage": "candidate_start",
                     "candidate_id": candidate_id(dict(task["params"]), int(task["candidate_index"])),
@@ -1225,12 +1255,14 @@ def _evaluate_candidates(
                     scenario_index=int(task["scenario_index"]),
                     scenario_id=str(task["scenario_id"]),
                     progress_callback=progress_callback,
+                    artifact_context=artifact_context,
                     worker_pid=None,
                 ),
             )
             _append_candidate_event(
                 manager=manager,
                 manifest=manifest,
+                artifact_context=artifact_context,
                 event={
                     "stage": "candidate_start",
                     "candidate_id": candidate_id(params, int(full_task["candidate_index"])),
@@ -1257,6 +1289,7 @@ def _evaluate_candidates(
                             scenario_index=int(task["scenario_index"]),
                             scenario_id=str(task["scenario_id"]),
                             progress_callback=progress_callback,
+                            artifact_context=artifact_context,
                             worker_pid=None,
                         ),
                     ),
@@ -1277,6 +1310,7 @@ def _evaluate_candidates(
                     manager=manager,
                     manifest=manifest,
                     candidate=result.base_result,
+                    artifact_context=artifact_context,
                 )
             event = {
                 "stage": "candidate_failure",
@@ -1290,7 +1324,7 @@ def _evaluate_candidates(
                 if result.failure_reason == "candidate_exception":
                     event["exception_type"] = result.failure_evidence.get("exception_type")
                     event["message"] = result.failure_evidence.get("message")
-            _append_candidate_event(manager=manager, manifest=manifest, event=event)
+            _append_candidate_event(manager=manager, manifest=manifest, event=event, artifact_context=artifact_context)
         elif manifest.research_run.execution.mode == "parallel":
             _emit_progress(
                 progress_callback,
@@ -1911,13 +1945,19 @@ def _evaluate_candidates(
             build_candidate_behavior_profile(candidate_payload)
         )
         candidate_payload["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate_payload))
-        write_json_atomic(
+        store = artifact_context or ResearchArtifactContext(
+            manager=manager,
+            experiment_id=manifest.experiment_id,
+            budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
+        )
+        store.write_json_atomic(
             _candidate_result_path(manager, manifest.experiment_id, str(candidate_payload["parameter_candidate_id"])),
             candidate_payload,
         )
         _append_candidate_event(
             manager=manager,
             manifest=manifest,
+            artifact_context=artifact_context,
             event={
                 "stage": "candidate_complete",
                 "candidate_id": candidate_payload["parameter_candidate_id"],
@@ -2028,6 +2068,7 @@ def _evaluate_candidate_base_result(
     work_unit: ResearchWorkUnit,
     work_unit_observability: list[dict[str, Any]] | None,
     progress_callback: ProgressCallback | None,
+    artifact_context: ResearchArtifactContext | None = None,
 ) -> dict[str, Any]:
     param_candidate_id = candidate_id(params, index)
     work_started = time.perf_counter()
@@ -2064,6 +2105,7 @@ def _evaluate_candidate_base_result(
             dataset_content_hash=snapshots[split_name].content_hash(),
             parameter_values=params,
             progress_callback=progress_callback,
+            artifact_context=artifact_context,
         )
         try:
             split_started = time.perf_counter()
@@ -2139,6 +2181,7 @@ def _evaluate_candidate_base_result(
             parameter_candidate_id=param_candidate_id,
             parameter_stability_score=None,
             progress_callback=progress_callback,
+            artifact_context=context.artifact_context,
         )
         if include_walk_forward
         else None
@@ -2586,13 +2629,19 @@ def _write_failed_candidate_evidence(
     manager: PathManager,
     manifest: ExperimentManifest,
     candidate: dict[str, Any],
+    artifact_context: ResearchArtifactContext | None = None,
 ) -> None:
     if not manifest.research_run.artifact_policy.failed_candidate_evidence:
         return
     path = _candidate_failure_path(manager, manifest.experiment_id, str(candidate["candidate_id"]))
     candidate["failure_artifact_ref"] = _data_dir_relative_ref(manager, path)
     candidate["failure_artifact_path"] = str(path)
-    write_json_atomic(path, candidate)
+    store = artifact_context or ResearchArtifactContext(
+        manager=manager,
+        experiment_id=manifest.experiment_id,
+        budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
+    )
+    store.write_json_atomic(path, candidate)
 
 
 def _apply_scenario_policy(*, manifest: ExperimentManifest, candidate: dict[str, Any]) -> None:
@@ -2951,6 +3000,7 @@ def _walk_forward_metrics(
     parameter_candidate_id: str | None = None,
     parameter_stability_score: float | None = None,
     progress_callback: ProgressCallback | None = None,
+    artifact_context: ResearchArtifactContext | None = None,
 ) -> dict[str, Any]:
     config = manifest.walk_forward
     if config is None:
@@ -3025,6 +3075,7 @@ def _walk_forward_metrics(
                 dataset_content_hash=train_snapshot.content_hash(),
                 parameter_values=parameter_values,
                 progress_callback=progress_callback,
+                artifact_context=artifact_context,
             )
             if manager is not None
             else None
@@ -3041,6 +3092,7 @@ def _walk_forward_metrics(
                 dataset_content_hash=test_snapshot.content_hash(),
                 parameter_values=parameter_values,
                 progress_callback=progress_callback,
+                artifact_context=artifact_context,
             )
             if manager is not None
             else None
@@ -3144,6 +3196,7 @@ def _report_payload(
     experiment_registry_reservation: dict[str, Any] | None = None,
     execution_plan: ResearchExecutionPlan | None = None,
     execution_observability: dict[str, Any] | None = None,
+    artifact_context: ResearchArtifactContext | None = None,
 ) -> dict[str, Any]:
     dataset_hash = combined_dataset_fingerprint(snapshots)
     dataset_quality_hash = combined_dataset_quality_hash(quality_reports)
@@ -3333,6 +3386,7 @@ def _report_payload(
                 dataset_content_hash=dataset_hash,
                 trace_indexes=audit_trace_indexes,
                 policy=manifest.research_run.audit_trail,
+                artifact_context=artifact_context,
             )
             audit_trace_manifest_path = trace_manifest_path(manager=manager, experiment_id=manifest.experiment_id)
             audit_verification = verify_audit_trail(
@@ -3912,6 +3966,22 @@ def _report_workload_estimate(
         estimated_tick_events = snapshot_candles * len(candidates) * scenario_count
         audit_mode = manifest.research_run.audit_trail.mode
         full_decisions = manifest.research_run.artifact_policy.full_decisions_external_jsonl
+        estimated_audit_stream_rows = (
+            snapshot_candles * len(candidates) * scenario_count * 3
+            if audit_mode == "complete_external"
+            else 0
+        )
+        estimated_artifact_write_count = (
+            3
+            + work_unit_count
+            + (
+                1 + work_unit_count * split_count * 3
+                if audit_mode == "complete_external"
+                else 0
+            )
+            + (work_unit_count * split_count if full_decisions else 0)
+        )
+        estimated_hash_payload_bytes = snapshot_candles * 128 + work_unit_count * split_count * 512 + 4096
         estimate = {
             "schema_version": 1,
             "candidate_count": len(candidates),
@@ -3933,22 +4003,19 @@ def _report_workload_estimate(
             "audit_mode": audit_mode,
             "report_detail": manifest.research_run.report_detail,
             "full_decisions_external_jsonl": full_decisions,
-            "estimated_audit_stream_rows": (
-                snapshot_candles * len(candidates) * scenario_count * 3
-                if audit_mode == "complete_external"
-                else 0
+            "estimated_audit_stream_rows": estimated_audit_stream_rows,
+            "estimated_artifact_write_count": estimated_artifact_write_count,
+            "estimated_hash_payload_bytes": estimated_hash_payload_bytes,
+            "estimated_artifact_bytes": _estimated_artifact_bytes(
+                candidate_count=len(candidates),
+                scenario_count=scenario_count,
+                split_count=split_count,
+                audit_mode=audit_mode,
+                estimated_audit_stream_rows=estimated_audit_stream_rows,
+                estimated_artifact_write_count=estimated_artifact_write_count,
+                estimated_hash_payload_bytes=estimated_hash_payload_bytes,
+                full_decisions_external_jsonl=full_decisions,
             ),
-            "estimated_artifact_write_count": (
-                3
-                + work_unit_count
-                + (
-                    1 + work_unit_count * split_count * 3
-                    if audit_mode == "complete_external"
-                    else 0
-                )
-                + (work_unit_count * split_count if full_decisions else 0)
-            ),
-            "estimated_hash_payload_bytes": snapshot_candles * 128 + work_unit_count * split_count * 512 + 4096,
             "estimated_snapshot_hash_count": split_count,
             "uses_production_evaluator": None,
             "uses_real_parallel_executor": None,

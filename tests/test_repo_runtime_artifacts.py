@@ -29,6 +29,9 @@ def test_repo_runtime_artifact_check_rejects_generated_research_artifacts() -> N
     sentinels = [
         Path("derived/research"),
         Path("reports/research"),
+        Path("data/paper/derived/research"),
+        Path("data/paper/reports/research"),
+        Path("pytest-debug"),
         Path("traces"),
         Path("candidate_results"),
         Path("candidate_failures"),
@@ -37,12 +40,14 @@ def test_repo_runtime_artifact_check_rejects_generated_research_artifacts() -> N
         for path in sentinels:
             path.mkdir(parents=True, exist_ok=True)
         Path("decisions.jsonl").write_text('{"x":1}\n', encoding="utf-8")
+        Path("data/paper/derived/research/candidate_events.jsonl").write_text('{"x":1}\n', encoding="utf-8")
         proc = subprocess.run(["bash", script.as_posix()], capture_output=True, text=True, check=False)
         output = proc.stdout + proc.stderr
         assert proc.returncode != 0
         for path in sentinels:
             assert path.as_posix() in output
         assert "decisions.jsonl" in output
+        assert "data/paper/derived/research" in output
     finally:
         for path in sentinels:
             shutil.rmtree(path, ignore_errors=True)

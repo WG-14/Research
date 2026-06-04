@@ -64,11 +64,21 @@ Pytest workspace controls:
 - `BITHUMB_PYTEST_RUN_ID`: optional run id. Defaults to a timestamp/PID value.
 - `KEEP_BITHUMB_TEST_ARTIFACTS=1`: keep the run workspace and print its path
   and size summary.
+- `BITHUMB_PYTEST_WORKSPACE_MAX_TOTAL_BYTES` and
+  `BITHUMB_PYTEST_WORKSPACE_MAX_SINGLE_FILE_BYTES`: optional per-test workspace
+  budgets enforced by the pytest fixture.
 
 On WSL, local Linux, and CI, official runners keep pytest and generated
 research/test evidence outside the repository. Successful runs clean the run
-workspace by default; failed runs or explicit keep-artifacts runs preserve the
-workspace for inspection.
+workspace by default. Failed tests, explicit keep-artifacts runs, and workspace
+budget overages preserve the workspace and print a size summary. The full
+runner prints the summary before successful cleanup.
+
+Research workload budgets are defined in
+`tests/policy/research_workload_budget_policy.json` and enforced by
+`scripts/check_research_workload_budget.py` before research/nightly and full
+pytest. The preflight uses estimated tick events, audit stream rows, artifact
+write count, hash payload bytes, artifact bytes, and artifact file count.
 
 Selector-less full pytest is long-running/full validation and is not the
 default PR check. Use `./scripts/run_full_pytest_tests.sh` or the dedicated

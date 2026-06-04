@@ -27,6 +27,31 @@ def test_test_run_workspace_tracks_external_runtime_and_artifact_roots(tmp_path:
     assert Path.cwd().resolve() not in workspace.root.resolve().parents
 
 
+def test_test_run_workspace_reports_size_budget_status(tmp_path: Path) -> None:
+    workspace = TestRunWorkspace.create(
+        base_root=tmp_path,
+        project_root=Path.cwd(),
+        run_id="run-budget",
+        suite_name="fast",
+        node_name="tests/example.py::test_budget",
+        max_total_bytes=8,
+        max_single_file_bytes=4,
+    )
+    (workspace.artifact_root / "large.bin").write_bytes(b"12345")
+    (workspace.runtime_root / "small.bin").write_bytes(b"1234")
+
+    status = workspace.budget_status()
+
+    assert status["ok"] is False
+    assert status["total_bytes"] == 9
+    assert status["largest_file_bytes"] == 5
+    assert {item["reason"] for item in status["violations"]} == {
+        "pytest_workspace_total_bytes_exceeded",
+        "pytest_workspace_single_file_bytes_exceeded",
+    }
+    assert "budget_violation" in workspace.format_summary()
+
+
 def test_pytest_workspace_wrapper_cleans_successful_workspace(tmp_path: Path) -> None:
     script = Path("scripts/lib/pytest_workspace.sh").resolve()
     workspace_root = tmp_path / "workspace"
@@ -84,6 +109,38 @@ def test_pytest_workspace_wrapper_keeps_requested_artifacts(tmp_path: Path) -> N
     assert "keeping workspace" in proc.stdout
 
 
+def test_pytest_workspace_wrapper_prints_success_summary_when_requested(tmp_path: Path) -> None:
+    script = Path("scripts/lib/pytest_workspace.sh").resolve()
+    workspace_root = tmp_path / "workspace"
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                f"source {script}; "
+                "bithumb_pytest_setup_workspace full; "
+                "touch \"$PYTEST_DEBUG_TEMPROOT/proof.txt\"; "
+                "kept=\"$BITHUMB_PYTEST_WORKSPACE\"; "
+                "bithumb_pytest_cleanup_workspace 0; "
+                "test ! -e \"$kept\""
+            ),
+        ],
+        env={
+            **os.environ,
+            "BITHUMB_PYTEST_WORKSPACE_ROOT": str(workspace_root),
+            "BITHUMB_PYTEST_RUN_ID": "run-summary",
+            "BITHUMB_PYTEST_SUMMARY_ON_SUCCESS": "1",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "retained_size_bytes=" in proc.stdout
+    assert "cleaned workspace" in proc.stdout
+
+
 def test_pytest_workspace_wrapper_refuses_repo_local_workspace() -> None:
     script = Path("scripts/lib/pytest_workspace.sh").resolve()
     proc = subprocess.run(
@@ -109,3 +166,12 @@ def test_official_runners_use_external_workspace_and_no_repo_local_basetemp() ->
         assert "bithumb_pytest_setup_workspace" in text
         assert '--basetemp="$PWD/.tmp/pytest"' not in text
         assert ".tmp/pytest" not in text
+
+
+def test_full_runner_requests_success_artifact_summary_before_cleanup() -> None:
+    text = Path("scripts/run_full_pytest_tests.sh").read_text(encoding="utf-8")
+    setup_index = text.index('bithumb_pytest_setup_workspace "full"')
+    summary_index = text.index("export BITHUMB_PYTEST_SUMMARY_ON_SUCCESS=1")
+    cleanup_index = text.index("bithumb_pytest_cleanup_workspace")
+
+    assert setup_index < summary_index < cleanup_index

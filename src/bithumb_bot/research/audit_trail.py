@@ -6,9 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from bithumb_bot.paths import PathManager, PathPolicyError
-from bithumb_bot.storage_io import write_json_atomic
 
-from .artifact_store import ArtifactBudget, ArtifactStore
+from .artifact_store import ArtifactBudget, ArtifactStore, ResearchArtifactContext
 from .hashing import content_hash_payload, sha256_prefixed
 
 
@@ -111,6 +110,7 @@ class AuditTraceScope:
         split: str,
         parameter_values: dict[str, Any] | None = None,
         artifact_budget: ArtifactBudget | None = None,
+        artifact_context: ResearchArtifactContext | None = None,
     ) -> None:
         self.manager = manager
         self.experiment_id = experiment_id
@@ -135,7 +135,11 @@ class AuditTraceScope:
             if path.exists():
                 path.unlink()
         self._sequence = 0
-        self.artifact_store = ArtifactStore(root=trace_root(manager=manager, experiment_id=experiment_id), budget=artifact_budget)
+        self.artifact_store = (
+            artifact_context
+            if artifact_context is not None
+            else ArtifactStore(root=trace_root(manager=manager, experiment_id=experiment_id), budget=artifact_budget)
+        )
         self._streams = {
             "decision": _StreamState("decision", self.root / "decisions.jsonl", _data_ref(manager, self.root / "decisions.jsonl")),
             "equity": _StreamState("equity", self.root / "equity.jsonl", _data_ref(manager, self.root / "equity.jsonl")),
@@ -243,6 +247,8 @@ def write_trace_manifest(
     dataset_content_hash: str,
     trace_indexes: list[dict[str, Any]],
     policy: AuditTrailPolicy,
+    artifact_context: ResearchArtifactContext | None = None,
+    artifact_budget: ArtifactBudget | None = None,
 ) -> dict[str, Any]:
     path = trace_manifest_path(manager=manager, experiment_id=experiment_id)
     payload: dict[str, Any] = {
@@ -262,7 +268,8 @@ def write_trace_manifest(
         ),
     }
     payload["content_hash"] = sha256_prefixed(content_hash_payload(payload))
-    write_json_atomic(path, payload)
+    store = artifact_context or ArtifactStore(root=trace_root(manager=manager, experiment_id=experiment_id), budget=artifact_budget)
+    store.write_json_atomic(path, payload)
     return payload
 
 

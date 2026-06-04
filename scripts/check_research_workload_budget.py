@@ -9,76 +9,88 @@ from pathlib import Path
 from typing import Any
 
 
+DEFAULT_POLICY_PATH = Path("tests/policy/research_workload_budget_policy.json")
+REQUIRED_LIMIT_FIELDS = (
+    "max_estimated_tick_events",
+    "max_estimated_audit_stream_rows",
+    "max_estimated_artifact_write_count",
+    "max_estimated_hash_payload_bytes",
+    "max_estimated_artifact_bytes",
+    "max_estimated_artifact_file_count",
+)
+ESTIMATE_TO_LIMIT_FIELDS = (
+    ("estimated_tick_events", "max_estimated_tick_events"),
+    ("estimated_audit_stream_rows", "max_estimated_audit_stream_rows"),
+    ("estimated_artifact_write_count", "max_estimated_artifact_write_count"),
+    ("estimated_hash_payload_bytes", "max_estimated_hash_payload_bytes"),
+    ("estimated_artifact_bytes", "max_estimated_artifact_bytes"),
+    ("estimated_artifact_file_count", "max_estimated_artifact_file_count"),
+)
+
+
 @dataclass(frozen=True)
 class WorkloadBudget:
-    max_estimated_tick_events: int
-    max_estimated_audit_stream_rows: int
-    max_estimated_artifact_write_count: int
-    max_estimated_hash_payload_bytes: int
-    max_artifact_bytes: int
-    max_audit_stream_bytes: int
-    max_artifact_file_count: int
+    suite: str
+    limits: dict[str, int]
 
 
-SUITE_BUDGETS = {
-    "fast": WorkloadBudget(
-        max_estimated_tick_events=25_000,
-        max_estimated_audit_stream_rows=0,
-        max_estimated_artifact_write_count=250,
-        max_estimated_hash_payload_bytes=2_000_000,
-        max_artifact_bytes=64 * 1024 * 1024,
-        max_audit_stream_bytes=0,
-        max_artifact_file_count=500,
-    ),
-    "research-nightly": WorkloadBudget(
-        max_estimated_tick_events=2_500_000,
-        max_estimated_audit_stream_rows=250_000,
-        max_estimated_artifact_write_count=20_000,
-        max_estimated_hash_payload_bytes=256 * 1024 * 1024,
-        max_artifact_bytes=512 * 1024 * 1024,
-        max_audit_stream_bytes=256 * 1024 * 1024,
-        max_artifact_file_count=25_000,
-    ),
-    "full": WorkloadBudget(
-        max_estimated_tick_events=3_000_000,
-        max_estimated_audit_stream_rows=250_000,
-        max_estimated_artifact_write_count=25_000,
-        max_estimated_hash_payload_bytes=320 * 1024 * 1024,
-        max_artifact_bytes=768 * 1024 * 1024,
-        max_audit_stream_bytes=320 * 1024 * 1024,
-        max_artifact_file_count=30_000,
-    ),
-}
+def load_policy(path: Path) -> dict[str, WorkloadBudget]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise SystemExit(f"workload budget policy file missing: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"workload budget policy file is invalid JSON: {path}: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise SystemExit("workload budget policy schema_version must be 1")
+    suites = payload.get("suites")
+    if not isinstance(suites, dict):
+        raise SystemExit("workload budget policy must define suites")
+    budgets: dict[str, WorkloadBudget] = {}
+    for suite in ("fast", "research-nightly", "full"):
+        raw = suites.get(suite)
+        if not isinstance(raw, dict):
+            raise SystemExit(f"workload budget policy missing suite={suite}")
+        limits: dict[str, int] = {}
+        for field in REQUIRED_LIMIT_FIELDS:
+            limits[field] = _non_negative_int(raw, field, source=f"policy suite={suite}")
+        budgets[suite] = WorkloadBudget(suite=suite, limits=limits)
+    return budgets
 
 
 def check_estimate(estimate: dict[str, Any], budget: WorkloadBudget) -> list[str]:
-    checks = {
-        "estimated_tick_events": budget.max_estimated_tick_events,
-        "estimated_audit_stream_rows": budget.max_estimated_audit_stream_rows,
-        "estimated_artifact_write_count": budget.max_estimated_artifact_write_count,
-        "estimated_hash_payload_bytes": budget.max_estimated_hash_payload_bytes,
-        "max_artifact_bytes": budget.max_artifact_bytes,
-        "max_audit_stream_bytes": budget.max_audit_stream_bytes,
-        "max_artifact_file_count": budget.max_artifact_file_count,
-    }
     violations: list[str] = []
-    for field, limit in checks.items():
-        observed = _int_field(estimate, field)
+    for estimate_field, limit_field in ESTIMATE_TO_LIMIT_FIELDS:
+        observed = _non_negative_int(estimate, estimate_field, source="workload estimate")
+        limit = budget.limits[limit_field]
         if observed > limit:
-            violations.append(f"{field} exceeded: observed={observed} limit={limit}")
+            violations.append(
+                f"suite={budget.suite} field={estimate_field} observed={observed} limit={limit}"
+            )
     return violations
 
 
 def main() -> int:
+    repo_root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description="Fail fast when research workload estimates exceed suite budgets.")
-    parser.add_argument("--suite", choices=sorted(SUITE_BUDGETS), default="research-nightly")
+    parser.add_argument("--suite", default="research-nightly")
     parser.add_argument("--estimate-json", type=Path, help="Optional synthetic workload estimate JSON.")
+    parser.add_argument(
+        "--policy-json",
+        type=Path,
+        default=repo_root / DEFAULT_POLICY_PATH,
+        help="Suite budget policy JSON.",
+    )
     args = parser.parse_args()
 
-    repo_root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo_root))
+    budgets = load_policy(args.policy_json)
+    if args.suite not in budgets:
+        raise SystemExit(f"unknown suite={args.suite}; policy suites={','.join(sorted(budgets))}")
     if args.estimate_json:
         estimate = json.loads(args.estimate_json.read_text(encoding="utf-8"))
+        if not isinstance(estimate, dict):
+            raise SystemExit("workload estimate JSON must be an object")
     else:
         from tests.policy.research_runner_policy import research_workload_summary
 
@@ -86,14 +98,13 @@ def main() -> int:
         estimate = {
             "estimated_tick_events": summary["total_estimated_tick_events"],
             "estimated_audit_stream_rows": summary["total_estimated_audit_stream_rows"],
-            "estimated_artifact_write_count": summary["expensive_test_count"] * 10,
-            "estimated_hash_payload_bytes": int(summary["total_estimated_tick_events"]) * 128 + 4096,
-            "max_artifact_bytes": 0,
-            "max_audit_stream_bytes": 0,
-            "max_artifact_file_count": summary["expensive_test_count"] * 10,
+            "estimated_artifact_write_count": summary["total_estimated_artifact_write_count"],
+            "estimated_hash_payload_bytes": summary["total_estimated_hash_payload_bytes"],
+            "estimated_artifact_bytes": summary["total_estimated_artifact_bytes"],
+            "estimated_artifact_file_count": summary["total_estimated_artifact_file_count"],
         }
 
-    violations = check_estimate(estimate, SUITE_BUDGETS[args.suite])
+    violations = check_estimate(estimate, budgets[args.suite])
     if violations:
         print(f"research workload budget exceeded for suite={args.suite}", file=sys.stderr)
         for violation in violations:
@@ -103,11 +114,11 @@ def main() -> int:
     return 0
 
 
-def _int_field(payload: dict[str, Any], field: str) -> int:
-    value = payload.get(field, 0)
+def _non_negative_int(payload: dict[str, Any], field: str, *, source: str) -> int:
+    value = payload.get(field)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise SystemExit(f"workload estimate field {field} must be a non-negative integer")
-    return value
+        raise SystemExit(f"{source} field {field} must be a non-negative integer")
+    return int(value)
 
 
 if __name__ == "__main__":

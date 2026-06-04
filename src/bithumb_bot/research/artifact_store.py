@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from bithumb_bot.paths import PathManager
 from bithumb_bot.storage_io import append_jsonl, write_json_atomic
 
 
@@ -132,3 +133,65 @@ class ArtifactStore:
                 )
             self._audit_stream_bytes = next_stream_bytes
         self._total_bytes = next_total
+
+
+class ResearchArtifactContext:
+    """Run-wide accounting for one research experiment's generated artifacts.
+
+    The budget is intentionally run-wide, not per trace scope. It covers the
+    existing research output buckets for one experiment:
+    `data/<mode>/derived/research/<experiment_id>` and
+    `data/<mode>/reports/research/<experiment_id>`.
+    """
+
+    def __init__(
+        self,
+        *,
+        manager: PathManager,
+        experiment_id: str,
+        budget: ArtifactBudget | None = None,
+    ) -> None:
+        self.manager = manager
+        self.experiment_id = experiment_id
+        self.derived_root = (manager.data_dir() / "derived" / "research" / experiment_id).resolve()
+        self.report_root = (manager.data_dir() / "reports" / "research" / experiment_id).resolve()
+        self.store = ArtifactStore(root=manager.data_dir(), budget=budget)
+
+    @property
+    def budget(self) -> ArtifactBudget:
+        return self.store.budget
+
+    @property
+    def total_bytes(self) -> int:
+        return self.store.total_bytes
+
+    @property
+    def file_count(self) -> int:
+        return self.store.file_count
+
+    @property
+    def audit_stream_rows(self) -> int:
+        return self.store.audit_stream_rows
+
+    @property
+    def audit_stream_bytes(self) -> int:
+        return self.store.audit_stream_bytes
+
+    def write_json_atomic(self, path: Path, payload: dict[str, Any]) -> None:
+        self._ensure_in_research_run(path)
+        self.store.write_json_atomic(path, payload)
+
+    def append_jsonl(self, path: Path, payload: dict[str, Any], *, audit_stream: bool = False) -> None:
+        self._ensure_in_research_run(path)
+        self.store.append_jsonl(path, payload, audit_stream=audit_stream)
+
+    def _ensure_in_research_run(self, path: Path) -> None:
+        resolved = path.resolve()
+        if (
+            resolved == self.derived_root
+            or self.derived_root in resolved.parents
+            or resolved == self.report_root
+            or self.report_root in resolved.parents
+        ):
+            return
+        raise ValueError(f"research artifact path outside experiment context: {resolved}")

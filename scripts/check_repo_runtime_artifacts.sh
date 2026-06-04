@@ -15,8 +15,16 @@ candidates="$({
   git ls-files --others --exclude-standard -- '*.jsonl'
   find . -path ./.git -prune -o \( \
     -path './.tmp/pytest' -o \
+    -path './pytest-debug' -o \
+    -path './bithumb-pytest-workspace' -o \
     -path './derived/research' -o \
     -path './reports/research' -o \
+    -path './data/paper/derived/research' -o \
+    -path './data/live/derived/research' -o \
+    -path './data/paper/reports/research' -o \
+    -path './data/live/reports/research' -o \
+    -path './*/derived/research' -o \
+    -path './*/reports/research' -o \
     -path './traces' -o \
     -path './candidate_results' -o \
     -path './candidate_failures' \

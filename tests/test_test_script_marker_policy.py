@@ -81,6 +81,15 @@ def test_fast_and_nightly_scripts_run_policy_guards_before_pytest() -> None:
         assert strategy_guard_index < pytest_index
 
 
+def test_research_nightly_and_full_scripts_run_workload_budget_before_pytest() -> None:
+    for path in (Path("scripts/run_research_nightly_tests.sh"), Path("scripts/run_full_pytest_tests.sh")):
+        text = path.read_text(encoding="utf-8")
+        budget_index = text.index("uv run python scripts/check_research_workload_budget.py --suite")
+        pytest_index = text.index("uv run pytest")
+
+        assert budget_index < pytest_index
+
+
 def test_default_fast_excluded_research_markers_match_script_expressions() -> None:
     expected = set(DEFAULT_FAST_EXCLUDED_RESEARCH_MARKERS)
     assert "research_kernel" in expected

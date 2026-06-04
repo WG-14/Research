@@ -132,6 +132,8 @@ def load_inventory(path: Path = INVENTORY_PATH) -> dict[str, dict[str, object]]:
             raise AssertionError(f"{path} inventory entry {nodeid} missing tier")
         if not isinstance(expected_workload, dict) or not expected_workload:
             raise AssertionError(f"{path} inventory entry {nodeid} missing expected_workload")
+        expected_workload = _normalized_expected_workload(expected_workload)
+        item["expected_workload"] = expected_workload
         for workload_field in (
             "strategy_count",
             "manifest_count",
@@ -139,6 +141,10 @@ def load_inventory(path: Path = INVENTORY_PATH) -> dict[str, dict[str, object]]:
             "estimated_strategy_runs",
             "estimated_tick_events",
             "estimated_audit_stream_rows",
+            "estimated_artifact_write_count",
+            "estimated_hash_payload_bytes",
+            "estimated_artifact_bytes",
+            "estimated_artifact_file_count",
         ):
             if not _non_negative_number(expected_workload.get(workload_field)):
                 raise AssertionError(
@@ -260,6 +266,10 @@ def research_workload_summary(
         "total_estimated_strategy_runs": 0,
         "total_estimated_tick_events": 0,
         "total_estimated_audit_stream_rows": 0,
+        "total_estimated_artifact_write_count": 0,
+        "total_estimated_hash_payload_bytes": 0,
+        "total_estimated_artifact_bytes": 0,
+        "total_estimated_artifact_file_count": 0,
     }
     workload_key_by_total = {
         "strategy_count": "strategy_count",
@@ -268,6 +278,10 @@ def research_workload_summary(
         "total_estimated_strategy_runs": "estimated_strategy_runs",
         "total_estimated_tick_events": "estimated_tick_events",
         "total_estimated_audit_stream_rows": "estimated_audit_stream_rows",
+        "total_estimated_artifact_write_count": "estimated_artifact_write_count",
+        "total_estimated_hash_payload_bytes": "estimated_hash_payload_bytes",
+        "total_estimated_artifact_bytes": "estimated_artifact_bytes",
+        "total_estimated_artifact_file_count": "estimated_artifact_file_count",
     }
     for test in expensive_tests:
         for marker in test.markers & EXPENSIVE_RESEARCH_MARKERS:
@@ -287,6 +301,26 @@ def research_workload_summary(
         "marker_counts": marker_counts,
         **totals,
     }
+
+
+def _normalized_expected_workload(expected_workload: dict[str, object]) -> dict[str, object]:
+    normalized = dict(expected_workload)
+    strategy_runs = int(normalized.get("estimated_strategy_runs") or 0)
+    tick_events = int(normalized.get("estimated_tick_events") or 0)
+    audit_rows = int(normalized.get("estimated_audit_stream_rows") or 0)
+    if "estimated_artifact_write_count" not in normalized:
+        normalized["estimated_artifact_write_count"] = max(1, strategy_runs) * 4 + (1 if audit_rows else 0)
+    if "estimated_hash_payload_bytes" not in normalized:
+        normalized["estimated_hash_payload_bytes"] = tick_events * 128 + max(1, strategy_runs) * 512 + 4096
+    if "estimated_artifact_bytes" not in normalized:
+        normalized["estimated_artifact_bytes"] = (
+            int(normalized["estimated_hash_payload_bytes"])
+            + int(normalized["estimated_artifact_write_count"]) * 4096
+            + audit_rows * 512
+        )
+    if "estimated_artifact_file_count" not in normalized:
+        normalized["estimated_artifact_file_count"] = int(normalized["estimated_artifact_write_count"])
+    return normalized
 
 
 def discover_direct_production_runner_calls(test_root: Path) -> Iterable[RunnerCall]:

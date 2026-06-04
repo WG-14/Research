@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from bithumb_bot.paths import PathManager, PathPolicyError
-from .artifact_store import ArtifactBudget, ArtifactStore
+from .artifact_store import ArtifactBudget, ArtifactStore, ResearchArtifactContext
 from .hashing import report_content_hash_payload, sha256_prefixed
 
 
@@ -89,6 +89,7 @@ def write_research_report(
     report_name: str,
     payload: dict[str, Any],
     artifact_budget: ArtifactBudget | None = None,
+    artifact_context: ResearchArtifactContext | None = None,
 ) -> tuple[ResearchReportPaths, str]:
     paths, report_payload, content_hash = finalize_research_report_payload(
         manager=manager,
@@ -96,7 +97,7 @@ def write_research_report(
         report_name=report_name,
         payload=payload,
     )
-    store = ArtifactStore(root=manager.data_dir(), budget=artifact_budget)
+    store = artifact_context or ArtifactStore(root=manager.data_dir(), budget=artifact_budget)
     store.write_json_atomic(paths.derived_path, {"candidates": report_payload.get("candidates", [])})
     store.write_json_atomic(paths.report_path, report_payload)
     return paths, content_hash

@@ -80,6 +80,9 @@ bithumb_pytest_cleanup_workspace() {
     bithumb_pytest_workspace_summary
     return 0
   fi
+  if [[ "${BITHUMB_PYTEST_SUMMARY_ON_SUCCESS:-0}" == "1" ]]; then
+    bithumb_pytest_workspace_summary
+  fi
   rm -rf "$BITHUMB_PYTEST_WORKSPACE"
   echo "[PYTEST-WORKSPACE] cleaned workspace: $BITHUMB_PYTEST_WORKSPACE"
 }

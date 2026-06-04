@@ -114,6 +114,24 @@ def build_research_execution_plan(
         "run_environment": run_environment,
         "run_environment_hash": sha256_prefixed(run_environment),
     }
+    estimated_audit_stream_rows = _estimated_audit_stream_rows(
+        audit_mode=manifest.research_run.audit_trail.mode,
+        dataset_candles=dataset_candles,
+        candidate_count=len(candidates),
+        scenario_count=len(manifest.execution_model.scenarios),
+    )
+    estimated_artifact_write_count = _estimated_artifact_write_count(
+        audit_mode=manifest.research_run.audit_trail.mode,
+        full_decisions_external_jsonl=manifest.research_run.artifact_policy.full_decisions_external_jsonl,
+        work_unit_count=len(candidates) * len(manifest.execution_model.scenarios),
+        split_count=split_count,
+    )
+    estimated_hash_payload_bytes = _estimated_hash_payload_bytes(
+        dataset_candles=dataset_candles,
+        candidate_count=len(candidates),
+        scenario_count=len(manifest.execution_model.scenarios),
+        split_count=split_count,
+    )
     plan["workload_estimate"] = {
         "schema_version": 1,
         "candidate_count": plan["candidate_count"],
@@ -126,23 +144,18 @@ def build_research_execution_plan(
         "audit_mode": manifest.research_run.audit_trail.mode,
         "report_detail": manifest.research_run.report_detail,
         "full_decisions_external_jsonl": manifest.research_run.artifact_policy.full_decisions_external_jsonl,
-        "estimated_audit_stream_rows": _estimated_audit_stream_rows(
-            audit_mode=manifest.research_run.audit_trail.mode,
-            dataset_candles=dataset_candles,
+        "estimated_audit_stream_rows": estimated_audit_stream_rows,
+        "estimated_artifact_write_count": estimated_artifact_write_count,
+        "estimated_hash_payload_bytes": estimated_hash_payload_bytes,
+        "estimated_artifact_bytes": _estimated_artifact_bytes(
             candidate_count=len(candidates),
             scenario_count=len(manifest.execution_model.scenarios),
-        ),
-        "estimated_artifact_write_count": _estimated_artifact_write_count(
+            split_count=split_count,
             audit_mode=manifest.research_run.audit_trail.mode,
+            estimated_audit_stream_rows=estimated_audit_stream_rows,
+            estimated_artifact_write_count=estimated_artifact_write_count,
+            estimated_hash_payload_bytes=estimated_hash_payload_bytes,
             full_decisions_external_jsonl=manifest.research_run.artifact_policy.full_decisions_external_jsonl,
-            work_unit_count=len(candidates) * len(manifest.execution_model.scenarios),
-            split_count=split_count,
-        ),
-        "estimated_hash_payload_bytes": _estimated_hash_payload_bytes(
-            dataset_candles=dataset_candles,
-            candidate_count=len(candidates),
-            scenario_count=len(manifest.execution_model.scenarios),
-            split_count=split_count,
         ),
         "estimated_snapshot_hash_count": len(snapshots),
         "uses_production_evaluator": None,
@@ -311,3 +324,30 @@ def _estimated_hash_payload_bytes(
         + int(candidate_count) * int(scenario_count) * int(split_count) * 512
         + 4096
     )
+
+
+def _estimated_artifact_bytes(
+    *,
+    candidate_count: int,
+    scenario_count: int,
+    split_count: int,
+    audit_mode: str,
+    estimated_audit_stream_rows: int,
+    estimated_artifact_write_count: int,
+    estimated_hash_payload_bytes: int,
+    full_decisions_external_jsonl: bool,
+) -> int:
+    work_unit_count = int(candidate_count) * int(scenario_count)
+    report_bytes = 64 * 1024
+    candidate_json_bytes = max(1, work_unit_count) * 16 * 1024
+    candidate_journal_bytes = max(1, work_unit_count) * 2 * 1024
+    hash_payload_bytes = int(estimated_hash_payload_bytes)
+    audit_bytes = 0
+    if audit_mode == "complete_external":
+        audit_bytes = int(estimated_audit_stream_rows) * 512 + int(estimated_artifact_write_count) * 1024
+    decision_jsonl_bytes = (
+        work_unit_count * int(split_count) * 8 * 1024
+        if full_decisions_external_jsonl
+        else 0
+    )
+    return int(report_bytes + candidate_json_bytes + candidate_journal_bytes + hash_payload_bytes + audit_bytes + decision_jsonl_bytes)

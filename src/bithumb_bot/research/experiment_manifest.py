@@ -460,7 +460,7 @@ class ResearchResourceLimits:
     max_trades: int | None = 5000
     max_equity_points_retained: int | None = 0
     max_rss_mb: float | None = 1400.0
-    max_artifact_bytes: int | None = 256 * 1024 * 1024
+    max_artifact_bytes: int | None = 512 * 1024 * 1024
     max_audit_stream_rows: int | None = 1_000_000
     max_audit_stream_bytes: int | None = 128 * 1024 * 1024
     max_artifact_file_count: int | None = 10_000
@@ -2681,7 +2681,7 @@ def _parse_research_resource_limits(value: Any) -> ResearchResourceLimits:
         ),
         max_rss_mb=_optional_positive_float(value.get("max_rss_mb", 1400.0), "research_run.resource_limits.max_rss_mb"),
         max_artifact_bytes=_optional_positive_or_zero_int(
-            value.get("max_artifact_bytes", 256 * 1024 * 1024),
+            value.get("max_artifact_bytes", 512 * 1024 * 1024),
             "research_run.resource_limits.max_artifact_bytes",
         ),
         max_audit_stream_rows=_optional_positive_or_zero_int(
