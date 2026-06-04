@@ -42,8 +42,9 @@ uv run bithumb-bot health
 ```
 
 `./scripts/run_fast_pr_tests.sh` is the default PR validation command. A
-selector-less `uv run pytest -q` is long-running/full validation and is not the
-default local PR check.
+selector-less raw `uv run pytest -q` is long-running/full validation and is not
+the default local PR check. Use `./scripts/run_full_pytest_tests.sh` for the
+official full-suite entrypoint.
 
 ## Canonical CLI
 
@@ -266,15 +267,21 @@ The rendered units use `BITHUMB_ENV_FILE=@BITHUMB_ENV_FILE_LIVE@` so the env fil
 
 - Default PR fast suite:
   - `./scripts/run_fast_pr_tests.sh`
-  - `uv run pytest -q -m "not research_kernel and not research_e2e and not audit_e2e and not walk_forward_e2e and not parallel_e2e and not nightly and not slow_research and not memory_sensitive"`
 - Fast regression set:
   - `uv run pytest -q -m fast_regression`
 - Slow integration/live-like set:
   - `uv run pytest -q -m slow_integration`
 - Dedicated research/nightly workload checks:
   - `./scripts/run_research_nightly_tests.sh`
-  - `uv run pytest -q -m "research_kernel or research_e2e or audit_e2e or walk_forward_e2e or parallel_e2e or nightly or slow_research or memory_sensitive"`
+- Full validation:
+  - `./scripts/run_full_pytest_tests.sh`
 - Known research resource high-water RSS regression reproduction:
   - `uv run pytest -q --tb=short --maxfail=1 tests/test_research_backtest_reproducibility.py::test_tiny_three_day_sma_backtest_completes_structurally tests/test_research_backtest_reproducibility.py::test_stress_report_is_candidate_order_independent tests/test_research_strategy_canary.py::test_buy_and_hold_full_research_backtest_report_contains_common_kernel_fields`
 
-Prefer the default PR fast suite first. It must not include unbounded real strategy/backtest kernel tick loops, full research matrices, complete-external audit research runs, walk-forward E2E, serial/parallel real comparisons, or memory-sensitive checks. Keep the dedicated research/nightly workload set separate unless you are validating restart, recovery, live-like execution paths, real strategy/backtest kernel behavior, walk-forward, complete-external audit binding, serial/parallel research execution, or research resource guard behavior. The dedicated research/nightly script checks every default-fast-excluded expensive research marker against the workload inventory in `tests/policy/research_e2e_inventory.json`. The three-test research command guards against process peak/high-water memory from earlier work affecting later candidate resource decisions.
+Prefer the default PR fast suite first. It must not include unbounded real strategy/backtest kernel tick loops, full research matrices, complete-external audit research runs, walk-forward E2E, serial/parallel real comparisons, or memory-sensitive checks. Keep the dedicated research/nightly workload set separate unless you are validating restart, recovery, live-like execution paths, real strategy/backtest kernel behavior, walk-forward, complete-external audit binding, serial/parallel research execution, or research resource guard behavior. The dedicated research/nightly script checks every default-fast-excluded expensive research marker against the workload inventory in `tests/policy/research_e2e_inventory.json`, then runs the workload budget preflight before pytest. The three-test research command guards against process peak/high-water memory from earlier work affecting later candidate resource decisions.
+
+Official suite runners create pytest workspaces outside the repository. Override
+the root with `BITHUMB_PYTEST_WORKSPACE_ROOT`, set `BITHUMB_PYTEST_RUN_ID` for
+stable run IDs, and set `KEEP_BITHUMB_TEST_ARTIFACTS=1` to preserve failed or
+diagnostic artifacts. Successful official runner executions clean the run
+workspace by default.

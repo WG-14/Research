@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from bithumb_bot.paths import PathManager, PathPolicyError
-from bithumb_bot.storage_io import append_jsonl, write_json_atomic
+from bithumb_bot.storage_io import write_json_atomic
 
+from .artifact_store import ArtifactBudget, ArtifactStore
 from .hashing import content_hash_payload, sha256_prefixed
 
 
@@ -109,6 +110,7 @@ class AuditTraceScope:
         scenario_index: int,
         split: str,
         parameter_values: dict[str, Any] | None = None,
+        artifact_budget: ArtifactBudget | None = None,
     ) -> None:
         self.manager = manager
         self.experiment_id = experiment_id
@@ -133,6 +135,7 @@ class AuditTraceScope:
             if path.exists():
                 path.unlink()
         self._sequence = 0
+        self.artifact_store = ArtifactStore(root=trace_root(manager=manager, experiment_id=experiment_id), budget=artifact_budget)
         self._streams = {
             "decision": _StreamState("decision", self.root / "decisions.jsonl", _data_ref(manager, self.root / "decisions.jsonl")),
             "equity": _StreamState("equity", self.root / "equity.jsonl", _data_ref(manager, self.root / "equity.jsonl")),
@@ -158,7 +161,7 @@ class AuditTraceScope:
             stream.path.touch(exist_ok=True)
         index = self.index_payload(status=status)
         index["content_hash"] = sha256_prefixed(content_hash_payload(index))
-        write_json_atomic(self.index_path, index)
+        self.artifact_store.write_json_atomic(self.index_path, index)
         return index
 
     def index_payload(self, *, status: str) -> dict[str, Any]:
@@ -207,7 +210,7 @@ class AuditTraceScope:
         }
         event_hash = sha256_prefixed(base)
         row = {**base, "event_hash": event_hash}
-        append_jsonl(stream.path, row)
+        self.artifact_store.append_jsonl(stream.path, row, audit_stream=True)
         stream.observe(ts=ts, event_hash=event_hash)
 
 

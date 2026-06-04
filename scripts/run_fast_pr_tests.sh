@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$PROJECT_ROOT"
+source "$PROJECT_ROOT/scripts/lib/pytest_workspace.sh"
+
 FAST_MARKER_EXPR="not research_kernel and not research_e2e and not audit_e2e and not walk_forward_e2e and not parallel_e2e and not nightly and not slow_research and not memory_sensitive"
 export BITHUMB_TEST_TIER=fast
 export PYTHONPATH="${PWD}${PYTHONPATH:+:${PYTHONPATH}}"
 duration_log="$(mktemp "${TMPDIR:-/tmp}/bithumb-fast-pytest-durations.XXXXXX.log")"
-trap 'rm -f "$duration_log"' EXIT
+
+bithumb_pytest_setup_workspace "fast"
+status=0
+trap 'status=$?; rm -f "$duration_log"; bithumb_pytest_cleanup_workspace "$status"; exit "$status"' EXIT
 
 uv run python scripts/check_research_test_policy.py
 uv run python scripts/check_strategy_pr_workload_guard.py

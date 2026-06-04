@@ -460,6 +460,10 @@ class ResearchResourceLimits:
     max_trades: int | None = 5000
     max_equity_points_retained: int | None = 0
     max_rss_mb: float | None = 1400.0
+    max_artifact_bytes: int | None = 256 * 1024 * 1024
+    max_audit_stream_rows: int | None = 1_000_000
+    max_audit_stream_bytes: int | None = 128 * 1024 * 1024
+    max_artifact_file_count: int | None = 10_000
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -468,6 +472,10 @@ class ResearchResourceLimits:
             "max_trades": self.max_trades,
             "max_equity_points_retained": self.max_equity_points_retained,
             "max_rss_mb": self.max_rss_mb,
+            "max_artifact_bytes": self.max_artifact_bytes,
+            "max_audit_stream_rows": self.max_audit_stream_rows,
+            "max_audit_stream_bytes": self.max_audit_stream_bytes,
+            "max_artifact_file_count": self.max_artifact_file_count,
             "max_rss_mb_semantics": "candidate_local_rss_delta_mb",
             "memory_sampling_policy": {
                 "cadence": "per_resource_limit_check_event",
@@ -2649,6 +2657,10 @@ def _parse_research_resource_limits(value: Any) -> ResearchResourceLimits:
         "max_trades",
         "max_equity_points_retained",
         "max_rss_mb",
+        "max_artifact_bytes",
+        "max_audit_stream_rows",
+        "max_audit_stream_bytes",
+        "max_artifact_file_count",
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
@@ -2668,6 +2680,22 @@ def _parse_research_resource_limits(value: Any) -> ResearchResourceLimits:
             "research_run.resource_limits.max_equity_points_retained",
         ),
         max_rss_mb=_optional_positive_float(value.get("max_rss_mb", 1400.0), "research_run.resource_limits.max_rss_mb"),
+        max_artifact_bytes=_optional_positive_or_zero_int(
+            value.get("max_artifact_bytes", 256 * 1024 * 1024),
+            "research_run.resource_limits.max_artifact_bytes",
+        ),
+        max_audit_stream_rows=_optional_positive_or_zero_int(
+            value.get("max_audit_stream_rows", 1_000_000),
+            "research_run.resource_limits.max_audit_stream_rows",
+        ),
+        max_audit_stream_bytes=_optional_positive_or_zero_int(
+            value.get("max_audit_stream_bytes", 128 * 1024 * 1024),
+            "research_run.resource_limits.max_audit_stream_bytes",
+        ),
+        max_artifact_file_count=_optional_positive_or_zero_int(
+            value.get("max_artifact_file_count", 10_000),
+            "research_run.resource_limits.max_artifact_file_count",
+        ),
     )
 
 

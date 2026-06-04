@@ -3,6 +3,8 @@ from __future__ import annotations
 import socket
 import sys
 import types
+import shutil
+import os
 from dataclasses import fields
 from pathlib import Path
 
@@ -12,6 +14,12 @@ import bithumb_bot.config as _config_module
 from bithumb_bot.config import settings
 from bithumb_bot.compat.sma_runtime_compat import legacy_default_strategy_name
 from bithumb_bot.paths import PathConfig, PathManager
+from tests.support.test_workspace import (
+    TestRunWorkspace,
+    workspace_base_root,
+    workspace_run_id,
+    workspace_suite_name,
+)
 
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -31,7 +39,7 @@ def _path_manager_for_runtime_root(runtime_root: Path) -> PathManager:
     )
 
 
-_BASE_RUNTIME_ROOT = Path("/tmp/bithumb-bot-pytest-runtime").resolve()
+_BASE_RUNTIME_ROOT = (workspace_base_root() / "session-runtime").resolve()
 _BASE_PATH_MANAGER = _path_manager_for_runtime_root(_BASE_RUNTIME_ROOT)
 if _SRC.is_dir():
     src_path = str(_SRC)
@@ -52,6 +60,13 @@ def _sync_config_singletons(path_manager=None) -> None:
             setattr(module, "settings", settings)
         if getattr(module, "PATH_MANAGER", None) is not manager and hasattr(module, "PATH_MANAGER"):
             setattr(module, "PATH_MANAGER", manager)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+    setattr(item, f"rep_{report.when}", report)
 
 
 try:
@@ -118,10 +133,28 @@ def _block_external_network(monkeypatch):
 
 
 @pytest.fixture
-def managed_runtime_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, str]:
-    """Inject managed runtime roots/DB under pytest tmp_path (never repo-local)."""
+def test_run_workspace(request: pytest.FixtureRequest) -> TestRunWorkspace:
+    workspace = TestRunWorkspace.create(
+        base_root=workspace_base_root(),
+        project_root=_ROOT,
+        run_id=workspace_run_id(),
+        suite_name=workspace_suite_name(),
+        node_name=request.node.nodeid,
+    )
+    yield workspace
+    failed = bool(getattr(request.node, "rep_call", None) and request.node.rep_call.failed)
+    if workspace.keep_on_failure and failed:
+        return
+    if os.environ.get("KEEP_BITHUMB_TEST_ARTIFACTS") == "1":
+        return
+    shutil.rmtree(workspace.root, ignore_errors=True)
+
+
+@pytest.fixture
+def managed_runtime_env(monkeypatch: pytest.MonkeyPatch, test_run_workspace: TestRunWorkspace) -> dict[str, str]:
+    """Inject managed runtime roots/DB under an explicit external test workspace."""
     project_root = _ROOT.resolve()
-    runtime_root = (tmp_path / "runtime").resolve()
+    runtime_root = test_run_workspace.runtime_root.resolve()
     assert project_root not in runtime_root.parents
 
     monkeypatch.setenv("MODE", "paper")
@@ -139,6 +172,7 @@ def managed_runtime_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict
 
     return {
         "project_root": str(project_root),
+        "workspace_root": str(test_run_workspace.root),
         "runtime_root": str(runtime_root),
         "db_path": str(db_path),
     }
@@ -164,14 +198,14 @@ def relaxed_test_order_rules() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _restore_global_settings_state(tmp_path: Path):
+def _restore_global_settings_state(test_run_workspace: TestRunWorkspace):
     """Keep direct settings mutations from leaking across test modules."""
     from bithumb_bot.broker import order_rules as _order_rules
     from bithumb_bot.research import strategy_registry as _strategy_registry
     from bithumb_bot.research import validation_protocol as _validation_protocol
 
     keys = [field.name for field in fields(type(settings))]
-    test_path_manager = _path_manager_for_runtime_root((tmp_path / "runtime-default").resolve())
+    test_path_manager = _path_manager_for_runtime_root((test_run_workspace.runtime_root / "runtime-default").resolve())
     _sync_config_singletons(test_path_manager)
     _strategy_registry.reload_research_strategy_plugins_for_tests()
     _validation_protocol._CANDIDATE_SCENARIO_WORKER_CONTEXT = None

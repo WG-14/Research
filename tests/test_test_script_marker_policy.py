@@ -55,9 +55,10 @@ def test_fast_and_diagnostic_scripts_use_canonical_marker_expressions() -> None:
 
 
 def test_research_nightly_script_uses_canonical_marker_expression() -> None:
-    text = Path("scripts/run_research_nightly_tests.sh").read_text(encoding="utf-8")
-
-    assert f'-m "{CANONICAL_RESEARCH_NIGHTLY_MARKER_EXPR}"' in text
+    assert (
+        _shell_assignment(Path("scripts/run_research_nightly_tests.sh"), "RESEARCH_NIGHTLY_MARKER_EXPR")
+        == CANONICAL_RESEARCH_NIGHTLY_MARKER_EXPR
+    )
 
 
 def test_fast_pr_script_exports_fast_test_tier_before_pytest() -> None:
@@ -85,9 +86,7 @@ def test_default_fast_excluded_research_markers_match_script_expressions() -> No
     assert "research_kernel" in expected
 
     fast_expr = _shell_assignment(Path("scripts/run_fast_pr_tests.sh"), "FAST_MARKER_EXPR")
-    nightly_text = Path("scripts/run_research_nightly_tests.sh").read_text(encoding="utf-8")
-    nightly_match = re.search(r'-m "([^"]+)"', nightly_text)
-    assert nightly_match is not None
+    nightly_expr = _shell_assignment(Path("scripts/run_research_nightly_tests.sh"), "RESEARCH_NIGHTLY_MARKER_EXPR")
 
     assert _fast_excluded_markers(fast_expr) == expected
-    assert _nightly_included_markers(nightly_match.group(1)) == expected
+    assert _nightly_included_markers(nightly_expr) == expected

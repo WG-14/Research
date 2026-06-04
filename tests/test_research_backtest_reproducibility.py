@@ -58,6 +58,7 @@ from bithumb_bot.research.audit_trail import (
     verify_audit_trail,
     write_trace_manifest,
 )
+from bithumb_bot.research.artifact_store import ArtifactBudget, ArtifactBudgetExceeded
 from bithumb_bot.research.return_panel import build_candidate_return_panel
 from bithumb_bot.research import cli as research_cli
 from bithumb_bot.research.cli import _print_report_summary
@@ -3294,12 +3295,20 @@ def test_research_run_policy_participates_in_manifest_hash() -> None:
             "max_trades": None,
             "max_equity_points_retained": None,
             "max_rss_mb": None,
+            "max_artifact_bytes": 2048,
+            "max_audit_stream_rows": 12,
+            "max_audit_stream_bytes": 1024,
+            "max_artifact_file_count": 6,
         },
     }
     full = parse_manifest(full_payload)
 
     assert bounded.research_run.report_detail == "summary"
     assert bounded.research_run.resource_limits.max_decisions_retained == 0
+    assert full.research_run.resource_limits.max_artifact_bytes == 2048
+    assert full.research_run.resource_limits.max_audit_stream_rows == 12
+    assert full.research_run.resource_limits.max_audit_stream_bytes == 1024
+    assert full.research_run.resource_limits.max_artifact_file_count == 6
     assert bounded.manifest_hash() != full.manifest_hash()
 
 
@@ -4005,6 +4014,34 @@ def test_audit_trace_verification_detects_tamper_and_missing_stream(tmp_path, mo
     missing = verify_audit_trail(manager=manager, experiment_id="audit_tamper")
     assert missing["ok"] is False
     assert "audit_trail_equity_stream_missing" in missing["reasons"]
+
+
+@pytest.mark.contract
+def test_audit_trace_budget_exceeded_fails_with_structured_reason(tmp_path, monkeypatch) -> None:
+    for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
+        monkeypatch.setenv(key, str(tmp_path / f"{key.lower()}_root"))
+    monkeypatch.setenv("MODE", "paper")
+    manager = PathManager.from_env(Path.cwd())
+    scope = AuditTraceScope(
+        manager=manager,
+        experiment_id="audit_budget",
+        manifest_hash="sha256:manifest",
+        dataset_content_hash="sha256:dataset",
+        candidate_id="candidate_001",
+        scenario_id="scenario_001",
+        scenario_index=0,
+        split="validation",
+        parameter_values={"SMA_SHORT": 2, "SMA_LONG": 4},
+        artifact_budget=ArtifactBudget(max_audit_stream_rows=1, max_audit_stream_bytes=4096, max_artifact_bytes=4096, max_artifact_file_count=4),
+    )
+
+    scope.write_decision({"decision_ts": 1, "raw_signal": "HOLD"})
+    with pytest.raises(ArtifactBudgetExceeded) as excinfo:
+        scope.write_decision({"decision_ts": 2, "raw_signal": "BUY"})
+
+    assert excinfo.value.as_dict()["reason"] == "artifact_budget_max_audit_stream_rows_exceeded"
+    assert excinfo.value.as_dict()["observed"] == 2
+    assert excinfo.value.as_dict()["limit"] == 1
 
 
 def test_audit_trace_verification_accepts_aborted_terminal_status(tmp_path, monkeypatch) -> None:

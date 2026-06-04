@@ -43,6 +43,7 @@ from .audit_trail import (
     write_trace_manifest,
     trace_manifest_path,
 )
+from .artifact_store import ArtifactBudget
 from .deployment_policy import is_production_bound_target, validate_production_calibration_policy
 from .execution_calibration import compare_calibration_to_scenario
 from .execution_model import DepthWalkExecutionModel, FixedBpsExecutionModel, StressExecutionModel, model_params_hash
@@ -569,6 +570,7 @@ def _backtest_context(
             scenario_index=scenario_index,
             split=split_name,
             parameter_values=parameter_values,
+            artifact_budget=_artifact_budget_from_limits(limits),
         )
     context_progress_callback = None
     if progress_callback is not None or manager is not None:
@@ -598,6 +600,15 @@ def _backtest_context(
         ),
         progress_callback=context_progress_callback,
         audit_trace=audit_trace,
+    )
+
+
+def _artifact_budget_from_limits(limits) -> ArtifactBudget:
+    return ArtifactBudget(
+        max_artifact_bytes=limits.max_artifact_bytes,
+        max_audit_stream_rows=limits.max_audit_stream_rows,
+        max_audit_stream_bytes=limits.max_audit_stream_bytes,
+        max_artifact_file_count=limits.max_artifact_file_count,
     )
 
 
@@ -867,6 +878,7 @@ def run_research_backtest(
         experiment_id=manifest.experiment_id,
         report_name="backtest",
         payload=report,
+        artifact_budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
     )
     persisted_report = json.loads(paths.report_path.read_text(encoding="utf-8"))
     report.clear()
@@ -1059,6 +1071,7 @@ def run_research_walk_forward(
         experiment_id=manifest.experiment_id,
         report_name="walk_forward",
         payload=report,
+        artifact_budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
     )
     persisted_report = json.loads(paths.report_path.read_text(encoding="utf-8"))
     report.clear()

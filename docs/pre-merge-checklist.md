@@ -26,9 +26,8 @@ pytest excluding `research_kernel`, `research_e2e`, `audit_e2e`,
 `walk_forward_e2e`, `parallel_e2e`, `nightly`, `slow_research`, and
 `memory_sensitive`, with duration reporting enabled. The fast script also parses
 the reported durations and fails default-fast tests over the configured fast
-threshold. The policy check prints suite-level expensive research workload
-totals, including strategy count, manifest count, strategy canary count,
-estimated strategy runs, estimated tick events, and estimated audit stream rows.
+threshold. The script creates a repository-external pytest workspace before
+pytest starts and cleans it on success by default.
 
 The dedicated research/nightly pytest suite is:
 
@@ -44,11 +43,36 @@ stay bounded in-memory micro-kernel contracts. Run research E2E/nightly
 validation through `scripts/run_research_nightly_tests.sh`, which includes
 `research_kernel`, `research_e2e`, `audit_e2e`, `walk_forward_e2e`,
 `parallel_e2e`, `nightly`, `slow_research`, and `memory_sensitive`, then checks
-their durations against `tests/policy/research_e2e_inventory.json`.
+their workload budget before pytest and durations against
+`tests/policy/research_e2e_inventory.json`.
+
+The official full-suite pytest entrypoint is:
+
+```bash
+./scripts/run_full_pytest_tests.sh
+```
+
+Do not use raw selector-less `uv run pytest -q` as the default local or PR
+validation path. Full-suite pytest validation must run through the dedicated
+full pytest script or a later full pytest pipeline so pytest temporary files,
+research artifacts, cleanup, and artifact summaries are handled consistently.
+
+Pytest workspace controls:
+
+- `BITHUMB_PYTEST_WORKSPACE_ROOT`: optional absolute repository-external root.
+  Defaults to `/tmp/bithumb-bot-pytest-${USER:-user}`.
+- `BITHUMB_PYTEST_RUN_ID`: optional run id. Defaults to a timestamp/PID value.
+- `KEEP_BITHUMB_TEST_ARTIFACTS=1`: keep the run workspace and print its path
+  and size summary.
+
+On WSL, local Linux, and CI, official runners keep pytest and generated
+research/test evidence outside the repository. Successful runs clean the run
+workspace by default; failed runs or explicit keep-artifacts runs preserve the
+workspace for inspection.
 
 Selector-less full pytest is long-running/full validation and is not the
-default PR check. Use the dedicated pytest pipeline for full-suite repair or
-final full validation when required.
+default PR check. Use `./scripts/run_full_pytest_tests.sh` or the dedicated
+pytest pipeline for full-suite repair or final full validation when required.
 
 `scripts/run_codex_pytest_pipeline.sh` is Codex full-pytest repair automation
 that may commit, push, and perform EC2 smoke verification. It is not the

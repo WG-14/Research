@@ -289,6 +289,11 @@ fixtures, fake stores, minimal snapshots, or deterministic evaluators with a
 validated workload estimate. They must not enter the production research
 evaluator or unbounded full strategy tick loops.
 
+The fast script also creates a repository-external pytest workspace via
+`scripts/lib/pytest_workspace.sh`. Successful runs clean that workspace by
+default; `KEEP_BITHUMB_TEST_ARTIFACTS=1` preserves it and prints an artifact
+summary.
+
 Dedicated research/nightly validation collects the intentionally expensive
 research pipeline tests and emits CI-friendly duration data:
 
@@ -300,6 +305,24 @@ This is the dedicated research/nightly pytest suite. Do not confuse it with
 `scripts/run_codex_pytest_pipeline.sh`, which is Codex repair automation that
 may commit, push, and run EC2 smoke verification. The Codex pipeline is not the
 research/nightly pytest tier.
+
+Research/nightly validation runs `scripts/check_research_workload_budget.py`
+before pytest. The gate uses `ResearchExecutionPlan.workload_estimate` style
+fields such as estimated tick events, audit stream rows, artifact write count,
+and hash payload bytes so oversized artifact-producing workloads fail before
+expensive execution starts.
+
+Full-suite pytest validation should use:
+
+```bash
+./scripts/run_full_pytest_tests.sh
+```
+
+Raw selector-less `uv run pytest -q` is not the default local/PR validation
+path. Use the dedicated full pytest script or a later full pytest pipeline so
+pytest temporary data, WSL cleanup, and research artifact summaries are managed.
+Workspace controls are `BITHUMB_PYTEST_WORKSPACE_ROOT`,
+`BITHUMB_PYTEST_RUN_ID`, and `KEEP_BITHUMB_TEST_ARTIFACTS`.
 
 Marker meaning follows the execution boundary:
 
