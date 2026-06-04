@@ -10,6 +10,7 @@ from tests.policy.research_runner_policy import (
     DEFAULT_FAST_EXCLUDED_RESEARCH_MARKERS,
     discover_policy_violations,
     load_inventory,
+    research_workload_summary,
 )
 
 
@@ -28,9 +29,17 @@ def _write_inventory(path: Path, entries: list[dict[str, object]]) -> Path:
 def _inventory_entry(nodeid: str, markers: list[str] | None = None) -> dict[str, object]:
     return {
         "nodeid": nodeid,
+        "tier": "research_nightly",
         "markers": markers or ["research_e2e"],
         "reason": "temporary policy fixture",
-        "expected_workload": {"strategy_runs": "fixture"},
+        "expected_workload": {
+            "strategy_count": 1,
+            "manifest_count": 1,
+            "strategy_canary_count": 0,
+            "estimated_strategy_runs": 1,
+            "estimated_tick_events": 3,
+            "estimated_audit_stream_rows": 0,
+        },
         "duration_budget_seconds": 30,
         "domain": "policy_test",
         "last_measured_seconds": 1,
@@ -129,7 +138,49 @@ def test_no_real_runner():
 
     violations = discover_policy_violations(test_root, inventory_path=inventory)
 
-    assert any("stale inventory entry without direct production runner call" in violation for violation in violations)
+    assert any("stale workload inventory entry without expensive research marker" in violation for violation in violations)
+
+
+def test_policy_requires_inventory_for_every_expensive_research_marker(tmp_path: Path) -> None:
+    test_root = tmp_path / "tests"
+    test_root.mkdir()
+    test_file = test_root / "test_slow_research_contract.py"
+    test_file.write_text(
+        """
+import pytest
+
+@pytest.mark.slow_research
+def test_slow_contract():
+    assert True
+""",
+        encoding="utf-8",
+    )
+    inventory = _write_inventory(tmp_path / "inventory.json", [])
+
+    violations = discover_policy_violations(test_root, inventory_path=inventory)
+
+    assert any("expensive research test missing workload inventory entry" in violation for violation in violations)
+
+
+def test_policy_rejects_expensive_inventory_entry_with_missing_workload_dimensions(tmp_path: Path) -> None:
+    inventory = _write_inventory(
+        tmp_path / "inventory.json",
+        [
+            {
+                "nodeid": "tests/test_example.py::test_real_runner",
+                "tier": "research_nightly",
+                "markers": ["slow_research"],
+                "reason": "missing suite-level workload dimensions",
+                "expected_workload": {"estimated_strategy_runs": 1},
+                "domain": "policy_test",
+                "duration_budget_seconds": 30,
+                "last_measured_seconds": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(AssertionError, match="expected_workload.strategy_count"):
+        load_inventory(inventory)
 
 
 def test_policy_classifies_real_kernel_entrypoints(tmp_path: Path) -> None:
@@ -435,7 +486,19 @@ def test_expensive_marker_allows_unbounded_call():
 """,
         encoding="utf-8",
     )
-    inventory = _write_inventory(tmp_path / "inventory.json", [])
+    inventory = _write_inventory(
+        tmp_path / "inventory.json",
+        [
+            _inventory_entry(
+                f"{test_file.as_posix()}::test_research_kernel_marker_allows_unbounded_call",
+                markers=["research_kernel"],
+            ),
+            _inventory_entry(
+                f"{test_file.as_posix()}::test_expensive_marker_allows_unbounded_call",
+                markers=["slow_research"],
+            ),
+        ],
+    )
 
     violations = discover_policy_violations(test_root, inventory_path=inventory)
 
@@ -461,7 +524,15 @@ def test_marked_budget_bypass():
 """,
         encoding="utf-8",
     )
-    inventory = _write_inventory(tmp_path / "inventory.json", [])
+    inventory = _write_inventory(
+        tmp_path / "inventory.json",
+        [
+            _inventory_entry(
+                f"{test_file.as_posix()}::test_marked_budget_bypass",
+                markers=["slow_research"],
+            )
+        ],
+    )
 
     violations = discover_policy_violations(test_root, inventory_path=inventory)
 
@@ -486,7 +557,15 @@ def test_marked_walk_forward_budget_bypass():
 """,
         encoding="utf-8",
     )
-    inventory = _write_inventory(tmp_path / "inventory.json", [])
+    inventory = _write_inventory(
+        tmp_path / "inventory.json",
+        [
+            _inventory_entry(
+                f"{test_file.as_posix()}::test_marked_walk_forward_budget_bypass",
+                markers=["nightly"],
+            )
+        ],
+    )
 
     violations = discover_policy_violations(test_root, inventory_path=inventory)
 
@@ -566,6 +645,7 @@ def test_inventory_validation_rejects_missing_cost_metadata(tmp_path: Path) -> N
         [
             {
                 "nodeid": "tests/test_example.py::test_real_runner",
+                "tier": "research_nightly",
                 "markers": ["research_e2e"],
                 "reason": "missing cost metadata",
             }
@@ -574,6 +654,69 @@ def test_inventory_validation_rejects_missing_cost_metadata(tmp_path: Path) -> N
 
     with pytest.raises(AssertionError, match="missing expected_workload"):
         load_inventory(inventory)
+
+
+def test_research_workload_summary_exposes_suite_strategy_growth_dimensions(tmp_path: Path) -> None:
+    test_root = tmp_path / "tests"
+    test_root.mkdir()
+    test_file = test_root / "test_strategy_canary.py"
+    test_file.write_text(
+        """
+import pytest
+
+@pytest.mark.research_e2e
+def test_strategy_canary_e2e():
+    assert True
+
+@pytest.mark.memory_sensitive
+def test_memory_policy():
+    assert True
+""",
+        encoding="utf-8",
+    )
+    inventory = _write_inventory(
+        tmp_path / "inventory.json",
+        [
+            _inventory_entry(
+                f"{test_file.as_posix()}::test_strategy_canary_e2e",
+                markers=["research_e2e"],
+            )
+            | {
+                "expected_workload": {
+                    "strategy_count": 1,
+                    "manifest_count": 1,
+                    "strategy_canary_count": 1,
+                    "estimated_strategy_runs": 2,
+                    "estimated_tick_events": 24,
+                    "estimated_audit_stream_rows": 0,
+                }
+            },
+            _inventory_entry(
+                f"{test_file.as_posix()}::test_memory_policy",
+                markers=["memory_sensitive"],
+            )
+            | {
+                "expected_workload": {
+                    "strategy_count": 0,
+                    "manifest_count": 0,
+                    "strategy_canary_count": 0,
+                    "estimated_strategy_runs": 0,
+                    "estimated_tick_events": 0,
+                    "estimated_audit_stream_rows": 0,
+                }
+            },
+        ],
+    )
+
+    summary = research_workload_summary(test_root=test_root, inventory_path=inventory)
+
+    assert summary["expensive_test_count"] == 2
+    assert summary["strategy_count"] == 1
+    assert summary["manifest_count"] == 1
+    assert summary["strategy_canary_count"] == 1
+    assert summary["total_estimated_strategy_runs"] == 2
+    assert summary["total_estimated_tick_events"] == 24
+    assert summary["total_estimated_audit_stream_rows"] == 0
 
 
 def test_fast_research_workload_budget_rejects_large_strategy_run_count() -> None:

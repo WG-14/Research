@@ -6,6 +6,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+
 from scripts.check_fast_test_durations import TestDuration, parse_pytest_durations
 from tests.policy.research_runner_policy import INVENTORY_PATH, load_inventory
 
@@ -53,21 +56,21 @@ def inventory_duration_violations(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Fail when inventoried research E2E pytest durations exceed their inventory budgets."
+        description="Fail when inventoried research/nightly pytest durations exceed their workload budgets."
     )
     parser.add_argument("duration_log", type=Path)
     parser.add_argument(
         "--inventory",
         type=Path,
         default=INVENTORY_PATH,
-        help="research E2E inventory JSON path",
+        help="research workload inventory JSON path",
     )
     args = parser.parse_args(argv)
 
     durations = parse_pytest_durations(args.duration_log.read_text(encoding="utf-8"))
     violations = inventory_duration_violations(durations, inventory_path=args.inventory)
     if violations:
-        print("research E2E inventory duration budget exceeded:", file=sys.stderr)
+        print("research workload inventory duration budget exceeded:", file=sys.stderr)
         for violation in violations:
             print(
                 f"- {violation.seconds:.2f}s {violation.phase} {violation.nodeid} "
@@ -75,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
         return 1
-    print(f"research E2E inventory duration guard: ok ({len(durations)} reported durations)")
+    print(f"research workload inventory duration guard: ok ({len(durations)} reported durations)")
     return 0
 
 

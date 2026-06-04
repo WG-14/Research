@@ -69,6 +69,17 @@ def test_fast_pr_script_exports_fast_test_tier_before_pytest() -> None:
     assert export_index < pytest_index
 
 
+def test_fast_and_nightly_scripts_run_policy_guards_before_pytest() -> None:
+    for path in (Path("scripts/run_fast_pr_tests.sh"), Path("scripts/run_research_nightly_tests.sh")):
+        text = path.read_text(encoding="utf-8")
+        research_policy_index = text.index("uv run python scripts/check_research_test_policy.py")
+        strategy_guard_index = text.index("uv run python scripts/check_strategy_pr_workload_guard.py")
+        pytest_index = text.index("uv run pytest")
+
+        assert research_policy_index < pytest_index
+        assert strategy_guard_index < pytest_index
+
+
 def test_default_fast_excluded_research_markers_match_script_expressions() -> None:
     expected = set(DEFAULT_FAST_EXCLUDED_RESEARCH_MARKERS)
     assert "research_kernel" in expected

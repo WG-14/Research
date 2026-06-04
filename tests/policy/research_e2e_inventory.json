@@ -1,195 +1,604 @@
 {
-  "schema_version": 2,
-  "description": "Intentional production research runner tests. Each entry uses run_research_backtest or run_research_walk_forward without a deterministic contract evaluator and must stay excluded from the default fast PR suite. Duration values are conservative baseline assumptions used for ownership and ratchet review when exact local measurements are unavailable.",
+  "schema_version": 3,
+  "description": "Comprehensive default-fast-excluded research workload inventory. Every test marked with research_kernel, research_e2e, audit_e2e, walk_forward_e2e, parallel_e2e, slow_research, nightly, or memory_sensitive must be listed here with budget and workload metadata. Duration values are conservative baseline assumptions used for ownership and ratchet review when exact local measurements are unavailable.",
   "tests": [
     {
       "nodeid": "tests/test_dataset_quality_report.py::test_research_report_surfaces_quality_and_promotion_refuses_failed_quality",
-      "markers": ["research_e2e"],
+      "markers": [
+        "research_e2e"
+      ],
       "reason": "verifies dataset quality failures propagate through the real backtest report and promotion boundary",
-      "expected_workload": {"strategy_runs": "single production backtest", "tick_scope": "small fixture dataset"},
+      "expected_workload": {
+        "strategy_runs": "single production backtest",
+        "tick_scope": "small fixture dataset",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0
+      },
       "duration_budget_seconds": 30,
       "domain": "research_quality",
-      "last_measured_seconds": 10
-    },
-    {
-      "nodeid": "tests/test_orderbook_top_research.py::test_required_top_of_book_missing_fails_dataset_quality_and_candidate_gate",
-      "markers": ["research_e2e"],
-      "reason": "verifies required top-of-book absence fails through the real dataset-quality and candidate-gate boundary",
-      "expected_workload": {"strategy_runs": "single production backtest", "tick_scope": "small top-of-book fixture"},
-      "duration_budget_seconds": 30,
-      "domain": "research_orderbook",
-      "last_measured_seconds": 10
-    },
-    {
-      "nodeid": "tests/test_orderbook_top_research.py::test_optional_top_of_book_missing_is_visible_warning_not_candidate_failure",
-      "markers": ["research_e2e"],
-      "reason": "verifies optional top-of-book warning propagation through the real backtest report boundary",
-      "expected_workload": {"strategy_runs": "single production backtest", "tick_scope": "small top-of-book fixture"},
-      "duration_budget_seconds": 30,
-      "domain": "research_orderbook",
-      "last_measured_seconds": 10
-    },
-    {
-      "nodeid": "tests/test_orderbook_top_research.py::test_research_backtest_metadata_includes_joined_top_of_book",
-      "markers": ["research_e2e"],
-      "reason": "verifies joined quote metadata from real research loading and evaluation",
-      "expected_workload": {"strategy_runs": "single production backtest", "tick_scope": "small joined quote fixture"},
-      "duration_budget_seconds": 30,
-      "domain": "research_orderbook",
-      "last_measured_seconds": 10
-    },
-    {
-      "nodeid": "tests/test_orderbook_top_research.py::test_stored_l2_depth_rows_are_reported_without_claiming_depth_execution",
-      "markers": ["research_e2e"],
-      "reason": "verifies real top-of-book and depth capability reporting through the production report boundary",
-      "expected_workload": {"strategy_runs": "single production backtest", "tick_scope": "small top-of-book/depth fixture"},
-      "duration_budget_seconds": 30,
-      "domain": "research_orderbook",
-      "last_measured_seconds": 10
-    },
-    {
-      "nodeid": "tests/test_orderbook_top_research.py::test_depth_walk_research_backtest_uses_signal_level_l2_depth",
-      "markers": ["research_e2e"],
-      "reason": "verifies real depth-walk execution evidence through the production strategy/backtest path",
-      "expected_workload": {"strategy_runs": "single production backtest", "tick_scope": "small L2 depth fixture"},
-      "duration_budget_seconds": 45,
-      "domain": "research_orderbook",
-      "last_measured_seconds": 15
+      "last_measured_seconds": 10,
+      "tier": "research_nightly"
     },
     {
       "nodeid": "tests/test_orderbook_top_research.py::test_depth_walk_research_backtest_fails_closed_when_l2_depth_missing",
-      "markers": ["research_e2e"],
+      "markers": [
+        "research_e2e"
+      ],
       "reason": "verifies real depth-walk fail-closed behavior at the production research boundary",
-      "expected_workload": {"strategy_runs": "single production backtest", "tick_scope": "small L2 depth fixture"},
+      "expected_workload": {
+        "strategy_runs": "single production backtest",
+        "tick_scope": "small L2 depth fixture",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0
+      },
       "duration_budget_seconds": 45,
       "domain": "research_orderbook",
-      "last_measured_seconds": 15
+      "last_measured_seconds": 15,
+      "tier": "research_nightly"
     },
     {
-      "nodeid": "tests/test_orderbook_top_research.py::test_strategy_requiring_top_of_book_fails_closed_when_manifest_lacks_it",
-      "markers": ["research_e2e"],
-      "reason": "verifies strategy data requirements fail before production research execution proceeds",
-      "expected_workload": {"strategy_runs": "single production backtest fail-fast path", "tick_scope": "small fixture dataset"},
-      "duration_budget_seconds": 30,
-      "domain": "research_orderbook",
-      "last_measured_seconds": 10
-    },
-    {
-      "nodeid": "tests/test_orderbook_top_research.py::test_stress_latency_non_latency_policy_is_flagged_or_failed",
-      "markers": ["research_e2e"],
-      "reason": "verifies real execution-timing stress policy behavior through the production evaluator",
-      "expected_workload": {"strategy_runs": "single production backtest with stress timing policy", "tick_scope": "small fixture dataset"},
+      "nodeid": "tests/test_orderbook_top_research.py::test_depth_walk_research_backtest_uses_signal_level_l2_depth",
+      "markers": [
+        "research_e2e"
+      ],
+      "reason": "verifies real depth-walk execution evidence through the production strategy/backtest path",
+      "expected_workload": {
+        "strategy_runs": "single production backtest",
+        "tick_scope": "small L2 depth fixture",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0
+      },
       "duration_budget_seconds": 45,
       "domain": "research_orderbook",
-      "last_measured_seconds": 15
+      "last_measured_seconds": 15,
+      "tier": "research_nightly"
+    },
+    {
+      "nodeid": "tests/test_orderbook_top_research.py::test_latency_adjusted_orderbook_loads_quote_after_latency_plus_wait",
+      "tier": "research_nightly",
+      "markers": [
+        "research_kernel"
+      ],
+      "reason": "verifies latency-adjusted top-of-book quote selection through the real kernel boundary",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 0,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 64,
+        "estimated_audit_stream_rows": 0
+      },
+      "duration_budget_seconds": 20,
+      "domain": "research_orderbook",
+      "last_measured_seconds": 8
     },
     {
       "nodeid": "tests/test_orderbook_top_research.py::test_missing_quote_policy_fail_fails_candidate",
-      "markers": ["research_e2e"],
+      "markers": [
+        "research_e2e"
+      ],
       "reason": "verifies missing quote fail policy at the real strategy/report boundary",
-      "expected_workload": {"strategy_runs": "single production backtest", "tick_scope": "small quote fixture"},
+      "expected_workload": {
+        "strategy_runs": "single production backtest",
+        "tick_scope": "small quote fixture",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0
+      },
       "duration_budget_seconds": 30,
       "domain": "research_orderbook",
-      "last_measured_seconds": 10
+      "last_measured_seconds": 10,
+      "tier": "research_nightly"
     },
     {
       "nodeid": "tests/test_orderbook_top_research.py::test_missing_quote_policy_warn_records_warning_without_promotion_grade_pass",
-      "markers": ["research_e2e"],
+      "markers": [
+        "research_e2e"
+      ],
       "reason": "verifies missing quote warn policy through real candidate evidence and report gates",
-      "expected_workload": {"strategy_runs": "single production backtest", "tick_scope": "small quote fixture"},
+      "expected_workload": {
+        "strategy_runs": "single production backtest",
+        "tick_scope": "small quote fixture",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0
+      },
       "duration_budget_seconds": 30,
       "domain": "research_orderbook",
-      "last_measured_seconds": 10
+      "last_measured_seconds": 10,
+      "tier": "research_nightly"
+    },
+    {
+      "nodeid": "tests/test_orderbook_top_research.py::test_optional_top_of_book_missing_is_visible_warning_not_candidate_failure",
+      "markers": [
+        "research_e2e"
+      ],
+      "reason": "verifies optional top-of-book warning propagation through the real backtest report boundary",
+      "expected_workload": {
+        "strategy_runs": "single production backtest",
+        "tick_scope": "small top-of-book fixture",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0
+      },
+      "duration_budget_seconds": 30,
+      "domain": "research_orderbook",
+      "last_measured_seconds": 10,
+      "tier": "research_nightly"
     },
     {
       "nodeid": "tests/test_orderbook_top_research.py::test_report_separates_execution_attempt_count_from_closed_trade_count",
-      "markers": ["research_e2e"],
+      "markers": [
+        "research_e2e"
+      ],
       "reason": "verifies real execution metadata aggregation through the production report boundary",
-      "expected_workload": {"strategy_runs": "single production backtest", "tick_scope": "small execution fixture"},
+      "expected_workload": {
+        "strategy_runs": "single production backtest",
+        "tick_scope": "small execution fixture",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0
+      },
       "duration_budget_seconds": 30,
       "domain": "research_orderbook",
-      "last_measured_seconds": 10
+      "last_measured_seconds": 10,
+      "tier": "research_nightly"
+    },
+    {
+      "nodeid": "tests/test_orderbook_top_research.py::test_required_top_of_book_missing_fails_dataset_quality_and_candidate_gate",
+      "markers": [
+        "research_e2e"
+      ],
+      "reason": "verifies required top-of-book absence fails through the real dataset-quality and candidate-gate boundary",
+      "expected_workload": {
+        "strategy_runs": "single production backtest",
+        "tick_scope": "small top-of-book fixture",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0
+      },
+      "duration_budget_seconds": 30,
+      "domain": "research_orderbook",
+      "last_measured_seconds": 10,
+      "tier": "research_nightly"
+    },
+    {
+      "nodeid": "tests/test_orderbook_top_research.py::test_research_backtest_metadata_includes_joined_top_of_book",
+      "markers": [
+        "research_e2e"
+      ],
+      "reason": "verifies joined quote metadata from real research loading and evaluation",
+      "expected_workload": {
+        "strategy_runs": "single production backtest",
+        "tick_scope": "small joined quote fixture",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0
+      },
+      "duration_budget_seconds": 30,
+      "domain": "research_orderbook",
+      "last_measured_seconds": 10,
+      "tier": "research_nightly"
     },
     {
       "nodeid": "tests/test_orderbook_top_research.py::test_signal_event_quote_coverage_reported",
-      "markers": ["research_e2e"],
+      "markers": [
+        "research_e2e"
+      ],
       "reason": "verifies deterministic content hash and quote coverage through repeated real production backtests",
-      "expected_workload": {"strategy_runs": "two production backtests", "tick_scope": "small quote fixture"},
+      "expected_workload": {
+        "strategy_runs": "two production backtests",
+        "tick_scope": "small quote fixture",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 2,
+        "estimated_tick_events": 8640,
+        "estimated_audit_stream_rows": 0
+      },
       "duration_budget_seconds": 60,
       "domain": "research_orderbook",
-      "last_measured_seconds": 20
+      "last_measured_seconds": 20,
+      "tier": "research_nightly"
+    },
+    {
+      "nodeid": "tests/test_orderbook_top_research.py::test_stored_l2_depth_rows_are_reported_without_claiming_depth_execution",
+      "markers": [
+        "research_e2e"
+      ],
+      "reason": "verifies real top-of-book and depth capability reporting through the production report boundary",
+      "expected_workload": {
+        "strategy_runs": "single production backtest",
+        "tick_scope": "small top-of-book/depth fixture",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0
+      },
+      "duration_budget_seconds": 30,
+      "domain": "research_orderbook",
+      "last_measured_seconds": 10,
+      "tier": "research_nightly"
+    },
+    {
+      "nodeid": "tests/test_orderbook_top_research.py::test_strategy_requiring_top_of_book_fails_closed_when_manifest_lacks_it",
+      "markers": [
+        "research_e2e"
+      ],
+      "reason": "verifies strategy data requirements fail before production research execution proceeds",
+      "expected_workload": {
+        "strategy_runs": "single production backtest fail-fast path",
+        "tick_scope": "small fixture dataset",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0
+      },
+      "duration_budget_seconds": 30,
+      "domain": "research_orderbook",
+      "last_measured_seconds": 10,
+      "tier": "research_nightly"
+    },
+    {
+      "nodeid": "tests/test_orderbook_top_research.py::test_stress_latency_non_latency_policy_is_flagged_or_failed",
+      "markers": [
+        "research_e2e"
+      ],
+      "reason": "verifies real execution-timing stress policy behavior through the production evaluator",
+      "expected_workload": {
+        "strategy_runs": "single production backtest with stress timing policy",
+        "tick_scope": "small fixture dataset",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0
+      },
+      "duration_budget_seconds": 45,
+      "domain": "research_orderbook",
+      "last_measured_seconds": 15,
+      "tier": "research_nightly"
     },
     {
       "nodeid": "tests/test_research_backtest_reproducibility.py::test_parallel_executor_uses_lightweight_tasks_with_worker_initializer",
-      "markers": ["parallel_e2e"],
+      "markers": [
+        "parallel_e2e"
+      ],
       "reason": "verifies real parallel worker initializer and process-boundary evidence",
-      "expected_workload": {"strategy_runs": "parallel production evaluator work units", "tick_scope": "small fixture dataset"},
+      "expected_workload": {
+        "strategy_runs": "parallel production evaluator work units",
+        "tick_scope": "small fixture dataset",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 2,
+        "estimated_tick_events": 8640,
+        "estimated_audit_stream_rows": 0
+      },
       "duration_budget_seconds": 90,
       "domain": "research_parallel",
+      "last_measured_seconds": 30,
+      "tier": "research_nightly"
+    },
+    {
+      "nodeid": "tests/test_research_backtest_reproducibility.py::test_parallel_research_failure_is_committed_by_main_process",
+      "markers": [
+        "parallel_e2e"
+      ],
+      "reason": "verifies real parallel failure artifact commit behavior at the main-process boundary",
+      "expected_workload": {
+        "strategy_runs": "parallel production evaluator fail path",
+        "tick_scope": "small fixture dataset",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 2,
+        "estimated_tick_events": 8640,
+        "estimated_audit_stream_rows": 0
+      },
+      "duration_budget_seconds": 90,
+      "domain": "research_parallel",
+      "last_measured_seconds": 30,
+      "tier": "research_nightly"
+    },
+    {
+      "nodeid": "tests/test_research_backtest_reproducibility.py::test_research_backtest_aggregates_scenarios_and_promotion_refuses_failed_stress",
+      "markers": [
+        "research_e2e"
+      ],
+      "reason": "verifies real scenario aggregation and promotion refusal through production backtest output",
+      "expected_workload": {
+        "strategy_runs": "production backtest with scenario aggregation",
+        "tick_scope": "small fixture dataset",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 4,
+        "estimated_tick_events": 17280,
+        "estimated_audit_stream_rows": 0
+      },
+      "duration_budget_seconds": 60,
+      "domain": "research_scenarios",
+      "last_measured_seconds": 20,
+      "tier": "research_nightly"
+    },
+    {
+      "nodeid": "tests/test_research_backtest_reproducibility.py::test_research_backtest_promotes_candidate_when_base_and_stress_pass",
+      "tier": "research_nightly",
+      "markers": [
+        "slow_research",
+        "nightly"
+      ],
+      "reason": "verifies production-bound promotion acceptance over base and stress evidence in the dedicated research tier",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 4,
+        "estimated_tick_events": 17280,
+        "estimated_audit_stream_rows": 0
+      },
+      "duration_budget_seconds": 90,
+      "domain": "research_promotion_contract",
       "last_measured_seconds": 30
     },
     {
       "nodeid": "tests/test_research_backtest_reproducibility.py::test_research_sweep_continues_after_guard_failure_and_writes_candidate_artifacts",
-      "markers": ["research_e2e"],
+      "markers": [
+        "research_e2e"
+      ],
       "reason": "verifies real resource-guard failure handling and candidate artifact persistence",
-      "expected_workload": {"strategy_runs": "multi-candidate production backtest", "tick_scope": "small fixture dataset"},
+      "expected_workload": {
+        "strategy_runs": "multi-candidate production backtest",
+        "tick_scope": "small fixture dataset",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 4,
+        "estimated_tick_events": 17280,
+        "estimated_audit_stream_rows": 0
+      },
       "duration_budget_seconds": 60,
       "domain": "research_resource_guard",
+      "last_measured_seconds": 20,
+      "tier": "research_nightly"
+    },
+    {
+      "nodeid": "tests/test_research_backtest_reproducibility.py::test_resource_guard_trips_on_candidate_local_rss_delta",
+      "tier": "research_nightly",
+      "markers": [
+        "memory_sensitive"
+      ],
+      "reason": "guards memory resource fail-closed behavior through the real resource policy boundary",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0
+      },
+      "duration_budget_seconds": 30,
+      "domain": "research_resource_guard",
+      "last_measured_seconds": 10
+    },
+    {
+      "nodeid": "tests/test_research_backtest_reproducibility.py::test_resource_guard_uses_candidate_local_rss_delta_not_process_peak",
+      "tier": "research_nightly",
+      "markers": [
+        "memory_sensitive"
+      ],
+      "reason": "guards memory resource accounting semantics that are order-sensitive and excluded from default-fast validation",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0
+      },
+      "duration_budget_seconds": 30,
+      "domain": "research_resource_guard",
+      "last_measured_seconds": 10
+    },
+    {
+      "nodeid": "tests/test_research_backtest_reproducibility.py::test_ru_maxrss_conversion_is_platform_explicit_for_large_linux_values",
+      "tier": "research_nightly",
+      "markers": [
+        "memory_sensitive"
+      ],
+      "reason": "guards platform-specific RSS conversion behavior for memory policy without default-fast ordering sensitivity",
+      "expected_workload": {
+        "strategy_count": 0,
+        "manifest_count": 0,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 0,
+        "estimated_tick_events": 0,
+        "estimated_audit_stream_rows": 0
+      },
+      "duration_budget_seconds": 15,
+      "domain": "research_resource_guard",
+      "last_measured_seconds": 5
+    },
+    {
+      "nodeid": "tests/test_research_backtest_reproducibility.py::test_summary_and_full_metrics_v2_gates_match_for_cagr_and_exposure",
+      "tier": "research_nightly",
+      "markers": [
+        "slow_research",
+        "nightly"
+      ],
+      "reason": "verifies summary/full report metric gate equivalence on larger deterministic research outputs outside default-fast budget",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 2,
+        "estimated_tick_events": 8640,
+        "estimated_audit_stream_rows": 0
+      },
+      "duration_budget_seconds": 60,
+      "domain": "research_metrics_contract",
       "last_measured_seconds": 20
     },
     {
-      "nodeid": "tests/test_research_backtest_reproducibility.py::test_parallel_research_failure_is_committed_by_main_process",
-      "markers": ["parallel_e2e"],
-      "reason": "verifies real parallel failure artifact commit behavior at the main-process boundary",
-      "expected_workload": {"strategy_runs": "parallel production evaluator fail path", "tick_scope": "small fixture dataset"},
-      "duration_budget_seconds": 90,
-      "domain": "research_parallel",
-      "last_measured_seconds": 30
-    },
-    {
       "nodeid": "tests/test_research_backtest_reproducibility.py::test_summary_zero_retention_writes_complete_external_audit_traces",
-      "markers": ["audit_e2e"],
+      "markers": [
+        "audit_e2e"
+      ],
       "reason": "verifies complete external audit JSONL persistence from a real production backtest",
-      "expected_workload": {"strategy_runs": "single production backtest with complete external audit", "tick_scope": "small fixture dataset"},
+      "expected_workload": {
+        "strategy_runs": "single production backtest with complete external audit",
+        "tick_scope": "small fixture dataset",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 12960
+      },
       "duration_budget_seconds": 90,
       "domain": "research_audit",
+      "last_measured_seconds": 30,
+      "tier": "research_nightly"
+    },
+    {
+      "nodeid": "tests/test_research_backtest_reproducibility.py::test_tiny_three_day_sma_backtest_completes_structurally",
+      "tier": "research_nightly",
+      "markers": [
+        "research_e2e",
+        "memory_sensitive"
+      ],
+      "reason": "representative real production backtest smoke plus memory-sensitive structural coverage that cannot be proven from payload fixtures alone",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0
+      },
+      "duration_budget_seconds": 90,
+      "domain": "research_smoke_memory",
       "last_measured_seconds": 30
     },
     {
       "nodeid": "tests/test_research_backtest_reproducibility.py::test_walk_forward_complete_external_audit_traces_all_windows",
-      "markers": ["audit_e2e", "walk_forward_e2e"],
+      "markers": [
+        "audit_e2e",
+        "walk_forward_e2e"
+      ],
       "reason": "verifies complete external audit trace integration for real walk-forward windows",
-      "expected_workload": {"strategy_runs": "production walk-forward with complete external audit", "tick_scope": "small multi-window fixture"},
+      "expected_workload": {
+        "strategy_runs": "production walk-forward with complete external audit",
+        "tick_scope": "small multi-window fixture",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 4,
+        "estimated_tick_events": 17280,
+        "estimated_audit_stream_rows": 51840
+      },
       "duration_budget_seconds": 120,
       "domain": "research_walk_forward_audit",
-      "last_measured_seconds": 40
+      "last_measured_seconds": 40,
+      "tier": "research_nightly"
     },
     {
-      "nodeid": "tests/test_research_backtest_reproducibility.py::test_research_backtest_aggregates_scenarios_and_promotion_refuses_failed_stress",
-      "markers": ["research_e2e"],
-      "reason": "verifies real scenario aggregation and promotion refusal through production backtest output",
-      "expected_workload": {"strategy_runs": "production backtest with scenario aggregation", "tick_scope": "small fixture dataset"},
-      "duration_budget_seconds": 60,
-      "domain": "research_scenarios",
-      "last_measured_seconds": 20
+      "nodeid": "tests/test_research_backtest_reproducibility.py::test_walk_forward_report_includes_execution_plan_and_observability",
+      "tier": "research_nightly",
+      "markers": [
+        "slow_research",
+        "nightly"
+      ],
+      "reason": "verifies walk-forward execution plan and observability report semantics with a deterministic evaluator outside default-fast budget",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 10,
+        "estimated_tick_events": 20000,
+        "estimated_audit_stream_rows": 0
+      },
+      "duration_budget_seconds": 45,
+      "domain": "research_walk_forward_contract",
+      "last_measured_seconds": 15
     },
     {
       "nodeid": "tests/test_research_strategy_canary.py::test_buy_and_hold_full_research_backtest_report_contains_common_kernel_fields",
-      "markers": ["research_e2e"],
+      "markers": [
+        "research_e2e"
+      ],
       "reason": "verifies production strategy canary behavior through the common kernel and report boundary",
-      "expected_workload": {"strategy_runs": "single production backtest canary", "tick_scope": "small fixture dataset"},
+      "expected_workload": {
+        "strategy_runs": "single production backtest canary",
+        "tick_scope": "small fixture dataset",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 1,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0
+      },
       "duration_budget_seconds": 45,
       "domain": "research_strategy_canary",
-      "last_measured_seconds": 15
+      "last_measured_seconds": 15,
+      "tier": "research_nightly"
     },
     {
       "nodeid": "tests/test_research_walk_forward.py::test_insufficient_windows_fails_clearly",
-      "markers": ["walk_forward_e2e"],
+      "markers": [
+        "walk_forward_e2e"
+      ],
       "reason": "verifies real walk-forward window validation at the production entrypoint",
-      "expected_workload": {"strategy_runs": "walk-forward fail-fast production entrypoint", "tick_scope": "small fixture dataset"},
+      "expected_workload": {
+        "strategy_runs": "walk-forward fail-fast production entrypoint",
+        "tick_scope": "small fixture dataset",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 4,
+        "estimated_tick_events": 17280,
+        "estimated_audit_stream_rows": 0
+      },
       "duration_budget_seconds": 45,
       "domain": "research_walk_forward",
-      "last_measured_seconds": 15
+      "last_measured_seconds": 15,
+      "tier": "research_nightly"
     }
   ]
 }

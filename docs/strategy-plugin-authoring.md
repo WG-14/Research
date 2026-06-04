@@ -199,18 +199,21 @@ candidate count, scenario count, split/window count, and tick count. The default
 PR suite is for contract and integration feedback, not full production research
 matrices.
 
-For every new strategy PR, include the expected default-PR
-`estimated_strategy_runs` delta in the review notes or checklist. Fast strategy
-tests should use a fake or minimal `DatasetSnapshot`, direct policy contracts,
-pure replay material, or a deterministic evaluator with
-`assert_fast_research_workload`. Strategy canaries in the default suite should
-focus on common kernel contracts and minimal datasets.
+For every new strategy PR, include the expected default-fast
+`estimated_strategy_runs` delta or the exact phrase `no default-fast workload
+delta` in the PR checklist. Also include the research/nightly workload delta for
+`estimated_strategy_runs`, `estimated_tick_events`, and
+`estimated_audit_stream_rows`. Fast strategy tests should use a fake or minimal
+`DatasetSnapshot`, direct policy contracts, pure replay material, or a
+deterministic evaluator with `assert_fast_research_workload`. Strategy canaries
+in the default suite should focus on common kernel contracts and minimal
+datasets.
 
 Do not add unmarked direct calls to `run_research_backtest` or
 `run_research_walk_forward`. The static policy check rejects direct production
-runner use unless the test has an expensive research marker and an entry in
-`tests/policy/research_e2e_inventory.json` explaining why lower-level contract
-coverage is insufficient.
+runner use unless the test has an expensive research marker and an entry in the
+comprehensive workload inventory at `tests/policy/research_e2e_inventory.json`
+explaining why lower-level contract coverage is insufficient.
 
 Production backtest or report canaries belong in `research_e2e`, `nightly`, or
 the dedicated research suite. Real walk-forward canaries belong in
@@ -218,7 +221,15 @@ the dedicated research suite. Real walk-forward canaries belong in
 `audit_e2e`; real parallel worker evidence belongs in `parallel_e2e`. Keep those
 E2E tests as the smallest representative smoke or acceptance checks and cover
 hash, report, audit, artifact, and promotion payload semantics with lower-level
-contract tests.
+contract tests. Any new `research_e2e`, `audit_e2e`, `walk_forward_e2e`,
+`parallel_e2e`, `research_kernel`, `slow_research`, `nightly`, or
+`memory_sensitive` test must be disclosed in the PR checklist with workload
+delta and justification.
+
+The repository statically checks that the PR template and this authoring guide
+continue to require those workload disclosures. The actual changed-file
+classification remains review-enforced because local policy checks do not
+always have the pull request diff available.
 
 Level 1 research-only strategy tests should prove:
 
@@ -227,6 +238,7 @@ Level 1 research-only strategy tests should prove:
 - deterministic reproducibility fields and `promotion_grade=false`
 - fail-closed promotion/runtime/live behavior
 - no runtime/live/promotion boilerplate in the public authoring path
+- no full default-fast research matrices
 
 Level 2 replay-compatible strategy tests should prove:
 
@@ -237,14 +249,16 @@ Level 2 replay-compatible strategy tests should prove:
 - `live_dry_run_allowed=false`
 - `live_real_order_allowed=false`
 - runtime/live preflight fail-closed reason codes
+- no full default-fast research matrices
 
 Level 3 live-eligible strategy tests should prove:
 
 - explicit runtime parameter adapter
 - runtime decision adapter factory
 - replay support when required
-- policy assembly
-- approved-profile binding
+- policy assembly and approved-profile binding
+- replay/equivalence contracts
+- no full default-fast research matrices
 - live dry-run and live real-order capability behavior
 - preserved decision, replay, runtime, policy, and profile hashes
 

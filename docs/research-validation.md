@@ -320,16 +320,26 @@ Marker meaning follows the execution boundary:
 - `memory_sensitive`: order-dependent memory/resource semantics that should not
   run in the default fast suite unless explicitly scoped.
 
+Every test with `research_kernel`, `research_e2e`, `audit_e2e`,
+`walk_forward_e2e`, `parallel_e2e`, `slow_research`, `nightly`, or
+`memory_sensitive` must be listed in the comprehensive workload inventory at
+`tests/policy/research_e2e_inventory.json` with nodeid, tier, markers, reason,
+expected workload, duration budget, owner or domain, and last measured duration.
+The expected workload records suite-level growth dimensions: `strategy_count`,
+`manifest_count`, `strategy_canary_count`, `estimated_strategy_runs`,
+`estimated_tick_events`, and `estimated_audit_stream_rows`.
+
 Every test that directly calls `run_research_backtest` or
 `run_research_walk_forward` without an approved deterministic contract helper
-must have one of those expensive markers and must be listed in
-`tests/policy/research_e2e_inventory.json` with markers, reason, expected
-workload, duration budget, owner or domain, and last measured duration. The
-reason must explain why a lower-level contract test is insufficient. The static
-policy checker enforces the recursive marker and inventory contract. Broad or
-duplicate production E2E tests should be replaced by lower-tier
-report/hash/audit/artifact contract coverage, leaving only the smallest
-representative smoke or acceptance test.
+must also have one of those expensive markers. Its inventory reason must explain
+why a lower-level contract test is insufficient. The static policy checker
+enforces the recursive marker and inventory contract, rejects stale inventory
+entries, and prints aggregate suite workload totals including
+`strategy_count`, `manifest_count`, `strategy_canary_count`,
+`total_estimated_strategy_runs`, `total_estimated_tick_events`, and
+`total_estimated_audit_stream_rows`. Broad or duplicate production E2E tests
+should be replaced by lower-tier report/hash/audit/artifact contract coverage,
+leaving only the smallest representative smoke or acceptance test.
 
 Tests that use `DeterministicResearchEvaluator`, `_run_contract_research_*`,
 report factories, payload factories, `AuditTraceScope`, or other fake/lower
@@ -354,11 +364,12 @@ small fixture helpers. Unbounded or full-kernel expansion must carry
 `_run_contract_research_backtest(enforce_fast_budget=False)` use must carry a
 default-fast-excluded marker such as `slow_research` or `nightly`.
 Default-fast validation must not include unbounded strategy/backtest tick loops.
-Because `research_kernel` is a research/nightly-tier marker, its current
-duration visibility comes from the `--durations` output emitted by
-`scripts/run_research_nightly_tests.sh`. The separate
-`tests/policy/research_e2e_inventory.json` duration ratchet remains scoped to
-inventoried production research E2E tests.
+Because `research_kernel` and the other expensive markers are
+research/nightly-tier markers, duration visibility comes from the `--durations`
+output emitted by `scripts/run_research_nightly_tests.sh`. The
+`tests/policy/research_e2e_inventory.json` duration ratchet covers every
+default-fast-excluded expensive research marker, not only direct production
+E2E tests.
 
 The focused reproduction for the historical order-dependent high-water RSS
 regression is:

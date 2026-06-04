@@ -90,6 +90,15 @@ class FastBudgetBypass:
     markers: frozenset[str]
 
 
+@dataclass(frozen=True)
+class ExpensiveResearchTest:
+    path: Path
+    test_name: str
+    nodeid: str
+    line: int
+    markers: frozenset[str]
+
+
 def load_inventory(path: Path = INVENTORY_PATH) -> dict[str, dict[str, object]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     tests = payload.get("tests")
@@ -103,6 +112,7 @@ def load_inventory(path: Path = INVENTORY_PATH) -> dict[str, dict[str, object]]:
         reason = item.get("reason")
         markers = item.get("markers")
         expected_workload = item.get("expected_workload")
+        tier = item.get("tier")
         duration_budget_seconds = item.get("duration_budget_seconds")
         owner = item.get("owner")
         domain = item.get("domain")
@@ -118,8 +128,22 @@ def load_inventory(path: Path = INVENTORY_PATH) -> dict[str, dict[str, object]]:
             raise AssertionError(f"{path} inventory entry {nodeid} has malformed markers")
         if marker_set.isdisjoint(EXPENSIVE_RESEARCH_MARKERS):
             raise AssertionError(f"{path} inventory entry {nodeid} lacks an expensive marker")
+        if not isinstance(tier, str) or not tier.strip():
+            raise AssertionError(f"{path} inventory entry {nodeid} missing tier")
         if not isinstance(expected_workload, dict) or not expected_workload:
             raise AssertionError(f"{path} inventory entry {nodeid} missing expected_workload")
+        for workload_field in (
+            "strategy_count",
+            "manifest_count",
+            "strategy_canary_count",
+            "estimated_strategy_runs",
+            "estimated_tick_events",
+            "estimated_audit_stream_rows",
+        ):
+            if not _non_negative_number(expected_workload.get(workload_field)):
+                raise AssertionError(
+                    f"{path} inventory entry {nodeid} missing expected_workload.{workload_field}"
+                )
         if not _positive_number(duration_budget_seconds):
             raise AssertionError(f"{path} inventory entry {nodeid} missing duration_budget_seconds")
         if not _positive_number(last_measured_seconds, allow_zero=True):
@@ -141,16 +165,25 @@ def discover_policy_violations(
     inventory_path: Path = INVENTORY_PATH,
 ) -> list[str]:
     violations: list[str] = []
+    expensive_tests = list(discover_expensive_research_tests(test_root))
     direct_calls = list(discover_direct_production_runner_calls(test_root))
     kernel_calls = list(discover_real_kernel_calls(test_root))
     fast_budget_bypasses = list(discover_fast_budget_bypasses(test_root))
     inventory = load_inventory(inventory_path)
     inventory_nodeids = set(inventory)
     direct_nodeids = {call.nodeid for call in direct_calls}
+    expensive_nodeids = {test.nodeid for test in expensive_tests}
 
-    stale = sorted(inventory_nodeids - direct_nodeids)
+    stale = sorted(inventory_nodeids - expensive_nodeids)
     if stale:
-        violations.extend(f"stale inventory entry without direct production runner call: {nodeid}" for nodeid in stale)
+        violations.extend(f"stale workload inventory entry without expensive research marker: {nodeid}" for nodeid in stale)
+
+    missing_expensive = sorted(expensive_nodeids - inventory_nodeids)
+    if missing_expensive:
+        violations.extend(
+            f"expensive research test missing workload inventory entry: {nodeid}"
+            for nodeid in missing_expensive
+        )
 
     missing = sorted(direct_nodeids - inventory_nodeids)
     if missing:
@@ -190,6 +223,70 @@ def discover_policy_violations(
     violations.extend(validate_contract_helpers(test_root))
     violations.extend(validate_fast_tier_guard_helper_usage(test_root))
     return sorted(set(violations))
+
+
+def discover_expensive_research_tests(test_root: Path) -> Iterable[ExpensiveResearchTest]:
+    for path in _iter_test_files(test_root):
+        display_path = _display_path(path)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        parent_by_id = _parent_map(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or not node.name.startswith("test_"):
+                continue
+            markers = frozenset(_decorator_marker_names(node) | _class_marker_names(node, parent_by_id))
+            if markers.isdisjoint(EXPENSIVE_RESEARCH_MARKERS):
+                continue
+            yield ExpensiveResearchTest(
+                path=display_path,
+                test_name=node.name,
+                nodeid=f"{display_path.as_posix()}::{node.name}",
+                line=node.lineno,
+                markers=markers,
+            )
+
+
+def research_workload_summary(
+    *,
+    test_root: Path = Path("tests"),
+    inventory_path: Path = INVENTORY_PATH,
+) -> dict[str, object]:
+    inventory = load_inventory(inventory_path)
+    expensive_tests = list(discover_expensive_research_tests(test_root))
+    marker_counts = {marker: 0 for marker in sorted(EXPENSIVE_RESEARCH_MARKERS)}
+    totals = {
+        "strategy_count": 0,
+        "manifest_count": 0,
+        "strategy_canary_count": 0,
+        "total_estimated_strategy_runs": 0,
+        "total_estimated_tick_events": 0,
+        "total_estimated_audit_stream_rows": 0,
+    }
+    workload_key_by_total = {
+        "strategy_count": "strategy_count",
+        "manifest_count": "manifest_count",
+        "strategy_canary_count": "strategy_canary_count",
+        "total_estimated_strategy_runs": "estimated_strategy_runs",
+        "total_estimated_tick_events": "estimated_tick_events",
+        "total_estimated_audit_stream_rows": "estimated_audit_stream_rows",
+    }
+    for test in expensive_tests:
+        for marker in test.markers & EXPENSIVE_RESEARCH_MARKERS:
+            marker_counts[marker] += 1
+        entry = inventory.get(test.nodeid)
+        if entry is None:
+            continue
+        workload = entry["expected_workload"]
+        if not isinstance(workload, dict):
+            continue
+        for total_key, workload_key in workload_key_by_total.items():
+            totals[total_key] += int(workload.get(workload_key) or 0)
+    return {
+        "schema_version": 1,
+        "inventory_path": inventory_path.as_posix(),
+        "expensive_test_count": len(expensive_tests),
+        "marker_counts": marker_counts,
+        **totals,
+    }
 
 
 def discover_direct_production_runner_calls(test_root: Path) -> Iterable[RunnerCall]:
@@ -698,3 +795,7 @@ def _positive_number(value: object, *, allow_zero: bool = False) -> bool:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return False
     return value >= 0 if allow_zero else value > 0
+
+
+def _non_negative_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0

@@ -7,6 +7,7 @@ duration_log="$(mktemp "${TMPDIR:-/tmp}/bithumb-fast-pytest-durations.XXXXXX.log
 trap 'rm -f "$duration_log"' EXIT
 
 uv run python scripts/check_research_test_policy.py
+uv run python scripts/check_strategy_pr_workload_guard.py
 uv run pytest -q \
   -m "$FAST_MARKER_EXPR" \
   --durations=50 \

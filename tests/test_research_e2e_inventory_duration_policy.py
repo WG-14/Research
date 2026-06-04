@@ -17,9 +17,17 @@ def _write_inventory(path: Path, *, budget: float = 5.0) -> Path:
                 "tests": [
                     {
                         "nodeid": "tests/test_research.py::test_real_runner",
+                        "tier": "research_nightly",
                         "markers": ["research_e2e"],
                         "reason": "synthetic duration ratchet fixture",
-                        "expected_workload": {"strategy_runs": "fixture"},
+                        "expected_workload": {
+                            "strategy_count": 1,
+                            "manifest_count": 1,
+                            "strategy_canary_count": 0,
+                            "estimated_strategy_runs": 1,
+                            "estimated_tick_events": 3,
+                            "estimated_audit_stream_rows": 0,
+                        },
                         "duration_budget_seconds": budget,
                         "domain": "duration_policy",
                         "last_measured_seconds": 1,
@@ -68,9 +76,17 @@ def test_inventory_duration_policy_rejects_malformed_inventory_entries(tmp_path:
                 "tests": [
                     {
                         "nodeid": "tests/test_research.py::test_real_runner",
+                        "tier": "research_nightly",
                         "markers": ["research_e2e"],
                         "reason": "missing duration budget",
-                        "expected_workload": {"strategy_runs": "fixture"},
+                        "expected_workload": {
+                            "strategy_count": 1,
+                            "manifest_count": 1,
+                            "strategy_canary_count": 0,
+                            "estimated_strategy_runs": 1,
+                            "estimated_tick_events": 3,
+                            "estimated_audit_stream_rows": 0,
+                        },
                         "domain": "duration_policy",
                         "last_measured_seconds": 1,
                     }
@@ -97,6 +113,6 @@ def test_inventory_duration_policy_main_reports_budget_failures(tmp_path: Path, 
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.splitlines() == [
-        "research E2E inventory duration budget exceeded:",
+        "research workload inventory duration budget exceeded:",
         "- 6.25s call tests/test_research.py::test_real_runner > budget 5s",
     ]

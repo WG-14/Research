@@ -271,10 +271,10 @@ The rendered units use `BITHUMB_ENV_FILE=@BITHUMB_ENV_FILE_LIVE@` so the env fil
   - `uv run pytest -q -m fast_regression`
 - Slow integration/live-like set:
   - `uv run pytest -q -m slow_integration`
-- Dedicated research E2E/resource checks:
+- Dedicated research/nightly workload checks:
   - `./scripts/run_research_nightly_tests.sh`
   - `uv run pytest -q -m "research_kernel or research_e2e or audit_e2e or walk_forward_e2e or parallel_e2e or nightly or slow_research or memory_sensitive"`
 - Known research resource high-water RSS regression reproduction:
   - `uv run pytest -q --tb=short --maxfail=1 tests/test_research_backtest_reproducibility.py::test_tiny_three_day_sma_backtest_completes_structurally tests/test_research_backtest_reproducibility.py::test_stress_report_is_candidate_order_independent tests/test_research_strategy_canary.py::test_buy_and_hold_full_research_backtest_report_contains_common_kernel_fields`
 
-Prefer the default PR fast suite first. It must not include unbounded real strategy/backtest kernel tick loops, full research matrices, complete-external audit research runs, walk-forward E2E, serial/parallel real comparisons, or memory-sensitive checks. Keep the dedicated research E2E/resource set separate unless you are validating restart, recovery, live-like execution paths, real strategy/backtest kernel behavior, walk-forward, complete-external audit binding, serial/parallel research execution, or research resource guard behavior. The three-test research command guards against process peak/high-water memory from earlier work affecting later candidate resource decisions.
+Prefer the default PR fast suite first. It must not include unbounded real strategy/backtest kernel tick loops, full research matrices, complete-external audit research runs, walk-forward E2E, serial/parallel real comparisons, or memory-sensitive checks. Keep the dedicated research/nightly workload set separate unless you are validating restart, recovery, live-like execution paths, real strategy/backtest kernel behavior, walk-forward, complete-external audit binding, serial/parallel research execution, or research resource guard behavior. The dedicated research/nightly script checks every default-fast-excluded expensive research marker against the workload inventory in `tests/policy/research_e2e_inventory.json`. The three-test research command guards against process peak/high-water memory from earlier work affecting later candidate resource decisions.

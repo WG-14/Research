@@ -26,7 +26,9 @@ pytest excluding `research_kernel`, `research_e2e`, `audit_e2e`,
 `walk_forward_e2e`, `parallel_e2e`, `nightly`, `slow_research`, and
 `memory_sensitive`, with duration reporting enabled. The fast script also parses
 the reported durations and fails default-fast tests over the configured fast
-threshold.
+threshold. The policy check prints suite-level expensive research workload
+totals, including strategy count, manifest count, strategy canary count,
+estimated strategy runs, estimated tick events, and estimated audit stream rows.
 
 The dedicated research/nightly pytest suite is:
 
@@ -41,7 +43,8 @@ unbounded strategy/kernel tick loops; direct kernel tests in the fast suite must
 stay bounded in-memory micro-kernel contracts. Run research E2E/nightly
 validation through `scripts/run_research_nightly_tests.sh`, which includes
 `research_kernel`, `research_e2e`, `audit_e2e`, `walk_forward_e2e`,
-`parallel_e2e`, `nightly`, `slow_research`, and `memory_sensitive`.
+`parallel_e2e`, `nightly`, `slow_research`, and `memory_sensitive`, then checks
+their durations against `tests/policy/research_e2e_inventory.json`.
 
 Selector-less full pytest is long-running/full validation and is not the
 default PR check. Use the dedicated pytest pipeline for full-suite repair or
