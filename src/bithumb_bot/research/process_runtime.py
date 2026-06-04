@@ -28,6 +28,7 @@ class ResearchProcessRuntime:
     outer_parallel_context: str | None
     unsafe_fork_allowed: bool
     process_budget: dict[str, object]
+    process_start_method_fallback: dict[str, object] | None = None
 
     def mp_context(self) -> mp.context.BaseContext:
         return mp.get_context(self.effective_start_method)
@@ -45,6 +46,11 @@ class ResearchProcessRuntime:
             "research_max_workers_requested": self.max_workers_requested,
             "research_max_workers_effective": self.max_workers_effective,
             "process_budget": dict(self.process_budget),
+            "process_start_method_fallback": (
+                dict(self.process_start_method_fallback)
+                if self.process_start_method_fallback is not None
+                else None
+            ),
         }
 
 
@@ -54,6 +60,7 @@ def resolve_research_process_runtime(
     requested_max_workers: int,
     allow_unsafe_fork: bool = False,
     unavailable_start_methods: tuple[str, ...] = (),
+    fallback_reason: str | None = None,
 ) -> ResearchProcessRuntime:
     available = tuple(mp.get_all_start_methods())
     requested = _normalize_requested_start_method(
@@ -71,6 +78,12 @@ def resolve_research_process_runtime(
     )
     max_workers_requested = _positive_int(requested_max_workers, "requested_max_workers")
     max_workers_effective, budget = _resolve_worker_budget(max_workers_requested)
+    fallback = _process_start_method_fallback(
+        requested=requested,
+        unavailable_start_methods=unavailable_start_methods,
+        effective=effective,
+        reason=fallback_reason,
+    )
     return ResearchProcessRuntime(
         requested_start_method=requested,
         effective_start_method=effective,
@@ -86,20 +99,24 @@ def resolve_research_process_runtime(
             **budget,
             "unavailable_process_start_methods": list(unavailable_start_methods),
         },
+        process_start_method_fallback=fallback,
     )
 
 
 def process_policy_observability(*, requested_start_method: str, requested_max_workers: int) -> dict[str, Any]:
     available = tuple(mp.get_all_start_methods())
+    max_workers_requested = _positive_int(requested_max_workers, "requested_max_workers")
+    max_workers_effective, budget = _resolve_worker_budget(max_workers_requested)
     return {
         "requested_process_start_method": _normalize_requested_start_method(
             requested_start_method,
             available_start_methods=available,
         ),
         "available_process_start_methods": list(available),
-        "research_max_workers_requested": _positive_int(requested_max_workers, "requested_max_workers"),
+        "research_max_workers_requested": max_workers_requested,
+        "research_max_workers_effective": max_workers_effective,
         "outer_parallel_context": _outer_parallel_context(),
-        "process_budget": _process_budget_metadata(_positive_int(requested_max_workers, "requested_max_workers")),
+        "process_budget": budget,
     }
 
 
@@ -173,6 +190,24 @@ def _process_budget_metadata(
         "research_max_workers_effective": effective_workers if effective_workers is not None else None,
         "research_max_workers_env_cap": int(research_cap_raw) if _is_positive_int(research_cap_raw) else None,
         "total_process_budget": int(total_budget_raw) if _is_positive_int(total_budget_raw) else None,
+    }
+
+
+def _process_start_method_fallback(
+    *,
+    requested: str,
+    unavailable_start_methods: tuple[str, ...],
+    effective: str,
+    reason: str | None,
+) -> dict[str, object] | None:
+    if not unavailable_start_methods:
+        return None
+    return {
+        "schema_version": 1,
+        "requested_process_start_method": requested,
+        "unavailable_process_start_methods": list(unavailable_start_methods),
+        "effective_process_start_method": effective,
+        "reason": reason or "start_method_unavailable",
     }
 
 

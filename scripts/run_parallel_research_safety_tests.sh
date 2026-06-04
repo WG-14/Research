@@ -12,6 +12,9 @@ trap 'status=$?; bithumb_pytest_cleanup_workspace "$status"; exit "$status"' EXI
 
 export PYTHONPATH="${PWD}${PYTHONPATH:+:${PYTHONPATH}}"
 
+PARALLEL_RESEARCH_SAFETY_MARKER_EXPR="parallel_e2e or memory_sensitive"
+
+bithumb_pytest_run_preflight "research test policy" uv run python scripts/check_research_test_policy.py
 bithumb_pytest_mark_pytest_started
 if [[ -n "${PYTEST_BIN:-}" ]]; then
   pytest_cmd=("$PYTEST_BIN")
@@ -20,8 +23,9 @@ else
 fi
 "${pytest_cmd[@]}" -q -n "${PYTEST_XDIST_WORKERS:-2}" --dist="${PYTEST_XDIST_DIST:-loadfile}" \
   tests/test_research_process_runtime.py \
-  tests/test_research_backtest_reproducibility.py::test_parallel_research_failure_is_committed_by_main_process \
-  tests/test_research_backtest_reproducibility.py::test_parallel_executor_maps_future_level_exception_to_failed_work_result \
+  -W error::DeprecationWarning
+"${pytest_cmd[@]}" -q -n "${PYTEST_XDIST_WORKERS:-2}" --dist="${PYTEST_XDIST_DIST:-loadfile}" \
+  -m "$PARALLEL_RESEARCH_SAFETY_MARKER_EXPR" \
   -W error::DeprecationWarning
 
 ./scripts/check_repo_runtime_artifacts.sh

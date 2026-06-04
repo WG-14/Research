@@ -61,6 +61,25 @@ def test_research_nightly_script_uses_canonical_marker_expression() -> None:
     )
 
 
+def test_parallel_research_safety_script_uses_drift_proof_marker_expression() -> None:
+    path = Path("scripts/run_parallel_research_safety_tests.sh")
+    text = path.read_text(encoding="utf-8")
+
+    assert _shell_assignment(path, "PARALLEL_RESEARCH_SAFETY_MARKER_EXPR") == "parallel_e2e or memory_sensitive"
+    assert '-m "$PARALLEL_RESEARCH_SAFETY_MARKER_EXPR"' in text
+    assert "tests/test_research_process_runtime.py" in text
+    assert "scripts/check_research_test_policy.py" in text
+
+
+def test_parallel_research_safety_script_runs_warning_as_error_and_runtime_artifact_check() -> None:
+    text = Path("scripts/run_parallel_research_safety_tests.sh").read_text(encoding="utf-8")
+
+    assert "-W error::DeprecationWarning" in text
+    assert '-n "${PYTEST_XDIST_WORKERS:-2}"' in text
+    assert '--dist="${PYTEST_XDIST_DIST:-loadfile}"' in text
+    assert "./scripts/check_repo_runtime_artifacts.sh" in text
+
+
 def test_fast_pr_script_exports_fast_test_tier_before_pytest() -> None:
     text = Path("scripts/run_fast_pr_tests.sh").read_text(encoding="utf-8")
 

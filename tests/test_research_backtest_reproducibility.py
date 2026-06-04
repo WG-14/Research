@@ -3877,6 +3877,17 @@ def test_parallel_research_failure_is_committed_by_main_process(tmp_path, monkey
     assert report["execution_observability"]["production_evaluator_used"] is True
     assert report["execution_observability"]["contract_evaluator_used"] is False
     assert any(item["status"] == "failed" for item in report["execution_observability"]["work_units"])
+    for item in report["execution_observability"]["work_units"]:
+        evidence = item["worker_process_evidence"]
+        assert evidence["worker_pid"]
+        assert evidence["callable_identity"]
+        assert evidence["input_hash"]
+        assert evidence["output_hash"]
+        assert evidence["exit_status"] in {0, 1}
+        assert evidence["resource_status"]
+        assert evidence["terminal_audit_trace_status"]
+        assert evidence["work_unit_hash"]
+        assert evidence["work_result_input_hash"]
     assert any('"stage":"candidate_failure"' in line for line in events)
     assert failures
     failed_payload = json.loads(failures[0].read_text(encoding="utf-8"))
@@ -3913,6 +3924,15 @@ def test_parallel_executor_maps_future_level_exception_to_failed_work_result() -
     assert results[0].failure_reason == "parallel_executor_exception"
     assert results[0].failure_evidence["phase"] == "future_result"
     assert results[0].failure_evidence["work_unit_hash"] == work_unit.work_unit_hash
+    evidence = results[0].observability_payload()["worker_process_evidence"]
+    assert evidence["callable_identity"]
+    assert evidence["input_hash"] == work_unit.work_result_input_hash
+    assert evidence["output_hash"] == results[0].content_hash
+    assert evidence["exit_status"] == 1
+    assert evidence["resource_status"] == "ERROR"
+    assert evidence["terminal_audit_trace_status"] == "not_applicable"
+    assert evidence["work_unit_hash"] == work_unit.work_unit_hash
+    assert evidence["work_result_input_hash"] == work_unit.work_result_input_hash
 
 
 def test_failed_future_normalization_preserves_stable_content_hash() -> None:

@@ -231,9 +231,17 @@ def test_full_runner_uses_labeled_preflights_before_pytest_start() -> None:
     strategy_guard_index = text.index('bithumb_pytest_run_preflight "strategy PR workload guard"')
     budget_index = text.index('bithumb_pytest_run_preflight "research workload budget full"')
     started_index = text.index("bithumb_pytest_mark_pytest_started")
-    pytest_index = text.index("uv run pytest -q")
+    pytest_index = text.index('uv run pytest "${pytest_args[@]}"')
 
     assert research_policy_index < strategy_guard_index < budget_index < started_index < pytest_index
+
+
+def test_full_runner_supports_optional_xdist_without_changing_serial_default() -> None:
+    text = Path("scripts/run_full_pytest_tests.sh").read_text(encoding="utf-8")
+
+    assert 'if [[ -n "${PYTEST_XDIST_WORKERS:-}" && "${PYTEST_XDIST_WORKERS:-0}" != "0" ]]' in text
+    assert 'pytest_args+=(-n "$PYTEST_XDIST_WORKERS" --dist="${PYTEST_XDIST_DIST:-loadfile}")' in text
+    assert "pytest_args=(-q)" in text
 
 
 def test_wsl_full_suite_disk_runbook_uses_official_runner() -> None:

@@ -371,6 +371,50 @@ ad-hoc selector-less pytest:
 PYTEST_XDIST_WORKERS=4 PYTEST_XDIST_DIST=loadfile ./scripts/run_full_pytest_tests.sh
 ```
 
+### Parallel Research Safety Matrix
+
+The nested parallelism matrix verifies that an outer pytest-xdist runner and
+the inner research process pool stay bounded, warning-clean, and auditable. Run
+these commands locally on Linux/WSL or in a dedicated pipeline when changing
+research parallel execution, process runtime policy, worker budgeting, or
+parallel report evidence.
+
+Required matrix:
+
+```bash
+PYTEST_XDIST_WORKERS=2 BITHUMB_RESEARCH_MAX_WORKERS=2 ./scripts/run_parallel_research_safety_tests.sh
+PYTEST_XDIST_WORKERS=4 BITHUMB_RESEARCH_MAX_WORKERS=2 ./scripts/run_parallel_research_safety_tests.sh
+PYTEST_XDIST_WORKERS=4 BITHUMB_RESEARCH_MAX_WORKERS=1 ./scripts/run_parallel_research_safety_tests.sh
+```
+
+Optional total-budget variants:
+
+```bash
+PYTEST_XDIST_WORKERS=2 BITHUMB_TOTAL_PROCESS_BUDGET=4 ./scripts/run_parallel_research_safety_tests.sh
+PYTEST_XDIST_WORKERS=4 BITHUMB_TOTAL_PROCESS_BUDGET=8 ./scripts/run_parallel_research_safety_tests.sh
+PYTEST_XDIST_WORKERS=4 BITHUMB_TOTAL_PROCESS_BUDGET=4 ./scripts/run_parallel_research_safety_tests.sh
+```
+
+Capture these fields for each row:
+
+- Wall time.
+- CPU usage or an observational summary of contention.
+- Max RSS or the closest available memory observation.
+- Warning count, with `DeprecationWarning` called out explicitly.
+- Pytest workspace cleanup result.
+- `./scripts/check_repo_runtime_artifacts.sh` result.
+- Observed `research_max_workers_effective`, `outer_parallel_context`, and
+  `process_budget` from a representative parallel report.
+- Recommended default values supported by the measurement.
+
+Current default recommendation: keep the safety gate default at
+`PYTEST_XDIST_WORKERS=2`, `PYTEST_XDIST_DIST=loadfile`, and
+`BITHUMB_RESEARCH_MP_START_METHOD=auto_safe`. Inner workers should remain capped
+with `BITHUMB_RESEARCH_MAX_WORKERS=2` for local/pipeline matrix runs until a
+larger value has measured wall-time benefit without memory pressure or warning
+regression. Rows not yet measured in the target pipeline should be recorded as
+pending local/pipeline measurement rather than treated as evidence.
+
 Workspace controls are `BITHUMB_PYTEST_WORKSPACE_ROOT`,
 `BITHUMB_PYTEST_RUN_ID`, and `KEEP_BITHUMB_TEST_ARTIFACTS`.
 When a full-runner preflight fails, the runner prints the failed preflight

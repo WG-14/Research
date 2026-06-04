@@ -131,6 +131,7 @@ def execute_research_work_units_parallel(
             requested_start_method=process_start_method,
             requested_max_workers=int(max_workers),
             unavailable_start_methods=("forkserver",),
+            fallback_reason="forkserver_pool_create_permission_error",
         )
         results = _execute_with_runtime(
             task_list=task_list,
