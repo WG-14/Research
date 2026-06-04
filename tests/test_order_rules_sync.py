@@ -549,6 +549,38 @@ def test_get_effective_order_rules_falls_back_to_manual_when_metadata_fetch_fail
     assert "risk=order-rule auto-sync unavailable" in warnings[0]
 
 
+def test_get_effective_order_rules_fallback_warning_uses_injected_notifier_under_pytest(monkeypatch):
+    order_rules._cached_rules.clear()
+
+    object.__setattr__(settings, "LIVE_MIN_ORDER_QTY", 0.0002)
+    object.__setattr__(settings, "LIVE_ORDER_QTY_STEP", 0.0005)
+    object.__setattr__(settings, "MIN_ORDER_NOTIONAL_KRW", 6000.0)
+    object.__setattr__(settings, "LIVE_ORDER_MAX_QTY_DECIMALS", 5)
+    monkeypatch.setenv("NOTIFIER_ENABLED", "true")
+    monkeypatch.setenv("NTFY_TOPIC", "parent-topic")
+    monkeypatch.setenv("NOTIFIER_WEBHOOK_URL", "https://example.invalid/generic")
+
+    monkeypatch.setattr(
+        order_rules,
+        "fetch_exchange_order_rules",
+        lambda _pair: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    monkeypatch.setattr(
+        order_rules,
+        "notify",
+        lambda _msg: pytest.fail("fallback warning must use injected notifier in this regression test"),
+    )
+
+    warnings: list[str] = []
+    resolved = order_rules.get_effective_order_rules("KRW-BTC", notify_fn=warnings.append)
+
+    assert resolved.fallback_used is True
+    assert resolved.source_mode == "local_fallback"
+    assert warnings
+    assert "order rules auto-sync failed" in warnings[0]
+    assert "reason_code=UNRECOVERABLE" in warnings[0]
+
+
 def test_get_effective_order_rules_cached_result_preserves_source_metadata(monkeypatch):
     order_rules._cached_rules.clear()
     object.__setattr__(settings, "LIVE_MIN_ORDER_QTY", 0.0003)

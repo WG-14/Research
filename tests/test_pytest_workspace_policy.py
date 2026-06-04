@@ -227,13 +227,77 @@ def test_pytest_workspace_preflight_failure_writes_external_report(tmp_path: Pat
 
 def test_full_runner_uses_labeled_preflights_before_pytest_start() -> None:
     text = Path("scripts/run_full_pytest_tests.sh").read_text(encoding="utf-8")
+    pythonpath_index = text.index('export PYTHONPATH="${PWD}${PYTHONPATH:+:${PYTHONPATH}}"')
+    safety_index = text.index("BITHUMB_PYTEST_ALLOW_EXTERNAL_NOTIFICATIONS")
     research_policy_index = text.index('bithumb_pytest_run_preflight "research test policy"')
     strategy_guard_index = text.index('bithumb_pytest_run_preflight "strategy PR workload guard"')
     budget_index = text.index('bithumb_pytest_run_preflight "research workload budget full"')
     started_index = text.index("bithumb_pytest_mark_pytest_started")
     pytest_index = text.index('uv run pytest "${pytest_args[@]}"')
 
-    assert research_policy_index < strategy_guard_index < budget_index < started_index < pytest_index
+    assert pythonpath_index < safety_index < research_policy_index < strategy_guard_index < budget_index < started_index < pytest_index
+
+
+def test_full_runner_sanitizes_notification_env_before_preflight_and_pytest(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    capture = tmp_path / "env-capture.txt"
+    fake_uv = fake_bin / "uv"
+    fake_uv.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+{
+  printf 'args=%s\\n' "$*"
+  printf 'NOTIFIER_ENABLED=%s\\n' "${NOTIFIER_ENABLED-__unset__}"
+  printf 'NTFY_TOPIC=%s\\n' "${NTFY_TOPIC-__unset__}"
+  printf 'NOTIFIER_WEBHOOK_URL=%s\\n' "${NOTIFIER_WEBHOOK_URL-__unset__}"
+  printf 'SLACK_WEBHOOK_URL=%s\\n' "${SLACK_WEBHOOK_URL-__unset__}"
+  printf 'TELEGRAM_BOT_TOKEN=%s\\n' "${TELEGRAM_BOT_TOKEN-__unset__}"
+  printf 'TELEGRAM_CHAT_ID=%s\\n' "${TELEGRAM_CHAT_ID-__unset__}"
+  printf '%s\\n' '---'
+} >> "$BITHUMB_CAPTURE_ENV"
+exit 0
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake_uv.chmod(0o755)
+
+    proc = subprocess.run(
+        ["bash", "scripts/run_full_pytest_tests.sh"],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "BITHUMB_CAPTURE_ENV": str(capture),
+            "BITHUMB_PYTEST_WORKSPACE_ROOT": str(tmp_path / "workspace"),
+            "BITHUMB_PYTEST_RUN_ID": "run-env-safety",
+            "NOTIFIER_ENABLED": "true",
+            "NTFY_TOPIC": "real-topic",
+            "NOTIFIER_WEBHOOK_URL": "https://example.invalid/generic",
+            "SLACK_WEBHOOK_URL": "https://example.invalid/slack",
+            "TELEGRAM_BOT_TOKEN": "real-token",
+            "TELEGRAM_CHAT_ID": "real-chat",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "[PYTEST-SAFETY] external notifications disabled for full pytest runner" in proc.stdout
+    captures = [block.strip().splitlines() for block in capture.read_text(encoding="utf-8").split("---") if block.strip()]
+    assert len(captures) == 4
+    assert any("args=run pytest -q" in block[0] for block in captures)
+    for block in captures:
+        values = dict(line.split("=", 1) for line in block[1:])
+        assert values == {
+            "NOTIFIER_ENABLED": "false",
+            "NTFY_TOPIC": "__unset__",
+            "NOTIFIER_WEBHOOK_URL": "__unset__",
+            "SLACK_WEBHOOK_URL": "__unset__",
+            "TELEGRAM_BOT_TOKEN": "__unset__",
+            "TELEGRAM_CHAT_ID": "__unset__",
+        }
 
 
 def test_full_runner_supports_optional_xdist_without_changing_serial_default() -> None:

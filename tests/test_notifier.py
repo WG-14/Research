@@ -45,6 +45,7 @@ def test_notify_uses_generic_webhook(monkeypatch: pytest.MonkeyPatch):
     assert calls[0][1] == {"text": "hello"}
 
 
+@pytest.mark.notification_transport_mock
 def test_ntfy_posts_plain_text_to_configured_topic(monkeypatch: pytest.MonkeyPatch):
     calls = []
 
@@ -69,6 +70,7 @@ def test_ntfy_posts_plain_text_to_configured_topic(monkeypatch: pytest.MonkeyPat
     ]
 
 
+@pytest.mark.notification_transport_mock
 def test_ntfy_uses_failure_priority_for_warn(monkeypatch: pytest.MonkeyPatch):
     calls = []
 
@@ -85,6 +87,7 @@ def test_ntfy_uses_failure_priority_for_warn(monkeypatch: pytest.MonkeyPatch):
     assert calls[0][2]["Tags"] == "warning"
 
 
+@pytest.mark.notification_transport_mock
 def test_ntfy_skips_without_topic(monkeypatch: pytest.MonkeyPatch):
     calls = []
     monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(post=lambda **kwargs: calls.append(kwargs)))
@@ -92,6 +95,15 @@ def test_ntfy_skips_without_topic(monkeypatch: pytest.MonkeyPatch):
     assert notifier._post_ntfy("done", severity=AlertSeverity.INFO) is False
 
     assert calls == []
+
+
+def test_inherited_notification_env_is_cleared_by_pytest_policy():
+    assert os.getenv("NOTIFIER_ENABLED") != "true"
+    assert os.getenv("NTFY_TOPIC") is None
+    assert os.getenv("NOTIFIER_WEBHOOK_URL") is None
+    assert os.getenv("SLACK_WEBHOOK_URL") is None
+    assert os.getenv("TELEGRAM_BOT_TOKEN") is None
+    assert os.getenv("TELEGRAM_CHAT_ID") is None
 
 
 def test_notify_tolerates_ntfy_delivery_exception(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):

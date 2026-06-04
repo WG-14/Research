@@ -2,7 +2,7 @@
 
 This file is generated from `src/bithumb_bot/config_spec.py`.
 Schema version: `config_spec_v1`
-Spec hash: `sha256:a0248510bd0826b077a402d00c78e1360c37c7a06f13773ec9f0138f7818b357`
+Spec hash: `sha256:091d36034ccb21f01648bc01e604d4bc7eb6bbc346ea3ece57b486ec1fd5ced0`
 
 | Name | Type | Scope | Default | Live required | Secret | Deprecated/Ignored | Safety | Validation | Description |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |

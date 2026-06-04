@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 
 from ..config import settings
 from ..config import (
@@ -38,7 +39,7 @@ def fetch_exchange_order_rules(pair: str):
     return derive_order_rules_from_chance(chance)
 
 
-def get_effective_order_rules(pair: str):
+def get_effective_order_rules(pair: str, *, notify_fn: Callable[[str], None] | None = None):
     from . import order_rules as rules_module
 
     normalized_pair, _raw_pair = canonical_market_with_raw(pair)
@@ -84,7 +85,8 @@ def get_effective_order_rules(pair: str):
             "order-rule auto-sync unavailable; side minimum totals, fees, and tick-size normalization "
             "may stay on local fallback until /v1/orders/chance succeeds again"
         )
-        rules_module.notify(
+        operator_notify = rules_module.notify if notify_fn is None else notify_fn
+        operator_notify(
             f"[WARN] order rules auto-sync failed for {pair}; using local fallback only "
             f"(reason_code={code}; reason={summary}; detail={detail}; risk={fallback_risk})"
         )

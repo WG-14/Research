@@ -54,4 +54,5 @@ markers = [
     "nightly: expensive research validation intended for nightly or dedicated pipelines",
     "memory_sensitive: tests that guard memory/resource semantics or order-dependent RSS behavior",
     "resource_guard: deterministic tests for research resource-limit enforcement and reporting",
+    "notification_transport_mock: notifier transport-internal tests that must use mocked HTTP clients only",
 ]

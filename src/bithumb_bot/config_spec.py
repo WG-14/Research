@@ -11,6 +11,7 @@ CONFIG_SCHEMA_VERSION = "config_spec_v1"
 
 ModeScope = Literal["common", "paper", "live", "internal", "bootstrap"]
 SafetyTier = Literal["P0", "P1", "P2", "internal"]
+SideEffectClass = Literal["none", "external_notification", "broker_private"]
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class EnvVarSpec:
     docs: str = ""
     validation_kind: str = ""
     min_live_bytes: int | None = None
+    side_effect_class: SideEffectClass = "none"
 
     def payload(self) -> dict[str, object]:
         return asdict(self)
@@ -237,6 +239,23 @@ SECRET_KEYS = {
     "TELEGRAM_BOT_TOKEN",
 }
 
+EXTERNAL_NOTIFICATION_ENV_KEYS = {
+    "NTFY_TOPIC",
+    "NOTIFIER_WEBHOOK_URL",
+    "SLACK_WEBHOOK_URL",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID",
+}
+
+BROKER_PRIVATE_ENV_KEYS = {
+    "BITHUMB_API_KEY",
+    "BITHUMB_API_SECRET",
+}
+
+PYTEST_INHERITANCE_UNSAFE_ENV_KEYS = frozenset(
+    sorted(EXTERNAL_NOTIFICATION_ENV_KEYS | BROKER_PRIVATE_ENV_KEYS)
+)
+
 JWT_HS256_MIN_SECRET_BYTES = 32
 JWT_HS256_SECRET_VALIDATION_KIND = "jwt_hs256_secret"
 
@@ -387,6 +406,14 @@ def _category_for(name: str) -> str:
     return "runtime"
 
 
+def _side_effect_class_for(name: str) -> SideEffectClass:
+    if name in EXTERNAL_NOTIFICATION_ENV_KEYS:
+        return "external_notification"
+    if name in BROKER_PRIVATE_ENV_KEYS:
+        return "broker_private"
+    return "none"
+
+
 def _build_spec(name: str) -> EnvVarSpec:
     scope = _scope_for(name)
     validation_kind = ""
@@ -411,6 +438,7 @@ def _build_spec(name: str) -> EnvVarSpec:
         example=EXAMPLE_DEFAULTS.get(name, ""),
         validation_kind=validation_kind,
         min_live_bytes=min_live_bytes,
+        side_effect_class=_side_effect_class_for(name),
     )
 
 

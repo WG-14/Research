@@ -11,7 +11,9 @@ from pathlib import Path
 import pytest
 
 import bithumb_bot.config as _config_module
+import bithumb_bot.notifier as _notifier_module
 from bithumb_bot.config import settings
+from bithumb_bot.config_spec import PYTEST_INHERITANCE_UNSAFE_ENV_KEYS
 from bithumb_bot.compat.sma_runtime_compat import legacy_default_strategy_name
 from bithumb_bot.paths import PathConfig, PathManager
 from tests.support.test_workspace import (
@@ -130,6 +132,28 @@ def _block_external_network(monkeypatch):
         raise RuntimeError("external network is disabled in tests")
 
     monkeypatch.setattr(socket, "create_connection", _deny)
+
+
+@pytest.fixture(autouse=True)
+def _block_external_notification_side_effects(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    for key in PYTEST_INHERITANCE_UNSAFE_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("NOTIFIER_ENABLED", "false")
+
+    allow_transport_internals = request.node.get_closest_marker("notification_transport_mock") is not None
+    if allow_transport_internals:
+        yield
+        return
+
+    def _deny_json_transport(url: str, payload: dict):
+        raise RuntimeError(f"external notification transport is disabled in pytest: {url}")
+
+    def _deny_ntfy_transport(msg: str, *, severity):
+        raise RuntimeError("external ntfy transport is disabled in pytest")
+
+    monkeypatch.setattr(_notifier_module, "_post_json", _deny_json_transport)
+    monkeypatch.setattr(_notifier_module, "_post_ntfy", _deny_ntfy_transport)
+    yield
 
 
 @pytest.fixture

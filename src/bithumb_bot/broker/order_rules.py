@@ -342,10 +342,10 @@ def _resolution_from_persisted_snapshot(*, pair: str) -> RuleResolution | None:
     )
 
 
-def get_effective_order_rules(pair: str) -> RuleResolution:
+def get_effective_order_rules(pair: str, *, notify_fn=None) -> RuleResolution:
     from .order_rule_resolution import get_effective_order_rules as resolve_effective_order_rules
 
-    return resolve_effective_order_rules(pair)
+    return resolve_effective_order_rules(pair, notify_fn=notify_fn)
 
 
 def get_cached_order_rule_snapshot(pair: str) -> RuleResolution | None:
