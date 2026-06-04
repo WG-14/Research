@@ -17,6 +17,7 @@ from bithumb_bot.execution_models import (
     SubmitPriceTickPolicy,
 )
 from bithumb_bot.public_api_orderbook import BestQuote
+from tests.support.live_auth import TEST_BITHUMB_API_KEY, TEST_BITHUMB_API_SECRET
 
 
 pytestmark = pytest.mark.fast_regression
@@ -27,8 +28,8 @@ def _configure_live_settings() -> None:
     object.__setattr__(settings, "PAIR", "KRW-BTC")
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
-    object.__setattr__(settings, "BITHUMB_API_KEY", "test-key")
-    object.__setattr__(settings, "BITHUMB_API_SECRET", "test-secret")
+    object.__setattr__(settings, "BITHUMB_API_KEY", TEST_BITHUMB_API_KEY)
+    object.__setattr__(settings, "BITHUMB_API_SECRET", TEST_BITHUMB_API_SECRET)
     object.__setattr__(settings, "LIVE_FEE_RATE_ESTIMATE", 0.0)
 
 

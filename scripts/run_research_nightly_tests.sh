@@ -3,6 +3,7 @@ set -euo pipefail
 
 duration_log="$(mktemp "${TMPDIR:-/tmp}/bithumb-research-nightly-durations.XXXXXX.log")"
 trap 'rm -f "$duration_log"' EXIT
+export PYTHONPATH="${PWD}${PYTHONPATH:+:${PYTHONPATH}}"
 
 uv run python scripts/check_research_test_policy.py
 uv run python scripts/check_strategy_pr_workload_guard.py

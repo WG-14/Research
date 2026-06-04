@@ -18,6 +18,7 @@ from typing import TypedDict
 import httpx
 
 from ..config import settings
+from ..config_spec import JWT_HS256_MIN_SECRET_BYTES
 from ..balance_authority import (
     BROKER_TRUTH_ACCOUNTS_V1,
     BROKER_TRUTH_MYASSET_WS,
@@ -146,6 +147,22 @@ _DOCUMENTED_PRIVATE_ERROR_MESSAGES: dict[str, tuple[str, str, str, bool, bool, b
         False,
     ),
 }
+
+
+def validate_bithumb_jwt_secret(secret: str, *, context: str) -> None:
+    secret_text = str(secret or "")
+    if not secret_text.strip():
+        raise BithumbAuthError(
+            "AUTH_SECRET_MISSING",
+            f"{context}: missing API secret",
+        )
+    byte_length = len(secret_text.encode("utf-8"))
+    if byte_length < JWT_HS256_MIN_SECRET_BYTES:
+        raise BithumbAuthError(
+            "AUTH_SECRET_TOO_SHORT",
+            f"{context}: Bithumb HS256 JWT API secret is too short "
+            f"(min_bytes={JWT_HS256_MIN_SECRET_BYTES} actual_bytes={byte_length})",
+        )
 
 
 class BithumbAuthError(BrokerRejectError):
@@ -498,6 +515,18 @@ class BithumbPrivateAPI:
         self.api_secret = api_secret
         self.base_url = base_url
         self.dry_run = dry_run
+        self._validate_auth_material()
+
+    def _validate_auth_material(self) -> None:
+        if not str(self.api_key or "").strip():
+            raise BithumbAuthError(
+                "AUTH_KEY_MISSING",
+                "private request rejected before signing: missing API key",
+            )
+        validate_bithumb_jwt_secret(
+            str(self.api_secret or ""),
+            context="private request rejected before signing",
+        )
 
     @staticmethod
     def _is_read_only_private_request(method: str) -> bool:
@@ -574,11 +603,10 @@ class BithumbPrivateAPI:
                 "AUTH_KEY_MISSING",
                 "private request rejected before signing: missing API key",
             )
-        if not str(self.api_secret or "").strip():
-            raise BithumbAuthError(
-                "AUTH_SECRET_MISSING",
-                "private request rejected before signing: missing API secret",
-            )
+        validate_bithumb_jwt_secret(
+            str(self.api_secret or ""),
+            context="private request rejected before signing",
+        )
         resolved_nonce = nonce or str(uuid.uuid4())
         resolved_timestamp = round(time.time() * 1000) if timestamp is None else int(timestamp)
         return {
@@ -1138,6 +1166,8 @@ def classify_private_api_error(exc: Exception) -> tuple[str, str]:
             return "AUTH_KEY_MISSING", "API key missing before JWT signing"
         if exc.reason_code == "AUTH_SECRET_MISSING":
             return "AUTH_SECRET_MISSING", "API secret missing before JWT signing"
+        if exc.reason_code == "AUTH_SECRET_TOO_SHORT":
+            return "AUTH_SECRET_TOO_SHORT", "API secret too short for HS256 JWT signing"
         return exc.reason_code, "private API auth material missing before signing"
     if isinstance(exc, BithumbRateLimitError):
         return "RATE_LIMITED", "private API rate limit or overload encountered"

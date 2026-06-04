@@ -13,6 +13,7 @@ import pytest
 
 from bithumb_bot.broker.bithumb import (
     BithumbBroker,
+    BithumbAuthError,
     BithumbPrivateAPI,
     BithumbOrderNotReadyError,
     BithumbRateLimitError,
@@ -32,6 +33,7 @@ from bithumb_bot.broker.order_payloads import build_order_payload, validate_orde
 from bithumb_bot.config import settings
 from bithumb_bot.lot_model import build_market_lot_rules, lot_count_to_qty
 from bithumb_bot.public_api_orderbook import BestQuote
+from tests.support.live_auth import TEST_BITHUMB_API_KEY, TEST_BITHUMB_API_SECRET
 from decimal import Decimal, ROUND_DOWN
 
 from bithumb_bot.broker import order_rules
@@ -93,8 +95,8 @@ def _configure_live():
     object.__setattr__(settings, "MODE", "live")
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", False)
-    object.__setattr__(settings, "BITHUMB_API_KEY", "k")
-    object.__setattr__(settings, "BITHUMB_API_SECRET", "s")
+    object.__setattr__(settings, "BITHUMB_API_KEY", TEST_BITHUMB_API_KEY)
+    object.__setattr__(settings, "BITHUMB_API_SECRET", TEST_BITHUMB_API_SECRET)
 
 
 def _set_buy_price_none_submit_contract(
@@ -308,7 +310,7 @@ def test_private_submit_order_uses_utf8_json_content_type(monkeypatch):
     monkeypatch.setattr("httpx.Client", _SequencedClient)
     monkeypatch.setattr("bithumb_bot.broker.bithumb._REQUEST_THROTTLER.acquire", lambda **_kwargs: 0.0)
 
-    api = BithumbPrivateAPI(api_key="k", api_secret="s", base_url="https://api.bithumb.com", dry_run=False)
+    api = BithumbPrivateAPI(api_key=TEST_BITHUMB_API_KEY, api_secret=TEST_BITHUMB_API_SECRET, base_url="https://api.bithumb.com", dry_run=False)
     api.submit_order(
         signed_request=_signed_order_request(
             {
@@ -851,7 +853,7 @@ def test_private_jwt_headers_include_query_hash_for_get(monkeypatch):
     auth = str(call["headers"]["Authorization"])
     claims = _decode_jwt(auth.removeprefix("Bearer "))
 
-    assert claims["access_key"] == "k"
+    assert claims["access_key"] == TEST_BITHUMB_API_KEY
     assert "nonce" in claims
     assert "timestamp" in claims
     assert "query_hash" in claims
@@ -926,10 +928,10 @@ def test_private_request_rejects_missing_api_key_before_http(monkeypatch):
     _SequencedClient.requests = []
     monkeypatch.setattr("httpx.Client", _SequencedClient)
 
-    broker = BithumbBroker()
-    with pytest.raises(BrokerRejectError, match="missing API key"):
-        broker._get_private("/v1/accounts", {}, retry_safe=False)
+    with pytest.raises(BithumbAuthError, match="missing API key") as excinfo:
+        BithumbBroker()
 
+    assert excinfo.value.reason_code == "AUTH_KEY_MISSING"
     assert _SequencedClient.calls == 0
 
 
@@ -941,11 +943,37 @@ def test_private_request_rejects_missing_api_secret_before_http(monkeypatch):
     _SequencedClient.requests = []
     monkeypatch.setattr("httpx.Client", _SequencedClient)
 
-    broker = BithumbBroker()
-    with pytest.raises(BrokerRejectError, match="missing API secret"):
-        broker._get_private("/v1/accounts", {}, retry_safe=False)
+    with pytest.raises(BithumbAuthError, match="missing API secret") as excinfo:
+        BithumbBroker()
 
+    assert excinfo.value.reason_code == "AUTH_SECRET_MISSING"
+    assert "actual_bytes" not in str(excinfo.value)
     assert _SequencedClient.calls == 0
+
+
+def test_private_api_rejects_short_secret_before_jwt_signing(monkeypatch):
+    encode_calls = 0
+
+    def _fail_encode(*_args, **_kwargs):
+        nonlocal encode_calls
+        encode_calls += 1
+        raise AssertionError("PyJWT signing must not run for short Bithumb secrets")
+
+    monkeypatch.setattr("bithumb_bot.broker.bithumb._jwt.encode", _fail_encode)
+
+    with pytest.raises(BithumbAuthError, match="too short") as excinfo:
+        BithumbPrivateAPI(
+            api_key=TEST_BITHUMB_API_KEY,
+            api_secret="s",
+            base_url="https://api.bithumb.com",
+            dry_run=False,
+        )
+
+    assert excinfo.value.reason_code == "AUTH_SECRET_TOO_SHORT"
+    assert "min_bytes=32" in str(excinfo.value)
+    assert "actual_bytes=1" in str(excinfo.value)
+    assert "api_secret=s" not in str(excinfo.value)
+    assert encode_calls == 0
 
 
 
@@ -956,7 +984,7 @@ def test_private_jwt_headers_include_query_hash_for_post_and_json_body(monkeypat
     _SequencedClient.requests = []
     monkeypatch.setattr("httpx.Client", _SequencedClient)
 
-    api = BithumbPrivateAPI(api_key="k", api_secret="s", base_url="https://api.bithumb.com", dry_run=False)
+    api = BithumbPrivateAPI(api_key=TEST_BITHUMB_API_KEY, api_secret=TEST_BITHUMB_API_SECRET, base_url="https://api.bithumb.com", dry_run=False)
     payload = {"market": "KRW-BTC", "side": "ask", "order_type": "market", "volume": "0.1"}
     api.submit_order(signed_request=_signed_order_request(payload), retry_safe=False)
 
@@ -964,7 +992,7 @@ def test_private_jwt_headers_include_query_hash_for_post_and_json_body(monkeypat
     auth = str(call["headers"]["Authorization"])
     claims = _decode_jwt(auth.removeprefix("Bearer "))
 
-    assert claims["access_key"] == "k"
+    assert claims["access_key"] == TEST_BITHUMB_API_KEY
     assert "query_hash" in claims
     assert str(call["headers"]["Content-Type"]).startswith("application/json")
     assert call["content"] == b'{"market":"KRW-BTC","side":"ask","order_type":"market","volume":"0.1"}'
@@ -985,7 +1013,7 @@ def test_private_jwt_headers_include_query_hash_for_delete(monkeypatch):
     auth = str(call["headers"]["Authorization"])
     claims = _decode_jwt(auth.removeprefix("Bearer "))
 
-    assert claims["access_key"] == "k"
+    assert claims["access_key"] == TEST_BITHUMB_API_KEY
     assert claims["query_hash"]
     assert call["endpoint"] == "/v2/order?order_id=cancel-1&client_order_id=cid-cancel"
 
@@ -1038,8 +1066,8 @@ def test_private_api_dry_run_allows_read_only_get_requests(monkeypatch):
     monkeypatch.setattr("httpx.Client", _SequencedClient)
 
     api = BithumbPrivateAPI(
-        api_key="k",
-        api_secret="s",
+        api_key=TEST_BITHUMB_API_KEY,
+        api_secret=TEST_BITHUMB_API_SECRET,
         base_url="https://api.bithumb.com",
         dry_run=True,
     )
@@ -1059,8 +1087,8 @@ def test_private_api_dry_run_blocks_private_write_requests(monkeypatch):
     monkeypatch.setattr("httpx.Client", _SequencedClient)
 
     api = BithumbPrivateAPI(
-        api_key="k",
-        api_secret="s",
+        api_key=TEST_BITHUMB_API_KEY,
+        api_secret=TEST_BITHUMB_API_SECRET,
         base_url="https://api.bithumb.com",
         dry_run=True,
     )
@@ -1078,7 +1106,7 @@ def test_private_api_rejects_direct_v2_orders_request_bypass(monkeypatch):
     _SequencedClient.requests = []
     monkeypatch.setattr("httpx.Client", _SequencedClient)
 
-    api = BithumbPrivateAPI(api_key="k", api_secret="s", base_url="https://api.bithumb.com", dry_run=False)
+    api = BithumbPrivateAPI(api_key=TEST_BITHUMB_API_KEY, api_secret=TEST_BITHUMB_API_SECRET, base_url="https://api.bithumb.com", dry_run=False)
 
     with pytest.raises(BrokerRejectError, match="direct /v2/orders private request is disabled"):
         api.request(
@@ -1098,7 +1126,7 @@ def test_private_api_rejects_forged_v2_orders_authority_token(monkeypatch):
     _SequencedClient.requests = []
     monkeypatch.setattr("httpx.Client", _SequencedClient)
 
-    api = BithumbPrivateAPI(api_key="k", api_secret="s", base_url="https://api.bithumb.com", dry_run=False)
+    api = BithumbPrivateAPI(api_key=TEST_BITHUMB_API_KEY, api_secret=TEST_BITHUMB_API_SECRET, base_url="https://api.bithumb.com", dry_run=False)
 
     with pytest.raises(BrokerRejectError, match="direct /v2/orders private request is disabled"):
         api.request(
@@ -1123,7 +1151,7 @@ def test_submit_order_rejects_signed_request_payload_drift(monkeypatch):
     signed_request = _signed_order_request(payload)
     signed_request.payload["price"] = "10000"
 
-    api = BithumbPrivateAPI(api_key="k", api_secret="s", base_url="https://api.bithumb.com", dry_run=False)
+    api = BithumbPrivateAPI(api_key=TEST_BITHUMB_API_KEY, api_secret=TEST_BITHUMB_API_SECRET, base_url="https://api.bithumb.com", dry_run=False)
 
     with pytest.raises(BrokerRejectError, match="canonical payload mismatch"):
         api.submit_order(signed_request=signed_request, retry_safe=False)
@@ -1138,7 +1166,7 @@ def test_order_submit_rejects_transmitted_body_byte_drift(monkeypatch):
     _SequencedClient.requests = []
     monkeypatch.setattr("httpx.Client", _SequencedClient)
 
-    api = BithumbPrivateAPI(api_key="k", api_secret="s", base_url="https://api.bithumb.com", dry_run=False)
+    api = BithumbPrivateAPI(api_key=TEST_BITHUMB_API_KEY, api_secret=TEST_BITHUMB_API_SECRET, base_url="https://api.bithumb.com", dry_run=False)
     original = api._order_submit_auth_context
 
     def _drifted_context(payload, *, nonce=None, timestamp=None):
@@ -1162,7 +1190,7 @@ def test_order_submit_rejects_json_kwarg_contract_drift(monkeypatch):
     _SequencedClient.requests = []
     monkeypatch.setattr("httpx.Client", _SequencedClient)
 
-    api = BithumbPrivateAPI(api_key="k", api_secret="s", base_url="https://api.bithumb.com", dry_run=False)
+    api = BithumbPrivateAPI(api_key=TEST_BITHUMB_API_KEY, api_secret=TEST_BITHUMB_API_SECRET, base_url="https://api.bithumb.com", dry_run=False)
     original = api._order_submit_auth_context
 
     def _drifted_context(payload, *, nonce=None, timestamp=None):
@@ -1186,7 +1214,7 @@ def test_order_submit_rejects_content_type_contract_drift(monkeypatch):
     _SequencedClient.requests = []
     monkeypatch.setattr("httpx.Client", _SequencedClient)
 
-    api = BithumbPrivateAPI(api_key="k", api_secret="s", base_url="https://api.bithumb.com", dry_run=False)
+    api = BithumbPrivateAPI(api_key=TEST_BITHUMB_API_KEY, api_secret=TEST_BITHUMB_API_SECRET, base_url="https://api.bithumb.com", dry_run=False)
     original = api._order_submit_auth_context
 
     def _drifted_context(payload, *, nonce=None, timestamp=None):
@@ -5081,7 +5109,7 @@ def test_private_non_order_posts_keep_json_body(monkeypatch):
     _SequencedClient.requests = []
     monkeypatch.setattr("httpx.Client", _SequencedClient)
 
-    api = BithumbPrivateAPI(api_key="k", api_secret="s", base_url="https://api.bithumb.com", dry_run=False)
+    api = BithumbPrivateAPI(api_key=TEST_BITHUMB_API_KEY, api_secret=TEST_BITHUMB_API_SECRET, base_url="https://api.bithumb.com", dry_run=False)
     api.request("POST", "/v2/orders/cancel", json_body={"order_id": "abc123"}, retry_safe=False)
 
     call = _SequencedClient.requests[0]
@@ -5098,7 +5126,7 @@ def test_order_submit_uses_dedicated_auth_builder(monkeypatch):
     _SequencedClient.requests = []
     monkeypatch.setattr("httpx.Client", _SequencedClient)
 
-    api = BithumbPrivateAPI(api_key="k", api_secret="s", base_url="https://api.bithumb.com", dry_run=False)
+    api = BithumbPrivateAPI(api_key=TEST_BITHUMB_API_KEY, api_secret=TEST_BITHUMB_API_SECRET, base_url="https://api.bithumb.com", dry_run=False)
     calls: list[dict[str, object]] = []
     original = api._order_submit_auth_context
 
@@ -5122,7 +5150,7 @@ def test_order_submit_auth_context_matches_official_claim_contract(monkeypatch):
     monkeypatch.setattr("bithumb_bot.broker.bithumb.uuid.uuid4", lambda: "nonce-fixed")
     monkeypatch.setattr("bithumb_bot.broker.bithumb.time.time", lambda: 1712230310.689)
 
-    api = BithumbPrivateAPI(api_key="k", api_secret="s", base_url="https://api.bithumb.com", dry_run=False)
+    api = BithumbPrivateAPI(api_key=TEST_BITHUMB_API_KEY, api_secret=TEST_BITHUMB_API_SECRET, base_url="https://api.bithumb.com", dry_run=False)
     payload = {"market": "KRW-BTC", "side": "bid", "order_type": "price", "price": "9998"}
 
     context = api._order_submit_auth_context(payload)
@@ -5135,7 +5163,7 @@ def test_order_submit_auth_context_matches_official_claim_contract(monkeypatch):
         "query_hash_alg": "SHA512",
     }
     assert context["claims"] == {
-        "access_key": "k",
+        "access_key": TEST_BITHUMB_API_KEY,
         "nonce": "nonce-fixed",
         "timestamp": 1712230310689,
         "query_hash": hashlib.sha512(context["canonical_payload"].encode("utf-8")).hexdigest(),
@@ -5156,7 +5184,7 @@ def test_non_order_post_does_not_use_order_submit_auth_builder(monkeypatch):
     _SequencedClient.requests = []
     monkeypatch.setattr("httpx.Client", _SequencedClient)
 
-    api = BithumbPrivateAPI(api_key="k", api_secret="s", base_url="https://api.bithumb.com", dry_run=False)
+    api = BithumbPrivateAPI(api_key=TEST_BITHUMB_API_KEY, api_secret=TEST_BITHUMB_API_SECRET, base_url="https://api.bithumb.com", dry_run=False)
 
     def _boom(*args, **kwargs):
         raise AssertionError("order submit auth builder should not be used")
@@ -5197,7 +5225,7 @@ def test_order_submit_uses_json_body_with_query_hash_from_canonical_payload(monk
     _SequencedClient.requests = []
     monkeypatch.setattr("httpx.Client", _SequencedClient)
 
-    api = BithumbPrivateAPI(api_key="k", api_secret="s", base_url="https://api.bithumb.com", dry_run=False)
+    api = BithumbPrivateAPI(api_key=TEST_BITHUMB_API_KEY, api_secret=TEST_BITHUMB_API_SECRET, base_url="https://api.bithumb.com", dry_run=False)
     api.submit_order(signed_request=_signed_order_request(payload), retry_safe=False)
 
     call = _SequencedClient.requests[0]
@@ -5223,7 +5251,7 @@ def test_order_submit_jwt_uses_same_canonical_payload_nonce_and_timestamp(monkey
     monkeypatch.setattr("bithumb_bot.broker.bithumb.time.time", lambda: 1712230310.689)
 
     payload = {"market": "KRW-BTC", "side": "bid", "order_type": "price", "price": "10002"}
-    api = BithumbPrivateAPI(api_key="k", api_secret="s", base_url="https://api.bithumb.com", dry_run=False)
+    api = BithumbPrivateAPI(api_key=TEST_BITHUMB_API_KEY, api_secret=TEST_BITHUMB_API_SECRET, base_url="https://api.bithumb.com", dry_run=False)
     api.submit_order(signed_request=_signed_order_request(payload), retry_safe=False)
 
     call = _SequencedClient.requests[0]
@@ -5247,7 +5275,7 @@ def test_order_http_debug_request_logs_query_hash_and_json_body(monkeypatch, cap
     _SequencedClient.requests = []
     monkeypatch.setattr("httpx.Client", _SequencedClient)
 
-    api = BithumbPrivateAPI(api_key="k", api_secret="s", base_url="https://api.bithumb.com", dry_run=False)
+    api = BithumbPrivateAPI(api_key=TEST_BITHUMB_API_KEY, api_secret=TEST_BITHUMB_API_SECRET, base_url="https://api.bithumb.com", dry_run=False)
     payload = {"market": "KRW-BTC", "side": "bid", "order_type": "price", "price": "9999"}
     with caplog.at_level("INFO", logger="bithumb_bot.run"):
         api.submit_order(signed_request=_signed_order_request(payload), retry_safe=False)
@@ -5295,7 +5323,7 @@ def test_order_submit_live_failure_regression_uses_json_body_and_matching_query_
     monkeypatch.setattr("bithumb_bot.broker.bithumb.uuid.uuid4", lambda: "nonce-fixed")
     monkeypatch.setattr("bithumb_bot.broker.bithumb.time.time", lambda: 1712230310.689)
 
-    api = BithumbPrivateAPI(api_key="k", api_secret="s", base_url="https://api.bithumb.com", dry_run=False)
+    api = BithumbPrivateAPI(api_key=TEST_BITHUMB_API_KEY, api_secret=TEST_BITHUMB_API_SECRET, base_url="https://api.bithumb.com", dry_run=False)
     payload = {"market": "KRW-BTC", "side": "bid", "order_type": "price", "price": "9998"}
 
     with pytest.raises(BrokerRejectError) as excinfo:
@@ -5311,7 +5339,7 @@ def test_order_submit_live_failure_regression_uses_json_body_and_matching_query_
     assert call["content"] == b'{"market":"KRW-BTC","side":"bid","order_type":"price","price":"9998"}'
     assert "json" not in call
     assert claims == {
-        "access_key": "k",
+        "access_key": TEST_BITHUMB_API_KEY,
         "nonce": "nonce-fixed",
         "timestamp": 1712230310689,
         "query_hash": hashlib.sha512(canonical_payload.encode("utf-8")).hexdigest(),

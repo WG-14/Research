@@ -12,12 +12,13 @@ from bithumb_bot.broker.order_list_v1 import (
     parse_v1_order_list_row,
 )
 from bithumb_bot.config import settings
+from tests.support.live_auth import TEST_BITHUMB_API_KEY, TEST_BITHUMB_API_SECRET
 
 
 def _configure_live() -> None:
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
-    object.__setattr__(settings, "BITHUMB_API_KEY", "k")
-    object.__setattr__(settings, "BITHUMB_API_SECRET", "s")
+    object.__setattr__(settings, "BITHUMB_API_KEY", TEST_BITHUMB_API_KEY)
+    object.__setattr__(settings, "BITHUMB_API_SECRET", TEST_BITHUMB_API_SECRET)
 
 
 @pytest.fixture(autouse=True)

@@ -13,6 +13,7 @@ from bithumb_bot.config import (
     runtime_code_provenance,
     settings,
 )
+from tests.support.live_auth import TEST_BITHUMB_API_KEY, TEST_BITHUMB_API_SECRET
 
 
 pytestmark = pytest.mark.fast_regression
@@ -24,8 +25,8 @@ FORBIDDEN_ALTERNATE_POST_ENDPOINTS = {"/v1/order", "/v1/orders"}
 
 def test_private_api_rejects_legacy_order_submit_post_routes() -> None:
     api = BithumbPrivateAPI(
-        api_key="k",
-        api_secret="s",
+        api_key=TEST_BITHUMB_API_KEY,
+        api_secret=TEST_BITHUMB_API_SECRET,
         base_url="https://api.bithumb.com",
         dry_run=False,
     )
@@ -37,8 +38,8 @@ def test_private_api_rejects_legacy_order_submit_post_routes() -> None:
 
 def test_private_api_rejects_direct_v2_order_submit_even_with_client_order_id() -> None:
     api = BithumbPrivateAPI(
-        api_key="k",
-        api_secret="s",
+        api_key=TEST_BITHUMB_API_KEY,
+        api_secret=TEST_BITHUMB_API_SECRET,
         base_url="https://api.bithumb.com",
         dry_run=False,
     )
@@ -59,8 +60,12 @@ def test_private_api_rejects_direct_v2_order_submit_even_with_client_order_id() 
 
 def test_broker_private_request_rejects_legacy_order_submit_post_routes() -> None:
     original_live_dry_run = settings.LIVE_DRY_RUN
+    original_api_key = settings.BITHUMB_API_KEY
+    original_api_secret = settings.BITHUMB_API_SECRET
     try:
         object.__setattr__(settings, "LIVE_DRY_RUN", False)
+        object.__setattr__(settings, "BITHUMB_API_KEY", TEST_BITHUMB_API_KEY)
+        object.__setattr__(settings, "BITHUMB_API_SECRET", TEST_BITHUMB_API_SECRET)
         broker = BithumbBroker()
 
         for endpoint in sorted(FORBIDDEN_ALTERNATE_POST_ENDPOINTS):
@@ -68,6 +73,8 @@ def test_broker_private_request_rejects_legacy_order_submit_post_routes() -> Non
                 broker._request_private("POST", endpoint, json_body={"market": "KRW-BTC"})
     finally:
         object.__setattr__(settings, "LIVE_DRY_RUN", original_live_dry_run)
+        object.__setattr__(settings, "BITHUMB_API_KEY", original_api_key)
+        object.__setattr__(settings, "BITHUMB_API_SECRET", original_api_secret)
 
 
 def test_source_does_not_add_static_alternate_order_submit_posts() -> None:

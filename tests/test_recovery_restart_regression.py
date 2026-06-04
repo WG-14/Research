@@ -32,6 +32,7 @@ from bithumb_bot.recovery import (
 )
 import bithumb_bot.recovery as recovery_module
 from tests.test_failsafe import _set_live_runtime_paths, _unit_runtime_strategy_set_manifest
+from tests.support.live_auth import TEST_BITHUMB_API_KEY, TEST_BITHUMB_API_SECRET
 
 
 pytestmark = pytest.mark.slow_integration
@@ -3418,8 +3419,8 @@ def _patch_single_tick_run_loop(monkeypatch) -> None:
     object.__setattr__(settings, "OPEN_ORDER_RECONCILE_MIN_INTERVAL_SEC", 30)
     object.__setattr__(settings, "MAX_OPEN_ORDER_AGE_SEC", 900)
     object.__setattr__(settings, "LIVE_DRY_RUN", True)
-    object.__setattr__(settings, "BITHUMB_API_KEY", "test-key")
-    object.__setattr__(settings, "BITHUMB_API_SECRET", "test-secret")
+    object.__setattr__(settings, "BITHUMB_API_KEY", TEST_BITHUMB_API_KEY)
+    object.__setattr__(settings, "BITHUMB_API_SECRET", TEST_BITHUMB_API_SECRET)
 
     object.__setattr__(settings, "MAX_ORDER_KRW", 100000)
     object.__setattr__(settings, "MAX_DAILY_LOSS_KRW", 50000)

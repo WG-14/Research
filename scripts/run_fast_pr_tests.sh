@@ -3,6 +3,7 @@ set -euo pipefail
 
 FAST_MARKER_EXPR="not research_kernel and not research_e2e and not audit_e2e and not walk_forward_e2e and not parallel_e2e and not nightly and not slow_research and not memory_sensitive"
 export BITHUMB_TEST_TIER=fast
+export PYTHONPATH="${PWD}${PYTHONPATH:+:${PYTHONPATH}}"
 duration_log="$(mktemp "${TMPDIR:-/tmp}/bithumb-fast-pytest-durations.XXXXXX.log")"
 trap 'rm -f "$duration_log"' EXIT
 

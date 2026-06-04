@@ -14,6 +14,7 @@ from bithumb_bot.marketdata import (
     validated_best_quote_prices,
 )
 from bithumb_bot.public_api_orderbook import BestQuote
+from tests.support.live_auth import TEST_BITHUMB_API_KEY, TEST_BITHUMB_API_SECRET
 
 
 class _OrderbookClient:
@@ -75,8 +76,8 @@ def test_broker_order_chance_and_payload_use_same_canonical_market(monkeypatch):
 
     object.__setattr__(settings, "PAIR", "KRW-BTC")
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
-    object.__setattr__(settings, "BITHUMB_API_KEY", "k")
-    object.__setattr__(settings, "BITHUMB_API_SECRET", "s")
+    object.__setattr__(settings, "BITHUMB_API_KEY", TEST_BITHUMB_API_KEY)
+    object.__setattr__(settings, "BITHUMB_API_SECRET", TEST_BITHUMB_API_SECRET)
 
     broker = BithumbBroker()
     monkeypatch.setattr("bithumb_bot.broker.bithumb.canonical_market_id", lambda market: str(market).upper())

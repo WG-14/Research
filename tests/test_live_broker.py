@@ -41,6 +41,7 @@ from bithumb_bot.fee_pending_repair import (
     apply_fee_pending_accounting_repair,
     build_fee_pending_accounting_repair_preview,
 )
+from tests.support.live_auth import TEST_BITHUMB_API_KEY, TEST_BITHUMB_API_SECRET
 from bithumb_bot.execution_models import OrderIntent
 from bithumb_bot.dust import build_position_state_model
 from bithumb_bot.lifecycle import summarize_position_lots, summarize_reserved_exit_qty
@@ -1181,8 +1182,8 @@ def _reset_pretrade_guards():
 
 def test_bithumb_broker_dry_run(monkeypatch):
     object.__setattr__(settings, "LIVE_DRY_RUN", True)
-    object.__setattr__(settings, "BITHUMB_API_KEY", "k")
-    object.__setattr__(settings, "BITHUMB_API_SECRET", "s")
+    object.__setattr__(settings, "BITHUMB_API_KEY", TEST_BITHUMB_API_KEY)
+    object.__setattr__(settings, "BITHUMB_API_SECRET", TEST_BITHUMB_API_SECRET)
     resolved_rules = order_rules.DerivedOrderConstraints(
         order_types=("limit", "price"),
         bid_types=("price",),
@@ -2632,8 +2633,8 @@ def test_bithumb_broker_buy_price_none_accepts_matching_live_submit_contract(mon
     object.__setattr__(settings, "PAIR", "KRW-BTC")
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
-    object.__setattr__(settings, "BITHUMB_API_KEY", "test-key")
-    object.__setattr__(settings, "BITHUMB_API_SECRET", "test-secret")
+    object.__setattr__(settings, "BITHUMB_API_KEY", TEST_BITHUMB_API_KEY)
+    object.__setattr__(settings, "BITHUMB_API_SECRET", TEST_BITHUMB_API_SECRET)
     object.__setattr__(settings, "LIVE_FEE_RATE_ESTIMATE", 0.0)
 
     resolved_rules = order_rules.DerivedOrderConstraints(
@@ -2718,8 +2719,8 @@ def test_bithumb_broker_buy_price_none_blocks_market_alias_without_explicit_supp
     object.__setattr__(settings, "PAIR", "KRW-BTC")
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
-    object.__setattr__(settings, "BITHUMB_API_KEY", "test-key")
-    object.__setattr__(settings, "BITHUMB_API_SECRET", "test-secret")
+    object.__setattr__(settings, "BITHUMB_API_KEY", TEST_BITHUMB_API_KEY)
+    object.__setattr__(settings, "BITHUMB_API_SECRET", TEST_BITHUMB_API_SECRET)
 
     resolved_rules = order_rules.DerivedOrderConstraints(
         order_types=("limit", "market"),
@@ -2783,8 +2784,8 @@ def test_bithumb_broker_buy_price_none_uses_same_contract_object_for_validation_
     object.__setattr__(settings, "PAIR", "KRW-BTC")
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
-    object.__setattr__(settings, "BITHUMB_API_KEY", "test-key")
-    object.__setattr__(settings, "BITHUMB_API_SECRET", "test-secret")
+    object.__setattr__(settings, "BITHUMB_API_KEY", TEST_BITHUMB_API_KEY)
+    object.__setattr__(settings, "BITHUMB_API_SECRET", TEST_BITHUMB_API_SECRET)
     object.__setattr__(settings, "LIVE_FEE_RATE_ESTIMATE", 0.0)
 
     resolved_rules = order_rules.DerivedOrderConstraints(
@@ -2909,8 +2910,8 @@ def test_bithumb_broker_rejects_missing_live_submit_plan_before_dispatch(monkeyp
     object.__setattr__(settings, "PAIR", "KRW-BTC")
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
-    object.__setattr__(settings, "BITHUMB_API_KEY", "test-key")
-    object.__setattr__(settings, "BITHUMB_API_SECRET", "test-secret")
+    object.__setattr__(settings, "BITHUMB_API_KEY", TEST_BITHUMB_API_KEY)
+    object.__setattr__(settings, "BITHUMB_API_SECRET", TEST_BITHUMB_API_SECRET)
 
     resolved_rules = order_rules.DerivedOrderConstraints(
         order_types=("limit", "price"),
@@ -2953,8 +2954,8 @@ def test_bithumb_broker_rejects_mismatched_submit_plan_inputs_before_dispatch(mo
     object.__setattr__(settings, "PAIR", "KRW-BTC")
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
-    object.__setattr__(settings, "BITHUMB_API_KEY", "test-key")
-    object.__setattr__(settings, "BITHUMB_API_SECRET", "test-secret")
+    object.__setattr__(settings, "BITHUMB_API_KEY", TEST_BITHUMB_API_KEY)
+    object.__setattr__(settings, "BITHUMB_API_SECRET", TEST_BITHUMB_API_SECRET)
 
     resolved_rules = order_rules.DerivedOrderConstraints(
         order_types=("limit", "price"),
@@ -11865,8 +11866,8 @@ def test_live_submit_attempt_reason_codes_cover_ambiguous_paths(tmp_path, monkey
     object.__setattr__(settings, "LIVE_MIN_ORDER_QTY", 0.0)
     object.__setattr__(settings, "LIVE_ORDER_QTY_STEP", 0.0)
     object.__setattr__(settings, "LIVE_ORDER_MAX_QTY_DECIMALS", 0)
-    object.__setattr__(settings, "BITHUMB_API_KEY", "test-key")
-    object.__setattr__(settings, "BITHUMB_API_SECRET", "test-secret")
+    object.__setattr__(settings, "BITHUMB_API_KEY", TEST_BITHUMB_API_KEY)
+    object.__setattr__(settings, "BITHUMB_API_SECRET", TEST_BITHUMB_API_SECRET)
     object.__setattr__(settings, "DB_PATH", str(tmp_path / "bootstrap_live_state.sqlite"))
     object.__setattr__(settings, "LIVE_PERFORMANCE_GATE_ENABLED", False)
     runtime_state.enable_trading()

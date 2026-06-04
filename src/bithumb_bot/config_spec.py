@@ -30,6 +30,8 @@ class EnvVarSpec:
     category: str = "runtime"
     example: str = ""
     docs: str = ""
+    validation_kind: str = ""
+    min_live_bytes: int | None = None
 
     def payload(self) -> dict[str, object]:
         return asdict(self)
@@ -228,6 +230,9 @@ SECRET_KEYS = {
     "TELEGRAM_BOT_TOKEN",
 }
 
+JWT_HS256_MIN_SECRET_BYTES = 32
+JWT_HS256_SECRET_VALIDATION_KIND = "jwt_hs256_secret"
+
 LIVE_REQUIRED_KEYS = {
     "BITHUMB_API_KEY",
     "BITHUMB_API_SECRET",
@@ -362,6 +367,11 @@ def _category_for(name: str) -> str:
 
 def _build_spec(name: str) -> EnvVarSpec:
     scope = _scope_for(name)
+    validation_kind = ""
+    min_live_bytes: int | None = None
+    if name == "BITHUMB_API_SECRET":
+        validation_kind = JWT_HS256_SECRET_VALIDATION_KIND
+        min_live_bytes = JWT_HS256_MIN_SECRET_BYTES
     return EnvVarSpec(
         name=name,
         value_type=_infer_type(name),
@@ -377,6 +387,8 @@ def _build_spec(name: str) -> EnvVarSpec:
         safety_tier=_safety_tier_for(name),
         category=_category_for(name),
         example=EXAMPLE_DEFAULTS.get(name, ""),
+        validation_kind=validation_kind,
+        min_live_bytes=min_live_bytes,
     )
 
 

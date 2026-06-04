@@ -1191,8 +1191,20 @@ def validate_live_mode_preflight(cfg: Settings) -> None:
 
     if not cfg.BITHUMB_API_KEY.strip():
         issues.append("BITHUMB_API_KEY is required when MODE=live")
-    if not cfg.BITHUMB_API_SECRET.strip():
+    api_secret = str(cfg.BITHUMB_API_SECRET or "")
+    if not api_secret.strip():
         issues.append("BITHUMB_API_SECRET is required when MODE=live")
+    else:
+        secret_spec = SPEC_BY_NAME["BITHUMB_API_SECRET"]
+        min_live_bytes = secret_spec.min_live_bytes
+        if secret_spec.validation_kind == "jwt_hs256_secret" and min_live_bytes is not None:
+            actual_bytes = len(api_secret.encode("utf-8"))
+            if actual_bytes < min_live_bytes:
+                issues.append(
+                    "BITHUMB_API_SECRET failed jwt_hs256_secret validation "
+                    f"reason_code=AUTH_SECRET_TOO_SHORT min_bytes={min_live_bytes} "
+                    f"actual_bytes={actual_bytes}"
+                )
     if not math.isfinite(float(cfg.BITHUMB_PRIVATE_RPS_LIMIT)) or cfg.BITHUMB_PRIVATE_RPS_LIMIT <= 0:
         issues.append("BITHUMB_PRIVATE_RPS_LIMIT must be a finite value > 0 when MODE=live")
     if not math.isfinite(float(cfg.BITHUMB_ORDER_RPS_LIMIT)) or cfg.BITHUMB_ORDER_RPS_LIMIT <= 0:

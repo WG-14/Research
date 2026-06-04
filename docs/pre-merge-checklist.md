@@ -65,5 +65,8 @@ Required gate coverage:
 - Live execution contract metadata includes config, docs, template, effective
   settings, env-file, provenance, approved-profile, managed-root, and runtime
   path fingerprints.
+- Bithumb JWT auth warning budget is zero: `jwt.exceptions.InsecureKeyLengthWarning`
+  is a test failure, and live-like tests must use centralized HS256-safe Bithumb
+  test auth material.
 - Operator-facing no-data diagnostics stay English, reason-coded, and
   action-oriented.

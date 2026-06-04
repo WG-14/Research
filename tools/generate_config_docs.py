@@ -21,8 +21,8 @@ def render_config_reference() -> str:
         f"Schema version: `{CONFIG_SCHEMA_VERSION}`",
         f"Spec hash: `{config_spec_hash()}`",
         "",
-        "| Name | Type | Scope | Default | Live required | Secret | Deprecated/Ignored | Safety | Description |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Name | Type | Scope | Default | Live required | Secret | Deprecated/Ignored | Safety | Validation | Description |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for spec in sorted(ENV_SPECS, key=lambda item: item.name):
         deprecated = []
@@ -31,6 +31,11 @@ def render_config_reference() -> str:
         if spec.ignored:
             deprecated.append("ignored")
         default = spec.default or (f"<{spec.default_resolver}>" if spec.default_resolver else "")
+        validation_parts = []
+        if spec.validation_kind:
+            validation_parts.append(spec.validation_kind)
+        if spec.min_live_bytes is not None:
+            validation_parts.append(f"min_live_bytes={spec.min_live_bytes}")
         lines.append(
             "| "
             + " | ".join(
@@ -43,6 +48,7 @@ def render_config_reference() -> str:
                     "yes" if spec.secret else "no",
                     ", ".join(deprecated) or "no",
                     spec.safety_tier,
+                    ", ".join(validation_parts) or "",
                     spec.description.replace("|", "/"),
                 ]
             )

@@ -31,6 +31,10 @@ bithumb-bot = "bithumb_bot.bootstrap:run_cli"
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"
+pythonpath = ["."]
+filterwarnings = [
+    "error::jwt.exceptions.InsecureKeyLengthWarning",
+]
 markers = [
     "fast_regression: quick deterministic regression checks for dust, auth, and order-validation behavior",
     "slow_integration: slower live-like or restart/reconcile integration checks",
