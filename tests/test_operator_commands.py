@@ -8482,8 +8482,10 @@ def test_repair_plan_help_declares_read_only_non_mutating_preview(capsys):
 
     assert exc.value.code == 0
     out = capsys.readouterr().out
+    normalized_out = " ".join(out.split())
+
     assert "usage: bithumb-bot repair-plan" in out
-    assert "read-only non-mutating plan" in out
+    assert "read-only non-mutating plan" in normalized_out
 
 
 def test_repair_plan_preview_surfaces_position_management_mode_when_accounting_is_reliable(monkeypatch, capsys):
