@@ -20,6 +20,14 @@ def test_config_spec_covers_current_drift_candidates() -> None:
     assert SPEC_BY_NAME["NOTIFIER_DEDUPE_WINDOW_SEC"].operator_visible
 
 
+def test_config_spec_pins_bithumb_api_secret_policy() -> None:
+    spec = SPEC_BY_NAME["BITHUMB_API_SECRET"]
+    assert spec.secret is True
+    assert spec.required_in_live is True
+    assert spec.validation_kind == "jwt_hs256_secret"
+    assert spec.min_live_bytes == 32
+
+
 def test_env_drift_checker_passes() -> None:
     assert _failures() == []
 

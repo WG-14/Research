@@ -1055,12 +1055,46 @@ def test_live_preflight_requires_credentials_in_live_mode(monkeypatch: pytest.Mo
 
 
 def test_live_preflight_rejects_short_bithumb_api_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    encode_calls = 0
+
+    def _fail_encode(*_args, **_kwargs):
+        nonlocal encode_calls
+        encode_calls += 1
+        raise AssertionError("PyJWT signing must not run for short Bithumb secrets")
+
+    monkeypatch.setattr("bithumb_bot.broker.bithumb._jwt.encode", _fail_encode)
     _set_valid_live_defaults(monkeypatch)
     object.__setattr__(settings, "LIVE_DRY_RUN", True)
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", False)
     object.__setattr__(settings, "BITHUMB_API_KEY", TEST_BITHUMB_API_KEY)
-    short_secret = "s"
+    short_secret = "short-secret-lint-redact"
     object.__setattr__(settings, "BITHUMB_API_SECRET", short_secret)
+
+    summary = config.live_execution_contract_summary(settings)
+    findings = summary["live_env_contract_lint_findings"]
+    short_secret_findings = [
+        item for item in findings if item["reason_code"] == "AUTH_SECRET_TOO_SHORT"
+    ]
+    assert short_secret_findings == [
+        {
+            "reason_code": "AUTH_SECRET_TOO_SHORT",
+            "severity": "ERROR",
+            "message": "Bithumb API secret is too short for HS256 JWT signing.",
+            "recommended_action": "replace_BITHUMB_API_SECRET_with_32_plus_byte_hs256_secret",
+            "docs_hint": "docs/config-reference.md",
+            "legacy_text": "bithumb_api_secret_too_short:BITHUMB_API_SECRET",
+            "details": {
+                "key": "BITHUMB_API_SECRET",
+                "validation_kind": "jwt_hs256_secret",
+                "min_bytes": 32,
+                "actual_bytes": len(short_secret.encode("utf-8")),
+            },
+        }
+    ]
+    assert "bithumb_api_secret_too_short:BITHUMB_API_SECRET" in summary["live_env_contract_lints"]
+    assert short_secret not in str(short_secret_findings)
+    assert short_secret not in str(summary["live_env_contract_lint_findings"])
+    assert short_secret not in str(summary)
 
     with pytest.raises(config.LiveModeValidationError) as exc:
         config.validate_live_mode_preflight(settings)
@@ -1069,8 +1103,9 @@ def test_live_preflight_rejects_short_bithumb_api_secret(monkeypatch: pytest.Mon
     assert "jwt_hs256_secret validation" in msg
     assert "reason_code=AUTH_SECRET_TOO_SHORT" in msg
     assert "min_bytes=32" in msg
-    assert "actual_bytes=1" in msg
-    assert "BITHUMB_API_SECRET=s" not in msg
+    assert f"actual_bytes={len(short_secret.encode('utf-8'))}" in msg
+    assert f"BITHUMB_API_SECRET={short_secret}" not in msg
+    assert encode_calls == 0
 
 
 def test_live_preflight_requires_explicit_arming_for_real_live_orders(

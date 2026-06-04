@@ -1606,6 +1606,24 @@ def live_env_contract_lint_findings(cfg: Settings) -> tuple[dict[str, object], .
                     details={"key": key, "value_present": True, "value_length": len(raw)},
                 )
             )
+    api_secret = str(cfg.BITHUMB_API_SECRET or "")
+    secret_spec = SPEC_BY_NAME["BITHUMB_API_SECRET"]
+    min_live_bytes = secret_spec.min_live_bytes
+    if api_secret.strip() and secret_spec.validation_kind == "jwt_hs256_secret" and min_live_bytes is not None:
+        actual_bytes = len(api_secret.encode("utf-8"))
+        if actual_bytes < min_live_bytes:
+            findings.append(
+                _config_lint_finding(
+                    "bithumb_api_secret_too_short",
+                    legacy="bithumb_api_secret_too_short:BITHUMB_API_SECRET",
+                    details={
+                        "key": "BITHUMB_API_SECRET",
+                        "validation_kind": secret_spec.validation_kind,
+                        "min_bytes": min_live_bytes,
+                        "actual_bytes": actual_bytes,
+                    },
+                )
+            )
     paper_keys = [key for key in PAPER_ONLY_ENV_KEYS if os.getenv(key) not in (None, "")]
     for key in paper_keys:
         findings.append(

@@ -65,8 +65,13 @@ Required gate coverage:
 - Live execution contract metadata includes config, docs, template, effective
   settings, env-file, provenance, approved-profile, managed-root, and runtime
   path fingerprints.
-- Bithumb JWT auth warning budget is zero: `jwt.exceptions.InsecureKeyLengthWarning`
-  is a test failure, and live-like tests must use centralized HS256-safe Bithumb
-  test auth material.
+- Bithumb JWT auth warning budget is zero:
+  `jwt.exceptions.InsecureKeyLengthWarning` is a test failure. Normal
+  live-like tests must use centralized HS256-safe Bithumb test auth material.
+  Short Bithumb secret literals are forbidden as normal test auth material and
+  are allowed only in intentional negative tests that assert repo-owned
+  rejection before PyJWT signing. The AST static regression test in
+  `tests/test_bithumb_auth_material_policy.py` is the source of truth for that
+  allowlist distinction; do not replace it with a grep-only policy.
 - Operator-facing no-data diagnostics stay English, reason-coded, and
   action-oriented.

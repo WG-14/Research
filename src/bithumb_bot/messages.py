@@ -100,6 +100,13 @@ CONFIG_LINT_MESSAGES = {
         recommended_action="trim_secret_value_in_runtime_env_file",
         docs_hint="docs/config-reference.md",
     ),
+    "bithumb_api_secret_too_short": OperatorMessage(
+        reason_code="AUTH_SECRET_TOO_SHORT",
+        severity="ERROR",
+        message="Bithumb API secret is too short for HS256 JWT signing.",
+        recommended_action="replace_BITHUMB_API_SECRET_with_32_plus_byte_hs256_secret",
+        docs_hint="docs/config-reference.md",
+    ),
     "paper_only_key_in_live_env": OperatorMessage(
         reason_code="PAPER_ONLY_KEY_IN_LIVE_ENV",
         severity="WARN",
