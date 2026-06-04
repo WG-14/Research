@@ -85,11 +85,6 @@ def get_effective_order_rules(pair: str, *, notify_fn: Callable[[str], None] | N
             "order-rule auto-sync unavailable; side minimum totals, fees, and tick-size normalization "
             "may stay on local fallback until /v1/orders/chance succeeds again"
         )
-        operator_notify = rules_module.notify if notify_fn is None else notify_fn
-        operator_notify(
-            f"[WARN] order rules auto-sync failed for {pair}; using local fallback only "
-            f"(reason_code={code}; reason={summary}; detail={detail}; risk={fallback_risk})"
-        )
         resolution = rules_module._build_fallback_only_rule_resolution(
             pair=pair,
             now=now,

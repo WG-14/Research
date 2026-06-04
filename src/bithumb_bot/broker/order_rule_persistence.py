@@ -263,6 +263,7 @@ def persist_rule_snapshot_if_possible(
             source_mode=resolution.source_mode,
             snapshot_persisted=True,
             chance_contract_change=chance_contract_change,
+            operator_event=getattr(resolution, "operator_event", {}),
         )
     except Exception:
         if conn is not None:

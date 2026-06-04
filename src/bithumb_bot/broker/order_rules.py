@@ -4,8 +4,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from ..config import settings
-from ..markets import ExchangeMarketCodeError, canonical_market_id, canonical_market_with_raw, parse_documented_market_code
-from ..notifier import notify
+from ..markets import ExchangeMarketCodeError, canonical_market_with_raw, parse_documented_market_code
 from .base import BrokerRejectError
 from .bithumb import BithumbBroker
 from .bithumb import classify_private_api_error
@@ -106,6 +105,7 @@ class RuleResolution:
     source_mode: str = "exchange"
     snapshot_persisted: bool = False
     chance_contract_change: "ChanceContractChange | None" = None
+    operator_event: dict[str, object] = field(default_factory=dict)
 
     def is_stale(self, *, now_sec: float | None = None) -> bool:
         if self.stale:
@@ -199,6 +199,7 @@ def _build_fallback_only_rule_resolution(
     reason_detail: str,
     fallback_risk: str,
 ) -> RuleResolution:
+    normalized_pair, _raw_pair = canonical_market_with_raw(pair)
     source = {
         **_fallback_rule_source_map(),
         "market_id": "unsupported_by_doc",
@@ -237,6 +238,24 @@ def _build_fallback_only_rule_resolution(
         expires_at_sec=now + _CACHE_TTL_SEC,
         stale=False,
         source_mode="local_fallback",
+        operator_event={
+            "event_type": "order_rule_fallback_used",
+            "market": normalized_pair,
+            "pair": normalized_pair,
+            "fallback_used": True,
+            "source_mode": "local_fallback",
+            "reason_code": reason_code,
+            "reason_summary": reason_summary,
+            "reason_detail": reason_detail,
+            "fallback_risk": fallback_risk,
+            "risk": fallback_risk,
+            "source_min_qty": source.get("min_qty", "missing"),
+            "source_qty_step": source.get("qty_step", "missing"),
+            "source_min_notional_krw": source.get("min_notional_krw", "missing"),
+            "source_max_qty_decimals": source.get("max_qty_decimals", "missing"),
+            "exchange_source_json": source["exchange_source_json"],
+            "local_fallback_source_json": source["local_fallback_source_json"],
+        },
     )
     if settings.MODE == "live":
         import logging

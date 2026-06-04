@@ -1059,6 +1059,19 @@ def validate_market_runtime(cfg: Settings) -> None:
     )
 
 
+def _dispatch_order_rule_resolution_operator_event(resolution: object) -> None:
+    event = getattr(resolution, "operator_event", None)
+    if not isinstance(event, dict) or not event:
+        return
+    event_name = str(event.get("event_type") or event.get("event_name") or "").strip()
+    if not event_name:
+        return
+    fields = {key: value for key, value in event.items() if key not in {"event_type", "event_name", "event_hash"}}
+    from .operator_notification_service import OperatorNotificationService
+
+    OperatorNotificationService().send_event(event_name, **fields)
+
+
 def validate_live_mode_preflight(cfg: Settings) -> None:
     if cfg.MODE != "live":
         return
@@ -1289,6 +1302,7 @@ def validate_live_mode_preflight(cfg: Settings) -> None:
 
     try:
         resolved = get_effective_order_rules(cfg.PAIR)
+        _dispatch_order_rule_resolution_operator_event(resolved)
         resolved_rules = resolved.rules
         issues.extend(required_rule_issues(resolved_rules))
         rule_source_issues = required_rule_source_issues(

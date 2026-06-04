@@ -21,6 +21,7 @@ from bithumb_bot.strategy_config import _sma_default, _sma_int
 from bithumb_bot.runtime_strategy_set import RuntimeDecisionRequestBuilder, RuntimeStrategySpec
 from bithumb_bot.storage_io import write_json_atomic
 from bithumb_bot.broker import order_rules
+from bithumb_bot import operator_notification_service
 from bithumb_bot.markets import MarketInfo, MarketRegistry
 from tests.support.live_auth import TEST_BITHUMB_API_KEY, TEST_BITHUMB_API_SECRET
 
@@ -1487,17 +1488,75 @@ def test_live_preflight_surfaces_document_schema_violation_when_manual_rules_are
         "fetch_exchange_order_rules",
         lambda _pair: (_ for _ in ()).throw(order_rules.OrderChanceSchemaError("/v1/orders/chance response.market.bid.min_total must be numeric")),
     )
-    warnings: list[str] = []
-    monkeypatch.setattr(order_rules, "notify", lambda msg: warnings.append(msg))
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        config,
+        "_dispatch_order_rule_resolution_operator_event",
+        lambda resolved: events.append(dict(resolved.operator_event)),
+    )
 
     with pytest.raises(config.LiveModeValidationError) as exc:
         config.validate_live_mode_preflight(settings)
 
     msg = str(exc.value)
     assert "min_qty must be > 0" in msg
-    assert warnings
-    assert "OrderChanceSchemaError" in warnings[0]
-    assert "response.market.bid.min_total must be numeric" in warnings[0]
+    assert events
+    assert events[0]["event_type"] == "order_rule_fallback_used"
+    assert "OrderChanceSchemaError" in str(events[0]["reason_detail"])
+    assert "response.market.bid.min_total must be numeric" in str(events[0]["reason_detail"])
+
+
+def test_live_preflight_delivers_order_rule_fallback_event_at_operator_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_valid_live_defaults(monkeypatch, stub_order_rules=False)
+    monkeypatch.setattr(order_rules, "get_effective_order_rules", _REAL_GET_EFFECTIVE_ORDER_RULES)
+    order_rules._cached_rules.clear()
+    object.__setattr__(
+        settings,
+        "LIVE_ORDER_RULE_FALLBACK_PROFILE",
+        config.LIVE_ORDER_RULE_FALLBACK_PROFILE_ALLOW_LOCAL_FALLBACK,
+    )
+
+    monkeypatch.setattr(
+        order_rules,
+        "fetch_exchange_order_rules",
+        lambda _pair: (_ for _ in ()).throw(RuntimeError("exchange unavailable")),
+    )
+    monkeypatch.setattr(
+        order_rules,
+        "notify",
+        lambda _msg: pytest.fail("domain order-rule resolution must not notify directly"),
+        raising=False,
+    )
+
+    delivered: list[tuple[str, dict[str, object]]] = []
+
+    class FakeOperatorNotificationService:
+        def send_event(self, event_name: str, /, **fields: object) -> None:
+            delivered.append((event_name, fields))
+
+    monkeypatch.setattr(
+        operator_notification_service,
+        "OperatorNotificationService",
+        lambda: FakeOperatorNotificationService(),
+    )
+
+    domain_resolution = order_rules.get_effective_order_rules("KRW-BTC")
+    assert domain_resolution.operator_event["event_type"] == "order_rule_fallback_used"
+    assert delivered == []
+
+    order_rules._cached_rules.clear()
+    config.validate_live_mode_preflight(settings)
+
+    assert len(delivered) == 1
+    event_name, fields = delivered[0]
+    assert event_name == "order_rule_fallback_used"
+    assert fields["market"] == "KRW-BTC"
+    assert fields["source_mode"] == "local_fallback"
+    assert fields["reason_code"] == "UNRECOVERABLE"
+    assert "RuntimeError: exchange unavailable" in str(fields["reason_detail"])
+    assert "order-rule auto-sync unavailable" in str(fields["fallback_risk"])
 
 
 def test_live_preflight_passes_with_valid_auto_synced_order_rules(monkeypatch: pytest.MonkeyPatch) -> None:

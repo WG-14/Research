@@ -254,6 +254,8 @@ set -euo pipefail
   printf 'SLACK_WEBHOOK_URL=%s\\n' "${SLACK_WEBHOOK_URL-__unset__}"
   printf 'TELEGRAM_BOT_TOKEN=%s\\n' "${TELEGRAM_BOT_TOKEN-__unset__}"
   printf 'TELEGRAM_CHAT_ID=%s\\n' "${TELEGRAM_CHAT_ID-__unset__}"
+  printf 'BITHUMB_API_KEY=%s\\n' "${BITHUMB_API_KEY-__unset__}"
+  printf 'BITHUMB_API_SECRET=%s\\n' "${BITHUMB_API_SECRET-__unset__}"
   printf '%s\\n' '---'
 } >> "$BITHUMB_CAPTURE_ENV"
 exit 0
@@ -277,6 +279,8 @@ exit 0
             "SLACK_WEBHOOK_URL": "https://example.invalid/slack",
             "TELEGRAM_BOT_TOKEN": "real-token",
             "TELEGRAM_CHAT_ID": "real-chat",
+            "BITHUMB_API_KEY": "real-api-key",
+            "BITHUMB_API_SECRET": "real-api-secret",
         },
         capture_output=True,
         text=True,
@@ -284,7 +288,7 @@ exit 0
     )
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "[PYTEST-SAFETY] external notifications disabled for full pytest runner" in proc.stdout
+    assert "[PYTEST-SAFETY] unsafe inherited env disabled for full pytest runner" in proc.stdout
     captures = [block.strip().splitlines() for block in capture.read_text(encoding="utf-8").split("---") if block.strip()]
     assert len(captures) == 4
     assert any("args=run pytest -q" in block[0] for block in captures)
@@ -297,6 +301,8 @@ exit 0
             "SLACK_WEBHOOK_URL": "__unset__",
             "TELEGRAM_BOT_TOKEN": "__unset__",
             "TELEGRAM_CHAT_ID": "__unset__",
+            "BITHUMB_API_KEY": "__unset__",
+            "BITHUMB_API_SECRET": "__unset__",
         }
 
 

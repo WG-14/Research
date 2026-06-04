@@ -10,10 +10,22 @@ from pathlib import Path
 
 import pytest
 
+_ROOT = Path(__file__).resolve().parents[1]
+_SRC = _ROOT / "src"
+if _SRC.is_dir():
+    src_path = str(_SRC)
+    if src_path not in sys.path:
+        sys.path.insert(0, src_path)
+
+from bithumb_bot.config_spec import PYTEST_INHERITANCE_UNSAFE_ENV_KEYS
+
+for _unsafe_env_key in PYTEST_INHERITANCE_UNSAFE_ENV_KEYS:
+    os.environ.pop(_unsafe_env_key, None)
+os.environ["NOTIFIER_ENABLED"] = "false"
+
 import bithumb_bot.config as _config_module
 import bithumb_bot.notifier as _notifier_module
 from bithumb_bot.config import settings
-from bithumb_bot.config_spec import PYTEST_INHERITANCE_UNSAFE_ENV_KEYS
 from bithumb_bot.compat.sma_runtime_compat import legacy_default_strategy_name
 from bithumb_bot.paths import PathConfig, PathManager
 from tests.support.test_workspace import (
@@ -24,8 +36,6 @@ from tests.support.test_workspace import (
 )
 
 
-_ROOT = Path(__file__).resolve().parents[1]
-_SRC = _ROOT / "src"
 def _path_manager_for_runtime_root(runtime_root: Path) -> PathManager:
     return PathManager(
         project_root=_ROOT.resolve(),
@@ -43,10 +53,6 @@ def _path_manager_for_runtime_root(runtime_root: Path) -> PathManager:
 
 _BASE_RUNTIME_ROOT = (workspace_base_root() / "session-runtime").resolve()
 _BASE_PATH_MANAGER = _path_manager_for_runtime_root(_BASE_RUNTIME_ROOT)
-if _SRC.is_dir():
-    src_path = str(_SRC)
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
 
 
 def _sync_config_singletons(path_manager=None) -> None:
@@ -146,10 +152,16 @@ def _block_external_notification_side_effects(request: pytest.FixtureRequest, mo
         return
 
     def _deny_json_transport(url: str, payload: dict):
-        raise RuntimeError(f"external notification transport is disabled in pytest: {url}")
+        raise _notifier_module.PytestNotificationSafetyViolation(
+            f"external notification transport is disabled in pytest: {url}"
+        )
 
     def _deny_ntfy_transport(msg: str, *, severity):
-        raise RuntimeError("external ntfy transport is disabled in pytest")
+        if not os.getenv("NTFY_TOPIC", "").strip():
+            return False
+        raise _notifier_module.PytestNotificationSafetyViolation(
+            "external ntfy transport is disabled in pytest"
+        )
 
     monkeypatch.setattr(_notifier_module, "_post_json", _deny_json_transport)
     monkeypatch.setattr(_notifier_module, "_post_ntfy", _deny_ntfy_transport)

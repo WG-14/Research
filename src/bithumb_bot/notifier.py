@@ -16,6 +16,10 @@ class AlertSeverity(StrEnum):
     CRITICAL = "CRITICAL"
 
 
+class PytestNotificationSafetyViolation(RuntimeError):
+    """Raised when pytest safety policy blocks a real notification transport."""
+
+
 _SEVERITY_RE = re.compile(r"(?:^|\s)severity=([A-Za-z_]+)(?:\s|$)")
 
 
@@ -144,6 +148,8 @@ def notify(msg: str, *, severity: str | AlertSeverity | None = None) -> None:
 
     try:
         delivered = _post_ntfy(msg, severity=effective_severity) or delivered
+    except PytestNotificationSafetyViolation:
+        raise
     except Exception as exc:
         print(f"[NOTIFY] ntfy delivery failed: {exc.__class__.__name__}")
 
@@ -152,6 +158,8 @@ def notify(msg: str, *, severity: str | AlertSeverity | None = None) -> None:
         try:
             _post_json(generic_webhook, {"text": msg})
             delivered = True
+        except PytestNotificationSafetyViolation:
+            raise
         except Exception as exc:
             print(f"[NOTIFY] generic webhook delivery failed: {exc.__class__.__name__}")
 
@@ -160,6 +168,8 @@ def notify(msg: str, *, severity: str | AlertSeverity | None = None) -> None:
         try:
             _post_json(slack_webhook, {"text": msg})
             delivered = True
+        except PytestNotificationSafetyViolation:
+            raise
         except Exception as exc:
             print(f"[NOTIFY] slack delivery failed: {exc.__class__.__name__}")
 
@@ -170,6 +180,8 @@ def notify(msg: str, *, severity: str | AlertSeverity | None = None) -> None:
         try:
             _post_json(telegram_url, {"chat_id": telegram_chat_id, "text": msg})
             delivered = True
+        except PytestNotificationSafetyViolation:
+            raise
         except Exception as exc:
             print(f"[NOTIFY] telegram delivery failed: {exc.__class__.__name__}")
 

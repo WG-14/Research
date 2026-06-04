@@ -274,16 +274,15 @@ def test_get_effective_order_rules_reports_schema_violation_even_with_manual_fal
         lambda: type("_StubBroker", (), {"get_order_chance": lambda _self, market: missing_required_field_response})(),
     )
 
-    warnings: list[str] = []
-    monkeypatch.setattr(order_rules, "notify", lambda msg: warnings.append(msg))
-
     resolved = order_rules.get_effective_order_rules("KRW-BTC")
 
     assert resolved.rules.min_notional_krw == 6000.0
     assert resolved.source["min_notional_krw"] == "local_fallback"
-    assert warnings
-    assert "OrderChanceSchemaError" in warnings[0]
-    assert "response.market.bid.min_total" in warnings[0]
+    assert resolved.operator_event["event_type"] == "order_rule_fallback_used"
+    assert resolved.operator_event["market"] == "KRW-BTC"
+    assert resolved.operator_event["source_mode"] == "local_fallback"
+    assert "OrderChanceSchemaError" in str(resolved.operator_event["reason_detail"])
+    assert "response.market.bid.min_total" in str(resolved.operator_event["reason_detail"])
 
 
 def test_live_order_rule_resolution_uses_persisted_snapshot_deterministically(monkeypatch, tmp_path):
@@ -523,9 +522,6 @@ def test_get_effective_order_rules_falls_back_to_manual_when_metadata_fetch_fail
         lambda _pair: (_ for _ in ()).throw(RuntimeError("boom")),
     )
 
-    warnings: list[str] = []
-    monkeypatch.setattr(order_rules, "notify", lambda msg: warnings.append(msg))
-
     resolved = order_rules.get_effective_order_rules("KRW-BTC")
 
     assert resolved.rules.min_qty == 0.0002
@@ -543,13 +539,16 @@ def test_get_effective_order_rules_falls_back_to_manual_when_metadata_fetch_fail
     assert resolved.fallback_reason_summary == "unclassified private API failure; operator investigation required"
     assert "RuntimeError: boom" in resolved.fallback_reason_detail
     assert "order-rule auto-sync unavailable" in resolved.fallback_risk
-    assert warnings
-    assert "using local fallback only" in warnings[0]
-    assert "reason_code=UNRECOVERABLE" in warnings[0]
-    assert "risk=order-rule auto-sync unavailable" in warnings[0]
+    assert resolved.operator_event["event_type"] == "order_rule_fallback_used"
+    assert resolved.operator_event["market"] == "KRW-BTC"
+    assert resolved.operator_event["fallback_used"] is True
+    assert resolved.operator_event["source_mode"] == "local_fallback"
+    assert resolved.operator_event["reason_code"] == "UNRECOVERABLE"
+    assert "RuntimeError: boom" in str(resolved.operator_event["reason_detail"])
+    assert "order-rule auto-sync unavailable" in str(resolved.operator_event["fallback_risk"])
 
 
-def test_get_effective_order_rules_fallback_warning_uses_injected_notifier_under_pytest(monkeypatch):
+def test_get_effective_order_rules_fallback_returns_event_data_without_domain_notification(monkeypatch):
     order_rules._cached_rules.clear()
 
     object.__setattr__(settings, "LIVE_MIN_ORDER_QTY", 0.0002)
@@ -568,7 +567,8 @@ def test_get_effective_order_rules_fallback_warning_uses_injected_notifier_under
     monkeypatch.setattr(
         order_rules,
         "notify",
-        lambda _msg: pytest.fail("fallback warning must use injected notifier in this regression test"),
+        lambda _msg: pytest.fail("domain order-rule resolution must not notify directly"),
+        raising=False,
     )
 
     warnings: list[str] = []
@@ -576,9 +576,11 @@ def test_get_effective_order_rules_fallback_warning_uses_injected_notifier_under
 
     assert resolved.fallback_used is True
     assert resolved.source_mode == "local_fallback"
-    assert warnings
-    assert "order rules auto-sync failed" in warnings[0]
-    assert "reason_code=UNRECOVERABLE" in warnings[0]
+    assert warnings == []
+    assert resolved.operator_event["event_type"] == "order_rule_fallback_used"
+    assert resolved.operator_event["reason_code"] == "UNRECOVERABLE"
+    assert resolved.operator_event["pair"] == "KRW-BTC"
+    assert "local_fallback_source_json" in resolved.operator_event
 
 
 def test_get_effective_order_rules_cached_result_preserves_source_metadata(monkeypatch):
