@@ -9,6 +9,20 @@ from bithumb_bot.research.process_runtime import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_process_runtime_env(monkeypatch) -> None:
+    for name in (
+        "BITHUMB_RESEARCH_ALLOW_UNSAFE_FORK",
+        "BITHUMB_RESEARCH_MAX_WORKERS",
+        "BITHUMB_RESEARCH_MP_START_METHOD",
+        "BITHUMB_TOTAL_PROCESS_BUDGET",
+        "PYTEST_XDIST_WORKER",
+        "PYTEST_XDIST_WORKER_COUNT",
+        "PYTEST_XDIST_WORKERS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def test_auto_safe_prefers_forkserver_when_available(monkeypatch) -> None:
     monkeypatch.setattr(process_runtime.mp, "get_all_start_methods", lambda: ["fork", "spawn", "forkserver"])
 
@@ -120,6 +134,7 @@ def test_total_process_budget_caps_inner_workers_when_outer_count_known(monkeypa
     monkeypatch.setattr(process_runtime.mp, "get_all_start_methods", lambda: ["forkserver", "spawn"])
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
     monkeypatch.setenv("PYTEST_XDIST_WORKER_COUNT", "2")
+    monkeypatch.delenv("BITHUMB_RESEARCH_MAX_WORKERS", raising=False)
     monkeypatch.setenv("BITHUMB_TOTAL_PROCESS_BUDGET", "6")
 
     runtime = resolve_research_process_runtime(requested_max_workers=8)
@@ -133,6 +148,7 @@ def test_total_process_budget_caps_inner_workers_without_outer_count(monkeypatch
     monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.delenv("PYTEST_XDIST_WORKER_COUNT", raising=False)
     monkeypatch.delenv("PYTEST_XDIST_WORKERS", raising=False)
+    monkeypatch.delenv("BITHUMB_RESEARCH_MAX_WORKERS", raising=False)
     monkeypatch.setenv("BITHUMB_TOTAL_PROCESS_BUDGET", "3")
 
     runtime = resolve_research_process_runtime(requested_max_workers=8)

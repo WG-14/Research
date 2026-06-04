@@ -3867,8 +3867,12 @@ def test_parallel_research_failure_is_committed_by_main_process(tmp_path, monkey
     assert report["execution_observability"]["outer_parallel_context"] in {None, "pytest-xdist"}
     assert report["execution_observability"]["unsafe_fork_allowed"] is False
     assert report["execution_observability"]["research_max_workers_requested"] == 2
-    assert report["execution_observability"]["research_max_workers_effective"] == 2
-    assert report["execution_observability"]["process_budget"]["research_max_workers_requested"] == 2
+    process_budget = report["execution_observability"]["process_budget"]
+    env_cap = process_budget.get("research_max_workers_env_cap")
+    expected_effective_workers = min(2, env_cap) if isinstance(env_cap, int) else 2
+    assert report["execution_observability"]["research_max_workers_effective"] == expected_effective_workers
+    assert process_budget["research_max_workers_requested"] == 2
+    assert process_budget["research_max_workers_effective"] == expected_effective_workers
     assert report["run_environment"]["multiprocessing_policy"]["requested_process_start_method"] == "auto_safe"
     assert (
         report["execution_plan"]["run_environment"]["multiprocessing_policy"]["requested_process_start_method"]

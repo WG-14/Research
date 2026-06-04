@@ -14,6 +14,69 @@ def _experiment_registry_section() -> str:
     return doc[start:end]
 
 
+def _parallel_research_safety_matrix_section() -> str:
+    doc = _research_validation_doc()
+    start = doc.index("### Parallel Research Safety Matrix")
+    end = doc.index("Workspace controls are", start)
+    return doc[start:end]
+
+
+def test_parallel_research_safety_matrix_records_measured_required_rows() -> None:
+    section = _parallel_research_safety_matrix_section()
+
+    for heading in (
+        "#### Measured evidence",
+        "#### Pending measurements",
+        "#### Recommended default",
+        "#### Reason for recommendation",
+    ):
+        assert heading in section
+
+    required_rows = {
+        "M1": "PYTEST_XDIST_WORKERS=2 BITHUMB_RESEARCH_MAX_WORKERS=2 ./scripts/run_parallel_research_safety_tests.sh",
+        "M2": "PYTEST_XDIST_WORKERS=4 BITHUMB_RESEARCH_MAX_WORKERS=2 ./scripts/run_parallel_research_safety_tests.sh",
+        "M3": "PYTEST_XDIST_WORKERS=4 BITHUMB_RESEARCH_MAX_WORKERS=1 ./scripts/run_parallel_research_safety_tests.sh",
+    }
+    measured = section[
+        section.index("#### Measured evidence") : section.index("#### Pending measurements")
+    ]
+
+    for matrix_id, command in required_rows.items():
+        assert f"| {matrix_id} | `{command}` |" in measured
+
+    assert measured.count("| M1 |") == 1
+    assert measured.count("| M2 |") == 1
+    assert measured.count("| M3 |") == 1
+    assert "DeprecationWarning=0" in measured
+    assert "[RUNTIME-ARTIFACT-CHECK] OK" in measured
+    assert "effective_process_start_method=spawn" in measured
+    assert "outer_parallel_context=pytest-xdist" in measured
+    assert "process_budget={" in measured
+
+    for placeholder in ("TODO", "TBD", "__FILL_", "pending local/pipeline measurement"):
+        assert placeholder not in measured
+
+
+def test_parallel_research_safety_matrix_keeps_optional_rows_pending() -> None:
+    section = _parallel_research_safety_matrix_section()
+    pending = section[
+        section.index("#### Pending measurements") : section.index("#### Recommended default")
+    ]
+    measured = section[
+        section.index("#### Measured evidence") : section.index("#### Pending measurements")
+    ]
+
+    optional_commands = (
+        "PYTEST_XDIST_WORKERS=2 BITHUMB_TOTAL_PROCESS_BUDGET=4 ./scripts/run_parallel_research_safety_tests.sh",
+        "PYTEST_XDIST_WORKERS=4 BITHUMB_TOTAL_PROCESS_BUDGET=8 ./scripts/run_parallel_research_safety_tests.sh",
+        "PYTEST_XDIST_WORKERS=4 BITHUMB_TOTAL_PROCESS_BUDGET=4 ./scripts/run_parallel_research_safety_tests.sh",
+    )
+
+    for command in optional_commands:
+        assert command in pending
+        assert command not in measured
+
+
 def test_research_validation_docs_describe_semantic_holdout_identity_not_fingerprint_only() -> None:
     doc = _experiment_registry_section()
 

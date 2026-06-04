@@ -395,25 +395,64 @@ PYTEST_XDIST_WORKERS=4 BITHUMB_TOTAL_PROCESS_BUDGET=8 ./scripts/run_parallel_res
 PYTEST_XDIST_WORKERS=4 BITHUMB_TOTAL_PROCESS_BUDGET=4 ./scripts/run_parallel_research_safety_tests.sh
 ```
 
-Capture these fields for each row:
+#### Measured evidence
 
-- Wall time.
-- CPU usage or an observational summary of contention.
-- Max RSS or the closest available memory observation.
-- Warning count, with `DeprecationWarning` called out explicitly.
-- Pytest workspace cleanup result.
-- `./scripts/check_repo_runtime_artifacts.sh` result.
-- Observed `research_max_workers_effective`, `outer_parallel_context`, and
-  `process_budget` from a representative parallel report.
-- Recommended default values supported by the measurement.
+Evidence source for the rows below: local WSL2 Linux
+`Linux-6.6.114.1-microsoft-standard-WSL2-x86_64-with-glibc2.39` on
+`DESKTOP-5FUBC3C`, Python `3.13.12`, available multiprocessing start methods
+`fork`, `spawn`, and `forkserver`. Local command execution exported
+`UV_CACHE_DIR=/tmp/uv-cache` because the sandbox default uv cache path under
+`/home/vorac/.cache/uv` was read-only; the matrix command lines themselves were
+run as shown. CPU percentage and max RSS were not emitted by the script output
+and were not separately captured for these rows.
 
-Current default recommendation: keep the safety gate default at
-`PYTEST_XDIST_WORKERS=2`, `PYTEST_XDIST_DIST=loadfile`, and
-`BITHUMB_RESEARCH_MP_START_METHOD=auto_safe`. Inner workers should remain capped
-with `BITHUMB_RESEARCH_MAX_WORKERS=2` for local/pipeline matrix runs until a
-larger value has measured wall-time benefit without memory pressure or warning
-regression. Rows not yet measured in the target pipeline should be recorded as
-pending local/pipeline measurement rather than treated as evidence.
+| Matrix ID | Exact command | Execution time | Wall time evidence | CPU | Max RSS / memory | Warnings | Pytest result | Cleanup and artifact check | Representative process runtime evidence | Interpretation |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| M1 | `PYTEST_XDIST_WORKERS=2 BITHUMB_RESEARCH_MAX_WORKERS=2 ./scripts/run_parallel_research_safety_tests.sh` | `2026-06-04T15:36:00Z` | Resolver phase `14 passed in 0.77s`; selected safety phase `6 passed in 145.15s (0:02:25)` | not captured | not captured | `DeprecationWarning=0`; total warnings `0` because no pytest warnings summary was emitted and `-W error::DeprecationWarning` was active | PASS | Workspace summary `retained_size_bytes=0`; workspace cleaned; `[RUNTIME-ARTIFACT-CHECK] OK: no repo-local runtime/test artifacts detected.` | Representative report: `actual_execution_mode=parallel_worker_initializer`; `parallel_executor_used=true`; `requested_process_start_method=auto_safe`; `effective_process_start_method=spawn`; `outer_parallel_context=pytest-xdist`; `research_max_workers_effective=2`; `worker_process_evidence_count=2`; `process_budget={outer_worker_count: 2, outer_worker_id: gw0, research_max_workers_requested: 2, research_max_workers_effective: 2, research_max_workers_env_cap: 2, total_process_budget: null, unavailable_process_start_methods: [forkserver]}` | Required local default-sized nested run passed warning-as-error and cleanup gates. `auto_safe` avoided implicit fork and fell back to `spawn` after forkserver pool creation was unavailable in this WSL2 sandbox. |
+| M2 | `PYTEST_XDIST_WORKERS=4 BITHUMB_RESEARCH_MAX_WORKERS=2 ./scripts/run_parallel_research_safety_tests.sh` | `2026-06-04T15:39:05Z` | Resolver phase `14 passed in 0.92s`; selected safety phase `6 passed in 149.56s (0:02:29)` | not captured | not captured | `DeprecationWarning=0`; total warnings `0` because no pytest warnings summary was emitted and `-W error::DeprecationWarning` was active | PASS | Workspace summary `retained_size_bytes=0`; workspace cleaned; `[RUNTIME-ARTIFACT-CHECK] OK: no repo-local runtime/test artifacts detected.` | Representative report: `actual_execution_mode=parallel_worker_initializer`; `parallel_executor_used=true`; `requested_process_start_method=auto_safe`; `effective_process_start_method=spawn`; `outer_parallel_context=pytest-xdist`; `research_max_workers_effective=2`; `worker_process_evidence_count=2`; `process_budget={outer_worker_count: 4, outer_worker_id: gw0, research_max_workers_requested: 2, research_max_workers_effective: 2, research_max_workers_env_cap: 2, total_process_budget: null, unavailable_process_start_methods: [forkserver]}` | Four outer xdist workers with two inner research workers stayed warning-clean and auditable, but did not improve local selected-phase wall time versus M1. |
+| M3 | `PYTEST_XDIST_WORKERS=4 BITHUMB_RESEARCH_MAX_WORKERS=1 ./scripts/run_parallel_research_safety_tests.sh` | `2026-06-04T15:32:55Z` | Resolver phase `14 passed in 0.93s`; selected safety phase `6 passed in 145.94s (0:02:25)` | not captured | not captured | `DeprecationWarning=0`; total warnings `0` because no pytest warnings summary was emitted and `-W error::DeprecationWarning` was active | PASS | Workspace summary `retained_size_bytes=0`; workspace cleaned; `[RUNTIME-ARTIFACT-CHECK] OK: no repo-local runtime/test artifacts detected.` | Representative report: `actual_execution_mode=parallel_worker_initializer`; `parallel_executor_used=true`; `requested_process_start_method=auto_safe`; `effective_process_start_method=spawn`; `outer_parallel_context=pytest-xdist`; `research_max_workers_effective=1`; `worker_process_evidence_count=2`; `process_budget={outer_worker_count: 4, outer_worker_id: gw0, research_max_workers_requested: 2, research_max_workers_effective: 1, research_max_workers_env_cap: 1, total_process_budget: null, unavailable_process_start_methods: [forkserver]}` | One inner worker under four xdist workers also passed warning-as-error and cleanup gates. It is useful as a lower-contention fallback, but the local evidence does not show a meaningful wall-time win over M1. |
+
+#### Pending measurements
+
+The optional total-budget variants below were not run for this measured matrix
+and are not completion evidence for the required rows:
+
+```bash
+PYTEST_XDIST_WORKERS=2 BITHUMB_TOTAL_PROCESS_BUDGET=4 ./scripts/run_parallel_research_safety_tests.sh
+PYTEST_XDIST_WORKERS=4 BITHUMB_TOTAL_PROCESS_BUDGET=8 ./scripts/run_parallel_research_safety_tests.sh
+PYTEST_XDIST_WORKERS=4 BITHUMB_TOTAL_PROCESS_BUDGET=4 ./scripts/run_parallel_research_safety_tests.sh
+```
+
+Dedicated CI or AWS Linux pipeline measurements should still capture CPU
+percentage and max RSS, because those fields were not available from the local
+safety script output above.
+
+#### Recommended default
+
+Keep the safety gate default at:
+
+```text
+PYTEST_XDIST_WORKERS=2
+PYTEST_XDIST_DIST=loadfile
+BITHUMB_RESEARCH_MP_START_METHOD=auto_safe
+BITHUMB_RESEARCH_MAX_WORKERS=2 for local/pipeline matrix runs
+```
+
+#### Reason for recommendation
+
+M1 is the smallest required measured row that exercises both outer xdist and
+inner real research process workers while preserving worker evidence,
+warning-as-error behavior, workspace cleanup, and repo artifact cleanliness.
+M2 shows that increasing the outer xdist worker count to four remains safe but
+did not produce a local selected-phase wall-time improvement. M3 shows that an
+inner cap of one remains safe and observable, but it is best treated as a
+contention fallback because it does not provide stronger local evidence than
+M1 for the default path. `auto_safe` remains the correct default because every
+measured row avoided unsafe implicit fork; this WSL2 sandbox recorded forkserver
+as unavailable at pool creation and fell back to observable `spawn`.
+
+Rows not yet measured in the target pipeline should be recorded as pending
+local/pipeline measurement rather than treated as evidence.
 
 Workspace controls are `BITHUMB_PYTEST_WORKSPACE_ROOT`,
 `BITHUMB_PYTEST_RUN_ID`, and `KEEP_BITHUMB_TEST_ARTIFACTS`.
