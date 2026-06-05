@@ -154,10 +154,7 @@ codex_input="${packet_dir}/codex_input.md"
   echo "## Repository Repair Prompt"
   echo
   if [[ -s "${SCRIPT_DIR}/codex_pytest_repair_prompt.md" ]]; then
-    sed \
-      -e 's/Run the full suite first:/Do not run the full suite. The WSL wrapper already ran it and attached failure evidence below. Original prompt line retained only as historical context:/' \
-      -e 's/uv run pytest -q/WRAPPER-OWNED-FULL-SUITE/g' \
-      "${SCRIPT_DIR}/codex_pytest_repair_prompt.md"
+    cat "${SCRIPT_DIR}/codex_pytest_repair_prompt.md"
   else
     echo "scripts/codex_pytest_repair_prompt.md is missing or empty."
   fi
