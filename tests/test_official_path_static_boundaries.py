@@ -47,6 +47,53 @@ EXPLICIT_COMPATIBILITY_PATHS = {
     "src/bithumb_bot/strategy/registry.py",
 }
 
+STRATEGY_NEUTRAL_CORE_PATHS = (
+    "src/bithumb_bot/strategy_decision_service.py",
+    "src/bithumb_bot/runtime_data_provider.py",
+    "src/bithumb_bot/strategy_decision_input.py",
+    "src/bithumb_bot/runtime_strategy_decision.py",
+    "src/bithumb_bot/runtime_strategy_set.py",
+    "src/bithumb_bot/execution_service.py",
+    "src/bithumb_bot/run_loop_execution_planner.py",
+    "src/bithumb_bot/decision_envelope.py",
+)
+
+FORBIDDEN_CORE_STRATEGY_LITERALS = frozenset(
+    {
+        "sma_with_filter",
+        "canary_non_sma",
+        "safe_hold",
+        "replay_threshold",
+        "threshold_research_only",
+    }
+)
+
+STRATEGY_NAME_BRANCH_NAMES = frozenset(
+    {
+        "key",
+        "name",
+        "selected_strategy_name",
+        "strategy",
+        "strategy_key",
+        "strategy_name",
+    }
+)
+
+STRATEGY_NAME_BRANCH_ATTRIBUTES = frozenset(
+    {
+        "name",
+        "selected_strategy_name",
+        "strategy",
+        "strategy_key",
+        "strategy_name",
+    }
+)
+
+STRATEGY_SPECIFIC_CORE_REASON = (
+    "strategy-specific logic belongs in plugin/adapter/projector/contract code, "
+    "not strategy-neutral runtime/decision core"
+)
+
 
 def _iter_official_files() -> list[Path]:
     files: list[Path] = []
@@ -82,6 +129,91 @@ def _line_has_marker(line: str, marker: str) -> bool:
     if marker == "from backtest":
         return bool(re.search(r"\bfrom\s+backtest\b", line))
     return marker in line
+
+
+def _is_strategy_name_expression(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in STRATEGY_NAME_BRANCH_NAMES
+    if isinstance(node, ast.Attribute):
+        return node.attr in STRATEGY_NAME_BRANCH_ATTRIBUTES
+    return False
+
+
+def _forbidden_strategy_literal(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        if node.value in FORBIDDEN_CORE_STRATEGY_LITERALS:
+            return node.value
+    return None
+
+
+def _literal_collection_values(node: ast.AST) -> tuple[str, ...]:
+    if not isinstance(node, (ast.Set, ast.Tuple, ast.List)):
+        return ()
+    values: list[str] = []
+    for element in node.elts:
+        value = _forbidden_strategy_literal(element)
+        if value is not None:
+            values.append(value)
+    return tuple(values)
+
+
+def _source_segment(source: str, node: ast.AST) -> str:
+    segment = ast.get_source_segment(source, node)
+    if segment is not None:
+        return segment
+    return ast.unparse(node)
+
+
+def _strategy_specific_branch_failures(path: Path, source: str) -> list[str]:
+    relative = path.relative_to(REPO).as_posix()
+    tree = ast.parse(source, filename=relative)
+    failures: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        comparisons = zip((node.left, *node.comparators[:-1]), node.ops, node.comparators)
+        for left, op, right in comparisons:
+            if isinstance(op, (ast.Eq, ast.NotEq)):
+                left_literal = _forbidden_strategy_literal(left)
+                right_literal = _forbidden_strategy_literal(right)
+                if _is_strategy_name_expression(left) and right_literal is not None:
+                    failures.append(
+                        f"{relative}:{node.lineno}: forbidden strategy-specific branch "
+                        f"{_source_segment(source, node)!r} references {right_literal!r}; "
+                        f"{STRATEGY_SPECIFIC_CORE_REASON}"
+                    )
+                if left_literal is not None and _is_strategy_name_expression(right):
+                    failures.append(
+                        f"{relative}:{node.lineno}: forbidden strategy-specific branch "
+                        f"{_source_segment(source, node)!r} references {left_literal!r}; "
+                        f"{STRATEGY_SPECIFIC_CORE_REASON}"
+                    )
+            if isinstance(op, (ast.In, ast.NotIn)) and _is_strategy_name_expression(left):
+                literals = _literal_collection_values(right)
+                if literals:
+                    failures.append(
+                        f"{relative}:{node.lineno}: forbidden strategy-specific membership branch "
+                        f"{_source_segment(source, node)!r} references {', '.join(repr(v) for v in literals)}; "
+                        f"{STRATEGY_SPECIFIC_CORE_REASON}"
+                    )
+    return failures
+
+
+def test_strategy_neutral_core_files_do_not_contain_strategy_specific_special_cases() -> None:
+    failures: list[str] = []
+    for relative in STRATEGY_NEUTRAL_CORE_PATHS:
+        path = REPO / relative
+        source = path.read_text(encoding="utf-8-sig")
+        for line_no, line in enumerate(source.splitlines(), start=1):
+            for literal in sorted(FORBIDDEN_CORE_STRATEGY_LITERALS):
+                if literal in line:
+                    failures.append(
+                        f"{relative}:{line_no}: forbidden strategy literal {literal!r}; "
+                        f"{STRATEGY_SPECIFIC_CORE_REASON}"
+                    )
+        failures.extend(_strategy_specific_branch_failures(path, source))
+
+    assert failures == []
 
 
 def test_official_paths_do_not_cross_smoke_or_legacy_authority_boundaries() -> None:
