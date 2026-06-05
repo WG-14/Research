@@ -266,8 +266,12 @@ class RuntimeStrategySpec:
                 None if self.risk_snapshot is None else dict(self.risk_snapshot)
             ),
             "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
-            "risk_decision": risk_decision,
-            "risk_decision_hash": risk_decision["risk_decision_hash"],
+            "exposure_boundary_artifact": risk_decision,
+            "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
+            "legacy_non_authoritative_exposure_risk_decision": risk_decision,
+            "legacy_non_authoritative_exposure_risk_decision_hash": risk_decision[
+                "exposure_boundary_artifact_hash"
+            ],
             "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
             "parameters": dict(self.parameters or {}),
             "runtime_adapter_config": dict(self.runtime_adapter_config or {}),
@@ -468,8 +472,12 @@ class RuntimeStrategyInstance:
             "max_target_exposure_krw": self.spec.max_target_exposure_krw,
             "risk_budget_krw": self.spec.risk_budget_krw,
             "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
-            "risk_decision": risk_decision,
-            "risk_decision_hash": risk_decision["risk_decision_hash"],
+            "exposure_boundary_artifact": risk_decision,
+            "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
+            "legacy_non_authoritative_exposure_risk_decision": risk_decision,
+            "legacy_non_authoritative_exposure_risk_decision_hash": risk_decision[
+                "exposure_boundary_artifact_hash"
+            ],
             "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
             "parameter_source": self.parameter_source,
             "parameters_raw": dict(self.parameters_raw),
@@ -1896,8 +1904,12 @@ def normalized_runtime_strategy_set_manifest(
         **submit_authority_policy.as_dict(),
         "submit_authority_policy_hash": submit_authority_policy.content_hash(),
         "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
-        "risk_decision": risk_decision,
-        "risk_decision_hash": risk_decision["risk_decision_hash"],
+        "exposure_boundary_artifact": risk_decision,
+        "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
+        "legacy_non_authoritative_exposure_risk_decision": risk_decision,
+        "legacy_non_authoritative_exposure_risk_decision_hash": risk_decision[
+            "exposure_boundary_artifact_hash"
+        ],
         "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
         "market_scope": market_scope.as_dict(),
         "multi_strategy_enabled": resolved.multi_strategy_enabled,

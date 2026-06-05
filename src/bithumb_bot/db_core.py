@@ -3778,10 +3778,12 @@ def _strategy_contribution_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "exposure_cap_applied": False,
         "exposure_cap_source": "none",
         "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
-        "risk_decision": default_risk_decision,
         "exposure_boundary_artifact": default_risk_decision,
         "exposure_boundary_artifact_hash": default_risk_decision["exposure_boundary_artifact_hash"],
-        "risk_decision_hash": default_risk_decision["risk_decision_hash"],
+        "legacy_non_authoritative_exposure_risk_decision": default_risk_decision,
+        "legacy_non_authoritative_exposure_risk_decision_hash": default_risk_decision[
+            "exposure_boundary_artifact_hash"
+        ],
         "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
         "strategy_risk_policy": None,
         "strategy_risk_snapshot": None,
@@ -3808,10 +3810,10 @@ def _strategy_contribution_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
                 "exposure_cap_applied",
                 "exposure_cap_source",
                 "risk_budget_semantics",
-                "risk_decision",
-                "risk_decision_hash",
                 "exposure_boundary_artifact",
                 "exposure_boundary_artifact_hash",
+                "legacy_non_authoritative_exposure_risk_decision",
+                "legacy_non_authoritative_exposure_risk_decision_hash",
                 "risk_budget_legacy_marker",
                 "strategy_risk_policy",
                 "strategy_risk_snapshot",
@@ -3854,13 +3856,17 @@ def _portfolio_target_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "authoritative": bool(row["authoritative"]),
         "fail_closed_reason": str(row["fail_closed_reason"] or ""),
         "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
-        "risk_decision": default_risk_decision,
         "exposure_boundary_artifact": default_risk_decision,
         "exposure_boundary_artifact_hash": default_risk_decision["exposure_boundary_artifact_hash"],
-        "risk_decision_hash": default_risk_decision["risk_decision_hash"],
+        "legacy_non_authoritative_exposure_risk_decision": default_risk_decision,
+        "legacy_non_authoritative_exposure_risk_decision_hash": default_risk_decision[
+            "exposure_boundary_artifact_hash"
+        ],
         "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
     }
     target_json = _json_loads_object(str(row["target_json"] or "{}"))
+    if target_json.get("final_portfolio_target_hash") and target_json.get("portfolio_risk_decision"):
+        return target_json
     for key in (
         "allocator_policy_name",
         "allocator_policy_version",
@@ -3874,10 +3880,10 @@ def _portfolio_target_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "exposure_cap_applied",
         "exposure_cap_source",
         "risk_budget_semantics",
-        "risk_decision",
-        "risk_decision_hash",
         "exposure_boundary_artifact",
         "exposure_boundary_artifact_hash",
+        "legacy_non_authoritative_exposure_risk_decision",
+        "legacy_non_authoritative_exposure_risk_decision_hash",
         "risk_budget_legacy_marker",
     ):
         payload[key] = target_json.get(key, payload[key])
@@ -3983,10 +3989,12 @@ def rebuild_allocation_decision_from_bundle(
         "authoritative": bool(allocation["authoritative"]),
         "primary_block_reason": str(allocation["primary_block_reason"] or ""),
         "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
-        "risk_decision": risk_decision,
         "exposure_boundary_artifact": risk_decision,
         "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
-        "risk_decision_hash": risk_decision["risk_decision_hash"],
+        "legacy_non_authoritative_exposure_risk_decision": risk_decision,
+        "legacy_non_authoritative_exposure_risk_decision_hash": risk_decision[
+            "exposure_boundary_artifact_hash"
+        ],
         "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
     }
     payload["allocation_decision_hash"] = sha256_prefixed(payload)

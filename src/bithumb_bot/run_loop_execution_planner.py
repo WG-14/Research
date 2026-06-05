@@ -314,20 +314,13 @@ def _allocation_context_fields(decision, *, runtime_pair: str) -> dict[str, obje
         "portfolio_target": target_payload,
         "portfolio_allocation_decision": decision_payload,
         "allocation_exposure_boundary_artifact_hash": str(
-            decision_payload.get("exposure_boundary_artifact_hash")
-            or decision_payload.get("risk_decision_hash")
-            or ""
+            decision_payload.get("exposure_boundary_artifact_hash") or ""
         ),
         "strategy_risk_decision_hash": str(target_conflict.get("strategy_risk_decision_hash") or ""),
         "strategy_risk_policy_hash": str(target_conflict.get("strategy_risk_policy_hash") or ""),
         "strategy_risk_input_hash": str(target_conflict.get("strategy_risk_input_hash") or ""),
         "strategy_risk_status": str(target_conflict.get("strategy_risk_status") or ""),
         "strategy_risk_reason_code": str(target_conflict.get("strategy_risk_block_reason_code") or ""),
-        "risk_decision_hash": str(
-            decision_payload.get("exposure_boundary_artifact_hash")
-            or decision_payload.get("risk_decision_hash")
-            or ""
-        ),
     }
 
 
@@ -711,11 +704,8 @@ def prepare_strategy_decision_persistence_context(
                 plan_payload.get("submit_authority_policy_hash") or ""
             )
             context["exposure_boundary_artifact_hash"] = str(
-                plan_payload.get("exposure_boundary_artifact_hash")
-                or plan_payload.get("risk_decision_hash")
-                or ""
+                plan_payload.get("exposure_boundary_artifact_hash") or ""
             )
-            context["risk_decision_hash"] = context["exposure_boundary_artifact_hash"]
             for risk_key in (
                 "pre_submit_risk_required",
                 "pre_submit_risk_decision_authority",
@@ -1100,6 +1090,33 @@ class ExecutionPlanner:
                                 mark_price=float(result.market_price),
                                 state_source="risk_policy_disabled_explicit",
                                 evidence={"strategy_instance_id": strategy_instance_id},
+                            )
+                            missing_state = ()
+                        elif not any(
+                            (
+                                float(risk_profile.policy.max_daily_loss_krw) > 0.0,
+                                float(risk_profile.policy.max_position_loss_pct) > 0.0,
+                                int(risk_profile.policy.max_daily_order_count) > 0,
+                                int(risk_profile.policy.max_trade_count_per_day) > 0,
+                                float(risk_profile.policy.max_drawdown_pct) > 0.0,
+                                int(risk_profile.policy.cooldown_after_loss_min) > 0,
+                                bool(risk_profile.policy.kill_switch),
+                            )
+                        ):
+                            from .risk_contract import RiskSnapshot
+
+                            snapshot = RiskSnapshot(
+                                evaluation_ts_ms=int(result.candle_ts),
+                                mark_price=float(result.market_price),
+                                state_source="risk_policy_no_runtime_state_required",
+                                evidence={
+                                    "strategy_instance_id": strategy_instance_id,
+                                    "strategy_name": spec.strategy_name,
+                                    "pair": str(spec.pair),
+                                    "interval": str(spec.interval),
+                                    "scope": "strategy_instance",
+                                    "state_derivation": "not_required_no_active_strategy_limits",
+                                },
                             )
                             missing_state = ()
                         else:

@@ -168,10 +168,12 @@ class StrategyContribution:
                 if self.strategy_risk_decision is None
                 else self.strategy_risk_decision.get("state_source")
             ),
-            "risk_decision": risk_decision,
             "exposure_boundary_artifact": risk_decision,
             "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
-            "risk_decision_hash": risk_decision["risk_decision_hash"],
+            "legacy_non_authoritative_exposure_risk_decision": risk_decision,
+            "legacy_non_authoritative_exposure_risk_decision_hash": risk_decision[
+                "exposure_boundary_artifact_hash"
+            ],
             "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
             "reason": self.reason,
         }
@@ -292,10 +294,12 @@ class PortfolioAllocationDecision:
             "authoritative": bool(self.authoritative),
             "primary_block_reason": self.primary_block_reason,
             "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
-            "risk_decision": risk_decision,
             "exposure_boundary_artifact": risk_decision,
             "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
-            "risk_decision_hash": risk_decision["risk_decision_hash"],
+            "legacy_non_authoritative_exposure_risk_decision": risk_decision,
+            "legacy_non_authoritative_exposure_risk_decision_hash": risk_decision[
+                "exposure_boundary_artifact_hash"
+            ],
             "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
         }
         payload["allocation_decision_hash"] = sha256_prefixed(
@@ -510,10 +514,12 @@ class PortfolioAllocator:
                 "exposure_cap_applied": False,
                 "exposure_cap_source": "none",
                 "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
-                "risk_decision": risk_decision,
                 "exposure_boundary_artifact": risk_decision,
                 "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
-                "risk_decision_hash": risk_decision["risk_decision_hash"],
+                "legacy_non_authoritative_exposure_risk_decision": risk_decision,
+                "legacy_non_authoritative_exposure_risk_decision_hash": risk_decision[
+                    "exposure_boundary_artifact_hash"
+                ],
                 "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
             }
         weighted_total = 0.0
@@ -550,10 +556,12 @@ class PortfolioAllocator:
             "exposure_cap_applied": cap_applied,
             "exposure_cap_source": "max_target_exposure_krw" if exposure_cap_present else "none",
             "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
-            "risk_decision": risk_decision,
             "exposure_boundary_artifact": risk_decision,
             "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
-            "risk_decision_hash": risk_decision["risk_decision_hash"],
+            "legacy_non_authoritative_exposure_risk_decision": risk_decision,
+            "legacy_non_authoritative_exposure_risk_decision_hash": risk_decision[
+                "exposure_boundary_artifact_hash"
+            ],
             "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
         }
 

@@ -121,6 +121,10 @@ def strategy_risk_profile_from_profile_payload(
         raise RuntimeError(f"strategy_risk_enforcement_mode_unsupported:{strategy_name}:{mode}")
     if live_real_order and mode != "enforced":
         raise RuntimeError(f"strategy_risk_enforcement_required_for_live_real_order:{strategy_name}")
+    if live_real_order and policy.policy_status == "disabled_explicit":
+        raise RuntimeError(
+            f"strategy_risk_policy_disabled_rejected_for_live_real_order:{strategy_name}"
+        )
 
     missing = str(
         missing_policy_behavior

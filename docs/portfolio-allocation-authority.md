@@ -107,15 +107,18 @@ For the initial deterministic allocator policy:
 - Strategy-level loss/order/drawdown/cooldown policy is separate from exposure caps. Runtime strategy specs and preferences may carry typed `risk_policy` and `risk_snapshot` evidence with `max_daily_loss_krw`, `max_daily_order_count`, `max_trade_count_per_day`, `max_drawdown_pct`, and `cooldown_after_loss_min`. If a selected BUY contribution violates policy, the allocator fails closed before authoritative `PortfolioTarget` adoption and records the blocking `strategy_risk_decision_hash`.
 
 Exposure-cap metadata is recorded as `exposure_boundary_artifact` and
-`exposure_boundary_artifact_hash`. Legacy `risk_decision` and
-`risk_decision_hash` aliases on exposure-boundary payloads are
-non-authoritative compatibility fields. Operational risk authority is recorded
-with typed layer-specific hashes: `strategy_risk_decision_hash`,
+`exposure_boundary_artifact_hash`. Production-facing allocation artifacts do
+not publish exposure-boundary metadata as generic `risk_decision` or
+`risk_decision_hash`. If compatibility copies are retained, they are named
+`legacy_non_authoritative_exposure_risk_decision` and
+`legacy_non_authoritative_exposure_risk_decision_hash` and are not live
+authority. Operational risk authority is recorded with typed layer-specific
+hashes: `strategy_risk_decision_hash`,
 `portfolio_risk_decision_hash`, and `pre_submit_risk_decision_hash`.
 
 ## Runtime Manifest
 
-At persistence time the materialized runtime strategy-set manifest is stored in SQLite as recovery-critical `trades` data. The manifest includes active strategy instances, raw and materialized parameters, normalized parameter source, strategy parameter hash, approved profile path/hash, runtime and plugin contract hashes, strategy version, execution and risk config hashes, `submit_authority_mode`, `submit_authority_policy_hash`, the risk-decision placeholder when applicable, market scope, single-pair enforcement, and the manifest hash.
+At persistence time the materialized runtime strategy-set manifest is stored in SQLite as recovery-critical `trades` data. The manifest includes active strategy instances, raw and materialized parameters, normalized parameter source, strategy parameter hash, approved profile path/hash, runtime and plugin contract hashes, strategy version, execution and risk config hashes, `submit_authority_mode`, `submit_authority_policy_hash`, exposure-boundary metadata, market scope, single-pair enforcement, and the manifest hash.
 
 Run-start manifests are candle-independent blueprints. Runtime data preflight is
 decision-cycle evidence and is linked from decision bundles through

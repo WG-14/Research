@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 
 import pytest
 
@@ -74,6 +74,24 @@ def _plan(
     )
 
 
+def _approved(plan: ExecutionSubmitPlan) -> ExecutionSubmitPlan:
+    plan_hash = plan.content_hash()
+    extra = dict(plan.extra_payload)
+    extra.update(
+        {
+            "submit_plan_hash": plan_hash,
+            "pre_submit_risk_status": "ALLOW",
+            "pre_submit_risk_decision_hash": "sha256:" + "1" * 64,
+            "pre_submit_risk_policy_hash": "sha256:" + "2" * 64,
+            "pre_submit_risk_input_hash": "sha256:" + "3" * 64,
+            "pre_submit_risk_plan_hash": plan_hash,
+            "pre_submit_risk_reason_code": "OK",
+            "pre_submit_risk_state_source": "unit",
+        }
+    )
+    return replace(plan, extra_payload=extra)
+
+
 def _summary(*, target: ExecutionSubmitPlan | None = None, buy: ExecutionSubmitPlan | None = None, residual: ExecutionSubmitPlan | None = None) -> ExecutionDecisionSummary:
     plan = target or residual or buy
     return ExecutionDecisionSummary(
@@ -99,14 +117,14 @@ def _summary(*, target: ExecutionSubmitPlan | None = None, buy: ExecutionSubmitP
 
 
 def test_mode_aware_submit_authority_matrix() -> None:
-    target = _plan()
+    target = _approved(_plan())
     legacy_buy = _plan(source="strategy_position", authority="configured_strategy_order_size")
-    residual = _plan(
+    residual = _approved(_plan(
         side="SELL",
         source="residual_inventory",
         authority="residual_inventory_policy",
         extra={"portfolio_target_authoritative": False},
-    )
+    ))
 
     assert evaluate_submit_authority_policy(
         legacy_buy,
@@ -135,6 +153,25 @@ def test_mode_aware_submit_authority_matrix() -> None:
         settings_obj=_settings(mode="live", dry_run=False, armed=True),
         plan_kind="residual",
     ).allowed
+
+
+def test_live_real_order_requires_operational_pre_submit_risk_proof() -> None:
+    missing = evaluate_submit_authority_policy(
+        _plan(),
+        settings_obj=_settings(mode="live", dry_run=False, armed=True),
+        plan_kind="target",
+    )
+    assert missing.allowed is False
+    assert missing.reason == "live_real_order_pre_submit_risk_not_allow"
+    assert missing.as_dict()["pre_submit_risk_approval_status"] == "blocked"
+
+    approved = evaluate_submit_authority_policy(
+        _approved(_plan()),
+        settings_obj=_settings(mode="live", dry_run=False, armed=True),
+        plan_kind="target",
+    )
+    assert approved.allowed is True
+    assert approved.as_dict()["pre_submit_risk_approval_status"] == "approved"
 
 
 @pytest.mark.parametrize(
@@ -217,12 +254,12 @@ def test_live_real_order_accepts_only_valid_residual_sell_exception_before_execu
         calls.append(dict(kwargs))
         return {"status": "called"}
 
-    residual = _plan(
+    residual = _approved(_plan(
         side="SELL",
         source="residual_inventory",
         authority="residual_inventory_policy",
         extra={"portfolio_target_authoritative": False},
-    )
+    ))
     service = LiveSignalExecutionService(
         broker=_Broker(),
         executor=_executor,

@@ -8,7 +8,6 @@ from typing import Any
 from .canonical_decision import canonical_payload_hash
 from .oms import collect_risky_order_state
 from .risk import (
-    _latest_position_entry_price,
     daily_loss_reason_code_from_reason,
     evaluate_daily_loss_state,
 )
@@ -200,6 +199,44 @@ def _open_exposure_qty(
     return float(row["qty"] if hasattr(row, "keys") else row[0])
 
 
+def _position_entry_price_for_instance(
+    conn: sqlite3.Connection,
+    *,
+    pair: str,
+    strategy_decision_ids: tuple[int, ...] | None,
+) -> float | None:
+    if strategy_decision_ids is None:
+        return None
+    if not _table_exists(conn, "open_position_lots"):
+        return None
+    columns = _table_columns(conn, "open_position_lots")
+    if not {"pair", "position_state", "qty_open", "entry_decision_id"}.issubset(columns):
+        return None
+    if "entry_price" not in columns:
+        return None
+    if not strategy_decision_ids:
+        return None
+    placeholders = _placeholders(strategy_decision_ids)
+    row = conn.execute(
+        f"""
+        SELECT
+            COALESCE(SUM(qty_open * entry_price), 0.0) AS weighted_entry,
+            COALESCE(SUM(qty_open), 0.0) AS qty
+        FROM open_position_lots
+        WHERE pair=? AND position_state='open_exposure'
+          AND entry_decision_id IN ({placeholders})
+          AND entry_price IS NOT NULL
+          AND entry_price > 0
+        """,
+        (str(pair), *strategy_decision_ids),
+    ).fetchone()
+    weighted = float(row["weighted_entry"] if hasattr(row, "keys") else row[0])
+    qty = float(row["qty"] if hasattr(row, "keys") else row[1])
+    if qty <= 0.0:
+        return None
+    return weighted / qty
+
+
 def _loss_today_for_instance(
     conn: sqlite3.Connection,
     ts_ms: int,
@@ -253,6 +290,44 @@ def _minutes_since_last_loss_for_instance(
     if last_loss_ts is None:
         return None
     return max(0.0, (int(ts_ms) - int(last_loss_ts)) / 60_000.0)
+
+
+def _current_drawdown_pct_for_instance(
+    conn: sqlite3.Connection,
+    ts_ms: int,
+    *,
+    pair: str,
+    strategy_instance_id: str,
+) -> float | None:
+    if not _table_exists(conn, "trade_lifecycles"):
+        return None
+    columns = _table_columns(conn, "trade_lifecycles")
+    if not {"exit_ts", "pair", "strategy_instance_id", "net_pnl"}.issubset(columns):
+        return None
+    rows = conn.execute(
+        """
+        SELECT exit_ts, net_pnl
+        FROM trade_lifecycles
+        WHERE exit_ts <= ?
+          AND pair=?
+          AND strategy_instance_id=?
+        ORDER BY exit_ts, id
+        """,
+        (int(ts_ms), str(pair), str(strategy_instance_id)),
+    ).fetchall()
+    if not rows:
+        return 0.0
+    equity = 0.0
+    peak = 0.0
+    max_drawdown_abs = 0.0
+    for row in rows:
+        pnl = float(row["net_pnl"] if hasattr(row, "keys") else row[1] or 0.0)
+        equity += pnl
+        peak = max(peak, equity)
+        max_drawdown_abs = max(max_drawdown_abs, peak - equity)
+    if peak <= 0.0:
+        return 100.0 if max_drawdown_abs > 0.0 else 0.0
+    return max(0.0, (max_drawdown_abs / peak) * 100.0)
 
 
 def _missing_required_state(policy: RiskPolicy, snapshot: RiskSnapshot) -> tuple[str, ...]:
@@ -351,6 +426,17 @@ class StrategyRiskStateProvider:
             pair=pair,
             strategy_instance_id=strategy_instance_id,
         )
+        position_entry_price = _position_entry_price_for_instance(
+            self.conn,
+            pair=pair,
+            strategy_decision_ids=strategy_decision_ids,
+        )
+        current_drawdown_pct = _current_drawdown_pct_for_instance(
+            self.conn,
+            int(as_of_ts_ms),
+            pair=pair,
+            strategy_instance_id=strategy_instance_id,
+        )
         evidence = {
             "strategy_instance_id": str(strategy_instance_id),
             "strategy_name": str(strategy_name),
@@ -424,6 +510,40 @@ class StrategyRiskStateProvider:
                     },
                     "value_available": asset_qty is not None,
                 },
+                "position_entry_price": {
+                    "scope": "strategy_instance",
+                    "table": "open_position_lots",
+                    "columns": ["pair", "position_state", "qty_open", "entry_price", "entry_decision_id"],
+                    "filters": {
+                        "pair": str(pair),
+                        "position_state": "open_exposure",
+                        "entry_decision_id_in_strategy_decision_ids": True,
+                    },
+                    "value_available": position_entry_price is not None,
+                },
+                "current_drawdown_pct": {
+                    "scope": "strategy_instance",
+                    "table": "trade_lifecycles",
+                    "columns": ["exit_ts", "pair", "strategy_instance_id", "net_pnl"],
+                    "filters": {
+                        "strategy_instance_id": str(strategy_instance_id),
+                        "pair": str(pair),
+                        "exit_ts_lte_as_of": True,
+                    },
+                    "value_available": current_drawdown_pct is not None,
+                },
+                "minutes_since_last_loss": {
+                    "scope": "strategy_instance",
+                    "table": "trade_lifecycles",
+                    "columns": ["exit_ts", "pair", "strategy_instance_id", "net_pnl"],
+                    "filters": {
+                        "strategy_instance_id": str(strategy_instance_id),
+                        "pair": str(pair),
+                        "net_pnl_lt_zero": True,
+                        "exit_ts_lte_as_of": True,
+                    },
+                    "value_available": minutes_since_last_loss is not None,
+                },
                 "unresolved_order_evidence": {
                     "scope": "account_global",
                     "source": "oms.collect_risky_order_state",
@@ -453,12 +573,13 @@ class StrategyRiskStateProvider:
             loss_today=loss_today,
             current_cash_krw=daily.current_cash_krw,
             current_asset_qty=asset_qty,
-            position_entry_price=_latest_position_entry_price(self.conn),
+            position_entry_price=position_entry_price,
             broker_local_mismatch=bool(mismatch),
             recovery_risk_mismatch_reason=daily.reason if mismatch else None,
             duplicate_entry=bool(asset_qty is not None and float(asset_qty) > 1e-12),
             daily_order_count=daily_order_count,
             daily_trade_count=daily_trade_count,
+            current_drawdown_pct=current_drawdown_pct,
             minutes_since_last_loss=minutes_since_last_loss,
             unresolved_order_blocked=bool(unresolved_blocked),
             unresolved_order_reason_code=str(unresolved_reason_code),

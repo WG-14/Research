@@ -11,12 +11,60 @@ from .risk_decision import (
 )
 
 
-def build_portfolio_risk_decision(target_payload: Mapping[str, object]) -> dict[str, object]:
-    status = "ALLOW" if bool(target_payload.get("authoritative")) else "BLOCK"
+@dataclass(frozen=True)
+class PortfolioRiskDecision:
+    evaluation_point: str
+    status: str
+    reason_code: str
+    reason: str
+    risk_policy_hash: str
+    risk_input_hash: str
+    risk_decision_hash: str
+    evidence_hash: str
+    state_source: str
+    effective_limits: Mapping[str, object]
+    evidence: Mapping[str, object]
+    schema_version: int = 1
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": int(self.schema_version),
+            "evaluation_point": self.evaluation_point,
+            "status": self.status,
+            "reason_code": self.reason_code,
+            "reason": self.reason,
+            "portfolio_risk_policy_hash": self.risk_policy_hash,
+            "portfolio_risk_input_hash": self.risk_input_hash,
+            "portfolio_risk_evidence_hash": self.evidence_hash,
+            "portfolio_risk_decision_hash": self.risk_decision_hash,
+            "risk_policy_hash": self.risk_policy_hash,
+            "risk_input_hash": self.risk_input_hash,
+            "risk_decision_hash": self.risk_decision_hash,
+            "state_source": self.state_source,
+            "effective_limits": dict(self.effective_limits),
+            "evidence": dict(self.evidence),
+        }
+
+
+def build_portfolio_risk_decision(target_payload: Mapping[str, object]) -> PortfolioRiskDecision:
+    malformed_reasons: list[str] = []
+    for field in (
+        "final_portfolio_target_hash",
+        "allocation_input_hash",
+        "strategy_contribution_hash",
+    ):
+        value = str(target_payload.get(field) or "").strip()
+        if not value.startswith("sha256:"):
+            malformed_reasons.append(f"{field}_missing_or_invalid")
+    status = "ALLOW" if bool(target_payload.get("authoritative")) and not malformed_reasons else "BLOCK"
     reason_code = (
         "OK"
         if status == "ALLOW"
-        else str(target_payload.get("fail_closed_reason") or "PORTFOLIO_TARGET_NOT_AUTHORITATIVE")
+        else (
+            malformed_reasons[0]
+            if malformed_reasons
+            else str(target_payload.get("fail_closed_reason") or "PORTFOLIO_TARGET_NOT_AUTHORITATIVE")
+        )
     )
     evidence = {
         "scope": "portfolio_allocation_single_pair",
@@ -29,6 +77,7 @@ def build_portfolio_risk_decision(target_payload: Mapping[str, object]) -> dict[
         "authoritative": bool(target_payload.get("authoritative")),
         "fail_closed_reason": str(target_payload.get("fail_closed_reason") or "none"),
         "conflict_resolution": dict(target_payload.get("conflict_resolution") or {}),
+        "malformed_reasons": malformed_reasons,
     }
     policy = {
         "schema_version": 1,
@@ -67,13 +116,19 @@ def build_portfolio_risk_decision(target_payload: Mapping[str, object]) -> dict[
         "evidence": evidence,
     }
     decision_hash = sha256_prefixed(decision_without_hash)
-    return {
-        **decision_without_hash,
-        "portfolio_risk_decision_hash": decision_hash,
-        "risk_decision_hash": decision_hash,
-        "risk_policy_hash": policy_hash,
-        "risk_input_hash": input_hash,
-    }
+    return PortfolioRiskDecision(
+        evaluation_point="portfolio_allocation",
+        status=status,
+        reason_code=reason_code,
+        reason=str(decision_without_hash["reason"]),
+        risk_policy_hash=policy_hash,
+        risk_input_hash=input_hash,
+        risk_decision_hash=decision_hash,
+        evidence_hash=evidence_hash,
+        state_source="portfolio_allocator_target",
+        effective_limits=policy,
+        evidence=evidence,
+    )
 
 
 @dataclass(frozen=True)
@@ -137,17 +192,20 @@ class PortfolioTarget:
             "authoritative": bool(self.authoritative),
             "fail_closed_reason": self.fail_closed_reason,
             "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
-            "risk_decision": risk_decision,
             "exposure_boundary_artifact": risk_decision,
             "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
-            "risk_decision_hash": risk_decision["risk_decision_hash"],
+            "legacy_non_authoritative_exposure_risk_decision": risk_decision,
+            "legacy_non_authoritative_exposure_risk_decision_hash": risk_decision[
+                "exposure_boundary_artifact_hash"
+            ],
             "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
         }
 
     def content_hash(self) -> str:
         payload = self._payload_without_hashes()
-        payload["final_portfolio_target_hash"] = sha256_prefixed(payload)
-        portfolio_risk_decision = build_portfolio_risk_decision(payload)
+        base_target_hash = sha256_prefixed(payload)
+        payload["final_portfolio_target_hash"] = base_target_hash
+        portfolio_risk_decision = build_portfolio_risk_decision(payload).as_dict()
         payload.update(
             {
                 "portfolio_risk_decision": portfolio_risk_decision,
@@ -168,13 +226,16 @@ class PortfolioTarget:
                 "portfolio_risk_state_source": portfolio_risk_decision["state_source"],
             }
         )
-        payload["final_portfolio_target_hash"] = sha256_prefixed(payload)
+        payload["final_portfolio_target_hash"] = sha256_prefixed(
+            {key: value for key, value in payload.items() if key != "final_portfolio_target_hash"}
+        )
         return payload["final_portfolio_target_hash"]
 
     def as_dict(self) -> dict[str, object]:
         payload = self._payload_without_hashes()
-        payload["final_portfolio_target_hash"] = sha256_prefixed(payload)
-        portfolio_risk_decision = build_portfolio_risk_decision(payload)
+        base_target_hash = sha256_prefixed(payload)
+        payload["final_portfolio_target_hash"] = base_target_hash
+        portfolio_risk_decision = build_portfolio_risk_decision(payload).as_dict()
         payload.update(
             {
                 "portfolio_risk_decision": portfolio_risk_decision,
@@ -195,5 +256,7 @@ class PortfolioTarget:
                 "portfolio_risk_state_source": portfolio_risk_decision["state_source"],
             }
         )
-        payload["final_portfolio_target_hash"] = sha256_prefixed(payload)
+        payload["final_portfolio_target_hash"] = sha256_prefixed(
+            {key: value for key, value in payload.items() if key != "final_portfolio_target_hash"}
+        )
         return payload

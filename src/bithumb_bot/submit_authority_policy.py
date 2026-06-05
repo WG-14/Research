@@ -64,6 +64,8 @@ class SubmitAuthorityPolicyDecision:
     side: str
     submit_expected: bool
     pre_submit_proof_status: str
+    pre_submit_risk_approval_status: str = "not_required"
+    pre_submit_risk_block_reason: str = "none"
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -79,6 +81,8 @@ class SubmitAuthorityPolicyDecision:
             "side": self.side,
             "submit_expected": bool(self.submit_expected),
             "pre_submit_proof_status": self.pre_submit_proof_status,
+            "pre_submit_risk_approval_status": self.pre_submit_risk_approval_status,
+            "pre_submit_risk_block_reason": self.pre_submit_risk_block_reason,
             "submit_authority_mode": self.policy.submit_authority_mode,
             "submit_authority_policy_hash": self.policy.content_hash(),
         }
@@ -171,9 +175,18 @@ def evaluate_submit_authority_policy(
     normalized_kind = str(plan_kind or "").strip().lower()
 
     def decision(allowed: bool, reason: str) -> SubmitAuthorityPolicyDecision:
+        risk_error = None
+        risk_status = "not_required"
+        if allowed and policy.live_real_order_requires_target_delta and submit_expected:
+            expected_hash = str(payload.get("submit_plan_hash") or "").strip()
+            risk_error = operational_pre_submit_risk_approval_error(
+                payload,
+                expected_submit_plan_hash=expected_hash,
+            )
+            risk_status = "approved" if risk_error is None else "blocked"
         return SubmitAuthorityPolicyDecision(
-            allowed=allowed,
-            reason=reason,
+            allowed=allowed if risk_error is None else False,
+            reason=reason if risk_error is None else risk_error,
             policy=policy,
             plan_kind=normalized_kind,
             mode=mode,
@@ -185,6 +198,8 @@ def evaluate_submit_authority_policy(
             side=side,
             submit_expected=submit_expected,
             pre_submit_proof_status=proof,
+            pre_submit_risk_approval_status=risk_status,
+            pre_submit_risk_block_reason="none" if risk_error is None else risk_error,
         )
 
     if mode == "live" and live_dry_run:

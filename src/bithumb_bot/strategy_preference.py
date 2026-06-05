@@ -168,10 +168,12 @@ class StrategyPreference:
                 if self.strategy_risk_decision is None
                 else self.strategy_risk_decision.get("reason_code")
             ),
-            "risk_decision": risk_decision,
             "exposure_boundary_artifact": risk_decision,
             "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
-            "risk_decision_hash": risk_decision["risk_decision_hash"],
+            "legacy_non_authoritative_exposure_risk_decision": risk_decision,
+            "legacy_non_authoritative_exposure_risk_decision_hash": risk_decision[
+                "exposure_boundary_artifact_hash"
+            ],
             "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
             "reason": self.reason,
             "policy_hash": self.policy_hash,

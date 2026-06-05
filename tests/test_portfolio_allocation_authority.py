@@ -262,7 +262,7 @@ def _bind_unit_approved_profiles(
             "profile_content_hash": profile_hash,
             "strategy_parameters": dict(bound.parameters or {}),
             "risk_policy": {
-                "policy_status": "disabled_explicit",
+                "policy_status": "enabled",
                 "missing_policy": "fail_closed_for_live",
                 "source": "unit_approved_profile",
             },
@@ -662,11 +662,16 @@ def test_risk_budget_does_not_act_as_exposure_cap() -> None:
     contribution = decision.as_dict()["contributions"][0]
     assert contribution["max_target_exposure_krw"] is None
     assert contribution["risk_budget_krw"] == pytest.approx(25_000.0)
-    assert str(contribution["risk_decision_hash"]).startswith("sha256:")
-    assert contribution["risk_decision"]["risk_budget_interpreted_as_exposure_cap"] is False
-    assert contribution["risk_decision"]["loss_budget_supported"] is False
+    assert "risk_decision_hash" not in contribution
+    assert "risk_decision" not in contribution
+    assert str(contribution["exposure_boundary_artifact_hash"]).startswith("sha256:")
+    assert contribution["exposure_boundary_artifact"]["risk_budget_interpreted_as_exposure_cap"] is False
+    assert contribution["exposure_boundary_artifact"]["loss_budget_supported"] is False
     assert contribution["risk_budget_legacy_marker"] == "deprecated:risk_budget_krw_not_enforced_as_loss_budget"
-    assert contribution["exposure_boundary_artifact_hash"] == contribution["risk_decision_hash"]
+    assert (
+        contribution["exposure_boundary_artifact_hash"]
+        == contribution["legacy_non_authoritative_exposure_risk_decision_hash"]
+    )
     assert contribution["strategy_risk_decision_hash"] is None
 
 
@@ -788,6 +793,85 @@ def test_exposure_cap_limits_buy_target_with_declared_semantics() -> None:
     assert target.as_dict()["portfolio_risk_status"] == "ALLOW"
     assert str(target.as_dict()["portfolio_risk_decision_hash"]).startswith("sha256:")
     assert target.content_hash() == target.as_dict()["final_portfolio_target_hash"]
+
+
+def test_portfolio_risk_decision_is_typed_and_hash_stable() -> None:
+    decision = _allocate((_preference("BUY", "strategy_a"),))
+    target = decision.target_for_pair("KRW-BTC")
+    assert target is not None
+
+    first = target.as_dict()["portfolio_risk_decision"]
+    second = target.as_dict()["portfolio_risk_decision"]
+
+    assert first["evaluation_point"] == "portfolio_allocation"
+    assert first["status"] == "ALLOW"
+    assert str(first["risk_decision_hash"]).startswith("sha256:")
+    assert first["risk_decision_hash"] == first["portfolio_risk_decision_hash"]
+    assert first == second
+
+
+def test_portfolio_risk_blocks_malformed_target_hashes() -> None:
+    target = PortfolioTarget(
+        pair="KRW-BTC",
+        target_exposure_krw=100_000.0,
+        target_qty=0.001,
+        allocator_policy_name="unit",
+        allocator_policy_version="1",
+        allocator_config_hash="sha256:config",
+        strategy_contribution_hash="",
+        allocation_input_hash="sha256:input",
+        reason="unit",
+        authoritative=True,
+    )
+    payload = target.as_dict()
+
+    assert payload["portfolio_risk_status"] == "BLOCK"
+    assert payload["portfolio_risk_reason_code"] == "strategy_contribution_hash_missing_or_invalid"
+
+
+def test_portfolio_risk_block_prevents_submittable_target_delta_plan() -> None:
+    old_engine = settings.EXECUTION_ENGINE
+    old_pair = settings.PAIR
+    try:
+        object.__setattr__(settings, "EXECUTION_ENGINE", "target_delta")
+        object.__setattr__(settings, "PAIR", "KRW-BTC")
+        target = PortfolioTarget(
+            pair="KRW-BTC",
+            target_exposure_krw=None,
+            target_qty=None,
+            allocator_policy_name="unit",
+            allocator_policy_version="1",
+            allocator_config_hash="sha256:config",
+            strategy_contribution_hash="sha256:contribution",
+            allocation_input_hash="sha256:input",
+            reason="blocked",
+            authoritative=False,
+            fail_closed_reason="portfolio_risk_unit_block",
+        )
+        summary = build_typed_execution_decision_summary(
+            typed_input=TypedExecutionPlanningInput(
+                strategy_decision=_decision(final_signal="BUY", strategy_name="strategy_a"),
+                candle_ts=123,
+                market_price=100_000_000.0,
+                readiness=ExecutionReadinessPlanningInput.from_payload(_readiness(broker_qty=0.0)),
+                target=ExecutionTargetPlanningInput(
+                    previous_target_exposure_krw=0.0,
+                    portfolio_target=target,
+                    portfolio_target_hash=target.content_hash(),
+                    allocation_decision_hash="sha256:allocation",
+                    allocator_config_hash="sha256:config",
+                    strategy_contribution_hash="sha256:contribution",
+                ),
+            )
+        )
+    finally:
+        object.__setattr__(settings, "EXECUTION_ENGINE", old_engine)
+        object.__setattr__(settings, "PAIR", old_pair)
+
+    assert summary.target_submit_plan is not None
+    assert summary.target_submit_plan.submit_expected is False
+    assert summary.target_submit_plan.block_reason == "portfolio_risk_unit_block"
+    assert summary.target_submit_plan.extra_payload["portfolio_risk_status"] == "BLOCK"
 
 
 def test_target_delta_typed_planning_uses_allocator_portfolio_target(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2228,9 +2312,11 @@ def test_manifest_contains_execution_and_risk_config_hashes(tmp_path) -> None:
         assert manifest["allowed_submit_plan_sources"] == list(policy.allowed_submit_plan_sources)
         assert manifest["allowed_submit_plan_authorities"] == list(policy.allowed_submit_plan_authorities)
         assert manifest["submit_authority_policy_hash"] == policy.content_hash()
-        assert str(manifest["risk_decision_hash"]).startswith("sha256:")
-        assert manifest["risk_decision"]["risk_budget_interpreted_as_exposure_cap"] is False
-        assert manifest["risk_decision"]["loss_budget_supported"] is False
+        assert str(manifest["exposure_boundary_artifact_hash"]).startswith("sha256:")
+        assert manifest["exposure_boundary_artifact"]["risk_budget_interpreted_as_exposure_cap"] is False
+        assert manifest["exposure_boundary_artifact"]["loss_budget_supported"] is False
+        assert "risk_decision_hash" not in manifest
+        assert "risk_decision" not in manifest
         assert manifest["risk_budget_legacy_marker"] == "deprecated:risk_budget_krw_not_enforced_as_loss_budget"
     finally:
         conn.close()

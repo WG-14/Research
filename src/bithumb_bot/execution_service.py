@@ -20,6 +20,7 @@ from .pre_trade_economics import build_pre_trade_economics_snapshot
 from .strategy_policy_contract import StrategyDecisionV2
 from .submit_authority_policy import (
     evaluate_submit_authority_policy,
+    operational_pre_submit_risk_approval_error,
     submit_authority_policy_from_settings,
 )
 from .target_position import TargetPositionSettings, build_target_position_decision
@@ -412,6 +413,15 @@ class ExecutionSubmitPlan:
         if extra:
             payload.update(extra)
         payload.setdefault("submit_plan_hash", self.content_hash())
+        if _pre_submit_risk_required_for_live_real(payload) and str(
+            payload.get("pre_submit_risk_decision_hash") or ""
+        ).strip():
+            approval_error = operational_pre_submit_risk_approval_error(
+                payload,
+                expected_submit_plan_hash=str(payload.get("submit_plan_hash") or ""),
+            )
+            if approval_error is not None:
+                raise ValueError(f"execution_submit_plan_pre_submit_risk_invalid:{approval_error}")
         payload["schema_version"] = EXECUTION_SUBMIT_PLAN_SCHEMA_VERSION
         payload["authority_label"] = EXECUTION_SUBMIT_PLAN_AUTHORITY_LABEL
         payload["content_hash"] = execution_submit_plan_payload_hash(payload)
@@ -474,8 +484,106 @@ def execution_submit_plan_payload_hash(plan: Mapping[str, object]) -> str:
         str(key): value
         for key, value in dict(plan).items()
         if key not in {"content_hash", "submit_plan_hash"}
+        and not str(key).startswith("pre_submit_risk_")
     }
     return sha256_prefixed(hash_input)
+
+
+def _pre_submit_risk_required_for_live_real(payload: Mapping[str, object]) -> bool:
+    return bool(payload.get("pre_submit_risk_required")) or (
+        str(getattr(settings, "MODE", "") or "").strip().lower() == "live"
+        and not bool(getattr(settings, "LIVE_DRY_RUN", True))
+        and bool(getattr(settings, "LIVE_REAL_ORDER_ARMED", False))
+        and bool(payload.get("submit_expected"))
+        and str(payload.get("source") or "").strip() in {"target_delta", "residual_inventory"}
+    )
+
+
+def _attach_live_real_pre_submit_risk_proof(
+    payload: dict[str, object],
+    *,
+    ts_ms: int,
+    market_price: float,
+    field_name: str,
+) -> dict[str, object] | None:
+    if not _pre_submit_risk_required_for_live_real(payload):
+        return payload
+    expected_hash = str(payload.get("submit_plan_hash") or "").strip()
+    if not expected_hash:
+        expected_hash = execution_submit_plan_payload_hash(payload)
+        payload["submit_plan_hash"] = expected_hash
+    existing_approval_error = operational_pre_submit_risk_approval_error(
+        payload,
+        expected_submit_plan_hash=expected_hash,
+    )
+    if existing_approval_error is None:
+        return payload
+    side = str(payload.get("side") or "").strip().upper()
+    try:
+        from .risk_contract import SubmitPlan
+        from .runtime_risk_engine import RuntimeRiskEngineAdapter
+
+        conn = ensure_db()
+        try:
+            decision = RuntimeRiskEngineAdapter(conn).evaluate_pre_submit(
+                plan=SubmitPlan(
+                    side=side or "UNKNOWN",
+                    qty=float(payload.get("qty") or 0.0),
+                    notional_krw=(
+                        None
+                        if payload.get("notional_krw") is None
+                        else float(payload.get("notional_krw") or 0.0)
+                    ),
+                    source=str(payload.get("source") or "execution_submit_plan"),
+                    evidence={
+                        "execution_submit_plan_hash": expected_hash,
+                        "execution_submit_plan_source": str(payload.get("source") or ""),
+                        "execution_submit_plan_authority": str(payload.get("authority") or ""),
+                        "plan_kind": field_name,
+                    },
+                ),
+                ts_ms=int(ts_ms),
+                now_ms=int(ts_ms),
+                cash=0.0,
+                qty=float(payload.get("qty") or 0.0),
+                price=float(market_price),
+                evaluation_origin="live_real_submit_authority_pre_submit",
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        _log_live_submit_plan_block(
+            reason=f"live_real_order_pre_submit_risk_evaluation_failed:{exc}",
+            field_name=field_name,
+            source=payload.get("source"),
+            side=side,
+        )
+        return None
+    proof_fields = {
+        "pre_submit_risk_decision": decision.as_dict(),
+        "pre_submit_risk_status": decision.status,
+        "pre_submit_risk_decision_hash": decision.risk_decision_hash,
+        "pre_submit_risk_policy_hash": decision.risk_policy_hash,
+        "pre_submit_risk_input_hash": decision.risk_input_hash,
+        "pre_submit_risk_plan_hash": expected_hash,
+        "pre_submit_risk_reason_code": decision.reason_code,
+        "pre_submit_risk_state_source": decision.state_source,
+        "pre_submit_risk_evidence": dict(decision.evidence),
+    }
+    approval_error = operational_pre_submit_risk_approval_error(
+        proof_fields,
+        expected_submit_plan_hash=expected_hash,
+    )
+    if approval_error is not None:
+        _log_live_submit_plan_block(
+            reason=approval_error,
+            field_name=field_name,
+            source=payload.get("source"),
+            side=side,
+        )
+        return None
+    payload.update(proof_fields)
+    return payload
 
 
 def validate_execution_submit_plan_payload(
@@ -1658,8 +1766,8 @@ def _build_execution_decision_summary_from_authority_payload(
                 "submit_authority_policy_hash": submit_authority_policy_hash,
                 "exposure_boundary_artifact": risk_decision,
                 "exposure_boundary_artifact_hash": exposure_boundary_artifact_hash,
-                "risk_decision": risk_decision,
-                "risk_decision_hash": exposure_boundary_artifact_hash,
+                "legacy_non_authoritative_exposure_risk_decision": risk_decision,
+                "legacy_non_authoritative_exposure_risk_decision_hash": exposure_boundary_artifact_hash,
                 "pre_submit_risk_required": bool(
                     str(getattr(settings, "MODE", "") or "").strip().lower() == "live"
                     and bool(getattr(settings, "LIVE_REAL_ORDER_ARMED", False))
@@ -1923,8 +2031,10 @@ def _build_execution_decision_summary_from_authority_payload(
                     submit_authority_policy.allowed_submit_plan_authorities
                 ),
                 "submit_authority_policy_hash": submit_authority_policy_hash,
-                "risk_decision": risk_decision,
-                "risk_decision_hash": risk_decision_hash,
+                "exposure_boundary_artifact": risk_decision,
+                "exposure_boundary_artifact_hash": risk_decision_hash,
+                "legacy_non_authoritative_exposure_risk_decision": risk_decision,
+                "legacy_non_authoritative_exposure_risk_decision_hash": risk_decision_hash,
             }
             residual_submit_plan = ExecutionSubmitPlan(
                 side="SELL",
@@ -2288,8 +2398,20 @@ class LiveSignalExecutionService:
             try:
                 if typed_target_plan is not None:
                     target_plan = typed_target_plan.as_final_payload()
+                    target_plan = _attach_live_real_pre_submit_risk_proof(
+                        target_plan,
+                        ts_ms=int(request.ts),
+                        market_price=float(request.market_price),
+                        field_name="target_submit_plan",
+                    ) or {}
                 if typed_residual_plan is not None:
                     residual_plan = typed_residual_plan.as_final_payload()
+                    residual_plan = _attach_live_real_pre_submit_risk_proof(
+                        residual_plan,
+                        ts_ms=int(request.ts),
+                        market_price=float(request.market_price),
+                        field_name="residual_submit_plan",
+                    ) or {}
                 if typed_buy_plan is not None:
                     buy_plan = typed_buy_plan.as_final_payload()
             except ValueError as exc:

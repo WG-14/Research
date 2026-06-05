@@ -128,11 +128,14 @@ operational risk-policy input. The exposure-cap concept is
 `max_target_exposure_krw`.
 
 Exposure-cap metadata is recorded as an `exposure_boundary_artifact` with
-`exposure_boundary_artifact_hash`. Any retained `risk_decision` or
-`risk_decision_hash` fields on those exposure-boundary payloads are
-non-authoritative compatibility aliases only. They must not be used for
-live-real-order admission. Typed operational risk decisions use layer-specific
-fields such as `strategy_risk_decision_hash`,
+`exposure_boundary_artifact_hash`. Production-facing runtime, allocation,
+portfolio-target, execution-plan, and manifest artifacts do not publish
+exposure-cap metadata as generic `risk_decision` or `risk_decision_hash`.
+If compatibility copies are retained, they are named
+`legacy_non_authoritative_exposure_risk_decision` and
+`legacy_non_authoritative_exposure_risk_decision_hash`; live-real-order
+admission must not consume them. Typed operational risk decisions use
+layer-specific fields such as `strategy_risk_decision_hash`,
 `portfolio_risk_decision_hash`, and `pre_submit_risk_decision_hash`.
 
 Exposure-boundary artifacts record:
@@ -190,7 +193,9 @@ available and before placing the order.
 Hash order is deterministic:
 
 1. `ExecutionSubmitPlan.content_hash()` hashes the typed submit plan fields and
-   extra payload, excluding `content_hash` and `submit_plan_hash`.
+   extra payload, excluding `content_hash`, `submit_plan_hash`, and
+   `pre_submit_risk_*` proof fields so the proof can bind to the evaluated plan
+   without changing that plan hash.
 2. `ExecutionSubmitPlan.as_final_payload()` sets `submit_plan_hash` to that
    stable content hash, then adds schema/version authority fields and computes
    the final payload `content_hash` over the final serialization while still

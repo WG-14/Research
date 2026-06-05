@@ -2464,14 +2464,14 @@ def test_live_real_order_multi_strategy_builder_uses_small_live_spec_profiles_wi
     )
     context = ProfileAuthorityContext.for_strategy_set(strategy_set, settings_obj=cfg)
 
-    request = RuntimeDecisionRequestBuilder(settings_obj=cfg).with_authority_context(context).build_for_spec(
-        strategy_set.active_strategies[0],
-        through_ts_ms=1_700_000_180_000,
-    )
-
-    assert request.approved_profile_path == "/tmp/small-live-left.json"
-    assert request.approved_profile_hash == "sha256:small-live"
-    assert request.observability_fields()["allow_global_profile_fallback"] is False
+    with pytest.raises(
+        RuntimeError,
+        match="strategy_risk_policy_disabled_rejected_for_live_real_order:canary_non_sma",
+    ):
+        RuntimeDecisionRequestBuilder(settings_obj=cfg).with_authority_context(context).build_for_spec(
+            strategy_set.active_strategies[0],
+            through_ts_ms=1_700_000_180_000,
+        )
 
 
 def test_decision_runner_rejects_live_multi_strategy_without_runtime_gateway(

@@ -14,6 +14,7 @@ from bithumb_bot.execution_service import (
     PaperSignalExecutionService,
     SignalExecutionRequest,
     TypedExecutionRequest,
+    execution_submit_plan_payload_hash,
     validate_execution_submit_plan_payload,
 )
 from bithumb_bot.submit_authority_policy import evaluate_submit_authority_policy
@@ -77,8 +78,23 @@ def _paper_service(calls: list[dict[str, object]]) -> PaperSignalExecutionServic
     return PaperSignalExecutionService(executor=_executor)
 
 
-def _valid_target_submit_plan() -> dict[str, object]:
+def _with_pre_submit_risk_proof(payload: dict[str, object]) -> dict[str, object]:
+    plan_hash = execution_submit_plan_payload_hash(payload)
     return {
+        **payload,
+        "submit_plan_hash": plan_hash,
+        "pre_submit_risk_status": "ALLOW",
+        "pre_submit_risk_decision_hash": "sha256:" + "1" * 64,
+        "pre_submit_risk_policy_hash": "sha256:" + "2" * 64,
+        "pre_submit_risk_input_hash": "sha256:" + "3" * 64,
+        "pre_submit_risk_plan_hash": plan_hash,
+        "pre_submit_risk_reason_code": "OK",
+        "pre_submit_risk_state_source": "unit",
+    }
+
+
+def _valid_target_submit_plan() -> dict[str, object]:
+    return _with_pre_submit_risk_proof({
         "side": "BUY",
         "source": "target_delta",
         "authority": "canonical_target_delta_sizing",
@@ -101,11 +117,11 @@ def _valid_target_submit_plan() -> dict[str, object]:
         "allocator_reason": "buy_target_from_allocator",
         "allocation_conflict_count": 0,
         "allocation_primary_block_reason": "none",
-    }
+    })
 
 
 def _valid_residual_submit_plan() -> dict[str, object]:
-    return {
+    return _with_pre_submit_risk_proof({
         "side": "SELL",
         "source": "residual_inventory",
         "authority": "residual_inventory_policy",
@@ -119,7 +135,7 @@ def _valid_residual_submit_plan() -> dict[str, object]:
         "pre_submit_proof_status": "passed",
         "block_reason": "none",
         "idempotency_key": "residual-plan-key",
-    }
+    })
 
 
 def _valid_buy_submit_plan() -> dict[str, object]:

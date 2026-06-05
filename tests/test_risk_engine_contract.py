@@ -340,8 +340,45 @@ def test_strategy_risk_state_provider_does_not_share_same_pair_instance_state(tm
     assert beta.daily_trade_count == 0
     assert alpha.current_asset_qty == pytest.approx(0.25)
     assert beta.current_asset_qty == pytest.approx(0.0)
+    assert alpha.position_entry_price == pytest.approx(100.0)
+    assert beta.position_entry_price is None
+    assert alpha.current_drawdown_pct == pytest.approx(100.0)
+    assert beta.current_drawdown_pct == pytest.approx(0.0)
     assert alpha.loss_today == pytest.approx(10.0)
     assert beta.loss_today == pytest.approx(0.0)
+    assert alpha.evidence["state_derivation"]["position_entry_price"]["scope"] == "strategy_instance"
+    assert alpha.evidence["state_derivation"]["current_drawdown_pct"]["scope"] == "strategy_instance"
+
+
+def test_enforced_strategy_risk_state_fails_closed_without_scoped_position_loss_state(tmp_path) -> None:
+    db_path = tmp_path / "strategy-risk-missing-position.sqlite"
+    conn = ensure_db(str(db_path))
+    record_strategy_decision(
+        conn,
+        decision_ts=1_800_000_000_000,
+        strategy_name="sma_with_filter",
+        signal="BUY",
+        reason="unit",
+        candle_ts=1_800_000_000_000,
+        market_price=100.0,
+        context={"strategy_instance_id": "alpha", "pair": "KRW-BTC", "interval": "1m"},
+    )
+    conn.commit()
+    policy = RiskPolicy(max_position_loss_pct=1.0, source="unit")
+    snapshot = StrategyRiskStateProvider(conn).snapshot(
+        strategy_instance_id="alpha",
+        strategy_name="sma_with_filter",
+        pair="KRW-BTC",
+        interval="1m",
+        as_of_ts_ms=1_800_000_120_000,
+        mark_price=90.0,
+        policy=policy,
+        enforced=True,
+    )
+
+    assert missing_required_risk_state(policy, snapshot) == ("position_loss_state",)
+    assert snapshot.evidence["missing_required_risk_state"] == ["position_loss_state"]
+    assert snapshot.evidence["missing_required_risk_state_behavior"] == "fail_closed"
 
 
 def test_enforced_strategy_risk_state_reports_missing_required_fields() -> None:
