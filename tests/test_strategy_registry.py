@@ -235,7 +235,8 @@ def test_live_sma_with_filter_route_does_not_call_legacy_decide(
         raising=False,
     )
     snapshot_calls: list[str] = []
-    def _provider_sma_payload(self, *, request, candle_rows):
+    def _projected_sma_payload(*, conn, request, candle_rows):
+        del conn
         return {
             "strategy": "sma_with_filter",
             "candles": list(candle_rows or ()),
@@ -247,12 +248,10 @@ def test_live_sma_with_filter_route_does_not_call_legacy_decide(
         snapshot_calls.append(request.strategy_name)
         return None
 
-    import bithumb_bot.runtime_data_provider as runtime_data_provider
-
     monkeypatch.setattr(
-        runtime_data_provider.SQLiteRuntimeDataProvider,
-        "_sma_with_filter_runtime_payload",
-        _provider_sma_payload,
+        runtime_sma_adapter,
+        "_sma_runtime_payload_from_generic_snapshot",
+        _projected_sma_payload,
     )
     monkeypatch.setattr(
         runtime_sma_adapter.SmaWithFilterRuntimeDecisionAdapter,
