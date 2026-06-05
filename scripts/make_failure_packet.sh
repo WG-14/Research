@@ -149,7 +149,7 @@ codex_input="${packet_dir}/codex_input.md"
   echo 'PYTEST_XDIST_WORKERS=4 PYTEST_XDIST_DIST=loadfile ./scripts/run_full_pytest_tests.sh && ./scripts/check_repo_runtime_artifacts.sh'
   echo '```'
   echo
-  echo "Codex must not run that command, \`./scripts/run_full_pytest_tests.sh\`, \`./scripts/check_repo_runtime_artifacts.sh\`, selector-less pytest, broad \`tests\` pytest targets, or raw \`uv run pytest -q\`."
+  echo "Codex must not run that command, \`./scripts/full_suite.sh\`, \`./scripts/run_full_pytest_tests.sh\`, \`./scripts/check_repo_runtime_artifacts.sh\`, selector-less pytest, broad \`tests\` pytest targets, or raw \`uv run pytest -q\`."
   echo
   echo "## Repository Repair Prompt"
   echo
