@@ -3781,6 +3781,8 @@ def _strategy_contribution_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "risk_decision": default_risk_decision,
         "risk_decision_hash": default_risk_decision["risk_decision_hash"],
         "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
+        "strategy_risk_policy": None,
+        "strategy_risk_snapshot": None,
         "reason": str(row["reason"] or ""),
     }
     raw_json = str(row["contribution_json"] or "").strip()
@@ -3799,6 +3801,8 @@ def _strategy_contribution_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
                 "risk_decision",
                 "risk_decision_hash",
                 "risk_budget_legacy_marker",
+                "strategy_risk_policy",
+                "strategy_risk_snapshot",
             ):
                 payload[key] = stored_payload.get(key, payload[key])
     return payload

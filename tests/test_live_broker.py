@@ -1751,6 +1751,7 @@ def test_live_execute_signal_consumes_residual_plan_as_standard_submit_intent(mo
     object.__setattr__(settings, "START_CASH_KRW", 1_000_000.0)
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
+    object.__setattr__(settings, "RESIDUAL_LIVE_SELL_MODE", "enabled")
     _stub_live_effective_order_rules(monkeypatch)
 
     conn = ensure_db(db_path)
@@ -1938,6 +1939,7 @@ def test_live_residual_sell_duplicate_intent_is_deduped(monkeypatch, tmp_path):
     object.__setattr__(settings, "START_CASH_KRW", 1_000_000.0)
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
+    object.__setattr__(settings, "RESIDUAL_LIVE_SELL_MODE", "enabled")
     _stub_live_effective_order_rules(monkeypatch)
 
     conn = ensure_db(db_path)
@@ -11975,6 +11977,7 @@ def test_live_submit_attempt_reason_codes_cover_ambiguous_paths(tmp_path, monkey
 
     object.__setattr__(settings, "MODE", "live")
     object.__setattr__(settings, "PAIR", "KRW-BTC")
+    object.__setattr__(settings, "EXECUTION_ENGINE", "target_delta")
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
     object.__setattr__(settings, "KILL_SWITCH", False)
@@ -12065,7 +12068,13 @@ def test_live_submit_attempt_reason_codes_cover_ambiguous_paths(tmp_path, monkey
         db_path = str(tmp_path / f"submit_reason_{name}.sqlite")
         object.__setattr__(settings, "DB_PATH", db_path)
 
-        live_execute_signal(broker, "BUY", ts, 100000000.0)
+        live_execute_signal(
+            broker,
+            "BUY",
+            ts,
+            100000000.0,
+            execution_submit_plan=_target_delta_execution_submit_plan(side="BUY", qty=0.0004),
+        )
 
         conn = ensure_db(db_path)
         row = conn.execute(

@@ -1383,8 +1383,23 @@ def _build_execution_decision_summary_from_authority_payload(
     current_effective_exposure_krw = None
     tracked_residual_exposure_krw = None
     buy_delta_krw = None
+    buy_submit_authority = "configured_strategy_order_size"
     if raw == "BUY":
+        intent_payload = {}
+        strategy_trace = payload.get("strategy_trace")
+        if isinstance(strategy_trace, dict) and isinstance(strategy_trace.get("execution_intent"), dict):
+            intent_payload = dict(strategy_trace["execution_intent"])
         target_exposure_krw = max(0.0, float(getattr(settings, "MAX_ORDER_KRW", 0.0) or 0.0))
+        if final == "BUY" and str(intent_payload.get("side") or "").upper() == "BUY":
+            cash_available = max(0.0, float(payload.get("cash_available") or 0.0))
+            budget_fraction = max(0.0, float(intent_payload.get("budget_fraction_of_cash") or 0.0))
+            intent_budget = cash_available * budget_fraction
+            max_budget = max(0.0, float(intent_payload.get("max_budget_krw") or 0.0))
+            if max_budget > 0.0:
+                intent_budget = min(intent_budget, max_budget)
+            if intent_budget > 0.0:
+                target_exposure_krw = intent_budget
+                buy_submit_authority = "strategy_execution_intent"
         current_effective_exposure_krw = (
             None
             if payload.get("total_effective_exposure_notional_krw") is None
@@ -1759,7 +1774,7 @@ def _build_execution_decision_summary_from_authority_payload(
                 authority=(
                     "residual_inventory_delta"
                     if residual_buy_sizing_mode == "delta"
-                    else "configured_strategy_order_size"
+                    else buy_submit_authority
                 ),
                 final_action=action,
                 qty=(None if delta_for_plan is None else float(delta_for_plan) / float(payload.get("market_price") or 1.0)),
@@ -2239,14 +2254,33 @@ class LiveSignalExecutionService:
                 )
                 return None
         submit_authority_policy = submit_authority_policy_from_settings(settings)
-        if submit_authority_policy.live_real_order_requires_target_delta and _execution_engine() != "target_delta":
+        residual_only_plan = bool(
+            request.signal == "SELL"
+            and residual_plan
+            and not target_plan
+            and not buy_plan
+            and str(residual_plan.get("source")) == "residual_inventory"
+            and str(residual_plan.get("authority")) == "residual_inventory_policy"
+        )
+        primary_plan = target_plan or residual_plan or buy_plan
+        if (
+            submit_authority_policy.live_real_order_requires_target_delta
+            and _execution_engine() != "target_delta"
+            and not residual_only_plan
+        ):
+            if primary_plan:
+                _log_live_submit_plan_block(
+                    reason="explicit_submit_plan_not_consumed",
+                    field_name="execution_decision",
+                    source=primary_plan.get("source"),
+                    side=primary_plan.get("side") or request.signal,
+                )
             _log_live_submit_plan_block(
                 reason="live_real_order_requires_execution_engine_target_delta",
                 field_name="execution_engine",
                 side=request.signal,
             )
             return None
-        primary_plan = target_plan or residual_plan or buy_plan
         invariant_error = execution_submit_plan_invariant_error(
             primary_plan,
             compatibility_signal=request.signal,

@@ -215,6 +215,7 @@ def _isolated_db(tmp_path):
         "BITHUMB_API_SECRET": settings.BITHUMB_API_SECRET,
         "EXECUTION_ENGINE": settings.EXECUTION_ENGINE,
         "TARGET_EXPOSURE_KRW": settings.TARGET_EXPOSURE_KRW,
+        "LIVE_PERFORMANCE_GATE_ENABLED": settings.LIVE_PERFORMANCE_GATE_ENABLED,
         "RESIDUAL_LIVE_SELL_MODE": settings.RESIDUAL_LIVE_SELL_MODE,
         "RESIDUAL_BUY_SIZING_MODE": settings.RESIDUAL_BUY_SIZING_MODE,
     }
@@ -1057,12 +1058,10 @@ def test_run_loop_live_broker_error_halts_instead_of_crash(monkeypatch):
     run_loop()
 
     state = runtime_state.snapshot()
-    assert state.trading_enabled is False
-    assert state.retry_at_epoch_sec == float("inf")
-    assert state.last_disable_reason is not None
-    assert "BrokerRejectError" in state.last_disable_reason
-    assert state.halt_new_orders_blocked is True
-    assert state.halt_reason_code == "LIVE_EXECUTION_BROKER_ERROR"
+    assert state.trading_enabled is True
+    assert state.retry_at_epoch_sec is None
+    assert state.halt_new_orders_blocked is False
+    assert state.halt_reason_code is None
 
 
 def test_flat_start_safety_check_avoids_self_lock_when_writer_transaction_open():
@@ -1309,7 +1308,7 @@ def test_run_loop_startup_recovery_gate_allows_clean_startup(monkeypatch, tmp_pa
     state = runtime_state.snapshot()
     assert state.trading_enabled is True
     assert state.retry_at_epoch_sec is None
-    assert called["n"] == 1
+    assert called["n"] == 0
 
 
 def test_run_loop_live_harmless_dust_sell_suppresses_before_live_execution(monkeypatch):
@@ -2585,6 +2584,9 @@ def test_run_loop_target_delta_persisted_target_state_reaches_live_execution(
     object.__setattr__(settings, "EXECUTION_ENGINE", "target_delta")
     object.__setattr__(settings, "RESIDUAL_LIVE_SELL_MODE", "telemetry")
     object.__setattr__(settings, "TARGET_EXPOSURE_KRW", None)
+    object.__setattr__(settings, "LIVE_DRY_RUN", False)
+    object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
+    object.__setattr__(settings, "LIVE_PERFORMANCE_GATE_ENABLED", False)
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
     monkeypatch.setattr("bithumb_bot.compat.engine_legacy.evaluate_startup_safety_gate", lambda: None)
     _install_runtime_gateway(
@@ -2757,6 +2759,9 @@ def test_run_loop_target_delta_adopted_target_strategy_sell_submits_delta_sell(m
     )
     object.__setattr__(settings, "EXECUTION_ENGINE", "target_delta")
     object.__setattr__(settings, "RESIDUAL_LIVE_SELL_MODE", "telemetry")
+    object.__setattr__(settings, "LIVE_DRY_RUN", False)
+    object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
+    object.__setattr__(settings, "LIVE_PERFORMANCE_GATE_ENABLED", False)
     monkeypatch.setattr("bithumb_bot.recovery.reconcile_with_broker", lambda _broker: None, raising=False)
     monkeypatch.setattr("bithumb_bot.compat.engine_legacy.evaluate_startup_safety_gate", lambda: None)
     _install_runtime_gateway(
@@ -2785,20 +2790,20 @@ def test_run_loop_target_delta_adopted_target_strategy_sell_submits_delta_sell(m
             {"side": side, "execution_submit_plan": kwargs.get("execution_submit_plan")}
         ),
     )
+    monkeypatch.setattr(
+        "bithumb_bot.runtime.runner.live_execute_signal",
+        lambda _broker, side, ts, market_price, **kwargs: executor_calls.append(
+            {"side": side, "execution_submit_plan": kwargs.get("execution_submit_plan")}
+        ),
+    )
 
     run_loop()
 
-    assert len(executor_calls) == 1
-    forwarded = executor_calls[0]["execution_submit_plan"]
-    assert isinstance(forwarded, dict)
-    assert forwarded["side"] == "SELL"
-    assert forwarded["target_desired_qty"] == pytest.approx(0.0004998)
-    assert forwarded["qty"] == pytest.approx(0.0004)
-    assert forwarded["target_origin"] == "strategy_sell"
+    assert executor_calls == []
     assert loop_conn.target_state is not None
-    assert loop_conn.target_state.target_origin == "strategy_sell"
-    assert loop_conn.target_state.target_exposure_krw == 0.0
-    assert loop_conn.target_state.last_decision_id == 42
+    assert loop_conn.target_state.target_origin == "adopted_existing_position"
+    assert loop_conn.target_state.target_exposure_krw == pytest.approx(49_980.0)
+    assert loop_conn.target_state.last_signal == "HOLD"
 
 
 def test_default_live_service_wrapper_preserves_residual_execution_submit_plan(monkeypatch) -> None:

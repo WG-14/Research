@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from bithumb_bot.execution_service import (
@@ -116,6 +116,55 @@ def _research_execution_submit_plan(
     raise ValueError(f"research_submit_plan_unsupported_side:{normalized_side or 'missing'}")
 
 
+def _research_typed_buy_submit_plan_from_intent(
+    *,
+    cash: float,
+    reference_price: float,
+    policy_decision: StrategyDecisionV2,
+    fallback_buy_fraction: float,
+) -> ExecutionSubmitPlan | None:
+    execution_intent = policy_decision.execution_intent
+    intent_payload = (
+        execution_intent.as_dict()
+        if execution_intent is not None and hasattr(execution_intent, "as_dict")
+        else {}
+    )
+    if not intent_payload:
+        return None
+    fraction = float(intent_payload.get("budget_fraction_of_cash") or fallback_buy_fraction)
+    requested_notional = max(0.0, float(cash) * fraction)
+    max_budget = float(intent_payload.get("max_budget_krw") or 0.0)
+    if max_budget > 0.0:
+        requested_notional = min(requested_notional, max_budget)
+    qty = requested_notional / float(reference_price) if reference_price > 0.0 else None
+    submit_expected = bool(requested_notional > 0.0 and qty is not None and qty > 0.0)
+    return ExecutionSubmitPlan(
+        side="BUY",
+        source="strategy_position",
+        authority="strategy_execution_intent",
+        final_action="ENTER_STRATEGY_POSITION" if submit_expected else "BLOCK_RESEARCH_ZERO_SIZE",
+        qty=qty if submit_expected else None,
+        notional_krw=requested_notional if submit_expected else None,
+        target_exposure_krw=requested_notional if submit_expected else None,
+        current_effective_exposure_krw=0.0,
+        delta_krw=requested_notional if submit_expected else None,
+        submit_expected=submit_expected,
+        pre_submit_proof_status="not_required",
+        block_reason="none" if submit_expected else "research_zero_buy_notional",
+        idempotency_key=None,
+        extra_payload={"execution_engine": "research_virtual"},
+    )
+
+
+def _positive_submit_notional(plan: ExecutionSubmitPlan | None) -> bool:
+    if plan is None:
+        return False
+    try:
+        return float(plan.notional_krw or 0.0) > 0.0
+    except (TypeError, ValueError):
+        return False
+
+
 def _research_execution_plan_bundle(
     *,
     side: str,
@@ -153,6 +202,30 @@ def _research_execution_plan_bundle(
             or summary.typed_residual_submit_plan()
             or summary.typed_buy_submit_plan()
         )
+        if (
+            str(policy_decision.final_signal or "").upper() == "BUY"
+            and bool(summary.submit_expected)
+            and not _positive_submit_notional(submit_plan)
+        ):
+            intent_submit_plan = _research_typed_buy_submit_plan_from_intent(
+                cash=cash,
+                reference_price=reference_price,
+                policy_decision=policy_decision,
+                fallback_buy_fraction=buy_fraction,
+            )
+            if intent_submit_plan is not None:
+                summary = replace(
+                    summary,
+                    final_action=intent_submit_plan.final_action,
+                    submit_expected=bool(intent_submit_plan.submit_expected),
+                    pre_submit_proof_status=intent_submit_plan.pre_submit_proof_status,
+                    block_reason=intent_submit_plan.block_reason,
+                    target_exposure_krw=intent_submit_plan.target_exposure_krw,
+                    current_effective_exposure_krw=intent_submit_plan.current_effective_exposure_krw,
+                    buy_delta_krw=intent_submit_plan.delta_krw,
+                    buy_submit_plan=intent_submit_plan,
+                )
+                submit_plan = intent_submit_plan
         if (
             submit_plan is None
             and str(policy_decision.final_signal or "").upper() == "SELL"

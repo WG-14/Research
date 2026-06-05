@@ -190,6 +190,21 @@ def evaluate_submit_authority_policy(
     if mode == "live" and live_dry_run:
         return decision(False, "live_dry_run_non_submitting")
     if policy.live_real_order_requires_target_delta:
+        if normalized_kind == "residual":
+            if source != RESIDUAL_SUBMIT_SOURCE:
+                return decision(False, "live_real_order_residual_plan_invalid_source")
+            if authority not in RESIDUAL_SUBMIT_AUTHORITIES:
+                return decision(False, "live_real_order_residual_plan_invalid_authority")
+            if side != "SELL":
+                return decision(False, "live_real_order_residual_plan_invalid_side")
+            if not submit_expected:
+                return decision(False, "live_real_order_residual_plan_submit_not_expected")
+            if proof != "passed":
+                return decision(False, "live_real_order_residual_plan_pre_submit_proof_not_passed")
+            residual_mode = str(getattr(settings_obj, "RESIDUAL_LIVE_SELL_MODE", "") or "").strip().lower()
+            if residual_mode != "enabled":
+                return decision(False, "live_real_order_residual_policy_not_enabled")
+            return decision(True, "allowed_residual_inventory_policy")
         if execution_engine != "target_delta":
             return decision(False, "live_real_order_requires_execution_engine_target_delta")
         if normalized_kind == "target":
@@ -212,21 +227,6 @@ def evaluate_submit_authority_policy(
             if not str(payload.get("strategy_contribution_hash") or "").strip():
                 return decision(False, "live_real_order_target_plan_missing_strategy_contribution_hash")
             return decision(True, "allowed_target_delta")
-        if normalized_kind == "residual":
-            if source != RESIDUAL_SUBMIT_SOURCE:
-                return decision(False, "live_real_order_residual_plan_invalid_source")
-            if authority not in RESIDUAL_SUBMIT_AUTHORITIES:
-                return decision(False, "live_real_order_residual_plan_invalid_authority")
-            if side != "SELL":
-                return decision(False, "live_real_order_residual_plan_invalid_side")
-            if not submit_expected:
-                return decision(False, "live_real_order_residual_plan_submit_not_expected")
-            if proof != "passed":
-                return decision(False, "live_real_order_residual_plan_pre_submit_proof_not_passed")
-            residual_mode = str(getattr(settings_obj, "RESIDUAL_LIVE_SELL_MODE", "") or "").strip().lower()
-            if residual_mode != "enabled":
-                return decision(False, "live_real_order_residual_policy_not_enabled")
-            return decision(True, "allowed_residual_inventory_policy")
         if normalized_kind == "buy":
             return decision(False, "live_real_order_buy_plan_rejected_target_delta_required")
         if source in LEGACY_BUY_SUBMIT_SOURCES:
