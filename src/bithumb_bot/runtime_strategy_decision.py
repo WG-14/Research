@@ -59,6 +59,11 @@ class RuntimeDecisionRequest:
             if hasattr(spec, "parameter_authority_audit")
             else {}
         )
+        profile_authority = (
+            spec.profile_authority_context
+            if hasattr(spec, "profile_authority_context")
+            else {}
+        )
         legacy_used = (
             bool(spec.legacy_compatibility_used)
             if hasattr(spec, "legacy_compatibility_used")
@@ -82,6 +87,13 @@ class RuntimeDecisionRequest:
             "request_hash": self.request_hash,
             "parameter_source": self.parameter_source,
             "parameter_authority_audit": dict(authority_audit or {}),
+            "profile_authority_context": dict(profile_authority or {}),
+            "runtime_selection_kind": dict(profile_authority or {}).get("runtime_selection_kind"),
+            "runtime_strategy_set_source": dict(profile_authority or {}).get("runtime_strategy_set_source"),
+            "profile_binding_kind": dict(profile_authority or {}).get("profile_binding_kind"),
+            "runtime_gate_authority": dict(profile_authority or {}).get("runtime_gate_authority"),
+            "allow_global_profile_fallback": dict(profile_authority or {}).get("allow_global_profile_fallback"),
+            "require_spec_bound_profile": dict(profile_authority or {}).get("require_spec_bound_profile"),
             "legacy_parameter_compatibility_used": legacy_used,
         }
 
@@ -263,11 +275,27 @@ class DecisionRunner:
         runtime_strategy_spec: object | None = None,
     ) -> RuntimeStrategyDecisionResult | None:
         from .runtime_strategy_set import (
+            ProfileAuthorityContext,
             RuntimeDecisionRequestBuilder,
             RuntimeMarketScope,
             RuntimeStrategySet,
+            RuntimeStrategySetResolver,
             RuntimeStrategySpec,
         )
+
+        resolved_strategy_set = None
+        live_mode = str(settings.MODE or "").strip().lower() == "live"
+        if live_mode:
+            try:
+                resolved_strategy_set = RuntimeStrategySetResolver().resolve()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"runtime_strategy_set_selection_failed: resolve_failed:{type(exc).__name__}:{exc}"
+                ) from exc
+            if resolved_strategy_set.multi_strategy_enabled and runtime_strategy_spec is None:
+                raise RuntimeError(
+                    "decision_runner_live_multi_strategy_requires_runtime_decision_gateway"
+                )
 
         if runtime_strategy_spec is not None:
             if not isinstance(runtime_strategy_spec, RuntimeStrategySpec):
@@ -286,14 +314,37 @@ class DecisionRunner:
                 parameters=parameters or None,
                 parameter_source=parameter_source if parameters else None,
             )
-        validate_live_strategy_selection(
-            replace(settings, STRATEGY_NAME=selected_strategy_name)
-        )
+        authority_context = None
+        if resolved_strategy_set is not None and resolved_strategy_set.multi_strategy_enabled:
+            authority_context = ProfileAuthorityContext.for_strategy_set(resolved_strategy_set)
+            from .research.strategy_registry import strategy_runtime_capability_issues
+
+            issues = strategy_runtime_capability_issues(
+                selected_strategy_name,
+                live_dry_run=bool(settings.LIVE_DRY_RUN),
+                live_real_order_armed=bool(settings.LIVE_REAL_ORDER_ARMED),
+                approved_profile_path=str(spec.approved_profile_path or "").strip(),
+                require_promotion_runtime=True,
+                require_runtime_replay=True,
+                require_runtime_decision_adapter=True,
+            )
+            if issues:
+                raise RuntimeError(
+                    "live_runtime_strategy_capability_validation_failed:"
+                    f"{selected_strategy_name}:reasons=" + ",".join(issues)
+                )
+        else:
+            validate_live_strategy_selection(
+                replace(settings, STRATEGY_NAME=selected_strategy_name)
+            )
         adapter = get_runtime_decision_adapter(selected_strategy_name)
         if adapter is None:
             raise production_runtime_strategy_missing_error(selected_strategy_name)
 
-        request = RuntimeDecisionRequestBuilder().build_for_spec(
+        builder = RuntimeDecisionRequestBuilder()
+        if authority_context is not None:
+            builder = builder.with_authority_context(authority_context)
+        request = builder.build_for_spec(
             spec,
             through_ts_ms=through_ts_ms,
         )

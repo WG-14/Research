@@ -726,6 +726,7 @@ def test_live_preflight_rejects_invalid_runtime_strategy_set_json(
 ) -> None:
     _set_valid_live_defaults(monkeypatch)
     monkeypatch.setenv("RUNTIME_STRATEGY_SET_JSON", '{"strategies": "not-a-list"}')
+    object.__setattr__(settings, "STRATEGY_NAME", "unsupported_legacy_global_name")
 
     with pytest.raises(config.LiveModeValidationError) as exc:
         config.validate_live_mode_preflight(settings)
@@ -733,6 +734,8 @@ def test_live_preflight_rejects_invalid_runtime_strategy_set_json(
     msg = str(exc.value)
     assert "runtime_strategy_set_selection_failed" in msg
     assert "runtime_strategy_set_json_must_be_list" in msg
+    assert "live_strategy_capability_validation_failed" not in msg
+    assert "unsupported_legacy_global_name" not in msg
 
 
 def test_runtime_strategy_set_rejects_multi_pair_until_pair_scoped_runtime_exists(

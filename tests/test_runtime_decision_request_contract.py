@@ -22,7 +22,9 @@ from bithumb_bot.runtime_adapters.safe_hold import SafeHoldRuntimeDecisionAdapte
 from bithumb_bot import runtime_strategy_decision
 from bithumb_bot.runtime_strategy_decision import PromotionRuntimeDecisionAdapter, RuntimeDecisionRequest
 from bithumb_bot.runtime_strategy_set import (
+    ProfileAuthorityContext,
     RuntimeMarketScope,
+    RuntimeDecisionGateway,
     RuntimeDecisionRequestBuilder,
     RuntimeStrategyDecisionCollector,
     RuntimeStrategyDecisionResultBundle,
@@ -1962,6 +1964,350 @@ def test_live_multi_strategy_request_builder_requires_spec_hash_even_with_global
         )
 
     assert loaded == []
+
+
+def test_profile_authority_context_is_typed_and_drives_builder_policy(
+    _clear_runtime_strategy_source_env: None,
+) -> None:
+    strategy_set = RuntimeStrategySet(
+        source="RUNTIME_STRATEGY_SET_JSON",
+        strategies=(
+            RuntimeStrategySpec("canary_non_sma", strategy_instance_id="left"),
+            RuntimeStrategySpec("canary_non_sma", strategy_instance_id="right"),
+        ),
+    )
+    cfg = replace(settings, MODE="live", LIVE_DRY_RUN=True, LIVE_REAL_ORDER_ARMED=False)
+    context = ProfileAuthorityContext.for_strategy_set(strategy_set, settings_obj=cfg)
+
+    assert context.selection_kind == "multi_strategy"
+    assert context.runtime_strategy_set_source == "RUNTIME_STRATEGY_SET_JSON"
+    assert context.require_spec_bound_profile is True
+    assert context.allow_global_profile_fallback is False
+
+    with pytest.raises(
+        RuntimeError,
+        match="spec_bound_approved_profile_path_missing_for_runtime_strategy:canary_non_sma",
+    ):
+        RuntimeDecisionRequestBuilder(settings_obj=cfg).with_authority_context(context).build_for_spec(
+            RuntimeStrategySpec("canary_non_sma", strategy_instance_id="left"),
+            through_ts_ms=1_700_000_180_000,
+        )
+
+
+def test_live_multi_strategy_collector_materializes_spec_bound_requests_without_global_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    _clear_runtime_strategy_source_env: None,
+) -> None:
+    from bithumb_bot import runtime_strategy_set
+
+    profiles = {
+        "/tmp/live-left.json": {
+            "profile_mode": "live_dry_run",
+            "profile_content_hash": "sha256:left-live",
+            "strategy_parameters": _complete_canary_parameters(CANARY_ORDER_REASON="left"),
+        },
+        "/tmp/live-right.json": {
+            "profile_mode": "live_dry_run",
+            "profile_content_hash": "sha256:right-live",
+            "strategy_parameters": _complete_canary_parameters(CANARY_ORDER_REASON="right"),
+        },
+    }
+    loaded: list[str] = []
+    received: list[RuntimeDecisionRequest] = []
+    monkeypatch.setattr(
+        runtime_strategy_set,
+        "load_approved_profile",
+        lambda path: loaded.append(str(path)) or profiles[str(path)],
+    )
+    monkeypatch.setattr(runtime_strategy_set, "diff_profile_to_runtime", lambda *args, **kwargs: ())
+
+    class _Adapter(CanaryNonSmaRuntimeDecisionAdapter):
+        def decide_feature_snapshot(self, request: RuntimeDecisionRequest, feature_snapshot: Any):
+            received.append(request)
+            return super().decide_feature_snapshot(request, feature_snapshot)
+
+    cfg = replace(
+        settings,
+        MODE="live",
+        LIVE_DRY_RUN=True,
+        LIVE_REAL_ORDER_ARMED=False,
+        STRATEGY_NAME="unsupported_legacy_global_name",
+        APPROVED_STRATEGY_PROFILE_PATH="",
+        STRATEGY_APPROVED_PROFILE_PATH="",
+        STRATEGY_PARAMETERS_JSON="",
+    )
+    strategy_set = RuntimeStrategySet(
+        source="RUNTIME_STRATEGY_SET_JSON",
+        strategies=(
+            RuntimeStrategySpec(
+                "canary_non_sma",
+                strategy_instance_id="left",
+                approved_profile_path="/tmp/live-left.json",
+                approved_profile_hash="sha256:left-live",
+            ),
+            RuntimeStrategySpec(
+                "canary_non_sma",
+                strategy_instance_id="right",
+                approved_profile_path="/tmp/live-right.json",
+                approved_profile_hash="sha256:right-live",
+            ),
+        ),
+    )
+
+    bundle = RuntimeStrategyDecisionCollector(
+        request_builder=RuntimeDecisionRequestBuilder(settings_obj=cfg),
+        adapter_resolver=_adapter_resolver({"canary_non_sma": _Adapter()}),
+    ).collect(_conn(), strategy_set, through_ts_ms=1_700_000_180_000)
+
+    assert bundle is not None
+    assert set(loaded) == {"/tmp/live-left.json", "/tmp/live-right.json"}
+    assert loaded.count("/tmp/live-left.json") >= 1
+    assert loaded.count("/tmp/live-right.json") >= 1
+    assert {request.approved_profile_path for request in received} == {
+        "/tmp/live-left.json",
+        "/tmp/live-right.json",
+    }
+    assert {request.approved_profile_hash for request in received} == {
+        "sha256:left-live",
+        "sha256:right-live",
+    }
+    for request in received:
+        fields = request.observability_fields()
+        assert fields["runtime_selection_kind"] == "multi_strategy"
+        assert fields["runtime_strategy_set_source"] == "RUNTIME_STRATEGY_SET_JSON"
+        assert fields["profile_binding_kind"] == "spec_bound_approved_profiles"
+        assert fields["allow_global_profile_fallback"] is False
+
+
+def test_live_multi_strategy_collector_rejects_global_profile_substitution(
+    monkeypatch: pytest.MonkeyPatch,
+    _clear_runtime_strategy_source_env: None,
+) -> None:
+    from bithumb_bot import runtime_strategy_set
+
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        runtime_strategy_set,
+        "load_approved_profile",
+        lambda path: loaded.append(str(path)) or {
+            "profile_mode": "live_dry_run",
+            "profile_content_hash": "sha256:global",
+            "strategy_parameters": _complete_canary_parameters(),
+        },
+    )
+    cfg = replace(
+        settings,
+        MODE="live",
+        LIVE_DRY_RUN=True,
+        LIVE_REAL_ORDER_ARMED=False,
+        STRATEGY_NAME="unsupported_legacy_global_name",
+        APPROVED_STRATEGY_PROFILE_PATH="/tmp/global.json",
+        STRATEGY_APPROVED_PROFILE_PATH="",
+        STRATEGY_PARAMETERS_JSON="",
+    )
+    strategy_set = RuntimeStrategySet(
+        source="RUNTIME_STRATEGY_SET_JSON",
+        strategies=(
+            RuntimeStrategySpec(
+                "canary_non_sma",
+                strategy_instance_id="left",
+                approved_profile_hash="sha256:left",
+            ),
+            RuntimeStrategySpec(
+                "canary_non_sma",
+                strategy_instance_id="right",
+                approved_profile_path="/tmp/right.json",
+                approved_profile_hash="sha256:right",
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="spec_bound_approved_profile_path_missing_for_runtime_strategy:canary_non_sma",
+    ):
+        RuntimeStrategyDecisionCollector(
+            request_builder=RuntimeDecisionRequestBuilder(settings_obj=cfg),
+            adapter_resolver=_adapter_resolver({"canary_non_sma": CanaryNonSmaRuntimeDecisionAdapter()}),
+        ).collect(_conn(), strategy_set, through_ts_ms=1_700_000_180_000)
+
+    assert loaded == []
+
+
+def test_runtime_decision_gateway_resolves_live_multi_strategy_authority_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    _clear_runtime_strategy_source_env: None,
+) -> None:
+    from bithumb_bot import runtime_strategy_set
+
+    monkeypatch.setattr(
+        runtime_strategy_set,
+        "load_approved_profile",
+        lambda path: {
+            "profile_mode": "live_dry_run",
+            "profile_content_hash": "sha256:gateway",
+            "strategy_parameters": _complete_canary_parameters(CANARY_ORDER_REASON=str(path)),
+        },
+    )
+    monkeypatch.setattr(runtime_strategy_set, "diff_profile_to_runtime", lambda *args, **kwargs: ())
+    runtime_strategy_set_json = json.dumps(
+        {
+            "market_scope": {"mode": "single_pair", "pair": "KRW-BTC", "interval": "1m"},
+            "strategies": [
+                {
+                    "strategy_name": "canary_non_sma",
+                    "strategy_instance_id": "left",
+                    "approved_profile_path": "/tmp/gateway-left.json",
+                    "approved_profile_hash": "sha256:gateway",
+                },
+                {
+                    "strategy_name": "canary_non_sma",
+                    "strategy_instance_id": "right",
+                    "approved_profile_path": "/tmp/gateway-right.json",
+                    "approved_profile_hash": "sha256:gateway",
+                },
+            ],
+        }
+    )
+    cfg = replace(
+        settings,
+        MODE="live",
+        PAIR="KRW-BTC",
+        INTERVAL="1m",
+        LIVE_DRY_RUN=True,
+        LIVE_REAL_ORDER_ARMED=False,
+        STRATEGY_NAME="unsupported_legacy_global_name",
+        APPROVED_STRATEGY_PROFILE_PATH="",
+        STRATEGY_APPROVED_PROFILE_PATH="",
+        STRATEGY_PARAMETERS_JSON="",
+        RUNTIME_STRATEGY_SET_JSON=runtime_strategy_set_json,
+        ACTIVE_STRATEGIES="",
+    )
+    received: list[RuntimeDecisionRequest] = []
+
+    class _Adapter(CanaryNonSmaRuntimeDecisionAdapter):
+        def decide_feature_snapshot(self, request: RuntimeDecisionRequest, feature_snapshot: Any):
+            received.append(request)
+            return super().decide_feature_snapshot(request, feature_snapshot)
+
+    bundle = RuntimeDecisionGateway(
+        resolver=RuntimeStrategySetResolver(settings_obj=cfg),
+        collector=RuntimeStrategyDecisionCollector(
+            adapter_resolver=_adapter_resolver({"canary_non_sma": _Adapter()}),
+        ),
+    ).decide_bundle(_conn(), through_ts_ms=1_700_000_180_000)
+
+    assert bundle is not None
+    assert len(received) == 2
+    assert all(request.observability_fields()["runtime_selection_kind"] == "multi_strategy" for request in received)
+
+
+def test_live_real_order_multi_strategy_builder_uses_small_live_spec_profiles_without_global(
+    monkeypatch: pytest.MonkeyPatch,
+    _clear_runtime_strategy_source_env: None,
+) -> None:
+    from bithumb_bot import runtime_strategy_set
+
+    monkeypatch.setattr(
+        runtime_strategy_set,
+        "load_approved_profile",
+        lambda path: {
+            "profile_mode": "small_live",
+            "profile_content_hash": "sha256:small-live",
+            "strategy_parameters": _complete_canary_parameters(),
+        },
+    )
+    monkeypatch.setattr(runtime_strategy_set, "diff_profile_to_runtime", lambda *args, **kwargs: ())
+    cfg = replace(
+        settings,
+        MODE="live",
+        LIVE_DRY_RUN=False,
+        LIVE_REAL_ORDER_ARMED=True,
+        APPROVED_STRATEGY_PROFILE_PATH="",
+        STRATEGY_APPROVED_PROFILE_PATH="",
+        STRATEGY_PARAMETERS_JSON="",
+    )
+    strategy_set = RuntimeStrategySet(
+        source="RUNTIME_STRATEGY_SET_JSON",
+        strategies=(
+            RuntimeStrategySpec(
+                "canary_non_sma",
+                strategy_instance_id="left",
+                approved_profile_path="/tmp/small-live-left.json",
+                approved_profile_hash="sha256:small-live",
+            ),
+            RuntimeStrategySpec(
+                "canary_non_sma",
+                strategy_instance_id="right",
+                approved_profile_path="/tmp/small-live-right.json",
+                approved_profile_hash="sha256:small-live",
+            ),
+        ),
+    )
+    context = ProfileAuthorityContext.for_strategy_set(strategy_set, settings_obj=cfg)
+
+    request = RuntimeDecisionRequestBuilder(settings_obj=cfg).with_authority_context(context).build_for_spec(
+        strategy_set.active_strategies[0],
+        through_ts_ms=1_700_000_180_000,
+    )
+
+    assert request.approved_profile_path == "/tmp/small-live-left.json"
+    assert request.approved_profile_hash == "sha256:small-live"
+    assert request.observability_fields()["allow_global_profile_fallback"] is False
+
+
+def test_decision_runner_rejects_live_multi_strategy_without_runtime_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+    _clear_runtime_strategy_source_env: None,
+) -> None:
+    runtime_strategy_set_json = json.dumps(
+        {
+            "market_scope": {"mode": "single_pair", "pair": "KRW-BTC", "interval": "1m"},
+            "strategies": [
+                {
+                    "strategy_name": "canary_non_sma",
+                    "strategy_instance_id": "left",
+                    "approved_profile_path": "/tmp/left.json",
+                    "approved_profile_hash": "sha256:left",
+                },
+                {
+                    "strategy_name": "canary_non_sma",
+                    "strategy_instance_id": "right",
+                    "approved_profile_path": "/tmp/right.json",
+                    "approved_profile_hash": "sha256:right",
+                },
+            ],
+        }
+    )
+    original = {
+        "MODE": settings.MODE,
+        "LIVE_DRY_RUN": settings.LIVE_DRY_RUN,
+        "LIVE_REAL_ORDER_ARMED": settings.LIVE_REAL_ORDER_ARMED,
+        "STRATEGY_NAME": settings.STRATEGY_NAME,
+        "RUNTIME_STRATEGY_SET_JSON": settings.RUNTIME_STRATEGY_SET_JSON,
+        "APPROVED_STRATEGY_PROFILE_PATH": settings.APPROVED_STRATEGY_PROFILE_PATH,
+        "STRATEGY_APPROVED_PROFILE_PATH": settings.STRATEGY_APPROVED_PROFILE_PATH,
+    }
+    try:
+        object.__setattr__(settings, "MODE", "live")
+        object.__setattr__(settings, "LIVE_DRY_RUN", True)
+        object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", False)
+        object.__setattr__(settings, "STRATEGY_NAME", "unsupported_legacy_global_name")
+        object.__setattr__(settings, "RUNTIME_STRATEGY_SET_JSON", runtime_strategy_set_json)
+        object.__setattr__(settings, "APPROVED_STRATEGY_PROFILE_PATH", "")
+        object.__setattr__(settings, "STRATEGY_APPROVED_PROFILE_PATH", "")
+
+        with pytest.raises(
+            RuntimeError,
+            match="decision_runner_live_multi_strategy_requires_runtime_decision_gateway",
+        ):
+            runtime_strategy_decision.DecisionRunner().decide_snapshot(
+                _conn(),
+                through_ts_ms=1_700_000_180_000,
+            )
+    finally:
+        for key, value in original.items():
+            object.__setattr__(settings, key, value)
 
 
 @pytest.mark.parametrize(

@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import Callable, Mapping
+from typing import Callable, Literal, Mapping
 
 from .approved_profile import (
     ApprovedProfileError,
@@ -77,6 +77,21 @@ def _plugin_accepts_empty_runtime_parameters(plugin: object | None) -> bool:
         and getattr(plugin, "runtime_parameter_adapter", None) is not None
         and not tuple(getattr(spec, "accepted_parameter_names", ()) or ())
     )
+
+
+def _settings_for_authority_context(
+    authority_context: "ProfileAuthorityContext",
+    *,
+    fallback: object = settings,
+) -> object:
+    updates: dict[str, object] = {}
+    if authority_context.runtime_mode:
+        updates["MODE"] = authority_context.runtime_mode
+    if authority_context.live_dry_run is not None:
+        updates["LIVE_DRY_RUN"] = bool(authority_context.live_dry_run)
+    if authority_context.live_real_order_armed is not None:
+        updates["LIVE_REAL_ORDER_ARMED"] = bool(authority_context.live_real_order_armed)
+    return replace(fallback, **updates) if updates else fallback
 
 
 @dataclass(frozen=True)
@@ -297,6 +312,7 @@ class RuntimeStrategyInstance:
     runtime_contract: Mapping[str, object]
     runtime_adapter_config: Mapping[str, object]
     parameter_authority_audit: Mapping[str, object] | None = None
+    profile_authority_context: Mapping[str, object] | None = None
     legacy_compatibility_used: bool = False
     schema_version: int = 1
 
@@ -324,6 +340,13 @@ class RuntimeStrategyInstance:
             "runtime_adapter_config",
             MappingProxyType(
                 {str(key): value for key, value in dict(self.runtime_adapter_config or {}).items()}
+            ),
+        )
+        object.__setattr__(
+            self,
+            "profile_authority_context",
+            MappingProxyType(
+                {str(key): value for key, value in dict(self.profile_authority_context or {}).items()}
             ),
         )
 
@@ -363,6 +386,7 @@ class RuntimeStrategyInstance:
             "strategy_version": self.strategy_version,
             "runtime_adapter_config": dict(self.runtime_adapter_config),
             "parameter_authority_audit": dict(self.parameter_authority_audit or {}),
+            "profile_authority_context": dict(self.profile_authority_context or {}),
             "legacy_compatibility_used": bool(self.legacy_compatibility_used),
         }
 
@@ -428,6 +452,123 @@ class RuntimeStrategySet:
             "multi_strategy_enabled": self.multi_strategy_enabled,
             "strategies": [item.as_dict() for item in self.strategies],
             "active_strategies": [item.as_dict() for item in self.active_strategies],
+        }
+
+
+@dataclass(frozen=True)
+class ProfileAuthorityContext:
+    selection_kind: Literal["single_strategy", "multi_strategy"]
+    runtime_strategy_set_source: str
+    require_spec_bound_profile: bool
+    allow_global_profile_fallback: bool
+    expected_profile_modes: tuple[str, ...] | None = None
+    runtime_mode: str | None = None
+    live_dry_run: bool | None = None
+    live_real_order_armed: bool | None = None
+
+    def __post_init__(self) -> None:
+        selection_kind = str(self.selection_kind or "").strip()
+        if selection_kind not in {"single_strategy", "multi_strategy"}:
+            raise ValueError(f"runtime_selection_kind_unsupported:{selection_kind}")
+        source = str(self.runtime_strategy_set_source or "").strip()
+        if not source:
+            raise ValueError("runtime_strategy_set_source_missing")
+        if self.require_spec_bound_profile and self.allow_global_profile_fallback:
+            raise ValueError("profile_authority_context_ambiguous")
+        modes = None
+        if self.expected_profile_modes is not None:
+            modes = tuple(sorted(str(item).strip() for item in self.expected_profile_modes if str(item).strip()))
+        object.__setattr__(self, "selection_kind", selection_kind)
+        object.__setattr__(self, "runtime_strategy_set_source", source)
+        object.__setattr__(self, "expected_profile_modes", modes)
+        if self.runtime_mode is not None:
+            object.__setattr__(self, "runtime_mode", str(self.runtime_mode).strip().lower() or None)
+
+    @classmethod
+    def for_strategy_set(
+        cls,
+        strategy_set: RuntimeStrategySet,
+        *,
+        settings_obj: object = settings,
+        expected_profile_modes: set[str] | tuple[str, ...] | None = None,
+    ) -> "ProfileAuthorityContext":
+        selection_kind: Literal["single_strategy", "multi_strategy"] = (
+            "multi_strategy" if strategy_set.multi_strategy_enabled else "single_strategy"
+        )
+        live_mode = str(getattr(settings_obj, "MODE", "") or "").strip().lower() == "live"
+        require_spec_bound = live_mode and selection_kind == "multi_strategy"
+        modes = None if expected_profile_modes is None else tuple(str(item) for item in expected_profile_modes)
+        return cls(
+            selection_kind=selection_kind,
+            runtime_strategy_set_source=str(strategy_set.source),
+            require_spec_bound_profile=require_spec_bound,
+            allow_global_profile_fallback=not require_spec_bound,
+            expected_profile_modes=modes,
+            runtime_mode=str(getattr(settings_obj, "MODE", "") or "").strip().lower() or None,
+            live_dry_run=bool(getattr(settings_obj, "LIVE_DRY_RUN", False)),
+            live_real_order_armed=bool(getattr(settings_obj, "LIVE_REAL_ORDER_ARMED", False)),
+        )
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, object]) -> "ProfileAuthorityContext":
+        modes = payload.get("expected_profile_modes")
+        expected_modes = None
+        if isinstance(modes, (list, tuple, set)):
+            expected_modes = tuple(str(item) for item in modes)
+        return cls(
+            selection_kind=str(
+                payload.get("selection_kind")
+                or payload.get("runtime_selection_kind")
+                or "single_strategy"
+            ),  # type: ignore[arg-type]
+            runtime_strategy_set_source=str(payload.get("runtime_strategy_set_source") or "unknown"),
+            require_spec_bound_profile=bool(payload.get("require_spec_bound_profile", False)),
+            allow_global_profile_fallback=bool(payload.get("allow_global_profile_fallback", True)),
+            expected_profile_modes=expected_modes,
+            runtime_mode=str(payload.get("runtime_mode") or "").strip().lower() or None,
+            live_dry_run=(
+                bool(payload["live_dry_run"]) if "live_dry_run" in payload else None
+            ),
+            live_real_order_armed=(
+                bool(payload["live_real_order_armed"]) if "live_real_order_armed" in payload else None
+            ),
+        )
+
+    @classmethod
+    def builder_default(cls) -> "ProfileAuthorityContext":
+        return cls(
+            selection_kind="single_strategy",
+            runtime_strategy_set_source="builder_default",
+            require_spec_bound_profile=False,
+            allow_global_profile_fallback=True,
+            runtime_mode=str(getattr(settings, "MODE", "") or "").strip().lower() or None,
+            live_dry_run=bool(getattr(settings, "LIVE_DRY_RUN", False)),
+            live_real_order_armed=bool(getattr(settings, "LIVE_REAL_ORDER_ARMED", False)),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "selection_kind": self.selection_kind,
+            "runtime_selection_kind": self.selection_kind,
+            "runtime_strategy_set_source": self.runtime_strategy_set_source,
+            "require_spec_bound_profile": bool(self.require_spec_bound_profile),
+            "allow_global_profile_fallback": bool(self.allow_global_profile_fallback),
+            "expected_profile_modes": (
+                None if self.expected_profile_modes is None else list(self.expected_profile_modes)
+            ),
+            "runtime_mode": self.runtime_mode,
+            "live_dry_run": self.live_dry_run,
+            "live_real_order_armed": self.live_real_order_armed,
+            "profile_binding_kind": (
+                "spec_bound_approved_profiles"
+                if self.require_spec_bound_profile
+                else "global_approved_profile_selector_allowed"
+            ),
+            "runtime_gate_authority": (
+                "RUNTIME_STRATEGY_SET_JSON"
+                if self.selection_kind == "multi_strategy"
+                else "STRATEGY_NAME"
+            ),
         }
 
 
@@ -742,6 +883,30 @@ class ParameterAuthorityResolver:
 class RuntimeDecisionRequestBuilder:
     settings_obj: object = settings
     require_spec_bound_approved_profile: bool = False
+    profile_authority_context: ProfileAuthorityContext | None = None
+
+    def _authority_context(self) -> ProfileAuthorityContext:
+        if self.profile_authority_context is not None:
+            return self.profile_authority_context
+        require_spec_bound = bool(self.require_spec_bound_approved_profile)
+        if not require_spec_bound:
+            return ProfileAuthorityContext.builder_default()
+        return ProfileAuthorityContext(
+            selection_kind="multi_strategy",
+            runtime_strategy_set_source="explicit_builder_requirement",
+            require_spec_bound_profile=True,
+            allow_global_profile_fallback=False,
+        )
+
+    def with_authority_context(
+        self,
+        authority_context: ProfileAuthorityContext,
+    ) -> "RuntimeDecisionRequestBuilder":
+        return replace(
+            self,
+            profile_authority_context=authority_context,
+            require_spec_bound_approved_profile=authority_context.require_spec_bound_profile,
+        )
 
     def materialize_instance(
         self,
@@ -749,9 +914,10 @@ class RuntimeDecisionRequestBuilder:
     ) -> RuntimeStrategyInstance:
         plugin = resolve_research_strategy_plugin(spec.strategy_name)
         cfg = replace(self.settings_obj, STRATEGY_NAME=spec.strategy_name)
+        authority_context = self._authority_context()
         spec_profile_path = str(spec.approved_profile_path or "").strip()
         spec_profile_hash = str(spec.approved_profile_hash or "").strip()
-        if self.require_spec_bound_approved_profile:
+        if authority_context.require_spec_bound_profile:
             if not spec_profile_path:
                 raise RuntimeError(
                     f"spec_bound_approved_profile_path_missing_for_runtime_strategy:{spec.strategy_name}"
@@ -762,11 +928,23 @@ class RuntimeDecisionRequestBuilder:
                 )
             approved_profile_path = spec_profile_path
         else:
+            if not authority_context.allow_global_profile_fallback and not spec_profile_path:
+                raise RuntimeError(
+                    f"global_profile_fallback_rejected_for_runtime_strategy:{spec.strategy_name}"
+                )
             approved_profile_path = (
                 spec_profile_path
-                or str(getattr(self.settings_obj, "APPROVED_STRATEGY_PROFILE_PATH", "") or "").strip()
-                or str(getattr(self.settings_obj, "STRATEGY_APPROVED_PROFILE_PATH", "") or "").strip()
-                or approved_profile_path_from_env()
+                or (
+                    str(getattr(self.settings_obj, "APPROVED_STRATEGY_PROFILE_PATH", "") or "").strip()
+                    if authority_context.allow_global_profile_fallback
+                    else ""
+                )
+                or (
+                    str(getattr(self.settings_obj, "STRATEGY_APPROVED_PROFILE_PATH", "") or "").strip()
+                    if authority_context.allow_global_profile_fallback
+                    else ""
+                )
+                or (approved_profile_path_from_env() if authority_context.allow_global_profile_fallback else None)
                 or None
             )
         profile = None
@@ -857,6 +1035,7 @@ class RuntimeDecisionRequestBuilder:
             runtime_contract=runtime_contract,
             runtime_adapter_config=dict(spec.runtime_adapter_config or {}),
             parameter_authority_audit=dict(authority.source_audit_metadata),
+            profile_authority_context=authority_context.as_dict(),
             legacy_compatibility_used=authority.legacy_compatibility_used,
         )
 
@@ -940,7 +1119,27 @@ class RuntimeStrategyDecisionResultBundle:
                 if isinstance(base_context, Mapping) and "through_ts_ms" in base_context
                 else int(result.candle_ts)
             )
-            request = RuntimeDecisionRequestBuilder().build_for_spec(
+            base_context = getattr(result, "base_context", {})
+            context_payload = (
+                base_context.get("profile_authority_context")
+                if isinstance(base_context, Mapping)
+                else None
+            )
+            if isinstance(context_payload, Mapping):
+                authority_context = ProfileAuthorityContext.from_mapping(context_payload)
+                builder = RuntimeDecisionRequestBuilder(
+                    settings_obj=_settings_for_authority_context(authority_context)
+                ).with_authority_context(authority_context)
+            else:
+                authority_context = ProfileAuthorityContext.for_strategy_set(self.strategy_set)
+                builder = (
+                    RuntimeDecisionRequestBuilder(
+                        settings_obj=_settings_for_authority_context(authority_context)
+                    ).with_authority_context(authority_context)
+                    if authority_context.require_spec_bound_profile
+                    else RuntimeDecisionRequestBuilder()
+                )
+            request = builder.build_for_spec(
                 spec,
                 through_ts_ms=None if through_ts is None else int(through_ts),
             )
@@ -1131,10 +1330,15 @@ class RuntimeStrategyDecisionCollector:
         *,
         through_ts_ms: int | None,
     ) -> RuntimeStrategyDecisionResultBundle | None:
+        authority_context = ProfileAuthorityContext.for_strategy_set(
+            strategy_set,
+            settings_obj=self.request_builder.settings_obj,
+        )
+        request_builder = self.request_builder.with_authority_context(authority_context)
         prepared: list[tuple[RuntimeStrategySpec, PromotionRuntimeDecisionAdapter, RuntimeDecisionRequest]] = []
         materialized_specs: list[RuntimeStrategySpec] = []
         for spec in strategy_set.active_strategies:
-            validate_live_strategy_selection(replace(settings, STRATEGY_NAME=spec.strategy_name))
+            self._validate_strategy_capability(spec, authority_context)
             adapter = self.adapter_resolver(spec.strategy_name)
             if adapter is None:
                 raise production_runtime_strategy_missing_error(spec.strategy_name)
@@ -1143,7 +1347,7 @@ class RuntimeStrategyDecisionCollector:
                 raise RuntimeError(
                     f"runtime_decision_adapter_name_mismatch:{spec.strategy_name}:{adapter_name}"
                 )
-            request = self.request_builder.build_for_spec(spec, through_ts_ms=through_ts_ms)
+            request = request_builder.build_for_spec(spec, through_ts_ms=through_ts_ms)
             if not promotion_adapter_supports_feature_snapshot(adapter):
                 raise RuntimeError(f"runtime_decision_feature_snapshot_required:{spec.strategy_name}")
             materialized_spec = replace(
@@ -1205,6 +1409,43 @@ class RuntimeStrategyDecisionCollector:
             data_availability_report=data_availability_report,
         )
 
+    def _validate_strategy_capability(
+        self,
+        spec: RuntimeStrategySpec,
+        authority_context: ProfileAuthorityContext,
+    ) -> None:
+        settings_obj = self.request_builder.settings_obj
+        if str(getattr(settings_obj, "MODE", "") or "").strip().lower() != "live":
+            return
+        if authority_context.selection_kind == "single_strategy":
+            validate_live_strategy_selection(replace(settings_obj, STRATEGY_NAME=spec.strategy_name))
+            return
+        if authority_context.require_spec_bound_profile:
+            if not str(spec.approved_profile_path or "").strip():
+                raise RuntimeError(
+                    f"spec_bound_approved_profile_path_missing_for_runtime_strategy:{spec.strategy_name}"
+                )
+            if not str(spec.approved_profile_hash or "").strip():
+                raise RuntimeError(
+                    f"spec_bound_approved_profile_hash_missing_for_runtime_strategy:{spec.strategy_name}"
+                )
+        from .research.strategy_registry import strategy_runtime_capability_issues
+
+        issues = strategy_runtime_capability_issues(
+            spec.strategy_name,
+            live_dry_run=bool(getattr(settings_obj, "LIVE_DRY_RUN", False)),
+            live_real_order_armed=bool(getattr(settings_obj, "LIVE_REAL_ORDER_ARMED", False)),
+            approved_profile_path=str(spec.approved_profile_path or "").strip(),
+            require_promotion_runtime=True,
+            require_runtime_replay=True,
+            require_runtime_decision_adapter=True,
+        )
+        if issues:
+            raise RuntimeError(
+                "live_runtime_strategy_capability_validation_failed:"
+                f"{spec.strategy_name}:reasons=" + ",".join(issues)
+            )
+
 
 def _decide_with_feature_snapshot(
     *,
@@ -1233,7 +1474,17 @@ class RuntimeDecisionGateway:
         through_ts_ms: int | None,
     ) -> RuntimeStrategyDecisionResultBundle | None:
         resolved = strategy_set or self.resolver.resolve()
-        return self.collector.collect(
+        collector = self.collector
+        resolver_settings = getattr(self.resolver, "_settings", settings)
+        if collector.request_builder.settings_obj is settings and resolver_settings is not settings:
+            collector = replace(
+                collector,
+                request_builder=replace(
+                    collector.request_builder,
+                    settings_obj=resolver_settings,
+                ),
+            )
+        return collector.collect(
             conn,
             resolved,
             through_ts_ms=through_ts_ms,
@@ -1407,13 +1658,13 @@ def normalized_runtime_strategy_set_manifest(
     market_issues = validate_runtime_strategy_set_market_scope(resolved, settings_obj)
     if market_issues:
         raise RuntimeError("; ".join(market_issues))
-    builder = RuntimeDecisionRequestBuilder(
+    authority_context = ProfileAuthorityContext.for_strategy_set(
+        resolved,
         settings_obj=settings_obj,
-        require_spec_bound_approved_profile=(
-            str(getattr(settings_obj, "MODE", "") or "").strip().lower() == "live"
-            and resolved.multi_strategy_enabled
-        ),
     )
+    builder = RuntimeDecisionRequestBuilder(settings_obj=settings_obj)
+    if authority_context.require_spec_bound_profile:
+        builder = builder.with_authority_context(authority_context)
     active_instances = tuple(builder.materialize_instance(spec) for spec in resolved.active_strategies)
     live_like_runtime = (
         str(getattr(settings_obj, "MODE", "") or "").strip().lower() == "live"
@@ -1459,7 +1710,7 @@ def normalized_runtime_strategy_set_manifest(
         ),
         "profile_binding_kind": (
             "spec_bound_approved_profiles"
-            if resolved.multi_strategy_enabled
+            if authority_context.require_spec_bound_profile
             else "global_approved_profile_selector"
         ),
         "global_profile_selector_present": bool(
@@ -1472,6 +1723,7 @@ def normalized_runtime_strategy_set_manifest(
             if resolved.multi_strategy_enabled
             else "STRATEGY_NAME"
         ),
+        "runtime_gate_authority": authority_context.as_dict()["runtime_gate_authority"],
         "runtime_pair": str(getattr(settings_obj, "PAIR", "")),
         "runtime_interval": str(getattr(settings_obj, "INTERVAL", "")),
         "runtime_scope": "multi-strategy / single-pair runtime",

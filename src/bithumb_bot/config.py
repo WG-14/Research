@@ -410,6 +410,7 @@ def validate_runtime_profile_bindings_for_live_startup(
     expected_profile_modes: set[str] | None = None,
 ) -> RuntimeProfileBindingReport:
     from .runtime_strategy_set import (
+        ProfileAuthorityContext,
         RuntimeDecisionRequestBuilder,
         derive_strategy_instance_id,
         validate_runtime_strategy_set_profile_binding,
@@ -459,10 +460,14 @@ def validate_runtime_profile_bindings_for_live_startup(
         )
 
     issues.extend(validate_runtime_strategy_set_profile_binding(strategy_set, cfg))
+    authority_context = ProfileAuthorityContext.for_strategy_set(
+        strategy_set,
+        settings_obj=cfg,
+        expected_profile_modes=expected_profile_modes,
+    )
     builder = RuntimeDecisionRequestBuilder(
         settings_obj=cfg,
-        require_spec_bound_approved_profile=True,
-    )
+    ).with_authority_context(authority_context)
     for spec in strategy_set.active_strategies:
         instance_id = derive_strategy_instance_id(spec)
         try:
@@ -544,6 +549,7 @@ def validate_runtime_strategy_set_selection(cfg: Settings) -> None:
     )
     from .runtime_strategy_decision import get_runtime_decision_adapter
     from .runtime_strategy_set import (
+        ProfileAuthorityContext,
         RuntimeStrategySetResolver,
         derive_strategy_instance_id,
         validate_runtime_strategy_set_market_scope,
@@ -573,10 +579,10 @@ def validate_runtime_strategy_set_selection(cfg: Settings) -> None:
     issues.extend(validate_runtime_strategy_set_market_scope(strategy_set, cfg))
     issues.extend(validate_runtime_strategy_set_profile_binding(strategy_set, cfg))
     active_instance_ids: set[str] = set()
+    authority_context = ProfileAuthorityContext.for_strategy_set(strategy_set, settings_obj=cfg)
     request_builder = runtime_strategy_set_module.RuntimeDecisionRequestBuilder(
         settings_obj=cfg,
-        require_spec_bound_approved_profile=live_like and strategy_set.multi_strategy_enabled,
-    )
+    ).with_authority_context(authority_context)
     for spec in strategy_set.active_strategies:
         instance_id = derive_strategy_instance_id(spec)
         if instance_id in active_instance_ids:
@@ -1236,7 +1242,7 @@ def validate_live_mode_preflight(cfg: Settings) -> None:
         return
 
     issues: list[str] = []
-    selection_kind: Literal["single_strategy", "multi_strategy"] = "single_strategy"
+    selection_kind: Literal["single_strategy", "multi_strategy"] | None = None
     try:
         strategy_set = _resolve_runtime_strategy_set_for_live_startup(cfg)
         selection_kind = _runtime_selection_kind(strategy_set)
