@@ -342,7 +342,7 @@ def _final_submit_plan_payload(**overrides: object) -> dict[str, object]:
         "strategy_contribution_hash": "sha256:contribution",
     }
     payload.update(overrides)
-    return ExecutionSubmitPlan(
+    plan = ExecutionSubmitPlan(
         side=str(payload["side"]),
         source=str(payload["source"]),
         authority=str(payload["authority"]),
@@ -376,7 +376,27 @@ def _final_submit_plan_payload(**overrides: object) -> dict[str, object]:
                 "idempotency_key",
             }
         },
-    ).as_final_payload()
+    )
+    return _with_unit_pre_submit_risk_proof(plan).as_final_payload()
+
+
+def _with_unit_pre_submit_risk_proof(plan: ExecutionSubmitPlan) -> ExecutionSubmitPlan:
+    plan_hash = plan.content_hash()
+    extra = dict(plan.extra_payload)
+    extra.update(
+        {
+            "submit_plan_hash": plan_hash,
+            "pre_submit_risk_status": "ALLOW",
+            "pre_submit_risk_decision_hash": "sha256:" + "1" * 64,
+            "pre_submit_risk_policy_hash": "sha256:" + "2" * 64,
+            "pre_submit_risk_input_hash": "sha256:" + "3" * 64,
+            "pre_submit_risk_evidence_hash": "sha256:" + "4" * 64,
+            "pre_submit_risk_plan_hash": plan_hash,
+            "pre_submit_risk_reason_code": "OK",
+            "pre_submit_risk_state_source": "unit",
+        }
+    )
+    return replace(plan, extra_payload=extra)
 
 
 def test_broker_boundary_blocks_strategy_position_buy_plan_in_live_real_order() -> None:
@@ -1692,7 +1712,7 @@ def test_live_sell_duplicate_intent_after_cancel_keeps_lot_native_authority(monk
 
 
 def _residual_execution_submit_plan() -> dict[str, object]:
-    return ExecutionSubmitPlan(
+    plan = ExecutionSubmitPlan(
         side="SELL",
         source="residual_inventory",
         authority="residual_inventory_policy",
@@ -1710,11 +1730,12 @@ def _residual_execution_submit_plan() -> dict[str, object]:
             "intent_type": "residual_close",
             "strategy_context": "residual_inventory_policy",
         },
-    ).as_final_payload()
+    )
+    return _with_unit_pre_submit_risk_proof(plan).as_final_payload()
 
 
 def _target_delta_execution_submit_plan(*, side: str = "SELL", qty: float = 0.0004998) -> dict[str, object]:
-    return ExecutionSubmitPlan(
+    plan = ExecutionSubmitPlan(
         side=side,
         source="target_delta",
         authority="target_position_delta",
@@ -1741,7 +1762,8 @@ def _target_delta_execution_submit_plan(*, side: str = "SELL", qty: float = 0.00
             "target_dust_classification": "executable_delta",
             "target_position_truth_state": "converged",
         },
-    ).as_final_payload()
+    )
+    return _with_unit_pre_submit_risk_proof(plan).as_final_payload()
 
 
 def test_live_execute_signal_consumes_residual_plan_as_standard_submit_intent(monkeypatch, tmp_path):

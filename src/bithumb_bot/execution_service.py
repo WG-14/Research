@@ -2086,9 +2086,9 @@ def _build_execution_decision_summary_from_authority_payload(
                 ),
                 "submit_authority_policy_hash": submit_authority_policy_hash,
                 "exposure_boundary_artifact": risk_decision,
-                "exposure_boundary_artifact_hash": risk_decision_hash,
+                "exposure_boundary_artifact_hash": exposure_boundary_artifact_hash,
                 "legacy_non_authoritative_exposure_risk_decision": risk_decision,
-                "legacy_non_authoritative_exposure_risk_decision_hash": risk_decision_hash,
+                "legacy_non_authoritative_exposure_risk_decision_hash": exposure_boundary_artifact_hash,
             }
             residual_submit_plan = ExecutionSubmitPlan(
                 side="SELL",

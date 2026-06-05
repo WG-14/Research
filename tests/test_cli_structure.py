@@ -80,6 +80,7 @@ EXPECTED_COMMANDS = {
     "runtime-replay-decisions",
     "runtime-strategy-set-dump",
     "runtime-strategy-set-lint",
+    "risk-layer-replay",
     "replay-decision",
     "promotion-provenance-verify",
     "promotion-verify",

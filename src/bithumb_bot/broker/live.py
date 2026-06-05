@@ -2709,6 +2709,25 @@ def _determine_live_execution_intent(
         residual_qty = float(execution_submit_plan.get("qty") or 0.0)
         if residual_qty <= POSITION_EPSILON:
             return None
+        position_state.decision_observability.update(
+            {
+                "execution_submit_plan_source": "residual_inventory",
+                "execution_submit_plan_authority": "residual_inventory_policy",
+                "execution_submit_plan_hash": str(
+                    execution_submit_plan.get("submit_plan_hash")
+                    or execution_submit_plan.get("content_hash")
+                    or ""
+                ),
+                "source": "residual_inventory",
+                "authority": "residual_inventory_policy",
+                "submit_qty_source": "residual_inventory_policy",
+                "submit_qty_source_truth_source": "execution_submit_plan.residual_inventory_policy",
+                "sell_qty_basis_qty": residual_qty,
+                "sell_qty_basis_source": "residual_inventory_policy",
+                "sell_qty_basis_qty_truth_source": "execution_submit_plan.qty",
+                "sell_qty_basis_source_truth_source": "execution_submit_plan.authority",
+            }
+        )
         residual_sizing = SimpleNamespace(
             allowed=True,
             block_reason="none",

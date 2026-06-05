@@ -374,7 +374,11 @@ class DecisionCoordinator:
             context.update(bundle_refs)
             allocation_payload = context.get("portfolio_allocation_decision")
             if not isinstance(allocation_payload, dict):
-                raise RuntimeError("portfolio_allocation_decision_missing")
+                planning_error = str(getattr(planning_bundle, "planning_error", "") or "").strip()
+                raise RuntimeError(
+                    "portfolio_allocation_decision_missing"
+                    + (f":{planning_error}" if planning_error else "")
+                )
             allocation_refs = self.record_portfolio_allocation_decision_fn(
                 conn,
                 bundle_id=int(bundle_refs["runtime_strategy_decision_bundle_id"]),

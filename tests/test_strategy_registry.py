@@ -18,6 +18,7 @@ from bithumb_bot.runtime_decision_service import (
     compute_legacy_signal_for_diagnostics as compute_signal,
 )
 from bithumb_bot.profile_cli import cmd_replay_decision
+from bithumb_bot.risk_contract import RiskPolicy
 from bithumb_bot import runtime_strategy_decision
 from bithumb_bot.runtime_adapters import sma_with_filter as runtime_sma_adapter
 from bithumb_bot.run_loop_compatibility import LegacyDbDecisionCompatibilityRunner
@@ -259,6 +260,14 @@ def test_live_sma_with_filter_route_does_not_call_legacy_decide(
         _feature_snapshot_boundary,
     )
     import bithumb_bot.runtime_strategy_set as runtime_strategy_set
+    risk_policy = RiskPolicy(
+        max_daily_loss_krw=30_000.0,
+        max_daily_order_count=2,
+        max_trade_count_per_day=4,
+        max_drawdown_pct=20.0,
+        cooldown_after_loss_min=15,
+        source="unit_approved_profile",
+    )
 
     monkeypatch.setattr(
         runtime_strategy_set,
@@ -267,6 +276,10 @@ def test_live_sma_with_filter_route_does_not_call_legacy_decide(
                 "profile_mode": "small_live",
                 "profile_content_hash": "sha256:unit",
                 "strategy_parameters": runtime_strategy_parameters_from_settings("sma_with_filter", settings),
+                "risk_policy": risk_policy.as_dict(),
+                "risk_policy_hash": risk_policy.policy_hash(),
+                "risk_enforcement_mode": "enforced",
+                "missing_risk_policy_behavior": "fail_closed_for_live",
             },
         )
     monkeypatch.setattr(runtime_strategy_set, "diff_profile_to_runtime", lambda *_args, **_kwargs: ())

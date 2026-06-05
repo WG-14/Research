@@ -164,4 +164,9 @@ def test_execution_intent_cannot_affect_target_delta_submit_sizing() -> None:
     assert left_payload["order_rule_authority"]
     assert left_payload["submit_authority_mode"] == "live_real_order_target_delta_only"
     assert str(left_payload["submit_authority_policy_hash"]).startswith("sha256:")
-    assert str(left_payload["risk_decision_hash"]).startswith("sha256:")
+    assert "risk_decision_hash" not in left_payload
+    assert str(left_payload["exposure_boundary_artifact_hash"]).startswith("sha256:")
+    assert (
+        left_payload["legacy_non_authoritative_exposure_risk_decision_hash"]
+        == left_payload["exposure_boundary_artifact_hash"]
+    )

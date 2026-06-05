@@ -16,9 +16,11 @@ from bithumb_bot.broker.balance_source import _default_flat_start_safety_check
 from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_db
 from bithumb_bot.decision_equivalence import sha256_prefixed
+from bithumb_bot.risk_contract import RiskPolicy, RiskSnapshot, build_risk_decision
 from bithumb_bot.runtime_compat import get_health_status
 from bithumb_bot.runtime.app_container import create_default_runtime_app
 from bithumb_bot.runtime.runner import Runner
+from bithumb_bot.research.strategy_registry import runtime_strategy_parameters_from_settings
 from bithumb_bot.execution_service import (
     ExecutionDecisionSummary,
     ExecutionSubmitPlan,
@@ -173,6 +175,41 @@ def _unit_runtime_strategy_set_manifest(**_kwargs):
     return payload
 
 
+def _unit_live_risk_policy() -> RiskPolicy:
+    return RiskPolicy(
+        source="unit_approved_profile",
+    )
+
+
+def _unit_pre_submit_risk_decision(plan) -> object:
+    policy = RiskPolicy(source="unit_pre_submit")
+    snapshot = RiskSnapshot(
+        evaluation_ts_ms=123,
+        mark_price=1.0,
+        broker_local_mismatch=False,
+        unresolved_order_blocked=False,
+        unresolved_order_reason_code="OK",
+        unresolved_order_reason="ok",
+        state_source="unit_pre_submit",
+        evidence={"execution_submit_plan_hash": str(plan.evidence.get("execution_submit_plan_hash") or "")},
+    )
+    return build_risk_decision(
+        evaluation_point="pre_submit",
+        status="ALLOW",
+        reason_code="OK",
+        reason="unit pre-submit risk allow",
+        allowed_actions=("SUBMIT",),
+        recommended_action="SUBMIT",
+        snapshot=snapshot,
+        policy=policy,
+        evidence={
+            "execution_submit_plan_hash": str(plan.evidence.get("execution_submit_plan_hash") or ""),
+            "execution_submit_plan_source": str(plan.evidence.get("execution_submit_plan_source") or ""),
+            "execution_submit_plan_authority": str(plan.evidence.get("execution_submit_plan_authority") or ""),
+        },
+    )
+
+
 def _submit_plan_payload(plan: object | None) -> dict[str, object]:
     assert plan is not None
     as_dict = getattr(plan, "as_dict", None)
@@ -180,6 +217,96 @@ def _submit_plan_payload(plan: object | None) -> dict[str, object]:
     payload = as_dict()
     assert isinstance(payload, dict)
     return payload
+
+
+def _persist_execution_plan_for_submit_plan(plan: ExecutionSubmitPlan) -> None:
+    submit_hash = plan.content_hash()
+    payload = _submit_plan_payload(plan)
+    conn = ensure_db()
+    try:
+        bundle_hash = f"unit-bundle:{submit_hash}"
+        allocation_hash = f"unit-allocation:{submit_hash}"
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO runtime_strategy_decision_bundle(
+                candle_ts, pair, interval, strategy_set_manifest_hash,
+                bundle_hash, result_count, created_ts
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (123, str(settings.PAIR), str(settings.INTERVAL), "sha256:unit", bundle_hash, 0, 123),
+        )
+        bundle_row = conn.execute(
+            "SELECT id FROM runtime_strategy_decision_bundle WHERE bundle_hash=?",
+            (bundle_hash,),
+        ).fetchone()
+        assert bundle_row is not None
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO portfolio_allocation_decision(
+                bundle_id, allocation_decision_hash, allocation_input_hash,
+                allocator_config_hash, strategy_contribution_hash, selected_signal,
+                selected_priority, authoritative, primary_block_reason, reason,
+                conflict_resolution_json, allocation_decision_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(bundle_row["id"]),
+                allocation_hash,
+                "sha256:unit-input",
+                "sha256:unit-config",
+                "sha256:unit-contribution",
+                "SELL",
+                0,
+                1,
+                "none",
+                "unit_residual_submit_plan_fixture",
+                "{}",
+                "{}",
+            ),
+        )
+        allocation_row = conn.execute(
+            "SELECT id FROM portfolio_allocation_decision WHERE allocation_decision_hash=?",
+            (allocation_hash,),
+        ).fetchone()
+        assert allocation_row is not None
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO execution_plan(
+                allocation_id, portfolio_target_hash, execution_plan_bundle_hash,
+                execution_submit_plan_hash, submit_plan_side, submit_plan_qty,
+                submit_plan_notional_krw, submit_plan_idempotency_key,
+                submit_plan_source, submit_plan_authority, submit_expected,
+                final_action, block_reason, status, execution_plan_bundle_json,
+                execution_submit_plan_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(allocation_row["id"]),
+                None,
+                bundle_hash,
+                submit_hash,
+                str(payload.get("side") or ""),
+                None if payload.get("qty") is None else float(payload.get("qty") or 0.0),
+                None
+                if payload.get("notional_krw") is None
+                else float(payload.get("notional_krw") or 0.0),
+                payload.get("idempotency_key"),
+                str(payload.get("source") or ""),
+                str(payload.get("authority") or ""),
+                1 if bool(payload.get("submit_expected")) else 0,
+                str(payload.get("final_action") or ""),
+                str(payload.get("block_reason") or ""),
+                "unit_test_pending_final_payload",
+                "{}",
+                "{}",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 @pytest.fixture(autouse=True)
@@ -218,6 +345,7 @@ def _isolated_db(tmp_path):
         "LIVE_PERFORMANCE_GATE_ENABLED": settings.LIVE_PERFORMANCE_GATE_ENABLED,
         "RESIDUAL_LIVE_SELL_MODE": settings.RESIDUAL_LIVE_SELL_MODE,
         "RESIDUAL_BUY_SIZING_MODE": settings.RESIDUAL_BUY_SIZING_MODE,
+        "APPROVED_STRATEGY_PROFILE_PATH": settings.APPROVED_STRATEGY_PROFILE_PATH,
     }
     old_env_db_path = os.environ.get("DB_PATH")
 
@@ -322,6 +450,7 @@ class _LoopConn:
         self.portfolio_allocation_rows: dict[str, dict[str, object]] = {}
         self.portfolio_target_rows: dict[str, dict[str, object]] = {}
         self.execution_plan_rows: dict[tuple[int, str], dict[str, object]] = {}
+        self.in_transaction = False
 
     def execute(self, query, params=None):
         q = " ".join(str(query).split())
@@ -502,13 +631,37 @@ class _LoopConn:
             if key not in self.execution_plan_rows:
                 self.execution_plan_rows[key] = {
                     "id": len(self.execution_plan_rows) + 1,
+                    "execution_submit_plan_hash": str(params[5]),
+                    "execution_submit_plan_json": params[17],
                 }
             return _Rows(None, rowcount=1)
+
+        if "UPDATE execution_plan" in q and "WHERE execution_submit_plan_hash=?" in q:
+            assert params is not None
+            submit_hash = str(params[11])
+            for row in self.execution_plan_rows.values():
+                if str(row.get("execution_submit_plan_hash") or "") == submit_hash:
+                    row["execution_submit_plan_json"] = params[0]
+                    row["execution_submit_plan_hash"] = str(params[1])
+                    return _Rows(None, rowcount=1)
+            return _Rows(None, rowcount=0)
 
         if "SELECT id FROM execution_plan WHERE allocation_id=? AND execution_plan_bundle_hash=?" in q:
             assert params is not None
             row = self.execution_plan_rows.get((int(params[0]), str(params[1])))
             return _Rows(None if row is None else {"id": row["id"]})
+
+        if "SELECT execution_submit_plan_json FROM execution_plan WHERE id=?" in q:
+            assert params is not None
+            row = next(
+                (
+                    item
+                    for item in self.execution_plan_rows.values()
+                    if int(item["id"]) == int(params[0])
+                ),
+                None,
+            )
+            return _Rows(None if row is None else {"execution_submit_plan_json": row["execution_submit_plan_json"]})
 
         if "SELECT final_portfolio_target_hash" in q and "FROM portfolio_target" in q:
             return _Rows(
@@ -956,6 +1109,7 @@ def _prepare_run_loop(
     object.__setattr__(settings, "KILL_SWITCH_LIQUIDATE", False)
     object.__setattr__(settings, "BITHUMB_API_KEY", "")
     object.__setattr__(settings, "BITHUMB_API_SECRET", "")
+    object.__setattr__(settings, "APPROVED_STRATEGY_PROFILE_PATH", "/tmp/unit-approved-profile.json")
 
     object.__setattr__(settings, "MAX_MARKET_SLIPPAGE_BPS", 50.0)
     object.__setattr__(settings, "LIVE_PRICE_PROTECTION_MAX_SLIPPAGE_BPS", 25.0)
@@ -968,6 +1122,31 @@ def _prepare_run_loop(
     validate_runtime_strategy_set_selection = lambda _cfg: None
     validate_market_runtime = lambda _cfg: None
     runtime_strategy_set_manifest_provider = _unit_runtime_strategy_set_manifest
+    risk_policy = _unit_live_risk_policy()
+    import bithumb_bot.runtime_strategy_set as runtime_strategy_set
+
+    monkeypatch.setattr(
+        runtime_strategy_set,
+        "load_approved_profile",
+        lambda _path: {
+            "profile_mode": "small_live",
+            "profile_content_hash": "sha256:unit-profile",
+            "strategy_parameters": runtime_strategy_parameters_from_settings(
+                "sma_with_filter",
+                settings,
+            ),
+            "risk_policy": risk_policy.as_dict(),
+            "risk_policy_hash": risk_policy.policy_hash(),
+            "risk_enforcement_mode": "enforced",
+            "missing_risk_policy_behavior": "fail_closed_for_live",
+        },
+    )
+    monkeypatch.setattr(runtime_strategy_set, "diff_profile_to_runtime", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(runtime_strategy_set, "expected_profile_modes_for_runtime", lambda _runtime: (("small_live",), "ok"))
+    monkeypatch.setattr(
+        "bithumb_bot.runtime_risk_engine.RuntimeRiskEngineAdapter.evaluate_pre_submit",
+        lambda self, *, plan, **_kwargs: _unit_pre_submit_risk_decision(plan),
+    )
     monkeypatch.setattr(
         "bithumb_bot.run_loop_execution_planner.runtime_strategy_set_manifest_hash",
         lambda _strategy_set: "sha256:unit-runtime-strategy-set",
@@ -997,6 +1176,7 @@ def _prepare_run_loop(
         target_state=target_state,
     )
     monkeypatch.setattr("bithumb_bot.runtime_data_access.ensure_db", lambda: loop_conn)
+    monkeypatch.setattr("bithumb_bot.execution_service.ensure_db", lambda: loop_conn)
     monkeypatch.setattr("bithumb_bot.flatten.ensure_db", lambda: loop_conn)
     monkeypatch.setattr("bithumb_bot.flatten.init_portfolio", lambda _conn: None)
     broker_factory = lambda: _DummyBroker()
@@ -1760,6 +1940,7 @@ def test_residual_sell_policy_enabled_submits_residual_qty_without_strategy_lot_
     assert decision.submit_expected is True
     assert decision.strategy_sell_candidate is None
     assert decision.residual_submit_plan is not None
+    _persist_execution_plan_for_submit_plan(decision.residual_submit_plan)
     assert _submit_plan_payload(decision.residual_submit_plan)["authority"] == "residual_inventory_policy"
 
     broker = _ResidualFakeBroker()
@@ -2351,6 +2532,9 @@ def test_valid_unconsumed_explicit_submit_plan_does_not_fall_through_to_legacy_s
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
     executor_calls: list[dict[str, object]] = []
+    summary = _typed_target_execution_summary()
+    assert summary.target_submit_plan is not None
+    _persist_execution_plan_for_submit_plan(summary.target_submit_plan)
 
     service = LiveSignalExecutionService(
         broker=_ResidualFakeBroker(),
@@ -2363,7 +2547,7 @@ def test_valid_unconsumed_explicit_submit_plan_does_not_fall_through_to_legacy_s
             ts=123,
             market_price=115_000_000.0,
             decision_context={},
-            execution_decision_summary=_typed_target_execution_summary(),
+            execution_decision_summary=summary,
         )
     )
 
@@ -2820,6 +3004,7 @@ def test_default_live_service_wrapper_preserves_residual_execution_submit_plan(m
         final_reason="dust_only_remainder",
     )
     assert decision.residual_submit_plan is not None
+    _persist_execution_plan_for_submit_plan(decision.residual_submit_plan)
     captured: dict[str, object] = {}
 
     def _capture_live_execute_signal(*_args, **kwargs):
@@ -2862,6 +3047,7 @@ def test_residual_enabled_executor_typeerror_fails_closed_without_retry() -> Non
         final_reason="dust_only_remainder",
     )
     assert decision.residual_submit_plan is not None
+    _persist_execution_plan_for_submit_plan(decision.residual_submit_plan)
     calls: list[dict[str, object]] = []
 
     def _legacy_executor(*_args, **kwargs):
