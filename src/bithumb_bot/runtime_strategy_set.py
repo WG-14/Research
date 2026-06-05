@@ -45,6 +45,10 @@ from .risk_decision import (
     RISK_BUDGET_SEMANTICS,
     build_risk_decision_artifact,
 )
+from .strategy_risk_profile import (
+    StrategyRiskProfile,
+    strategy_risk_profile_from_profile_payload,
+)
 from .runtime_data_provider import (
     RuntimeDataAvailabilityReport,
     RuntimeDataRequirementResolver,
@@ -151,6 +155,7 @@ class RuntimeStrategySpec:
     max_target_exposure_krw: float | None = None
     risk_budget_krw: float | None = None
     risk_policy: Mapping[str, object] | None = None
+    risk_policy_hash: str | None = None
     risk_snapshot: Mapping[str, object] | None = None
     parameters: Mapping[str, object] | None = None
     runtime_adapter_config: Mapping[str, object] | None = None
@@ -218,6 +223,8 @@ class RuntimeStrategySpec:
             object.__setattr__(self, "parameter_source", str(self.parameter_source).strip() or None)
         if self.runtime_contract_hash is not None:
             object.__setattr__(self, "runtime_contract_hash", str(self.runtime_contract_hash).strip() or None)
+        if self.risk_policy_hash is not None:
+            object.__setattr__(self, "risk_policy_hash", str(self.risk_policy_hash).strip() or None)
         if self.strategy_version is not None:
             object.__setattr__(self, "strategy_version", str(self.strategy_version).strip() or None)
         if self.strategy_instance_id is not None:
@@ -254,6 +261,7 @@ class RuntimeStrategySpec:
             "strategy_risk_policy": (
                 None if self.risk_policy is None else dict(self.risk_policy)
             ),
+            "strategy_risk_policy_hash": self.risk_policy_hash,
             "strategy_risk_snapshot": (
                 None if self.risk_snapshot is None else dict(self.risk_snapshot)
             ),
@@ -387,6 +395,7 @@ class RuntimeStrategyInstance:
     strategy_version: str | None
     runtime_contract: Mapping[str, object]
     runtime_adapter_config: Mapping[str, object]
+    risk_profile: StrategyRiskProfile | None = None
     parameter_authority_audit: Mapping[str, object] | None = None
     profile_authority_context: Mapping[str, object] | None = None
     legacy_compatibility_used: bool = False
@@ -472,6 +481,15 @@ class RuntimeStrategyInstance:
             "plugin_contract_hash": self.plugin_contract_hash,
             "strategy_version": self.strategy_version,
             "runtime_adapter_config": dict(self.runtime_adapter_config),
+            "strategy_risk_profile": (
+                None if self.risk_profile is None else self.risk_profile.as_dict()
+            ),
+            "strategy_risk_profile_hash": (
+                None if self.risk_profile is None else self.risk_profile.profile_hash()
+            ),
+            "strategy_risk_policy_hash": (
+                None if self.risk_profile is None else self.risk_profile.risk_policy_hash
+            ),
             "parameter_authority_audit": dict(self.parameter_authority_audit or {}),
             "profile_authority_context": dict(self.profile_authority_context or {}),
             "legacy_compatibility_used": bool(self.legacy_compatibility_used),
@@ -784,6 +802,10 @@ class RuntimeStrategySetResolver:
                 if isinstance(payload.get("risk_policy"), Mapping)
                 else default.risk_policy
             ),
+            risk_policy_hash=(
+                str(payload.get("risk_policy_hash") or payload.get("strategy_risk_policy_hash") or "").strip()
+                or default.risk_policy_hash
+            ),
             risk_snapshot=(
                 payload.get("risk_snapshot")
                 if isinstance(payload.get("risk_snapshot"), Mapping)
@@ -1012,6 +1034,14 @@ class RuntimeDecisionRequestBuilder:
         plugin = resolve_research_strategy_plugin(spec.strategy_name)
         cfg = replace(self.settings_obj, STRATEGY_NAME=spec.strategy_name)
         authority_context = self._authority_context()
+        live_like = str(getattr(self.settings_obj, "MODE", "") or "").strip().lower() == "live"
+        live_real_order = bool(
+            str(getattr(self.settings_obj, "MODE", "") or "").strip().lower() == "live"
+            and bool(getattr(self.settings_obj, "LIVE_REAL_ORDER_ARMED", False))
+            and not bool(getattr(self.settings_obj, "LIVE_DRY_RUN", True))
+        )
+        if live_like and spec.risk_snapshot is not None:
+            raise RuntimeError(f"static_risk_snapshot_rejected_for_live_authority:{spec.strategy_name}")
         spec_profile_path = str(spec.approved_profile_path or "").strip()
         spec_profile_hash = str(spec.approved_profile_hash or "").strip()
         if authority_context.require_spec_bound_profile:
@@ -1117,6 +1147,19 @@ class RuntimeDecisionRequestBuilder:
             spec,
             strategy_parameters_hash=strategy_parameters_hash,
         )
+        risk_profile = strategy_risk_profile_from_profile_payload(
+            strategy_instance_id=strategy_instance_id,
+            strategy_name=spec.strategy_name,
+            pair=str(spec.pair),
+            interval=str(spec.interval),
+            profile_payload=profile,
+            approved_runtime_profile_path=approved_profile_path,
+            approved_runtime_profile_hash=approved_profile_hash,
+            inline_risk_policy=spec.risk_policy,
+            declared_risk_policy_hash=spec.risk_policy_hash,
+            live_like=live_like,
+            live_real_order=live_real_order,
+        )
         return RuntimeStrategyInstance(
             spec=spec,
             strategy_instance_id=strategy_instance_id,
@@ -1131,6 +1174,7 @@ class RuntimeDecisionRequestBuilder:
             strategy_version=strategy_version,
             runtime_contract=runtime_contract,
             runtime_adapter_config=dict(spec.runtime_adapter_config or {}),
+            risk_profile=risk_profile,
             parameter_authority_audit=dict(authority.source_audit_metadata),
             profile_authority_context=authority_context.as_dict(),
             legacy_compatibility_used=authority.legacy_compatibility_used,
@@ -1882,6 +1926,15 @@ def normalized_runtime_strategy_set_manifest(
             "strategy_instance_id": instance.strategy_instance_id,
             "approved_profile_path": instance.approved_profile_path,
             "approved_profile_hash": instance.approved_profile_hash,
+            "strategy_risk_profile_hash": (
+                None if instance.risk_profile is None else instance.risk_profile.profile_hash()
+            ),
+            "strategy_risk_policy_hash": (
+                None if instance.risk_profile is None else instance.risk_profile.risk_policy_hash
+            ),
+            "strategy_risk_enforcement_mode": (
+                None if instance.risk_profile is None else instance.risk_profile.enforcement_mode
+            ),
             "plugin_contract_hash": instance.plugin_contract_hash,
             "strategy_parameters_hash": instance.strategy_parameters_hash,
             "runtime_contract_hash": instance.runtime_contract_hash,

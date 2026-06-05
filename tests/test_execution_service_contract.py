@@ -17,6 +17,7 @@ from bithumb_bot.execution_service import (
     validate_execution_submit_plan_payload,
 )
 from bithumb_bot.submit_authority_policy import evaluate_submit_authority_policy
+from bithumb_bot.submit_authority_policy import operational_pre_submit_risk_approval_error
 from bithumb_bot.research.backtest_kernel import ResearchExecutionContext, ResearchVirtualExecutionService
 from bithumb_bot.research.execution_model import FixedBpsExecutionModel
 
@@ -289,6 +290,33 @@ def test_submit_authority_policy_rejects_live_target_delta_without_provenance() 
 
     assert decision.allowed is False
     assert decision.reason == "live_real_order_target_plan_missing_portfolio_target_hash"
+
+
+def test_operational_pre_submit_risk_approval_requires_allow_and_matching_plan_hash() -> None:
+    payload = {
+        "pre_submit_risk_status": "ALLOW",
+        "pre_submit_risk_decision_hash": "sha256:decision",
+        "pre_submit_risk_policy_hash": "sha256:policy",
+        "pre_submit_risk_input_hash": "sha256:input",
+        "pre_submit_risk_plan_hash": "sha256:plan",
+    }
+
+    assert operational_pre_submit_risk_approval_error(
+        payload,
+        expected_submit_plan_hash="sha256:plan",
+    ) is None
+    assert operational_pre_submit_risk_approval_error(
+        {**payload, "pre_submit_risk_status": "BLOCK"},
+        expected_submit_plan_hash="sha256:plan",
+    ) == "live_real_order_pre_submit_risk_not_allow"
+    assert operational_pre_submit_risk_approval_error(
+        payload,
+        expected_submit_plan_hash="sha256:other",
+    ) == "live_real_order_pre_submit_risk_plan_hash_mismatch"
+    assert operational_pre_submit_risk_approval_error(
+        {**payload, "pre_submit_risk_decision_hash": ""},
+        expected_submit_plan_hash="sha256:plan",
+    ) == "live_real_order_pre_submit_risk_decision_hash_missing"
 
 
 def _typed_target_execution_summary() -> ExecutionDecisionSummary:

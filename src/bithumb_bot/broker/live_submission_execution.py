@@ -29,6 +29,7 @@ from ..reason_codes import (
 )
 from ..risk_contract import SubmitPlan
 from ..runtime_risk_engine import RuntimeRiskEngineAdapter
+from ..submit_authority_policy import operational_pre_submit_risk_approval_error
 from .live_submit_planning import build_live_submit_plan
 from .live_submit_orchestrator import (
     StandardSubmitPlanningFailureRequest,
@@ -535,6 +536,17 @@ def execute_live_submission_and_application(
             side=feasibility.side,
             qty=float(feasibility.normalized_qty),
             source="live_submission",
+            evidence={
+                "execution_submit_plan_hash": str(
+                    decision_observability.get("execution_submit_plan_hash") or ""
+                ),
+                "execution_submit_plan_source": str(
+                    decision_observability.get("execution_submit_plan_source") or ""
+                ),
+                "execution_submit_plan_authority": str(
+                    decision_observability.get("execution_submit_plan_authority") or ""
+                ),
+            },
         ),
         ts_ms=int(ts),
         now_ms=int(time.time() * 1000),
@@ -628,6 +640,52 @@ def execute_live_submission_and_application(
             f"live order placement blocked ({feasibility.side}): category=submission_halt;reason={risk_decision.reason}"
         )
         return None
+    pre_submit_risk_fields = {
+        "pre_submit_risk_decision": risk_decision.as_dict(),
+        "pre_submit_risk_decision_hash": risk_decision.risk_decision_hash,
+        "pre_submit_risk_policy_hash": risk_decision.risk_policy_hash,
+        "pre_submit_risk_input_hash": risk_decision.risk_input_hash,
+        "pre_submit_risk_status": risk_decision.status,
+        "pre_submit_risk_reason_code": risk_decision.reason_code,
+        "pre_submit_risk_state_source": risk_decision.state_source,
+        "pre_submit_risk_plan_hash": str(
+            decision_observability.get("execution_submit_plan_hash") or ""
+        ),
+    }
+    if str(settings.MODE).strip().lower() == "live" and not bool(settings.LIVE_DRY_RUN):
+        expected_plan_hash = str(decision_observability.get("execution_submit_plan_hash") or "").strip()
+        decision_plan = risk_decision.evidence.get("submit_plan")
+        decision_plan_evidence = decision_plan.get("evidence") if isinstance(decision_plan, dict) else None
+        actual_plan_hash = (
+            str(decision_plan_evidence.get("execution_submit_plan_hash") or "").strip()
+            if isinstance(decision_plan_evidence, dict)
+            else ""
+        )
+        if not expected_plan_hash or actual_plan_hash != expected_plan_hash:
+            live_module.RUN_LOG.warning(
+                format_log_kv(
+                    "[ORDER_SKIP] pre-submit risk decision plan mismatch",
+                    side=feasibility.side,
+                    expected_submit_plan_hash=expected_plan_hash or "-",
+                    actual_submit_plan_hash=actual_plan_hash or "-",
+                    pre_submit_risk_decision_hash=risk_decision.risk_decision_hash,
+                )
+            )
+            return None
+        approval_error = operational_pre_submit_risk_approval_error(
+            pre_submit_risk_fields,
+            expected_submit_plan_hash=expected_plan_hash,
+        )
+        if approval_error is not None:
+            live_module.RUN_LOG.warning(
+                format_log_kv(
+                    "[ORDER_SKIP] pre-submit risk approval blocked",
+                    side=feasibility.side,
+                    reason=approval_error,
+                    pre_submit_risk_decision_hash=risk_decision.risk_decision_hash,
+                )
+            )
+            return None
 
     existing = conn.execute(
         "SELECT status FROM orders WHERE client_order_id=?",
@@ -884,6 +942,13 @@ def execute_live_submission_and_application(
             "dust_tracking_qty": float(position_state.dust_tracking_qty),
         }
         sell_observability = {}
+    submit_observability_fields.update(pre_submit_risk_fields)
+    submit_truth_source_fields.update(
+        {
+            "pre_submit_risk_decision_truth_source": "RuntimeRiskEngineAdapter.evaluate_pre_submit",
+            "pre_submit_risk_plan_hash_truth_source": "ExecutionSubmitPlan.final_payload",
+        }
+    )
 
     planning_payload_hash = payload_fingerprint(
         {

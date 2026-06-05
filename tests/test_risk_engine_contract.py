@@ -13,6 +13,8 @@ from bithumb_bot.risk import DAILY_LOSS_LIMIT_REASON_CODE, RISK_STATE_MISMATCH, 
 from bithumb_bot.risk_contract import RiskPolicy, RiskSnapshot, SubmitPlan
 from bithumb_bot.risk_policy_engine import RiskPolicyEngine
 from bithumb_bot.runtime_risk_engine import RuntimeRiskEngineAdapter
+from bithumb_bot.strategy_risk_profile import strategy_risk_profile_from_profile_payload
+from bithumb_bot.strategy_risk_state import StrategyRiskStateProvider, missing_required_risk_state
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -143,6 +145,91 @@ def test_strategy_level_risk_policy_schema_contains_required_fields() -> None:
     assert payload["cooldown_after_loss_min"] == 15
 
 
+def test_typed_strategy_risk_profile_binds_policy_hash_and_scope() -> None:
+    profile = strategy_risk_profile_from_profile_payload(
+        strategy_instance_id="sma:unit",
+        strategy_name="sma_with_filter",
+        pair="KRW-BTC",
+        interval="1m",
+        profile_payload={
+            "risk_policy": _policy().as_dict(),
+            "risk_enforcement_mode": "enforced",
+            "missing_risk_policy_behavior": "fail_closed_for_live",
+        },
+        approved_runtime_profile_path="/runtime/profile.json",
+        approved_runtime_profile_hash="sha256:profile",
+        live_like=True,
+        live_real_order=True,
+    )
+
+    assert profile is not None
+    assert profile.strategy_instance_id == "sma:unit"
+    assert profile.policy == _policy()
+    assert profile.risk_policy_hash == _policy().policy_hash()
+    assert profile.profile_hash().startswith("sha256:")
+    assert profile.as_dict()["approved_runtime_profile_hash"] == "sha256:profile"
+
+
+def test_strategy_risk_state_provider_derives_reproducible_snapshot_and_blocks_count_limit(tmp_path) -> None:
+    db_path = tmp_path / "strategy-risk.sqlite"
+    conn = ensure_db(str(db_path))
+    set_portfolio_breakdown(
+        conn,
+        cash_available=1_000_000.0,
+        cash_locked=0.0,
+        asset_available=0.0,
+        asset_locked=0.0,
+    )
+    conn.execute(
+        """
+        INSERT INTO orders(client_order_id, side, qty_req, qty_filled, status, created_ts, updated_ts)
+        VALUES ('order-1', 'BUY', 0.1, 0.0, 'FILLED', ?, ?)
+        """,
+        (1_800_000_000_000, 1_800_000_000_000),
+    )
+    conn.commit()
+    policy = RiskPolicy(max_daily_order_count=1, source="unit")
+    provider = StrategyRiskStateProvider(conn)
+
+    first = provider.snapshot(
+        strategy_instance_id="sma:unit",
+        strategy_name="sma_with_filter",
+        pair="KRW-BTC",
+        interval="1m",
+        as_of_ts_ms=1_800_000_000_001,
+        mark_price=100.0,
+        policy=policy,
+        enforced=True,
+    )
+    second = provider.snapshot(
+        strategy_instance_id="sma:unit",
+        strategy_name="sma_with_filter",
+        pair="KRW-BTC",
+        interval="1m",
+        as_of_ts_ms=1_800_000_000_001,
+        mark_price=100.0,
+        policy=policy,
+        enforced=True,
+    )
+    decision = RiskPolicyEngine(policy).evaluate_pre_decision(first)
+
+    assert first.input_hash() == second.input_hash()
+    assert first.state_source == "runtime_db_ledger"
+    assert str(first.evidence["risk_state_evidence_hash"]).startswith("sha256:")
+    assert decision.reason_code == "MAX_DAILY_ORDER_COUNT"
+    assert decision.status == "BLOCK"
+
+
+def test_enforced_strategy_risk_state_reports_missing_required_fields() -> None:
+    policy = RiskPolicy(max_trade_count_per_day=1, max_drawdown_pct=5.0, source="unit")
+    snapshot = _snapshot(daily_trade_count=None, current_drawdown_pct=None)
+
+    assert missing_required_risk_state(policy, snapshot) == (
+        "daily_trade_count",
+        "current_drawdown_pct",
+    )
+
+
 def test_runtime_risk_evaluation_records_typed_decision_identity(tmp_path) -> None:
     original = {
         "DB_PATH": settings.DB_PATH,
@@ -257,7 +344,36 @@ def test_tuple_guardrails_are_not_called_from_runtime_execution_paths() -> None:
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in blocked_calls:
                 violations.append(f"{path.relative_to(ROOT)}:{node.lineno}:{node.func.id}")
+    assert violations == []
 
+
+def test_risk_budget_krw_not_used_in_arithmetic_authority_paths() -> None:
+    allowed_paths = {
+        ROOT / "src/bithumb_bot/risk_decision.py",
+        ROOT / "src/bithumb_bot/strategy_preference.py",
+        ROOT / "src/bithumb_bot/portfolio_allocation.py",
+        ROOT / "src/bithumb_bot/runtime_strategy_set.py",
+        ROOT / "src/bithumb_bot/db_core.py",
+    }
+    violations: list[str] = []
+    for path in (ROOT / "src/bithumb_bot").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if "risk_budget_krw" not in text:
+            continue
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.BinOp):
+                segment = ast.get_source_segment(text, node) or ""
+                if "risk_budget_krw" in segment and path not in allowed_paths:
+                    violations.append(f"{path.relative_to(ROOT)}:{node.lineno}:{segment}")
+            if isinstance(node, ast.Call):
+                segment = ast.get_source_segment(text, node) or ""
+                if (
+                    "risk_budget_krw" in segment
+                    and any(name in segment for name in ("min(", "max(", "float("))
+                    and path not in allowed_paths
+                ):
+                    violations.append(f"{path.relative_to(ROOT)}:{node.lineno}:{segment}")
     assert violations == []
 
 

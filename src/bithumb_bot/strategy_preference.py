@@ -57,6 +57,8 @@ class StrategyPreference:
     risk_budget_krw: float | None = None
     risk_policy: Mapping[str, object] | None = None
     risk_snapshot: Mapping[str, object] | None = None
+    strategy_risk_profile: Mapping[str, object] | None = None
+    strategy_risk_decision: Mapping[str, object] | None = None
     policy_hash: str = ""
     policy_contract_hash: str = ""
     policy_input_hash: str = ""
@@ -88,6 +90,20 @@ class StrategyPreference:
             self,
             "risk_snapshot",
             None if self.risk_snapshot is None else _stable_value(dict(self.risk_snapshot)),
+        )
+        object.__setattr__(
+            self,
+            "strategy_risk_profile",
+            None
+            if self.strategy_risk_profile is None
+            else _stable_value(dict(self.strategy_risk_profile)),
+        )
+        object.__setattr__(
+            self,
+            "strategy_risk_decision",
+            None
+            if self.strategy_risk_decision is None
+            else _stable_value(dict(self.strategy_risk_decision)),
         )
         object.__setattr__(
             self,
@@ -125,7 +141,36 @@ class StrategyPreference:
             "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
             "strategy_risk_policy": self.risk_policy,
             "strategy_risk_snapshot": self.risk_snapshot,
+            "strategy_risk_profile": self.strategy_risk_profile,
+            "strategy_risk_decision": self.strategy_risk_decision,
+            "strategy_risk_decision_hash": (
+                None
+                if self.strategy_risk_decision is None
+                else self.strategy_risk_decision.get("risk_decision_hash")
+            ),
+            "strategy_risk_policy_hash": (
+                None
+                if self.strategy_risk_profile is None
+                else self.strategy_risk_profile.get("risk_policy_hash")
+            ),
+            "strategy_risk_input_hash": (
+                None
+                if self.strategy_risk_decision is None
+                else self.strategy_risk_decision.get("risk_input_hash")
+            ),
+            "strategy_risk_status": (
+                None
+                if self.strategy_risk_decision is None
+                else self.strategy_risk_decision.get("status")
+            ),
+            "strategy_risk_reason_code": (
+                None
+                if self.strategy_risk_decision is None
+                else self.strategy_risk_decision.get("reason_code")
+            ),
             "risk_decision": risk_decision,
+            "exposure_boundary_artifact": risk_decision,
+            "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
             "risk_decision_hash": risk_decision["risk_decision_hash"],
             "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
             "reason": self.reason,
@@ -184,6 +229,8 @@ def strategy_decision_to_preference(
     max_target_exposure_krw: float | None = None,
     risk_policy: Mapping[str, object] | None = None,
     risk_snapshot: Mapping[str, object] | None = None,
+    strategy_risk_profile: Mapping[str, object] | None = None,
+    strategy_risk_decision: Mapping[str, object] | None = None,
     horizon: str = "",
     confidence: float | None = None,
     metadata: Mapping[str, object] | None = None,
@@ -211,6 +258,8 @@ def strategy_decision_to_preference(
         risk_budget_krw=risk_budget_krw,
         risk_policy=risk_policy,
         risk_snapshot=risk_snapshot,
+        strategy_risk_profile=strategy_risk_profile,
+        strategy_risk_decision=strategy_risk_decision,
         horizon=horizon,
         confidence=confidence,
         policy_hash=decision.policy_hash,

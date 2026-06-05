@@ -261,6 +261,13 @@ def _bind_unit_approved_profiles(
             "profile_mode": "small_live",
             "profile_content_hash": profile_hash,
             "strategy_parameters": dict(bound.parameters or {}),
+            "risk_policy": {
+                "policy_status": "disabled_explicit",
+                "missing_policy": "fail_closed_for_live",
+                "source": "unit_approved_profile",
+            },
+            "risk_enforcement_mode": "enforced",
+            "missing_risk_policy_behavior": "fail_closed_for_live",
         }
         bound_specs.append(bound)
 
@@ -659,6 +666,8 @@ def test_risk_budget_does_not_act_as_exposure_cap() -> None:
     assert contribution["risk_decision"]["risk_budget_interpreted_as_exposure_cap"] is False
     assert contribution["risk_decision"]["loss_budget_supported"] is False
     assert contribution["risk_budget_legacy_marker"] == "deprecated:risk_budget_krw_not_enforced_as_loss_budget"
+    assert contribution["exposure_boundary_artifact_hash"] == contribution["risk_decision_hash"]
+    assert contribution["strategy_risk_decision_hash"] is None
 
 
 def test_strategy_level_risk_policy_violation_blocks_authoritative_portfolio_target() -> None:
@@ -691,6 +700,57 @@ def test_strategy_level_risk_policy_violation_blocks_authoritative_portfolio_tar
     assert target.fail_closed_reason == "DAILY_LOSS_LIMIT"
     assert target.conflict_resolution["strategy_risk_policy_blocked"] is True
     assert str(target.conflict_resolution["strategy_risk_decision_hash"]).startswith("sha256:")
+    assert str(target.conflict_resolution["strategy_risk_policy_hash"]).startswith("sha256:")
+    assert str(target.conflict_resolution["strategy_risk_input_hash"]).startswith("sha256:")
+
+
+def test_allocator_uses_operational_strategy_risk_decision_and_blocks_non_allow() -> None:
+    decision_payload = {
+        "evaluation_point": "pre_decision",
+        "status": "BLOCK",
+        "reason_code": "MAX_DAILY_ORDER_COUNT",
+        "reason": "daily order count limit exceeded",
+        "allowed_actions": ["HOLD"],
+        "recommended_action": "halt",
+        "risk_input_hash": "sha256:input",
+        "risk_policy_hash": "sha256:policy",
+        "risk_decision_hash": "sha256:decision",
+        "effective_limits": {"max_daily_order_count": 1},
+        "state_source": "runtime_db_ledger",
+        "evidence": {"strategy_instance_id": "strategy_a"},
+    }
+    preference = strategy_decision_to_preference(
+        _decision(final_signal="BUY", strategy_name="strategy_a"),
+        pair="KRW-BTC",
+        desired_exposure_krw=100_000.0,
+        strategy_risk_profile={"risk_policy_hash": "sha256:policy"},
+        strategy_risk_decision=decision_payload,
+    )
+
+    decision = _allocate((preference,))
+    target = decision.target_for_pair("KRW-BTC")
+
+    assert target is not None
+    assert target.authoritative is False
+    assert target.fail_closed_reason == "MAX_DAILY_ORDER_COUNT"
+    assert target.conflict_resolution["strategy_risk_decision_hash"] == "sha256:decision"
+    assert target.conflict_resolution["strategy_risk_status"] == "BLOCK"
+
+
+def test_allocator_fails_closed_when_profile_has_no_operational_strategy_risk_decision() -> None:
+    preference = strategy_decision_to_preference(
+        _decision(final_signal="BUY", strategy_name="strategy_a"),
+        pair="KRW-BTC",
+        desired_exposure_krw=100_000.0,
+        strategy_risk_profile={"risk_policy_hash": "sha256:policy"},
+    )
+
+    decision = _allocate((preference,))
+    target = decision.target_for_pair("KRW-BTC")
+
+    assert target is not None
+    assert target.authoritative is False
+    assert target.fail_closed_reason == "STRATEGY_RISK_DECISION_MISSING"
 
 
 def test_allocator_records_risk_budget_semantics() -> None:
@@ -1542,7 +1602,9 @@ def test_selected_failing_instance_blocks_even_when_same_name_pair_history_passe
     assert gate["gate"]["summary"]["sample_count"] == 2
 
 
-def test_performance_gate_threshold_changes_execution_plan_hash_when_blocking() -> None:
+def test_performance_gate_threshold_changes_execution_plan_hash_when_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from bithumb_bot.run_loop_execution_planner import ExecutionPlanner
 
     def _plan_with_min_sample(min_sample: int):
@@ -1573,6 +1635,7 @@ def test_performance_gate_threshold_changes_execution_plan_hash_when_blocking() 
             priority=10,
             parameters=_complete_canary_parameters(),
         )
+        (buy_spec,) = _bind_unit_approved_profiles(monkeypatch, buy_spec)
         bundle = RuntimeStrategyDecisionResultBundle(
             strategy_set=RuntimeStrategySet(source="unit", strategies=(buy_spec,)),
             results=(_runtime_result("BUY", "canary_non_sma", spec=buy_spec),),
@@ -2165,7 +2228,7 @@ def test_manifest_contains_execution_and_risk_config_hashes(tmp_path) -> None:
         conn.close()
 
 
-def test_live_real_order_manifest_records_target_delta_authority_and_legacy_disabled() -> None:
+def test_live_real_order_manifest_fails_closed_without_risk_profile_authority() -> None:
     cfg = replace(
         settings,
         MODE="live",
@@ -2180,14 +2243,8 @@ def test_live_real_order_manifest_records_target_delta_authority_and_legacy_disa
         strategies=(RuntimeStrategySpec("safe_hold", strategy_instance_id="hold"),),
     )
 
-    manifest = normalized_runtime_strategy_set_manifest(strategy_set=strategy_set, settings_obj=cfg)
-
-    assert manifest["submit_authority_mode"] == "live_real_order_target_delta_only"
-    assert manifest["live_real_order_requires_target_delta"] is True
-    assert manifest["legacy_lot_native_compat_enabled"] is False
-    assert manifest["allowed_submit_plan_sources"] == ["target_delta", "residual_inventory"]
-    assert "configured_strategy_order_size" not in manifest["allowed_submit_plan_authorities"]
-    assert str(manifest["submit_authority_policy_hash"]).startswith("sha256:")
+    with pytest.raises(RuntimeError, match="strategy_risk_profile_missing_for_live_strategy:safe_hold"):
+        normalized_runtime_strategy_set_manifest(strategy_set=strategy_set, settings_obj=cfg)
 
 
 def test_runtime_manifest_replays_decision_request_hashes_exactly(tmp_path) -> None:

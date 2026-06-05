@@ -23,10 +23,14 @@ from .portfolio_allocation import (
     SignalAggregator,
 )
 from .strategy_preference import strategy_decision_to_preference
+from .risk_policy_engine import RiskPolicyEngine
+from .strategy_risk_state import StrategyRiskStateProvider, missing_required_risk_state
 from .runtime_readiness import compute_runtime_readiness_snapshot
 from .runtime_strategy_set import (
     MULTI_PAIR_RUNTIME_UNSUPPORTED_REASON,
     RUNTIME_SCOPE_MODE,
+    ProfileAuthorityContext,
+    RuntimeDecisionRequestBuilder,
     RuntimeStrategyDecisionResultBundle,
     RuntimeStrategySet,
     derive_strategy_instance_id,
@@ -309,10 +313,18 @@ def _allocation_context_fields(decision, *, runtime_pair: str) -> dict[str, obje
         "allocation_contributions": [item.as_dict() for item in decision.contributions],
         "portfolio_target": target_payload,
         "portfolio_allocation_decision": decision_payload,
-        "allocation_risk_decision_hash": str(decision_payload.get("risk_decision_hash") or ""),
+        "allocation_exposure_boundary_artifact_hash": str(
+            decision_payload.get("exposure_boundary_artifact_hash")
+            or decision_payload.get("risk_decision_hash")
+            or ""
+        ),
         "strategy_risk_decision_hash": str(target_conflict.get("strategy_risk_decision_hash") or ""),
+        "strategy_risk_policy_hash": str(target_conflict.get("strategy_risk_policy_hash") or ""),
+        "strategy_risk_input_hash": str(target_conflict.get("strategy_risk_input_hash") or ""),
+        "strategy_risk_status": str(target_conflict.get("strategy_risk_status") or ""),
+        "strategy_risk_reason_code": str(target_conflict.get("strategy_risk_block_reason_code") or ""),
         "risk_decision_hash": str(
-            target_conflict.get("strategy_risk_decision_hash")
+            decision_payload.get("exposure_boundary_artifact_hash")
             or decision_payload.get("risk_decision_hash")
             or ""
         ),
@@ -698,7 +710,24 @@ def prepare_strategy_decision_persistence_context(
             context["submit_authority_policy_hash"] = str(
                 plan_payload.get("submit_authority_policy_hash") or ""
             )
-            context["risk_decision_hash"] = str(plan_payload.get("risk_decision_hash") or "")
+            context["exposure_boundary_artifact_hash"] = str(
+                plan_payload.get("exposure_boundary_artifact_hash")
+                or plan_payload.get("risk_decision_hash")
+                or ""
+            )
+            context["risk_decision_hash"] = context["exposure_boundary_artifact_hash"]
+            for risk_key in (
+                "pre_submit_risk_required",
+                "pre_submit_risk_decision_authority",
+                "pre_submit_risk_decision_hash",
+                "pre_submit_risk_policy_hash",
+                "pre_submit_risk_input_hash",
+                "pre_submit_risk_status",
+                "pre_submit_risk_reason_code",
+                "pre_submit_risk_plan_hash",
+            ):
+                if risk_key in plan_payload:
+                    context[risk_key] = plan_payload[risk_key]
             break
     target_shadow = execution_decision.get("target_shadow_decision")
     if isinstance(target_shadow, dict):
@@ -1041,6 +1070,116 @@ class ExecutionPlanner:
                             }
                         )
                     runtime_result_contexts.append(result_metadata)
+                    strategy_risk_profile_payload = None
+                    strategy_risk_decision_payload = None
+                    live_like_for_risk = (
+                        str(getattr(self.settings_obj, "MODE", "") or "").strip().lower() == "live"
+                    )
+                    risk_profile = None
+                    if live_like_for_risk or spec.risk_policy is not None:
+                        try:
+                            authority_context = ProfileAuthorityContext.for_strategy_set(
+                                runtime_result_bundle.strategy_set,
+                                settings_obj=self.settings_obj,
+                            )
+                            materialized_instance = RuntimeDecisionRequestBuilder(
+                                settings_obj=self.settings_obj
+                            ).with_authority_context(authority_context).materialize_instance(spec)
+                            risk_profile = materialized_instance.risk_profile
+                        except Exception:
+                            if live_like_for_risk:
+                                raise
+                            risk_profile = None
+                    if risk_profile is not None:
+                        enforced = risk_profile.enforcement_mode == "enforced"
+                        if risk_profile.policy.policy_status == "disabled_explicit":
+                            from .risk_contract import RiskSnapshot
+
+                            snapshot = RiskSnapshot(
+                                evaluation_ts_ms=int(result.candle_ts),
+                                mark_price=float(result.market_price),
+                                state_source="risk_policy_disabled_explicit",
+                                evidence={"strategy_instance_id": strategy_instance_id},
+                            )
+                            missing_state = ()
+                        else:
+                            snapshot = StrategyRiskStateProvider(
+                                conn,
+                                max_open_order_age_sec=int(
+                                    getattr(self.settings_obj, "MAX_OPEN_ORDER_AGE_SEC", 300) or 300
+                                ),
+                            ).snapshot(
+                                strategy_instance_id=strategy_instance_id,
+                                strategy_name=spec.strategy_name,
+                                pair=str(spec.pair),
+                                interval=str(spec.interval),
+                                as_of_ts_ms=int(result.candle_ts),
+                                mark_price=float(result.market_price),
+                                policy=risk_profile.policy,
+                                enforced=enforced,
+                            )
+                            missing_state = missing_required_risk_state(risk_profile.policy, snapshot)
+                        if enforced and missing_state:
+                            strategy_risk_decision_payload = {
+                                "evaluation_point": "pre_decision",
+                                "status": "BLOCK",
+                                "reason_code": "STRATEGY_RISK_STATE_INCOMPLETE",
+                                "reason": "required runtime risk state is unavailable",
+                                "allowed_actions": ["HOLD"],
+                                "recommended_action": "halt",
+                                "risk_input_hash": snapshot.input_hash(),
+                                "risk_policy_hash": risk_profile.risk_policy_hash,
+                                "risk_decision_hash": sha256_prefixed(
+                                    {
+                                        "evaluation_point": "pre_decision",
+                                        "status": "BLOCK",
+                                        "reason_code": "STRATEGY_RISK_STATE_INCOMPLETE",
+                                        "risk_input_hash": snapshot.input_hash(),
+                                        "risk_policy_hash": risk_profile.risk_policy_hash,
+                                        "missing_required_risk_state": list(missing_state),
+                                    }
+                                ),
+                                "effective_limits": risk_profile.policy.effective_limits(),
+                                "state_source": snapshot.state_source,
+                                "evidence": {
+                                    **dict(snapshot.evidence),
+                                    "missing_required_risk_state": list(missing_state),
+                                },
+                            }
+                        else:
+                            strategy_risk_decision_payload = RiskPolicyEngine(
+                                risk_profile.policy
+                            ).evaluate_pre_decision(snapshot).as_dict()
+                        strategy_risk_profile_payload = risk_profile.as_dict()
+                        result_metadata.update(
+                            {
+                                "strategy_risk_profile_hash": risk_profile.profile_hash(),
+                                "strategy_risk_policy_hash": risk_profile.risk_policy_hash,
+                                "strategy_risk_decision_hash": strategy_risk_decision_payload.get(
+                                    "risk_decision_hash"
+                                )
+                                if isinstance(strategy_risk_decision_payload, dict)
+                                else None,
+                                "strategy_risk_input_hash": strategy_risk_decision_payload.get(
+                                    "risk_input_hash"
+                                )
+                                if isinstance(strategy_risk_decision_payload, dict)
+                                else None,
+                                "strategy_risk_status": strategy_risk_decision_payload.get("status")
+                                if isinstance(strategy_risk_decision_payload, dict)
+                                else None,
+                                "strategy_risk_reason_code": strategy_risk_decision_payload.get(
+                                    "reason_code"
+                                )
+                                if isinstance(strategy_risk_decision_payload, dict)
+                                else None,
+                                "strategy_risk_state_source": strategy_risk_decision_payload.get(
+                                    "state_source"
+                                )
+                                if isinstance(strategy_risk_decision_payload, dict)
+                                else None,
+                            }
+                        )
                     preference_list.append(
                         strategy_decision_to_preference(
                             result.decision,
@@ -1052,6 +1191,8 @@ class ExecutionPlanner:
                             max_target_exposure_krw=spec.max_target_exposure_krw,
                             risk_policy=spec.risk_policy,
                             risk_snapshot=spec.risk_snapshot,
+                            strategy_risk_profile=strategy_risk_profile_payload,
+                            strategy_risk_decision=strategy_risk_decision_payload,
                             metadata=result_metadata,
                         )
                     )

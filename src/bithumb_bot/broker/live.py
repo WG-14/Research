@@ -2622,6 +2622,9 @@ def _determine_live_execution_intent(
                 "execution_engine": "target_delta",
                 "execution_submit_plan_source": "target_delta",
                 "execution_submit_plan_authority": str(target_plan.get("authority") or "canonical_target_delta_sizing"),
+                "execution_submit_plan_hash": str(
+                    target_plan.get("submit_plan_hash") or target_plan.get("content_hash") or ""
+                ),
                 "target_engine_mode": "target_delta",
                 "target_previous_exposure_krw": target_plan.get("target_previous_exposure_krw"),
                 "target_new_exposure_krw": target_plan.get("target_exposure_krw"),

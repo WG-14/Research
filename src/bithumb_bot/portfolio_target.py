@@ -73,6 +73,8 @@ class PortfolioTarget:
             "fail_closed_reason": self.fail_closed_reason,
             "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
             "risk_decision": risk_decision,
+            "exposure_boundary_artifact": risk_decision,
+            "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
             "risk_decision_hash": risk_decision["risk_decision_hash"],
             "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
         }

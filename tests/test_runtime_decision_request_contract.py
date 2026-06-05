@@ -824,6 +824,99 @@ def test_request_builder_rejects_explicit_profile_hash_mismatch(
         )
 
 
+def test_live_request_builder_requires_approved_strategy_risk_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = {
+        "profile_mode": "live_dry_run",
+        "profile_content_hash": "sha256:profile",
+        "strategy_parameters": _complete_sma_parameters(),
+    }
+    from bithumb_bot import runtime_strategy_set
+
+    monkeypatch.setattr(runtime_strategy_set, "load_approved_profile", lambda path: profile)
+    monkeypatch.setattr(runtime_strategy_set, "expected_profile_modes_for_runtime", lambda runtime: (("live_dry_run",), "ok"))
+    monkeypatch.setattr(runtime_strategy_set, "diff_profile_to_runtime", lambda *args, **kwargs: ())
+    cfg = _live_single_strategy_cfg(profile_path="/runtime/profile.json")
+
+    with pytest.raises(RuntimeError, match="strategy_risk_profile_missing_for_live_strategy:sma_with_filter"):
+        RuntimeDecisionRequestBuilder(settings_obj=cfg).materialize_instance(
+            RuntimeStrategySpec(
+                "sma_with_filter",
+                pair="KRW-BTC",
+                interval="1m",
+                approved_profile_path="/runtime/profile.json",
+                approved_profile_hash="sha256:profile",
+            )
+        )
+
+
+def test_live_request_builder_rejects_risk_policy_hash_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = {
+        "profile_mode": "small_live",
+        "profile_content_hash": "sha256:profile",
+        "strategy_parameters": _complete_sma_parameters(),
+        "risk_policy": {"max_daily_order_count": 5, "source": "approved_profile"},
+        "risk_policy_hash": "sha256:tampered",
+        "risk_enforcement_mode": "enforced",
+        "missing_risk_policy_behavior": "fail_closed_for_live",
+    }
+    from bithumb_bot import runtime_strategy_set
+
+    monkeypatch.setattr(runtime_strategy_set, "load_approved_profile", lambda path: profile)
+    monkeypatch.setattr(runtime_strategy_set, "expected_profile_modes_for_runtime", lambda runtime: (("small_live",), "ok"))
+    monkeypatch.setattr(runtime_strategy_set, "diff_profile_to_runtime", lambda *args, **kwargs: ())
+    cfg = _live_single_strategy_cfg(
+        profile_path="/runtime/profile.json",
+        live_dry_run=False,
+        live_real_order_armed=True,
+    )
+
+    with pytest.raises(RuntimeError, match="strategy_risk_policy_hash_mismatch:sma_with_filter"):
+        RuntimeDecisionRequestBuilder(settings_obj=cfg).materialize_instance(
+            RuntimeStrategySpec(
+                "sma_with_filter",
+                pair="KRW-BTC",
+                interval="1m",
+                approved_profile_path="/runtime/profile.json",
+                approved_profile_hash="sha256:profile",
+            )
+        )
+
+
+def test_live_request_builder_rejects_static_risk_snapshot_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = {
+        "profile_mode": "live_dry_run",
+        "profile_content_hash": "sha256:profile",
+        "strategy_parameters": _complete_sma_parameters(),
+        "risk_policy": {"max_daily_order_count": 5, "source": "approved_profile"},
+        "risk_enforcement_mode": "telemetry",
+        "missing_risk_policy_behavior": "fail_closed_for_live",
+    }
+    from bithumb_bot import runtime_strategy_set
+
+    monkeypatch.setattr(runtime_strategy_set, "load_approved_profile", lambda path: profile)
+    monkeypatch.setattr(runtime_strategy_set, "expected_profile_modes_for_runtime", lambda runtime: (("live_dry_run",), "ok"))
+    monkeypatch.setattr(runtime_strategy_set, "diff_profile_to_runtime", lambda *args, **kwargs: ())
+    cfg = _live_single_strategy_cfg(profile_path="/runtime/profile.json")
+
+    with pytest.raises(RuntimeError, match="static_risk_snapshot_rejected_for_live_authority:sma_with_filter"):
+        RuntimeDecisionRequestBuilder(settings_obj=cfg).materialize_instance(
+            RuntimeStrategySpec(
+                "sma_with_filter",
+                pair="KRW-BTC",
+                interval="1m",
+                approved_profile_path="/runtime/profile.json",
+                approved_profile_hash="sha256:profile",
+                risk_snapshot={"evaluation_ts_ms": 1, "mark_price": 1.0},
+            )
+        )
+
+
 def test_request_builder_rejects_settings_drift_in_strict_profile_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1962,6 +2055,13 @@ def test_live_like_single_strategy_name_preflight_accepts_valid_approved_profile
         "profile_mode": "live_dry_run",
         "profile_content_hash": "sha256:profile",
         "strategy_parameters": profile_params,
+        "risk_policy": {
+            "policy_status": "disabled_explicit",
+            "missing_policy": "fail_closed_for_live",
+            "source": "unit_approved_profile",
+        },
+        "risk_enforcement_mode": "telemetry",
+        "missing_risk_policy_behavior": "fail_closed_for_live",
     }
     monkeypatch.setattr(runtime_strategy_set, "load_approved_profile", lambda path: profile)
     monkeypatch.setattr(
@@ -2095,11 +2195,25 @@ def test_live_multi_strategy_collector_materializes_spec_bound_requests_without_
             "profile_mode": "live_dry_run",
             "profile_content_hash": "sha256:left-live",
             "strategy_parameters": _complete_canary_parameters(CANARY_ORDER_REASON="left"),
+            "risk_policy": {
+                "policy_status": "disabled_explicit",
+                "missing_policy": "fail_closed_for_live",
+                "source": "unit_approved_profile",
+            },
+            "risk_enforcement_mode": "telemetry",
+            "missing_risk_policy_behavior": "fail_closed_for_live",
         },
         "/tmp/live-right.json": {
             "profile_mode": "live_dry_run",
             "profile_content_hash": "sha256:right-live",
             "strategy_parameters": _complete_canary_parameters(CANARY_ORDER_REASON="right"),
+            "risk_policy": {
+                "policy_status": "disabled_explicit",
+                "missing_policy": "fail_closed_for_live",
+                "source": "unit_approved_profile",
+            },
+            "risk_enforcement_mode": "telemetry",
+            "missing_risk_policy_behavior": "fail_closed_for_live",
         },
     }
     loaded: list[str] = []
@@ -2237,6 +2351,13 @@ def test_runtime_decision_gateway_resolves_live_multi_strategy_authority_by_defa
             "profile_mode": "live_dry_run",
             "profile_content_hash": "sha256:gateway",
             "strategy_parameters": _complete_canary_parameters(CANARY_ORDER_REASON=str(path)),
+            "risk_policy": {
+                "policy_status": "disabled_explicit",
+                "missing_policy": "fail_closed_for_live",
+                "source": "unit_approved_profile",
+            },
+            "risk_enforcement_mode": "telemetry",
+            "missing_risk_policy_behavior": "fail_closed_for_live",
         },
     )
     monkeypatch.setattr(runtime_strategy_set, "diff_profile_to_runtime", lambda *args, **kwargs: ())
@@ -2305,6 +2426,13 @@ def test_live_real_order_multi_strategy_builder_uses_small_live_spec_profiles_wi
             "profile_mode": "small_live",
             "profile_content_hash": "sha256:small-live",
             "strategy_parameters": _complete_canary_parameters(),
+            "risk_policy": {
+                "policy_status": "disabled_explicit",
+                "missing_policy": "fail_closed_for_live",
+                "source": "unit_approved_profile",
+            },
+            "risk_enforcement_mode": "enforced",
+            "missing_risk_policy_behavior": "fail_closed_for_live",
         },
     )
     monkeypatch.setattr(runtime_strategy_set, "diff_profile_to_runtime", lambda *args, **kwargs: ())

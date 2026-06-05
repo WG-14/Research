@@ -20,6 +20,7 @@ from bithumb_bot.research.strategy_registry import resolve_research_strategy_plu
 from bithumb_bot.research.strategy_spec import materialized_strategy_parameters_hash
 from bithumb_bot.strategy_config import _sma_default, _sma_int
 from bithumb_bot.runtime_strategy_set import RuntimeDecisionRequestBuilder, RuntimeStrategySpec
+from bithumb_bot.risk_contract import RiskPolicy
 from bithumb_bot.storage_io import write_json_atomic
 from bithumb_bot.broker import order_rules
 from bithumb_bot import operator_notification_service
@@ -420,6 +421,16 @@ def _write_live_profile(tmp_path: Path, *, mode: str = "small_live", sma_short: 
         interval=str(settings.INTERVAL),
         generated_at="2026-05-04T00:00:00+00:00",
     )
+    risk_policy = RiskPolicy(
+        policy_status="enabled",
+        missing_policy="fail_closed_for_live",
+        source="unit_approved_profile",
+    )
+    profile["risk_policy"] = risk_policy.as_dict()
+    profile["risk_policy_hash"] = risk_policy.policy_hash()
+    profile["risk_enforcement_mode"] = "enforced" if mode == "small_live" else "telemetry"
+    profile["missing_risk_policy_behavior"] = "fail_closed_for_live"
+    profile["profile_content_hash"] = compute_approved_profile_hash(profile)
     path = tmp_path / f"{mode}_profile.json"
     write_json_atomic(path, profile)
     return path

@@ -97,6 +97,8 @@ class StrategyContribution:
     reason: str
     strategy_risk_policy: Mapping[str, object] | None = None
     strategy_risk_snapshot: Mapping[str, object] | None = None
+    strategy_risk_profile: Mapping[str, object] | None = None
+    strategy_risk_decision: Mapping[str, object] | None = None
     pre_cap_weighted_target_exposure_krw: float | None = None
     exposure_cap_applied: bool = False
     exposure_cap_source: str = "none"
@@ -132,7 +134,43 @@ class StrategyContribution:
             "strategy_risk_snapshot": (
                 None if self.strategy_risk_snapshot is None else dict(self.strategy_risk_snapshot)
             ),
+            "strategy_risk_profile": (
+                None if self.strategy_risk_profile is None else dict(self.strategy_risk_profile)
+            ),
+            "strategy_risk_decision": (
+                None if self.strategy_risk_decision is None else dict(self.strategy_risk_decision)
+            ),
+            "strategy_risk_decision_hash": (
+                None
+                if self.strategy_risk_decision is None
+                else self.strategy_risk_decision.get("risk_decision_hash")
+            ),
+            "strategy_risk_policy_hash": (
+                None
+                if self.strategy_risk_decision is None
+                else self.strategy_risk_decision.get("risk_policy_hash")
+            ),
+            "strategy_risk_input_hash": (
+                None
+                if self.strategy_risk_decision is None
+                else self.strategy_risk_decision.get("risk_input_hash")
+            ),
+            "strategy_risk_status": (
+                None if self.strategy_risk_decision is None else self.strategy_risk_decision.get("status")
+            ),
+            "strategy_risk_reason_code": (
+                None
+                if self.strategy_risk_decision is None
+                else self.strategy_risk_decision.get("reason_code")
+            ),
+            "strategy_risk_state_source": (
+                None
+                if self.strategy_risk_decision is None
+                else self.strategy_risk_decision.get("state_source")
+            ),
             "risk_decision": risk_decision,
+            "exposure_boundary_artifact": risk_decision,
+            "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
             "risk_decision_hash": risk_decision["risk_decision_hash"],
             "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
             "reason": self.reason,
@@ -255,6 +293,8 @@ class PortfolioAllocationDecision:
             "primary_block_reason": self.primary_block_reason,
             "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
             "risk_decision": risk_decision,
+            "exposure_boundary_artifact": risk_decision,
+            "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
             "risk_decision_hash": risk_decision["risk_decision_hash"],
             "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
         }
@@ -355,6 +395,8 @@ class PortfolioAllocator:
             max_target_exposure_krw=preference.max_target_exposure_krw,
             strategy_risk_policy=preference.risk_policy,
             strategy_risk_snapshot=preference.risk_snapshot,
+            strategy_risk_profile=preference.strategy_risk_profile,
+            strategy_risk_decision=preference.strategy_risk_decision,
             reason=preference.reason,
         )
 
@@ -469,6 +511,8 @@ class PortfolioAllocator:
                 "exposure_cap_source": "none",
                 "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
                 "risk_decision": risk_decision,
+                "exposure_boundary_artifact": risk_decision,
+                "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
                 "risk_decision_hash": risk_decision["risk_decision_hash"],
                 "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
             }
@@ -507,6 +551,8 @@ class PortfolioAllocator:
             "exposure_cap_source": "max_target_exposure_krw" if exposure_cap_present else "none",
             "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
             "risk_decision": risk_decision,
+            "exposure_boundary_artifact": risk_decision,
+            "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
             "risk_decision_hash": risk_decision["risk_decision_hash"],
             "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
         }
@@ -516,6 +562,31 @@ class PortfolioAllocator:
         contributions: tuple[StrategyContribution, ...],
     ) -> dict[str, object] | None:
         for item in contributions:
+            if isinstance(item.strategy_risk_decision, Mapping):
+                decision = dict(item.strategy_risk_decision)
+                if str(decision.get("status") or "") != "ALLOW":
+                    return {
+                        "strategy_risk_policy_blocked": True,
+                        "strategy_risk_blocked_instance_id": item.strategy_instance_id,
+                        "strategy_risk_block_reason_code": str(
+                            decision.get("reason_code") or "STRATEGY_RISK_NOT_ALLOW"
+                        ),
+                        "strategy_risk_decision": decision,
+                        "strategy_risk_decision_hash": str(decision.get("risk_decision_hash") or ""),
+                        "strategy_risk_policy_hash": str(decision.get("risk_policy_hash") or ""),
+                        "strategy_risk_input_hash": str(decision.get("risk_input_hash") or ""),
+                        "strategy_risk_status": str(decision.get("status") or ""),
+                        "strategy_risk_state_source": str(decision.get("state_source") or ""),
+                    }
+                continue
+            if isinstance(item.strategy_risk_profile, Mapping):
+                return {
+                    "strategy_risk_policy_blocked": True,
+                    "strategy_risk_blocked_instance_id": item.strategy_instance_id,
+                    "strategy_risk_block_reason_code": "STRATEGY_RISK_DECISION_MISSING",
+                    "strategy_risk_status": "MISSING",
+                    "strategy_risk_policy_hash": str(item.strategy_risk_profile.get("risk_policy_hash") or ""),
+                }
             if not isinstance(item.strategy_risk_policy, Mapping):
                 continue
             policy = _strategy_risk_policy_from_mapping(item.strategy_risk_policy)
@@ -531,7 +602,10 @@ class PortfolioAllocator:
                     "strategy_risk_block_reason_code": decision.reason_code,
                     "strategy_risk_decision": decision.as_dict(),
                     "strategy_risk_decision_hash": decision.risk_decision_hash,
-                    "risk_decision_hash": decision.risk_decision_hash,
+                    "strategy_risk_policy_hash": decision.risk_policy_hash,
+                    "strategy_risk_input_hash": decision.risk_input_hash,
+                    "strategy_risk_status": decision.status,
+                    "strategy_risk_state_source": decision.state_source,
                 }
         return None
 

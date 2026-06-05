@@ -3779,10 +3779,20 @@ def _strategy_contribution_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "exposure_cap_source": "none",
         "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
         "risk_decision": default_risk_decision,
+        "exposure_boundary_artifact": default_risk_decision,
+        "exposure_boundary_artifact_hash": default_risk_decision["exposure_boundary_artifact_hash"],
         "risk_decision_hash": default_risk_decision["risk_decision_hash"],
         "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
         "strategy_risk_policy": None,
         "strategy_risk_snapshot": None,
+        "strategy_risk_profile": None,
+        "strategy_risk_decision": None,
+        "strategy_risk_decision_hash": None,
+        "strategy_risk_policy_hash": None,
+        "strategy_risk_input_hash": None,
+        "strategy_risk_status": None,
+        "strategy_risk_reason_code": None,
+        "strategy_risk_state_source": None,
         "reason": str(row["reason"] or ""),
     }
     raw_json = str(row["contribution_json"] or "").strip()
@@ -3800,9 +3810,19 @@ def _strategy_contribution_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
                 "risk_budget_semantics",
                 "risk_decision",
                 "risk_decision_hash",
+                "exposure_boundary_artifact",
+                "exposure_boundary_artifact_hash",
                 "risk_budget_legacy_marker",
                 "strategy_risk_policy",
                 "strategy_risk_snapshot",
+                "strategy_risk_profile",
+                "strategy_risk_decision",
+                "strategy_risk_decision_hash",
+                "strategy_risk_policy_hash",
+                "strategy_risk_input_hash",
+                "strategy_risk_status",
+                "strategy_risk_reason_code",
+                "strategy_risk_state_source",
             ):
                 payload[key] = stored_payload.get(key, payload[key])
     return payload
@@ -3835,6 +3855,8 @@ def _portfolio_target_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "fail_closed_reason": str(row["fail_closed_reason"] or ""),
         "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
         "risk_decision": default_risk_decision,
+        "exposure_boundary_artifact": default_risk_decision,
+        "exposure_boundary_artifact_hash": default_risk_decision["exposure_boundary_artifact_hash"],
         "risk_decision_hash": default_risk_decision["risk_decision_hash"],
         "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
     }
@@ -3854,6 +3876,8 @@ def _portfolio_target_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "risk_budget_semantics",
         "risk_decision",
         "risk_decision_hash",
+        "exposure_boundary_artifact",
+        "exposure_boundary_artifact_hash",
         "risk_budget_legacy_marker",
     ):
         payload[key] = target_json.get(key, payload[key])
@@ -3960,6 +3984,8 @@ def rebuild_allocation_decision_from_bundle(
         "primary_block_reason": str(allocation["primary_block_reason"] or ""),
         "risk_budget_semantics": RISK_BUDGET_SEMANTICS,
         "risk_decision": risk_decision,
+        "exposure_boundary_artifact": risk_decision,
+        "exposure_boundary_artifact_hash": risk_decision["exposure_boundary_artifact_hash"],
         "risk_decision_hash": risk_decision["risk_decision_hash"],
         "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
     }

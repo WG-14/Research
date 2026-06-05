@@ -1432,7 +1432,7 @@ def _build_execution_decision_summary_from_authority_payload(
         exposure_cap_source="portfolio_target",
         decision_context="execution_submit_plan",
     )
-    risk_decision_hash = str(risk_decision["risk_decision_hash"])
+    exposure_boundary_artifact_hash = str(risk_decision["exposure_boundary_artifact_hash"])
 
     if bool(getattr(settings, "TARGET_EXECUTION_SHADOW", False)) or execution_engine == "target_delta":
         execution_order_rules = resolve_execution_order_rules(payload, market=str(settings.PAIR))
@@ -1618,8 +1618,16 @@ def _build_execution_decision_summary_from_authority_payload(
                     submit_authority_policy.allowed_submit_plan_authorities
                 ),
                 "submit_authority_policy_hash": submit_authority_policy_hash,
+                "exposure_boundary_artifact": risk_decision,
+                "exposure_boundary_artifact_hash": exposure_boundary_artifact_hash,
                 "risk_decision": risk_decision,
-                "risk_decision_hash": risk_decision_hash,
+                "risk_decision_hash": exposure_boundary_artifact_hash,
+                "pre_submit_risk_required": bool(
+                    str(getattr(settings, "MODE", "") or "").strip().lower() == "live"
+                    and bool(getattr(settings, "LIVE_REAL_ORDER_ARMED", False))
+                    and not bool(getattr(settings, "LIVE_DRY_RUN", True))
+                ),
+                "pre_submit_risk_decision_authority": "RuntimeRiskEngineAdapter.evaluate_pre_submit",
             }
             if performance_gate_fields and str(target_decision.delta_side) == "BUY":
                 target_plan_extra.update(performance_gate_fields)

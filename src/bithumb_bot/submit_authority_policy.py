@@ -260,3 +260,26 @@ def live_real_order_legacy_buy_submit_plan_error(
     ):
         return "live_real_order_buy_plan_rejected_target_delta_required"
     return None
+
+
+def operational_pre_submit_risk_approval_error(
+    payload: Mapping[str, object],
+    *,
+    expected_submit_plan_hash: str,
+) -> str | None:
+    status = str(payload.get("pre_submit_risk_status") or "").strip().upper()
+    if status != "ALLOW":
+        return "live_real_order_pre_submit_risk_not_allow"
+    for field in (
+        "pre_submit_risk_decision_hash",
+        "pre_submit_risk_policy_hash",
+        "pre_submit_risk_input_hash",
+    ):
+        if not str(payload.get(field) or "").strip().startswith("sha256:"):
+            return f"live_real_order_{field}_missing"
+    actual_plan_hash = str(payload.get("pre_submit_risk_plan_hash") or "").strip()
+    if not str(expected_submit_plan_hash or "").strip():
+        return "live_real_order_pre_submit_expected_plan_hash_missing"
+    if actual_plan_hash != str(expected_submit_plan_hash):
+        return "live_real_order_pre_submit_risk_plan_hash_mismatch"
+    return None
