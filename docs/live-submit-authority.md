@@ -136,7 +136,11 @@ If compatibility copies are retained, they are named
 `legacy_non_authoritative_exposure_risk_decision_hash`; live-real-order
 admission must not consume them. Typed operational risk decisions use
 layer-specific fields such as `strategy_risk_decision_hash`,
-`portfolio_risk_decision_hash`, and `pre_submit_risk_decision_hash`.
+`strategy_risk_evidence_hash`, `portfolio_risk_decision_hash`,
+`portfolio_risk_evidence_hash`, `pre_submit_risk_decision_hash`, and
+`pre_submit_risk_evidence_hash`. The evidence hash is the canonical hash of the
+decision evidence payload. The decision hash binds policy hash, input hash,
+evidence hash, state source, status, reason code, and outcome.
 
 Exposure-boundary artifacts record:
 
@@ -170,8 +174,9 @@ allocation and execution context.
 After the authoritative `PortfolioTarget` is created, a separate
 `PortfolioRiskDecision` records `portfolio_risk_decision_hash`,
 `portfolio_risk_policy_hash`, `portfolio_risk_input_hash`,
-`portfolio_risk_state_source`, effective limits, and replayable evidence. A
-non-ALLOW portfolio risk decision prevents submittable target-delta planning.
+`portfolio_risk_evidence_hash`, `portfolio_risk_state_source`, effective
+limits, and replayable evidence. A non-ALLOW portfolio risk decision prevents
+submittable target-delta planning.
 
 Immediately before live broker submission,
 `RuntimeRiskEngineAdapter.evaluate_pre_submit()` evaluates the stable
@@ -181,6 +186,7 @@ Immediately before live broker submission,
 - `pre_submit_risk_decision_hash`
 - `pre_submit_risk_policy_hash`
 - `pre_submit_risk_input_hash`
+- `pre_submit_risk_evidence_hash`
 - `pre_submit_risk_plan_hash`
 - `pre_submit_risk_reason_code`
 - `pre_submit_risk_state_source`
@@ -189,6 +195,17 @@ Immediately before live broker submission,
 `ExecutionSubmitPlan.submit_plan_hash` evaluated by the risk engine. The final
 broker submission path validates this proof after runtime DB/broker state is
 available and before placing the order.
+
+Operators can replay persisted risk-layer hashes without broker access:
+
+```bash
+uv run bithumb-bot risk-layer-replay --db <runtime.sqlite> --decision-id <id> --json
+uv run bithumb-bot risk-layer-replay --db <runtime.sqlite> --execution-plan-id <id> --json
+```
+
+The verifier opens SQLite read-only, never submits orders, never calls live
+broker APIs, and reports explicit pass/fail/not-applicable status for strategy,
+portfolio, and pre-submit risk layers.
 
 Hash order is deterministic:
 

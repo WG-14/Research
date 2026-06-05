@@ -645,6 +645,7 @@ def execute_live_submission_and_application(
         "pre_submit_risk_decision_hash": risk_decision.risk_decision_hash,
         "pre_submit_risk_policy_hash": risk_decision.risk_policy_hash,
         "pre_submit_risk_input_hash": risk_decision.risk_input_hash,
+        "pre_submit_risk_evidence_hash": risk_decision.risk_evidence_hash,
         "pre_submit_risk_status": risk_decision.status,
         "pre_submit_risk_reason_code": risk_decision.reason_code,
         "pre_submit_risk_state_source": risk_decision.state_source,
@@ -948,6 +949,7 @@ def execute_live_submission_and_application(
         {
             "pre_submit_risk_decision_truth_source": "RuntimeRiskEngineAdapter.evaluate_pre_submit",
             "pre_submit_risk_plan_hash_truth_source": "ExecutionSubmitPlan.final_payload",
+            "pre_submit_risk_evidence_hash_truth_source": "RiskDecision.identity_fields",
         }
     )
 

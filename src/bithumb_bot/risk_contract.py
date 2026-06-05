@@ -157,6 +157,7 @@ class RiskDecision:
     recommended_action: str | None
     risk_input_hash: str
     risk_policy_hash: str
+    risk_evidence_hash: str
     risk_decision_hash: str
     effective_limits: dict[str, object]
     state_source: str
@@ -172,6 +173,7 @@ class RiskDecision:
             "recommended_action": self.recommended_action,
             "risk_input_hash": self.risk_input_hash,
             "risk_policy_hash": self.risk_policy_hash,
+            "risk_evidence_hash": self.risk_evidence_hash,
             "risk_decision_hash": self.risk_decision_hash,
             "effective_limits": dict(self.effective_limits),
             "state_source": self.state_source,
@@ -182,6 +184,7 @@ class RiskDecision:
         return {
             "risk_input_hash": self.risk_input_hash,
             "risk_policy_hash": self.risk_policy_hash,
+            "risk_evidence_hash": self.risk_evidence_hash,
             "risk_decision_hash": self.risk_decision_hash,
             "risk_reason_code": self.reason_code,
             "risk_status": self.status,
@@ -229,6 +232,10 @@ def build_risk_decision(
     policy_hash = policy.policy_hash()
     effective_limits = policy.effective_limits()
     decision_evidence = dict(evidence or {})
+    # Evidence is hashed as its own canonical payload before the decision hash
+    # is computed. The decision hash then binds policy, input, evidence hash,
+    # and decision outcome while preserving the full evidence payload for audit.
+    evidence_hash = canonical_payload_hash(decision_evidence)
     payload_without_hash = {
         "evaluation_point": evaluation_point,
         "status": status,
@@ -238,6 +245,7 @@ def build_risk_decision(
         "recommended_action": recommended_action,
         "risk_input_hash": input_hash,
         "risk_policy_hash": policy_hash,
+        "risk_evidence_hash": evidence_hash,
         "effective_limits": effective_limits,
         "state_source": snapshot.state_source,
         "evidence": decision_evidence,
@@ -252,6 +260,7 @@ def build_risk_decision(
         recommended_action=recommended_action,
         risk_input_hash=input_hash,
         risk_policy_hash=policy_hash,
+        risk_evidence_hash=evidence_hash,
         risk_decision_hash=decision_hash,
         effective_limits=effective_limits,
         state_source=snapshot.state_source,

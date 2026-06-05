@@ -565,6 +565,7 @@ def _attach_live_real_pre_submit_risk_proof(
         "pre_submit_risk_decision_hash": decision.risk_decision_hash,
         "pre_submit_risk_policy_hash": decision.risk_policy_hash,
         "pre_submit_risk_input_hash": decision.risk_input_hash,
+        "pre_submit_risk_evidence_hash": decision.risk_evidence_hash,
         "pre_submit_risk_plan_hash": expected_hash,
         "pre_submit_risk_reason_code": decision.reason_code,
         "pre_submit_risk_state_source": decision.state_source,
@@ -1410,6 +1411,7 @@ def _portfolio_target_authority_error(
         "portfolio_risk_decision_hash",
         "portfolio_risk_policy_hash",
         "portfolio_risk_input_hash",
+        "portfolio_risk_evidence_hash",
         "portfolio_risk_state_source",
     ):
         if not str(portfolio_target_payload.get(field) or "").strip():

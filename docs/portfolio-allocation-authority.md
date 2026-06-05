@@ -38,6 +38,7 @@ Runtime strategy set
   and before submittable execution planning. It is distinct from exposure-cap
   metadata and carries `portfolio_risk_decision_hash`,
   `portfolio_risk_policy_hash`, `portfolio_risk_input_hash`,
+  `portfolio_risk_evidence_hash`,
   `portfolio_risk_state_source`, effective limits, and replayable evidence.
 - `ExecutionSubmitPlan` remains the final execution authority, but live
   real-order submission also requires a valid pre-submit operational risk
@@ -113,8 +114,12 @@ not publish exposure-boundary metadata as generic `risk_decision` or
 `legacy_non_authoritative_exposure_risk_decision` and
 `legacy_non_authoritative_exposure_risk_decision_hash` and are not live
 authority. Operational risk authority is recorded with typed layer-specific
-hashes: `strategy_risk_decision_hash`,
-`portfolio_risk_decision_hash`, and `pre_submit_risk_decision_hash`.
+hashes: `strategy_risk_decision_hash`, `strategy_risk_evidence_hash`,
+`portfolio_risk_decision_hash`, `portfolio_risk_evidence_hash`,
+`pre_submit_risk_decision_hash`, and `pre_submit_risk_evidence_hash`.
+The evidence hash is the canonical hash of the layer's evidence payload. The
+decision hash binds that evidence hash together with the layer policy hash,
+input hash, state source, status, reason code, and decision outcome.
 
 ## Runtime Manifest
 
@@ -174,4 +179,20 @@ Observability dictionaries remain non-authoritative. Live real-order submission 
 Direct lower-boundary broker calls cannot use compatibility-only exposure
 metadata or dict-only submit plans to bypass the pre-submit risk proof. The
 live broker path validates the pre-submit risk status, decision/policy/input
-hashes, reason code, state source, and plan hash before placing a real order.
+hashes, evidence hash, reason code, state source, and plan hash before placing
+a real order.
+
+## Risk Replay
+
+Operators can verify persisted risk-layer hashes with:
+
+```bash
+uv run bithumb-bot risk-layer-replay --db <runtime.sqlite> --decision-id <id> --json
+uv run bithumb-bot risk-layer-replay --db <runtime.sqlite> --execution-plan-id <id> --json
+```
+
+The verifier is read-only: it opens SQLite with `mode=ro`, does not call broker
+APIs, does not submit orders, and does not mutate DB state. Applicable strategy,
+portfolio, and pre-submit layers report stored and recomputed decision hashes,
+policy hash, input hash, evidence hash, state source, status, reason code, and
+mismatch reason. Non-applicable layers are reported explicitly.

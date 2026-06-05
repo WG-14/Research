@@ -707,6 +707,7 @@ def test_strategy_level_risk_policy_violation_blocks_authoritative_portfolio_tar
     assert str(target.conflict_resolution["strategy_risk_decision_hash"]).startswith("sha256:")
     assert str(target.conflict_resolution["strategy_risk_policy_hash"]).startswith("sha256:")
     assert str(target.conflict_resolution["strategy_risk_input_hash"]).startswith("sha256:")
+    assert str(target.conflict_resolution["strategy_risk_evidence_hash"]).startswith("sha256:")
 
 
 def test_allocator_uses_operational_strategy_risk_decision_and_blocks_non_allow() -> None:
@@ -719,6 +720,7 @@ def test_allocator_uses_operational_strategy_risk_decision_and_blocks_non_allow(
         "recommended_action": "halt",
         "risk_input_hash": "sha256:input",
         "risk_policy_hash": "sha256:policy",
+        "risk_evidence_hash": "sha256:evidence",
         "risk_decision_hash": "sha256:decision",
         "effective_limits": {"max_daily_order_count": 1},
         "state_source": "runtime_db_ledger",
@@ -739,6 +741,7 @@ def test_allocator_uses_operational_strategy_risk_decision_and_blocks_non_allow(
     assert target.authoritative is False
     assert target.fail_closed_reason == "MAX_DAILY_ORDER_COUNT"
     assert target.conflict_resolution["strategy_risk_decision_hash"] == "sha256:decision"
+    assert target.conflict_resolution["strategy_risk_evidence_hash"] == "sha256:evidence"
     assert target.conflict_resolution["strategy_risk_status"] == "BLOCK"
 
 
@@ -914,6 +917,7 @@ def test_target_delta_typed_planning_uses_allocator_portfolio_target(monkeypatch
     assert str(plan.extra_payload["portfolio_risk_decision_hash"]).startswith("sha256:")
     assert str(plan.extra_payload["portfolio_risk_policy_hash"]).startswith("sha256:")
     assert str(plan.extra_payload["portfolio_risk_input_hash"]).startswith("sha256:")
+    assert str(plan.extra_payload["portfolio_risk_evidence_hash"]).startswith("sha256:")
 
 
 def test_run_loop_single_strategy_path_passes_through_allocator() -> None:

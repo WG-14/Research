@@ -1941,6 +1941,18 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         ON risk_evaluations(reason_code, evaluation_ts_ms, id)
         """
     )
+    for name, ddl in (
+        ("risk_input_hash", "risk_input_hash TEXT"),
+        ("risk_policy_hash", "risk_policy_hash TEXT"),
+        ("risk_evidence_hash", "risk_evidence_hash TEXT"),
+        ("risk_decision_hash", "risk_decision_hash TEXT"),
+        ("risk_reason_code", "risk_reason_code TEXT"),
+        ("risk_status", "risk_status TEXT"),
+        ("risk_evaluation_point", "risk_evaluation_point TEXT"),
+        ("risk_state_source", "risk_state_source TEXT"),
+        ("effective_risk_limits_json", "effective_risk_limits_json TEXT"),
+    ):
+        _ensure_column(conn, "risk_evaluations", name, ddl)
 
     conn.execute(
         """
@@ -3792,6 +3804,7 @@ def _strategy_contribution_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "strategy_risk_decision_hash": None,
         "strategy_risk_policy_hash": None,
         "strategy_risk_input_hash": None,
+        "strategy_risk_evidence_hash": None,
         "strategy_risk_status": None,
         "strategy_risk_reason_code": None,
         "strategy_risk_state_source": None,
@@ -3822,6 +3835,7 @@ def _strategy_contribution_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
                 "strategy_risk_decision_hash",
                 "strategy_risk_policy_hash",
                 "strategy_risk_input_hash",
+                "strategy_risk_evidence_hash",
                 "strategy_risk_status",
                 "strategy_risk_reason_code",
                 "strategy_risk_state_source",

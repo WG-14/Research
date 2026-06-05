@@ -155,6 +155,15 @@ The current execution-authority boundary is implemented in `src/bithumb_bot/deci
 
 Live broker submission requires the final validated serialization from `ExecutionSubmitPlan.as_final_payload()`, including schema version, authority label, and content hash. The broker-facing architecture and forbidden live real-order bypass paths are documented in [`docs/live-submit-authority.md`](/docs/live-submit-authority.md).
 
+Typed operational risk decisions carry separate policy, input, evidence, and
+decision hashes. `strategy_risk_evidence_hash`,
+`portfolio_risk_evidence_hash`, and `pre_submit_risk_evidence_hash` identify
+the canonical evidence payload used by each layer; the layer decision hash binds
+that evidence hash together with policy/input hashes and the decision outcome.
+Exposure-boundary artifacts remain separate metadata for exposure caps such as
+`max_target_exposure_krw`; they are not operational risk approvals and
+`risk_budget_krw` remains deprecated non-authoritative compatibility metadata.
+
 Portfolio target authority is documented in [`docs/portfolio-allocation-authority.md`](/docs/portfolio-allocation-authority.md), and the runtime scope contract is documented in [`docs/runtime-scope.md`](/docs/runtime-scope.md). Strategy output becomes a typed non-authoritative `StrategyPreference`; `SignalAggregator` and `PortfolioAllocator` produce the authoritative `PortfolioTarget`; target-delta planning consumes that target before producing `ExecutionSubmitPlan`. Single-strategy runtime uses the same allocator path as the degenerate multi-strategy case. Missing or malformed portfolio target authority fails closed.
 
 The supported production boundary is a multi-strategy / single-pair / single-interval runtime. Multi-strategy runtime orchestration is configured with structured object-form `RUNTIME_STRATEGY_SET_JSON`, including `market_scope={mode:"single_pair", pair, interval}` and a `strategies` list. All active strategies must use the same `PAIR` and `INTERVAL` as the runtime. `ACTIVE_STRATEGIES` remains a compatibility/diagnostic name-list shortcut only; it does not carry per-instance parameter, approved-profile, priority, weight, or exposure-cap authority, and live mode rejects multiple `ACTIVE_STRATEGIES` unless a structured strategy-set contract is provided. Legacy list-form `RUNTIME_STRATEGY_SET_JSON` is paper/dev compatibility only; live-like modes require object form with `market_scope`. When neither is set, runtime resolves exactly one active strategy from `STRATEGY_NAME`. Active strategies are collected on the same closed candle, converted to typed `StrategyPreference`s, and allocated into one authoritative `PortfolioTarget` for the configured `settings.PAIR` before execution planning. The current run loop enforces single-pair and single-interval invariants at startup and enforces the single-target pair invariant again inside execution planning across paper, live dry-run, and live real-order paths; pair mismatches are reported as `multi_pair_runtime_unsupported`, interval mismatches as `single_interval_runtime_unsupported`, multi-target allocations fail closed as `single_pair_allocation_target_count_mismatch`, and target pair mismatches fail closed as `single_pair_allocation_target_pair_mismatch`.
@@ -163,9 +172,20 @@ Multi-pair portfolio runtime is not enabled. The reserved future `market_scope.m
 
 Runtime strategy parameter authority is strict in live/live-like and profile-bound runs. The normalized request `parameter_source` is one of `approved_profile`, `runtime_strategy_spec`, or explicit `paper_legacy_compat`; global `STRATEGY_PARAMETERS_JSON` and plugin `runtime_parameter_adapter.from_settings()` are compatibility fallbacks only and are rejected as strict runtime authority. Live multi-strategy mode requires every active strategy instance to bind `approved_profile_path` and `approved_profile_hash`; a global approved-profile selector remains a single-strategy compatibility path only.
 
-Runtime strategy risk authority follows the same live fail-closed model. Live strategy instances must materialize a hash-bound `StrategyRiskProfile` from the approved runtime profile; inline `risk_policy` mappings and static `risk_snapshot` mappings in `RUNTIME_STRATEGY_SET_JSON` are not live authority. Strategy risk state is derived from runtime DB/ledger/order/position state at decision time, and allocator-selected BUY contributions require an operational `strategy_risk_decision` with `status=ALLOW`. Exposure-cap evidence is recorded separately as `exposure_boundary_artifact_hash`; operational risk decisions use `strategy_risk_*` and `pre_submit_risk_*` fields.
+Runtime strategy risk authority follows the same live fail-closed model. Live strategy instances must materialize a hash-bound `StrategyRiskProfile` from the approved runtime profile; inline `risk_policy` mappings and static `risk_snapshot` mappings in `RUNTIME_STRATEGY_SET_JSON` are not live authority. Strategy risk state is derived from runtime DB/ledger/order/position state at decision time, and allocator-selected BUY contributions require an operational `strategy_risk_decision` with `status=ALLOW`. Exposure-cap evidence is recorded separately as `exposure_boundary_artifact_hash`; operational risk decisions use `strategy_risk_*`, `portfolio_risk_*`, and `pre_submit_risk_*` fields including their evidence hashes.
 
-Live target-delta submission still requires typed `ExecutionSubmitPlan` authority. The live submit path additionally binds `RuntimeRiskEngineAdapter.evaluate_pre_submit()` output to the final submit-plan hash before broker submission; missing, non-ALLOW, or mismatched pre-submit risk approval fails closed.
+Live target-delta submission still requires typed `ExecutionSubmitPlan` authority. The live submit path additionally binds `RuntimeRiskEngineAdapter.evaluate_pre_submit()` output to the final submit-plan hash before broker submission; missing, malformed, non-ALLOW, evidence-hash-missing, or mismatched pre-submit risk approval fails closed.
+
+Operators can verify persisted runtime risk-layer hashes without broker access:
+
+```bash
+uv run bithumb-bot risk-layer-replay --db <paper_or_runtime.sqlite> --decision-id <id> --json
+uv run bithumb-bot risk-layer-replay --db <paper_or_runtime.sqlite> --execution-plan-id <id> --json
+```
+
+The verifier opens SQLite read-only, does not call live broker APIs, does not
+submit orders, and reports strategy, portfolio, and pre-submit replay status
+with expected and recomputed decision hashes plus policy/input/evidence hashes.
 
 For live real-order target-delta planning, the performance gate is scoped to allocator-selected BUY/SELL strategy contributions by `strategy_instance_id`, `strategy_name`, and `pair`, not to global `STRATEGY_NAME`. Allocator-unselected strategies do not block submit, HOLD-only selections are not blocked by unrelated BUY/SELL history, and selected contribution failures fail closed with `selected_strategy_performance_gate_blocked` plus per-contribution gate results in planning context.
 Closed lifecycle performance rows persist `strategy_instance_id` for this gate and use it as the primary query filter when available; older rows without instance identity can only participate through broad `strategy_name`/`pair` compatibility filtering.

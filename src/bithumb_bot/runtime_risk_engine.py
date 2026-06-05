@@ -221,6 +221,7 @@ def _record_typed_decision_identity(
         SET
             risk_input_hash=?,
             risk_policy_hash=?,
+            risk_evidence_hash=?,
             risk_decision_hash=?,
             risk_reason_code=?,
             risk_status=?,
@@ -238,6 +239,7 @@ def _record_typed_decision_identity(
         (
             decision.risk_input_hash,
             decision.risk_policy_hash,
+            decision.risk_evidence_hash,
             decision.risk_decision_hash,
             decision.reason_code,
             decision.status,
@@ -260,6 +262,7 @@ def _ensure_typed_risk_columns(conn: sqlite3.Connection) -> None:
     for name, ddl in (
         ("risk_input_hash", "risk_input_hash TEXT"),
         ("risk_policy_hash", "risk_policy_hash TEXT"),
+        ("risk_evidence_hash", "risk_evidence_hash TEXT"),
         ("risk_decision_hash", "risk_decision_hash TEXT"),
         ("risk_reason_code", "risk_reason_code TEXT"),
         ("risk_status", "risk_status TEXT"),

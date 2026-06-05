@@ -162,6 +162,7 @@ class DecisionPayloadBuilder:
         for key in (
             "risk_input_hash",
             "risk_policy_hash",
+            "risk_evidence_hash",
             "risk_decision_hash",
             "risk_reason_code",
             "risk_status",

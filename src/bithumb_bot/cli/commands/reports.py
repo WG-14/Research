@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 from pathlib import Path
 
@@ -173,6 +174,17 @@ def _decision_attribution(args: argparse.Namespace, _context) -> None:
         print(format_decision_attribution_summary(summary))
 
 
+def _risk_layer_replay(args: argparse.Namespace, _context) -> None:
+    from bithumb_bot.risk_layer_replay import verify_risk_layer_replay_db
+
+    report = verify_risk_layer_replay_db(
+        args.db,
+        decision_id=args.decision_id,
+        execution_plan_id=args.execution_plan_id,
+    )
+    print(json.dumps(report, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+
+
 def command_specs() -> list[CommandSpec]:
     return [
         make_spec("report", domain="reports", handler=_report, build=lambda p: p.add_argument("--days", type=int, default=30)),
@@ -184,6 +196,7 @@ def command_specs() -> list[CommandSpec]:
         make_spec("cash-drift-report", domain="reports", handler=_cash_drift, help="audit broker cash versus local ledger and recent external cash adjustments", description="Read-only cash drift diagnostic for broker/local comparison and adjustment review.", build=_build_cash_drift, json_output_supported=True),
         make_spec("decision-telemetry", domain="reports", handler=_decision_telemetry, help="summary of HOLD/blocked decision telemetry", build=lambda p: p.add_argument("--limit", type=int, default=200)),
         make_spec("decision-attribution", domain="reports", handler=_decision_attribution, help="funnel-oriented attribution summary from stored strategy decision context", description="Read-only decision attribution report for strategy_decisions.context_json.", build=_build_decision_attribution, json_output_supported=True),
+        make_spec("risk-layer-replay", domain="reports", handler=_risk_layer_replay, help="read-only replay verification for typed runtime risk-layer hashes", description="Read-only risk-layer verifier for strategy, portfolio, and pre-submit decision hashes. Opens SQLite in read-only mode and never calls broker APIs or submits orders.", build=_build_risk_layer_replay, json_output_supported=True),
         make_spec("execution-quality-report", domain="reports", handler=_execution_quality, help="report signal-submit-fill execution quality against research cost assumptions", description="Materialize and summarize order-level execution quality from strategy decisions, submit evidence, and fills without changing live trading behavior.", build=_build_execution_quality, produces_artifact=True, json_output_supported=True),
     ]
 
@@ -239,6 +252,13 @@ def _build_decision_attribution(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--to", dest="to_date", help="KST date (YYYY-MM-DD)")
     parser.add_argument("--pair")
     parser.add_argument("--interval")
+    parser.add_argument("--json", action="store_true")
+
+
+def _build_risk_layer_replay(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--db", required=True)
+    parser.add_argument("--decision-id", type=int)
+    parser.add_argument("--execution-plan-id", type=int)
     parser.add_argument("--json", action="store_true")
 
 

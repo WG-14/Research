@@ -155,6 +155,11 @@ class StrategyContribution:
                 if self.strategy_risk_decision is None
                 else self.strategy_risk_decision.get("risk_input_hash")
             ),
+            "strategy_risk_evidence_hash": (
+                None
+                if self.strategy_risk_decision is None
+                else self.strategy_risk_decision.get("risk_evidence_hash")
+            ),
             "strategy_risk_status": (
                 None if self.strategy_risk_decision is None else self.strategy_risk_decision.get("status")
             ),
@@ -583,6 +588,7 @@ class PortfolioAllocator:
                         "strategy_risk_decision_hash": str(decision.get("risk_decision_hash") or ""),
                         "strategy_risk_policy_hash": str(decision.get("risk_policy_hash") or ""),
                         "strategy_risk_input_hash": str(decision.get("risk_input_hash") or ""),
+                        "strategy_risk_evidence_hash": str(decision.get("risk_evidence_hash") or ""),
                         "strategy_risk_status": str(decision.get("status") or ""),
                         "strategy_risk_state_source": str(decision.get("state_source") or ""),
                     }
@@ -594,6 +600,7 @@ class PortfolioAllocator:
                     "strategy_risk_block_reason_code": "STRATEGY_RISK_DECISION_MISSING",
                     "strategy_risk_status": "MISSING",
                     "strategy_risk_policy_hash": str(item.strategy_risk_profile.get("risk_policy_hash") or ""),
+                    "strategy_risk_evidence_hash": "",
                 }
             if not isinstance(item.strategy_risk_policy, Mapping):
                 continue
@@ -612,6 +619,7 @@ class PortfolioAllocator:
                     "strategy_risk_decision_hash": decision.risk_decision_hash,
                     "strategy_risk_policy_hash": decision.risk_policy_hash,
                     "strategy_risk_input_hash": decision.risk_input_hash,
+                    "strategy_risk_evidence_hash": decision.risk_evidence_hash,
                     "strategy_risk_status": decision.status,
                     "strategy_risk_state_source": decision.state_source,
                 }

@@ -87,6 +87,7 @@ def _with_pre_submit_risk_proof(payload: dict[str, object]) -> dict[str, object]
         "pre_submit_risk_decision_hash": "sha256:" + "1" * 64,
         "pre_submit_risk_policy_hash": "sha256:" + "2" * 64,
         "pre_submit_risk_input_hash": "sha256:" + "3" * 64,
+        "pre_submit_risk_evidence_hash": "sha256:" + "4" * 64,
         "pre_submit_risk_plan_hash": plan_hash,
         "pre_submit_risk_reason_code": "OK",
         "pre_submit_risk_state_source": "unit",
@@ -311,9 +312,10 @@ def test_submit_authority_policy_rejects_live_target_delta_without_provenance() 
 def test_operational_pre_submit_risk_approval_requires_allow_and_matching_plan_hash() -> None:
     payload = {
         "pre_submit_risk_status": "ALLOW",
-        "pre_submit_risk_decision_hash": "sha256:decision",
-        "pre_submit_risk_policy_hash": "sha256:policy",
-        "pre_submit_risk_input_hash": "sha256:input",
+        "pre_submit_risk_decision_hash": "sha256:" + "1" * 64,
+        "pre_submit_risk_policy_hash": "sha256:" + "2" * 64,
+        "pre_submit_risk_input_hash": "sha256:" + "3" * 64,
+        "pre_submit_risk_evidence_hash": "sha256:" + "4" * 64,
         "pre_submit_risk_plan_hash": "sha256:plan",
         "pre_submit_risk_reason_code": "OK",
         "pre_submit_risk_state_source": "runtime_db_broker",
@@ -335,6 +337,14 @@ def test_operational_pre_submit_risk_approval_requires_allow_and_matching_plan_h
         {**payload, "pre_submit_risk_decision_hash": ""},
         expected_submit_plan_hash="sha256:plan",
     ) == "live_real_order_pre_submit_risk_decision_hash_missing"
+    assert operational_pre_submit_risk_approval_error(
+        {**payload, "pre_submit_risk_evidence_hash": ""},
+        expected_submit_plan_hash="sha256:plan",
+    ) == "live_real_order_pre_submit_risk_evidence_hash_missing"
+    assert operational_pre_submit_risk_approval_error(
+        {**payload, "pre_submit_risk_evidence_hash": "sha256:not-a-real-digest"},
+        expected_submit_plan_hash="sha256:plan",
+    ) == "live_real_order_pre_submit_risk_evidence_hash_missing"
     assert operational_pre_submit_risk_approval_error(
         {**payload, "pre_submit_risk_reason_code": ""},
         expected_submit_plan_hash="sha256:plan",

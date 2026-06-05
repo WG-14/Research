@@ -1255,6 +1255,7 @@ def test_runtime_decision_request_parameter_source_is_normalized() -> None:
     )
 
     assert request.parameter_source == "runtime_strategy_spec"
+    assert request.runtime_strategy_spec.legacy_compatibility_used is False
     assert request.observability_fields()["parameter_source"] == "runtime_strategy_spec"
     assert request.runtime_strategy_spec.parameter_authority_audit["authority"] == "runtime_strategy_spec"
 
@@ -1273,7 +1274,22 @@ def test_paper_legacy_compat_is_explicit_when_fallback_is_used() -> None:
     assert request.runtime_strategy_spec.parameter_authority_audit["legacy_fallback"] == "STRATEGY_PARAMETERS_JSON"
 
 
-def test_runtime_strategy_spec_parameters_are_authoritative_without_settings_fallback() -> None:
+def test_runtime_strategy_spec_parameters_are_authoritative_without_settings_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bithumb_bot import runtime_strategy_set
+
+    profile = {
+        "profile_mode": "live_dry_run",
+        "profile_content_hash": "sha256:profile",
+        "strategy_parameters": _complete_canary_parameters(CANARY_ORDER_REASON="spec"),
+        "risk_policy": {"max_daily_order_count": 5, "source": "approved_profile"},
+        "risk_enforcement_mode": "enforced",
+        "missing_risk_policy_behavior": "fail_closed_for_live",
+    }
+    monkeypatch.setattr(runtime_strategy_set, "load_approved_profile", lambda path: profile)
+    monkeypatch.setattr(runtime_strategy_set, "expected_profile_modes_for_runtime", lambda runtime: (("live_dry_run",), "ok"))
+    monkeypatch.setattr(runtime_strategy_set, "diff_profile_to_runtime", lambda *args, **kwargs: ())
     cfg = replace(
         settings,
         MODE="live",
@@ -1287,12 +1303,15 @@ def test_runtime_strategy_spec_parameters_are_authoritative_without_settings_fal
             pair="KRW-BTC",
             interval="1m",
             parameters=_complete_canary_parameters(CANARY_ORDER_REASON="spec"),
+            approved_profile_path="/runtime/canary.json",
+            approved_profile_hash="sha256:profile",
         ),
         through_ts_ms=1_700_000_180_000,
     )
 
-    assert request.parameter_source == "runtime_strategy_spec"
+    assert request.parameter_source == "approved_profile"
     assert request.parameters["CANARY_ORDER_REASON"] == "spec"
+    assert request.runtime_strategy_spec.legacy_compatibility_used is False
 
 
 def test_strategy_spec_validates_type_range_enum_and_units() -> None:
@@ -1492,21 +1511,42 @@ def test_new_strategy_plugin_materializes_without_settings_attribute() -> None:
     )
 
     assert request.parameter_source == "runtime_strategy_spec"
+    assert request.runtime_strategy_spec.legacy_compatibility_used is False
     assert request.parameters["CANARY_ORDER_REASON"] == "no_settings_attribute"
     assert not hasattr(cfg, "CANARY_ORDER_REASON")
 
 
-def test_promotion_strategy_does_not_require_from_settings_for_strict_runtime() -> None:
+def test_promotion_strategy_does_not_require_from_settings_for_strict_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bithumb_bot import runtime_strategy_set
+
     source = Path("src/bithumb_bot/research/strategy_registry.py").read_text(encoding="utf-8")
+    profile = {
+        "profile_mode": "live_dry_run",
+        "profile_content_hash": "sha256:profile",
+        "strategy_parameters": _complete_canary_parameters(),
+        "risk_policy": {"max_daily_order_count": 5, "source": "approved_profile"},
+        "risk_enforcement_mode": "enforced",
+        "missing_risk_policy_behavior": "fail_closed_for_live",
+    }
+    monkeypatch.setattr(runtime_strategy_set, "load_approved_profile", lambda path: profile)
+    monkeypatch.setattr(runtime_strategy_set, "expected_profile_modes_for_runtime", lambda runtime: (("live_dry_run",), "ok"))
+    monkeypatch.setattr(runtime_strategy_set, "diff_profile_to_runtime", lambda *args, **kwargs: ())
 
     assert "strategy promotion runtime capability missing parameter adapter" not in source
     request = RuntimeDecisionRequestBuilder(
         settings_obj=replace(settings, MODE="live", LIVE_DRY_RUN=True, STRATEGY_PARAMETERS_JSON="")
     ).build_for_spec(
-        RuntimeStrategySpec("canary_non_sma", parameters=_complete_canary_parameters()),
+        RuntimeStrategySpec(
+            "canary_non_sma",
+            parameters=_complete_canary_parameters(),
+            approved_profile_path="/runtime/canary.json",
+            approved_profile_hash="sha256:profile",
+        ),
         through_ts_ms=1_700_000_180_000,
     )
-    assert request.parameter_source == "runtime_strategy_spec"
+    assert request.parameter_source == "approved_profile"
 
 
 def test_settings_strategy_specific_fields_are_legacy_allowlisted() -> None:

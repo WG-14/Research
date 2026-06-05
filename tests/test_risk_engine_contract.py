@@ -112,6 +112,7 @@ def test_risk_parity_vectors_share_decision_identity(
         assert decision.allowed_actions == first.allowed_actions
         assert decision.risk_input_hash == first.risk_input_hash
         assert decision.risk_policy_hash == first.risk_policy_hash
+        assert decision.risk_evidence_hash == first.risk_evidence_hash
 
 
 def test_risk_decision_identity_fields_are_trace_compatible() -> None:
@@ -124,6 +125,7 @@ def test_risk_decision_identity_fields_are_trace_compatible() -> None:
     assert set(fields) == {
         "risk_input_hash",
         "risk_policy_hash",
+        "risk_evidence_hash",
         "risk_decision_hash",
         "risk_reason_code",
         "risk_status",
@@ -132,6 +134,7 @@ def test_risk_decision_identity_fields_are_trace_compatible() -> None:
         "effective_risk_limits",
     }
     assert fields["risk_decision_hash"] == decision.risk_decision_hash
+    assert fields["risk_evidence_hash"] == decision.risk_evidence_hash
     assert fields["risk_reason_code"] == DAILY_LOSS_LIMIT_REASON_CODE
 
 
@@ -448,6 +451,7 @@ def test_runtime_risk_evaluation_records_typed_decision_identity(tmp_path) -> No
     assert decision.reason_code == DAILY_LOSS_LIMIT_REASON_CODE
     assert recent["risk_input_hash"] == decision.risk_input_hash
     assert recent["risk_policy_hash"] == decision.risk_policy_hash
+    assert recent["risk_evidence_hash"] == decision.risk_evidence_hash
     assert recent["risk_decision_hash"] == decision.risk_decision_hash
     assert recent["risk_status"] == decision.status
     assert recent["risk_evaluation_point"] == "pre_decision"

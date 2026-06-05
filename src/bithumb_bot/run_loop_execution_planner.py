@@ -319,6 +319,7 @@ def _allocation_context_fields(decision, *, runtime_pair: str) -> dict[str, obje
         "strategy_risk_decision_hash": str(target_conflict.get("strategy_risk_decision_hash") or ""),
         "strategy_risk_policy_hash": str(target_conflict.get("strategy_risk_policy_hash") or ""),
         "strategy_risk_input_hash": str(target_conflict.get("strategy_risk_input_hash") or ""),
+        "strategy_risk_evidence_hash": str(target_conflict.get("strategy_risk_evidence_hash") or ""),
         "strategy_risk_status": str(target_conflict.get("strategy_risk_status") or ""),
         "strategy_risk_reason_code": str(target_conflict.get("strategy_risk_block_reason_code") or ""),
     }
@@ -712,6 +713,7 @@ def prepare_strategy_decision_persistence_context(
                 "pre_submit_risk_decision_hash",
                 "pre_submit_risk_policy_hash",
                 "pre_submit_risk_input_hash",
+                "pre_submit_risk_evidence_hash",
                 "pre_submit_risk_status",
                 "pre_submit_risk_reason_code",
                 "pre_submit_risk_plan_hash",
@@ -1137,32 +1139,22 @@ class ExecutionPlanner:
                             )
                             missing_state = missing_required_risk_state(risk_profile.policy, snapshot)
                         if enforced and missing_state:
-                            strategy_risk_decision_payload = {
-                                "evaluation_point": "pre_decision",
-                                "status": "BLOCK",
-                                "reason_code": "STRATEGY_RISK_STATE_INCOMPLETE",
-                                "reason": "required runtime risk state is unavailable",
-                                "allowed_actions": ["HOLD"],
-                                "recommended_action": "halt",
-                                "risk_input_hash": snapshot.input_hash(),
-                                "risk_policy_hash": risk_profile.risk_policy_hash,
-                                "risk_decision_hash": sha256_prefixed(
-                                    {
-                                        "evaluation_point": "pre_decision",
-                                        "status": "BLOCK",
-                                        "reason_code": "STRATEGY_RISK_STATE_INCOMPLETE",
-                                        "risk_input_hash": snapshot.input_hash(),
-                                        "risk_policy_hash": risk_profile.risk_policy_hash,
-                                        "missing_required_risk_state": list(missing_state),
-                                    }
-                                ),
-                                "effective_limits": risk_profile.policy.effective_limits(),
-                                "state_source": snapshot.state_source,
-                                "evidence": {
+                            from .risk_contract import build_risk_decision
+
+                            strategy_risk_decision_payload = build_risk_decision(
+                                evaluation_point="pre_decision",
+                                status="BLOCK",
+                                reason_code="STRATEGY_RISK_STATE_INCOMPLETE",
+                                reason="required runtime risk state is unavailable",
+                                allowed_actions=("HOLD",),
+                                recommended_action="halt",
+                                snapshot=snapshot,
+                                policy=risk_profile.policy,
+                                evidence={
                                     **dict(snapshot.evidence),
                                     "missing_required_risk_state": list(missing_state),
                                 },
-                            }
+                            ).as_dict()
                         else:
                             strategy_risk_decision_payload = RiskPolicyEngine(
                                 risk_profile.policy
@@ -1179,6 +1171,11 @@ class ExecutionPlanner:
                                 else None,
                                 "strategy_risk_input_hash": strategy_risk_decision_payload.get(
                                     "risk_input_hash"
+                                )
+                                if isinstance(strategy_risk_decision_payload, dict)
+                                else None,
+                                "strategy_risk_evidence_hash": strategy_risk_decision_payload.get(
+                                    "risk_evidence_hash"
                                 )
                                 if isinstance(strategy_risk_decision_payload, dict)
                                 else None,

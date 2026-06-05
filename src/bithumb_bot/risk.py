@@ -217,6 +217,7 @@ def _ensure_daily_risk_tables(conn: sqlite3.Connection) -> None:
     for name, ddl in (
         ("risk_input_hash", "risk_input_hash TEXT"),
         ("risk_policy_hash", "risk_policy_hash TEXT"),
+        ("risk_evidence_hash", "risk_evidence_hash TEXT"),
         ("risk_decision_hash", "risk_decision_hash TEXT"),
         ("risk_reason_code", "risk_reason_code TEXT"),
         ("risk_status", "risk_status TEXT"),
@@ -1061,6 +1062,7 @@ def fetch_recent_risk_evaluations(conn: sqlite3.Connection, *, limit: int = 20) 
             mismatch_summary,
             risk_input_hash,
             risk_policy_hash,
+            risk_evidence_hash,
             risk_decision_hash,
             risk_reason_code,
             risk_status,

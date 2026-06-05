@@ -158,6 +158,11 @@ class StrategyPreference:
                 if self.strategy_risk_decision is None
                 else self.strategy_risk_decision.get("risk_input_hash")
             ),
+            "strategy_risk_evidence_hash": (
+                None
+                if self.strategy_risk_decision is None
+                else self.strategy_risk_decision.get("risk_evidence_hash")
+            ),
             "strategy_risk_status": (
                 None
                 if self.strategy_risk_decision is None

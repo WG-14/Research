@@ -277,6 +277,14 @@ def live_real_order_legacy_buy_submit_plan_error(
     return None
 
 
+def _valid_sha256_prefixed(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text.startswith("sha256:"):
+        return False
+    digest = text.removeprefix("sha256:")
+    return len(digest) == 64 and all(char in "0123456789abcdef" for char in digest.lower())
+
+
 def operational_pre_submit_risk_approval_error(
     payload: Mapping[str, object],
     *,
@@ -289,8 +297,9 @@ def operational_pre_submit_risk_approval_error(
         "pre_submit_risk_decision_hash",
         "pre_submit_risk_policy_hash",
         "pre_submit_risk_input_hash",
+        "pre_submit_risk_evidence_hash",
     ):
-        if not str(payload.get(field) or "").strip().startswith("sha256:"):
+        if not _valid_sha256_prefixed(payload.get(field)):
             return f"live_real_order_{field}_missing"
     for field in (
         "pre_submit_risk_reason_code",
