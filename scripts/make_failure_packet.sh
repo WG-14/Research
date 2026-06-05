@@ -30,6 +30,26 @@ if [[ ! -f "${log_file}" ]]; then
   exit 1
 fi
 
+emit_head_tail() {
+  local file="$1"
+  local head_lines="${2:-240}"
+  local tail_lines="${3:-240}"
+  local line_count
+
+  line_count="$(wc -l < "${file}")"
+  if [[ "${line_count}" -le "${head_lines}" ]]; then
+    sed -n "1,${head_lines}p" "${file}"
+  elif [[ "${line_count}" -le $((head_lines + tail_lines)) ]]; then
+    sed -n "1,${line_count}p" "${file}"
+  else
+    sed -n "1,${head_lines}p" "${file}"
+    echo
+    echo "[FAILURE-PACKET] truncated middle; showing tail below. See packet file for full evidence."
+    echo
+    tail -n "${tail_lines}" "${file}"
+  fi
+}
+
 timestamp="$(date -u '+%Y%m%dT%H%M%SZ')"
 packet_dir="${WORK_DIR}/packets/${timestamp}_iter${ITERATION}"
 mkdir -p "${packet_dir}"
@@ -222,8 +242,16 @@ PY
   echo
 } > "${diagnostic_artifact_file}"
 set +e
-"${SCRIPT_DIR}/check_repo_runtime_artifacts.sh" >> "${diagnostic_artifact_file}" 2>&1
-diagnostic_artifact_exit_code=$?
+if [[ ! -e "${SCRIPT_DIR}/check_repo_runtime_artifacts.sh" ]]; then
+  echo "[DIAGNOSTIC-RUNTIME-ARTIFACT-CHECK] skipped: scripts/check_repo_runtime_artifacts.sh is missing." >> "${diagnostic_artifact_file}"
+  diagnostic_artifact_exit_code=127
+elif [[ ! -x "${SCRIPT_DIR}/check_repo_runtime_artifacts.sh" ]]; then
+  echo "[DIAGNOSTIC-RUNTIME-ARTIFACT-CHECK] skipped: scripts/check_repo_runtime_artifacts.sh is not executable." >> "${diagnostic_artifact_file}"
+  diagnostic_artifact_exit_code=126
+else
+  "${SCRIPT_DIR}/check_repo_runtime_artifacts.sh" >> "${diagnostic_artifact_file}" 2>&1
+  diagnostic_artifact_exit_code=$?
+fi
 set -e
 {
   echo
@@ -393,12 +421,12 @@ codex_input="${packet_dir}/codex_input.md"
   echo
   echo "## Pytest Failure Sections"
   echo '```text'
-  sed -n '1,360p' "${pytest_failure_sections_file}"
+  emit_head_tail "${pytest_failure_sections_file}" 360 360
   echo '```'
   echo
   echo "## Failure Context Around Markers"
   echo '```text'
-  sed -n '1,360p' "${pytest_failure_context_file}"
+  emit_head_tail "${pytest_failure_context_file}" 360 360
   echo '```'
   echo
   echo "## Preflight Failure JSON"
@@ -413,7 +441,7 @@ codex_input="${packet_dir}/codex_input.md"
   echo
   echo "## Failure Signature Material"
   echo '```text'
-  sed -n '1,320p' "${failure_signature_material_file}"
+  emit_head_tail "${failure_signature_material_file}" 320 320
   echo '```'
   echo
   echo "## Preflight Failure Excerpt"
@@ -443,7 +471,7 @@ codex_input="${packet_dir}/codex_input.md"
   echo
   echo "## Git Diff Patch Excerpt"
   echo '```diff'
-  sed -n '1,260p' "${packet_dir}/git_diff.patch"
+  emit_head_tail "${packet_dir}/git_diff.patch" 260 260
   echo '```'
   echo
   echo "## Repro Commands"
