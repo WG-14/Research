@@ -140,6 +140,46 @@ def test_live_real_order_scalar_contract_fields_still_fail_closed() -> None:
     assert "custom_hash" not in str(exc.value)
 
 
+def test_non_sma_live_dry_run_contract_missing_promotion_evidence_fails_closed() -> None:
+    request = _live_real_order_request(
+        contract=DecisionEvidenceContract(
+            required_promotion_provenance_fields=("non_sma_contract_hash",),
+        ),
+        provenance={},
+    )
+    request = StrategyEvaluationRequest(
+        **{
+            **request.__dict__,
+            "mode": "live_dry_run",
+        }
+    )
+
+    with pytest.raises(ValueError) as exc:
+        StrategyDecisionService().evaluate(request)
+
+    assert "strategy_evaluation_required_provenance_missing:contract_canary" in str(exc.value)
+    assert "non_sma_contract_hash" in str(exc.value)
+
+
+def test_non_sma_live_dry_run_contract_complete_promotion_evidence_passes() -> None:
+    request = _live_real_order_request(
+        contract=DecisionEvidenceContract(
+            required_promotion_provenance_fields=("non_sma_contract_hash",),
+        ),
+        provenance={"non_sma_contract_hash": HASH},
+    )
+    request = StrategyEvaluationRequest(
+        **{
+            **request.__dict__,
+            "mode": "live_dry_run",
+        }
+    )
+
+    result = StrategyDecisionService().evaluate(request)
+
+    assert result.provenance["non_sma_contract_hash"] == HASH
+
+
 def test_live_real_order_plugin_rejects_incomplete_decision_evidence_contract() -> None:
     with pytest.raises(ValueError) as exc:
         ResearchStrategyPlugin(

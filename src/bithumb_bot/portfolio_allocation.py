@@ -433,6 +433,23 @@ class PortfolioAllocator:
             "selected_strategy_instance_ids": [item.strategy_instance_id for item in top],
             "selected_strategies": [item.strategy_name for item in top],
             "selected_signals": sorted(top_signals),
+            "selected_strategy_risk_profiles": [
+                dict(item.strategy_risk_profile)
+                for item in top
+                if isinstance(item.strategy_risk_profile, Mapping)
+            ],
+            "selected_strategy_risk_profile_hashes": [
+                str(item.strategy_risk_profile.get("strategy_risk_profile_hash") or "")
+                for item in top
+                if isinstance(item.strategy_risk_profile, Mapping)
+                and str(item.strategy_risk_profile.get("strategy_risk_profile_hash") or "").strip()
+            ],
+            "selected_strategy_risk_policy_hashes": [
+                str(item.strategy_risk_profile.get("risk_policy_hash") or "")
+                for item in top
+                if isinstance(item.strategy_risk_profile, Mapping)
+                and str(item.strategy_risk_profile.get("risk_policy_hash") or "").strip()
+            ],
             "conflict_count": conflict_count,
         }
         if conflict_count:

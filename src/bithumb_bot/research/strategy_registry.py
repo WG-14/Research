@@ -255,6 +255,7 @@ class StrategyRuntimeCapabilities:
     live_dry_run_allowed: bool = False
     live_real_order_allowed: bool = False
     approved_profile_required: bool = True
+    accepts_empty_runtime_parameters: bool = False
     fail_closed_reason: str = "strategy_runtime_capability_missing"
     research_supported: bool | None = None
     replay_decisions_supported: bool | None = None
@@ -308,6 +309,7 @@ class StrategyRuntimeCapabilities:
             "live_dry_run_allowed": bool(self.live_dry_run_allowed),
             "live_real_order_allowed": bool(self.live_real_order_allowed),
             "approved_profile_required": bool(self.approved_profile_required),
+            "accepts_empty_runtime_parameters": bool(self.accepts_empty_runtime_parameters),
             "fail_closed_reason": self.fail_closed_reason,
         }
 

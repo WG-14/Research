@@ -1184,7 +1184,10 @@ class ExecutionPlanner:
                             strategy_risk_decision_payload = RiskPolicyEngine(
                                 risk_profile.policy
                             ).evaluate_pre_decision(snapshot).as_dict()
-                        strategy_risk_profile_payload = risk_profile.as_dict()
+                        strategy_risk_profile_payload = {
+                            **risk_profile.as_dict(),
+                            "strategy_risk_profile_hash": risk_profile.profile_hash(),
+                        }
                         result_metadata.update(
                             {
                                 "strategy_risk_profile_hash": risk_profile.profile_hash(),

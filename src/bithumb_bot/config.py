@@ -628,7 +628,7 @@ def validate_runtime_strategy_set_selection(cfg: Settings) -> None:
                 issues.append(
                     f"{spec.strategy_name}:runtime_strategy_parameters_missing_required:{','.join(missing)}"
                 )
-        elif spec.strategy_name == "safe_hold":
+        elif bool(plugin.runtime_capabilities.accepts_empty_runtime_parameters):
             pass
 
         try:

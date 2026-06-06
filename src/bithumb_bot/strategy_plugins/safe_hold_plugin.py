@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Any
 
 from bithumb_bot.research.backtest_types import BacktestRun, BacktestRunContext
@@ -105,6 +106,11 @@ _SAFE_HOLD_PROMOTION_EXTENSION = PromotionGradeStrategyExtension(
     approved_profile_required=False,
     fail_closed_reason="safe_hold_runtime_fallback_not_live_eligible",
 )
+_SAFE_HOLD_RUNTIME_CAPABILITIES = _SAFE_HOLD_PROMOTION_EXTENSION.runtime_capabilities()
+_SAFE_HOLD_RUNTIME_CAPABILITIES = replace(
+    _SAFE_HOLD_RUNTIME_CAPABILITIES,
+    accepts_empty_runtime_parameters=True,
+)
 
 
 SAFE_HOLD_PLUGIN = ResearchStrategyPlugin(
@@ -122,7 +128,7 @@ SAFE_HOLD_PLUGIN = ResearchStrategyPlugin(
     runtime_decision_adapter_factory=_SAFE_HOLD_PROMOTION_EXTENSION.runtime_decision_adapter_factory,
     policy_assembly_factory=_SAFE_HOLD_PROMOTION_EXTENSION.policy_assembly_factory,
     research_runnable=False,
-    runtime_capabilities=_SAFE_HOLD_PROMOTION_EXTENSION.runtime_capabilities(),
+    runtime_capabilities=_SAFE_HOLD_RUNTIME_CAPABILITIES,
     authoring_contract_kind="promotion_grade",
     promotion_extension_payload=_SAFE_HOLD_PROMOTION_EXTENSION.contract_payload(),
 )

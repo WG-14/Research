@@ -522,10 +522,13 @@ def _attach_live_real_pre_submit_risk_proof(
     try:
         from .risk_contract import SubmitPlan
         from .runtime_risk_engine import RuntimeRiskEngineAdapter
+        from .runtime_risk_engine import resolve_effective_pre_submit_risk_policy
+
+        effective_policy = resolve_effective_pre_submit_risk_policy(payload)
 
         conn = ensure_db()
         try:
-            decision = RuntimeRiskEngineAdapter(conn).evaluate_pre_submit(
+            decision = RuntimeRiskEngineAdapter(conn, policy=effective_policy.policy).evaluate_pre_submit(
                 plan=SubmitPlan(
                     side=side or "UNKNOWN",
                     qty=float(payload.get("qty") or 0.0),
@@ -540,6 +543,7 @@ def _attach_live_real_pre_submit_risk_proof(
                         "execution_submit_plan_source": str(payload.get("source") or ""),
                         "execution_submit_plan_authority": str(payload.get("authority") or ""),
                         "plan_kind": field_name,
+                        **effective_policy.evidence_fields(),
                     },
                 ),
                 ts_ms=int(ts_ms),
@@ -560,10 +564,12 @@ def _attach_live_real_pre_submit_risk_proof(
         )
         return None
     proof_fields = {
+        **effective_policy.evidence_fields(),
         "pre_submit_risk_decision": decision.as_dict(),
         "pre_submit_risk_status": decision.status,
         "pre_submit_risk_decision_hash": decision.risk_decision_hash,
         "pre_submit_risk_policy_hash": decision.risk_policy_hash,
+        "effective_pre_submit_risk_policy_hash": decision.risk_policy_hash,
         "pre_submit_risk_input_hash": decision.risk_input_hash,
         "pre_submit_risk_evidence_hash": decision.risk_evidence_hash,
         "pre_submit_risk_plan_hash": expected_hash,
@@ -1792,6 +1798,46 @@ def _build_execution_decision_summary_from_authority_payload(
                 ),
                 "portfolio_risk_state_source": (
                     None if portfolio_target is None else portfolio_target.as_dict().get("portfolio_risk_state_source")
+                ),
+                "strategy_instance_ids": (
+                    []
+                    if portfolio_target is None
+                    else list(
+                        dict(portfolio_target.as_dict().get("conflict_resolution") or {}).get(
+                            "selected_strategy_instance_ids"
+                        )
+                        or []
+                    )
+                ),
+                "strategy_risk_profiles": (
+                    []
+                    if portfolio_target is None
+                    else list(
+                        dict(portfolio_target.as_dict().get("conflict_resolution") or {}).get(
+                            "selected_strategy_risk_profiles"
+                        )
+                        or []
+                    )
+                ),
+                "strategy_risk_profile_hashes": (
+                    []
+                    if portfolio_target is None
+                    else list(
+                        dict(portfolio_target.as_dict().get("conflict_resolution") or {}).get(
+                            "selected_strategy_risk_profile_hashes"
+                        )
+                        or []
+                    )
+                ),
+                "strategy_risk_policy_hashes": (
+                    []
+                    if portfolio_target is None
+                    else list(
+                        dict(portfolio_target.as_dict().get("conflict_resolution") or {}).get(
+                            "selected_strategy_risk_policy_hashes"
+                        )
+                        or []
+                    )
                 ),
                 "allocation_decision_hash": str(payload.get("allocation_decision_hash") or ""),
                 "allocator_config_hash": str(payload.get("allocator_config_hash") or ""),

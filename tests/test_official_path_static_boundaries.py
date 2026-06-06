@@ -4,6 +4,8 @@ from pathlib import Path
 import re
 import ast
 
+from bithumb_bot.research.strategy_registry import list_research_strategy_plugins
+
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -48,6 +50,7 @@ EXPLICIT_COMPATIBILITY_PATHS = {
 }
 
 STRATEGY_NEUTRAL_CORE_PATHS = (
+    "src/bithumb_bot/config.py",
     "src/bithumb_bot/strategy_decision_service.py",
     "src/bithumb_bot/runtime_data_provider.py",
     "src/bithumb_bot/strategy_decision_input.py",
@@ -58,15 +61,7 @@ STRATEGY_NEUTRAL_CORE_PATHS = (
     "src/bithumb_bot/decision_envelope.py",
 )
 
-FORBIDDEN_CORE_STRATEGY_LITERALS = frozenset(
-    {
-        "sma_with_filter",
-        "canary_non_sma",
-        "safe_hold",
-        "replay_threshold",
-        "threshold_research_only",
-    }
-)
+STRATEGY_LITERAL_EXCEPTION_ALLOWLIST: dict[str, dict[str, str]] = {}
 
 STRATEGY_NAME_BRANCH_NAMES = frozenset(
     {
@@ -139,19 +134,31 @@ def _is_strategy_name_expression(node: ast.AST) -> bool:
     return False
 
 
-def _forbidden_strategy_literal(node: ast.AST) -> str | None:
+def _registered_strategy_names() -> frozenset[str]:
+    return frozenset(
+        str(plugin.name or "").strip().lower()
+        for plugin in list_research_strategy_plugins()
+        if str(plugin.name or "").strip()
+    )
+
+
+def _strategy_literal_allowed(*, relative: str, literal: str) -> bool:
+    return literal in STRATEGY_LITERAL_EXCEPTION_ALLOWLIST.get(relative, {})
+
+
+def _forbidden_strategy_literal(node: ast.AST, forbidden_literals: frozenset[str]) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        if node.value in FORBIDDEN_CORE_STRATEGY_LITERALS:
+        if node.value in forbidden_literals:
             return node.value
     return None
 
 
-def _literal_collection_values(node: ast.AST) -> tuple[str, ...]:
+def _literal_collection_values(node: ast.AST, forbidden_literals: frozenset[str]) -> tuple[str, ...]:
     if not isinstance(node, (ast.Set, ast.Tuple, ast.List)):
         return ()
     values: list[str] = []
     for element in node.elts:
-        value = _forbidden_strategy_literal(element)
+        value = _forbidden_strategy_literal(element, forbidden_literals)
         if value is not None:
             values.append(value)
     return tuple(values)
@@ -164,7 +171,30 @@ def _source_segment(source: str, node: ast.AST) -> str:
     return ast.unparse(node)
 
 
-def _strategy_specific_branch_failures(path: Path, source: str) -> list[str]:
+def _strategy_literal_failures(
+    path: Path,
+    source: str,
+    *,
+    forbidden_literals: frozenset[str],
+) -> list[str]:
+    relative = path.relative_to(REPO).as_posix()
+    failures: list[str] = []
+    for line_no, line in enumerate(source.splitlines(), start=1):
+        for literal in sorted(forbidden_literals):
+            if literal in line and not _strategy_literal_allowed(relative=relative, literal=literal):
+                failures.append(
+                    f"{relative}:{line_no}: forbidden strategy literal {literal!r}; "
+                    f"{STRATEGY_SPECIFIC_CORE_REASON}"
+                )
+    return failures
+
+
+def _strategy_specific_branch_failures(
+    path: Path,
+    source: str,
+    *,
+    forbidden_literals: frozenset[str],
+) -> list[str]:
     relative = path.relative_to(REPO).as_posix()
     tree = ast.parse(source, filename=relative)
     failures: list[str] = []
@@ -174,8 +204,8 @@ def _strategy_specific_branch_failures(path: Path, source: str) -> list[str]:
         comparisons = zip((node.left, *node.comparators[:-1]), node.ops, node.comparators)
         for left, op, right in comparisons:
             if isinstance(op, (ast.Eq, ast.NotEq)):
-                left_literal = _forbidden_strategy_literal(left)
-                right_literal = _forbidden_strategy_literal(right)
+                left_literal = _forbidden_strategy_literal(left, forbidden_literals)
+                right_literal = _forbidden_strategy_literal(right, forbidden_literals)
                 if _is_strategy_name_expression(left) and right_literal is not None:
                     failures.append(
                         f"{relative}:{node.lineno}: forbidden strategy-specific branch "
@@ -189,7 +219,7 @@ def _strategy_specific_branch_failures(path: Path, source: str) -> list[str]:
                         f"{STRATEGY_SPECIFIC_CORE_REASON}"
                     )
             if isinstance(op, (ast.In, ast.NotIn)) and _is_strategy_name_expression(left):
-                literals = _literal_collection_values(right)
+                literals = _literal_collection_values(right, forbidden_literals)
                 if literals:
                     failures.append(
                         f"{relative}:{node.lineno}: forbidden strategy-specific membership branch "
@@ -200,20 +230,50 @@ def _strategy_specific_branch_failures(path: Path, source: str) -> list[str]:
 
 
 def test_strategy_neutral_core_files_do_not_contain_strategy_specific_special_cases() -> None:
+    forbidden_literals = _registered_strategy_names()
+    assert forbidden_literals
     failures: list[str] = []
     for relative in STRATEGY_NEUTRAL_CORE_PATHS:
         path = REPO / relative
         source = path.read_text(encoding="utf-8-sig")
-        for line_no, line in enumerate(source.splitlines(), start=1):
-            for literal in sorted(FORBIDDEN_CORE_STRATEGY_LITERALS):
-                if literal in line:
-                    failures.append(
-                        f"{relative}:{line_no}: forbidden strategy literal {literal!r}; "
-                        f"{STRATEGY_SPECIFIC_CORE_REASON}"
-                    )
-        failures.extend(_strategy_specific_branch_failures(path, source))
+        failures.extend(
+            _strategy_literal_failures(path, source, forbidden_literals=forbidden_literals)
+        )
+        failures.extend(
+            _strategy_specific_branch_failures(
+                path,
+                source,
+                forbidden_literals=forbidden_literals,
+            )
+        )
 
     assert failures == []
+
+
+def test_strategy_name_guard_uses_registered_plugin_inventory_for_literals() -> None:
+    literal = sorted(_registered_strategy_names())[0]
+    failures = _strategy_literal_failures(
+        REPO / "src/bithumb_bot/config.py",
+        f'STRATEGY_NAME = "{literal}"\n',
+        forbidden_literals=frozenset({literal}),
+    )
+
+    assert failures
+    assert literal in failures[0]
+
+
+def test_strategy_name_guard_uses_registered_plugin_inventory_for_branches() -> None:
+    literal = sorted(_registered_strategy_names())[0]
+    source = f'if strategy_name == "{literal}":\n    pass\n'
+    failures = _strategy_specific_branch_failures(
+        REPO / "src/bithumb_bot/config.py",
+        source,
+        forbidden_literals=frozenset({literal}),
+    )
+
+    assert failures
+    assert "forbidden strategy-specific branch" in failures[0]
+    assert literal in failures[0]
 
 
 def test_official_paths_do_not_cross_smoke_or_legacy_authority_boundaries() -> None:

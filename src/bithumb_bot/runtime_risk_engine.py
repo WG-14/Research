@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 from .config import settings
 from .oms import collect_risky_order_state
@@ -15,6 +15,7 @@ from .risk import (
 )
 from .risk_contract import RiskDecision, RiskPolicy, RiskSnapshot, SubmitPlan
 from .risk_policy_engine import RiskPolicyEngine
+from .strategy_risk_profile import risk_policy_from_mapping
 
 
 def settings_risk_policy() -> RiskPolicy:
@@ -28,6 +29,135 @@ def settings_risk_policy() -> RiskPolicy:
         unresolved_order_policy="block",
         policy_status="enabled",
         source="runtime_settings",
+    )
+
+
+@dataclass(frozen=True)
+class EffectivePreSubmitRiskPolicy:
+    policy: RiskPolicy
+    risk_policy_source: str
+    strategy_instance_ids: tuple[str, ...] = ()
+    strategy_risk_profile_hashes: tuple[str, ...] = ()
+    strategy_risk_policy_hashes: tuple[str, ...] = ()
+    portfolio_risk_policy_hash: str | None = None
+    composition_rule: str = "settings_fallback_no_plan_bound_strategy_policy"
+
+    def evidence_fields(self) -> dict[str, object]:
+        return {
+            "risk_policy_source": self.risk_policy_source,
+            "pre_submit_risk_policy_source": self.risk_policy_source,
+            "pre_submit_risk_policy_composition_rule": self.composition_rule,
+            "strategy_instance_ids": list(self.strategy_instance_ids),
+            "strategy_risk_profile_hashes": list(self.strategy_risk_profile_hashes),
+            "strategy_risk_policy_hashes": list(self.strategy_risk_policy_hashes),
+            "portfolio_risk_policy_hash": self.portfolio_risk_policy_hash,
+            "effective_pre_submit_risk_policy": self.policy.as_dict(),
+            "effective_pre_submit_risk_policy_hash": self.policy.policy_hash(),
+        }
+
+
+def resolve_effective_pre_submit_risk_policy(
+    submit_payload: Mapping[str, object],
+) -> EffectivePreSubmitRiskPolicy:
+    strategy_profiles = _strategy_risk_profiles_from_submit_payload(submit_payload)
+    if (
+        not strategy_profiles
+        and str(submit_payload.get("source") or "").strip() == "target_delta"
+        and bool(submit_payload.get("pre_submit_risk_required"))
+    ):
+        raise ValueError("pre_submit_strategy_risk_profiles_missing_for_target_delta")
+    if strategy_profiles:
+        policies: list[RiskPolicy] = []
+        instance_ids: list[str] = []
+        profile_hashes: list[str] = []
+        policy_hashes: list[str] = []
+        for profile in strategy_profiles:
+            raw_policy = profile.get("risk_policy")
+            if not isinstance(raw_policy, Mapping):
+                raise ValueError("pre_submit_strategy_risk_policy_missing")
+            policy = risk_policy_from_mapping(raw_policy)
+            policy_hash = policy.policy_hash()
+            declared_policy_hash = str(profile.get("risk_policy_hash") or "").strip()
+            if declared_policy_hash and declared_policy_hash != policy_hash:
+                raise ValueError("pre_submit_strategy_risk_policy_hash_mismatch")
+            policies.append(policy)
+            instance_id = str(profile.get("strategy_instance_id") or "").strip()
+            if instance_id:
+                instance_ids.append(instance_id)
+            profile_hash = str(profile.get("strategy_risk_profile_hash") or profile.get("profile_hash") or "").strip()
+            if profile_hash:
+                profile_hashes.append(profile_hash)
+            policy_hashes.append(policy_hash)
+        return EffectivePreSubmitRiskPolicy(
+            policy=_compose_most_restrictive_strategy_policies(policies),
+            risk_policy_source="strategy_risk_profiles",
+            strategy_instance_ids=tuple(sorted(set(instance_ids))),
+            strategy_risk_profile_hashes=tuple(sorted(set(profile_hashes))),
+            strategy_risk_policy_hashes=tuple(sorted(set(policy_hashes))),
+            portfolio_risk_policy_hash=(
+                str(submit_payload.get("portfolio_risk_policy_hash") or "").strip() or None
+            ),
+            composition_rule="most_restrictive_selected_strategy_policy",
+        )
+    return EffectivePreSubmitRiskPolicy(
+        policy=settings_risk_policy(),
+        risk_policy_source="runtime_settings_fallback",
+        portfolio_risk_policy_hash=(
+            str(submit_payload.get("portfolio_risk_policy_hash") or "").strip() or None
+        ),
+    )
+
+
+def _strategy_risk_profiles_from_submit_payload(
+    submit_payload: Mapping[str, object],
+) -> tuple[Mapping[str, object], ...]:
+    raw_profiles = submit_payload.get("strategy_risk_profiles")
+    profiles: list[Mapping[str, object]] = []
+    if isinstance(raw_profiles, list | tuple):
+        profiles.extend(item for item in raw_profiles if isinstance(item, Mapping))
+    raw_profile = submit_payload.get("strategy_risk_profile")
+    if isinstance(raw_profile, Mapping):
+        profiles.append(raw_profile)
+    return tuple(profiles)
+
+
+def _positive_min(values: list[float | int]) -> float:
+    positives = [float(value) for value in values if float(value) > 0.0]
+    return min(positives) if positives else 0.0
+
+
+def _compose_most_restrictive_strategy_policies(policies: list[RiskPolicy]) -> RiskPolicy:
+    if not policies:
+        return settings_risk_policy()
+    enabled = [policy for policy in policies if policy.policy_status != "disabled_explicit"]
+    source_policies = enabled or policies
+    unresolved_policy = (
+        "block"
+        if any(policy.unresolved_order_policy == "block" for policy in source_policies)
+        else str(source_policies[0].unresolved_order_policy)
+    )
+    return RiskPolicy(
+        schema_version=1,
+        max_daily_loss_krw=_positive_min([policy.max_daily_loss_krw for policy in source_policies]),
+        max_position_loss_pct=_positive_min([policy.max_position_loss_pct for policy in source_policies]),
+        max_daily_order_count=int(_positive_min([policy.max_daily_order_count for policy in source_policies])),
+        max_trade_count_per_day=int(
+            _positive_min([policy.max_trade_count_per_day for policy in source_policies])
+        ),
+        max_drawdown_pct=_positive_min([policy.max_drawdown_pct for policy in source_policies]),
+        cooldown_after_loss_min=int(
+            _positive_min([policy.cooldown_after_loss_min for policy in source_policies])
+        ),
+        kill_switch=any(policy.kill_switch for policy in source_policies),
+        max_open_positions=max(1, min(max(1, int(policy.max_open_positions)) for policy in source_policies)),
+        unresolved_order_policy=unresolved_policy,
+        policy_status=("enabled" if enabled else "disabled_explicit"),
+        missing_policy=(
+            "fail_closed_for_live"
+            if any(policy.missing_policy == "fail_closed_for_live" for policy in source_policies)
+            else str(source_policies[0].missing_policy)
+        ),
+        source="composed_selected_strategy_risk_profiles",
     )
 
 

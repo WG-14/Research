@@ -19,6 +19,8 @@ from bithumb_bot.execution_service import (
     execution_submit_plan_payload_hash,
     validate_execution_submit_plan_payload,
 )
+from bithumb_bot.risk_contract import RiskPolicy, RiskSnapshot
+from bithumb_bot.risk_policy_engine import RiskPolicyEngine
 from bithumb_bot.submit_authority_policy import evaluate_submit_authority_policy
 from bithumb_bot.submit_authority_policy import operational_pre_submit_risk_approval_error
 from bithumb_bot.db_core import update_execution_plan_final_submit_payload
@@ -412,6 +414,89 @@ def test_final_submit_payload_update_persists_broker_bound_pre_submit_proof() ->
         assert stored["final_submit_payload_hash"].startswith("sha256:")
     finally:
         conn.close()
+
+
+def test_live_real_pre_submit_proof_uses_plan_bound_strategy_risk_policy(monkeypatch) -> None:
+    from bithumb_bot import execution_service
+
+    policy = RiskPolicy(kill_switch=True, source="approved_profile_unit")
+    captured: dict[str, object] = {}
+
+    def _fake_ensure_db():
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _fake_evaluate_pre_submit(self, *, plan, **_kwargs):
+        captured["policy"] = self.policy
+        return RiskPolicyEngine(self.policy).evaluate_pre_submit(
+            plan,
+            RiskSnapshot(
+                evaluation_ts_ms=1_800_000_000_000,
+                mark_price=100.0,
+                state_source="unit",
+                evidence={"unit": True},
+            ),
+        )
+
+    monkeypatch.setattr(execution_service, "ensure_db", _fake_ensure_db)
+    monkeypatch.setattr(
+        "bithumb_bot.runtime_risk_engine.RuntimeRiskEngineAdapter.evaluate_pre_submit",
+        _fake_evaluate_pre_submit,
+    )
+    payload = {
+        "side": "BUY",
+        "source": "target_delta",
+        "authority": "canonical_target_delta_sizing",
+        "qty": 0.001,
+        "notional_krw": 100_000.0,
+        "pre_submit_risk_required": True,
+        "portfolio_risk_policy_hash": "sha256:" + "9" * 64,
+        "strategy_risk_profiles": [
+            {
+                "strategy_instance_id": "unit_canary",
+                "strategy_name": "canary_non_sma",
+                "strategy_risk_profile_hash": "sha256:" + "8" * 64,
+                "risk_policy": policy.as_dict(),
+                "risk_policy_hash": policy.policy_hash(),
+            }
+        ],
+    }
+
+    result = execution_service._attach_live_real_pre_submit_risk_proof(
+        payload,
+        ts_ms=1_800_000_000_000,
+        market_price=100.0,
+        field_name="target_submit_plan",
+    )
+
+    assert result is None
+    effective_policy = captured["policy"]
+    assert isinstance(effective_policy, RiskPolicy)
+    assert effective_policy.kill_switch is True
+    assert effective_policy.source == "composed_selected_strategy_risk_profiles"
+    assert payload["risk_policy_source"] == "strategy_risk_profiles"
+    assert payload["pre_submit_risk_policy_composition_rule"] == "most_restrictive_selected_strategy_policy"
+    assert payload["strategy_instance_ids"] == ["unit_canary"]
+    assert payload["strategy_risk_profile_hashes"] == ["sha256:" + "8" * 64]
+    assert payload["portfolio_risk_policy_hash"] == "sha256:" + "9" * 64
+    assert payload["effective_pre_submit_risk_policy_hash"] == effective_policy.policy_hash()
+    assert payload["pre_submit_risk_policy_hash"] == effective_policy.policy_hash()
+    assert payload["pre_submit_risk_decision_hash"].startswith("sha256:")
+    assert payload["pre_submit_risk_reason_code"] == "KILL_SWITCH"
+
+
+def test_live_real_target_delta_pre_submit_rejects_missing_strategy_risk_profiles() -> None:
+    from bithumb_bot.runtime_risk_engine import resolve_effective_pre_submit_risk_policy
+
+    with pytest.raises(ValueError, match="pre_submit_strategy_risk_profiles_missing_for_target_delta"):
+        resolve_effective_pre_submit_risk_policy(
+            {
+                "source": "target_delta",
+                "pre_submit_risk_required": True,
+                "portfolio_risk_policy_hash": "sha256:" + "9" * 64,
+            }
+        )
 
 
 def _typed_target_execution_summary() -> ExecutionDecisionSummary:

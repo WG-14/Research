@@ -38,6 +38,7 @@ from bithumb_bot.runtime_strategy_set import (
 from bithumb_bot.strategy_plugins.canary_non_sma import CanaryNonSmaRuntimeDecisionAdapter
 from bithumb_bot.runtime_adapters.sma_with_filter import SmaWithFilterRuntimeConfig
 from bithumb_bot.research.strategy_spec import StrategySpecError, materialize_strategy_parameters, strategy_spec_for_name
+from bithumb_bot.research.strategy_registry import resolve_research_strategy_plugin
 from bithumb_bot.strategy_policy_contract import PositionSnapshot, StrategyDecisionV2
 
 
@@ -1644,6 +1645,16 @@ def test_runtime_strategy_set_preflight_rejects_pair_mismatch() -> None:
         validate_runtime_strategy_set_selection(cfg)
     assert exc.type.__name__ == "LiveModeValidationError"
     assert "runtime_strategy_pair_mismatch" in str(exc.value)
+
+
+def test_safe_hold_empty_runtime_parameters_are_plugin_capability_driven() -> None:
+    plugin = resolve_research_strategy_plugin("safe_hold")
+    source = Path("src/bithumb_bot/config.py").read_text(encoding="utf-8-sig")
+
+    assert plugin.runtime_capabilities.accepts_empty_runtime_parameters is True
+    assert plugin.contract_payload()["runtime_capabilities"]["accepts_empty_runtime_parameters"] is True
+    assert 'strategy_name == "safe_hold"' not in source
+    assert "safe_hold" not in source
 
 
 def test_runtime_strategy_set_requires_market_scope_for_structured_contract() -> None:
