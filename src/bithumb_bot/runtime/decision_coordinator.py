@@ -126,6 +126,7 @@ def persist_target_position_state_for_run_loop(
     updated_ts: int,
     settings_obj: object = settings,
     runtime_pair: str | None = None,
+    provenance_context: Mapping[str, object] | None = None,
 ) -> bool:
     if not run_loop_uses_target_delta(settings_obj):
         return False
@@ -143,6 +144,7 @@ def persist_target_position_state_for_run_loop(
         or target_decision.get("target_reference_price") is None
     ):
         return False
+    provenance = dict(provenance_context or {})
     upsert_target_position_state(
         conn,
         pair=str(runtime_pair or getattr(settings_obj, "PAIR")),
@@ -165,6 +167,20 @@ def persist_target_position_state_for_run_loop(
             else float(target_decision.get("target_adopted_exposure_krw") or 0.0)
         ),
         created_from_signal=str(target_decision.get("target_strategy_signal_source") or signal),
+        runtime_strategy_set_manifest_hash=str(
+            provenance.get("runtime_strategy_set_manifest_hash") or ""
+        ),
+        runtime_strategy_decision_bundle_hash=str(
+            provenance.get("runtime_strategy_decision_bundle_hash") or ""
+        ),
+        portfolio_allocation_decision_hash=str(
+            provenance.get("portfolio_allocation_decision_hash")
+            or provenance.get("allocation_decision_hash")
+            or ""
+        ),
+        portfolio_target_hash=str(provenance.get("portfolio_target_hash") or ""),
+        execution_plan_batch_hash=str(provenance.get("execution_plan_batch_hash") or ""),
+        execution_submit_plan_hash=str(provenance.get("execution_submit_plan_hash") or ""),
     )
     return True
 
@@ -472,6 +488,7 @@ class DecisionCoordinator:
                     updated_ts=updated_ts,
                     settings_obj=self.settings_obj,
                     runtime_pair=str(context.get("runtime_pair") or typed_bundle.strategy_set.market_scope.pair),
+                    provenance_context=context,
                 )
             except TypeError:
                 self.target_position_state_persister(

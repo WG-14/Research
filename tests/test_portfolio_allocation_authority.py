@@ -1440,6 +1440,85 @@ def test_planner_runtime_pair_uses_injected_scope_when_global_pair_changes(tmp_p
     assert result.persistence_context["portfolio_target"]["target_exposure_krw"] == pytest.approx(12_345.0)
 
 
+def test_runtime_planner_persists_virtual_lifecycle_without_submit_authority(tmp_path) -> None:
+    from bithumb_bot.db_core import load_strategy_virtual_target_state
+    from bithumb_bot.run_loop_execution_planner import ExecutionPlanner
+
+    old_engine = settings.EXECUTION_ENGINE
+    conn = ensure_db(str(tmp_path / "virtual-lifecycle-runtime.sqlite"))
+    try:
+        object.__setattr__(settings, "EXECUTION_ENGINE", "target_delta")
+        planner = ExecutionPlanner(
+            readiness_snapshot_builder=lambda _conn: _Readiness(_readiness(broker_qty=0.0)),
+            target_state_resolver=lambda *_args, **_kwargs: {
+                "previous_target_exposure_krw": 0.0,
+                "target_policy_metadata": {},
+            },
+        )
+        buy_spec = RuntimeStrategySpec(
+            "canary_non_sma",
+            strategy_instance_id="buy",
+            priority=10,
+            desired_exposure_krw=60_000.0,
+        )
+        hold_spec = RuntimeStrategySpec(
+            "safe_hold",
+            strategy_instance_id="hold",
+            priority=10,
+            desired_exposure_krw=60_000.0,
+        )
+        strategy_set = RuntimeStrategySet(source="unit", strategies=(buy_spec, hold_spec))
+        bundle = RuntimeStrategyDecisionResultBundle(
+            strategy_set=strategy_set,
+            results=(
+                _runtime_result("BUY", "canary_non_sma", spec=buy_spec),
+                _runtime_result("HOLD", "safe_hold", spec=hold_spec),
+            ),
+        )
+        result = planner.plan_runtime_strategy_results(conn, bundle, updated_ts=456)
+        conn.commit()
+        contexts = {
+            str(item["strategy_instance_id"]): item
+            for item in result.persistence_context["runtime_strategy_result_contexts"]
+        }
+        buy_context = contexts["buy"]
+        hold_context = contexts["hold"]
+        loaded_buy = load_strategy_virtual_target_state(
+            conn,
+            strategy_instance_id="buy",
+            pair="KRW-BTC",
+            interval="1m",
+            scope_key_hash=str(buy_context["scope_key_hash"]),
+        )
+        loaded_hold = load_strategy_virtual_target_state(
+            conn,
+            strategy_instance_id="hold",
+            pair="KRW-BTC",
+            interval="1m",
+            scope_key_hash=str(hold_context["scope_key_hash"]),
+        )
+    finally:
+        object.__setattr__(settings, "EXECUTION_ENGINE", old_engine)
+        conn.close()
+
+    assert result.planning_error is None
+    assert result.submit_plan is not None
+    assert result.submit_plan.side == "BUY"
+    assert result.persistence_context["strategy_preference_count"] == 2
+    assert result.persistence_context["allocation_target_pairs"] == ["KRW-BTC"]
+    assert result.persistence_context["portfolio_target"]["pair"] == "KRW-BTC"
+    assert loaded_buy is not None
+    assert loaded_hold is not None
+    assert loaded_buy.virtual_target_exposure_krw == pytest.approx(60_000.0)
+    assert loaded_hold.virtual_target_exposure_krw == pytest.approx(0.0)
+    assert buy_context["virtual_target_live_submit_authority"] is False
+    assert hold_context["virtual_target_live_submit_authority"] is False
+    assert buy_context["virtual_target_state_before_hash"] == ""
+    assert str(buy_context["virtual_target_state_after_hash"]).startswith("sha256:")
+    assert loaded_buy.content_hash() == buy_context["virtual_target_state_after_hash"]
+    assert loaded_hold.content_hash() == hold_context["virtual_target_state_after_hash"]
+
+
 def test_strict_target_delta_rejects_missing_strategy_target_exposure() -> None:
     from bithumb_bot.run_loop_execution_planner import ExecutionPlanner
 

@@ -23,7 +23,13 @@ from .risk_decision import (
     RISK_BUDGET_SEMANTICS,
     build_risk_decision_artifact,
 )
-from .target_position import TargetPositionState
+from .target_position import (
+    ACTUAL_PAIR_TARGET_AUTHORITY,
+    ACTUAL_PAIR_TARGET_AUTHORITY_SCOPE,
+    ACTUAL_PAIR_TARGET_SOURCE,
+    TargetPositionState,
+    build_actual_pair_target_provenance,
+)
 
 
 # The lot-state contract is intentionally tiny and safety-critical:
@@ -2905,6 +2911,75 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "target_position_state", "adopted_broker_qty", "adopted_broker_qty REAL")
     _ensure_column(conn, "target_position_state", "adopted_broker_exposure_krw", "adopted_broker_exposure_krw REAL")
     _ensure_column(conn, "target_position_state", "created_from_signal", "created_from_signal TEXT NOT NULL DEFAULT ''")
+    _ensure_column(
+        conn,
+        "target_position_state",
+        "actual_target_authority",
+        f"actual_target_authority TEXT NOT NULL DEFAULT '{ACTUAL_PAIR_TARGET_AUTHORITY}'",
+    )
+    _ensure_column(
+        conn,
+        "target_position_state",
+        "actual_target_authority_scope",
+        (
+            "actual_target_authority_scope TEXT NOT NULL DEFAULT "
+            f"'{ACTUAL_PAIR_TARGET_AUTHORITY_SCOPE}'"
+        ),
+    )
+    _ensure_column(
+        conn,
+        "target_position_state",
+        "actual_target_source",
+        "actual_target_source TEXT NOT NULL DEFAULT ''",
+    )
+    _ensure_column(
+        conn,
+        "target_position_state",
+        "runtime_strategy_set_manifest_hash",
+        "runtime_strategy_set_manifest_hash TEXT NOT NULL DEFAULT ''",
+    )
+    _ensure_column(
+        conn,
+        "target_position_state",
+        "runtime_strategy_decision_bundle_hash",
+        "runtime_strategy_decision_bundle_hash TEXT NOT NULL DEFAULT ''",
+    )
+    _ensure_column(
+        conn,
+        "target_position_state",
+        "portfolio_allocation_decision_hash",
+        "portfolio_allocation_decision_hash TEXT NOT NULL DEFAULT ''",
+    )
+    _ensure_column(
+        conn,
+        "target_position_state",
+        "portfolio_target_hash",
+        "portfolio_target_hash TEXT NOT NULL DEFAULT ''",
+    )
+    _ensure_column(
+        conn,
+        "target_position_state",
+        "execution_plan_batch_hash",
+        "execution_plan_batch_hash TEXT NOT NULL DEFAULT ''",
+    )
+    _ensure_column(
+        conn,
+        "target_position_state",
+        "execution_submit_plan_hash",
+        "execution_submit_plan_hash TEXT NOT NULL DEFAULT ''",
+    )
+    _ensure_column(
+        conn,
+        "target_position_state",
+        "actual_target_provenance_hash",
+        "actual_target_provenance_hash TEXT NOT NULL DEFAULT ''",
+    )
+    _ensure_column(
+        conn,
+        "target_position_state",
+        "actual_target_provenance_json",
+        "actual_target_provenance_json TEXT NOT NULL DEFAULT '{}'",
+    )
 
     conn.execute(
         """
@@ -4301,7 +4376,13 @@ def load_target_position_state(conn: sqlite3.Connection, *, pair: str) -> Target
         """
         SELECT pair, target_exposure_krw, target_qty, last_signal, last_decision_id,
                last_reference_price, updated_ts, target_origin, adoption_reason,
-               adopted_broker_qty, adopted_broker_exposure_krw, created_from_signal
+               adopted_broker_qty, adopted_broker_exposure_krw, created_from_signal,
+               actual_target_authority, actual_target_authority_scope,
+               actual_target_source, runtime_strategy_set_manifest_hash,
+               runtime_strategy_decision_bundle_hash, portfolio_allocation_decision_hash,
+               portfolio_target_hash, execution_plan_batch_hash,
+               execution_submit_plan_hash, actual_target_provenance_hash,
+               actual_target_provenance_json
         FROM target_position_state
         WHERE pair=?
         """,
@@ -4328,6 +4409,17 @@ def load_target_position_state(conn: sqlite3.Connection, *, pair: str) -> Target
             else float(row["adopted_broker_exposure_krw"])
         ),
         created_from_signal=str(row["created_from_signal"] or ""),
+        actual_target_authority=str(row["actual_target_authority"] or ACTUAL_PAIR_TARGET_AUTHORITY),
+        actual_target_authority_scope=str(row["actual_target_authority_scope"] or ACTUAL_PAIR_TARGET_AUTHORITY_SCOPE),
+        actual_target_source=str(row["actual_target_source"] or ""),
+        runtime_strategy_set_manifest_hash=str(row["runtime_strategy_set_manifest_hash"] or ""),
+        runtime_strategy_decision_bundle_hash=str(row["runtime_strategy_decision_bundle_hash"] or ""),
+        portfolio_allocation_decision_hash=str(row["portfolio_allocation_decision_hash"] or ""),
+        portfolio_target_hash=str(row["portfolio_target_hash"] or ""),
+        execution_plan_batch_hash=str(row["execution_plan_batch_hash"] or ""),
+        execution_submit_plan_hash=str(row["execution_submit_plan_hash"] or ""),
+        actual_target_provenance_hash=str(row["actual_target_provenance_hash"] or ""),
+        actual_target_provenance_json=str(row["actual_target_provenance_json"] or "{}"),
     )
 
 
@@ -4346,15 +4438,37 @@ def upsert_target_position_state(
     adopted_broker_qty: float | None = None,
     adopted_broker_exposure_krw: float | None = None,
     created_from_signal: str = "",
+    runtime_strategy_set_manifest_hash: str = "",
+    runtime_strategy_decision_bundle_hash: str = "",
+    portfolio_allocation_decision_hash: str = "",
+    portfolio_target_hash: str = "",
+    execution_plan_batch_hash: str = "",
+    execution_submit_plan_hash: str = "",
+    actual_target_source: str = ACTUAL_PAIR_TARGET_SOURCE,
 ) -> None:
+    provenance = build_actual_pair_target_provenance(
+        pair=str(pair),
+        runtime_strategy_set_manifest_hash=runtime_strategy_set_manifest_hash,
+        runtime_strategy_decision_bundle_hash=runtime_strategy_decision_bundle_hash,
+        portfolio_allocation_decision_hash=portfolio_allocation_decision_hash,
+        portfolio_target_hash=portfolio_target_hash,
+        execution_plan_batch_hash=execution_plan_batch_hash,
+        execution_submit_plan_hash=execution_submit_plan_hash,
+        source=actual_target_source,
+    )
     conn.execute(
         """
         INSERT INTO target_position_state(
             pair, target_exposure_krw, target_qty, last_signal, last_decision_id,
             last_reference_price, updated_ts, target_origin, adoption_reason,
-            adopted_broker_qty, adopted_broker_exposure_krw, created_from_signal
+            adopted_broker_qty, adopted_broker_exposure_krw, created_from_signal,
+            actual_target_authority, actual_target_authority_scope,
+            actual_target_source, runtime_strategy_set_manifest_hash,
+            runtime_strategy_decision_bundle_hash, portfolio_allocation_decision_hash,
+            portfolio_target_hash, execution_plan_batch_hash, execution_submit_plan_hash,
+            actual_target_provenance_hash, actual_target_provenance_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(pair) DO UPDATE SET
             target_exposure_krw=excluded.target_exposure_krw,
             target_qty=excluded.target_qty,
@@ -4366,7 +4480,18 @@ def upsert_target_position_state(
             adoption_reason=excluded.adoption_reason,
             adopted_broker_qty=excluded.adopted_broker_qty,
             adopted_broker_exposure_krw=excluded.adopted_broker_exposure_krw,
-            created_from_signal=excluded.created_from_signal
+            created_from_signal=excluded.created_from_signal,
+            actual_target_authority=excluded.actual_target_authority,
+            actual_target_authority_scope=excluded.actual_target_authority_scope,
+            actual_target_source=excluded.actual_target_source,
+            runtime_strategy_set_manifest_hash=excluded.runtime_strategy_set_manifest_hash,
+            runtime_strategy_decision_bundle_hash=excluded.runtime_strategy_decision_bundle_hash,
+            portfolio_allocation_decision_hash=excluded.portfolio_allocation_decision_hash,
+            portfolio_target_hash=excluded.portfolio_target_hash,
+            execution_plan_batch_hash=excluded.execution_plan_batch_hash,
+            execution_submit_plan_hash=excluded.execution_submit_plan_hash,
+            actual_target_provenance_hash=excluded.actual_target_provenance_hash,
+            actual_target_provenance_json=excluded.actual_target_provenance_json
         """,
         (
             str(pair),
@@ -4385,6 +4510,17 @@ def upsert_target_position_state(
                 else float(adopted_broker_exposure_krw)
             ),
             str(created_from_signal or ""),
+            ACTUAL_PAIR_TARGET_AUTHORITY,
+            ACTUAL_PAIR_TARGET_AUTHORITY_SCOPE,
+            str(actual_target_source or ACTUAL_PAIR_TARGET_SOURCE),
+            str(runtime_strategy_set_manifest_hash or ""),
+            str(runtime_strategy_decision_bundle_hash or ""),
+            str(portfolio_allocation_decision_hash or ""),
+            str(portfolio_target_hash or ""),
+            str(execution_plan_batch_hash or ""),
+            str(execution_submit_plan_hash or ""),
+            str(provenance["actual_target_provenance_hash"]),
+            _json_dumps_stable(provenance),
         ),
     )
 

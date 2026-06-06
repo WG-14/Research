@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from .canonical_decision import sha256_prefixed
+
 
 TARGET_ENGINE_MODE_SHADOW = "shadow"
 TARGET_ENGINE_MODE_TARGET_DELTA = "target_delta"
@@ -20,6 +22,9 @@ TARGET_POLICY_INITIALIZE_FLAT_TARGET = "initialize_flat_target"
 TARGET_POLICY_ADOPT_EXISTING_BROKER_POSITION = "adopt_existing_broker_position"
 TARGET_POLICY_INITIALIZE_TRUE_DUST_FLAT = "initialize_true_dust_flat"
 TARGET_POLICY_BLOCK_UNSAFE_STATE = "block_unsafe_state"
+ACTUAL_PAIR_TARGET_AUTHORITY = "allocator_derived_pair_actual_target"
+ACTUAL_PAIR_TARGET_AUTHORITY_SCOPE = "pair"
+ACTUAL_PAIR_TARGET_SOURCE = "PortfolioAllocator->PortfolioTarget->ExecutionPlanBatch->ExecutionSubmitPlan"
 
 
 @dataclass(frozen=True)
@@ -45,6 +50,48 @@ class TargetPositionState:
     adopted_broker_qty: float | None = None
     adopted_broker_exposure_krw: float | None = None
     created_from_signal: str = ""
+    actual_target_authority: str = ACTUAL_PAIR_TARGET_AUTHORITY
+    actual_target_authority_scope: str = ACTUAL_PAIR_TARGET_AUTHORITY_SCOPE
+    actual_target_source: str = ""
+    runtime_strategy_set_manifest_hash: str = ""
+    runtime_strategy_decision_bundle_hash: str = ""
+    portfolio_allocation_decision_hash: str = ""
+    portfolio_target_hash: str = ""
+    execution_plan_batch_hash: str = ""
+    execution_submit_plan_hash: str = ""
+    actual_target_provenance_hash: str = ""
+    actual_target_provenance_json: str = "{}"
+
+
+def build_actual_pair_target_provenance(
+    *,
+    pair: str,
+    runtime_strategy_set_manifest_hash: str = "",
+    runtime_strategy_decision_bundle_hash: str = "",
+    portfolio_allocation_decision_hash: str = "",
+    portfolio_target_hash: str = "",
+    execution_plan_batch_hash: str = "",
+    execution_submit_plan_hash: str = "",
+    source: str = ACTUAL_PAIR_TARGET_SOURCE,
+) -> dict[str, object]:
+    payload = {
+        "schema_version": 1,
+        "authority": ACTUAL_PAIR_TARGET_AUTHORITY,
+        "authority_scope": ACTUAL_PAIR_TARGET_AUTHORITY_SCOPE,
+        "pair": str(pair),
+        "source": str(source or ACTUAL_PAIR_TARGET_SOURCE),
+        "runtime_strategy_set_manifest_hash": str(runtime_strategy_set_manifest_hash or ""),
+        "runtime_strategy_decision_bundle_hash": str(runtime_strategy_decision_bundle_hash or ""),
+        "portfolio_allocation_decision_hash": str(portfolio_allocation_decision_hash or ""),
+        "portfolio_target_hash": str(portfolio_target_hash or ""),
+        "execution_plan_batch_hash": str(execution_plan_batch_hash or ""),
+        "execution_submit_plan_hash": str(execution_submit_plan_hash or ""),
+        "strategy_virtual_lifecycle_authority": "non_authoritative_observation_only",
+        "live_submit_authority": True,
+        "live_submit_authority_source": "allocator_derived_pair_target_only",
+    }
+    payload["actual_target_provenance_hash"] = sha256_prefixed(payload)
+    return payload
 
 
 @dataclass(frozen=True)

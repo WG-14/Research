@@ -24,6 +24,7 @@ from .submit_authority_policy import (
     submit_authority_policy_from_settings,
 )
 from .target_position import TargetPositionSettings, build_target_position_decision
+from .virtual_target_state import assert_not_live_submit_authority
 
 if False:  # pragma: no cover
     from .broker.base import Broker
@@ -204,6 +205,9 @@ class ExecutionTargetPlanningInput:
     allocation_decision_hash: str = ""
     allocator_config_hash: str = ""
     strategy_contribution_hash: str = ""
+
+    def __post_init__(self) -> None:
+        assert_not_live_submit_authority(self.portfolio_target)
 
 
 @dataclass(frozen=True)
@@ -389,6 +393,9 @@ class ExecutionSubmitPlan:
     portfolio_target_hash: str = ""
     submit_authority_policy_hash: str = ""
     extra_payload: dict[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        assert_not_live_submit_authority(self.extra_payload)
 
     def as_dict(self) -> dict[str, object]:
         payload = {

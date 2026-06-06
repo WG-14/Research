@@ -161,6 +161,37 @@ virtual strategy lifecycle state. Future strategy-instance or interval
 lifecycle support must introduce a separate virtual target-state model instead
 of treating the current pair row as per-strategy authority.
 
+The row is explicitly actual broker-facing target authority for one pair. It is
+allocator-derived, not strategy-derived: runtime persistence may update it only
+after the allocator/execution chain has produced the pair `PortfolioTarget`,
+`ExecutionPlanBatch`, and selected `ExecutionSubmitPlan`. The row records
+pair-level provenance hashes when available:
+
+- `runtime_strategy_set_manifest_hash`
+- `runtime_strategy_decision_bundle_hash`
+- `portfolio_allocation_decision_hash`
+- `portfolio_target_hash`
+- `execution_plan_batch_hash`
+- `execution_submit_plan_hash`
+
+The row also stores an `actual_target_provenance_hash` over those fields and
+marks the authority as `allocator_derived_pair_actual_target` with
+`authority_scope=pair`. That provenance is recovery-critical SQLite `trades`
+state and links the current actual target back to the persisted manifest ->
+decision bundle -> allocation -> execution batch -> submit plan chain.
+
+`strategy_virtual_target_state` is the separate strategy lifecycle model. It is
+keyed by `strategy_instance_id`, `pair`, `interval`, and `scope_key_hash`.
+Runtime planning may persist before/after virtual lifecycle evidence for each
+typed strategy result and include stable hashes in strategy result/contribution
+metadata. This state is explicitly
+`non_authoritative_strategy_virtual_lifecycle_state` with
+`live_submit_authority=false`; it exists for observation, replay, attribution,
+and experiment lifecycle tracking only. It must not determine broker-facing
+submit side, quantity, notional, target exposure, eligibility, pre-submit risk
+proof, or final broker payload. Typed execution planning rejects virtual target
+state if it is supplied as live submit authority.
+
 The current live accounting ledger remains single-asset authority for the
 configured runtime pair. A single aggregate portfolio row such as
 `portfolio(id=1, asset_qty)` is not enough to authorize multi-pair live

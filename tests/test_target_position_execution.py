@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -1341,6 +1343,105 @@ def test_engine_run_loop_target_state_helper_preserves_restart_hold_target(tmp_p
     assert state.target_exposure_krw == 0.0
     assert state.last_signal == "HOLD"
     assert state.last_decision_id == 8
+
+
+def test_target_position_state_persists_pair_actual_target_provenance(tmp_path) -> None:
+    manifest_hash = "sha256:" + "1" * 64
+    bundle_hash = "sha256:" + "2" * 64
+    allocation_hash = "sha256:" + "3" * 64
+    target_hash = "sha256:" + "4" * 64
+    batch_hash = "sha256:" + "5" * 64
+    submit_hash = "sha256:" + "6" * 64
+    conn = ensure_db(str(tmp_path / "target-provenance.sqlite"))
+    try:
+        upsert_target_position_state(
+            conn,
+            pair="KRW-BTC",
+            target_exposure_krw=70_000.0,
+            target_qty=0.0007,
+            last_signal="BUY",
+            last_decision_id=11,
+            last_reference_price=100_000_000.0,
+            updated_ts=222,
+            target_origin="allocator",
+            runtime_strategy_set_manifest_hash=manifest_hash,
+            runtime_strategy_decision_bundle_hash=bundle_hash,
+            portfolio_allocation_decision_hash=allocation_hash,
+            portfolio_target_hash=target_hash,
+            execution_plan_batch_hash=batch_hash,
+            execution_submit_plan_hash=submit_hash,
+        )
+        conn.commit()
+        state = load_target_position_state(conn, pair="KRW-BTC")
+    finally:
+        conn.close()
+
+    assert state is not None
+    assert state.actual_target_authority == "allocator_derived_pair_actual_target"
+    assert state.actual_target_authority_scope == "pair"
+    assert state.runtime_strategy_set_manifest_hash == manifest_hash
+    assert state.runtime_strategy_decision_bundle_hash == bundle_hash
+    assert state.portfolio_allocation_decision_hash == allocation_hash
+    assert state.portfolio_target_hash == target_hash
+    assert state.execution_plan_batch_hash == batch_hash
+    assert state.execution_submit_plan_hash == submit_hash
+    provenance = json.loads(state.actual_target_provenance_json)
+    assert provenance["authority"] == "allocator_derived_pair_actual_target"
+    assert provenance["authority_scope"] == "pair"
+    assert provenance["strategy_virtual_lifecycle_authority"] == "non_authoritative_observation_only"
+    assert provenance["actual_target_provenance_hash"] == state.actual_target_provenance_hash
+
+
+def test_run_loop_target_state_persister_records_allocator_execution_provenance(tmp_path) -> None:
+    from bithumb_bot.runtime.decision_coordinator import persist_target_position_state_for_run_loop
+
+    manifest_hash = "sha256:" + "a" * 64
+    bundle_hash = "sha256:" + "b" * 64
+    allocation_hash = "sha256:" + "c" * 64
+    target_hash = "sha256:" + "d" * 64
+    batch_hash = "sha256:" + "e" * 64
+    submit_hash = "sha256:" + "f" * 64
+    conn = ensure_db(str(tmp_path / "target-persister-provenance.sqlite"))
+    try:
+        persisted = persist_target_position_state_for_run_loop(
+            conn,
+            execution_decision={
+                "target_shadow_decision": {
+                    "target_new_exposure_krw": 80_000.0,
+                    "target_qty": 0.0008,
+                    "target_reference_price": 100_000_000.0,
+                    "target_origin": "allocator",
+                    "target_strategy_signal_source": "BUY",
+                }
+            },
+            signal="BUY",
+            decision_id=33,
+            updated_ts=444,
+            settings_obj=SimpleNamespace(EXECUTION_ENGINE="target_delta", PAIR="KRW-BTC"),
+            runtime_pair="KRW-BTC",
+            provenance_context={
+                "runtime_strategy_set_manifest_hash": manifest_hash,
+                "runtime_strategy_decision_bundle_hash": bundle_hash,
+                "portfolio_allocation_decision_hash": allocation_hash,
+                "portfolio_target_hash": target_hash,
+                "execution_plan_batch_hash": batch_hash,
+                "execution_submit_plan_hash": submit_hash,
+            },
+        )
+        conn.commit()
+        state = load_target_position_state(conn, pair="KRW-BTC")
+    finally:
+        conn.close()
+
+    assert persisted is True
+    assert state is not None
+    assert state.target_exposure_krw == pytest.approx(80_000.0)
+    assert state.runtime_strategy_set_manifest_hash == manifest_hash
+    assert state.runtime_strategy_decision_bundle_hash == bundle_hash
+    assert state.portfolio_allocation_decision_hash == allocation_hash
+    assert state.portfolio_target_hash == target_hash
+    assert state.execution_plan_batch_hash == batch_hash
+    assert state.execution_submit_plan_hash == submit_hash
 
 
 def test_target_delta_hold_without_startup_policy_fails_closed(tmp_path) -> None:

@@ -21,7 +21,11 @@ from bithumb_bot.execution_plan_batch import (
     verify_pair_plan_replay_complete,
     verify_pre_submit_risk_finalization_artifact,
 )
-from bithumb_bot.execution_service import ExecutionDecisionSummary, ExecutionSubmitPlan
+from bithumb_bot.execution_service import (
+    ExecutionDecisionSummary,
+    ExecutionSubmitPlan,
+    ExecutionTargetPlanningInput,
+)
 from bithumb_bot.runtime.decision_coordinator import DecisionCoordinator
 from bithumb_bot.runtime.execution_coordinator import ExecutionCoordinator
 from bithumb_bot.portfolio_allocation import (
@@ -525,6 +529,8 @@ def test_virtual_target_state_is_independent_and_not_live_submit_authority() -> 
         assert loaded_first.strategy_name == "sma_with_filter"
         with pytest.raises(TypeError, match="virtual_target_state_not_live_submit_authority"):
             assert_not_live_submit_authority(first)
+        with pytest.raises(TypeError, match="virtual_target_state_not_live_submit_authority"):
+            ExecutionTargetPlanningInput(portfolio_target=first)  # type: ignore[arg-type]
     finally:
         conn.close()
 

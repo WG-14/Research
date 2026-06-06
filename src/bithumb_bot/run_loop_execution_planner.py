@@ -8,7 +8,9 @@ from .canonical_decision import order_rules_snapshot_payload
 from .db_core import (
     create_or_get_budget_lock,
     create_or_get_order_lock,
+    load_strategy_virtual_target_state,
     load_target_position_state,
+    upsert_strategy_virtual_target_state,
     upsert_target_position_state,
 )
 from .decision_envelope import DecisionEnvelope, _thaw_mapping
@@ -54,6 +56,7 @@ from .target_position import (
     TARGET_POLICY_USE_EXISTING_TARGET,
     resolve_startup_target_position_policy,
 )
+from .virtual_target_state import evolve_strategy_virtual_target_state
 
 
 READINESS_CONTEXT_KEYS = (
@@ -1198,6 +1201,79 @@ class ExecutionPlanner:
                                     "parameter_source",
                                 )
                                 if key in result_context
+                            }
+                        )
+                    scope_key_hash = str(result_metadata.get("scope_key_hash") or "").strip()
+                    runtime_contract_hash = str(
+                        result_metadata.get("runtime_contract_hash") or ""
+                    ).strip()
+                    if (
+                        scope_key_hash
+                        and runtime_contract_hash
+                        and callable(getattr(conn, "execute", None))
+                    ):
+                        previous_virtual_state = load_strategy_virtual_target_state(
+                            conn,
+                            strategy_instance_id=strategy_instance_id,
+                            pair=str(spec.pair),
+                            interval=str(spec.interval),
+                            scope_key_hash=scope_key_hash,
+                        )
+                        virtual_target_exposure = spec.desired_exposure_krw
+                        if virtual_target_exposure is None and not strict_target_exposure:
+                            virtual_target_exposure = fallback_target_exposure
+                        virtual_state = evolve_strategy_virtual_target_state(
+                            previous=previous_virtual_state,
+                            strategy_instance_id=strategy_instance_id,
+                            strategy_name=spec.strategy_name,
+                            pair=str(spec.pair),
+                            interval=str(spec.interval),
+                            scope_key_hash=scope_key_hash,
+                            runtime_contract_hash=runtime_contract_hash,
+                            signal=str(result.decision.final_signal or "HOLD"),
+                            target_exposure_krw=virtual_target_exposure,
+                            reference_price=(
+                                None if reference_price is None else float(reference_price)
+                            ),
+                            updated_ts=int(updated_ts),
+                            evidence={
+                                "runtime_strategy_decision_request_hash": result_metadata.get(
+                                    "runtime_decision_request_hash"
+                                ),
+                                "policy_input_hash": getattr(
+                                    result.decision,
+                                    "policy_input_hash",
+                                    "",
+                                ),
+                                "policy_decision_hash": getattr(
+                                    result.decision,
+                                    "policy_decision_hash",
+                                    "",
+                                ),
+                                "strategy_instance_id": strategy_instance_id,
+                                "pair": str(spec.pair),
+                                "interval": str(spec.interval),
+                                "non_authoritative": True,
+                                "live_submit_authority": False,
+                            },
+                        )
+                        upsert_strategy_virtual_target_state(conn, virtual_state)
+                        before_hash = (
+                            ""
+                            if previous_virtual_state is None
+                            else previous_virtual_state.content_hash()
+                        )
+                        after_payload = virtual_state.as_dict()
+                        result_metadata.update(
+                            {
+                                "virtual_target_lifecycle_authority": (
+                                    "non_authoritative_strategy_virtual_lifecycle_state"
+                                ),
+                                "virtual_target_live_submit_authority": False,
+                                "virtual_target_state_before_hash": before_hash,
+                                "virtual_target_state_after_hash": virtual_state.content_hash(),
+                                "virtual_target_state_evidence_hash": virtual_state.evidence_hash,
+                                "virtual_target_state_artifact": after_payload,
                             }
                         )
                     runtime_result_contexts.append(result_metadata)
