@@ -384,6 +384,10 @@ class ExecutionSubmitPlan:
     pre_submit_proof_status: str
     block_reason: str
     idempotency_key: str | None
+    pair: str = ""
+    scope_key_hash: str = ""
+    portfolio_target_hash: str = ""
+    submit_authority_policy_hash: str = ""
     extra_payload: dict[str, object] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
@@ -402,6 +406,14 @@ class ExecutionSubmitPlan:
             "block_reason": self.block_reason,
             "idempotency_key": self.idempotency_key,
         }
+        for key, value in (
+            ("pair", self.pair),
+            ("scope_key_hash", self.scope_key_hash),
+            ("portfolio_target_hash", self.portfolio_target_hash),
+            ("submit_authority_policy_hash", self.submit_authority_policy_hash),
+        ):
+            if str(value or "").strip():
+                payload[key] = value
         payload.update(dict(self.extra_payload))
         return payload
 

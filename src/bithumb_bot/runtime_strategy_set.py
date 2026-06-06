@@ -39,6 +39,7 @@ from .runtime_strategy_decision import (
     promotion_adapter_supports_feature_snapshot,
     production_runtime_strategy_missing_error,
 )
+from .runtime_scope import RuntimeScopeKey
 from .submit_authority_policy import submit_authority_policy_from_settings
 from .risk_decision import (
     RISK_BUDGET_LEGACY_MARKER,
@@ -1455,6 +1456,17 @@ class RuntimeDecisionRequestBuilder:
             "parameter_source": instance.parameter_source,
             "runtime_adapter_config": dict(instance.runtime_adapter_config),
         }
+        scope_key = RuntimeScopeKey(
+            pair=str(spec.pair),
+            interval=str(spec.interval or getattr(cfg, "INTERVAL", "")),
+            strategy_instance_id=instance.strategy_instance_id,
+            strategy_name=spec.strategy_name,
+            runtime_contract_hash=str(instance.runtime_contract_hash or "paper_legacy_compat:runtime_contract_hash_missing"),
+            approved_profile_hash=str(instance.approved_profile_hash or "paper_legacy_compat:approved_profile_hash_missing"),
+            strategy_parameters_hash=instance.strategy_parameters_hash,
+        )
+        request_payload["runtime_scope_key"] = scope_key.as_dict()
+        request_payload["scope_key_hash"] = scope_key.scope_key_hash()
         request_hash = sha256_prefixed(request_payload)
         return RuntimeDecisionRequest(
             strategy_instance_id=instance.strategy_instance_id,
@@ -1474,6 +1486,8 @@ class RuntimeDecisionRequestBuilder:
             plugin_contract_hash=instance.plugin_contract_hash,
             strategy_version=instance.strategy_version,
             request_hash=request_hash,
+            runtime_scope_key=scope_key,
+            scope_key_hash=scope_key.scope_key_hash(),
         )
 
 
@@ -1598,6 +1612,7 @@ def _result_strategy_instance_id(result: RuntimeStrategyDecisionResult) -> str:
 _REQUIRED_REQUEST_METADATA_FIELDS = (
     "runtime_decision_request_hash",
     "strategy_instance_id",
+    "scope_key_hash",
     "strategy_parameters_hash",
     "approved_profile_hash",
     "runtime_contract_hash",
@@ -1616,6 +1631,8 @@ def _runtime_result_replay_metadata(result: RuntimeStrategyDecisionResult) -> di
         "candle_ts": int(result.candle_ts),
         "runtime_decision_request_hash": base.get("runtime_decision_request_hash"),
         "strategy_instance_id": base.get("strategy_instance_id"),
+        "runtime_scope_key": base.get("runtime_scope_key"),
+        "scope_key_hash": base.get("scope_key_hash"),
         "strategy_parameters_hash": base.get("strategy_parameters_hash"),
         "approved_profile_hash": base.get("approved_profile_hash"),
         "runtime_contract_hash": base.get("runtime_contract_hash"),
@@ -1683,6 +1700,9 @@ def validate_runtime_decision_result_provenance(
     if not isinstance(base_context, Mapping):
         raise ValueError("runtime_decision_request_metadata_missing:base_context")
     expected = request.observability_fields()
+    if isinstance(base_context, dict):
+        base_context.setdefault("runtime_scope_key", expected.get("runtime_scope_key"))
+        base_context.setdefault("scope_key_hash", expected.get("scope_key_hash"))
     for field in _REQUIRED_REQUEST_METADATA_FIELDS:
         if field not in base_context:
             raise ValueError(f"runtime_decision_request_metadata_missing:{field}")
@@ -1692,6 +1712,9 @@ def validate_runtime_decision_result_provenance(
     replay = getattr(result, "replay_fingerprint", {})
     if not isinstance(replay, Mapping):
         raise ValueError("runtime_decision_request_metadata_missing:replay_fingerprint")
+    if isinstance(replay, dict):
+        replay.setdefault("runtime_scope_key", expected.get("runtime_scope_key"))
+        replay.setdefault("scope_key_hash", expected.get("scope_key_hash"))
     for field in _REQUIRED_REQUEST_METADATA_FIELDS:
         if field not in replay:
             raise ValueError(f"runtime_decision_request_metadata_missing:replay_fingerprint.{field}")

@@ -297,12 +297,23 @@ class SQLiteRuntimeDataProvider:
         through_ts_ms: int | None,
     ) -> RuntimeDataAvailabilityReport:
         requirements = self.resolver.resolve_for_strategy_set(strategy_set)
-        return self.availability_report_for_requirements(
+        report = self.availability_report_for_requirements(
             requirements,
             pair=str(getattr(getattr(strategy_set, "market_scope", None), "pair", "") or ""),
             interval=str(getattr(getattr(strategy_set, "market_scope", None), "interval", "") or ""),
             through_ts_ms=through_ts_ms,
         )
+        payload = report.as_dict()
+        scope_payload = self._scope_coverage_payload(
+            strategy_set=strategy_set,
+            requirements=requirements,
+            through_ts_ms=through_ts_ms,
+        )
+        payload.update(scope_payload)
+        payload["report_hash"] = sha256_prefixed(
+            {key: value for key, value in payload.items() if key != "report_hash"}
+        )
+        return RuntimeDataAvailabilityReport(payload)
 
     def availability_report_for_requirements(
         self,
@@ -478,6 +489,12 @@ class SQLiteRuntimeDataProvider:
             "last_close": feature_payload.get("last_close"),
         }
         coverage = dict(report.payload.get("coverage_by_capability") or {})
+        scope_key = getattr(request, "runtime_scope_key", None)
+        scope_payload = (
+            scope_key.with_hash_payload()
+            if hasattr(scope_key, "with_hash_payload")
+            else {}
+        )
         payload: dict[str, object] = {
             "schema_version": 1,
             "pair": pair,
@@ -495,6 +512,27 @@ class SQLiteRuntimeDataProvider:
             "provider_contract_hash": self.provider_contract_hash,
             "runtime_data_contract_hash": requirements.content_hash(),
             "runtime_data_availability_report_hash": report.report_hash,
+            "runtime_scope_key": scope_payload or None,
+            "scope_key_hash": scope_payload.get("scope_key_hash"),
+            "coverage_by_scope": {
+                str(scope_payload.get("scope_key_hash") or f"{pair}:{interval}"): coverage
+            },
+            "selected_candle_by_scope": {
+                str(scope_payload.get("scope_key_hash") or f"{pair}:{interval}"): feature_payload.get("candle")
+            },
+            "source_schema_hash_by_scope": {
+                str(scope_payload.get("scope_key_hash") or f"{pair}:{interval}"): report.payload.get("source_schema_hash")
+            },
+            "freshness_by_scope": {
+                str(scope_payload.get("scope_key_hash") or f"{pair}:{interval}"): {
+                    "staleness_ms": (
+                        None
+                        if through_ts_ms is None or decision_candle_ts is None
+                        else max(0, int(through_ts_ms) - int(decision_candle_ts))
+                    ),
+                    "decision_clock_policy": "single_interval_same_closed_candle_fail_closed_v1",
+                }
+            },
             "staleness_ms": (
                 None
                 if through_ts_ms is None or decision_candle_ts is None
@@ -505,6 +543,70 @@ class SQLiteRuntimeDataProvider:
         payload["market_snapshot_hash"] = sha256_prefixed(market_material)
         payload["feature_snapshot_hash"] = sha256_prefixed(payload)
         return RuntimeFeatureSnapshot(payload)
+
+    def _scope_coverage_payload(
+        self,
+        *,
+        strategy_set: object,
+        requirements: RuntimeStrategyDataRequirements,
+        through_ts_ms: int | None,
+    ) -> dict[str, object]:
+        coverage_by_scope: dict[str, object] = {}
+        selected_candle_by_scope: dict[str, object] = {}
+        source_schema_hash_by_scope: dict[str, object] = {}
+        freshness_by_scope: dict[str, object] = {}
+        schema_hash = self._db_schema_fingerprint()
+        for spec in tuple(getattr(strategy_set, "active_strategies", ()) or ()):
+            instance_id = str(getattr(spec, "strategy_instance_id", "") or "").strip()
+            if not instance_id:
+                instance_id = str(getattr(spec, "strategy_name", "") or "strategy").strip().lower()
+            pair = str(getattr(spec, "pair", "") or getattr(getattr(strategy_set, "market_scope", None), "pair", "") or "")
+            interval = str(getattr(spec, "interval", "") or getattr(getattr(strategy_set, "market_scope", None), "interval", "") or "")
+            scope_id = f"{instance_id}:{pair}:{interval}"
+            requirement_by_name = {
+                item.name: item for item in tuple(requirements.required) + tuple(requirements.optional)
+            }
+            coverage = {
+                capability: self._coverage_for_capability(
+                    capability,
+                    requirement=requirement_by_name.get(capability),
+                    pair=pair,
+                    interval=interval,
+                    through_ts_ms=through_ts_ms,
+                ).as_dict()
+                for capability in requirements.all_names
+            }
+            coverage_by_scope[scope_id] = coverage
+            candle = coverage.get("candles") if isinstance(coverage, Mapping) else None
+            selected_candle_by_scope[scope_id] = (
+                None
+                if not isinstance(candle, Mapping)
+                else {
+                    "selected_ts": candle.get("selected_ts"),
+                    "status": candle.get("status"),
+                    "reason": candle.get("reason"),
+                }
+            )
+            source_schema_hash_by_scope[scope_id] = schema_hash
+            freshness_by_scope[scope_id] = {
+                "decision_clock_policy": "single_interval_same_closed_candle_fail_closed_v1",
+                "freshness_policy": "per_scope_required_capabilities_fail_closed",
+                "stale_or_missing_scope_policy": "fail_closed",
+                "status": "PASS"
+                if all(
+                    coverage.get(item.name, {}).get("status") == "PASS"
+                    for item in requirements.required
+                    if isinstance(coverage.get(item.name), Mapping)
+                )
+                else "FAIL",
+            }
+        return {
+            "coverage_by_scope": coverage_by_scope,
+            "selected_candle_by_scope": selected_candle_by_scope,
+            "source_schema_hash_by_scope": source_schema_hash_by_scope,
+            "freshness_by_scope": freshness_by_scope,
+            "decision_clock_policy": "single_interval_same_closed_candle_fail_closed_v1",
+        }
 
     def _candle_rows(
         self,

@@ -64,6 +64,8 @@ class StrategyPreference:
     policy_input_hash: str = ""
     policy_decision_hash: str = ""
     position_snapshot_hash: str = ""
+    scope_key_hash: str = ""
+    runtime_scope_key: Mapping[str, object] | None = None
     execution_intent_hint: Mapping[str, object] | None = None
     metadata: Mapping[str, object] = field(default_factory=dict)
     schema_version: int = 1
@@ -111,6 +113,12 @@ class StrategyPreference:
             None
             if self.execution_intent_hint is None
             else _stable_value(dict(self.execution_intent_hint)),
+        )
+        object.__setattr__(self, "scope_key_hash", str(self.scope_key_hash or "").strip())
+        object.__setattr__(
+            self,
+            "runtime_scope_key",
+            None if self.runtime_scope_key is None else _stable_value(dict(self.runtime_scope_key)),
         )
         object.__setattr__(self, "metadata", _stable_value(dict(self.metadata)))
         object.__setattr__(self, "strategy_instance_id", str(self.strategy_instance_id or self.strategy_name))
@@ -186,6 +194,8 @@ class StrategyPreference:
             "policy_input_hash": self.policy_input_hash,
             "policy_decision_hash": self.policy_decision_hash,
             "position_snapshot_hash": self.position_snapshot_hash,
+            "scope_key_hash": self.scope_key_hash,
+            "runtime_scope_key": self.runtime_scope_key,
             "execution_intent_hint": self.execution_intent_hint,
             "execution_intent_authority": "non_authoritative_strategy_hint",
             "metadata": dict(self.metadata),
@@ -274,6 +284,12 @@ def strategy_decision_to_preference(
         policy_input_hash=decision.policy_input_hash,
         policy_decision_hash=decision.policy_decision_hash,
         position_snapshot_hash=sha256_prefixed(position_payload),
+        scope_key_hash=str((metadata or {}).get("scope_key_hash") or ""),
+        runtime_scope_key=(
+            dict((metadata or {}).get("runtime_scope_key") or {})
+            if isinstance((metadata or {}).get("runtime_scope_key"), Mapping)
+            else None
+        ),
         execution_intent_hint=execution_intent_payload,
         metadata={
             "raw_reason": decision.raw_reason,

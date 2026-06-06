@@ -74,6 +74,7 @@ def build_portfolio_risk_decision(target_payload: Mapping[str, object]) -> Portf
         "allocator_config_hash": str(target_payload.get("allocator_config_hash") or ""),
         "strategy_contribution_hash": str(target_payload.get("strategy_contribution_hash") or ""),
         "pair": str(target_payload.get("pair") or ""),
+        "scope_key_hashes": list(target_payload.get("scope_key_hashes") or []),
         "authoritative": bool(target_payload.get("authoritative")),
         "fail_closed_reason": str(target_payload.get("fail_closed_reason") or "none"),
         "conflict_resolution": dict(target_payload.get("conflict_resolution") or {}),
@@ -98,6 +99,7 @@ def build_portfolio_risk_decision(target_payload: Mapping[str, object]) -> Portf
         "allocator_config_hash": str(target_payload.get("allocator_config_hash") or ""),
         "strategy_contribution_hash": str(target_payload.get("strategy_contribution_hash") or ""),
         "final_portfolio_target_hash": str(target_payload.get("final_portfolio_target_hash") or ""),
+        "scope_key_hashes": list(target_payload.get("scope_key_hashes") or []),
     }
     policy_hash = sha256_prefixed(policy)
     input_hash = sha256_prefixed(risk_input)
@@ -143,6 +145,7 @@ class PortfolioTarget:
     allocation_input_hash: str
     reason: str
     conflict_resolution: Mapping[str, object] = field(default_factory=dict)
+    scope_key_hashes: tuple[str, ...] = ()
     authoritative: bool = True
     fail_closed_reason: str = "none"
     schema_version: int = 1
@@ -162,6 +165,11 @@ class PortfolioTarget:
             self,
             "conflict_resolution",
             {str(key): value for key, value in dict(self.conflict_resolution).items()},
+        )
+        object.__setattr__(
+            self,
+            "scope_key_hashes",
+            tuple(sorted(str(item).strip() for item in self.scope_key_hashes if str(item).strip())),
         )
 
     def _payload_without_hashes(self) -> dict[str, object]:
@@ -192,6 +200,7 @@ class PortfolioTarget:
             "allocator_config_hash": self.allocator_config_hash,
             "strategy_contribution_hash": self.strategy_contribution_hash,
             "allocation_input_hash": self.allocation_input_hash,
+            "scope_key_hashes": list(self.scope_key_hashes),
             "reason": self.reason,
             "conflict_resolution": dict(self.conflict_resolution),
             "authoritative": bool(self.authoritative),

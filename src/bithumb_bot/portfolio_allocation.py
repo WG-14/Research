@@ -95,6 +95,8 @@ class StrategyContribution:
     risk_budget_krw: float | None
     max_target_exposure_krw: float | None
     reason: str
+    scope_key_hash: str = ""
+    runtime_scope_key: Mapping[str, object] | None = None
     strategy_risk_policy: Mapping[str, object] | None = None
     strategy_risk_snapshot: Mapping[str, object] | None = None
     strategy_risk_profile: Mapping[str, object] | None = None
@@ -121,6 +123,10 @@ class StrategyContribution:
             "priority": int(self.priority),
             "weight": float(self.weight),
             "preference_hash": self.preference_hash,
+            "scope_key_hash": self.scope_key_hash,
+            "runtime_scope_key": (
+                None if self.runtime_scope_key is None else dict(self.runtime_scope_key)
+            ),
             "desired_exposure_krw": self.desired_exposure_krw,
             "risk_budget_krw": self.risk_budget_krw,
             "max_target_exposure_krw": self.max_target_exposure_krw,
@@ -244,6 +250,8 @@ class PortfolioAllocationInput:
     allocator_config: PortfolioAllocatorConfig
     previous_target_exposure_krw: float | None = None
     reference_price: float | None = None
+    previous_target_exposure_by_pair: Mapping[str, float | None] | None = None
+    reference_price_by_pair: Mapping[str, float | None] | None = None
     schema_version: int = 1
 
     def __post_init__(self) -> None:
@@ -263,6 +271,29 @@ class PortfolioAllocationInput:
             "reference_price",
             None if self.reference_price is None else float(self.reference_price),
         )
+        pairs = sorted({preference.pair for preference in self.preference_set.preferences})
+        previous_by_pair = (
+            {str(key): (None if value is None else float(value)) for key, value in dict(self.previous_target_exposure_by_pair).items()}
+            if self.previous_target_exposure_by_pair is not None
+            else {
+                pair: (
+                    None
+                    if self.previous_target_exposure_krw is None
+                    else float(self.previous_target_exposure_krw)
+                )
+                for pair in pairs
+            }
+        )
+        reference_by_pair = (
+            {str(key): (None if value is None else float(value)) for key, value in dict(self.reference_price_by_pair).items()}
+            if self.reference_price_by_pair is not None
+            else {
+                pair: (None if self.reference_price is None else float(self.reference_price))
+                for pair in pairs
+            }
+        )
+        object.__setattr__(self, "previous_target_exposure_by_pair", previous_by_pair)
+        object.__setattr__(self, "reference_price_by_pair", reference_by_pair)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -271,6 +302,9 @@ class PortfolioAllocationInput:
             "allocator_config": self.allocator_config.as_dict(),
             "previous_target_exposure_krw": self.previous_target_exposure_krw,
             "reference_price": self.reference_price,
+            "previous_target_exposure_by_pair": dict(self.previous_target_exposure_by_pair or {}),
+            "reference_price_by_pair": dict(self.reference_price_by_pair or {}),
+            "pair_aware_allocation_input": True,
         }
 
     def content_hash(self) -> str:
@@ -413,6 +447,8 @@ class PortfolioAllocator:
             strategy_risk_snapshot=preference.risk_snapshot,
             strategy_risk_profile=preference.strategy_risk_profile,
             strategy_risk_decision=preference.strategy_risk_decision,
+            scope_key_hash=preference.scope_key_hash,
+            runtime_scope_key=preference.runtime_scope_key,
             reason=preference.reason,
         )
 
@@ -471,6 +507,12 @@ class PortfolioAllocator:
         active_top_signals = sorted(signal for signal in top_signals if signal != "HOLD")
         selected_signal = active_top_signals[0] if active_top_signals else "HOLD"
         conflict_resolution["selected_signal"] = selected_signal
+        previous_by_pair = dict(allocation_input.previous_target_exposure_by_pair or {})
+        reference_by_pair = dict(allocation_input.reference_price_by_pair or {})
+        previous_target_for_pair = previous_by_pair.get(pair)
+        reference_price_for_pair = reference_by_pair.get(pair)
+        conflict_resolution["previous_target_exposure_lookup_pair"] = pair
+        conflict_resolution["reference_price_lookup_pair"] = pair
         if selected_signal == "BUY":
             buy_contributions = tuple(item for item in top if item.signal_direction == "BUY")
             risk_block = self._selected_strategy_risk_block(buy_contributions)
@@ -511,7 +553,7 @@ class PortfolioAllocator:
             target_exposure = 0.0
             reason = "sell_target_zero_exposure"
         elif selected_signal == "HOLD":
-            if allocation_input.previous_target_exposure_krw is None:
+            if previous_target_for_pair is None:
                 return self._blocked_target(
                     pair,
                     input_hash,
@@ -520,7 +562,7 @@ class PortfolioAllocator:
                     "hold_missing_previous_target_exposure",
                     conflict_resolution=conflict_resolution,
                 )
-            target_exposure = max(0.0, float(allocation_input.previous_target_exposure_krw))
+            target_exposure = max(0.0, float(previous_target_for_pair))
             reason = "hold_maintains_previous_target"
         else:
             return self._blocked_target(
@@ -533,8 +575,8 @@ class PortfolioAllocator:
             )
         target_qty = (
             None
-            if allocation_input.reference_price is None or float(allocation_input.reference_price) <= 0.0
-            else float(target_exposure) / float(allocation_input.reference_price)
+            if reference_price_for_pair is None or float(reference_price_for_pair) <= 0.0
+            else float(target_exposure) / float(reference_price_for_pair)
         )
         return PortfolioTarget(
             pair=pair,
@@ -547,6 +589,9 @@ class PortfolioAllocator:
             allocation_input_hash=input_hash,
             reason=reason,
             conflict_resolution=conflict_resolution,
+            scope_key_hashes=tuple(
+                item.scope_key_hash for item in contributions if str(item.scope_key_hash or "").strip()
+            ),
             authoritative=True,
             fail_closed_reason="none",
         )

@@ -1211,6 +1211,27 @@ def _ensure_multi_strategy_artifact_schema(conn: sqlite3.Connection) -> None:
         """
     )
 
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS execution_plan_batch (
+            batch_hash TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL,
+            runtime_strategy_set_manifest_hash TEXT NOT NULL,
+            allocation_decision_hash TEXT NOT NULL,
+            budget_lock_hash TEXT NOT NULL,
+            status TEXT NOT NULL,
+            batch_json TEXT NOT NULL,
+            created_ts INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_execution_plan_batch_manifest
+        ON execution_plan_batch(runtime_strategy_set_manifest_hash, allocation_decision_hash)
+        """
+    )
+
 
 def _ensure_open_position_lot_invariant_triggers(conn: sqlite3.Connection) -> None:
     invariant_check = """
@@ -2883,6 +2904,32 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS strategy_virtual_target_state (
+            strategy_instance_id TEXT NOT NULL,
+            pair TEXT NOT NULL,
+            interval TEXT NOT NULL,
+            scope_key_hash TEXT NOT NULL,
+            runtime_contract_hash TEXT NOT NULL,
+            virtual_target_exposure_krw REAL NOT NULL,
+            virtual_target_qty REAL,
+            lifecycle_state TEXT NOT NULL,
+            last_signal TEXT NOT NULL,
+            updated_ts INTEGER NOT NULL,
+            evidence_hash TEXT,
+            state_json TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY(strategy_instance_id, pair, interval, scope_key_hash)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_strategy_virtual_target_state_scope
+        ON strategy_virtual_target_state(scope_key_hash, pair, interval)
+        """
+    )
+
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS open_position_lots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             pair TEXT NOT NULL,
@@ -3001,6 +3048,67 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     _ensure_open_position_lot_invariant_triggers(conn)
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS account_balances (
+            currency TEXT PRIMARY KEY,
+            available REAL NOT NULL DEFAULT 0,
+            locked REAL NOT NULL DEFAULT 0,
+            total REAL NOT NULL DEFAULT 0,
+            authority_source TEXT NOT NULL DEFAULT 'multi_asset_ledger_v1',
+            updated_ts INTEGER NOT NULL DEFAULT 0,
+            evidence_hash TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pair_positions (
+            pair TEXT PRIMARY KEY,
+            base_currency TEXT NOT NULL,
+            quote_currency TEXT NOT NULL,
+            available_qty REAL NOT NULL DEFAULT 0,
+            locked_qty REAL NOT NULL DEFAULT 0,
+            total_qty REAL NOT NULL DEFAULT 0,
+            authority_source TEXT NOT NULL DEFAULT 'multi_asset_ledger_v1',
+            updated_ts INTEGER NOT NULL DEFAULT 0,
+            evidence_hash TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS budget_locks (
+            lock_hash TEXT PRIMARY KEY,
+            currency TEXT NOT NULL,
+            pair TEXT,
+            amount REAL NOT NULL,
+            status TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            created_ts INTEGER NOT NULL,
+            released_ts INTEGER,
+            evidence_hash TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS order_locks (
+            lock_hash TEXT PRIMARY KEY,
+            pair TEXT NOT NULL,
+            currency TEXT NOT NULL,
+            client_order_id TEXT,
+            exchange_order_id TEXT,
+            amount REAL NOT NULL,
+            status TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            created_ts INTEGER NOT NULL,
+            released_ts INTEGER,
+            evidence_hash TEXT
+        )
+        """
+    )
 
     conn.execute(
         """
@@ -3677,6 +3785,43 @@ def record_execution_plan(
     }
 
 
+def record_execution_plan_batch(
+    conn: sqlite3.Connection,
+    *,
+    execution_plan_batch: object,
+    created_ts: int,
+) -> dict[str, Any]:
+    from .execution_plan_batch import ExecutionPlanBatch
+
+    if not isinstance(execution_plan_batch, ExecutionPlanBatch):
+        raise TypeError("execution_plan_batch_required")
+    payload = execution_plan_batch.as_dict()
+    batch_hash = str(payload["batch_hash"])
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO execution_plan_batch(
+            batch_hash, batch_id, runtime_strategy_set_manifest_hash,
+            allocation_decision_hash, budget_lock_hash, status, batch_json, created_ts
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            batch_hash,
+            str(payload["batch_id"]),
+            execution_plan_batch.runtime_strategy_set_manifest_hash,
+            execution_plan_batch.allocation_decision_hash,
+            execution_plan_batch.budget_lock_hash,
+            execution_plan_batch.status,
+            _json_dumps_stable(payload),
+            int(created_ts),
+        ),
+    )
+    return {
+        "execution_plan_batch_hash": batch_hash,
+        "execution_plan_batch_id": str(payload["batch_id"]),
+    }
+
+
 def update_execution_plan_final_submit_payload(
     conn: sqlite3.Connection,
     *,
@@ -3859,6 +4004,8 @@ def _strategy_contribution_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
             "exposure_boundary_artifact_hash"
         ],
         "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
+        "scope_key_hash": "",
+        "runtime_scope_key": None,
         "strategy_risk_policy": None,
         "strategy_risk_snapshot": None,
         "strategy_risk_profile": None,
@@ -3890,6 +4037,8 @@ def _strategy_contribution_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
                 "legacy_non_authoritative_exposure_risk_decision",
                 "legacy_non_authoritative_exposure_risk_decision_hash",
                 "risk_budget_legacy_marker",
+                "scope_key_hash",
+                "runtime_scope_key",
                 "strategy_risk_policy",
                 "strategy_risk_snapshot",
                 "strategy_risk_profile",
@@ -4221,6 +4370,187 @@ def upsert_target_position_state(
             str(created_from_signal or ""),
         ),
     )
+
+
+def upsert_strategy_virtual_target_state(conn: sqlite3.Connection, state: object) -> None:
+    from .virtual_target_state import StrategyVirtualTargetState
+
+    if not isinstance(state, StrategyVirtualTargetState):
+        raise TypeError("strategy_virtual_target_state_required")
+    payload = state.as_dict()
+    conn.execute(
+        """
+        INSERT INTO strategy_virtual_target_state(
+            strategy_instance_id, pair, interval, scope_key_hash,
+            runtime_contract_hash, virtual_target_exposure_krw, virtual_target_qty,
+            lifecycle_state, last_signal, updated_ts, evidence_hash, state_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(strategy_instance_id, pair, interval, scope_key_hash) DO UPDATE SET
+            runtime_contract_hash=excluded.runtime_contract_hash,
+            virtual_target_exposure_krw=excluded.virtual_target_exposure_krw,
+            virtual_target_qty=excluded.virtual_target_qty,
+            lifecycle_state=excluded.lifecycle_state,
+            last_signal=excluded.last_signal,
+            updated_ts=excluded.updated_ts,
+            evidence_hash=excluded.evidence_hash,
+            state_json=excluded.state_json
+        """,
+        (
+            state.strategy_instance_id,
+            state.pair,
+            state.interval,
+            state.scope_key_hash,
+            state.runtime_contract_hash,
+            state.virtual_target_exposure_krw,
+            state.virtual_target_qty,
+            state.lifecycle_state,
+            state.last_signal,
+            int(state.updated_ts),
+            state.evidence_hash,
+            _json_dumps_stable(payload),
+        ),
+    )
+
+
+def load_strategy_virtual_target_state(
+    conn: sqlite3.Connection,
+    *,
+    strategy_instance_id: str,
+    pair: str,
+    interval: str,
+    scope_key_hash: str,
+):
+    from .virtual_target_state import StrategyVirtualTargetState
+
+    row = conn.execute(
+        """
+        SELECT state_json
+        FROM strategy_virtual_target_state
+        WHERE strategy_instance_id=? AND pair=? AND interval=? AND scope_key_hash=?
+        """,
+        (strategy_instance_id, pair, interval, scope_key_hash),
+    ).fetchone()
+    if row is None:
+        return None
+    payload = _json_loads_object(row["state_json"])
+    return StrategyVirtualTargetState(
+        strategy_instance_id=str(payload["strategy_instance_id"]),
+        pair=str(payload["pair"]),
+        interval=str(payload["interval"]),
+        scope_key_hash=str(payload["scope_key_hash"]),
+        runtime_contract_hash=str(payload["runtime_contract_hash"]),
+        virtual_target_exposure_krw=float(payload["virtual_target_exposure_krw"]),
+        virtual_target_qty=(
+            None if payload.get("virtual_target_qty") is None else float(payload["virtual_target_qty"])
+        ),
+        lifecycle_state=str(payload["lifecycle_state"]),
+        last_signal=str(payload["last_signal"]),
+        updated_ts=int(payload["updated_ts"]),
+        evidence_hash=str(payload.get("evidence_hash") or ""),
+    )
+
+
+def upsert_account_balance(
+    conn: sqlite3.Connection,
+    *,
+    currency: str,
+    available: float,
+    locked: float,
+    updated_ts: int,
+    evidence_hash: str = "",
+) -> None:
+    available_n = float(available)
+    locked_n = float(locked)
+    if available_n < 0.0 or locked_n < 0.0:
+        raise RuntimeError("multi_asset_balance_negative")
+    conn.execute(
+        """
+        INSERT INTO account_balances(currency, available, locked, total, updated_ts, evidence_hash)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(currency) DO UPDATE SET
+            available=excluded.available,
+            locked=excluded.locked,
+            total=excluded.total,
+            updated_ts=excluded.updated_ts,
+            evidence_hash=excluded.evidence_hash
+        """,
+        (
+            str(currency).strip().upper(),
+            available_n,
+            locked_n,
+            available_n + locked_n,
+            int(updated_ts),
+            str(evidence_hash or "").strip(),
+        ),
+    )
+
+
+def upsert_pair_position(
+    conn: sqlite3.Connection,
+    *,
+    pair: str,
+    base_currency: str,
+    quote_currency: str,
+    available_qty: float,
+    locked_qty: float,
+    updated_ts: int,
+    evidence_hash: str = "",
+) -> None:
+    available_n = float(available_qty)
+    locked_n = float(locked_qty)
+    if available_n < 0.0 or locked_n < 0.0:
+        raise RuntimeError("multi_asset_position_negative")
+    conn.execute(
+        """
+        INSERT INTO pair_positions(
+            pair, base_currency, quote_currency, available_qty, locked_qty, total_qty,
+            updated_ts, evidence_hash
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(pair) DO UPDATE SET
+            base_currency=excluded.base_currency,
+            quote_currency=excluded.quote_currency,
+            available_qty=excluded.available_qty,
+            locked_qty=excluded.locked_qty,
+            total_qty=excluded.total_qty,
+            updated_ts=excluded.updated_ts,
+            evidence_hash=excluded.evidence_hash
+        """,
+        (
+            str(pair).strip(),
+            str(base_currency).strip().upper(),
+            str(quote_currency).strip().upper(),
+            available_n,
+            locked_n,
+            available_n + locked_n,
+            int(updated_ts),
+            str(evidence_hash or "").strip(),
+        ),
+    )
+
+
+def multi_asset_ledger_authority_status(conn: sqlite3.Connection) -> dict[str, Any]:
+    tables = {
+        "account_balances",
+        "pair_positions",
+        "budget_locks",
+        "order_locks",
+    }
+    existing = {
+        str(row["name"])
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    missing = sorted(tables.difference(existing))
+    return {
+        "schema_version": 1,
+        "authority_model": "multi_asset_ledger_v1",
+        "status": "present" if not missing else "missing",
+        "missing_tables": missing,
+        "portfolio_id_1_multi_pair_live_authority": False,
+        "live_multi_pair_enablement": "fail_closed_until_scoped_batch_ledger_authority_verified",
+        "fail_closed_reason": "multi_asset_ledger_authority_missing" if missing else "multi_pair_runtime_unsupported",
+    }
 
 
 def init_portfolio(conn: sqlite3.Connection) -> None:

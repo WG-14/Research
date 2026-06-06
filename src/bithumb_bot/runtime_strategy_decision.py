@@ -5,6 +5,7 @@ from types import MappingProxyType
 from typing import Callable, Mapping, Protocol, runtime_checkable
 
 from .config import settings, validate_live_strategy_selection
+from .runtime_scope import RuntimeScopeKey
 from .runtime_data_provider import RuntimeFeatureSnapshot
 from .strategy_policy_contract import StrategyDecisionV2
 
@@ -28,6 +29,8 @@ class RuntimeDecisionRequest:
     plugin_contract_hash: str | None
     strategy_version: str | None
     request_hash: str
+    runtime_scope_key: RuntimeScopeKey | None = None
+    scope_key_hash: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "strategy_instance_id", str(self.strategy_instance_id or "").strip())
@@ -51,6 +54,23 @@ class RuntimeDecisionRequest:
                 {str(key): value for key, value in dict(self.parameters_materialized or {}).items()}
             ),
         )
+        scope_key = self.runtime_scope_key
+        if scope_key is None:
+            scope_key = RuntimeScopeKey(
+                pair=self.pair,
+                interval=self.interval,
+                strategy_instance_id=self.strategy_instance_id,
+                strategy_name=self.strategy_name,
+                runtime_contract_hash=str(
+                    self.runtime_contract_hash or "paper_legacy_compat:runtime_contract_hash_missing"
+                ),
+                approved_profile_hash=str(
+                    self.approved_profile_hash or "paper_legacy_compat:approved_profile_hash_missing"
+                ),
+                strategy_parameters_hash=self.strategy_parameters_hash,
+            )
+        object.__setattr__(self, "runtime_scope_key", scope_key)
+        object.__setattr__(self, "scope_key_hash", self.scope_key_hash or scope_key.scope_key_hash())
 
     def observability_fields(self) -> dict[str, object]:
         spec = self.runtime_strategy_spec
@@ -80,6 +100,8 @@ class RuntimeDecisionRequest:
             "approved_profile_path": self.approved_profile_path,
             "approved_profile_hash": self.approved_profile_hash,
             "runtime_contract_hash": self.runtime_contract_hash,
+            "runtime_scope_key": self.runtime_scope_key.as_dict() if self.runtime_scope_key else None,
+            "scope_key_hash": self.scope_key_hash,
             "through_ts_ms": self.through_ts_ms,
             "candle_ts": self.through_ts_ms,
             "plugin_contract_hash": self.plugin_contract_hash,
@@ -107,6 +129,8 @@ class RuntimeDecisionRequest:
             "pair": self.pair,
             "interval": self.interval,
             "runtime_strategy_spec": spec_payload,
+            "runtime_scope_key": self.runtime_scope_key.as_dict() if self.runtime_scope_key else None,
+            "scope_key_hash": self.scope_key_hash,
         }
 
 
@@ -499,6 +523,8 @@ def _attach_runtime_request_metadata(
                 "strategy_parameters_hash": request.strategy_parameters_hash,
                 "approved_profile_hash": request.approved_profile_hash,
                 "runtime_contract_hash": request.runtime_contract_hash,
+                "runtime_scope_key": request.runtime_scope_key.as_dict() if request.runtime_scope_key else None,
+                "scope_key_hash": request.scope_key_hash,
                 "plugin_contract_hash": request.plugin_contract_hash,
                 "through_ts_ms": request.through_ts_ms,
             }
@@ -509,6 +535,7 @@ def _attach_runtime_request_metadata(
                 "runtime_decision_request_hash": request.request_hash,
                 "strategy_instance_id": request.strategy_instance_id,
                 "strategy_parameters_hash": request.strategy_parameters_hash,
+                "scope_key_hash": request.scope_key_hash,
             }
         )
 
@@ -551,6 +578,9 @@ def _attach_runtime_feature_snapshot_metadata(
         "source_schema_hash": payload.get("source_schema_hash"),
         "feature_snapshot_hash": payload.get("feature_snapshot_hash"),
         "runtime_data_market_snapshot_hash": payload.get("market_snapshot_hash"),
+        "runtime_scope_key": payload.get("runtime_scope_key"),
+        "scope_key_hash": payload.get("scope_key_hash"),
+        "source_schema_hash_by_scope": payload.get("source_schema_hash_by_scope"),
     }
     if isinstance(result.base_context, dict):
         result.base_context.update(fields)
