@@ -152,5 +152,3 @@ def evolve_strategy_virtual_target_state(
         updated_ts=int(updated_ts),
         evidence_hash=sha256_prefixed(evidence_payload),
     )
-    if isinstance(state, Mapping) and str(state.get("authority") or "") == "non_authoritative_strategy_virtual_lifecycle_state":
-        raise TypeError("virtual_target_state_not_live_submit_authority")

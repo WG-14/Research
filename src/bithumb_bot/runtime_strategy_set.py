@@ -1792,6 +1792,15 @@ class RuntimeStrategyDecisionCollector:
             feature_snapshot = data_provider.snapshot(request, requirements)
             if feature_snapshot is None:
                 return None
+            _validate_feature_snapshot_scope_preflight(
+                feature_snapshot,
+                data_availability_report,
+                request=request,
+            )
+            feature_snapshot = _bind_feature_snapshot_to_preflight_report(
+                feature_snapshot,
+                data_availability_report,
+            )
             feature_snapshot = _project_runtime_feature_snapshot(
                 adapter=adapter,
                 conn=conn,
@@ -1870,6 +1879,68 @@ def _decide_with_feature_snapshot(
     if callable(feature_decider):
         return feature_decider(request, feature_snapshot)
     raise RuntimeError(f"runtime_decision_feature_snapshot_required:{request.strategy_name}")
+
+
+def _validate_feature_snapshot_scope_preflight(
+    feature_snapshot: RuntimeFeatureSnapshot,
+    data_availability_report: RuntimeDataAvailabilityReport,
+    *,
+    request: RuntimeDecisionRequest,
+) -> None:
+    snapshot_payload = feature_snapshot.as_dict()
+    report_payload = data_availability_report.as_dict()
+    scope_maps = {
+        "coverage_by_scope": report_payload.get("coverage_by_scope"),
+        "selected_candle_by_scope": report_payload.get("selected_candle_by_scope"),
+        "source_schema_hash_by_scope": report_payload.get("source_schema_hash_by_scope"),
+        "freshness_by_scope": report_payload.get("freshness_by_scope"),
+    }
+    if not all(isinstance(value, Mapping) for value in scope_maps.values()):
+        raise RuntimeError("runtime_data_preflight_scope_maps_missing")
+
+    scope_hash = str(snapshot_payload.get("scope_key_hash") or "").strip()
+    preflight_scope_id = str(snapshot_payload.get("preflight_scope_id") or "").strip()
+    expected_scope_id = (
+        f"{request.strategy_instance_id}:{request.pair}:{request.interval}"
+        if str(request.strategy_instance_id or "").strip()
+        else f"{request.pair}:{request.interval}"
+    )
+    strategy_name_scope_id = (
+        f"{getattr(request, 'strategy_name', '')}:{request.pair}:{request.interval}"
+        if str(getattr(request, "strategy_name", "") or "").strip()
+        else ""
+    )
+    candidate_keys = tuple(
+        key
+        for key in (scope_hash, preflight_scope_id, expected_scope_id, strategy_name_scope_id)
+        if key
+    )
+    if not candidate_keys:
+        raise RuntimeError("runtime_data_snapshot_scope_key_missing")
+
+    missing_layers = [
+        layer
+        for layer, mapping in scope_maps.items()
+        if not any(key in mapping for key in candidate_keys)  # type: ignore[operator]
+    ]
+    if missing_layers:
+        raise RuntimeError(
+            "runtime_data_snapshot_preflight_scope_mismatch:"
+            + ",".join(missing_layers)
+        )
+
+
+def _bind_feature_snapshot_to_preflight_report(
+    feature_snapshot: RuntimeFeatureSnapshot,
+    data_availability_report: RuntimeDataAvailabilityReport,
+) -> RuntimeFeatureSnapshot:
+    payload = feature_snapshot.as_dict()
+    payload["runtime_data_availability_report_hash"] = data_availability_report.report_hash
+    payload["runtime_data_preflight_authority"] = "RuntimeDataAvailabilityReport.scope_preflight_v2"
+    payload["feature_snapshot_hash"] = sha256_prefixed(
+        {key: value for key, value in payload.items() if key != "feature_snapshot_hash"}
+    )
+    return RuntimeFeatureSnapshot(payload)
 
 
 @dataclass(frozen=True)

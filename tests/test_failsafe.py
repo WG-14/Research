@@ -20,6 +20,7 @@ from bithumb_bot.risk_contract import RiskPolicy, RiskSnapshot, build_risk_decis
 from bithumb_bot.runtime_compat import get_health_status
 from bithumb_bot.runtime.app_container import create_default_runtime_app
 from bithumb_bot.runtime.runner import Runner
+from bithumb_bot.runtime_scope import RuntimeScopeKey
 from bithumb_bot.research.strategy_registry import runtime_strategy_parameters_from_settings
 from bithumb_bot.execution_service import (
     ExecutionDecisionSummary,
@@ -449,11 +450,17 @@ class _LoopConn:
         self.runtime_strategy_decision_result_rows: dict[tuple[int, str], dict[str, object]] = {}
         self.portfolio_allocation_rows: dict[str, dict[str, object]] = {}
         self.portfolio_target_rows: dict[str, dict[str, object]] = {}
+        self.execution_plan_batch_rows: dict[str, dict[str, object]] = {}
         self.execution_plan_rows: dict[tuple[int, str], dict[str, object]] = {}
+        self.budget_lock_rows: dict[str, dict[str, object]] = {}
+        self.order_lock_rows: dict[str, dict[str, object]] = {}
         self.in_transaction = False
 
     def execute(self, query, params=None):
         q = " ".join(str(query).split())
+
+        if "FROM sqlite_master" in q and "budget_locks" in q and "order_locks" in q:
+            return _Rows([{"name": "budget_locks"}, {"name": "order_locks"}])
 
         if "FROM target_position_state" in q:
             if self.target_state is None:
@@ -624,6 +631,46 @@ class _LoopConn:
                 None,
             )
             return _Rows(row)
+
+        if "INSERT OR IGNORE INTO execution_plan_batch" in q:
+            assert params is not None
+            batch_hash = str(params[0])
+            if batch_hash not in self.execution_plan_batch_rows:
+                self.execution_plan_batch_rows[batch_hash] = {
+                    "batch_hash": batch_hash,
+                    "batch_id": str(params[1]),
+                }
+            return _Rows(None, rowcount=1)
+
+        if "INSERT OR IGNORE INTO budget_locks" in q:
+            assert params is not None
+            lock_hash = str(params[0])
+            if lock_hash not in self.budget_lock_rows:
+                self.budget_lock_rows[lock_hash] = {
+                    "lock_hash": lock_hash,
+                    "status": str(params[4]),
+                    "evidence_hash": str(params[7]),
+                }
+            return _Rows(None, rowcount=1)
+
+        if "SELECT lock_hash, status, evidence_hash FROM budget_locks WHERE lock_hash=?" in q:
+            assert params is not None
+            return _Rows(self.budget_lock_rows.get(str(params[0])))
+
+        if "INSERT OR IGNORE INTO order_locks" in q:
+            assert params is not None
+            lock_hash = str(params[0])
+            if lock_hash not in self.order_lock_rows:
+                self.order_lock_rows[lock_hash] = {
+                    "lock_hash": lock_hash,
+                    "status": str(params[4]),
+                    "evidence_hash": str(params[7]),
+                }
+            return _Rows(None, rowcount=1)
+
+        if "SELECT lock_hash, status, evidence_hash FROM order_locks WHERE lock_hash=?" in q:
+            assert params is not None
+            return _Rows(self.order_lock_rows.get(str(params[0])))
 
         if "INSERT OR IGNORE INTO execution_plan" in q:
             assert params is not None
@@ -1003,14 +1050,25 @@ def _install_runtime_gateway(monkeypatch_or_factory, result_factory=None):
                 if spec is not None
                 else str(result.decision.strategy_name)
             )
+            scope_key = RuntimeScopeKey(
+                pair=settings.PAIR,
+                interval=settings.INTERVAL,
+                strategy_instance_id=strategy_instance_id,
+                strategy_name=result.decision.strategy_name,
+                runtime_contract_hash="sha256:unit-runtime-contract",
+                approved_profile_hash="sha256:unit-approved-profile",
+                strategy_parameters_hash="sha256:unit-parameters",
+            )
             result.base_context.update(
                 {
                     "runtime_decision_request_hash": "sha256:unit-runtime-request",
                     "strategy_instance_id": strategy_instance_id,
                     "strategy_parameters_hash": "sha256:unit-parameters",
-                    "approved_profile_hash": None,
+                    "approved_profile_hash": "sha256:unit-approved-profile",
                     "runtime_contract_hash": "sha256:unit-runtime-contract",
                     "plugin_contract_hash": "sha256:unit-plugin-contract",
+                    "runtime_scope_key": scope_key.as_dict(),
+                    "scope_key_hash": scope_key.scope_key_hash(),
                     "through_ts_ms": through_ts_ms,
                 }
             )
@@ -1019,9 +1077,11 @@ def _install_runtime_gateway(monkeypatch_or_factory, result_factory=None):
                     "runtime_decision_request_hash": "sha256:unit-runtime-request",
                     "strategy_instance_id": strategy_instance_id,
                     "strategy_parameters_hash": "sha256:unit-parameters",
-                    "approved_profile_hash": None,
+                    "approved_profile_hash": "sha256:unit-approved-profile",
                     "runtime_contract_hash": "sha256:unit-runtime-contract",
                     "plugin_contract_hash": "sha256:unit-plugin-contract",
+                    "runtime_scope_key": scope_key.as_dict(),
+                    "scope_key_hash": scope_key.scope_key_hash(),
                     "through_ts_ms": through_ts_ms,
                 }
             )

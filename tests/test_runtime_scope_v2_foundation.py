@@ -31,6 +31,9 @@ from bithumb_bot.portfolio_allocation import (
     SignalAggregator,
 )
 from bithumb_bot.runtime_data_provider import (
+    DecisionClockPolicy,
+    RuntimeDataAvailabilityReport,
+    RuntimeFeatureSnapshot,
     RuntimeStrategyDataRequirements,
     SQLiteRuntimeDataProvider,
 )
@@ -42,6 +45,7 @@ from bithumb_bot.runtime_scope import (
 )
 from bithumb_bot.runtime_scope_replay import verify_runtime_scope_replay_payload
 from bithumb_bot.strategy_preference import StrategyPreference
+from bithumb_bot.runtime_strategy_set import _validate_feature_snapshot_scope_preflight
 from bithumb_bot.virtual_target_state import (
     StrategyVirtualTargetState,
     assert_not_live_submit_authority,
@@ -675,3 +679,49 @@ def test_runtime_data_preflight_and_snapshot_are_scope_aware() -> None:
         )
     finally:
         conn.close()
+
+
+def test_decision_clock_policy_fails_closed_for_mixed_intervals() -> None:
+    policy = DecisionClockPolicy()
+
+    single = policy.evaluate_intervals(("1m", "1m"))
+    mixed = policy.evaluate_intervals(("1m", "5m"))
+
+    assert single["status"] == "PASS"
+    assert mixed["status"] == "FAIL"
+    assert mixed["reason"] == "single_interval_runtime_unsupported"
+
+
+def test_runtime_data_snapshot_scope_mismatch_fails_closed() -> None:
+    scope = _scope(strategy_instance_id="fake-1")
+    snapshot = RuntimeFeatureSnapshot(
+        {
+            "scope_key_hash": scope.scope_key_hash(),
+            "preflight_scope_id": "fake-1:KRW-BTC:1m",
+        }
+    )
+    request = SimpleNamespace(
+        strategy_instance_id="fake-1",
+        pair="KRW-BTC",
+        interval="1m",
+    )
+    matching_report = RuntimeDataAvailabilityReport(
+        {
+            "coverage_by_scope": {scope.scope_key_hash(): {}},
+            "selected_candle_by_scope": {scope.scope_key_hash(): {}},
+            "source_schema_hash_by_scope": {scope.scope_key_hash(): "sha256:" + "1" * 64},
+            "freshness_by_scope": {scope.scope_key_hash(): {"status": "PASS"}},
+        }
+    )
+    _validate_feature_snapshot_scope_preflight(snapshot, matching_report, request=request)
+
+    mismatched_report = RuntimeDataAvailabilityReport(
+        {
+            "coverage_by_scope": {"other-scope": {}},
+            "selected_candle_by_scope": {"other-scope": {}},
+            "source_schema_hash_by_scope": {"other-scope": "sha256:" + "1" * 64},
+            "freshness_by_scope": {"other-scope": {"status": "PASS"}},
+        }
+    )
+    with pytest.raises(RuntimeError, match="runtime_data_snapshot_preflight_scope_mismatch"):
+        _validate_feature_snapshot_scope_preflight(snapshot, mismatched_report, request=request)

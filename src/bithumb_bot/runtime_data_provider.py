@@ -21,6 +21,46 @@ from .research.strategy_registry import (
 RUNTIME_DATA_PROVIDER_NAME = "sqlite_runtime_data_provider"
 RUNTIME_DATA_PROVIDER_VERSION = "1"
 RUNTIME_DATA_CONTRACT_SCHEMA_VERSION = 1
+SINGLE_INTERVAL_DECISION_CLOCK_POLICY = "single_interval_same_closed_candle_fail_closed_v1"
+
+
+@dataclass(frozen=True)
+class DecisionClockPolicy:
+    policy_name: str = SINGLE_INTERVAL_DECISION_CLOCK_POLICY
+    supported_interval_mode: str = "single_interval"
+    mixed_interval_policy: str = "fail_closed"
+    mixed_interval_fail_closed_reason: str = "single_interval_runtime_unsupported"
+    freshness_policy: str = "per_scope_required_capabilities_fail_closed"
+    stale_or_missing_scope_policy: str = "fail_closed"
+    schema_version: int = 1
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": int(self.schema_version),
+            "policy_name": self.policy_name,
+            "supported_interval_mode": self.supported_interval_mode,
+            "mixed_interval_policy": self.mixed_interval_policy,
+            "mixed_interval_fail_closed_reason": self.mixed_interval_fail_closed_reason,
+            "freshness_policy": self.freshness_policy,
+            "stale_or_missing_scope_policy": self.stale_or_missing_scope_policy,
+        }
+
+    def evaluate_intervals(self, intervals: object) -> dict[str, object]:
+        normalized = sorted({str(item or "").strip() for item in tuple(intervals or ()) if str(item or "").strip()})
+        mixed = len(normalized) > 1
+        return {
+            **self.as_dict(),
+            "intervals": normalized,
+            "status": "FAIL" if mixed else "PASS",
+            "reason": self.mixed_interval_fail_closed_reason if mixed else "single_interval_policy_satisfied",
+        }
+
+
+DEFAULT_DECISION_CLOCK_POLICY = DecisionClockPolicy()
+
+
+def decision_clock_policy_payload() -> dict[str, object]:
+    return DEFAULT_DECISION_CLOCK_POLICY.as_dict()
 
 def runtime_data_provider_contract_payload() -> dict[str, object]:
     return {
@@ -34,6 +74,7 @@ def runtime_data_provider_contract_payload() -> dict[str, object]:
         "unsupported_required_capability_policy": "fail_closed",
         "optional_missing_policy": "warn_by_default",
         "snapshot_contract": "RuntimeFeatureSnapshot.v1",
+        "decision_clock_policy": decision_clock_policy_payload(),
     }
 
 
@@ -495,6 +536,12 @@ class SQLiteRuntimeDataProvider:
             if hasattr(scope_key, "with_hash_payload")
             else {}
         )
+        strategy_instance_id = str(scope_payload.get("strategy_instance_id") or "").strip()
+        preflight_scope_id = (
+            f"{strategy_instance_id}:{pair}:{interval}"
+            if strategy_instance_id
+            else f"{pair}:{interval}"
+        )
         payload: dict[str, object] = {
             "schema_version": 1,
             "pair": pair,
@@ -514,6 +561,7 @@ class SQLiteRuntimeDataProvider:
             "runtime_data_availability_report_hash": report.report_hash,
             "runtime_scope_key": scope_payload or None,
             "scope_key_hash": scope_payload.get("scope_key_hash"),
+            "preflight_scope_id": preflight_scope_id,
             "coverage_by_scope": {
                 str(scope_payload.get("scope_key_hash") or f"{pair}:{interval}"): coverage
             },
@@ -530,7 +578,8 @@ class SQLiteRuntimeDataProvider:
                         if through_ts_ms is None or decision_candle_ts is None
                         else max(0, int(through_ts_ms) - int(decision_candle_ts))
                     ),
-                    "decision_clock_policy": "single_interval_same_closed_candle_fail_closed_v1",
+                    "decision_clock_policy": DEFAULT_DECISION_CLOCK_POLICY.policy_name,
+                    "decision_clock_policy_payload": DEFAULT_DECISION_CLOCK_POLICY.as_dict(),
                 }
             },
             "staleness_ms": (
@@ -555,6 +604,7 @@ class SQLiteRuntimeDataProvider:
         selected_candle_by_scope: dict[str, object] = {}
         source_schema_hash_by_scope: dict[str, object] = {}
         freshness_by_scope: dict[str, object] = {}
+        scope_identity_by_scope: dict[str, object] = {}
         schema_hash = self._db_schema_fingerprint()
         for spec in tuple(getattr(strategy_set, "active_strategies", ()) or ()):
             instance_id = str(getattr(spec, "strategy_instance_id", "") or "").strip()
@@ -563,6 +613,24 @@ class SQLiteRuntimeDataProvider:
             pair = str(getattr(spec, "pair", "") or getattr(getattr(strategy_set, "market_scope", None), "pair", "") or "")
             interval = str(getattr(spec, "interval", "") or getattr(getattr(strategy_set, "market_scope", None), "interval", "") or "")
             scope_id = f"{instance_id}:{pair}:{interval}"
+            scope_keys = [scope_id]
+            scope_key_payload: dict[str, object] | None = None
+            try:
+                from .runtime_scope import RuntimeScopeKey
+
+                key = RuntimeScopeKey(
+                    pair=pair,
+                    interval=interval,
+                    strategy_instance_id=instance_id,
+                    strategy_name=str(getattr(spec, "strategy_name", "") or ""),
+                    runtime_contract_hash=str(getattr(spec, "runtime_contract_hash", "") or ""),
+                    approved_profile_hash=str(getattr(spec, "approved_profile_hash", "") or ""),
+                    strategy_parameters_hash=str(getattr(spec, "strategy_parameters_hash", "") or ""),
+                )
+                scope_key_payload = key.with_hash_payload()
+                scope_keys.append(key.scope_key_hash())
+            except ValueError:
+                scope_key_payload = None
             requirement_by_name = {
                 item.name: item for item in tuple(requirements.required) + tuple(requirements.optional)
             }
@@ -576,9 +644,8 @@ class SQLiteRuntimeDataProvider:
                 ).as_dict()
                 for capability in requirements.all_names
             }
-            coverage_by_scope[scope_id] = coverage
             candle = coverage.get("candles") if isinstance(coverage, Mapping) else None
-            selected_candle_by_scope[scope_id] = (
+            selected_candle = (
                 None
                 if not isinstance(candle, Mapping)
                 else {
@@ -587,11 +654,11 @@ class SQLiteRuntimeDataProvider:
                     "reason": candle.get("reason"),
                 }
             )
-            source_schema_hash_by_scope[scope_id] = schema_hash
-            freshness_by_scope[scope_id] = {
-                "decision_clock_policy": "single_interval_same_closed_candle_fail_closed_v1",
-                "freshness_policy": "per_scope_required_capabilities_fail_closed",
-                "stale_or_missing_scope_policy": "fail_closed",
+            freshness = {
+                "decision_clock_policy": DEFAULT_DECISION_CLOCK_POLICY.policy_name,
+                "decision_clock_policy_payload": DEFAULT_DECISION_CLOCK_POLICY.as_dict(),
+                "freshness_policy": DEFAULT_DECISION_CLOCK_POLICY.freshness_policy,
+                "stale_or_missing_scope_policy": DEFAULT_DECISION_CLOCK_POLICY.stale_or_missing_scope_policy,
                 "status": "PASS"
                 if all(
                     coverage.get(item.name, {}).get("status") == "PASS"
@@ -600,12 +667,28 @@ class SQLiteRuntimeDataProvider:
                 )
                 else "FAIL",
             }
+            for key in scope_keys:
+                coverage_by_scope[key] = coverage
+                selected_candle_by_scope[key] = selected_candle
+                source_schema_hash_by_scope[key] = schema_hash
+                freshness_by_scope[key] = freshness
+                scope_identity_by_scope[key] = {
+                    "preflight_scope_id": scope_id,
+                    "runtime_scope_key": scope_key_payload,
+                    "scope_key_hash": None if scope_key_payload is None else scope_key_payload.get("scope_key_hash"),
+                }
         return {
             "coverage_by_scope": coverage_by_scope,
             "selected_candle_by_scope": selected_candle_by_scope,
             "source_schema_hash_by_scope": source_schema_hash_by_scope,
             "freshness_by_scope": freshness_by_scope,
-            "decision_clock_policy": "single_interval_same_closed_candle_fail_closed_v1",
+            "scope_identity_by_scope": scope_identity_by_scope,
+            "decision_clock_policy": DEFAULT_DECISION_CLOCK_POLICY.policy_name,
+            "decision_clock_policy_payload": DEFAULT_DECISION_CLOCK_POLICY.as_dict(),
+            "decision_clock_policy_evaluation": DEFAULT_DECISION_CLOCK_POLICY.evaluate_intervals(
+                str(getattr(spec, "interval", "") or getattr(getattr(strategy_set, "market_scope", None), "interval", "") or "")
+                for spec in tuple(getattr(strategy_set, "active_strategies", ()) or ())
+            ),
         }
 
     def _candle_rows(

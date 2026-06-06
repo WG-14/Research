@@ -1738,15 +1738,19 @@ def _build_execution_plan_batch_for_runtime_pair(
         )
         or ""
     ).strip()
+    submit_expected = bool(submit_plan is not None and bool(submit_plan.submit_expected))
     pre_submit_required = bool(
-        (submit_plan is not None and bool(submit_plan.extra_payload.get("pre_submit_risk_required")))
-        or bool(context.get("pre_submit_risk_required"))
+        submit_expected
+        and (
+            (submit_plan is not None and bool(submit_plan.extra_payload.get("pre_submit_risk_required")))
+            or bool(context.get("pre_submit_risk_required"))
+        )
     )
     pre_submit_not_required_reason = ""
     pre_submit_finalization_required = False
     pre_submit_status = str(context.get("pre_submit_risk_status") or "").strip()
     if pre_submit_required and not raw_pre_submit_hash:
-        pre_submit_finalization_required = bool(submit_plan is not None and bool(submit_plan.submit_expected))
+        pre_submit_finalization_required = submit_expected
         pre_submit_status = pre_submit_status or "pending_finalization"
     elif not pre_submit_required:
         if submit_plan is None:
@@ -1778,7 +1782,7 @@ def _build_execution_plan_batch_for_runtime_pair(
         pre_submit_risk_proof_status=pre_submit_status,
         pre_submit_risk_not_required_reason=pre_submit_not_required_reason,
         pre_submit_risk_finalization_required=pre_submit_finalization_required,
-        submit_expected=False if submit_plan is None else bool(submit_plan.submit_expected),
+        submit_expected=submit_expected,
         lock_evidence_hash=str(lock_evidence["evidence_hash"]),
         lock_type=str(lock_evidence["lock_type"]),
         lock_status=str(lock_evidence["lock_status"]),
@@ -1806,7 +1810,7 @@ def _build_execution_plan_batch_for_runtime_pair(
         "pre_submit_risk_required": pre_submit_required,
         "pre_submit_risk_not_required_reason": pre_submit_not_required_reason,
         "pre_submit_risk_finalization_required": pre_submit_finalization_required,
-        "status": "ALLOW" if submit_plan is not None and bool(submit_plan.submit_expected) else "NOT_REQUIRED",
+        "status": "ALLOW" if submit_expected else "NOT_REQUIRED",
     }
     return ExecutionPlanBatch(
         runtime_strategy_set_manifest_hash=str(
