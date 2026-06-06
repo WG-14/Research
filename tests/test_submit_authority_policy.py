@@ -122,14 +122,14 @@ def _summary(*, target: ExecutionSubmitPlan | None = None, buy: ExecutionSubmitP
 
 
 def test_mode_aware_submit_authority_matrix() -> None:
-    target = _approved(_plan())
+    target = _approved(_plan()).as_final_payload()
     legacy_buy = _plan(source="strategy_position", authority="configured_strategy_order_size")
     residual = _approved(_plan(
         side="SELL",
         source="residual_inventory",
         authority="residual_inventory_policy",
         extra={"portfolio_target_authoritative": False},
-    ))
+    )).as_final_payload()
 
     assert evaluate_submit_authority_policy(
         legacy_buy,
@@ -162,7 +162,7 @@ def test_mode_aware_submit_authority_matrix() -> None:
 
 def test_live_real_order_requires_operational_pre_submit_risk_proof() -> None:
     missing = evaluate_submit_authority_policy(
-        _plan(),
+        _plan().as_final_payload(),
         settings_obj=_settings(mode="live", dry_run=False, armed=True),
         plan_kind="target",
     )
@@ -171,12 +171,25 @@ def test_live_real_order_requires_operational_pre_submit_risk_proof() -> None:
     assert missing.as_dict()["pre_submit_risk_approval_status"] == "blocked"
 
     approved = evaluate_submit_authority_policy(
-        _approved(_plan()),
+        _approved(_plan()).as_final_payload(),
         settings_obj=_settings(mode="live", dry_run=False, armed=True),
         plan_kind="target",
     )
     assert approved.allowed is True
     assert approved.as_dict()["pre_submit_risk_approval_status"] == "approved"
+
+
+def test_live_real_order_schema_valid_plan_still_requires_final_submit_payload() -> None:
+    raw_typed_plan = _approved(_plan())
+
+    rejected = evaluate_submit_authority_policy(
+        raw_typed_plan,
+        settings_obj=_settings(mode="live", dry_run=False, armed=True),
+        plan_kind="target",
+    )
+
+    assert rejected.allowed is False
+    assert rejected.reason == "live_real_order_submit_plan_missing_final_schema"
 
 
 @pytest.mark.parametrize(

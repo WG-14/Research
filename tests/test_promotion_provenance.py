@@ -5,6 +5,7 @@ import json
 from bithumb_bot.profile_cli import cmd_promotion_provenance_verify
 from bithumb_bot.promotion_provenance import (
     PromotionArtifact,
+    sha256_prefixed,
     validate_promotion_artifact,
     validate_promotion_artifact_provenance,
 )
@@ -191,6 +192,52 @@ def test_canonical_promotion_rejects_compatibility_fallback_context() -> None:
     assert "canonical_promotion_compatibility_fallback" in result.reason_codes
     assert "canonical_promotion_typed_execution_provenance_missing" in result.reason_codes
     assert "canonical_promotion_typed_authority_plane_missing" in result.reason_codes
+
+
+def test_canonical_promotion_rejects_hashed_diagnostic_bundle_even_with_forged_top_level_markers() -> None:
+    payload = _typed_payload(
+        compatibility_fallback=False,
+        artifact_grade="promotion_candidate",
+        authority_plane="typed_execution_plan_bundle",
+        execution_evidence_source="typed_execution_plan_bundle",
+    )
+    bundle = dict(payload["execution_plan_bundle_evidence"])
+    bundle.update(
+        {
+            "compatibility_fallback": True,
+            "promotion_grade": False,
+            "artifact_grade": "diagnostic_only",
+            "authority_plane": "diagnostic_research_compatibility_only",
+            "execution_evidence_source": "research_compatibility_fallback",
+            "live_authoritative": False,
+        }
+    )
+    payload["execution_plan_bundle_evidence"] = bundle
+    payload["execution_plan_bundle_hash"] = sha256_prefixed(bundle)
+
+    result = validate_promotion_artifact(payload)
+
+    assert result.ok is False
+    assert "canonical_promotion_compatibility_fallback" in result.reason_codes
+    assert "canonical_promotion_bundle_not_promotion_grade" in result.reason_codes
+    assert "canonical_promotion_artifact_grade_not_promotion" in result.reason_codes
+    assert "canonical_promotion_typed_authority_plane_missing" in result.reason_codes
+    assert "canonical_promotion_typed_execution_provenance_missing" in result.reason_codes
+
+
+def test_canonical_promotion_rejects_dict_only_submit_evidence_even_when_hash_bound() -> None:
+    payload = _typed_payload()
+    submit = dict(payload["execution_submit_plan_evidence"])
+    submit.pop("schema_version")
+    submit.pop("authority_label")
+    submit["content_hash"] = "sha256:" + "b" * 64
+    payload["execution_submit_plan_evidence"] = submit
+    payload["execution_submit_plan_hash"] = sha256_prefixed(submit)
+
+    result = validate_promotion_artifact(payload)
+
+    assert result.ok is False
+    assert "canonical_promotion_dict_only_submit_evidence_not_authority" in result.reason_codes
 
 
 def test_canonical_promotion_rejects_missing_new_input_contract_hashes() -> None:

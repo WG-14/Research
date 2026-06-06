@@ -314,11 +314,40 @@ def _typed_evidence_failure_codes(
     if not isinstance(bundle_evidence, dict) or not isinstance(summary_evidence, dict):
         failures.append("canonical_promotion_forged_or_unverified_typed_evidence")
         return failures
+    if bundle_evidence.get("compatibility_fallback") is True:
+        failures.append("canonical_promotion_compatibility_fallback")
+    if bundle_evidence.get("promotion_grade") is False:
+        failures.append("canonical_promotion_bundle_not_promotion_grade")
+    if str(bundle_evidence.get("artifact_grade") or PROMOTION_ARTIFACT_GRADE) != PROMOTION_ARTIFACT_GRADE:
+        failures.append("canonical_promotion_artifact_grade_not_promotion")
+    if str(bundle_evidence.get("authority_plane") or PROMOTION_AUTHORITY_PLANE) != PROMOTION_AUTHORITY_PLANE:
+        failures.append("canonical_promotion_typed_authority_plane_missing")
+    if (
+        str(bundle_evidence.get("execution_evidence_source") or PROMOTION_EXECUTION_EVIDENCE_SOURCE)
+        != PROMOTION_EXECUTION_EVIDENCE_SOURCE
+    ):
+        failures.append("canonical_promotion_typed_execution_provenance_missing")
+    if bundle_evidence.get("live_authoritative") is True:
+        failures.append("canonical_promotion_research_bundle_claims_live_authority")
     if sha256_prefixed(bundle_evidence) != provenance.execution_plan_bundle_hash:
         failures.append("canonical_promotion_forged_or_unverified_typed_evidence")
     if sha256_prefixed(summary_evidence) != provenance.execution_summary_hash:
         failures.append("canonical_promotion_forged_or_unverified_typed_evidence")
     if isinstance(submit_evidence, dict):
+        if str(submit_evidence.get("authority_label") or "") != "ExecutionSubmitPlan.final_payload.v1":
+            failures.append("canonical_promotion_dict_only_submit_evidence_not_authority")
+        try:
+            submit_schema_version = int(submit_evidence.get("schema_version") or 0)
+        except (TypeError, ValueError):
+            submit_schema_version = 0
+        if submit_schema_version != 1:
+            failures.append("canonical_promotion_dict_only_submit_evidence_not_authority")
+        if submit_evidence.get("compatibility_fallback") is True:
+            failures.append("canonical_promotion_compatibility_fallback")
+        if submit_evidence.get("promotion_grade") is False:
+            failures.append("canonical_promotion_submit_plan_not_promotion_grade")
+        if str(submit_evidence.get("artifact_grade") or PROMOTION_ARTIFACT_GRADE) != PROMOTION_ARTIFACT_GRADE:
+            failures.append("canonical_promotion_artifact_grade_not_promotion")
         if sha256_prefixed(submit_evidence) != provenance.execution_submit_plan_hash:
             failures.append("canonical_promotion_forged_or_unverified_typed_evidence")
     elif isinstance(no_submit_proof, dict):

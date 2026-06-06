@@ -403,14 +403,23 @@ def _with_unit_pre_submit_risk_proof(plan: ExecutionSubmitPlan) -> ExecutionSubm
     return replace(plan, extra_payload=extra)
 
 
-def test_broker_boundary_blocks_strategy_position_buy_plan_in_live_real_order() -> None:
+@pytest.mark.parametrize(
+    "authority",
+    [
+        "configured_strategy_order_size",
+        "strategy_execution_intent",
+        "research_compatibility_execution_intent",
+        "residual_inventory_delta",
+    ],
+)
+def test_broker_boundary_blocks_strategy_position_buy_plan_in_live_real_order(authority: str) -> None:
     object.__setattr__(settings, "MODE", "live")
     object.__setattr__(settings, "LIVE_DRY_RUN", False)
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
     object.__setattr__(settings, "EXECUTION_ENGINE", "lot_native")
     plan = _final_submit_plan_payload(
         source="strategy_position",
-        authority="configured_strategy_order_size",
+        authority=authority,
         pre_submit_proof_status="not_required",
         portfolio_target_authoritative=False,
         portfolio_target_hash="",

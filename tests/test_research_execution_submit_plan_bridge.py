@@ -183,6 +183,13 @@ def test_research_backtest_bundle_blocks_zero_size_before_request() -> None:
     assert bundle.submit_plan.submit_expected is False
     assert bundle.compatibility_fallback is True
     assert bundle.promotion_grade is False
+    assert bundle.as_dict()["artifact_grade"] == "diagnostic_only"
+    assert bundle.as_dict()["authority_plane"] == "diagnostic_research_compatibility_only"
+    assert bundle.as_dict()["execution_evidence_source"] == "research_compatibility_fallback"
+    assert bundle.as_dict()["live_authoritative"] is False
+    assert bundle.submit_plan is not None
+    assert bundle.submit_plan.as_dict()["artifact_grade"] == "diagnostic_only"
+    assert bundle.submit_plan.as_dict()["authority_plane"] == "diagnostic_research_compatibility_only"
     assert bundle.recommended_next_action == "regenerate_research_decisions_with_typed_execution_submit_plan"
     assert execution_submit_plan_to_research_request(
         submit_plan=bundle.submit_plan,
@@ -244,6 +251,11 @@ def test_research_compatibility_fallback_evidence_is_not_promotion_grade() -> No
     assert evidence["compatibility_fallback"] is True
     assert evidence["research_compatibility_execution_fallback"] is True
     assert evidence["promotion_grade"] is False
+    assert evidence["artifact_grade"] == "diagnostic_only"
+    assert evidence["authority_plane"] == "diagnostic_research_compatibility_only"
+    assert evidence["execution_evidence_source"] == "research_compatibility_fallback"
+    assert evidence["promotion_rejection_reason"] == "compatibility_or_diagnostic_execution_evidence_not_promotion_grade"
+    assert evidence["live_authoritative"] is False
     assert evidence["execution_scope"] == "submit_plan_admission_only"
     assert evidence["scope_badge"] == "SUBMIT_PLAN_EQUIVALENCE_ONLY"
     assert evidence["recommended_next_action"] == "regenerate_research_decisions_with_typed_execution_submit_plan"
