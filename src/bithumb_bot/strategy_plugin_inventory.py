@@ -4,7 +4,20 @@ from dataclasses import dataclass
 import json
 from typing import Any
 
-from bithumb_bot.research.strategy_registry import list_research_strategy_plugins
+from bithumb_bot.research.strategy_registry import (
+    ResearchStrategyRegistryError,
+    list_research_strategy_plugins,
+    resolve_research_strategy_plugin,
+)
+
+
+SUPPORTED_STRATEGY_VALIDATION_TARGETS = (
+    "research_backtest",
+    "runtime_replay",
+    "runtime_decision",
+    "live_dry_run",
+    "live_real_order",
+)
 
 
 @dataclass(frozen=True)
@@ -89,6 +102,115 @@ def strategy_plugin_inventory_json() -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def build_strategy_target_verdict(
+    strategy: str,
+    target: str,
+) -> dict[str, Any]:
+    normalized_target = str(target or "").strip().lower()
+    if normalized_target not in SUPPORTED_STRATEGY_VALIDATION_TARGETS:
+        raise ValueError(f"strategy_validation_target_unsupported:{normalized_target}")
+    strategy_name = str(strategy or "").strip().lower()
+    if not strategy_name:
+        raise ValueError("strategy_validation_strategy_missing")
+    try:
+        plugin = resolve_research_strategy_plugin(strategy_name)
+    except ResearchStrategyRegistryError as exc:
+        return _unknown_strategy_verdict(strategy_name, normalized_target, str(exc))
+    payload = plugin.contract_payload()
+    operator_targets = dict(payload["operator_verdict"]["targets"])
+    static_verdict = dict(operator_targets[normalized_target])
+    required_evidence = _required_evidence_for_target(payload, normalized_target)
+    blocking_reasons = list(static_verdict.get("blocked_reasons") or [])
+    if normalized_target in {"live_dry_run", "live_real_order"} and bool(
+        payload["live_eligibility"]["approved_profile_required"]
+    ):
+        reason = f"approved_profile_required_for_strategy:{plugin.name}"
+        if reason not in blocking_reasons:
+            blocking_reasons.append(reason)
+    if normalized_target == "live_real_order" and not bool(payload["live_real_order_allowed"]):
+        reason = f"live_real_order_not_allowed_for_strategy:{plugin.name}:{payload['fail_closed_reason']}"
+        if reason not in blocking_reasons:
+            blocking_reasons.append(reason)
+    if normalized_target == "live_dry_run" and not bool(payload["live_dry_run_allowed"]):
+        reason = f"live_dry_run_not_allowed_for_strategy:{plugin.name}:{payload['fail_closed_reason']}"
+        if reason not in blocking_reasons:
+            blocking_reasons.append(reason)
+    allowed = bool(static_verdict.get("allowed")) and not blocking_reasons
+    return {
+        "strategy": plugin.name,
+        "authoring_level": payload["authoring_level"],
+        "capability_level": payload["capability_level"],
+        "target_runtime": normalized_target,
+        "allowed": bool(allowed),
+        "blocking_reasons": [] if allowed else sorted(set(str(item) for item in blocking_reasons)),
+        "next_required_action": "none"
+        if allowed
+        else _next_action_for_blocked_target(payload, normalized_target, blocking_reasons),
+        "required_evidence": required_evidence,
+        "supported_runtime_scope": payload["supported_runtime_scope"],
+    }
+
+
+def strategy_target_verdict_json(strategy: str, target: str) -> str:
+    return json.dumps(
+        build_strategy_target_verdict(strategy, target),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _required_evidence_for_target(payload: dict[str, Any], target: str) -> dict[str, bool]:
+    runtime_target = target in {"runtime_decision", "live_dry_run", "live_real_order"}
+    live_target = target in {"live_dry_run", "live_real_order"}
+    return {
+        "approved_profile": bool(live_target and payload["live_eligibility"]["approved_profile_required"]),
+        "runtime_contract_hash": bool(runtime_target),
+        "decision_evidence_contract": bool(runtime_target or target == "runtime_replay"),
+        "runtime_data_preflight": bool(runtime_target),
+        "risk_profile": bool(live_target),
+    }
+
+
+def _next_action_for_blocked_target(
+    payload: dict[str, Any],
+    target: str,
+    blocking_reasons: list[str],
+) -> str:
+    if any("approved_profile_required_for_strategy" in reason for reason in blocking_reasons):
+        return "supply_approved_profile"
+    if target == "runtime_replay":
+        return "add_replay_compatible_contract"
+    if target == "runtime_decision":
+        return "add_live_eligible_contract_for_runtime_or_live"
+    if target == "live_dry_run":
+        return "add_live_dry_run_capability"
+    if target == "live_real_order":
+        return "add_live_real_order_eligible_contract"
+    return str(payload.get("next_required_action") or "do_not_promote")
+
+
+def _unknown_strategy_verdict(strategy_name: str, target: str, reason: str) -> dict[str, Any]:
+    return {
+        "strategy": strategy_name,
+        "authoring_level": "unknown",
+        "capability_level": "unsupported",
+        "target_runtime": target,
+        "allowed": False,
+        "blocking_reasons": [f"strategy_plugin_not_registered:{strategy_name}:{reason}"],
+        "next_required_action": "register_strategy_plugin",
+        "required_evidence": _required_evidence_for_target(
+            {"live_eligibility": {"approved_profile_required": True}},
+            target,
+        ),
+        "supported_runtime_scope": {
+            "supported_runtime_scope": "multi_strategy_single_pair_single_interval",
+            "multi_pair_portfolio_supported": False,
+            "multi_interval_runtime_supported": False,
+        },
+    }
 
 
 def _strategy_plugin_sources_by_name() -> dict[str, StrategyPluginSource]:

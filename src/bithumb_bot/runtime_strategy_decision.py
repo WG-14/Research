@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Callable, Mapping, Protocol, runtime_checkable
@@ -404,7 +405,6 @@ class DecisionRunner:
             return None
         feature_snapshot = _project_runtime_feature_snapshot(
             adapter=adapter,
-            conn=conn,
             request=request,
             feature_snapshot=feature_snapshot,
         )
@@ -539,14 +539,15 @@ def promotion_adapter_supports_feature_snapshot(adapter: object) -> bool:
 def _project_runtime_feature_snapshot(
     *,
     adapter: object,
-    conn: object,
     request: RuntimeDecisionRequest,
     feature_snapshot: RuntimeFeatureSnapshot,
 ) -> RuntimeFeatureSnapshot | None:
     projector = getattr(adapter, "project_feature_snapshot", None)
     if not callable(projector):
         return feature_snapshot
-    projected = projector(conn, request, feature_snapshot)
+    if _has_db_bound_projector_method(adapter):
+        raise RuntimeError(f"promotion_runtime_adapter_db_bound_projector_forbidden:{request.strategy_name}")
+    projected = projector(request, feature_snapshot)
     if projected is None:
         return None
     if not isinstance(projected, RuntimeFeatureSnapshot):
@@ -558,6 +559,26 @@ def _has_db_bound_decide_method(adapter: object) -> bool:
     return callable(getattr(adapter, "decide", None)) or callable(
         getattr(adapter, "decide_database_snapshot", None)
     )
+
+
+def _has_db_bound_projector_method(adapter: object) -> bool:
+    projector = getattr(adapter, "project_feature_snapshot", None)
+    if not callable(projector):
+        return False
+    try:
+        signature = inspect.signature(projector)
+    except (TypeError, ValueError):
+        return True
+    positional = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.kind
+        in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }
+    ]
+    return len(positional) != 2
 
 
 def _attach_runtime_feature_snapshot_metadata(

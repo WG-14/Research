@@ -2,9 +2,9 @@
 
 Strategy authoring has three public levels:
 
-1. Level 1: research-only strategies for experiments and backtests
-2. Level 2: replay-compatible strategies that can prove deterministic read-only replay but are not live eligible
-3. Level 3: promotion-grade strategies with runtime adapters, approved-profile binding, and explicit execution capability gates
+1. Level 1: `level_1_research_only` strategies for experiments and backtests
+2. Level 2: `level_2_replay_compatible` strategies that can prove deterministic read-only replay but are not live eligible
+3. Level 3: `level_3_promotion_grade` strategies with runtime adapters, approved-profile binding, and explicit execution capability gates
 
 Live safety is not weakened by the research-only API. A strategy without a promotion extension fails closed for promotion export, runtime replay, live dry-run, and live real-order.
 Level 3 authoring does not mean unrestricted live dry-run or real-order eligibility. Live dry-run and real-order authority are separate operational capability fields and remain blocked unless the strategy contract explicitly allows them and the runtime supplies the required approved profile, evidence, and scope.
@@ -71,6 +71,21 @@ trading DB, broker credentials, order submission, or runtime artifact writes:
 ```bash
 uv run bithumb-bot strategy-plugin-inventory --json
 ```
+
+Operators can also request one target-specific verdict without combining nested
+inventory fields:
+
+```bash
+uv run bithumb-bot strategy-plugin-validate --strategy <name> --target <target> --json
+```
+
+Supported targets are `research_backtest`, `runtime_replay`,
+`runtime_decision`, `live_dry_run`, and `live_real_order`. The command is
+read-only: it does not open the trading DB, use broker or network APIs, submit
+orders, or write artifacts. It emits deterministic JSON with `allowed`,
+`blocking_reasons`, `next_required_action`, `required_evidence`, and the current
+supported runtime scope. Use this as the final static operator path before
+separate runtime/live preflight evidence.
 
 The strategy plugin inventory emits deterministic JSON sorted by strategy name.
 Each entry includes source attribution, built-in manifest object path when
@@ -213,12 +228,20 @@ paper legacy compatibility only and must not be required for strict runtime oper
 New strategies should not add strategy-specific fields to `Settings`.
 `STRATEGY_PARAMETERS_JSON` is the same paper legacy compatibility surface; it is
 not production authority for promotion, live dry-run, or live real-order runtime.
+These compatibility fallbacks live under the explicit
+`bithumb_bot.legacy_compat.runtime_parameters` boundary and may be invoked only
+by the central `ParameterAuthorityResolver`.
 
 Production runtime decisions must enter the adapter through
 `decide_feature_snapshot(request, feature_snapshot)`. DB-bound methods such as
 `decide(conn, ...)` and `decide_database_snapshot(conn, ...)` are compatibility
 or diagnostic surfaces only and are forbidden as promotion/live production
-decision authority.
+decision authority. Adapter-owned feature projectors must also be connection
+free: `project_feature_snapshot(request, feature_snapshot)`. A DB-bound
+`project_feature_snapshot(conn, request, feature_snapshot)` signature is rejected
+as promotion/live authority. Additional DB-backed data must be declared through
+runtime data requirements and supplied by the runtime data provider/preflight
+snapshot path.
 
 Structured runtime selection uses `RUNTIME_STRATEGY_SET_JSON` with
 `market_scope.mode="single_pair"` for the current runtime. Every active strategy

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -615,7 +614,10 @@ class ResearchStrategyPlugin:
                 "forbidden_production_decision_methods": [
                     "decide(conn, ...)",
                     "decide_database_snapshot(conn, ...)",
+                    "project_feature_snapshot(conn, request, feature_snapshot)",
                 ],
+                "feature_snapshot_projector_signature": "project_feature_snapshot(request, feature_snapshot)",
+                "db_bound_feature_snapshot_projector_allowed_in_promotion_live": False,
                 "promotion_runtime_decisions_supported": bool(
                     self.runtime_capabilities.promotion_runtime_decisions_supported
                 ),
@@ -1075,7 +1077,9 @@ def runtime_strategy_parameters_from_settings(strategy_name: str, cfg: object) -
         return parameters
     if plugin.runtime_parameter_adapter is None:
         raise ResearchStrategyRegistryError(f"runtime parameter extraction unsupported: {plugin.name}")
-    parameters = plugin.runtime_parameter_adapter.from_settings(cfg)
+    from bithumb_bot.legacy_compat.runtime_parameters import settings_derived_fallback
+
+    parameters = settings_derived_fallback(plugin.runtime_parameter_adapter, cfg).raw_parameters
     _assert_runtime_parameters_accepted(plugin=plugin, parameters=parameters)
     return parameters
 
@@ -1089,22 +1093,24 @@ def runtime_strategy_parameter_env_keys(strategy_name: str) -> tuple[str, ...]:
 
 def _strategy_parameters_json_from_env(env: dict[str, str]) -> dict[str, Any] | None:
     raw = str(env.get("STRATEGY_PARAMETERS_JSON") or "").strip()
-    return _parse_strategy_parameters_json(raw) if raw else None
+    return _paper_legacy_strategy_parameters_json(raw)
 
 
 def _strategy_parameters_json_from_settings(cfg: object) -> dict[str, Any] | None:
     raw = str(getattr(cfg, "STRATEGY_PARAMETERS_JSON", "") or "").strip()
-    return _parse_strategy_parameters_json(raw) if raw else None
+    return _paper_legacy_strategy_parameters_json(raw)
 
 
-def _parse_strategy_parameters_json(raw: str) -> dict[str, Any]:
+def _paper_legacy_strategy_parameters_json(raw: str) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    from bithumb_bot.legacy_compat.runtime_parameters import strategy_parameters_json_fallback
+
     try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ResearchStrategyRegistryError(f"strategy_parameters_json_invalid:{exc}") from exc
-    if not isinstance(payload, dict):
-        raise ResearchStrategyRegistryError("strategy_parameters_json_must_be_object")
-    return {str(key): value for key, value in payload.items()}
+        fallback = strategy_parameters_json_fallback(raw)
+    except RuntimeError as exc:
+        raise ResearchStrategyRegistryError(str(exc)) from exc
+    return None if fallback is None else dict(fallback.raw_parameters)
 
 
 def _assert_runtime_parameters_accepted(

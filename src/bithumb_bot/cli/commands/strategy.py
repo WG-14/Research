@@ -15,6 +15,13 @@ def _strategy_plugin_inventory(args: argparse.Namespace, context) -> int:
     return 0
 
 
+def _strategy_plugin_validate(args: argparse.Namespace, context) -> int:
+    from bithumb_bot.strategy_plugin_inventory import strategy_target_verdict_json
+
+    context.printer(strategy_target_verdict_json(args.strategy, args.target))
+    return 0
+
+
 def _strategy_sweep(args: argparse.Namespace, _context) -> None:
     from bithumb_bot.config import settings
     from bithumb_bot.reporting import parse_kst_date_range_to_ts_ms
@@ -80,6 +87,18 @@ def command_specs() -> list[CommandSpec]:
             json_output_supported=True,
         ),
         make_spec(
+            "strategy-plugin-validate",
+            domain="strategy",
+            handler=_strategy_plugin_validate,
+            help="print read-only target-specific strategy usability verdict as deterministic JSON",
+            description=(
+                "Read-only target-specific strategy verdict. Does not open the trading DB, "
+                "contact brokers, submit orders, or write runtime artifacts."
+            ),
+            build=_build_strategy_plugin_validate,
+            json_output_supported=True,
+        ),
+        make_spec(
             "strategy-sweep",
             domain="strategy",
             handler=_strategy_sweep,
@@ -95,6 +114,22 @@ def command_specs() -> list[CommandSpec]:
 
 
 def _build_strategy_plugin_inventory(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--json", action="store_true", help="emit deterministic JSON (default)")
+
+
+def _build_strategy_plugin_validate(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--strategy", required=True)
+    parser.add_argument(
+        "--target",
+        required=True,
+        choices=(
+            "research_backtest",
+            "runtime_replay",
+            "runtime_decision",
+            "live_dry_run",
+            "live_real_order",
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="emit deterministic JSON (default)")
 
 

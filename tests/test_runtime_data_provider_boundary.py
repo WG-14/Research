@@ -449,10 +449,24 @@ def test_canary_runtime_decision_uses_provider_snapshot_provenance() -> None:
     assert result.decision.final_signal == "BUY"
     assert result.base_context["feature_snapshot_hash"].startswith("sha256:")
     assert result.base_context["market_snapshot_hash"].startswith("sha256:")
+    assert result.base_context["runtime_decision_request_hash"].startswith("sha256:")
+    assert result.base_context["strategy_instance_id"]
+    assert result.base_context["scope_key_hash"].startswith("sha256:")
+    assert result.base_context["strategy_parameters_hash"].startswith("sha256:")
+    assert result.base_context["runtime_contract_hash"].startswith("sha256:")
+    assert result.base_context["plugin_contract_hash"].startswith("sha256:")
+    assert result.base_context["through_ts_ms"] == 1_700_000_180_000
+    assert result.base_context["runtime_data_contract_hash"].startswith("sha256:")
     provenance = result.base_context["strategy_evaluation_provenance"]
     assert isinstance(provenance, dict)
     assert provenance["feature_snapshot_hash"] == result.base_context["feature_snapshot_hash"]
     assert result.replay_fingerprint["feature_snapshot_hash"] == result.base_context["feature_snapshot_hash"]
+    assert result.replay_fingerprint["runtime_decision_request_hash"] == (
+        result.base_context["runtime_decision_request_hash"]
+    )
+    assert result.replay_fingerprint["runtime_data_contract_hash"] == (
+        result.base_context["runtime_data_contract_hash"]
+    )
     assert bundle.data_availability_report is not None
     assert bundle.data_availability_report.report_hash.startswith("sha256:")
     replay_metadata = bundle.as_dict()["results"][0]

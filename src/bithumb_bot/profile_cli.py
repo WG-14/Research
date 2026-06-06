@@ -679,14 +679,27 @@ def cmd_replay_decision(
         plugin = resolve_research_strategy_plugin(selected_strategy)
         if plugin.runtime_replay_builder is None or plugin.single_replay_bundle_builder is None:
             raise ValueError(f"replay_decision_unsupported_strategy:{selected_strategy or 'missing'}")
+        from bithumb_bot.runtime_strategy_set import ParameterAuthorityResolver, RuntimeStrategySpec
+
+        parameter_authority = ParameterAuthorityResolver(
+            settings_obj=settings,
+            authority_scope="paper_legacy",
+        ).resolve(
+            RuntimeStrategySpec(
+                selected_strategy,
+                pair=str(settings.PAIR),
+                interval=str(settings.INTERVAL),
+            ),
+            profile=None,
+            approved_profile_path=None,
+            approved_profile_hash=None,
+        )
         strategy = plugin.runtime_replay_builder(
             {
                 "strategy_name": selected_strategy,
                 "market": str(settings.PAIR),
                 "interval": str(settings.INTERVAL),
-                "strategy_parameters": plugin.runtime_parameter_adapter.from_settings(settings)
-                if plugin.runtime_parameter_adapter is not None
-                else {},
+                "strategy_parameters": dict(parameter_authority.materialized_parameters),
                 "cost_model": {
                     "fee_rate": float(settings.LIVE_FEE_RATE_ESTIMATE),
                     "slippage_bps": float(settings.STRATEGY_ENTRY_SLIPPAGE_BPS),

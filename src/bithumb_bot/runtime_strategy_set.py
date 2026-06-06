@@ -17,6 +17,12 @@ from .approved_profile import (
 )
 from .config import settings, validate_live_strategy_selection
 from .decision_equivalence import sha256_prefixed
+from .legacy_compat.runtime_parameters import (
+    PAPER_LEGACY_PARAMETER_SOURCE,
+    fallback_source_hash as _fallback_source_hash,
+    settings_derived_fallback,
+    strategy_parameters_json_fallback,
+)
 from .research.strategy_registry import (
     ResearchStrategyRegistryError,
     resolve_research_strategy_plugin,
@@ -96,16 +102,6 @@ def runtime_authority_scope_from_settings(settings_obj: object = settings) -> Ru
     if str(getattr(settings_obj, "STRATEGY_APPROVED_PROFILE_PATH", "") or "").strip():
         return "promotion"
     return "paper_legacy"
-
-
-def _fallback_source_hash(source: str, payload: Mapping[str, object]) -> str:
-    return sha256_prefixed(
-        {
-            "paper_legacy_compat": True,
-            "fallback_source": source,
-            "fallback_payload": dict(payload),
-        }
-    )
 
 
 def _optional_float(value: object) -> float | None:
@@ -1130,40 +1126,25 @@ class ParameterAuthorityResolver:
                 },
             )
         strict = self._strict_runtime_mode()
-        raw_json = str(getattr(self.settings_obj, "STRATEGY_PARAMETERS_JSON", "") or "").strip()
-        if raw_json:
+        legacy_json = strategy_parameters_json_fallback(
+            str(getattr(self.settings_obj, "STRATEGY_PARAMETERS_JSON", "") or "")
+        )
+        if legacy_json is not None:
             if strict:
                 raise RuntimeError(
                     f"strict_runtime_rejects_strategy_parameters_json_fallback:{spec.strategy_name}"
                 )
-            if str(spec.parameter_source or "").strip() not in {"", "paper_legacy_compat"}:
+            if str(spec.parameter_source or "").strip() not in {"", PAPER_LEGACY_PARAMETER_SOURCE}:
                 raise RuntimeError(
                     f"runtime_strategy_parameters_missing:{spec.strategy_name}"
                 )
-            try:
-                payload = json.loads(raw_json)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(f"strategy_parameters_json_invalid:{exc}") from exc
-            if not isinstance(payload, Mapping):
-                raise RuntimeError("strategy_parameters_json_must_be_object")
-            source = "paper_legacy_compat"
-            payload = {str(key): value for key, value in payload.items()}
+            audit = dict(legacy_json.audit)
+            audit["authority_scope"] = self.authority_scope
             return (
-                payload,
-                source,
+                dict(legacy_json.raw_parameters),
+                legacy_json.parameter_source,
                 True,
-                {
-                    "authority": "paper_legacy_compat",
-                    "authority_scope": self.authority_scope,
-                    "parameter_source": source,
-                    "legacy_fallback": "STRATEGY_PARAMETERS_JSON",
-                    "legacy_compatibility_used": True,
-                    "paper_legacy_compat": True,
-                    "fallback_source_hash": _fallback_source_hash(
-                        "STRATEGY_PARAMETERS_JSON",
-                        payload,
-                    ),
-                },
+                audit,
             )
         if plugin is not None and plugin.runtime_parameter_adapter is not None:
             if strict:
@@ -1172,24 +1153,14 @@ class ParameterAuthorityResolver:
                     f"{spec.strategy_name};"
                     f"strict_runtime_rejects_plugin_from_settings_fallback:{spec.strategy_name}"
                 )
-            source = "paper_legacy_compat"
-            payload = dict(plugin.runtime_parameter_adapter.from_settings(self.settings_obj))
+            legacy_settings = settings_derived_fallback(plugin.runtime_parameter_adapter, self.settings_obj)
+            audit = dict(legacy_settings.audit)
+            audit["authority_scope"] = self.authority_scope
             return (
-                payload,
-                source,
+                dict(legacy_settings.raw_parameters),
+                legacy_settings.parameter_source,
                 True,
-                {
-                    "authority": "paper_legacy_compat",
-                    "authority_scope": self.authority_scope,
-                    "parameter_source": source,
-                    "legacy_fallback": "runtime_parameter_adapter.from_settings",
-                    "legacy_compatibility_used": True,
-                    "paper_legacy_compat": True,
-                    "fallback_source_hash": _fallback_source_hash(
-                        "runtime_parameter_adapter.from_settings",
-                        payload,
-                    ),
-                },
+                audit,
             )
         raise RuntimeError(f"runtime_strategy_parameters_missing:{spec.strategy_name}")
 
@@ -1803,7 +1774,6 @@ class RuntimeStrategyDecisionCollector:
             )
             feature_snapshot = _project_runtime_feature_snapshot(
                 adapter=adapter,
-                conn=conn,
                 request=request,
                 feature_snapshot=feature_snapshot,
             )
@@ -1811,7 +1781,6 @@ class RuntimeStrategyDecisionCollector:
                 return None
             result = _decide_with_feature_snapshot(
                 adapter=adapter,
-                conn=conn,
                 request=request,
                 feature_snapshot=feature_snapshot,
             )
@@ -1870,11 +1839,9 @@ class RuntimeStrategyDecisionCollector:
 def _decide_with_feature_snapshot(
     *,
     adapter: PromotionRuntimeDecisionAdapter,
-    conn: object,
     request: RuntimeDecisionRequest,
     feature_snapshot: RuntimeFeatureSnapshot,
 ) -> RuntimeStrategyDecisionResult | None:
-    del conn
     feature_decider = getattr(adapter, "decide_feature_snapshot", None)
     if callable(feature_decider):
         return feature_decider(request, feature_snapshot)

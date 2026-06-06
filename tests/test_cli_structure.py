@@ -62,6 +62,7 @@ EXPECTED_COMMANDS = {
     "fee-diagnostics",
     "strategy-report",
     "strategy-plugin-inventory",
+    "strategy-plugin-validate",
     "experiment-report",
     "cash-drift-report",
     "decision-telemetry",
@@ -147,6 +148,7 @@ def test_command_registration_contains_expected_major_groups() -> None:
     ("command", "options"),
     [
         ("strategy-sweep", ["--short", "--long", "--edge-buffer", "--min-expected-edge", "--slippage-bps", "--json"]),
+        ("strategy-plugin-validate", ["--strategy", "--target", "--json"]),
         ("recover-order", ["--client-order-id", "--exchange-order-id", "--dry-run", "--yes"]),
         ("fee-gap-accounting-repair", ["--apply", "--yes", "--note"]),
         ("recovery-report", ["--json"]),
