@@ -178,6 +178,11 @@ class PortfolioTarget:
             "pre_cap_weighted_target_exposure_krw": self.conflict_resolution.get(
                 "pre_cap_weighted_target_exposure_krw"
             ),
+            "target_exposure_source": self.conflict_resolution.get("target_exposure_source", "unspecified"),
+            "allocation_target_source": self.conflict_resolution.get("allocation_target_source", "unspecified"),
+            "strict_target_exposure_required": bool(
+                self.conflict_resolution.get("strict_target_exposure_required", False)
+            ),
             "exposure_cap_krw": self.conflict_resolution.get("exposure_cap_krw"),
             "exposure_cap_applied": bool(self.conflict_resolution.get("exposure_cap_applied", False)),
             "exposure_cap_source": self.conflict_resolution.get("exposure_cap_source", "none"),

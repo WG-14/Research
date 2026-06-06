@@ -192,7 +192,12 @@ def _runtime_result(
     request: object | None = None,
 ) -> _RuntimeResult:
     decision = _decision(final_signal=signal, strategy_name=name)
-    request_spec = spec or RuntimeStrategySpec(name, strategy_instance_id=strategy_instance_id)
+    request_spec = spec or RuntimeStrategySpec(
+        name,
+        strategy_instance_id=strategy_instance_id,
+        pair="KRW-BTC",
+        interval="1m",
+    )
     actual_request = request or RuntimeDecisionRequestBuilder().build_for_spec(
         request_spec,
         through_ts_ms=candle_ts,
@@ -459,6 +464,115 @@ def test_runtime_strategy_set_resolver_reads_structured_strategy_contract(
         "CANARY_ORDER_REASON": "canary_json",
     }
     assert dict(sma_spec.parameters) == {"SMA_SHORT": 7, "SMA_LONG": 30}
+
+
+@pytest.mark.parametrize(
+    ("market_scope", "reason"),
+    [
+        ({"mode": "single_pair", "interval": "1m"}, "runtime_strategy_set_market_scope_missing:pair"),
+        ({"mode": "single_pair", "pair": "KRW-BTC"}, "runtime_strategy_set_market_scope_missing:interval"),
+    ],
+)
+def test_strict_runtime_strategy_set_requires_explicit_market_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    market_scope: dict[str, object],
+    reason: str,
+) -> None:
+    payload = {
+        "market_scope": market_scope,
+        "strategies": [
+            {
+                "strategy_name": "canary_non_sma",
+                "pair": "KRW-BTC",
+                "interval": "1m",
+                "desired_exposure_krw": 70_000.0,
+                "parameters": _complete_canary_parameters(),
+            }
+        ],
+    }
+    monkeypatch.setenv("RUNTIME_STRATEGY_SET_JSON", json.dumps(payload))
+    object.__setattr__(settings, "MODE", "live")
+    try:
+        with pytest.raises(ValueError, match=reason):
+            RuntimeStrategySetResolver().resolve()
+    finally:
+        object.__setattr__(settings, "MODE", "paper")
+
+
+@pytest.mark.parametrize(
+    ("strategy_payload", "reason"),
+    [
+        (
+            {"strategy_name": "canary_non_sma", "interval": "1m"},
+            "runtime_strategy_pair_missing:canary_non_sma",
+        ),
+        (
+            {"strategy_name": "canary_non_sma", "pair": "KRW-BTC"},
+            "runtime_strategy_interval_missing:canary_non_sma",
+        ),
+    ],
+)
+def test_strict_runtime_strategy_set_requires_explicit_or_bound_spec_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    strategy_payload: dict[str, object],
+    reason: str,
+) -> None:
+    payload = {
+        "market_scope": {"mode": "single_pair", "pair": "KRW-BTC", "interval": "1m"},
+        "strategies": [{**strategy_payload, "parameters": _complete_canary_parameters()}],
+    }
+    monkeypatch.setenv("RUNTIME_STRATEGY_SET_JSON", json.dumps(payload))
+    object.__setattr__(settings, "MODE", "live")
+    try:
+        with pytest.raises(ValueError, match=reason):
+            RuntimeStrategySetResolver().resolve()
+    finally:
+        object.__setattr__(settings, "MODE", "paper")
+
+
+def test_strict_runtime_strategy_set_allows_explicit_market_scope_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "market_scope": {"mode": "single_pair", "pair": "KRW-BTC", "interval": "1m"},
+        "strategies": [
+            {
+                "strategy_name": "canary_non_sma",
+                "bind_market_scope": True,
+                "desired_exposure_krw": 70_000.0,
+                "parameters": _complete_canary_parameters(),
+            }
+        ],
+    }
+    monkeypatch.setenv("RUNTIME_STRATEGY_SET_JSON", json.dumps(payload))
+    object.__setattr__(settings, "MODE", "live")
+    try:
+        strategy_set = RuntimeStrategySetResolver().resolve()
+    finally:
+        object.__setattr__(settings, "MODE", "paper")
+
+    spec = strategy_set.active_strategies[0]
+    assert spec.pair == "KRW-BTC"
+    assert spec.interval == "1m"
+    assert dict(spec.source_audit)["market_scope_binding_explicit"] is True
+    assert dict(spec.source_audit)["legacy_compatibility_used"] is False
+
+
+def test_paper_legacy_strategy_name_fallback_is_audited(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ACTIVE_STRATEGIES", raising=False)
+    monkeypatch.delenv("RUNTIME_STRATEGY_SET_JSON", raising=False)
+    old_strategy = settings.STRATEGY_NAME
+    try:
+        object.__setattr__(settings, "STRATEGY_NAME", "sma_with_filter")
+        strategy_set = RuntimeStrategySetResolver().resolve()
+    finally:
+        object.__setattr__(settings, "STRATEGY_NAME", old_strategy)
+
+    audit = dict(strategy_set.active_strategies[0].source_audit)
+    assert audit["legacy_compatibility_used"] is True
+    assert audit["pair_source"] == "settings.PAIR"
+    assert audit["interval_source"] == "settings.INTERVAL"
+    assert audit["market_scope_source"] == "settings"
 
 
 def test_multi_strategy_collector_executes_all_on_same_candle() -> None:
@@ -1304,6 +1418,134 @@ def test_planner_runtime_pair_uses_injected_scope_when_global_pair_changes(tmp_p
     assert result.persistence_context["allocation_target_pairs"] == ["KRW-BTC"]
     assert result.persistence_context["portfolio_target"]["pair"] == "KRW-BTC"
     assert result.persistence_context["portfolio_target"]["target_exposure_krw"] == pytest.approx(12_345.0)
+
+
+def test_strict_target_delta_rejects_missing_strategy_target_exposure() -> None:
+    from bithumb_bot.run_loop_execution_planner import ExecutionPlanner
+
+    @dataclass(frozen=True)
+    class _Settings:
+        PAIR: str = "KRW-BTC"
+        INTERVAL: str = "1m"
+        EXECUTION_ENGINE: str = "target_delta"
+        TARGET_EXPOSURE_KRW: float | None = 80_000.0
+        MAX_ORDER_KRW: float = 90_000.0
+        MODE: str = "paper"
+        LIVE_REAL_ORDER_ARMED: bool = False
+        LIVE_DRY_RUN: bool = True
+
+    old_engine = settings.EXECUTION_ENGINE
+    try:
+        object.__setattr__(settings, "EXECUTION_ENGINE", "target_delta")
+        planner = ExecutionPlanner(
+            settings_obj=_Settings(),
+            readiness_snapshot_builder=lambda _conn: _Readiness(_readiness(broker_qty=0.0)),
+            target_state_resolver=lambda *_args, **_kwargs: {
+                "previous_target_exposure_krw": 0.0,
+                "target_policy_metadata": {},
+            },
+        )
+        spec = RuntimeStrategySpec(
+            "canary_non_sma",
+            strategy_instance_id="buy",
+            pair="KRW-BTC",
+            interval="1m",
+            parameters=_complete_canary_parameters(),
+        )
+        bundle = RuntimeStrategyDecisionResultBundle(
+            strategy_set=RuntimeStrategySet(
+                source="RUNTIME_STRATEGY_SET_JSON",
+                market_scope=RuntimeMarketScope(mode="single_pair", pair="KRW-BTC", interval="1m"),
+                strategies=(spec,),
+            ),
+            results=(_runtime_result("BUY", "canary_non_sma", spec=spec),),
+        )
+        result = planner.plan_runtime_strategy_results(object(), bundle, updated_ts=456)
+    finally:
+        object.__setattr__(settings, "EXECUTION_ENGINE", old_engine)
+
+    assert result.planning_error is None
+    assert result.persistence_context["strict_target_exposure_required"] is True
+    assert result.persistence_context["target_exposure_source"] == "runtime_strategy_spec.desired_exposure_krw"
+    assert result.persistence_context["portfolio_target_authoritative"] is False
+    assert str(result.persistence_context["allocation_primary_block_reason"]).startswith(
+        "strict_target_exposure_missing:"
+    )
+    assert result.submit_plan is not None
+    assert result.submit_plan.submit_expected is False
+    assert result.submit_plan.block_reason.startswith("strict_target_exposure_missing:")
+
+
+def test_target_delta_submit_identity_uses_portfolio_target_pair_when_global_settings_change() -> None:
+    from bithumb_bot.run_loop_execution_planner import ExecutionPlanner
+
+    @dataclass(frozen=True)
+    class _Settings:
+        PAIR: str = "KRW-BTC"
+        INTERVAL: str = "1m"
+        EXECUTION_ENGINE: str = "target_delta"
+        TARGET_EXPOSURE_KRW: float | None = 80_000.0
+        MAX_ORDER_KRW: float = 90_000.0
+        MODE: str = "paper"
+        LIVE_REAL_ORDER_ARMED: bool = False
+        LIVE_DRY_RUN: bool = True
+
+    def _planned(global_pair: str) -> tuple[str, str, str, dict[str, object]]:
+        old_pair = settings.PAIR
+        old_interval = settings.INTERVAL
+        old_engine = settings.EXECUTION_ENGINE
+        try:
+            object.__setattr__(settings, "PAIR", global_pair)
+            object.__setattr__(settings, "INTERVAL", "30m")
+            object.__setattr__(settings, "EXECUTION_ENGINE", "target_delta")
+            planner = ExecutionPlanner(
+                settings_obj=_Settings(),
+                readiness_snapshot_builder=lambda _conn: _Readiness(_readiness(broker_qty=0.0)),
+                target_state_resolver=lambda *_args, **_kwargs: {
+                    "previous_target_exposure_krw": 0.0,
+                    "target_policy_metadata": {},
+                },
+            )
+            spec = RuntimeStrategySpec(
+                "canary_non_sma",
+                strategy_instance_id="buy",
+                pair="KRW-BTC",
+                interval="1m",
+                desired_exposure_krw=80_000.0,
+                parameters=_complete_canary_parameters(),
+            )
+            bundle = RuntimeStrategyDecisionResultBundle(
+                strategy_set=RuntimeStrategySet(
+                    source="RUNTIME_STRATEGY_SET_JSON",
+                    market_scope=RuntimeMarketScope(mode="single_pair", pair="KRW-BTC", interval="1m"),
+                    strategies=(spec,),
+                ),
+                results=(_runtime_result("BUY", "canary_non_sma", spec=spec),),
+            )
+            result = planner.plan_runtime_strategy_results(object(), bundle, updated_ts=456)
+        finally:
+            object.__setattr__(settings, "PAIR", old_pair)
+            object.__setattr__(settings, "INTERVAL", old_interval)
+            object.__setattr__(settings, "EXECUTION_ENGINE", old_engine)
+
+        assert result.submit_plan is not None
+        payload = result.submit_plan.as_dict()
+        return (
+            result.submit_plan.content_hash(),
+            str(payload["idempotency_key"]),
+            str(payload["authoritative_pair"]),
+            payload,
+        )
+
+    first_hash, first_key, first_pair, first_payload = _planned("KRW-ETH")
+    second_hash, second_key, second_pair, second_payload = _planned("KRW-XRP")
+
+    assert first_pair == "KRW-BTC"
+    assert second_pair == "KRW-BTC"
+    assert first_hash == second_hash
+    assert first_key == second_key
+    assert first_payload["portfolio_target_pair"] == "KRW-BTC"
+    assert first_payload["authoritative_pair"] == "KRW-BTC"
 
 
 def test_persist_target_position_state_uses_runtime_pair_not_global_pair(tmp_path) -> None:

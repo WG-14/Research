@@ -564,8 +564,8 @@ def test_live_multi_strategy_requires_spec_bound_approved_profiles(
         {
             "market_scope": {"mode": "single_pair", "pair": "KRW-BTC", "interval": settings.INTERVAL},
             "strategies": [
-                {"strategy_name": "safe_hold", "strategy_instance_id": "left"},
-                {"strategy_name": "safe_hold", "strategy_instance_id": "right"},
+                {"strategy_name": "safe_hold", "strategy_instance_id": "left", "bind_market_scope": True},
+                {"strategy_name": "safe_hold", "strategy_instance_id": "right", "bind_market_scope": True},
             ],
         }
     )
@@ -593,8 +593,8 @@ def test_global_profile_selector_rejected_for_live_multi_strategy(
         {
             "market_scope": {"mode": "single_pair", "pair": "KRW-BTC", "interval": settings.INTERVAL},
             "strategies": [
-                {"strategy_name": "safe_hold", "strategy_instance_id": "left"},
-                {"strategy_name": "safe_hold", "strategy_instance_id": "right"},
+                {"strategy_name": "safe_hold", "strategy_instance_id": "left", "bind_market_scope": True},
+                {"strategy_name": "safe_hold", "strategy_instance_id": "right", "bind_market_scope": True},
             ],
         }
     )

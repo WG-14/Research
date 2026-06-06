@@ -1745,7 +1745,7 @@ def test_explicit_multi_pair_portfolio_scope_fails_closed_until_supported() -> N
         RUNTIME_STRATEGY_SET_JSON=json.dumps(
             {
                 "market_scope": {"mode": "multi_pair_portfolio", "pair": "KRW-BTC", "interval": "1m"},
-                "strategies": [{"strategy_name": "safe_hold", "pair": "KRW-BTC"}],
+                "strategies": [{"strategy_name": "safe_hold", "pair": "KRW-BTC", "interval": "1m"}],
             }
         ),
     )
@@ -1776,7 +1776,7 @@ def test_market_scope_pair_must_match_settings_pair() -> None:
         RUNTIME_STRATEGY_SET_JSON=json.dumps(
             {
                 "market_scope": {"mode": "single_pair", "pair": "KRW-ETH", "interval": "1m"},
-                "strategies": [{"strategy_name": "safe_hold", "pair": "KRW-ETH"}],
+                "strategies": [{"strategy_name": "safe_hold", "pair": "KRW-ETH", "interval": "1m"}],
             }
         ),
     )
@@ -1795,14 +1795,14 @@ def test_strategy_pair_mismatch_reports_multi_pair_runtime_unsupported() -> None
         RUNTIME_STRATEGY_SET_JSON=json.dumps(
             {
                 "market_scope": {"mode": "single_pair", "pair": "KRW-BTC", "interval": "1m"},
-                "strategies": [{"strategy_name": "safe_hold", "pair": "KRW-ETH"}],
+                "strategies": [{"strategy_name": "safe_hold", "pair": "KRW-ETH", "interval": "1m"}],
             }
         ),
     )
 
     with pytest.raises(LiveModeValidationError) as exc:
         validate_runtime_strategy_set_selection(cfg)
-    assert "runtime_strategy_pair_mismatch:multi_pair_runtime_unsupported" in str(exc.value)
+    assert "runtime_strategy_pair_mismatch:safe_hold" in str(exc.value)
 
 
 def test_strategy_interval_mismatch_reports_single_interval_runtime_unsupported() -> None:
@@ -1820,7 +1820,7 @@ def test_strategy_interval_mismatch_reports_single_interval_runtime_unsupported(
 
     with pytest.raises(LiveModeValidationError) as exc:
         validate_runtime_strategy_set_selection(cfg)
-    assert "runtime_strategy_interval_mismatch:single_interval_runtime_unsupported" in str(exc.value)
+    assert "runtime_strategy_interval_mismatch:safe_hold" in str(exc.value)
 
 
 def test_market_scope_interval_mismatch_reports_single_interval_runtime_unsupported() -> None:
@@ -2213,8 +2213,8 @@ def test_profile_authority_context_is_typed_and_drives_builder_policy(
     strategy_set = RuntimeStrategySet(
         source="RUNTIME_STRATEGY_SET_JSON",
         strategies=(
-            RuntimeStrategySpec("canary_non_sma", strategy_instance_id="left"),
-            RuntimeStrategySpec("canary_non_sma", strategy_instance_id="right"),
+            RuntimeStrategySpec("canary_non_sma", strategy_instance_id="left", pair="KRW-BTC", interval="1m"),
+            RuntimeStrategySpec("canary_non_sma", strategy_instance_id="right", pair="KRW-BTC", interval="1m"),
         ),
     )
     cfg = replace(settings, MODE="live", LIVE_DRY_RUN=True, LIVE_REAL_ORDER_ARMED=False)
@@ -2230,7 +2230,7 @@ def test_profile_authority_context_is_typed_and_drives_builder_policy(
         match="spec_bound_approved_profile_path_missing_for_runtime_strategy:canary_non_sma",
     ):
         RuntimeDecisionRequestBuilder(settings_obj=cfg).with_authority_context(context).build_for_spec(
-            RuntimeStrategySpec("canary_non_sma", strategy_instance_id="left"),
+            RuntimeStrategySpec("canary_non_sma", strategy_instance_id="left", pair="KRW-BTC", interval="1m"),
             through_ts_ms=1_700_000_180_000,
         )
 
@@ -2297,12 +2297,16 @@ def test_live_multi_strategy_collector_materializes_spec_bound_requests_without_
             RuntimeStrategySpec(
                 "canary_non_sma",
                 strategy_instance_id="left",
+                pair="KRW-BTC",
+                interval="1m",
                 approved_profile_path="/tmp/live-left.json",
                 approved_profile_hash="sha256:left-live",
             ),
             RuntimeStrategySpec(
                 "canary_non_sma",
                 strategy_instance_id="right",
+                pair="KRW-BTC",
+                interval="1m",
                 approved_profile_path="/tmp/live-right.json",
                 approved_profile_hash="sha256:right-live",
             ),
@@ -2366,11 +2370,15 @@ def test_live_multi_strategy_collector_rejects_global_profile_substitution(
             RuntimeStrategySpec(
                 "canary_non_sma",
                 strategy_instance_id="left",
+                pair="KRW-BTC",
+                interval="1m",
                 approved_profile_hash="sha256:left",
             ),
             RuntimeStrategySpec(
                 "canary_non_sma",
                 strategy_instance_id="right",
+                pair="KRW-BTC",
+                interval="1m",
                 approved_profile_path="/tmp/right.json",
                 approved_profile_hash="sha256:right",
             ),

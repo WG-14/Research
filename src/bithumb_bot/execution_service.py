@@ -1483,6 +1483,34 @@ def _portfolio_target_authority_error(
     return None
 
 
+def _authoritative_target_pair_error(
+    *,
+    payload: Mapping[str, object],
+    portfolio_target: PortfolioTarget | None,
+    settings_pair: str,
+) -> str | None:
+    if portfolio_target is None:
+        return None
+    target_pair = str(portfolio_target.pair or "").strip()
+    if not target_pair:
+        return "portfolio_target_pair_missing"
+    runtime_pair = str(payload.get("runtime_pair") or "").strip()
+    if runtime_pair and runtime_pair != target_pair:
+        return "runtime_pair_portfolio_target_pair_mismatch"
+    active_specs = payload.get("active_strategy_set")
+    if isinstance(active_specs, list):
+        spec_pairs = {
+            str(item.get("pair") or "").strip()
+            for item in active_specs
+            if isinstance(item, Mapping) and str(item.get("pair") or "").strip()
+        }
+        if spec_pairs and spec_pairs != {target_pair}:
+            return "strategy_spec_pair_portfolio_target_pair_mismatch"
+    if _live_real_order_submit_plan_required() and settings_pair and settings_pair != target_pair:
+        return "settings_pair_portfolio_target_pair_mismatch"
+    return None
+
+
 def build_typed_execution_decision_summary(
     *,
     typed_input: TypedExecutionPlanningInput,
@@ -1617,12 +1645,24 @@ def _build_execution_decision_summary_from_authority_payload(
     exposure_boundary_artifact_hash = str(risk_decision["exposure_boundary_artifact_hash"])
 
     if bool(getattr(settings, "TARGET_EXECUTION_SHADOW", False)) or execution_engine == "target_delta":
-        execution_order_rules = resolve_execution_order_rules(payload, market=str(settings.PAIR))
+        settings_pair = str(getattr(settings, "PAIR", "") or "").strip()
+        authoritative_pair = (
+            str(portfolio_target.pair).strip()
+            if portfolio_target is not None
+            else str(payload.get("runtime_pair") or settings_pair).strip()
+        )
+        pair_authority_error = _authoritative_target_pair_error(
+            payload=payload,
+            portfolio_target=portfolio_target,
+            settings_pair=settings_pair,
+        )
+        execution_order_rules = resolve_execution_order_rules(payload, market=authoritative_pair)
         target_authority_error = _portfolio_target_authority_error(
             portfolio_target=portfolio_target,
             portfolio_target_hash=portfolio_target_hash,
             required=execution_engine == "target_delta" and bool(portfolio_target_required),
         )
+        target_authority_error = target_authority_error or pair_authority_error
         authoritative_target_exposure_krw = (
             None
             if portfolio_target is None or target_authority_error is not None
@@ -1661,7 +1701,7 @@ def _build_execution_decision_summary_from_authority_payload(
             target_sizing_dict: dict[str, object] | None = None
             if target_authority_error is None and target_decision.delta_side in {"BUY", "SELL"}:
                 target_sizing = build_target_delta_execution_sizing(
-                    pair=str(settings.PAIR),
+                    pair=authoritative_pair,
                     side=str(target_decision.delta_side),
                     desired_qty=target_decision.submit_qty,
                     market_price=float(target_decision.reference_price or 0.0),
@@ -1675,7 +1715,7 @@ def _build_execution_decision_summary_from_authority_payload(
             target_idempotency_key = None
             if target_sizing is not None and target_sizing.allowed:
                 target_idempotency_key = build_order_intent_key(
-                    symbol=str(settings.PAIR),
+                    symbol=authoritative_pair,
                     side=str(target_sizing.side),
                     strategy_context="target_delta",
                     intent_ts=_residual_intent_ts(payload),
@@ -1728,6 +1768,11 @@ def _build_execution_decision_summary_from_authority_payload(
                 "intent_type": "target_delta_rebalance",
                 "strategy_context": "target_delta",
                 "authority_source": "target_delta",
+                "authoritative_pair": authoritative_pair,
+                "portfolio_target_pair": None if portfolio_target is None else portfolio_target.pair,
+                "runtime_pair": str(payload.get("runtime_pair") or ""),
+                "pair_authority_source": "PortfolioTarget.pair",
+                "pair_authority_error": pair_authority_error,
                 "target_desired_qty": target_decision.submit_qty,
                 "target_exchange_constrained_qty": (
                     None if target_sizing is None else target_sizing.exchange_constrained_qty
@@ -1775,6 +1820,15 @@ def _build_execution_decision_summary_from_authority_payload(
                     False if portfolio_target is None else bool(portfolio_target.authoritative)
                 ),
                 "portfolio_target_hash": portfolio_target_hash,
+                "target_exposure_source": (
+                    None if portfolio_target is None else portfolio_target.as_dict().get("target_exposure_source")
+                ),
+                "allocation_target_source": (
+                    None if portfolio_target is None else portfolio_target.as_dict().get("allocation_target_source")
+                ),
+                "strict_target_exposure_required": (
+                    None if portfolio_target is None else portfolio_target.as_dict().get("strict_target_exposure_required")
+                ),
                 "portfolio_risk_decision": (
                     None if portfolio_target is None else portfolio_target.as_dict().get("portfolio_risk_decision")
                 ),

@@ -159,6 +159,7 @@ class RuntimeStrategySpec:
     risk_snapshot: Mapping[str, object] | None = None
     parameters: Mapping[str, object] | None = None
     runtime_adapter_config: Mapping[str, object] | None = None
+    source_audit: Mapping[str, object] | None = None
     approved_profile_path: str | None = None
     approved_profile_hash: str | None = None
     parameter_source: str | None = None
@@ -170,10 +171,10 @@ class RuntimeStrategySpec:
         name = str(self.strategy_name or "").strip().lower()
         if not name:
             raise ValueError("runtime_strategy_name_missing")
-        pair = str(self.pair or settings.PAIR).strip()
+        pair = str(self.pair or "").strip()
         if not pair:
             raise ValueError("runtime_strategy_pair_missing")
-        interval = str(self.interval or settings.INTERVAL).strip()
+        interval = str(self.interval or "").strip()
         if not interval:
             raise ValueError("runtime_strategy_interval_missing")
         weight = float(self.weight)
@@ -236,6 +237,11 @@ class RuntimeStrategySpec:
                 {str(key): value for key, value in dict(self.runtime_adapter_config or {}).items()}
             ),
         )
+        object.__setattr__(
+            self,
+            "source_audit",
+            MappingProxyType({str(key): value for key, value in dict(self.source_audit or {}).items()}),
+        )
 
     def as_dict(self) -> dict[str, object]:
         risk_decision = build_risk_decision_artifact(
@@ -275,6 +281,7 @@ class RuntimeStrategySpec:
             "risk_budget_legacy_marker": RISK_BUDGET_LEGACY_MARKER,
             "parameters": dict(self.parameters or {}),
             "runtime_adapter_config": dict(self.runtime_adapter_config or {}),
+            "source_audit": dict(self.source_audit or {}),
             "approved_profile_path": self.approved_profile_path,
             "approved_profile_hash": self.approved_profile_hash,
             "parameter_source": self.parameter_source,
@@ -294,8 +301,8 @@ class RuntimeMarketScope:
         mode = str(self.mode or "").strip().lower() or "single_pair"
         if mode not in {"single_pair", "multi_pair_portfolio"}:
             raise ValueError(f"runtime_market_scope_mode_unsupported:{mode}")
-        pair = str(self.pair or settings.PAIR).strip()
-        interval = str(self.interval or settings.INTERVAL).strip()
+        pair = str(self.pair or "").strip()
+        interval = str(self.interval or "").strip()
         if not pair:
             raise ValueError("runtime_market_scope_pair_missing")
         if not interval:
@@ -512,10 +519,18 @@ class RuntimeStrategySet:
     schema_version: int = 1
 
     def __post_init__(self) -> None:
-        scope = self.market_scope or RuntimeMarketScope()
         active = tuple(item for item in self.strategies if item.enabled)
         if not active:
             raise ValueError("runtime_strategy_set_empty")
+        scope = self.market_scope
+        if scope is None:
+            pairs = {str(item.pair) for item in active}
+            intervals = {str(item.interval) for item in active}
+            if len(pairs) != 1:
+                raise ValueError(MULTI_PAIR_RUNTIME_UNSUPPORTED_REASON)
+            if len(intervals) != 1:
+                raise ValueError(SINGLE_INTERVAL_RUNTIME_UNSUPPORTED_REASON)
+            scope = RuntimeMarketScope(pair=next(iter(pairs)), interval=next(iter(intervals)))
         seen: set[str] = set()
         for item in active:
             key = derive_strategy_instance_id(item)
@@ -706,7 +721,14 @@ class RuntimeStrategySetResolver:
         if raw_json:
             specs, market_scope = self._load_json_strategy_set(raw_json)
             return RuntimeStrategySet(
-                strategies=tuple(self._spec_from_mapping(item) for item in specs),
+                strategies=tuple(
+                    self._spec_from_mapping(
+                        item,
+                        market_scope=market_scope,
+                        structured_runtime_contract=True,
+                    )
+                    for item in specs
+                ),
                 source="RUNTIME_STRATEGY_SET_JSON",
                 market_scope=market_scope,
             )
@@ -739,10 +761,11 @@ class RuntimeStrategySetResolver:
 
     def _load_json_strategy_set(self, raw_json: str) -> tuple[list[Mapping[str, object]], RuntimeMarketScope]:
         payload = json.loads(raw_json)
-        market_scope_payload: Mapping[str, object] = {}
         live_like = (
             str(getattr(self._settings, "MODE", "") or "").strip().lower() == "live"
             or bool(getattr(self._settings, "LIVE_DRY_RUN", False))
+            or str(getattr(self._settings, "APPROVED_STRATEGY_PROFILE_PATH", "") or "").strip()
+            or str(getattr(self._settings, "STRATEGY_APPROVED_PROFILE_PATH", "") or "").strip()
         )
         if isinstance(payload, Mapping):
             strategies_payload = payload.get("strategies", ())
@@ -757,6 +780,13 @@ class RuntimeStrategySetResolver:
             payload = strategies_payload
         elif live_like:
             raise ValueError("runtime_strategy_set_json_object_required_for_live_like")
+        else:
+            market_scope_payload = {
+                "mode": "single_pair",
+                "pair": str(getattr(self._settings, "PAIR", "")),
+                "interval": str(getattr(self._settings, "INTERVAL", "")),
+                "source": "paper_legacy_list_form_settings_fallback",
+            }
         if not isinstance(payload, list):
             raise ValueError("runtime_strategy_set_json_must_be_list")
         specs: list[Mapping[str, object]] = []
@@ -764,30 +794,97 @@ class RuntimeStrategySetResolver:
             if not isinstance(item, Mapping):
                 raise ValueError("runtime_strategy_set_json_item_must_be_object")
             specs.append(item)
+        missing_scope = [
+            key for key in ("pair", "interval") if not str(market_scope_payload.get(key) or "").strip()
+        ]
+        if missing_scope:
+            raise ValueError(f"runtime_strategy_set_market_scope_missing:{','.join(missing_scope)}")
         return (
             specs,
             RuntimeMarketScope(
                 mode=str(market_scope_payload.get("mode", "single_pair")),
-                pair=str(market_scope_payload.get("pair") or getattr(self._settings, "PAIR", "")),
-                interval=str(market_scope_payload.get("interval") or getattr(self._settings, "INTERVAL", "")),
+                pair=str(market_scope_payload.get("pair") or ""),
+                interval=str(market_scope_payload.get("interval") or ""),
             ),
         )
 
     def _default_spec(self, strategy_name: str) -> RuntimeStrategySpec:
         target = getattr(self._settings, "TARGET_EXPOSURE_KRW", None)
+        target_source = "TARGET_EXPOSURE_KRW"
         if target is None:
             target = getattr(self._settings, "MAX_ORDER_KRW", None)
+            target_source = "MAX_ORDER_KRW"
         return RuntimeStrategySpec(
             strategy_name=strategy_name,
             pair=str(getattr(self._settings, "PAIR", "")),
             interval=str(getattr(self._settings, "INTERVAL", "")),
             desired_exposure_krw=_optional_float(target),
+            source_audit={
+                "legacy_compatibility_used": True,
+                "pair_source": "settings.PAIR",
+                "interval_source": "settings.INTERVAL",
+                "market_scope_source": "settings",
+                "target_exposure_source": target_source,
+                "allocation_target_source": target_source,
+            },
         )
 
-    def _spec_from_mapping(self, payload: Mapping[str, object]) -> RuntimeStrategySpec:
+    def _spec_from_mapping(
+        self,
+        payload: Mapping[str, object],
+        *,
+        market_scope: RuntimeMarketScope,
+        structured_runtime_contract: bool,
+    ) -> RuntimeStrategySpec:
         if "strategy_name" not in payload and "name" in payload:
             payload = {**dict(payload), "strategy_name": payload["name"]}
-        default = self._default_spec(str(payload.get("strategy_name", "")))
+        name = str(payload.get("strategy_name", ""))
+        explicit_pair = str(payload.get("pair") or "").strip()
+        explicit_interval = str(payload.get("interval") or "").strip()
+        bind_scope = bool(
+            payload.get("bind_market_scope")
+            or payload.get("use_market_scope")
+            or payload.get("market_scope_bound")
+        )
+        if structured_runtime_contract:
+            if not explicit_pair and not bind_scope:
+                raise ValueError(f"runtime_strategy_pair_missing:{name}")
+            if not explicit_interval and not bind_scope:
+                raise ValueError(f"runtime_strategy_interval_missing:{name}")
+            pair = explicit_pair or str(market_scope.pair)
+            interval = explicit_interval or str(market_scope.interval)
+            if pair != str(market_scope.pair):
+                raise ValueError(f"runtime_strategy_pair_mismatch:{name}")
+            if interval != str(market_scope.interval):
+                raise ValueError(f"runtime_strategy_interval_mismatch:{name}")
+            source_audit = {
+                "legacy_compatibility_used": False,
+                "pair_source": "runtime_strategy_spec.pair" if explicit_pair else "market_scope_binding",
+                "interval_source": "runtime_strategy_spec.interval" if explicit_interval else "market_scope_binding",
+                "market_scope_source": "RUNTIME_STRATEGY_SET_JSON.market_scope",
+                "market_scope_binding_explicit": bool(bind_scope),
+                "target_exposure_source": (
+                    "runtime_strategy_spec.desired_exposure_krw"
+                    if "desired_exposure_krw" in payload
+                    else "missing"
+                ),
+                "allocation_target_source": (
+                    "runtime_strategy_spec.desired_exposure_krw"
+                    if "desired_exposure_krw" in payload
+                    else "missing"
+                ),
+            }
+        else:
+            default = self._default_spec(name)
+            pair = explicit_pair or str(default.pair)
+            interval = explicit_interval or str(default.interval)
+            source_audit = {
+                **dict(default.source_audit or {}),
+                "pair_source": "runtime_strategy_spec.pair" if explicit_pair else "settings.PAIR",
+                "interval_source": "runtime_strategy_spec.interval" if explicit_interval else "settings.INTERVAL",
+                "market_scope_source": "paper_legacy_compatibility",
+            }
+        default = self._default_spec(name)
         return RuntimeStrategySpec(
             strategy_name=str(payload.get("strategy_name", default.strategy_name)),
             strategy_instance_id=(
@@ -795,8 +892,8 @@ class RuntimeStrategySetResolver:
                 or default.strategy_instance_id
             ),
             enabled=bool(payload.get("enabled", default.enabled)),
-            pair=str(payload.get("pair", default.pair)),
-            interval=str(payload.get("interval", default.interval)),
+            pair=pair,
+            interval=interval,
             priority=int(payload.get("priority", default.priority)),
             weight=float(payload.get("weight", default.weight)),
             desired_exposure_krw=payload.get("desired_exposure_krw", default.desired_exposure_krw),
@@ -825,6 +922,7 @@ class RuntimeStrategySetResolver:
                 if isinstance(payload.get("runtime_adapter_config"), Mapping)
                 else None
             ),
+            source_audit=source_audit,
             approved_profile_path=(
                 str(payload.get("approved_profile_path") or payload.get("profile_path") or "").strip()
                 or default.approved_profile_path

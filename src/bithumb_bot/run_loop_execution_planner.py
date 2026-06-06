@@ -270,14 +270,42 @@ class ExecutionAuthorityEnvelope:
         )
 
 
-def _allocator_target_exposure_krw(settings_obj: object = settings) -> float:
+def _allocator_target_exposure_authority(settings_obj: object = settings) -> tuple[float, str, bool]:
     explicit = getattr(settings_obj, "TARGET_EXPOSURE_KRW", None)
     if explicit is not None:
         try:
-            return max(0.0, float(explicit))
+            return max(0.0, float(explicit)), "TARGET_EXPOSURE_KRW", True
         except (TypeError, ValueError):
             pass
-    return max(0.0, float(getattr(settings_obj, "MAX_ORDER_KRW", 0.0) or 0.0))
+    return (
+        max(0.0, float(getattr(settings_obj, "MAX_ORDER_KRW", 0.0) or 0.0)),
+        "MAX_ORDER_KRW",
+        True,
+    )
+
+
+def _allocator_target_exposure_krw(settings_obj: object = settings) -> float:
+    exposure, _source, _legacy = _allocator_target_exposure_authority(settings_obj)
+    return exposure
+
+
+def _strict_target_exposure_required(
+    *,
+    settings_obj: object,
+    strategy_set: RuntimeStrategySet | None,
+) -> bool:
+    return bool(
+        run_loop_uses_target_delta(settings_obj)
+        and (
+            str(getattr(settings_obj, "MODE", "") or "").strip().lower() == "live"
+            or str(getattr(settings_obj, "APPROVED_STRATEGY_PROFILE_PATH", "") or "").strip()
+            or str(getattr(settings_obj, "STRATEGY_APPROVED_PROFILE_PATH", "") or "").strip()
+            or (
+                strategy_set is not None
+                and str(strategy_set.source or "").strip() == "RUNTIME_STRATEGY_SET_JSON"
+            )
+        )
+    )
 
 
 def _allocation_context_fields(decision, *, runtime_pair: str) -> dict[str, object]:
@@ -995,8 +1023,21 @@ class ExecutionPlanner:
                     target_policy_metadata = dict(target_resolution.get("target_policy_metadata", {}))
                     context.update(target_policy_metadata)
                     pre_allocation_target_resolution_applied = True
+            fallback_target_exposure, fallback_target_source, fallback_legacy = (
+                _allocator_target_exposure_authority(self.settings_obj)
+            )
+            strict_target_exposure = _strict_target_exposure_required(
+                settings_obj=self.settings_obj,
+                strategy_set=strategy_set,
+            )
             allocation_config = PortfolioAllocatorConfig(
-                target_exposure_krw=_allocator_target_exposure_krw(self.settings_obj),
+                target_exposure_krw=fallback_target_exposure,
+                target_exposure_source=(
+                    "runtime_strategy_spec.desired_exposure_krw"
+                    if strict_target_exposure
+                    else f"paper_legacy_compat:{fallback_target_source}"
+                ),
+                require_explicit_strategy_target_exposure=strict_target_exposure,
                 strategy_priorities=(
                     {}
                     if strategy_set is None
@@ -1008,6 +1049,16 @@ class ExecutionPlanner:
                     else {derive_strategy_instance_id(item): item.weight for item in strategy_set.active_strategies}
                 ),
             )
+            context.update(
+                {
+                    "target_exposure_source": allocation_config.target_exposure_source,
+                    "allocation_target_source": allocation_config.target_exposure_source,
+                    "strict_target_exposure_required": strict_target_exposure,
+                    "legacy_target_exposure_fallback_used": bool(
+                        fallback_legacy and not strict_target_exposure
+                    ),
+                }
+            )
             if runtime_result_bundle is None:
                 strategy_preference = strategy_decision_to_preference(
                     planning_input.strategy_decision,
@@ -1016,7 +1067,16 @@ class ExecutionPlanner:
                         context.get("strategy_instance_id")
                         or planning_input.strategy_decision.strategy_name
                     ),
-                    desired_exposure_krw=_allocator_target_exposure_krw(self.settings_obj),
+                    desired_exposure_krw=(
+                        None if strict_target_exposure else fallback_target_exposure
+                    ),
+                    metadata={
+                        "target_exposure_source": allocation_config.target_exposure_source,
+                        "allocation_target_source": allocation_config.target_exposure_source,
+                        "legacy_compatibility_used": bool(
+                            fallback_legacy and not strict_target_exposure
+                        ),
+                    },
                 )
                 preferences = (strategy_preference,)
             else:

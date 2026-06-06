@@ -192,6 +192,8 @@ class PortfolioAllocatorConfig:
     policy_name: str = "deterministic_priority_target_v1"
     policy_version: str = "1"
     target_exposure_krw: float = 0.0
+    target_exposure_source: str = "unspecified"
+    require_explicit_strategy_target_exposure: bool = False
     hold_policy: str = "maintain_previous_target"
     mixed_hold_policy: str = "active_signal_over_hold"
     conflict_policy: str = "fail_closed_equal_priority"
@@ -219,6 +221,11 @@ class PortfolioAllocatorConfig:
             "policy_name": self.policy_name,
             "policy_version": self.policy_version,
             "target_exposure_krw": float(self.target_exposure_krw),
+            "target_exposure_source": self.target_exposure_source,
+            "allocation_target_source": self.target_exposure_source,
+            "require_explicit_strategy_target_exposure": bool(
+                self.require_explicit_strategy_target_exposure
+            ),
             "hold_policy": self.hold_policy,
             "mixed_hold_policy": self.mixed_hold_policy,
             "conflict_policy": self.conflict_policy,
@@ -477,7 +484,27 @@ class PortfolioAllocator:
                     str(risk_block["strategy_risk_block_reason_code"]),
                     conflict_resolution=conflict_resolution,
                 )
-            target_exposure, cap_audit = self._buy_target_exposure(buy_contributions)
+            try:
+                target_exposure, cap_audit = self._buy_target_exposure(buy_contributions)
+            except ValueError as exc:
+                reason = str(exc) or "strict_target_exposure_missing"
+                conflict_resolution.update(
+                    {
+                        "target_exposure_source": self.config.target_exposure_source,
+                        "allocation_target_source": self.config.target_exposure_source,
+                        "strict_target_exposure_required": bool(
+                            self.config.require_explicit_strategy_target_exposure
+                        ),
+                    }
+                )
+                return self._blocked_target(
+                    pair,
+                    input_hash,
+                    config_hash,
+                    contribution_hash,
+                    reason,
+                    conflict_resolution=conflict_resolution,
+                )
             conflict_resolution.update(cap_audit)
             reason = "buy_weighted_target_from_allocator"
         elif selected_signal == "SELL":
@@ -526,12 +553,19 @@ class PortfolioAllocator:
 
     def _buy_target_exposure(self, contributions: tuple[StrategyContribution, ...]) -> tuple[float, dict[str, object]]:
         if not contributions:
+            if self.config.require_explicit_strategy_target_exposure:
+                raise ValueError("strict_target_exposure_missing")
             target = max(0.0, float(self.config.target_exposure_krw))
             risk_decision = build_risk_decision_artifact(
                 decision_context="portfolio_allocator_default_target"
             )
             return target, {
                 "pre_cap_weighted_target_exposure_krw": target,
+                "target_exposure_source": self.config.target_exposure_source,
+                "allocation_target_source": self.config.target_exposure_source,
+                "strict_target_exposure_required": bool(
+                    self.config.require_explicit_strategy_target_exposure
+                ),
                 "exposure_cap_krw": None,
                 "exposure_cap_applied": False,
                 "exposure_cap_source": "none",
@@ -550,6 +584,13 @@ class PortfolioAllocator:
         exposure_cap_present = False
         for item in contributions:
             weight = max(0.0, float(item.weight))
+            if (
+                self.config.require_explicit_strategy_target_exposure
+                and item.desired_exposure_krw is None
+            ):
+                raise ValueError(
+                    f"strict_target_exposure_missing:{item.strategy_instance_id}"
+                )
             exposure = (
                 float(item.desired_exposure_krw)
                 if item.desired_exposure_krw is not None
@@ -574,6 +615,19 @@ class PortfolioAllocator:
         )
         return max(0.0, float(target)), {
             "pre_cap_weighted_target_exposure_krw": max(0.0, float(pre_cap)),
+            "target_exposure_source": (
+                "runtime_strategy_spec.desired_exposure_krw"
+                if all(item.desired_exposure_krw is not None for item in contributions)
+                else self.config.target_exposure_source
+            ),
+            "allocation_target_source": (
+                "runtime_strategy_spec.desired_exposure_krw"
+                if all(item.desired_exposure_krw is not None for item in contributions)
+                else self.config.target_exposure_source
+            ),
+            "strict_target_exposure_required": bool(
+                self.config.require_explicit_strategy_target_exposure
+            ),
             "exposure_cap_krw": exposure_cap_total if exposure_cap_present else None,
             "exposure_cap_applied": cap_applied,
             "exposure_cap_source": "max_target_exposure_krw" if exposure_cap_present else "none",
