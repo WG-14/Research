@@ -4,6 +4,7 @@ from dataclasses import dataclass, field, replace
 from typing import Callable, Mapping
 
 from .config import settings
+from .canonical_decision import order_rules_snapshot_payload
 from .db_core import (
     create_or_get_budget_lock,
     create_or_get_order_lock,
@@ -1192,6 +1193,8 @@ class ExecutionPlanner:
                                     "runtime_contract_hash",
                                     "plugin_contract_hash",
                                     "runtime_decision_request_hash",
+                                    "runtime_scope_key",
+                                    "scope_key_hash",
                                     "parameter_source",
                                 )
                                 if key in result_context
@@ -1624,6 +1627,16 @@ def _build_execution_plan_batch_for_runtime_pair(
         runtime_pair = str(submit_plan.pair or "").strip()
     if not runtime_pair:
         runtime_pair = "unknown"
+    portfolio_target_payload = (
+        dict(context.get("portfolio_target") or {})
+        if isinstance(context.get("portfolio_target"), Mapping)
+        else {}
+    )
+    target_scope_hashes = tuple(
+        str(item).strip()
+        for item in (portfolio_target_payload.get("scope_key_hashes") or ())
+        if str(item).strip()
+    )
     portfolio_target_hash = str(
         context.get("portfolio_target_hash")
         or (submit_plan.portfolio_target_hash if submit_plan is not None else "")
@@ -1702,21 +1715,58 @@ def _build_execution_plan_batch_for_runtime_pair(
             "lock_status": "diagnostic_unpersisted" if not db_locking_available else "not_required",
             "evidence_hash": evidence_hash,
         }
-    pre_submit_hash = str(
+    execution_order_rules = resolve_execution_order_rules(dict(context), market=runtime_pair)
+    order_rule_snapshot = order_rules_snapshot_payload(
+        execution_order_rules.as_order_rules(),
+        pair=runtime_pair,
+    )
+    order_rule_snapshot_hash = sha256_prefixed(order_rule_snapshot)
+    order_rule_signature = sha256_prefixed(
+        {
+            "pair": runtime_pair,
+            "order_rule_snapshot_hash": order_rule_snapshot_hash,
+            "order_rule_authority_source": order_rule_snapshot.get("order_rule_authority_source"),
+            "order_rule_authority_source_mode": order_rule_snapshot.get("order_rule_authority_source_mode"),
+        }
+    )
+    raw_pre_submit_hash = str(
         context.get("pre_submit_risk_decision_hash")
         or (
             submit_plan.extra_payload.get("pre_submit_risk_decision_hash")
             if submit_plan is not None and isinstance(submit_plan.extra_payload, dict)
             else ""
         )
-        or sha256_prefixed({"pre_submit_risk": "not_applicable", "execution_submit_plan_hash": submit_hash})
+        or ""
+    ).strip()
+    pre_submit_required = bool(
+        (submit_plan is not None and bool(submit_plan.extra_payload.get("pre_submit_risk_required")))
+        or bool(context.get("pre_submit_risk_required"))
     )
+    pre_submit_not_required_reason = ""
+    pre_submit_finalization_required = False
+    pre_submit_status = str(context.get("pre_submit_risk_status") or "").strip()
+    if pre_submit_required and not raw_pre_submit_hash:
+        pre_submit_finalization_required = bool(submit_plan is not None and bool(submit_plan.submit_expected))
+        pre_submit_status = pre_submit_status or "pending_finalization"
+    elif not pre_submit_required:
+        if submit_plan is None:
+            pre_submit_not_required_reason = "no_submit_plan"
+        elif not bool(submit_plan.submit_expected):
+            pre_submit_not_required_reason = str(submit_plan.block_reason or "submit_not_expected")
+        else:
+            pre_submit_not_required_reason = "not_live_real_submit_path"
+        pre_submit_status = pre_submit_status or "not_required"
+    pre_submit_hash = raw_pre_submit_hash
     pair_plan = PairExecutionPlan(
         pair=runtime_pair,
-        scope_key_hash=str(context.get("scope_key_hash") or ""),
+        scope_key_hash=str(context.get("scope_key_hash") or (target_scope_hashes[0] if target_scope_hashes else "")),
+        scope_key_hashes=target_scope_hashes,
         portfolio_target_hash=portfolio_target_hash,
         execution_submit_plan_hash=submit_hash,
         execution_plan_hash=str(context.get("execution_plan_bundle_hash") or ""),
+        order_rule_snapshot_hash=order_rule_snapshot_hash,
+        order_rule_signature=order_rule_signature,
+        order_rule_snapshot=order_rule_snapshot,
         idempotency_key=idempotency_key,
         submit_authority_policy_hash=str(
             (submit_plan.submit_authority_policy_hash if submit_plan is not None else "")
@@ -1724,6 +1774,10 @@ def _build_execution_plan_batch_for_runtime_pair(
             or sha256_prefixed({"submit_authority_policy": "compatibility"})
         ),
         pre_submit_risk_decision_hash=pre_submit_hash,
+        pre_submit_risk_required=pre_submit_required,
+        pre_submit_risk_proof_status=pre_submit_status,
+        pre_submit_risk_not_required_reason=pre_submit_not_required_reason,
+        pre_submit_risk_finalization_required=pre_submit_finalization_required,
         submit_expected=False if submit_plan is None else bool(submit_plan.submit_expected),
         lock_evidence_hash=str(lock_evidence["evidence_hash"]),
         lock_type=str(lock_evidence["lock_type"]),
@@ -1731,6 +1785,13 @@ def _build_execution_plan_batch_for_runtime_pair(
         replay_evidence={
             "execution_submit_plan_hash": submit_hash,
             "portfolio_target_hash": portfolio_target_hash,
+            "scope_key_hashes": list(target_scope_hashes),
+            "order_rule_snapshot_hash": order_rule_snapshot_hash,
+            "order_rule_signature": order_rule_signature,
+            "pre_submit_risk_decision_hash": pre_submit_hash,
+            "pre_submit_risk_required": pre_submit_required,
+            "pre_submit_risk_not_required_reason": pre_submit_not_required_reason,
+            "pre_submit_risk_finalization_required": pre_submit_finalization_required,
             "submit_plan_source": "" if submit_plan is None else submit_plan.source,
             "submit_plan_authority": "" if submit_plan is None else submit_plan.authority,
         },
@@ -1742,6 +1803,9 @@ def _build_execution_plan_batch_for_runtime_pair(
         "pair_plan_hashes": [pair_plan.content_hash()],
         "lock_evidence_hashes": [str(lock_evidence["evidence_hash"])],
         "pre_submit_risk_decision_hash": pre_submit_hash,
+        "pre_submit_risk_required": pre_submit_required,
+        "pre_submit_risk_not_required_reason": pre_submit_not_required_reason,
+        "pre_submit_risk_finalization_required": pre_submit_finalization_required,
         "status": "ALLOW" if submit_plan is not None and bool(submit_plan.submit_expected) else "NOT_REQUIRED",
     }
     return ExecutionPlanBatch(

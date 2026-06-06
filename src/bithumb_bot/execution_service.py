@@ -602,6 +602,13 @@ def _attach_live_real_pre_submit_risk_proof(
             }
         )
         payload["content_hash"] = execution_submit_plan_payload_hash(payload)
+        from .execution_plan_batch import build_pre_submit_risk_finalization_artifact
+
+        finalization = build_pre_submit_risk_finalization_artifact(payload)
+        payload["pre_submit_risk_finalization_artifact"] = finalization
+        payload["pre_submit_risk_finalization_hash"] = finalization[
+            "pre_submit_risk_finalization_hash"
+        ]
         try:
             from .db_core import update_execution_plan_final_submit_payload
 
@@ -633,6 +640,13 @@ def _attach_live_real_pre_submit_risk_proof(
         return None
     payload.update(proof_fields)
     payload["content_hash"] = execution_submit_plan_payload_hash(payload)
+    from .execution_plan_batch import build_pre_submit_risk_finalization_artifact
+
+    finalization = build_pre_submit_risk_finalization_artifact(payload)
+    payload["pre_submit_risk_finalization_artifact"] = finalization
+    payload["pre_submit_risk_finalization_hash"] = finalization[
+        "pre_submit_risk_finalization_hash"
+    ]
     try:
         from .db_core import update_execution_plan_final_submit_payload
 
@@ -925,6 +939,18 @@ def _execution_batch_payload_extra(request: TypedExecutionRequest) -> dict[str, 
         "execution_plan_batch_id": str(getattr(batch, "batch_id", "") or ""),
         "pair_execution_plan_hash": pair_hash,
         "pair_execution_plan_pair": str(getattr(pair_plan, "pair", "") or ""),
+        "pair_execution_plan_pre_submit_risk_decision_hash": str(
+            getattr(pair_plan, "pre_submit_risk_decision_hash", "") or ""
+        ),
+        "pair_execution_plan_pre_submit_risk_finalization_required": bool(
+            getattr(pair_plan, "pre_submit_risk_finalization_required", False)
+        ),
+        "pair_execution_plan_order_rule_snapshot_hash": str(
+            getattr(pair_plan, "order_rule_snapshot_hash", "") or ""
+        ),
+        "pair_execution_plan_scope_key_hashes": list(
+            getattr(pair_plan, "scope_key_hashes", ()) or ()
+        ),
         "pair_execution_plan_lock_evidence_hash": str(
             getattr(pair_plan, "lock_evidence_hash", "") or ""
         ),

@@ -216,6 +216,8 @@ def _runtime_result(
         "approved_profile_hash": actual_request.approved_profile_hash,
         "runtime_contract_hash": actual_request.runtime_contract_hash,
         "plugin_contract_hash": actual_request.plugin_contract_hash,
+        "runtime_scope_key": actual_request.runtime_scope_key.as_dict(),
+        "scope_key_hash": actual_request.scope_key_hash,
         "through_ts_ms": candle_ts,
     }
     if authority_context:
@@ -1129,6 +1131,14 @@ def test_run_loop_multi_strategy_path_sends_multiple_preferences_to_allocator() 
         item["strategy_instance_id"]
         for item in result.persistence_context["runtime_strategy_result_contexts"]
     )
+    target_scope_hashes = result.persistence_context["portfolio_target"]["scope_key_hashes"]  # type: ignore[index]
+    assert len(target_scope_hashes) == 2
+    pair_plan = result.execution_plan_batch.pair_plans[0]  # type: ignore[union-attr]
+    assert pair_plan.scope_key_hashes == tuple(sorted(target_scope_hashes))
+    pair_payload = result.execution_plan_batch.as_dict()["pair_plans"][0]  # type: ignore[union-attr,index]
+    assert pair_payload["scope_key_hashes"] == sorted(target_scope_hashes)
+    assert pair_payload["order_rule_snapshot_hash"].startswith("sha256:")
+    assert pair_payload["pre_submit_risk_not_required_reason"] == "not_live_real_submit_path"
 
 
 def test_run_loop_multi_strategy_allocator_signal_overrides_representative_hold() -> None:

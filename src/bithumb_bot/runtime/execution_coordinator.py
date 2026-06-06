@@ -398,6 +398,27 @@ def _batch_selected_pair_plan_error(
         submit_hash = primary_plan.content_hash() if callable(getattr(primary_plan, "content_hash", None)) else ""
         if str(getattr(pair_plan, "execution_submit_plan_hash", "") or "") != submit_hash:
             return "execution_plan_batch_submit_plan_hash_mismatch"
+        if bool(getattr(primary_plan, "submit_expected", False)) and not tuple(
+            getattr(pair_plan, "scope_key_hashes", ()) or ()
+        ):
+            return "execution_plan_batch_scope_evidence_missing"
+        if bool(getattr(primary_plan, "submit_expected", False)) and not str(
+            getattr(pair_plan, "order_rule_snapshot_hash", "") or ""
+        ).strip():
+            return "execution_plan_batch_order_rule_evidence_missing"
+        if bool(getattr(primary_plan, "submit_expected", False)):
+            pre_submit_required = bool(getattr(pair_plan, "pre_submit_risk_required", False))
+            pre_submit_hash = str(getattr(pair_plan, "pre_submit_risk_decision_hash", "") or "").strip()
+            finalization_required = bool(
+                getattr(pair_plan, "pre_submit_risk_finalization_required", False)
+            )
+            not_required_reason = str(
+                getattr(pair_plan, "pre_submit_risk_not_required_reason", "") or ""
+            ).strip()
+            if pre_submit_required and not pre_submit_hash and not finalization_required:
+                return "execution_plan_batch_pre_submit_risk_proof_missing"
+            if not pre_submit_required and not not_required_reason:
+                return "execution_plan_batch_pre_submit_risk_not_required_reason_missing"
         if bool(getattr(primary_plan, "submit_expected", False)):
             if not str(getattr(pair_plan, "lock_evidence_hash", "") or "").strip():
                 return "execution_plan_batch_lock_evidence_missing"

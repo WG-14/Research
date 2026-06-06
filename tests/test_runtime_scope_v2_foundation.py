@@ -16,7 +16,10 @@ from bithumb_bot.db_core import (
 from bithumb_bot.execution_plan_batch import (
     ExecutionPlanBatch,
     PairExecutionPlan,
+    build_pre_submit_risk_finalization_artifact,
     reject_dict_only_batch_authority,
+    verify_pair_plan_replay_complete,
+    verify_pre_submit_risk_finalization_artifact,
 )
 from bithumb_bot.execution_service import ExecutionDecisionSummary, ExecutionSubmitPlan
 from bithumb_bot.runtime.decision_coordinator import DecisionCoordinator
@@ -171,14 +174,21 @@ def test_pair_aware_hold_missing_own_pair_previous_exposure_fails_closed() -> No
 
 
 def test_execution_plan_batch_hash_stability_and_dict_authority_rejection() -> None:
+    order_rule_snapshot = {"pair": "KRW-BTC", "min_qty": 0.0001, "min_notional_krw": 5000.0}
     pair_plan = PairExecutionPlan(
         pair="KRW-BTC",
         scope_key_hash=_scope().scope_key_hash(),
+        scope_key_hashes=(_scope().scope_key_hash(),),
         portfolio_target_hash="sha256:" + "a" * 64,
         execution_submit_plan_hash="sha256:" + "b" * 64,
         idempotency_key="idem-btc",
         submit_authority_policy_hash="sha256:" + "c" * 64,
         pre_submit_risk_decision_hash="sha256:" + "d" * 64,
+        pre_submit_risk_required=True,
+        pre_submit_risk_proof_status="allow",
+        order_rule_snapshot_hash="sha256:" + "9" * 64,
+        order_rule_signature="sha256:" + "8" * 64,
+        order_rule_snapshot=order_rule_snapshot,
     )
     batch = ExecutionPlanBatch(
         runtime_strategy_set_manifest_hash="sha256:" + "e" * 64,
@@ -195,8 +205,89 @@ def test_execution_plan_batch_hash_stability_and_dict_authority_rejection() -> N
         budget_lock_hash="sha256:" + "1" * 64,
     ).content_hash()
     assert batch.as_dict()["pair_plans"][0]["pair"] == "KRW-BTC"
+    assert batch.as_dict()["pair_plans"][0]["scope_key_hashes"] == [_scope().scope_key_hash()]
+    assert batch.as_dict()["pair_plans"][0]["order_rule_snapshot_hash"] == "sha256:" + "9" * 64
     with pytest.raises(TypeError, match="dict_only_execution_batch_not_authority"):
         reject_dict_only_batch_authority(batch.as_dict())
+
+
+def test_pair_execution_plan_scope_and_order_rule_evidence_are_hash_bound() -> None:
+    scope_hashes = (_scope(strategy_instance_id="s1").scope_key_hash(), _scope(strategy_instance_id="s2").scope_key_hash())
+    order_rule_snapshot = {"pair": "KRW-BTC", "min_qty": 0.0001, "min_notional_krw": 5000.0}
+    pair_plan = PairExecutionPlan(
+        pair="KRW-BTC",
+        scope_key_hashes=scope_hashes,
+        portfolio_target_hash="sha256:" + "a" * 64,
+        execution_submit_plan_hash="sha256:" + "b" * 64,
+        idempotency_key="idem-btc",
+        submit_authority_policy_hash="sha256:" + "c" * 64,
+        pre_submit_risk_decision_hash="sha256:" + "d" * 64,
+        pre_submit_risk_required=True,
+        pre_submit_risk_proof_status="allow",
+        order_rule_snapshot_hash="sha256:" + "9" * 64,
+        order_rule_signature="sha256:" + "8" * 64,
+        order_rule_snapshot=order_rule_snapshot,
+        submit_expected=True,
+        lock_evidence_hash="sha256:" + "e" * 64,
+        lock_type="quote_budget",
+        lock_status="active",
+    )
+    changed_order_rules = PairExecutionPlan(
+        **{
+            **pair_plan.as_dict(),
+            "order_rule_snapshot_hash": "sha256:" + "7" * 64,
+        }
+    )
+    assert pair_plan.as_dict()["scope_key_hashes"] == sorted(scope_hashes)
+    assert verify_pair_plan_replay_complete(pair_plan.as_dict())["status"] == "pass"
+    missing_scope = dict(pair_plan.as_dict())
+    missing_scope["scope_key_hashes"] = []
+    assert verify_pair_plan_replay_complete(missing_scope)["status"] == "fail"
+    assert "scope_key_hashes" in verify_pair_plan_replay_complete(missing_scope)["missing_fields"]
+    assert pair_plan.content_hash() != changed_order_rules.content_hash()
+
+
+def test_pair_execution_plan_rejects_submit_expected_missing_order_rule_evidence() -> None:
+    with pytest.raises(ValueError, match="pair_execution_plan_order_rule_evidence_missing"):
+        PairExecutionPlan(
+            pair="KRW-BTC",
+            scope_key_hashes=(_scope().scope_key_hash(),),
+            portfolio_target_hash="sha256:" + "a" * 64,
+            execution_submit_plan_hash="sha256:" + "b" * 64,
+            idempotency_key="idem-btc",
+            submit_authority_policy_hash="sha256:" + "c" * 64,
+            pre_submit_risk_decision_hash="sha256:" + "d" * 64,
+            pre_submit_risk_required=True,
+            pre_submit_risk_proof_status="allow",
+            submit_expected=True,
+        )
+
+
+def test_pre_submit_risk_finalization_artifact_detects_mismatch() -> None:
+    payload = {
+        "execution_plan_batch_hash": "sha256:" + "1" * 64,
+        "execution_plan_batch_id": "batch-1",
+        "pair_execution_plan_hash": "sha256:" + "2" * 64,
+        "pair_execution_plan_pair": "KRW-BTC",
+        "submit_plan_hash": "sha256:" + "3" * 64,
+        "content_hash": "sha256:" + "4" * 64,
+        "pre_submit_risk_decision_hash": "sha256:" + "5" * 64,
+        "pre_submit_risk_policy_hash": "sha256:" + "6" * 64,
+        "pre_submit_risk_input_hash": "sha256:" + "7" * 64,
+        "pre_submit_risk_evidence_hash": "sha256:" + "8" * 64,
+        "pre_submit_risk_plan_hash": "sha256:" + "3" * 64,
+    }
+    artifact = build_pre_submit_risk_finalization_artifact(payload)
+    final_payload = {
+        **payload,
+        "pre_submit_risk_finalization_artifact": artifact,
+        "pre_submit_risk_finalization_hash": artifact["pre_submit_risk_finalization_hash"],
+    }
+    assert verify_pre_submit_risk_finalization_artifact(final_payload)["status"] == "pass"
+    tampered = {**final_payload, "pre_submit_risk_decision_hash": "sha256:" + "9" * 64}
+    mismatch = verify_pre_submit_risk_finalization_artifact(tampered)
+    assert mismatch["status"] == "fail"
+    assert "pre_submit_risk_decision_hash" in mismatch["mismatch_reason"]
 
 
 def _submit_plan(*, idempotency_key: str = "idem-btc") -> ExecutionSubmitPlan:
@@ -244,13 +335,20 @@ def _summary(plan: ExecutionSubmitPlan) -> ExecutionDecisionSummary:
 
 
 def _batch_for_plan(plan: ExecutionSubmitPlan) -> ExecutionPlanBatch:
+    order_rule_snapshot = {"pair": "KRW-BTC", "min_qty": 0.0001, "min_notional_krw": 5000.0}
     pair_plan = PairExecutionPlan(
         pair="KRW-BTC",
+        scope_key_hashes=(_scope().scope_key_hash(),),
         portfolio_target_hash=str(plan.portfolio_target_hash),
         execution_submit_plan_hash=plan.content_hash(),
         idempotency_key=str(plan.idempotency_key),
         submit_authority_policy_hash=str(plan.submit_authority_policy_hash),
         pre_submit_risk_decision_hash="sha256:" + "d" * 64,
+        pre_submit_risk_required=True,
+        pre_submit_risk_proof_status="allow",
+        order_rule_snapshot_hash="sha256:" + "9" * 64,
+        order_rule_signature="sha256:" + "8" * 64,
+        order_rule_snapshot=order_rule_snapshot,
         lock_evidence_hash="sha256:" + "e" * 64,
         lock_type="quote_budget",
         lock_status="active",
