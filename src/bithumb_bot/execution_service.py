@@ -930,31 +930,74 @@ def _execution_batch_payload_extra(request: TypedExecutionRequest) -> dict[str, 
     if batch is None or not callable(getattr(batch, "content_hash", None)):
         return {}
     pair_plans = tuple(getattr(batch, "pair_plans", ()) or ())
-    if len(pair_plans) != 1:
+    if not pair_plans:
         return {}
-    pair_plan = pair_plans[0]
-    pair_hash = pair_plan.content_hash() if callable(getattr(pair_plan, "content_hash", None)) else ""
-    return {
+    pair_plan_hashes = [
+        pair_plan.content_hash() if callable(getattr(pair_plan, "content_hash", None)) else ""
+        for pair_plan in pair_plans
+    ]
+    pair_plan_payloads = [
+        {
+            "pair_execution_plan_hash": pair_hash,
+            "pair_execution_plan_pair": str(getattr(pair_plan, "pair", "") or ""),
+            "pair_execution_plan_pre_submit_risk_decision_hash": str(
+                getattr(pair_plan, "pre_submit_risk_decision_hash", "") or ""
+            ),
+            "pair_execution_plan_pre_submit_risk_finalization_required": bool(
+                getattr(pair_plan, "pre_submit_risk_finalization_required", False)
+            ),
+            "pair_execution_plan_order_rule_snapshot_hash": str(
+                getattr(pair_plan, "order_rule_snapshot_hash", "") or ""
+            ),
+            "pair_execution_plan_scope_key_hashes": list(
+                getattr(pair_plan, "scope_key_hashes", ()) or ()
+            ),
+            "pair_execution_plan_lock_evidence_hash": str(
+                getattr(pair_plan, "lock_evidence_hash", "") or ""
+            ),
+            "pair_execution_plan_lock_status": str(getattr(pair_plan, "lock_status", "") or ""),
+        }
+        for pair_plan, pair_hash in zip(pair_plans, pair_plan_hashes)
+    ]
+    primary_pair_plan = pair_plans[0]
+    primary_pair_hash = pair_plan_hashes[0]
+    payload = {
         "execution_plan_batch_hash": batch.content_hash(),
         "execution_plan_batch_id": str(getattr(batch, "batch_id", "") or ""),
-        "pair_execution_plan_hash": pair_hash,
-        "pair_execution_plan_pair": str(getattr(pair_plan, "pair", "") or ""),
+        "execution_plan_batch_pair_count": len(pair_plans),
+        "execution_plan_batch_pair_plan_hashes": pair_plan_hashes,
+        "execution_plan_batch_pair_plans": pair_plan_payloads,
+    }
+    if len(pair_plans) != 1:
+        payload.update(
+            {
+                "runtime_scope_mode": "multi_pair_portfolio",
+                "primary_submit_plan_compatibility_authority": False,
+            }
+        )
+        return payload
+    return {
+        **payload,
+        "runtime_scope_mode": "single_pair",
+        "primary_submit_plan_compatibility_authority": True,
+        "pair_execution_plan_hash": primary_pair_hash,
+        "pair_execution_plan_pair": str(getattr(primary_pair_plan, "pair", "") or ""),
         "pair_execution_plan_pre_submit_risk_decision_hash": str(
-            getattr(pair_plan, "pre_submit_risk_decision_hash", "") or ""
+            getattr(primary_pair_plan, "pre_submit_risk_decision_hash", "") or ""
         ),
         "pair_execution_plan_pre_submit_risk_finalization_required": bool(
-            getattr(pair_plan, "pre_submit_risk_finalization_required", False)
+            getattr(primary_pair_plan, "pre_submit_risk_finalization_required", False)
         ),
         "pair_execution_plan_order_rule_snapshot_hash": str(
-            getattr(pair_plan, "order_rule_snapshot_hash", "") or ""
+            getattr(primary_pair_plan, "order_rule_snapshot_hash", "") or ""
         ),
         "pair_execution_plan_scope_key_hashes": list(
-            getattr(pair_plan, "scope_key_hashes", ()) or ()
+            getattr(primary_pair_plan, "scope_key_hashes", ()) or ()
         ),
         "pair_execution_plan_lock_evidence_hash": str(
-            getattr(pair_plan, "lock_evidence_hash", "") or ""
+            getattr(primary_pair_plan, "lock_evidence_hash", "") or ""
         ),
-        "pair_execution_plan_lock_status": str(getattr(pair_plan, "lock_status", "") or ""),
+        "pair_execution_plan_lock_status": str(getattr(primary_pair_plan, "lock_status", "") or ""),
     }
 
 
