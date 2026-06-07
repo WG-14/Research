@@ -8,3 +8,4 @@ dependencies = ["bithumb-bot"]
 [project.entry-points."bithumb_bot.strategy_plugins"]
 example_research_only = "example_strategy_plugin:LEVEL_1_RESEARCH_ONLY_PLUGIN"
 example_replay_compatible = "example_strategy_plugin:LEVEL_2_REPLAY_COMPATIBLE_PLUGIN"
+example_promotion_grade = "example_strategy_plugin:LEVEL_3_PROMOTION_GRADE_PLUGIN"

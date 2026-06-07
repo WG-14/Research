@@ -1163,6 +1163,10 @@ class ParameterAuthorityResolver:
         approved_profile_path: str | None,
         approved_profile_hash: str | None,
     ) -> ParameterAuthority:
+        try:
+            resolve_research_strategy_plugin(spec.strategy_name)
+        except ResearchStrategyRegistryError as exc:
+            raise RuntimeError(f"runtime_strategy_plugin_unsupported:{spec.strategy_name}") from exc
         if profile is not None:
             raw_parameters = dict(profile["strategy_parameters"])
             parameter_source = "approved_profile"
@@ -1422,7 +1426,10 @@ class RuntimeDecisionRequestBuilder:
         self,
         spec: RuntimeStrategySpec,
     ) -> RuntimeStrategyInstance:
-        plugin = resolve_research_strategy_plugin(spec.strategy_name)
+        try:
+            plugin = resolve_research_strategy_plugin(spec.strategy_name)
+        except ResearchStrategyRegistryError as exc:
+            raise RuntimeError(f"runtime_strategy_plugin_unsupported:{spec.strategy_name}") from exc
         cfg = replace(self.settings_obj, STRATEGY_NAME=spec.strategy_name)
         authority_context = self._authority_context()
         live_like = str(getattr(self.settings_obj, "MODE", "") or "").strip().lower() == "live"

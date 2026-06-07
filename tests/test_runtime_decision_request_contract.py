@@ -132,6 +132,50 @@ def _canary_spec(**overrides: object) -> RuntimeStrategySpec:
     )
 
 
+def test_unregistered_runtime_strategy_fails_without_legacy_fallback() -> None:
+    spec = RuntimeStrategySpec(
+        "unregistered_runtime_strategy",
+        pair="KRW-BTC",
+        interval="1m",
+        parameters={},
+    )
+
+    assert runtime_strategy_decision.get_runtime_decision_adapter(spec.strategy_name) is None
+    with pytest.raises(RuntimeError, match="runtime_strategy_plugin_unsupported:unregistered_runtime_strategy"):
+        RuntimeDecisionRequestBuilder().build_for_spec(spec, through_ts_ms=1_700_000_180_000)
+
+
+def test_unregistered_live_strategy_does_not_fall_back_to_settings_strategy() -> None:
+    cfg = replace(
+        settings,
+        MODE="live",
+        STRATEGY_NAME="canary_non_sma",
+        RUNTIME_STRATEGY_SET_JSON=json.dumps(
+            {
+                "market_scope": {"mode": "single_pair", "pair": "KRW-BTC", "interval": "1m"},
+                "strategies": [
+                    {
+                        "strategy_name": "unregistered_live_strategy",
+                        "pair": "KRW-BTC",
+                        "interval": "1m",
+                        "parameters": {},
+                    }
+                ],
+            }
+        ),
+    )
+
+    strategy_set = RuntimeStrategySetResolver(settings_obj=cfg).resolve()
+    spec = strategy_set.active_strategies[0]
+
+    assert spec.strategy_name == "unregistered_live_strategy"
+    with pytest.raises(RuntimeError, match="runtime_strategy_plugin_unsupported:unregistered_live_strategy"):
+        RuntimeDecisionRequestBuilder(settings_obj=cfg).build_for_spec(
+            spec,
+            through_ts_ms=1_700_000_180_000,
+        )
+
+
 def _conn() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row

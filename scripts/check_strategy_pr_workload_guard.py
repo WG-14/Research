@@ -26,6 +26,17 @@ REQUIRED_PR_TEMPLATE_TOKENS = (
     "builtin_manifest.py",
     "bithumb_bot.strategy_plugins",
     "strategy-plugin-inventory --json",
+    "registration path",
+    "builtin_manifest",
+    "external_entry_point",
+    "built-in reason",
+    "official_example",
+    "canary",
+    "fail_safe",
+    "maintained_baseline",
+    "approved_core_strategy",
+    "entry point group",
+    "inventory evidence",
     "list_research_strategy_plugins()",
     "resolve_research_strategy_plugin()",
     "common execution, risk, data, research, and runtime core paths remain strategy-neutral",
@@ -39,6 +50,7 @@ REQUIRED_PR_TEMPLATE_TOKENS = (
     "assert_live_eligible_contract",
     "architecture_review_required",
     "architecture_review_complete",
+    "architecture review marker",
 )
 
 REQUIRED_AUTHORING_DOC_TOKENS = (
@@ -51,6 +63,15 @@ REQUIRED_AUTHORING_DOC_TOKENS = (
     "lower-level contract",
     "builtin_manifest.py",
     "entry-point group",
+    "Registration Path",
+    "Built-in Reason",
+    "official_example",
+    "canary",
+    "fail_safe",
+    "maintained_baseline",
+    "approved_core_strategy",
+    "PLUGIN_REGISTRATION_INTENT",
+    "private_helper",
     "STRATEGY_PLUGINS",
     "strategy-plugin-inventory --json",
     "list_research_strategy_plugins()",
@@ -73,6 +94,13 @@ LEVEL_HELPERS = {
     ),
 }
 LEVEL_TOKENS = tuple(LEVEL_HELPERS) + ("not_strategy_related",)
+BUILTIN_REASON_TOKENS = (
+    "official_example",
+    "canary",
+    "fail_safe",
+    "maintained_baseline",
+    "approved_core_strategy",
+)
 CORE_PATH_PREFIXES = (
     "src/bithumb_bot/runtime_",
     "src/bithumb_bot/research/",
@@ -121,9 +149,21 @@ def validate_strategy_pr_evidence(
     ]
     if plugin_files:
         has_builtin_manifest = BUILTIN_MANIFEST in normalized_files or "builtin_manifest.py" in text
+        declares_builtin_path = "registration path: builtin_manifest" in text or has_builtin_manifest
         has_entry_point = "bithumb_bot.strategy_plugins" in text
+        declares_external_path = "registration path: external_entry_point" in text or has_entry_point
         if not (has_builtin_manifest or has_entry_point):
             violations.append("strategy plugin changes require built-in manifest or external entry-point evidence")
+        if not (declares_builtin_path or declares_external_path):
+            violations.append("strategy plugin changes require Registration Path evidence")
+        if "strategy-plugin-inventory --json" not in text:
+            violations.append("strategy plugin changes require inventory evidence")
+        if BUILTIN_MANIFEST in normalized_files:
+            builtin_reason = _extract_field_value(text, "built-in reason")
+            if builtin_reason not in BUILTIN_REASON_TOKENS:
+                violations.append("built-in strategy changes require valid Built-in Reason")
+        if declares_external_path and BUILTIN_MANIFEST in normalized_files:
+            violations.append("external entry-point strategy changes must not edit built-in manifest")
     if core_related and not (
         "architecture_review_required" in text or "architecture_review_complete" in text
     ):
@@ -131,6 +171,15 @@ def validate_strategy_pr_evidence(
     if "full default-fast research matrix" in text or "full default-fast research matrices added" in text:
         violations.append("default-fast research matrix expansion is not allowed")
     return violations
+
+
+def _extract_field_value(text: str, field: str) -> str:
+    prefix = f"{field}:"
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(prefix):
+            return stripped[len(prefix):].strip().split()[0] if stripped[len(prefix):].strip() else ""
+    return ""
 
 
 def _changed_files_from_args(args: argparse.Namespace, repo_root: Path) -> tuple[str, ...]:

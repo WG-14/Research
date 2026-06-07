@@ -17,6 +17,7 @@ from bithumb_bot.research.strategy_registry import (
     reload_research_strategy_plugins_for_tests,
     resolve_research_strategy_plugin,
 )
+from bithumb_bot.strategy_plugin_inventory import build_strategy_plugin_inventory
 from bithumb_bot.strategy_authoring import ReplayCompatibleStrategyPlugin
 from bithumb_bot.strategy_plugins.replay_threshold import (
     REPLAY_THRESHOLD_PLUGIN,
@@ -188,6 +189,104 @@ def test_entry_point_scaffold_documents_and_verifies_level_1_and_level_2(
         params={"EXAMPLE_REPLAY_CLOSE_ABOVE": 100.5},
         tmp_path=tmp_path,
     )
+
+
+def _load_example_strategy_plugin_module() -> Any:
+    module_path = Path("examples/strategy_plugin_package/example_strategy_plugin.py")
+    spec = importlib.util.spec_from_file_location("example_strategy_plugin", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["example_strategy_plugin"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_entry_point_scaffold_documents_and_verifies_level_3(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import bithumb_bot.strategy_plugins as strategy_plugins
+
+    pyproject = Path("examples/strategy_plugin_package/pyproject.toml").read_text(encoding="utf-8")
+    assert 'example_promotion_grade = "example_strategy_plugin:LEVEL_3_PROMOTION_GRADE_PLUGIN"' in pyproject
+    module = _load_example_strategy_plugin_module()
+    monkeypatch.setattr(
+        strategy_plugins.metadata,
+        "entry_points",
+        lambda: [
+            _FakeEntryPoint(
+                "example_promotion_grade",
+                "example_strategy_plugin:LEVEL_3_PROMOTION_GRADE_PLUGIN",
+                module.LEVEL_3_PROMOTION_GRADE_PLUGIN,
+            ),
+        ],
+    )
+
+    reload_research_strategy_plugins_for_tests(providers=(strategy_plugins.iter_entry_point_strategy_plugins,))
+    plugin = resolve_research_strategy_plugin("example_external_promotion_grade")
+
+    assert_live_eligible_contract(
+        plugin,
+        tmp_path=tmp_path,
+        params={"EXAMPLE_LEVEL_3_CLOSE_ABOVE": 100.5},
+        pair="KRW-BTC",
+        interval="1m",
+    )
+
+
+def test_level_3_external_entry_point_does_not_require_builtin_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import bithumb_bot.strategy_plugins as strategy_plugins
+    from bithumb_bot.strategy_plugins.builtin_manifest import iter_builtin_strategy_plugin_exports
+
+    module = _load_example_strategy_plugin_module()
+    monkeypatch.setattr(
+        strategy_plugins.metadata,
+        "entry_points",
+        lambda: [
+            _FakeEntryPoint(
+                "example_promotion_grade",
+                "example_strategy_plugin:LEVEL_3_PROMOTION_GRADE_PLUGIN",
+                module.LEVEL_3_PROMOTION_GRADE_PLUGIN,
+            ),
+        ],
+    )
+
+    reload_research_strategy_plugins_for_tests(providers=(strategy_plugins.iter_entry_point_strategy_plugins,))
+
+    manifest_paths = {item.object_path for item in iter_builtin_strategy_plugin_exports()}
+    assert "example_strategy_plugin:LEVEL_3_PROMOTION_GRADE_PLUGIN" not in manifest_paths
+    assert resolve_research_strategy_plugin("example_external_promotion_grade").name == (
+        "example_external_promotion_grade"
+    )
+
+
+def test_level_3_external_entry_point_inventory_source_is_entry_point(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import bithumb_bot.strategy_plugins as strategy_plugins
+
+    module = _load_example_strategy_plugin_module()
+    monkeypatch.setattr(
+        strategy_plugins.metadata,
+        "entry_points",
+        lambda: [
+            _FakeEntryPoint(
+                "example_promotion_grade",
+                "example_strategy_plugin:LEVEL_3_PROMOTION_GRADE_PLUGIN",
+                module.LEVEL_3_PROMOTION_GRADE_PLUGIN,
+            ),
+        ],
+    )
+
+    reload_research_strategy_plugins_for_tests(providers=(strategy_plugins.iter_entry_point_strategy_plugins,))
+    inventory = build_strategy_plugin_inventory()
+    by_name = {entry["name"]: entry for entry in inventory["strategies"]}
+
+    assert by_name["example_external_promotion_grade"]["source"] == "entry_point"
+    assert by_name["example_external_promotion_grade"]["entry_point_name"] == "example_promotion_grade"
 
 
 def test_level_3_live_eligible_contract_helper_covers_canary_example(tmp_path: Path) -> None:

@@ -90,12 +90,41 @@ so in-repo discovery remains explicit and reviewable.
 External packages must not edit the built-in manifest. They register through the
 `bithumb_bot.strategy_plugins` entry-point group in their package metadata.
 
+Built-in registration is reserved for strategies that are appropriate to carry
+inside the repository:
+
+- `official_example`
+- `canary`
+- `fail_safe`
+- `maintained_baseline`
+- `approved_core_strategy`
+
+Temporary experiments, organization-specific strategies, and personal research
+strategies should use external entry points instead of the built-in manifest.
+Strategy PR evidence must declare `Registration Path: builtin_manifest` with a
+valid `Built-in Reason` for built-in additions, or
+`Registration Path: external_entry_point` with
+`Entry Point Group: bithumb_bot.strategy_plugins` for external packages.
+
 Any public in-repo plugin export such as `*_PLUGIN`, `STRATEGY_PLUGIN`, or
 `STRATEGY_PLUGINS` must either appear in the built-in manifest or be explicitly
 allowlisted in the focused discovery guard test with a clear reason. A new
 built-in strategy is not complete until it appears in
 `list_research_strategy_plugins()` and can be resolved with
 `resolve_research_strategy_plugin()`.
+
+Plugin modules that construct public authoring objects must use the public
+export naming convention. A helper-only strategy module that contains a private
+authoring object and intentionally has no public plugin export must declare the
+fixed marker:
+
+```python
+PLUGIN_REGISTRATION_INTENT = "private_helper"
+```
+
+The marker must be non-empty and must not appear in a module that is also
+registered in `builtin_manifest.py`. This keeps helper modules reviewable
+without making them discoverable.
 
 Operators and reviewers can inspect the read-only discovery surface without a
 trading DB, broker credentials, order submission, or runtime artifact writes:
@@ -419,13 +448,21 @@ Minimal `pyproject.toml` shape:
 [project.entry-points."bithumb_bot.strategy_plugins"]
 my_research_strategy = "my_package.my_strategy:RESEARCH_ONLY_PLUGIN"
 my_replay_strategy = "my_package.my_strategy:REPLAY_COMPATIBLE_PLUGIN"
+my_promotion_grade_strategy = "my_package.my_strategy:LEVEL_3_PROMOTION_GRADE_PLUGIN"
 ```
 
 The repository scaffold in `examples/strategy_plugin_package/` includes Level 1
-and Level 2 examples. Use the public contract helpers to verify discovery,
-registration, generic backtest behavior, deterministic runtime replay, and
-fail-closed live gates. Entry-point plugins should keep runtime artifacts out of
-the repository and should not add strategy-specific fields to `Settings`.
+and Level 2 examples plus a Level 3 external promotion-grade scaffold. The
+Level 3 scaffold uses `build_live_eligible_strategy_plugin()` with
+`PromotionGradeStrategyExtension`, a runtime decision adapter, policy assembly,
+runtime replay support, and explicit live capability flags. It is discovered
+through package metadata only and must not modify `builtin_manifest.py`.
+
+Use the public contract helpers to verify discovery, registration, generic
+backtest behavior, deterministic runtime replay, promotion-grade runtime
+decisions, and fail-closed live gates. Entry-point plugins should keep runtime
+artifacts out of the repository and should not add strategy-specific fields to
+`Settings`.
 
 ## Canary Replay Sequence
 

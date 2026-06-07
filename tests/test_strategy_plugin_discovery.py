@@ -26,7 +26,10 @@ from bithumb_bot.research.strategy_registry import (
 )
 from bithumb_bot.research.strategy_spec import StrategySpec
 from bithumb_bot.strategy_evidence_contract import DecisionEvidenceContract
-from bithumb_bot.strategy_plugin_inventory import build_strategy_plugin_inventory
+from bithumb_bot.strategy_plugin_inventory import (
+    build_strategy_plugin_inventory,
+    build_strategy_target_verdict,
+)
 from bithumb_bot.strategy_plugins.builtin_manifest import (
     BuiltinStrategyPluginExport,
     iter_builtin_strategy_plugin_exports,
@@ -35,6 +38,17 @@ from bithumb_bot.strategy_plugins.builtin_manifest import (
 
 DYNAMIC_PLUGIN_NAME = "dynamic_entrypoint_unit"
 BUILTIN_PLUGIN_EXPORT_ALLOWLIST: dict[str, str] = {}
+PLUGIN_REGISTRATION_INTENT_MARKER = "PLUGIN_REGISTRATION_INTENT"
+PRIVATE_HELPER_REGISTRATION_INTENT = "private_helper"
+AUTHORING_FACTORY_NAMES = {
+    "ResearchOnlyStrategyPlugin",
+    "ReplayCompatibleStrategyPlugin",
+    "LiveEligibleStrategyPlugin",
+    "build_replay_compatible_strategy_plugin",
+    "build_live_eligible_strategy_plugin",
+    "research_plugin_from_decide_snapshot",
+    "research_plugin_from_event_builder",
+}
 
 
 @dataclass(frozen=True)
@@ -213,12 +227,15 @@ def _builtin_export_object_paths() -> set[str]:
     return {plugin_export.object_path for plugin_export in iter_builtin_strategy_plugin_exports()}
 
 
-def _iter_public_plugin_export_paths() -> set[str]:
-    root = Path("src/bithumb_bot/strategy_plugins")
+def _iter_public_plugin_export_paths(
+    root: Path = Path("src/bithumb_bot/strategy_plugins"),
+    *,
+    module_prefix: str = "bithumb_bot.strategy_plugins",
+) -> set[str]:
     export_paths: set[str] = set()
     for path in sorted(root.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.as_posix())
-        module = f"bithumb_bot.strategy_plugins.{path.stem}"
+        module = f"{module_prefix}.{path.stem}"
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
                 targets = node.targets
@@ -230,6 +247,79 @@ def _iter_public_plugin_export_paths() -> set[str]:
                 if isinstance(target, ast.Name) and _is_public_plugin_export_name(target.id):
                     export_paths.add(f"{module}:{target.id}")
     return export_paths
+
+
+def _module_registration_intent(tree: ast.AST) -> str | None:
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+        for target in targets:
+            if not isinstance(target, ast.Name) or target.id != PLUGIN_REGISTRATION_INTENT_MARKER:
+                continue
+            value = node.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                return value.value
+            return ""
+    return None
+
+
+def _call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def _is_authoring_object_assignment(node: ast.Assign | ast.AnnAssign) -> bool:
+    return isinstance(node.value, ast.Call) and _call_name(node.value.func) in AUTHORING_FACTORY_NAMES
+
+
+def _strategy_authoring_registration_intent_violations(
+    root: Path = Path("src/bithumb_bot/strategy_plugins"),
+    *,
+    module_prefix: str = "bithumb_bot.strategy_plugins",
+    manifest_exports: set[str] | None = None,
+) -> list[str]:
+    manifest_exports = _builtin_export_object_paths() if manifest_exports is None else set(manifest_exports)
+    public_exports_by_module: dict[str, set[str]] = {}
+    for export_path in _iter_public_plugin_export_paths(root, module_prefix=module_prefix):
+        module, _object_name = export_path.rsplit(":", 1)
+        public_exports_by_module.setdefault(module, set()).add(export_path)
+    violations: list[str] = []
+    for path in sorted(root.glob("*.py")):
+        rel = path.as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+        module = f"{module_prefix}.{path.stem}"
+        intent = _module_registration_intent(tree)
+        if intent is not None and not intent.strip():
+            violations.append(f"{rel}: empty {PLUGIN_REGISTRATION_INTENT_MARKER}")
+        public_exports = public_exports_by_module.get(module, set())
+        registered_public_exports = public_exports & manifest_exports
+        if intent == PRIVATE_HELPER_REGISTRATION_INTENT and registered_public_exports:
+            violations.append(f"{rel}: private helper intent conflicts with manifest registration")
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)) or not _is_authoring_object_assignment(node):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                export_path = f"{module}:{target.id}"
+                if _is_public_plugin_export_name(target.id):
+                    if export_path not in manifest_exports and export_path not in BUILTIN_PLUGIN_EXPORT_ALLOWLIST:
+                        violations.append(f"{rel}:{node.lineno}: public plugin export is not registered")
+                    continue
+                if target.id.startswith("_") and registered_public_exports:
+                    continue
+                if intent != PRIVATE_HELPER_REGISTRATION_INTENT:
+                    violations.append(
+                        f"{rel}:{node.lineno}: non-standard plugin authoring object "
+                        f"{target.id!r} requires {PLUGIN_REGISTRATION_INTENT_MARKER}="
+                        f"{PRIVATE_HELPER_REGISTRATION_INTENT!r}"
+                    )
+    return violations
 
 
 def _is_public_plugin_export_name(name: str) -> bool:
@@ -461,6 +551,61 @@ def test_strategy_plugin_inventory_cli_is_read_only_json_surface() -> None:
     assert payload == build_strategy_plugin_inventory()
 
 
+def test_strategy_plugin_validate_cli_is_read_only_json_surface() -> None:
+    from types import SimpleNamespace
+
+    from bithumb_bot.cli.context import AppContext
+    from bithumb_bot.cli.main import main
+    from bithumb_bot.cli.registry import command_registry
+
+    output: list[str] = []
+    spec = command_registry()["strategy-plugin-validate"]
+
+    assert spec.read_only is True
+    assert spec.mutating is False
+    assert spec.writes_db is False
+    assert spec.uses_broker is False
+    assert spec.produces_artifact is False
+    assert spec.json_output_supported is True
+
+    rc = main(
+        [
+            "strategy-plugin-validate",
+            "--strategy",
+            "unknown_strategy",
+            "--target",
+            "live_dry_run",
+            "--json",
+        ],
+        context=AppContext(settings=SimpleNamespace(MODE="paper"), printer=output.append),
+    )
+    payload = json.loads(output[0])
+
+    assert rc == 0
+    assert payload["allowed"] is False
+    assert payload["next_required_action"] == "register_strategy_plugin"
+    assert payload["blocking_reasons"][0].startswith("strategy_plugin_not_registered:unknown_strategy")
+
+
+def test_registered_strategy_does_not_imply_live_target_allowed() -> None:
+    inventory = build_strategy_plugin_inventory()
+    by_name = {entry["name"]: entry for entry in inventory["strategies"]}
+
+    assert by_name["threshold_research_only"]["operator_verdict"]["targets"]["live_dry_run"]["allowed"] is False
+    assert by_name["replay_threshold"]["runtime_replay_supported"] is True
+    assert by_name["replay_threshold"]["runtime_decision_supported"] is False
+    assert by_name["replay_threshold"]["operator_verdict"]["targets"]["live_real_order"]["allowed"] is False
+
+
+def test_unknown_strategy_target_verdict_is_register_strategy_plugin() -> None:
+    verdict = build_strategy_target_verdict("unknown_strategy", "live_dry_run")
+
+    assert verdict["strategy"] == "unknown_strategy"
+    assert verdict["allowed"] is False
+    assert verdict["next_required_action"] == "register_strategy_plugin"
+    assert verdict["blocking_reasons"][0].startswith("strategy_plugin_not_registered:unknown_strategy")
+
+
 def test_public_builtin_plugin_exports_must_be_registered_in_manifest() -> None:
     public_exports = _iter_public_plugin_export_paths()
     manifest_exports = _builtin_export_object_paths()
@@ -474,6 +619,109 @@ def test_public_builtin_plugin_exports_must_be_registered_in_manifest() -> None:
     assert undocumented_allowlist == []
     assert public_exports - manifest_exports - allowlisted_exports == set()
     assert manifest_exports <= public_exports
+
+
+def test_builtin_strategy_file_without_manifest_entry_fails_discovery_guard(tmp_path: Path) -> None:
+    root = tmp_path / "strategy_plugins"
+    root.mkdir()
+    (root / "new_strategy.py").write_text(
+        "\n".join(
+            (
+                "from bithumb_bot.strategy_authoring import research_plugin_from_decide_snapshot",
+                "NEW_STRATEGY_PLUGIN = research_plugin_from_decide_snapshot(",
+                "    strategy_name='new_strategy',",
+                "    version='new_strategy.v1',",
+                "    spec=object(),",
+                "    required_data=('candles',),",
+                "    decide_snapshot=lambda **_: {'signal': 'HOLD'},",
+                ")",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    violations = _strategy_authoring_registration_intent_violations(
+        root,
+        module_prefix="tests.strategy_plugins",
+        manifest_exports=set(),
+    )
+
+    assert violations
+    assert "public plugin export is not registered" in violations[0]
+
+
+def test_strategy_plugins_init_does_not_package_wide_auto_scan() -> None:
+    source = Path("src/bithumb_bot/strategy_plugins/__init__.py").read_text(encoding="utf-8")
+    forbidden = {
+        "pkgutil.iter_modules",
+        "iter_modules(",
+        "walk_packages(",
+        "rglob(",
+        "glob(",
+        "strategy_plugins.*",
+    }
+
+    assert {token for token in forbidden if token in source} == set()
+
+
+def test_strategy_plugin_modules_with_authoring_objects_declare_registration_intent() -> None:
+    assert _strategy_authoring_registration_intent_violations() == []
+
+
+def test_nonstandard_plugin_export_without_intent_fails(tmp_path: Path) -> None:
+    root = tmp_path / "strategy_plugins"
+    root.mkdir()
+    (root / "helper_strategy.py").write_text(
+        "\n".join(
+            (
+                "from bithumb_bot.strategy_authoring import research_plugin_from_decide_snapshot",
+                "MY_OBJECT = research_plugin_from_decide_snapshot(",
+                "    strategy_name='helper_strategy',",
+                "    version='helper_strategy.v1',",
+                "    spec=object(),",
+                "    required_data=('candles',),",
+                "    decide_snapshot=lambda **_: {'signal': 'HOLD'},",
+                ")",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    violations = _strategy_authoring_registration_intent_violations(
+        root,
+        module_prefix="tests.strategy_plugins",
+        manifest_exports=set(),
+    )
+
+    assert violations
+    assert "non-standard plugin authoring object" in violations[0]
+
+
+def test_private_helper_registration_intent_cannot_be_empty_or_manifest_registered(tmp_path: Path) -> None:
+    root = tmp_path / "strategy_plugins"
+    root.mkdir()
+    (root / "empty_intent.py").write_text(
+        f"{PLUGIN_REGISTRATION_INTENT_MARKER} = ''\n",
+        encoding="utf-8",
+    )
+    (root / "registered_helper.py").write_text(
+        "\n".join(
+            (
+                f"{PLUGIN_REGISTRATION_INTENT_MARKER} = 'private_helper'",
+                "REGISTERED_HELPER_PLUGIN = object()",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    violations = _strategy_authoring_registration_intent_violations(
+        root,
+        module_prefix="tests.strategy_plugins",
+        manifest_exports={"tests.strategy_plugins.registered_helper:REGISTERED_HELPER_PLUGIN"},
+    )
+
+    assert any("empty PLUGIN_REGISTRATION_INTENT" in violation for violation in violations)
+    assert any("private helper intent conflicts with manifest registration" in violation for violation in violations)
 
 
 def test_builtin_manifest_iterable_strategy_plugins_are_expanded(

@@ -6,10 +6,16 @@ from typing import Any
 from bithumb_bot.research.strategy_spec import StrategyParameterSchema
 from bithumb_bot.research.strategy_spec import StrategySpec
 from bithumb_bot.research.hashing import sha256_prefixed
+from bithumb_bot.runtime_decision_contract import RuntimeStrategyPolicyHashes
+from bithumb_bot.strategy_authoring import PromotionGradeStrategyExtension
 from bithumb_bot.strategy_authoring import ReplayCompatibleStrategyExtension
+from bithumb_bot.strategy_authoring import build_live_eligible_strategy_plugin
 from bithumb_bot.strategy_authoring import build_replay_compatible_strategy_plugin
 from bithumb_bot.strategy_authoring import research_plugin_from_decide_snapshot
 from bithumb_bot.strategy_evidence import StrategyDecisionEvidenceBuilder
+from bithumb_bot.strategy_evidence_contract import DecisionEvidenceContract
+from bithumb_bot.strategy_policy_contract import PositionSnapshot
+from bithumb_bot.strategy_policy_contract import StrategyDecisionV2
 
 
 LEVEL_1_SPEC = StrategySpec(
@@ -212,6 +218,250 @@ LEVEL_2_REPLAY_COMPATIBLE_PLUGIN = build_replay_compatible_strategy_plugin(
     extension=ReplayCompatibleStrategyExtension(
         runtime_replay_builder=_build_level_2_replay_strategy,
         parameter_materializer=_materialize_level_2,
+    ),
+)
+
+
+LEVEL_3_SPEC = StrategySpec(
+    strategy_name="example_external_promotion_grade",
+    strategy_version="example_external_promotion_grade.v1",
+    accepted_parameter_names=("EXAMPLE_LEVEL_3_CLOSE_ABOVE",),
+    required_parameter_names=("EXAMPLE_LEVEL_3_CLOSE_ABOVE",),
+    behavior_affecting_parameter_names=("EXAMPLE_LEVEL_3_CLOSE_ABOVE",),
+    metadata_only_parameter_names=(),
+    research_only_parameter_names=(),
+    default_parameters={},
+    decision_contract_version="example_external_promotion_grade.decision.v1",
+    required_data=("candles",),
+    optional_data=(),
+    exit_policy_schema={"schema_version": 1, "rules": ()},
+    parameter_schema=(
+        StrategyParameterSchema(
+            name="EXAMPLE_LEVEL_3_CLOSE_ABOVE",
+            value_type="float",
+            min_value=0.0,
+            required=True,
+            runtime_bound=True,
+            behavior_affecting=True,
+        ),
+    ),
+)
+
+
+def _materialize_level_3(parameters: dict[str, Any]) -> dict[str, Any]:
+    payload = {"EXAMPLE_LEVEL_3_CLOSE_ABOVE": float(parameters["EXAMPLE_LEVEL_3_CLOSE_ABOVE"])}
+    LEVEL_3_SPEC.validate_parameters(payload)
+    return payload
+
+
+def _decide_level_3_snapshot(
+    *,
+    candle: Any,
+    candle_index: int,
+    dataset: Any,
+    parameter_values: dict[str, Any],
+) -> dict[str, Any]:
+    parameters = _materialize_level_3(parameter_values)
+    signal = "BUY" if float(candle.close) > parameters["EXAMPLE_LEVEL_3_CLOSE_ABOVE"] else "HOLD"
+    return {
+        "signal": signal,
+        "reason": "example_level_3_decision",
+        "feature_snapshot": {"candle_index": int(candle_index), "close": float(candle.close)},
+    }
+
+
+@dataclass(frozen=True)
+class ExampleLevel3ReplayStrategy:
+    name: str = LEVEL_3_SPEC.strategy_name
+    market: str = ""
+    interval: str = ""
+    parameters: dict[str, Any] | None = None
+
+    def decide_runtime_snapshot(self, conn: Any, *, through_ts_ms: int | None = None) -> Any | None:
+        from bithumb_bot.strategy.base import StrategyDecision
+
+        row = conn.execute(
+            """
+            SELECT ts, close FROM candles
+            WHERE pair=? AND interval=? AND (? IS NULL OR ts<=?)
+            ORDER BY ts DESC LIMIT 1
+            """,
+            (self.market, self.interval, through_ts_ms, through_ts_ms),
+        ).fetchone()
+        if row is None:
+            return None
+        close = float(row["close"]) if hasattr(row, "keys") else float(row[1])
+        params = _materialize_level_3(dict(self.parameters or {}))
+        signal = "BUY" if close > params["EXAMPLE_LEVEL_3_CLOSE_ABOVE"] else "HOLD"
+        return StrategyDecision(
+            signal=signal,
+            reason="example_level_3_replay_decision",
+            context={"strategy": self.name, "final_signal": signal, "read_only_replay": True},
+        )
+
+
+def _build_level_3_replay_strategy(
+    profile: dict[str, Any],
+    candidate_regime_policy: dict[str, Any] | None = None,
+) -> ExampleLevel3ReplayStrategy:
+    del candidate_regime_policy
+    params = profile.get("strategy_parameters") if isinstance(profile.get("strategy_parameters"), dict) else {}
+    return ExampleLevel3ReplayStrategy(
+        market=str(profile.get("market") or ""),
+        interval=str(profile.get("interval") or ""),
+        parameters=_materialize_level_3(dict(params)),
+    )
+
+
+@dataclass(frozen=True)
+class ExampleLevel3PolicyAssembly:
+    strategy_name: str = LEVEL_3_SPEC.strategy_name
+    decision_contract_version: str = LEVEL_3_SPEC.decision_contract_version
+
+    def materialize_parameters(self, raw: dict[str, Any]) -> dict[str, Any]:
+        return _materialize_level_3(raw)
+
+
+@dataclass
+class ExampleLevel3RuntimeResult:
+    decision: StrategyDecisionV2
+    base_context: dict[str, object]
+    candle_ts: int
+    market_price: float
+    policy_hashes: RuntimeStrategyPolicyHashes
+    replay_fingerprint: dict[str, object]
+    boundary: dict[str, object]
+
+    def as_legacy_dict(self) -> dict[str, object]:
+        return dict(self.base_context)
+
+
+@dataclass(frozen=True)
+class ExampleLevel3RuntimeDecisionAdapter:
+    strategy_name: str = LEVEL_3_SPEC.strategy_name
+
+    def typed_authority_required(self) -> bool:
+        return True
+
+    def decide_feature_snapshot(self, request: Any, feature_snapshot: Any) -> ExampleLevel3RuntimeResult:
+        candle_ts = int(getattr(feature_snapshot, "candle_ts", None) or request.through_ts_ms or 0)
+        close = float(getattr(feature_snapshot, "close", None) or getattr(feature_snapshot, "last_close", None) or 0.0)
+        params = _materialize_level_3(dict(request.parameters))
+        signal = "BUY" if close > params["EXAMPLE_LEVEL_3_CLOSE_ABOVE"] else "HOLD"
+        policy_contract = {
+            "schema_version": 1,
+            "strategy_name": self.strategy_name,
+            "decision_contract_version": LEVEL_3_SPEC.decision_contract_version,
+        }
+        policy_input = {
+            "schema_version": 1,
+            "strategy_name": self.strategy_name,
+            "pair": request.pair,
+            "interval": request.interval,
+            "candle_ts": candle_ts,
+            "close": close,
+            "parameters": params,
+        }
+        policy_decision = {"schema_version": 1, "final_signal": signal}
+        policy_contract_hash = sha256_prefixed(policy_contract)
+        policy_input_hash = sha256_prefixed(policy_input)
+        policy_decision_hash = sha256_prefixed(policy_decision)
+        policy_hash = sha256_prefixed(
+            {
+                "policy_contract_hash": policy_contract_hash,
+                "policy_input_hash": policy_input_hash,
+                "policy_decision_hash": policy_decision_hash,
+            }
+        )
+        provenance = {
+            "decision_boundary": "StrategyDecisionService.evaluate",
+            "approved_profile_hash": str(request.approved_profile_hash or ""),
+            "runtime_contract_hash": str(request.runtime_contract_hash or ""),
+            "policy_input_hash": policy_input_hash,
+        }
+        decision = StrategyDecisionV2(
+            strategy_name=self.strategy_name,
+            raw_signal=signal,
+            raw_reason="example_level_3_runtime_decision",
+            entry_signal=signal if signal == "BUY" else "HOLD",
+            entry_reason="example_level_3_runtime_decision",
+            exit_signal="HOLD",
+            exit_reason="example_level_3_no_exit",
+            final_signal=signal,
+            final_reason="example_level_3_runtime_decision",
+            blocked_filters=(),
+            entry_blocked=False,
+            entry_block_reason=None,
+            exit_rule=None,
+            exit_evaluations=(),
+            protective_exit_overrode_entry=False,
+            exit_filter_suppression_prevented=False,
+            position_snapshot=PositionSnapshot(in_position=False, entry_allowed=True, exit_allowed=False),
+            execution_intent=None,
+            entry_decision=object(),  # type: ignore[arg-type]
+            trace={"strategy_evaluation_provenance": provenance},
+            policy_hash=policy_hash,
+            policy_contract_hash=policy_contract_hash,
+            policy_input_hash=policy_input_hash,
+            policy_decision_hash=policy_decision_hash,
+        )
+        replay_fingerprint = {
+            "schema_version": 1,
+            "strategy_name": self.strategy_name,
+            "candle_ts": candle_ts,
+            "replay_fingerprint_hash": sha256_prefixed(
+                {"strategy_name": self.strategy_name, "candle_ts": candle_ts, "policy_input_hash": policy_input_hash}
+            ),
+        }
+        return ExampleLevel3RuntimeResult(
+            decision=decision,
+            base_context={"market_price": close, "last_close": close},
+            candle_ts=candle_ts,
+            market_price=close,
+            policy_hashes=RuntimeStrategyPolicyHashes(
+                {
+                    "pure_policy_hash": policy_hash,
+                    "policy_contract_hash": policy_contract_hash,
+                    "policy_input_hash": policy_input_hash,
+                    "policy_decision_hash": policy_decision_hash,
+                }
+            ),
+            replay_fingerprint=replay_fingerprint,
+            boundary={"decision_boundary_phase": "example_external_promotion_grade"},
+        )
+
+
+def _level_3_runtime_adapter_factory() -> ExampleLevel3RuntimeDecisionAdapter:
+    return ExampleLevel3RuntimeDecisionAdapter()
+
+
+def _level_3_policy_assembly_factory() -> ExampleLevel3PolicyAssembly:
+    return ExampleLevel3PolicyAssembly()
+
+
+_LEVEL_3_RESEARCH_PLUGIN = research_plugin_from_decide_snapshot(
+    strategy_name=LEVEL_3_SPEC.strategy_name,
+    version=LEVEL_3_SPEC.strategy_version,
+    spec=LEVEL_3_SPEC,
+    required_data=LEVEL_3_SPEC.required_data,
+    decide_snapshot=_decide_level_3_snapshot,
+)
+
+
+LEVEL_3_PROMOTION_GRADE_PLUGIN = build_live_eligible_strategy_plugin(
+    research=_LEVEL_3_RESEARCH_PLUGIN,
+    extension=PromotionGradeStrategyExtension(
+        runtime_replay_builder=_build_level_3_replay_strategy,
+        runtime_parameter_adapter=None,
+        runtime_decision_adapter_factory=_level_3_runtime_adapter_factory,
+        policy_assembly_factory=_level_3_policy_assembly_factory,
+        live_dry_run_allowed=True,
+        live_real_order_allowed=False,
+        approved_profile_required=True,
+        fail_closed_reason="example_external_level_3_real_order_not_approved",
+        decision_evidence_contract=DecisionEvidenceContract(
+            required_promotion_provenance_fields=("policy_input_hash",),
+        ),
     ),
 )
 
