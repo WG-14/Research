@@ -195,6 +195,98 @@ def test_live_real_order_schema_valid_plan_still_requires_final_submit_payload()
 @pytest.mark.parametrize(
     ("source", "authority"),
     [
+        ("research_backtest", "research_compatibility_execution_intent"),
+        ("strategy_position", "strategy_execution_intent"),
+        ("strategy_position", "configured_strategy_order_size"),
+    ],
+)
+def test_live_real_order_submit_authority_matrix_rejects_legacy_buy_sources(
+    source: str,
+    authority: str,
+) -> None:
+    decision = evaluate_submit_authority_policy(
+        _plan(source=source, authority=authority).as_dict(),
+        settings_obj=_settings(mode="live", dry_run=False, armed=True),
+        plan_kind="buy",
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "live_real_order_buy_plan_rejected_target_delta_required"
+
+
+@pytest.mark.parametrize(
+    ("extra", "reason"),
+    [
+        ({"portfolio_target_authoritative": False}, "live_real_order_target_plan_missing_authoritative_portfolio_target"),
+        ({"portfolio_target_hash": ""}, "live_real_order_target_plan_missing_portfolio_target_hash"),
+        ({"allocation_decision_hash": ""}, "live_real_order_target_plan_missing_allocation_decision_hash"),
+        ({"strategy_contribution_hash": ""}, "live_real_order_target_plan_missing_strategy_contribution_hash"),
+    ],
+)
+def test_live_real_order_submit_authority_matrix_accepts_target_delta_only_with_required_hashes(
+    extra: dict[str, object],
+    reason: str,
+) -> None:
+    allowed = evaluate_submit_authority_policy(
+        _approved(_plan()).as_final_payload(),
+        settings_obj=_settings(mode="live", dry_run=False, armed=True),
+        plan_kind="target",
+    )
+    assert allowed.allowed is True
+    assert allowed.reason == "allowed_target_delta"
+
+    rejected = evaluate_submit_authority_policy(
+        _approved(_plan(extra=extra)).as_final_payload(),
+        settings_obj=_settings(mode="live", dry_run=False, armed=True),
+        plan_kind="target",
+    )
+    assert rejected.allowed is False
+    assert rejected.reason == reason
+
+
+@pytest.mark.parametrize(
+    ("side", "source", "authority", "residual_mode", "reason"),
+    [
+        ("SELL", "residual_inventory", "residual_inventory_policy", "enabled", "allowed_residual_inventory_policy"),
+        ("BUY", "residual_inventory", "residual_inventory_policy", "enabled", "live_real_order_residual_plan_invalid_side"),
+        ("SELL", "target_delta", "residual_inventory_policy", "enabled", "live_real_order_residual_plan_invalid_source"),
+        ("SELL", "residual_inventory", "strategy_execution_intent", "enabled", "live_real_order_residual_plan_invalid_authority"),
+        ("SELL", "residual_inventory", "residual_inventory_policy", "telemetry", "live_real_order_residual_policy_not_enabled"),
+    ],
+)
+def test_live_real_order_submit_authority_matrix_accepts_residual_sell_exception_only(
+    side: str,
+    source: str,
+    authority: str,
+    residual_mode: str,
+    reason: str,
+) -> None:
+    settings_obj = _settings(mode="live", dry_run=False, armed=True)
+    settings_obj.RESIDUAL_LIVE_SELL_MODE = residual_mode
+    decision = evaluate_submit_authority_policy(
+        _approved(_plan(side=side, source=source, authority=authority)).as_final_payload(),
+        settings_obj=settings_obj,
+        plan_kind="residual",
+    )
+
+    assert decision.allowed is (reason == "allowed_residual_inventory_policy")
+    assert decision.reason == reason
+
+
+def test_live_dry_run_submit_authority_is_non_submitting() -> None:
+    decision = evaluate_submit_authority_policy(
+        _approved(_plan()).as_final_payload(),
+        settings_obj=_settings(mode="live", dry_run=True, armed=False),
+        plan_kind="target",
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "live_dry_run_non_submitting"
+
+
+@pytest.mark.parametrize(
+    ("source", "authority"),
+    [
         ("strategy_position", "configured_strategy_order_size"),
         ("strategy_position", "strategy_execution_intent"),
         ("strategy_position", "research_compatibility_execution_intent"),

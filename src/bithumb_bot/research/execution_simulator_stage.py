@@ -117,10 +117,20 @@ class DefaultExecutionSimulator:
         policy_drives_execution = bool(request.policy_drives_execution)
         policy_decision = request.policy_decision
         plan_bundle = request.plan_bundle
+        override_used = False
+        override_source = ""
         if plan_bundle is None:
-            plan_bundle_builder = _compat_attr(
-                "_research_execution_plan_bundle",
-                _default_research_execution_plan_bundle,
+            plan_bundle_builder = (
+                _default_research_execution_plan_bundle
+                if promotion_grade_policy_required
+                else _research_test_compat_attr(
+                    "_research_execution_plan_bundle",
+                    _default_research_execution_plan_bundle,
+                )
+            )
+            override_used = plan_bundle_builder is not _default_research_execution_plan_bundle
+            override_source = (
+                "backtest_pipeline._research_execution_plan_bundle" if override_used else ""
             )
             plan_bundle = plan_bundle_builder(
                 side=action,
@@ -143,8 +153,24 @@ class DefaultExecutionSimulator:
         submit_plan = plan_bundle.submit_plan
         evidence = dict(request.execution_evidence or {})
         if not evidence:
-            evidence_builder = _compat_attr("_execution_plan_evidence", _default_execution_plan_evidence)
+            evidence_builder = (
+                _default_execution_plan_evidence
+                if promotion_grade_policy_required
+                else _research_test_compat_attr(
+                    "_execution_plan_evidence",
+                    _default_execution_plan_evidence,
+                )
+            )
+            override_used = override_used or evidence_builder is not _default_execution_plan_evidence
+            override_source = override_source or (
+                "backtest_pipeline._execution_plan_evidence"
+                if evidence_builder is not _default_execution_plan_evidence
+                else ""
+            )
             evidence = evidence_builder(plan_bundle)
+        if override_used:
+            evidence["planner_override_used"] = True
+            evidence["override_source"] = override_source
         if submit_plan is None:
             if promotion_grade_policy_required:
                 raise ValueError("research_submit_plan_missing")
@@ -194,7 +220,7 @@ class DefaultExecutionSimulator:
                 requested_notional=_positive_float_or_none(submit_plan.notional_krw),
             )
         else:
-            service_cls = _compat_attr("ResearchVirtualExecutionService", ResearchVirtualExecutionService)
+            service_cls = _research_test_compat_attr("ResearchVirtualExecutionService", ResearchVirtualExecutionService)
             fill = execute_research_signal_request(
                 service_cls=service_cls,
                 execution_model=model,
@@ -298,8 +324,7 @@ class DefaultExecutionSimulator:
 
 
 def blocked_execution_evidence(reason_code: str) -> dict[str, object]:
-    evidence_builder = _compat_attr("_execution_plan_evidence", _default_execution_plan_evidence)
-    return evidence_builder(
+    return _default_execution_plan_evidence(
         ResearchExecutionPlanBundle(
             submit_plan=None,
             summary=None,
@@ -320,7 +345,7 @@ def _positive_float_or_none(value: object) -> float | None:
     return parsed if parsed > 0.0 else None
 
 
-def _compat_attr(name: str, default: Any) -> Any:
+def _research_test_compat_attr(name: str, default: Any) -> Any:
     try:
         from . import backtest_pipeline
     except Exception:

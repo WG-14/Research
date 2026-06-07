@@ -1,0 +1,11 @@
+from __future__ import annotations
+
+DIAGNOSTIC_EXECUTION_AUTHORITY_PLANE = "diagnostic_research_compatibility_only"
+DIAGNOSTIC_EXECUTION_EVIDENCE_SOURCE = "research_compatibility_fallback"
+DIAGNOSTIC_EXECUTION_ARTIFACT_GRADE = "diagnostic_only"
+
+__all__ = [
+    "DIAGNOSTIC_EXECUTION_ARTIFACT_GRADE",
+    "DIAGNOSTIC_EXECUTION_AUTHORITY_PLANE",
+    "DIAGNOSTIC_EXECUTION_EVIDENCE_SOURCE",
+]

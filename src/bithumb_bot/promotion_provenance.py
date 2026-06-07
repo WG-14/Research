@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .promotion_evidence_verifier import verify_promotion_candidate_execution_evidence
+
 
 PROMOTION_ARTIFACT_GRADE = "promotion_candidate"
 DIAGNOSTIC_ARTIFACT_GRADE = "diagnostic_only"
@@ -152,14 +154,17 @@ class PromotionArtifact:
                 "execution_plan_bundle_hash": sha256_prefixed(bundle_payload),
                 "execution_plan_bundle_evidence": bundle_payload,
                 "typed_execution_summary_present": True,
+                "typed_submit_plan": submit_payload is not None,
                 "execution_summary_hash": sha256_prefixed(summary_payload),
                 "typed_execution_summary_evidence": summary_payload,
                 "execution_submit_plan_hash": submit_hash,
                 submit_evidence_key: submit_evidence,
                 "compatibility_fallback": False,
+                "research_compatibility_execution_fallback": False,
                 "legacy_context_planning_used": False,
                 "runtime_replay_planning_error": "",
                 "artifact_grade": PROMOTION_ARTIFACT_GRADE,
+                "promotion_grade": submit_payload is not None,
                 "promotion_rejection_reason": "",
             }
         )
@@ -180,6 +185,10 @@ def validate_promotion_artifact_provenance(
     provenance = PromotionArtifactProvenance.from_payload(payload)
     failures = promotion_provenance_failure_codes(provenance)
     failures.extend(_typed_evidence_failure_codes(payload, provenance))
+    failures.extend(
+        "canonical_" + reason
+        for reason in verify_promotion_candidate_execution_evidence(payload).reason_codes
+    )
     return PromotionProvenanceValidation(
         ok=not failures,
         reason_codes=tuple(sorted(set(failures))),

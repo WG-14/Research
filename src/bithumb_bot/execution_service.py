@@ -11,6 +11,10 @@ from .decision_contract import apply_decision_contract
 from .decision_context import resolve_canonical_position_exposure_snapshot
 from .decision_equivalence import sha256_prefixed
 from .execution_order_rules import resolve_execution_order_rules
+from .execution_submit_plan_schema import (
+    EXECUTION_SUBMIT_PLAN_SCHEMA_KNOWN_AUTHORITIES,
+    EXECUTION_SUBMIT_PLAN_SCHEMA_KNOWN_SOURCES,
+)
 from .observability import format_log_kv
 from .oms import build_order_intent_key
 from .order_sizing import build_target_delta_execution_sizing
@@ -451,27 +455,6 @@ class ExecutionSubmitPlan:
         )
         return payload
 
-# Schema-known values are broad serialization compatibility values, not live
-# submit allowlists. Live authorization is decided by submit_authority_policy.py.
-EXECUTION_SUBMIT_PLAN_SCHEMA_KNOWN_SOURCES = frozenset(
-    {
-        "target_delta",
-        "strategy_position",
-        "residual_inventory",
-        "research_backtest",
-    }
-)
-EXECUTION_SUBMIT_PLAN_SCHEMA_KNOWN_AUTHORITIES = frozenset(
-    {
-        "canonical_target_delta_sizing",
-        "configured_strategy_order_size",
-        "residual_inventory_policy",
-        "residual_inventory_delta",
-        "strategy_execution_intent",
-        "research_compatibility_execution_intent",
-        "target_position_delta",
-    }
-)
 EXECUTION_SUBMIT_PLAN_REQUIRED_FIELDS = frozenset(
     {
         "side",
@@ -680,12 +663,17 @@ def _attach_live_real_pre_submit_risk_proof(
     return payload
 
 
-def validate_execution_submit_plan_payload(
+def validate_execution_submit_plan_serialization(
     plan: dict[str, object] | None,
     *,
     field_name: str,
     require_final_payload: bool = False,
 ) -> None:
+    """Validate ExecutionSubmitPlan serialization/schema only.
+
+    This does not authorize live submission. Live and promotion submit authority
+    must be decided by submit_authority_policy.evaluate_submit_authority_policy().
+    """
     if plan is None:
         return
     missing = sorted(EXECUTION_SUBMIT_PLAN_REQUIRED_FIELDS.difference(plan))
@@ -728,6 +716,20 @@ def validate_execution_submit_plan_payload(
         expected_hash = execution_submit_plan_payload_hash(plan)
         if content_hash != expected_hash:
             raise ValueError(f"{field_name}_schema_content_hash_mismatch")
+
+
+def validate_execution_submit_plan_payload(
+    plan: dict[str, object] | None,
+    *,
+    field_name: str,
+    require_final_payload: bool = False,
+) -> None:
+    """Compatibility wrapper for serialization/schema validation only."""
+    validate_execution_submit_plan_serialization(
+        plan,
+        field_name=field_name,
+        require_final_payload=require_final_payload,
+    )
 
 
 def _log_live_submit_plan_block(

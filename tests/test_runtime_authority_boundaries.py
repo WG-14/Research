@@ -7,7 +7,14 @@ import pytest
 
 from bithumb_bot.runtime_data_provider import RuntimeFeatureSnapshot
 from bithumb_bot.runtime_strategy_decision import _project_runtime_feature_snapshot
-from bithumb_bot.runtime_strategy_set import ParameterAuthorityResolver, RuntimeStrategySpec
+from bithumb_bot.runtime_strategy_set import (
+    ParameterAuthorityResolver,
+    RuntimeMarketScope,
+    RuntimeStrategyInstance,
+    RuntimeStrategySet,
+    RuntimeStrategySpec,
+    normalized_runtime_strategy_set_manifest,
+)
 
 
 def test_production_runtime_modules_do_not_import_legacy_parameter_fallback_directly() -> None:
@@ -32,7 +39,6 @@ def test_production_runtime_modules_do_not_import_legacy_parameter_fallback_dire
 def test_production_live_modules_do_not_import_research_compatibility_planning() -> None:
     production_files = (
         "src/bithumb_bot/execution_service.py",
-        "src/bithumb_bot/submit_authority_policy.py",
         "src/bithumb_bot/broker/live.py",
         "src/bithumb_bot/run_loop_execution_planner.py",
     )
@@ -40,7 +46,9 @@ def test_production_live_modules_do_not_import_research_compatibility_planning()
         path
         for path in production_files
         if "research.execution_planning" in Path(path).read_text(encoding="utf-8")
+        or "compatibility_execution_planning" in Path(path).read_text(encoding="utf-8")
         or "_research_execution_submit_plan" in Path(path).read_text(encoding="utf-8")
+        or "research_compatibility_execution_intent" in Path(path).read_text(encoding="utf-8")
         or "strategy_parameters_json_fallback" in Path(path).read_text(encoding="utf-8")
         or "settings_derived_fallback" in Path(path).read_text(encoding="utf-8")
     ]
@@ -110,6 +118,106 @@ def test_paper_scope_allows_and_audits_strategy_parameters_json_fallback() -> No
     assert authority.legacy_compatibility_used is True
     assert dict(authority.source_audit_metadata)["authority_scope"] == "paper_legacy"
     assert dict(authority.source_audit_metadata)["legacy_fallback"] == "STRATEGY_PARAMETERS_JSON"
+
+
+def test_live_mode_rejects_strategy_parameters_json_even_in_paper_legacy_scope() -> None:
+    settings_obj = _settings_with_strategy_parameters_json(
+        '{"CANARY_ORDER_START_INDEX":0,"CANARY_ORDER_SIDE":"BUY","CANARY_ORDER_REASON":"unit"}'
+    )
+    settings_obj.MODE = "live"
+    resolver = ParameterAuthorityResolver(settings_obj=settings_obj, authority_scope="paper_legacy")
+
+    with pytest.raises(RuntimeError, match="strict_runtime_rejects_strategy_parameters_json_fallback"):
+        resolver.resolve(
+            RuntimeStrategySpec("canary_non_sma", parameters=None),
+            profile=None,
+            approved_profile_path=None,
+            approved_profile_hash=None,
+        )
+
+
+def test_approved_profile_path_rejects_strategy_parameters_json_fallback() -> None:
+    settings_obj = _settings_with_strategy_parameters_json(
+        '{"CANARY_ORDER_START_INDEX":0,"CANARY_ORDER_SIDE":"BUY","CANARY_ORDER_REASON":"unit"}'
+    )
+    settings_obj.APPROVED_STRATEGY_PROFILE_PATH = "/runtime/profiles/canary.json"
+    resolver = ParameterAuthorityResolver(settings_obj=settings_obj, authority_scope="paper_legacy")
+
+    with pytest.raises(RuntimeError, match="strict_runtime_rejects_strategy_parameters_json_fallback"):
+        resolver.resolve(
+            RuntimeStrategySpec("canary_non_sma", parameters=None),
+            profile=None,
+            approved_profile_path=None,
+            approved_profile_hash=None,
+        )
+
+
+@pytest.mark.parametrize(
+    "authority_scope",
+    ["promotion", "runtime_replay", "live_dry_run", "live_real_order"],
+)
+def test_non_paper_authority_scopes_reject_plugin_from_settings_fallback(
+    authority_scope: str,
+) -> None:
+    resolver = ParameterAuthorityResolver(
+        settings_obj=_settings_with_strategy_parameters_json(""),
+        authority_scope=authority_scope,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="strict_runtime_rejects_plugin_from_settings_fallback"):
+        resolver.resolve(
+            RuntimeStrategySpec("canary_non_sma", parameters=None),
+            profile=None,
+            approved_profile_path=None,
+            approved_profile_hash=None,
+        )
+
+
+def test_live_like_manifest_rejects_legacy_parameter_authority_instances(monkeypatch) -> None:
+    strategy_set = RuntimeStrategySet(
+        strategies=(RuntimeStrategySpec("canary_non_sma", parameters={}),),
+        source="unit",
+        market_scope=RuntimeMarketScope(pair="KRW-BTC", interval="1m"),
+    )
+    instance = RuntimeStrategyInstance(
+        spec=strategy_set.active_strategies[0],
+        strategy_instance_id="canary:unit",
+        parameters_raw={},
+        parameters_materialized={},
+        strategy_parameters_hash="sha256:parameters",
+        parameter_source="paper_legacy_compat",
+        approved_profile_path=None,
+        approved_profile_hash=None,
+        runtime_contract_hash="sha256:runtime",
+        plugin_contract_hash="sha256:plugin",
+        strategy_version="unit",
+        runtime_contract={},
+        runtime_adapter_config={},
+        legacy_compatibility_used=True,
+    )
+
+    class _Builder:
+        def materialize_instance(self, _spec):  # type: ignore[no-untyped-def]
+            return instance
+
+        def build_for_spec(self, spec, *, through_ts_ms):  # type: ignore[no-untyped-def]
+            raise AssertionError("manifest should reject before request build")
+
+    monkeypatch.setattr("bithumb_bot.runtime_strategy_set.RuntimeDecisionRequestBuilder", lambda **_kwargs: _Builder())
+
+    with pytest.raises(RuntimeError, match="runtime_strategy_manifest_legacy_compatibility_rejected"):
+        normalized_runtime_strategy_set_manifest(
+            strategy_set=strategy_set,
+            settings_obj=SimpleNamespace(
+                MODE="live",
+                LIVE_DRY_RUN=True,
+                LIVE_REAL_ORDER_ARMED=False,
+                PAIR="KRW-BTC",
+                INTERVAL="1m",
+                APPROVED_STRATEGY_PROFILE_PATH="",
+                STRATEGY_APPROVED_PROFILE_PATH="",
+            ),
+        )
 
 
 def test_db_bound_projector_signature_is_rejected_before_projection() -> None:

@@ -12,9 +12,9 @@ from .execution_planning import (
     ResearchExecutionPlanBundle,
     _execution_plan_evidence,
     _research_execution_plan_bundle,
-    _research_execution_submit_plan,
     _research_position_snapshot,
 )
+from .compatibility_execution_planning import _research_execution_submit_plan
 from .execution_simulator import (
     ResearchExecutionContext,
     ResearchVirtualExecutionService,

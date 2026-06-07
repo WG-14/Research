@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import inspect
 import json
 import sqlite3
 
@@ -18,6 +19,7 @@ from bithumb_bot.execution_service import (
     TypedExecutionRequest,
     execution_submit_plan_payload_hash,
     validate_execution_submit_plan_payload,
+    validate_execution_submit_plan_serialization,
 )
 from bithumb_bot.risk_contract import RiskPolicy, RiskSnapshot
 from bithumb_bot.risk_policy_engine import RiskPolicyEngine
@@ -164,6 +166,61 @@ def _valid_buy_submit_plan() -> dict[str, object]:
         "block_reason": "none",
         "idempotency_key": "buy-plan-key",
     }
+
+
+def test_schema_validity_does_not_imply_live_submit_authority() -> None:
+    plan = _valid_buy_submit_plan()
+
+    validate_execution_submit_plan_serialization(plan, field_name="unit_plan")
+    decision = evaluate_submit_authority_policy(
+        plan,
+        settings_obj=_PolicySettings(mode="live", dry_run=False, armed=True, engine="target_delta"),
+        plan_kind="buy",
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "live_real_order_buy_plan_rejected_target_delta_required"
+
+
+def test_live_real_order_rejects_schema_valid_research_compatibility_authority() -> None:
+    plan = {**_valid_buy_submit_plan(), "source": "research_backtest", "authority": "research_compatibility_execution_intent"}
+
+    validate_execution_submit_plan_payload(plan, field_name="unit_plan")
+    decision = evaluate_submit_authority_policy(
+        plan,
+        settings_obj=_PolicySettings(mode="live", dry_run=False, armed=True, engine="target_delta"),
+        plan_kind="buy",
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "live_real_order_buy_plan_rejected_target_delta_required"
+
+
+def test_live_real_order_rejects_schema_valid_strategy_position_buy_plan() -> None:
+    plan = {**_valid_buy_submit_plan(), "source": "strategy_position", "authority": "strategy_execution_intent"}
+
+    validate_execution_submit_plan_payload(plan, field_name="unit_plan")
+    decision = evaluate_submit_authority_policy(
+        plan,
+        settings_obj=_PolicySettings(mode="live", dry_run=False, armed=True, engine="target_delta"),
+        plan_kind="buy",
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "live_real_order_buy_plan_rejected_target_delta_required"
+
+
+def test_live_broker_schema_validation_is_followed_by_policy_gate_static() -> None:
+    source = inspect.getsource(live_broker)
+
+    assert "validate_execution_submit_plan_payload" in source
+    assert source.count("if not _broker_submit_authority_allowed(") >= 3
+    for marker in (
+        'plan_kind="target"',
+        'plan_kind="buy"',
+        'plan_kind="residual"',
+    ):
+        assert marker in source
 
 
 def _typed_plan(payload: dict[str, object]) -> ExecutionSubmitPlan:
