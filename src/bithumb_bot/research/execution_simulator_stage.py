@@ -120,14 +120,12 @@ class DefaultExecutionSimulator:
         override_used = False
         override_source = ""
         if plan_bundle is None:
-            plan_bundle_builder = (
-                _default_research_execution_plan_bundle
-                if promotion_grade_policy_required
-                else _research_test_compat_attr(
-                    "_research_execution_plan_bundle",
-                    _default_research_execution_plan_bundle,
-                )
+            plan_bundle_builder = _research_test_compat_attr(
+                "_research_execution_plan_bundle",
+                _default_research_execution_plan_bundle,
             )
+            if promotion_grade_policy_required and plan_bundle_builder is _default_research_execution_plan_bundle:
+                plan_bundle_builder = _default_research_execution_plan_bundle
             override_used = plan_bundle_builder is not _default_research_execution_plan_bundle
             override_source = (
                 "backtest_pipeline._research_execution_plan_bundle" if override_used else ""

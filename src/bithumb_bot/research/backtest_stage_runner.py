@@ -292,7 +292,7 @@ class BacktestEventProcessor:
                         allow_execution_compatibility_fallback=bool(
                             strategy_envelope.provenance.get("allow_execution_compatibility_fallback")
                         ),
-                        policy_drives_execution=True,
+                        policy_drives_execution=promotion_grade_policy_required,
                         policy_decision=policy_decision,
                     )
                 )
@@ -347,10 +347,10 @@ class BacktestEventProcessor:
                         allow_execution_compatibility_fallback=bool(
                             strategy_envelope.provenance.get("allow_execution_compatibility_fallback")
                         ),
-                        policy_drives_execution=True,
+                        policy_drives_execution=promotion_grade_policy_required,
                         policy_decision=policy_decision,
-                        plan_bundle=planning.plan_bundle,
-                        execution_evidence=planning.evidence,
+                        plan_bundle=None,
+                        execution_evidence=None,
                         exit_rule=risk_decision.exit_rule,
                         exit_reason=risk_decision.exit_reason,
                     )
