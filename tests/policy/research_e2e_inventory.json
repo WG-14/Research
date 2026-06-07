@@ -693,6 +693,31 @@
       "domain": "research_artifact_observability",
       "last_measured_seconds": 3,
       "tier": "research_nightly"
+    },
+    {
+      "nodeid": "tests/test_research_backtest_reproducibility.py::test_persisted_report_contains_report_write_stage_timing",
+      "markers": [
+        "research_e2e"
+      ],
+      "reason": "verifies persisted production research report_write stage timing matches final artifact write observability",
+      "expected_workload": {
+        "strategy_runs": "single production backtest",
+        "tick_scope": "small fixture dataset",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0,
+        "estimated_artifact_write_count": 2,
+        "estimated_hash_payload_bytes": 12000,
+        "estimated_artifact_bytes": 24000,
+        "estimated_artifact_file_count": 2
+      },
+      "duration_budget_seconds": 45,
+      "domain": "research_artifact_observability",
+      "last_measured_seconds": 3,
+      "tier": "research_nightly"
     }
   ]
 }
