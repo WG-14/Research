@@ -45,11 +45,13 @@ contracts, stop and report the conflict instead of weakening production behavior
 
 Before editing any file during pytest repair mode, Codex must:
 
-1. Read `AGENTS.md`.
-2. Read any nested `AGENTS.md` that applies to files Codex may touch.
-3. Read the WSL failure packet in the required packet-reading order.
-4. Summarize all visible failures before making code or test changes.
-5. Identify repair clusters and choose the first repair cluster according to the repair priority rules.
+1. Read the repository-root `AGENTS.md`.
+2. Read the WSL failure packet in the required packet-reading order.
+3. Summarize all visible failures before making code or test changes.
+4. Identify repair clusters and the candidate files each cluster may touch.
+5. Before editing any candidate file, read any nested `AGENTS.md` that applies
+   to that file.
+6. Choose the first repair cluster according to the repair priority rules.
 
 If `AGENTS.md` or a nested `AGENTS.md` conflicts with this prompt, Codex must
 follow the stricter safety, storage, path, live-safety, recovery,
@@ -60,15 +62,26 @@ is to report missing required evidence or repository instructions.
 
 ## Hard Prohibitions
 
-Codex must not run, invoke, or indirectly trigger:
+Codex must not run, invoke, indirectly trigger, or shell-wrap:
 
 - `./scripts/run_codex_pytest_pipeline.sh`
 - `./scripts/full_suite.sh`
 - `./scripts/run_full_pytest_tests.sh`
 - `./scripts/check_repo_runtime_artifacts.sh`
 - the wrapper-owned validation command
-- selector-less pytest, such as `uv run pytest -q`
-- broad pytest targets, such as `uv run pytest tests`, `uv run pytest tests/`, or equivalent broad selectors
+- selector-less pytest through any equivalent form, including:
+  - `uv run pytest -q`
+  - `pytest -q`
+  - `python -m pytest -q`
+  - `uv run python -m pytest -q`
+- broad pytest targets through any equivalent form, including:
+  - `uv run pytest tests`
+  - `uv run pytest tests/`
+  - `pytest tests`
+  - `python -m pytest tests`
+  - `uv run python -m pytest tests`
+- shell-wrapped forms of prohibited scripts or commands, including `bash`,
+  `sh`, `env`, or `make` targets that invoke them
 - deployment scripts
 - EC2 verification scripts
 - live broker scripts
@@ -85,6 +98,8 @@ The WSL wrapper is the only authority allowed to run that command.
 
 If Codex believes a prohibited command is required, Codex must stop and report
 the reason as a validation handoff or blocker instead of running it.
+
+## Modification Scope Limits
 
 Do not modify this request file, `scripts/codex_pytest_repair_prompt.md`,
 unless the latest failure packet, wrapper log, pytest failure, preflight failure,
@@ -201,27 +216,23 @@ forcing a test pass.
 
 ## Testing Expectations
 
-After a patch, run targeted focused tests for changed areas only. Do not broaden
-to wrapper-owned validation inside Codex.
-
-Codex may run only focused pytest commands allowed by the Focused Validation
-Scope below.
-
 The first full baseline command for this repair task has already been run by the
 WSL wrapper. Treat the provided failure packet as the current baseline evidence.
 
 If the failure packet shows collection errors, import errors, configuration
-errors, runtime artifact failures, or an external blocker, repair or report that
-blocker first.
+errors, runtime artifact failures, or external blockers, repair or report those
+blockers first.
 
 If the failure packet contains a runtime artifact failure, Codex may repair the
 underlying cause, such as removing accidental repo-local generated artifacts or
 changing code that writes artifacts into the repository. Respect the Hard
 Prohibitions.
 
-Do not use full-suite reruns as the debugging loop. Do not repeat the same
-command without a new hypothesis or a code change. Do not repeat the same
-focused test command only by extending timeout.
+Do not use full-suite reruns as the debugging loop. Use only commands allowed by
+the Focused Validation Scope, and respect the Hard Prohibitions.
+
+Do not repeat the same command without a new hypothesis or a code change. Do not
+repeat the same focused test command only by extending timeout.
 
 If the same verification runs longer than 90 seconds, stop repeating it and
 report:
@@ -229,8 +240,6 @@ report:
 - the likely bottleneck
 - the narrower command used instead
 - the residual validation risk
-
-Minimize unnecessary time use, token use, and test reruns throughout the task.
 
 If the completed patch has broad blast radius and focused tests are insufficient
 to validate the affected safety or contract area, report that WSL wrapper
