@@ -88,11 +88,24 @@ Codex must not run, invoke, indirectly trigger, or shell-wrap:
 - notification scripts
 - remote operation scripts
 
-The wrapper-owned validation command is:
+The wrapper normally invokes validation through:
+
+```bash
+./scripts/full_suite.sh
+```
+
+Codex must not run `./scripts/full_suite.sh` directly.
+Do not run `./scripts/full_suite.sh`.
+
+`./scripts/full_suite.sh` owns the wrapper-owned validation command:
 
 ```bash
 PYTEST_XDIST_WORKERS=8 PYTEST_XDIST_DIST=worksteal ./scripts/run_full_pytest_tests.sh && ./scripts/check_repo_runtime_artifacts.sh
 ```
+
+Codex must not run this command.
+Do not run `./scripts/run_full_pytest_tests.sh`.
+Do not run `./scripts/check_repo_runtime_artifacts.sh`.
 
 The WSL wrapper is the only authority allowed to run that command.
 
