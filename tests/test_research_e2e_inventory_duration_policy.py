@@ -31,6 +31,10 @@ def _write_inventory(path: Path, *, budget: float = 5.0) -> Path:
                         "duration_budget_seconds": budget,
                         "domain": "duration_policy",
                         "last_measured_seconds": 1,
+                        "must_be_e2e_reason": "research_kernel_behavior",
+                        "lower_level_contract_available": False,
+                        "replacement_contract_test": "",
+                        "e2e_canary_group": "duration_policy",
                     }
                 ],
             }
@@ -89,6 +93,10 @@ def test_inventory_duration_policy_rejects_malformed_inventory_entries(tmp_path:
                         },
                         "domain": "duration_policy",
                         "last_measured_seconds": 1,
+                        "must_be_e2e_reason": "research_kernel_behavior",
+                        "lower_level_contract_available": False,
+                        "replacement_contract_test": "",
+                        "e2e_canary_group": "duration_policy",
                     }
                 ],
             }

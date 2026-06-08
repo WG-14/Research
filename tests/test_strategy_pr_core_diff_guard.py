@@ -9,6 +9,27 @@ contract helper: assert_live_eligible_contract
 registration path: builtin_manifest
 built-in reason: canary
 strategy-plugin-inventory --json
+workload_delta_json:
+{
+  "base": {
+    "expensive_test_count": 34,
+    "strategy_count": 33,
+    "manifest_count": 32,
+    "strategy_canary_count": 1,
+    "estimated_strategy_runs": 61,
+    "estimated_audit_stream_rows": 103680
+  },
+  "head": {
+    "expensive_test_count": 34,
+    "strategy_count": 34,
+    "manifest_count": 33,
+    "strategy_canary_count": 1,
+    "estimated_strategy_runs": 62,
+    "estimated_audit_stream_rows": 103680
+  },
+  "new_expensive_nodeids": [],
+  "new_e2e_reasons": []
+}
 """
 
 
@@ -72,6 +93,27 @@ registration path: external_entry_point
 bithumb_bot.strategy_plugins
 entry point group
 inventory evidence: strategy-plugin-inventory --json
+workload_delta_json:
+{
+  "base": {
+    "expensive_test_count": 34,
+    "strategy_count": 33,
+    "manifest_count": 32,
+    "strategy_canary_count": 1,
+    "estimated_strategy_runs": 61,
+    "estimated_audit_stream_rows": 103680
+  },
+  "head": {
+    "expensive_test_count": 34,
+    "strategy_count": 34,
+    "manifest_count": 32,
+    "strategy_canary_count": 1,
+    "estimated_strategy_runs": 62,
+    "estimated_audit_stream_rows": 103680
+  },
+  "new_expensive_nodeids": [],
+  "new_e2e_reasons": []
+}
 """,
     )
 
