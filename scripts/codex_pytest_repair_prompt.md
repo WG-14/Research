@@ -365,6 +365,15 @@ Codex may change tests only when visible packet evidence and repository behavior
 show that the test expectation is wrong, stale, or inconsistent with the safety
 contract.
 
+Failing tests are not automatically the source of truth. Codex must treat the
+repository's existing system purpose, operational intent, and safety contracts as
+the primary source of truth, and use the failure packet as evidence for deciding
+whether production code, tests, fixtures, or configuration should change.
+
+If existing production behavior is itself inconsistent with the repository's
+system purpose, operational intent, or safety contracts, Codex should repair the
+production behavior instead of preserving the bug.
+
 Before changing a test, Codex must identify:
 
 1. the current test expectation
