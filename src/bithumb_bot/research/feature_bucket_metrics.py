@@ -77,16 +77,38 @@ def compute_feature_bucket_metrics(
     metrics: list[FeatureBucketMetric] = []
     for key in sorted(grouped):
         feature_name, horizon_label = key
-        rows = sorted(grouped[key], key=_observation_sort_key)
-        buckets = _bucket_observations(rows, bucket_count=bucket_count)
+        rows = grouped[key]
+        value_types = {row.feature.value_type for row in rows}
+        if len(value_types) != 1:
+            raise ValueError(f"mixed feature value types for feature={feature_name!r} horizon={horizon_label!r}")
+        value_type = next(iter(value_types))
+        if _is_category_value_type(value_type):
+            category_buckets = _category_buckets(rows)
+            for category_key in sorted(category_buckets):
+                metrics.append(
+                    _metric_for_rows(
+                        feature_name=feature_name,
+                        horizon_label=horizon_label,
+                        bucket_id=f"category:{category_key}",
+                        bucket_label=f"category {category_key}",
+                        rows=category_buckets[category_key],
+                        min_bucket_count=min_bucket_count,
+                    )
+                )
+            continue
+
+        if not _is_numeric_value_type(value_type):
+            raise ValueError(f"unsupported feature value_type={value_type!r} for feature={feature_name!r}")
+        sorted_rows = sorted(rows, key=_observation_sort_key)
+        buckets = _bucket_observations(sorted_rows, bucket_count=bucket_count)
         for bucket_index in range(bucket_count):
             bucket_rows = buckets.get(bucket_index, [])
             metrics.append(
-                _metric_for_bucket(
+                _metric_for_rows(
                     feature_name=feature_name,
                     horizon_label=horizon_label,
-                    bucket_index=bucket_index,
-                    bucket_count=bucket_count,
+                    bucket_id=f"q{bucket_index:02d}",
+                    bucket_label=f"quantile {bucket_index + 1}/{bucket_count}",
                     rows=bucket_rows,
                     min_bucket_count=min_bucket_count,
                 )
@@ -109,8 +131,9 @@ def _parse_bucket_method(bucket_method: str) -> int:
 
 def _observation_sort_key(observation: FeatureObservation) -> tuple[str, float | str, int, str]:
     value = observation.feature.value
-    comparable: float | str
-    comparable = float(value) if isinstance(value, (int, float, bool)) else str(value)
+    if not _is_numeric_value_type(observation.feature.value_type):
+        raise ValueError("categorical observations must not be quantile sorted")
+    comparable = float(value)
     return (observation.feature.value_type, comparable, observation.target.entry_ts, observation.target.horizon_label)
 
 
@@ -129,17 +152,15 @@ def _bucket_observations(
     return buckets
 
 
-def _metric_for_bucket(
+def _metric_for_rows(
     *,
     feature_name: str,
     horizon_label: str,
-    bucket_index: int,
-    bucket_count: int,
+    bucket_id: str,
+    bucket_label: str,
     rows: list[FeatureObservation],
     min_bucket_count: int,
 ) -> FeatureBucketMetric:
-    bucket_id = f"q{bucket_index:02d}"
-    bucket_label = f"quantile {bucket_index + 1}/{bucket_count}"
     count = len(rows)
     policy = _policy_for_rows(rows)
     if count == 0:
@@ -205,6 +226,28 @@ def _metric_for_bucket(
         mfe_mae_ratio=(mean_mfe / abs_mean_mae) if abs_mean_mae > 0.0 else None,
         warnings=tuple(warnings),
     )
+
+
+def _is_numeric_value_type(value_type: str) -> bool:
+    return str(value_type).lower() in {"float", "int", "number"}
+
+
+def _is_category_value_type(value_type: str) -> bool:
+    return str(value_type).lower() in {"str", "string", "bool", "category"}
+
+
+def _category_buckets(rows: list[FeatureObservation]) -> dict[str, list[FeatureObservation]]:
+    buckets: dict[str, list[FeatureObservation]] = {}
+    for row in rows:
+        category = _category_value(row.feature.value, value_type=row.feature.value_type)
+        buckets.setdefault(category, []).append(row)
+    return buckets
+
+
+def _category_value(value: object, *, value_type: str) -> str:
+    if str(value_type).lower() == "bool":
+        return "true" if bool(value) else "false"
+    return str(value)
 
 
 @dataclass(frozen=True)

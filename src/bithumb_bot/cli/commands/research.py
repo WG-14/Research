@@ -45,6 +45,7 @@ def _research_forward_diagnostics(args: argparse.Namespace, _context) -> int:
             min_bucket_count=int(args.min_bucket_count),
             out_path=str(args.out) if args.out else None,
             as_json=bool(args.json),
+            allow_final_holdout_diagnostics=bool(args.allow_final_holdout_diagnostics),
         )
     )
 
@@ -179,6 +180,7 @@ def _build_forward_diagnostics(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument("--min-bucket-count", type=_positive_int_arg, default=30)
+    parser.add_argument("--allow-final-holdout-diagnostics", action="store_true")
     parser.add_argument("--out")
     parser.add_argument("--json", action="store_true")
 

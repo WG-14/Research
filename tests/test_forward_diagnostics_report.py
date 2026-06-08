@@ -8,7 +8,7 @@ import pytest
 
 from bithumb_bot.paths import PathConfig, PathManager
 from bithumb_bot.research.feature_bucket_metrics import FeatureBucketMetric
-from bithumb_bot.research.forward_diagnostics import ForwardDiagnosticsResult
+from bithumb_bot.research.forward_diagnostics import DatasetProvenance, ForwardDiagnosticsResult
 from bithumb_bot.research.forward_diagnostics_report import write_forward_diagnostics_report
 
 
@@ -63,6 +63,22 @@ def _metric(
     )
 
 
+def _dataset(*, content_hash: str = "sha256:" + "2" * 64) -> DatasetProvenance:
+    return DatasetProvenance(
+        snapshot_id="snapshot1",
+        source="test_source",
+        market="BTC_KRW",
+        interval="1m",
+        split_name="train",
+        date_range={"start": "2026-01-01", "end": "2026-01-02"},
+        content_hash=content_hash,
+        source_uri=None,
+        source_content_hash=None,
+        source_schema_hash=None,
+        adapter_provenance_hash=None,
+    )
+
+
 def _result(
     value: float = 0.01,
     *,
@@ -70,6 +86,9 @@ def _result(
     path_start_policy: str = "entry_candle",
     intrabar_included: bool = True,
     mfe_mae_basis: str = "ohlc_entry_to_exit_candles",
+    dataset: DatasetProvenance | None = None,
+    final_holdout_diagnostic_override: bool = False,
+    warnings: tuple[dict[str, object], ...] = (),
 ) -> ForwardDiagnosticsResult:
     return ForwardDiagnosticsResult(
         experiment_id="exp1",
@@ -101,7 +120,9 @@ def _result(
                 mfe_mae_basis=mfe_mae_basis,
             ),
         ),
-        warnings=(),
+        warnings=warnings,
+        dataset=dataset or _dataset(),
+        final_holdout_diagnostic_override=final_holdout_diagnostic_override,
     )
 
 
@@ -161,6 +182,39 @@ def test_forward_diagnostics_report_includes_path_policy(tmp_path: Path) -> None
         "intrabar_included": False,
         "mfe_mae_basis": "ohlc_future_candles_only",
     }
+
+
+def test_forward_diagnostics_report_includes_dataset_provenance(tmp_path: Path) -> None:
+    report = write_forward_diagnostics_report(manager=_manager(tmp_path), manifest=_manifest(), result=_result())
+
+    assert report["dataset"] == {
+        "snapshot_id": "snapshot1",
+        "source": "test_source",
+        "market": "BTC_KRW",
+        "interval": "1m",
+        "split_name": "train",
+        "date_range": {"start": "2026-01-01", "end": "2026-01-02"},
+        "content_hash": "sha256:" + "2" * 64,
+        "source_uri": None,
+        "source_content_hash": None,
+        "source_schema_hash": None,
+        "adapter_provenance_hash": None,
+    }
+
+
+def test_report_content_hash_changes_when_dataset_content_hash_changes(tmp_path: Path) -> None:
+    first = write_forward_diagnostics_report(
+        manager=_manager(tmp_path / "a"),
+        manifest=_manifest(),
+        result=_result(dataset=_dataset(content_hash="sha256:" + "2" * 64)),
+    )
+    second = write_forward_diagnostics_report(
+        manager=_manager(tmp_path / "b"),
+        manifest=_manifest(),
+        result=_result(dataset=_dataset(content_hash="sha256:" + "3" * 64)),
+    )
+
+    assert first["content_hash"] != second["content_hash"]
 
 
 def test_forward_diagnostics_metrics_csv_includes_path_policy_columns(tmp_path: Path) -> None:

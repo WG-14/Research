@@ -10,7 +10,9 @@ approved profile, runtime replay, and live execution boundaries.
 ## Inputs
 
 - A research manifest.
-- A manifest split: `train`, `validation`, or `final_holdout`.
+- A manifest split: `train` or `validation` for normal feature-mining diagnostics.
+  `final_holdout` requires the explicit `--allow-final-holdout-diagnostics`
+  override and records contamination-risk metadata in the report.
 - A comma-separated feature list.
 - A comma-separated positive integer horizon list.
 - A bucket method such as `quantile:10`.
@@ -53,6 +55,17 @@ uv run bithumb-bot research-forward-diagnostics \
   --min-bucket-count 30 \
   --json
 ```
+
+`final_holdout` is not the normal feature-mining path. To inspect it anyway,
+operators must pass:
+
+```bash
+--split final_holdout --allow-final-holdout-diagnostics
+```
+
+Reports produced with that override record
+`final_holdout_diagnostic_override=true` and include the machine-readable warning
+`final_holdout_diagnostic_contamination_risk`.
 
 ## Outputs
 

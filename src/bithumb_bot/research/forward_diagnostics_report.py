@@ -59,6 +59,8 @@ def write_forward_diagnostics_report(
         "artifact_type": "forward_return_diagnostic_warnings",
         "diagnostic_only": True,
         "warnings": list(result.warnings),
+        "diagnostic_status": result.diagnostic_status,
+        "fail_reasons": list(result.fail_reasons),
     }
     write_json_atomic(paths.warnings_path, warnings_payload)
 
@@ -73,6 +75,7 @@ def write_forward_diagnostics_report(
         "experiment_id": manifest.experiment_id,
         "manifest_hash": manifest.manifest_hash(),
         "split_name": result.split_name,
+        "dataset": result.dataset.as_dict(),
         "entry_price_mode": result.entry_price_mode,
         "calculation_policy": {
             "entry_price_mode": result.entry_price_mode,
@@ -85,6 +88,10 @@ def write_forward_diagnostics_report(
         "horizon_steps": list(result.horizon_steps),
         "sample_count": result.sample_count,
         "target_count": result.target_count,
+        "diagnostic_status": result.diagnostic_status,
+        "fail_reasons": list(result.fail_reasons),
+        "final_holdout_diagnostic_override": result.final_holdout_diagnostic_override,
+        "warnings": list(result.warnings),
         "artifact_paths": {
             "report": str(paths.report_path),
             "feature_bucket_metrics": str(paths.feature_bucket_metrics_path),

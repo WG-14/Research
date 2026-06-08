@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from bithumb_bot.cli.registry import command_registry
 from bithumb_bot.research.forward_diagnostics_report import validate_forward_diagnostics_report_flags
 from bithumb_bot.research.strategy_registry import list_research_strategy_plugins
@@ -71,3 +73,30 @@ def test_forward_diagnostics_report_remains_diagnostic_only_after_policy_fields_
     }
 
     validate_forward_diagnostics_report_flags(payload)
+
+
+def test_forward_diagnostics_report_cannot_be_promotion_evidence() -> None:
+    base_payload = {
+        "diagnostic_only": True,
+        "promotion_evidence": False,
+        "approved_profile_evidence": False,
+        "live_readiness_evidence": False,
+        "capital_allocation_evidence": False,
+    }
+    for field in (
+        "promotion_evidence",
+        "approved_profile_evidence",
+        "live_readiness_evidence",
+        "capital_allocation_evidence",
+    ):
+        payload = dict(base_payload)
+        payload[field] = True
+        with pytest.raises(ValueError, match="diagnostic-only"):
+            validate_forward_diagnostics_report_flags(payload)
+
+
+def test_forward_diagnostics_command_remains_read_only() -> None:
+    spec = command_registry()["research-forward-diagnostics"]
+
+    assert spec.domain == "research"
+    assert spec.read_only is True

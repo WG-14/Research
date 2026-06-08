@@ -215,26 +215,12 @@ class RegimeProvider:
 
 
 def feature_provider_for_name(name: str) -> FeatureProvider:
-    providers: dict[str, FeatureProvider] = {
-        provider.name: provider
-        for provider in (
-            SmaGapProvider(),
-            RangeRatioProvider(),
-            VolumeRatioProvider(),
-            BreakoutDistanceProvider(),
-            RollingReturnProvider(),
-            ZScoreProvider(),
-            RegimeProvider(),
-        )
-    }
-    try:
-        return providers[str(name).strip()]
-    except KeyError as exc:
-        allowed = ", ".join(sorted(providers))
-        raise ValueError(f"unknown diagnostic feature={name!r}; allowed values: {allowed}") from exc
+    from bithumb_bot.research.feature_provider_registry import feature_provider_spec_for_name
+
+    return feature_provider_spec_for_name(name).provider
 
 
 def feature_providers_for_names(names: tuple[str, ...]) -> tuple[FeatureProvider, ...]:
-    if not names:
-        raise ValueError("features must not be empty")
-    return tuple(feature_provider_for_name(name) for name in names)
+    from bithumb_bot.research.feature_provider_registry import feature_provider_specs_for_names
+
+    return tuple(spec.provider for spec in feature_provider_specs_for_names(names))

@@ -6,7 +6,7 @@ from typing import Any
 
 from bithumb_bot.config import PATH_MANAGER, settings
 from bithumb_bot.research.experiment_manifest import ManifestValidationError, load_manifest
-from bithumb_bot.research.forward_diagnostics import run_forward_diagnostics
+from bithumb_bot.research.forward_diagnostics import ForwardDiagnosticsUnavailableError, run_forward_diagnostics
 from bithumb_bot.research.forward_diagnostics_report import write_forward_diagnostics_report
 
 
@@ -24,13 +24,16 @@ def cmd_research_forward_diagnostics(
     min_bucket_count: int = 30,
     out_path: str | None = None,
     as_json: bool = False,
+    allow_final_holdout_diagnostics: bool = False,
 ) -> int:
     try:
         split = _normalize_split(split_name)
+        if split == "final_holdout" and not allow_final_holdout_diagnostics:
+            raise ValueError("final_holdout diagnostics require --allow-final-holdout-diagnostics")
         feature_names = _normalize_features(features)
         horizon_steps = _normalize_horizons(horizons)
         manifest = load_manifest(manifest_path)
-        result_payload = run_forward_diagnostics(
+        result = run_forward_diagnostics(
             manifest=manifest,
             db_path=settings.DB_PATH,
             split_name=split,
@@ -39,23 +42,7 @@ def cmd_research_forward_diagnostics(
             bucket_method=str(bucket),
             entry_price_mode=str(entry_price),
             min_bucket_count=int(min_bucket_count),
-        )
-        from bithumb_bot.research.forward_diagnostics import ForwardDiagnosticsResult
-        result = ForwardDiagnosticsResult(
-            experiment_id=str(result_payload["experiment_id"]),
-            split_name=str(result_payload["split_name"]),
-            feature_names=tuple(str(item) for item in result_payload["feature_names"]),
-            horizon_steps=tuple(int(item) for item in result_payload["horizon_steps"]),
-            bucket_method=str(result_payload["bucket_method"]),
-            entry_price_mode=str(result_payload["entry_price_mode"]),
-            path_start_policy=str(result_payload["calculation_policy"]["path_start_policy"]),
-            intrabar_included=bool(result_payload["calculation_policy"]["intrabar_included"]),
-            mfe_mae_basis=str(result_payload["calculation_policy"]["mfe_mae_basis"]),
-            sample_count=int(result_payload["sample_count"]),
-            target_count=int(result_payload["target_count"]),
-            feature_bucket_metrics=tuple(_metric_from_payload(item) for item in result_payload["feature_bucket_metrics"]),
-            feature_horizon_metrics=tuple(_metric_from_payload(item) for item in result_payload["feature_horizon_metrics"]),
-            warnings=tuple(dict(item) for item in result_payload["warnings"]),
+            final_holdout_diagnostic_override=bool(allow_final_holdout_diagnostics and split == "final_holdout"),
         )
         report = write_forward_diagnostics_report(manager=PATH_MANAGER, manifest=manifest, result=result)
         if out_path:
@@ -70,55 +57,9 @@ def cmd_research_forward_diagnostics(
                 f"report={report['artifact_paths']['report']}"
             )
         return 0
-    except (ManifestValidationError, OSError, ValueError, IndexError) as exc:
+    except (ForwardDiagnosticsUnavailableError, ManifestValidationError, OSError, ValueError, IndexError) as exc:
         print(f"[RESEARCH-FORWARD-DIAGNOSTICS] error={exc}")
         return 1
-
-
-def _metric_from_payload(payload: Any):
-    from bithumb_bot.research.feature_bucket_metrics import FeatureBucketMetric
-
-    data = dict(payload)
-    return FeatureBucketMetric(
-        feature_name=str(data["feature_name"]),
-        bucket_id=str(data["bucket_id"]),
-        bucket_label=str(data["bucket_label"]),
-        horizon_label=str(data["horizon_label"]),
-        entry_price_mode=_optional_str(data.get("entry_price_mode")),
-        path_start_policy=_optional_str(data.get("path_start_policy")),
-        intrabar_included=_optional_bool(data.get("intrabar_included")),
-        mfe_mae_basis=_optional_str(data.get("mfe_mae_basis")),
-        count=int(data["count"]),
-        mean_forward_return=_optional_float(data.get("mean_forward_return")),
-        median_forward_return=_optional_float(data.get("median_forward_return")),
-        win_rate=_optional_float(data.get("win_rate")),
-        p10_forward_return=_optional_float(data.get("p10_forward_return")),
-        p90_forward_return=_optional_float(data.get("p90_forward_return")),
-        mean_mfe=_optional_float(data.get("mean_mfe")),
-        median_mfe=_optional_float(data.get("median_mfe")),
-        mean_mae=_optional_float(data.get("mean_mae")),
-        median_mae=_optional_float(data.get("median_mae")),
-        mfe_mae_ratio=_optional_float(data.get("mfe_mae_ratio")),
-        warnings=tuple(str(item) for item in data.get("warnings", ())),
-    )
-
-
-def _optional_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    return float(value)
-
-
-def _optional_str(value: Any) -> str | None:
-    if value is None:
-        return None
-    return str(value)
-
-
-def _optional_bool(value: Any) -> bool | None:
-    if value is None:
-        return None
-    return bool(value)
 
 
 def _normalize_split(split_name: str) -> str:

@@ -42,7 +42,7 @@ def test_forward_diagnostics_uses_dataset_snapshot_loader(monkeypatch) -> None:
     monkeypatch.setattr(forward_diagnostics, "load_dataset_split", fake_loader)
     manifest = SimpleNamespace(experiment_id="exp")
 
-    payload = run_forward_diagnostics(
+    result = run_forward_diagnostics(
         manifest=manifest,
         db_path="/tmp/test.sqlite",
         split_name="train",
@@ -53,7 +53,8 @@ def test_forward_diagnostics_uses_dataset_snapshot_loader(monkeypatch) -> None:
     )
 
     assert calls == [("/tmp/test.sqlite", manifest, "train")]
-    assert payload["split_name"] == "train"
+    assert isinstance(result, ForwardDiagnosticsResult)
+    assert result.split_name == "train"
 
 
 def test_forward_diagnostics_core_accepts_dataset_snapshot_without_db() -> None:
