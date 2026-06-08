@@ -7,8 +7,15 @@ from types import SimpleNamespace
 import pytest
 
 from bithumb_bot.paths import PathConfig, PathManager
+from bithumb_bot.research.diagnostic_availability import DiagnosticAvailability
+from bithumb_bot.research.diagnostic_coverage import FeatureHorizonCoverage
 from bithumb_bot.research.feature_bucket_metrics import FeatureBucketMetric
-from bithumb_bot.research.forward_diagnostics import DatasetProvenance, ForwardDiagnosticsResult
+from bithumb_bot.research.feature_provider_registry import FeatureProviderSpec, feature_provider_specs_for_names
+from bithumb_bot.research.forward_diagnostics import (
+    DatasetProvenance,
+    ForwardDiagnosticsDatasetQuality,
+    ForwardDiagnosticsResult,
+)
 from bithumb_bot.research.forward_diagnostics_report import write_forward_diagnostics_report
 
 
@@ -79,6 +86,45 @@ def _dataset(*, content_hash: str = "sha256:" + "2" * 64) -> DatasetProvenance:
     )
 
 
+def _availability(*, status: str = "available", warnings: tuple[str, ...] = ()) -> DiagnosticAvailability:
+    return DiagnosticAvailability(
+        status=status,  # type: ignore[arg-type]
+        fail_reasons=(),
+        warnings=warnings,
+        target_count=1,
+        sample_count=1,
+        feature_value_count=1,
+    )
+
+
+def _coverage(*, status: str = "available") -> tuple[FeatureHorizonCoverage, ...]:
+    return (
+        FeatureHorizonCoverage(
+            feature_name="sma_gap",
+            horizon_label="1c",
+            requested=True,
+            computed_count=1,
+            missing_count=0,
+            status=status,  # type: ignore[arg-type]
+            reasons=(),
+        ),
+    )
+
+
+def _dataset_quality(
+    *,
+    status: str = "PASS",
+    report_hash: str = "sha256:" + "4" * 64,
+    dataset_content_hash: str = "sha256:" + "2" * 64,
+) -> ForwardDiagnosticsDatasetQuality:
+    return ForwardDiagnosticsDatasetQuality(
+        quality_gate_status=status,
+        quality_gate_reasons=() if status == "PASS" else ("missing_candles",),
+        dataset_quality_report_hash=report_hash,
+        dataset_content_hash=dataset_content_hash,
+    )
+
+
 def _result(
     value: float = 0.01,
     *,
@@ -87,6 +133,10 @@ def _result(
     intrabar_included: bool = True,
     mfe_mae_basis: str = "ohlc_entry_to_exit_candles",
     dataset: DatasetProvenance | None = None,
+    dataset_quality: ForwardDiagnosticsDatasetQuality | None = None,
+    availability: DiagnosticAvailability | None = None,
+    coverage: tuple[FeatureHorizonCoverage, ...] | None = None,
+    feature_provider_specs: tuple[FeatureProviderSpec, ...] | None = None,
     final_holdout_diagnostic_override: bool = False,
     warnings: tuple[dict[str, object], ...] = (),
 ) -> ForwardDiagnosticsResult:
@@ -102,6 +152,10 @@ def _result(
         mfe_mae_basis=mfe_mae_basis,
         sample_count=1,
         target_count=1,
+        availability=availability or _availability(),
+        coverage=coverage or _coverage(),
+        feature_provider_specs=feature_provider_specs or feature_provider_specs_for_names(("sma_gap",)),
+        dataset_quality=dataset_quality or _dataset_quality(),
         feature_bucket_metrics=(
             _metric(
                 value,
@@ -202,6 +256,41 @@ def test_forward_diagnostics_report_includes_dataset_provenance(tmp_path: Path) 
     }
 
 
+def test_report_includes_feature_provider_specs(tmp_path: Path) -> None:
+    report = write_forward_diagnostics_report(manager=_manager(tmp_path), manifest=_manifest(), result=_result())
+
+    assert report["feature_provider_specs"][0]["name"] == "sma_gap"
+    assert report["feature_provider_specs"][0]["value_type"] == "float"
+    assert report["feature_provider_specs"][0]["required_history"] == 20
+    assert report["feature_provider_specs"][0]["bucketizer_type"] == "quantile"
+    assert report["feature_provider_specs"][0]["definition_hash"].startswith("sha256:")
+    assert report["feature_provider_specs"][0]["causal_inputs"] == ["candle.close"]
+
+
+def test_report_includes_dataset_quality_status_and_hash(tmp_path: Path) -> None:
+    report = write_forward_diagnostics_report(manager=_manager(tmp_path), manifest=_manifest(), result=_result())
+
+    assert report["dataset_quality"]["quality_gate_status"] == "PASS"
+    assert report["dataset_quality"]["quality_gate_reasons"] == []
+    assert report["dataset_quality"]["dataset_quality_report_hash"] == "sha256:" + "4" * 64
+
+
+def test_report_includes_requested_feature_horizon_coverage(tmp_path: Path) -> None:
+    report = write_forward_diagnostics_report(manager=_manager(tmp_path), manifest=_manifest(), result=_result())
+
+    assert report["coverage"]["feature_horizon"] == [
+        {
+            "feature_name": "sma_gap",
+            "horizon_label": "1c",
+            "requested": True,
+            "computed_count": 1,
+            "missing_count": 0,
+            "status": "available",
+            "reasons": [],
+        }
+    ]
+
+
 def test_report_content_hash_changes_when_dataset_content_hash_changes(tmp_path: Path) -> None:
     first = write_forward_diagnostics_report(
         manager=_manager(tmp_path / "a"),
@@ -212,6 +301,49 @@ def test_report_content_hash_changes_when_dataset_content_hash_changes(tmp_path:
         manager=_manager(tmp_path / "b"),
         manifest=_manifest(),
         result=_result(dataset=_dataset(content_hash="sha256:" + "3" * 64)),
+    )
+
+    assert first["content_hash"] != second["content_hash"]
+
+
+def test_report_content_hash_changes_when_dataset_quality_hash_changes(tmp_path: Path) -> None:
+    first = write_forward_diagnostics_report(
+        manager=_manager(tmp_path / "a"),
+        manifest=_manifest(),
+        result=_result(dataset_quality=_dataset_quality(report_hash="sha256:" + "4" * 64)),
+    )
+    second = write_forward_diagnostics_report(
+        manager=_manager(tmp_path / "b"),
+        manifest=_manifest(),
+        result=_result(dataset_quality=_dataset_quality(report_hash="sha256:" + "5" * 64)),
+    )
+
+    assert first["content_hash"] != second["content_hash"]
+
+
+def test_coverage_rows_are_included_in_report_content_hash(tmp_path: Path) -> None:
+    first = write_forward_diagnostics_report(
+        manager=_manager(tmp_path / "a"),
+        manifest=_manifest(),
+        result=_result(coverage=_coverage(status="available")),
+    )
+    second = write_forward_diagnostics_report(
+        manager=_manager(tmp_path / "b"),
+        manifest=_manifest(),
+        result=_result(
+            availability=_availability(status="degraded", warnings=("feature_horizon_coverage_incomplete",)),
+            coverage=(
+                FeatureHorizonCoverage(
+                    feature_name="sma_gap",
+                    horizon_label="1c",
+                    requested=True,
+                    computed_count=0,
+                    missing_count=1,
+                    status="unavailable",
+                    reasons=("feature_history_unavailable",),
+                ),
+            ),
+        ),
     )
 
     assert first["content_hash"] != second["content_hash"]

@@ -4,10 +4,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from bithumb_bot.paths import PathConfig, PathManager
+from bithumb_bot.research.diagnostic_availability import DiagnosticAvailability
+from bithumb_bot.research.diagnostic_coverage import FeatureHorizonCoverage
 from bithumb_bot.research.feature_bucket_metrics import FeatureBucketMetric
+from bithumb_bot.research.feature_provider_registry import feature_provider_specs_for_names
 from bithumb_bot.research.forward_diagnostics import (
     FINAL_HOLDOUT_WARNING_REASON,
     DatasetProvenance,
+    ForwardDiagnosticsDatasetQuality,
     ForwardDiagnosticsResult,
 )
 from bithumb_bot.research.forward_diagnostics_report import write_forward_diagnostics_report
@@ -76,6 +80,32 @@ def _result(*, split_name: str, override: bool) -> ForwardDiagnosticsResult:
         mfe_mae_basis="ohlc_entry_to_exit_candles",
         sample_count=1,
         target_count=1,
+        availability=DiagnosticAvailability(
+            status="available",
+            fail_reasons=(),
+            warnings=(),
+            target_count=1,
+            sample_count=1,
+            feature_value_count=1,
+        ),
+        coverage=(
+            FeatureHorizonCoverage(
+                feature_name="sma_gap",
+                horizon_label="1c",
+                requested=True,
+                computed_count=1,
+                missing_count=0,
+                status="available",
+                reasons=(),
+            ),
+        ),
+        feature_provider_specs=feature_provider_specs_for_names(("sma_gap",)),
+        dataset_quality=ForwardDiagnosticsDatasetQuality(
+            quality_gate_status="PASS",
+            quality_gate_reasons=(),
+            dataset_quality_report_hash="sha256:" + "4" * 64,
+            dataset_content_hash="sha256:" + "2" * 64,
+        ),
         feature_bucket_metrics=(_metric(),),
         feature_horizon_metrics=(_metric(),),
         warnings=warnings,

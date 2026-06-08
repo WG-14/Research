@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from bithumb_bot.cli.parser import build_parser
@@ -201,6 +203,94 @@ def test_research_forward_diagnostics_accepts_final_holdout_with_explicit_overri
     assert calls["split_name"] == "final_holdout"
     assert calls["final_holdout_diagnostic_override"] is True
     assert calls["reported_result"] is not None
+
+
+def test_cli_json_success_outputs_parseable_json(monkeypatch, capsys) -> None:
+    import bithumb_bot.research.forward_diagnostics_cli as cli
+
+    monkeypatch.setattr(cli, "load_manifest", lambda path: type("Manifest", (), {"experiment_id": "exp1", "manifest_hash": lambda self: "sha256:" + "1" * 64})())
+    monkeypatch.setattr(cli, "run_forward_diagnostics", lambda **kwargs: object())
+    monkeypatch.setattr(
+        cli,
+        "write_forward_diagnostics_report",
+        lambda **kwargs: {
+            "artifact_type": "forward_return_diagnostic_report",
+            "diagnostic_status": "available",
+            "artifact_paths": {"report": "/tmp/report.json"},
+        },
+    )
+
+    code = cli.cmd_research_forward_diagnostics(
+        manifest_path="manifest.json",
+        split_name="train",
+        features=("range_ratio",),
+        horizons=(1,),
+        bucket="quantile:1",
+        as_json=True,
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["artifact_type"] == "forward_return_diagnostic_report"
+    assert payload["diagnostic_status"] == "available"
+
+
+def test_cli_json_failure_outputs_parseable_json(monkeypatch, capsys, tmp_path) -> None:
+    import bithumb_bot.research.forward_diagnostics_cli as cli
+    from bithumb_bot.research.forward_diagnostics import ForwardDiagnosticsUnavailableError
+    from tests.test_forward_diagnostics_report import _manager, _manifest
+
+    monkeypatch.setattr(cli, "PATH_MANAGER", _manager(tmp_path))
+    monkeypatch.setattr(cli, "load_manifest", lambda path: _manifest())
+    monkeypatch.setattr(
+        cli,
+        "run_forward_diagnostics",
+        lambda **kwargs: (_ for _ in ()).throw(ForwardDiagnosticsUnavailableError(("no_forward_targets",))),
+    )
+
+    code = cli.cmd_research_forward_diagnostics(
+        manifest_path="manifest.json",
+        split_name="train",
+        features=("range_ratio",),
+        horizons=(1,),
+        bucket="quantile:1",
+        as_json=True,
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert code == 1
+    assert payload["artifact_type"] == "forward_return_diagnostic_failure"
+    assert payload["diagnostic_status"] == "unavailable"
+    assert payload["fail_reasons"] == ["no_forward_targets"]
+
+
+def test_cli_json_failure_does_not_prefix_human_readable_label(monkeypatch, capsys, tmp_path) -> None:
+    import bithumb_bot.research.forward_diagnostics_cli as cli
+    from bithumb_bot.research.forward_diagnostics import ForwardDiagnosticsUnavailableError
+    from tests.test_forward_diagnostics_report import _manager, _manifest
+
+    monkeypatch.setattr(cli, "PATH_MANAGER", _manager(tmp_path))
+    monkeypatch.setattr(cli, "load_manifest", lambda path: _manifest())
+    monkeypatch.setattr(
+        cli,
+        "run_forward_diagnostics",
+        lambda **kwargs: (_ for _ in ()).throw(ForwardDiagnosticsUnavailableError(("no_forward_targets",))),
+    )
+
+    code = cli.cmd_research_forward_diagnostics(
+        manifest_path="manifest.json",
+        split_name="train",
+        features=("range_ratio",),
+        horizons=(1,),
+        bucket="quantile:1",
+        as_json=True,
+    )
+    output = capsys.readouterr().out
+
+    assert code == 1
+    assert not output.startswith("[RESEARCH-FORWARD-DIAGNOSTICS]")
+    json.loads(output)
 
 
 def test_forward_diagnostics_cli_does_not_rehydrate_result_from_dict() -> None:

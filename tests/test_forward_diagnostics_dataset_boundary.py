@@ -40,6 +40,20 @@ def test_forward_diagnostics_uses_dataset_snapshot_loader(monkeypatch) -> None:
         return _snapshot()
 
     monkeypatch.setattr(forward_diagnostics, "load_dataset_split", fake_loader)
+    monkeypatch.setattr(
+        forward_diagnostics,
+        "build_dataset_quality_report",
+        lambda **kwargs: type(
+            "QualityReport",
+            (),
+            {
+                "quality_gate_status": "PASS",
+                "quality_gate_reasons": (),
+                "content_hash": "sha256:" + "4" * 64,
+                "payload": {"dataset_content_hash": _snapshot().content_hash()},
+            },
+        )(),
+    )
     manifest = SimpleNamespace(experiment_id="exp")
 
     result = run_forward_diagnostics(

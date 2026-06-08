@@ -1,13 +1,31 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from bithumb_bot.paths import PathConfig, PathManager
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
 from bithumb_bot.research.experiment_manifest import DateRange
 from bithumb_bot.research.forward_diagnostics import (
     ForwardDiagnosticsUnavailableError,
     run_forward_diagnostics_on_snapshot,
 )
+
+
+def _manager(tmp_path) -> PathManager:
+    return PathManager(
+        project_root=Path(__file__).resolve().parents[1],
+        config=PathConfig(
+            mode="paper",
+            env_root=tmp_path / "env",
+            run_root=tmp_path / "run",
+            data_root=tmp_path / "data",
+            log_root=tmp_path / "logs",
+            backup_root=tmp_path / "backup",
+            archive_root=tmp_path / "archive",
+        ),
+    )
 
 
 def _snapshot(count: int) -> DatasetSnapshot:
@@ -66,13 +84,13 @@ def test_forward_diagnostics_fails_when_horizon_exceeds_dataset() -> None:
     assert "horizon_exceeds_dataset" in exc.value.fail_reasons
 
 
-def test_cli_returns_nonzero_for_empty_diagnostic_result(monkeypatch) -> None:
+def test_cli_returns_nonzero_for_empty_diagnostic_result(monkeypatch, tmp_path) -> None:
     import bithumb_bot.research.forward_diagnostics_cli as cli
 
     report_calls: list[object] = []
 
     def fake_load_manifest(path):
-        return object()
+        return type("Manifest", (), {"experiment_id": "exp1", "manifest_hash": lambda self: "sha256:" + "1" * 64})()
 
     def fake_run_forward_diagnostics(**kwargs):
         raise ForwardDiagnosticsUnavailableError(("no_forward_targets",))
@@ -84,6 +102,7 @@ def test_cli_returns_nonzero_for_empty_diagnostic_result(monkeypatch) -> None:
     monkeypatch.setattr(cli, "load_manifest", fake_load_manifest)
     monkeypatch.setattr(cli, "run_forward_diagnostics", fake_run_forward_diagnostics)
     monkeypatch.setattr(cli, "write_forward_diagnostics_report", fake_write_forward_diagnostics_report)
+    monkeypatch.setattr(cli, "PATH_MANAGER", _manager(tmp_path))
 
     code = cli.cmd_research_forward_diagnostics(
         manifest_path="manifest.json",
@@ -95,3 +114,5 @@ def test_cli_returns_nonzero_for_empty_diagnostic_result(monkeypatch) -> None:
 
     assert code == 1
     assert report_calls == []
+    assert not (cli.PATH_MANAGER.data_dir() / "reports/research/exp1/forward_diagnostics_report.json").exists()
+    assert (cli.PATH_MANAGER.data_dir() / "reports/research/exp1/forward_diagnostics_failure.json").exists()

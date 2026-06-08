@@ -31,6 +31,17 @@ class FeatureProviderSpec:
     causal_inputs: tuple[str, ...]
     causal_contract_exemption_reason: str | None = None
 
+    def as_report_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "value_type": self.value_type,
+            "required_history": self.required_history,
+            "bucketizer_type": self.bucketizer_type,
+            "definition_hash": self.definition_hash,
+            "causal_inputs": list(self.causal_inputs),
+            "causal_contract_exemption_reason": self.causal_contract_exemption_reason,
+        }
+
 
 def list_feature_provider_specs() -> tuple[FeatureProviderSpec, ...]:
     specs = (

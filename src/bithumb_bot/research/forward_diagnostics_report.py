@@ -58,10 +58,15 @@ def write_forward_diagnostics_report(
         "schema_version": 1,
         "artifact_type": "forward_return_diagnostic_warnings",
         "diagnostic_only": True,
+        "promotion_evidence": False,
+        "approved_profile_evidence": False,
+        "live_readiness_evidence": False,
+        "capital_allocation_evidence": False,
         "warnings": list(result.warnings),
         "diagnostic_status": result.diagnostic_status,
         "fail_reasons": list(result.fail_reasons),
     }
+    validate_forward_diagnostics_report_flags(warnings_payload)
     write_json_atomic(paths.warnings_path, warnings_payload)
 
     report = {
@@ -88,6 +93,10 @@ def write_forward_diagnostics_report(
         "horizon_steps": list(result.horizon_steps),
         "sample_count": result.sample_count,
         "target_count": result.target_count,
+        "availability": result.availability.as_dict(),
+        "coverage": {"feature_horizon": [row.as_dict() for row in result.coverage]},
+        "feature_provider_specs": [spec.as_report_dict() for spec in result.feature_provider_specs],
+        "dataset_quality": result.dataset_quality.as_dict(),
         "diagnostic_status": result.diagnostic_status,
         "fail_reasons": list(result.fail_reasons),
         "final_holdout_diagnostic_override": result.final_holdout_diagnostic_override,
