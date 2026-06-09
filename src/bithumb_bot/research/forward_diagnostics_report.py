@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from bithumb_bot.evidence_safety import diagnostic_feature_mining_taxonomy
 from bithumb_bot.paths import PathManager
 from bithumb_bot.research.experiment_manifest import ExperimentManifest
 from bithumb_bot.research.forward_diagnostics import FINAL_HOLDOUT_WARNING_REASON, ForwardDiagnosticsResult
 from bithumb_bot.research.hashing import report_content_hash_payload, sha256_prefixed
+from bithumb_bot.research.artifact_contract import apply_artifact_contract, validate_artifact_contract
 from bithumb_bot.storage_io import write_json_atomic, write_text_atomic
 
 
@@ -56,33 +56,24 @@ def write_forward_diagnostics_report(
         raise TypeError("write_forward_diagnostics_report requires ForwardDiagnosticsResult")
     validate_forward_diagnostics_split_policy(result)
     paths = forward_diagnostics_report_paths(manager=manager, experiment_id=manifest.experiment_id)
-    _write_metrics_csv(paths.feature_bucket_metrics_path, [metric.as_dict() for metric in result.feature_bucket_metrics])
-    _write_metrics_csv(paths.feature_horizon_metrics_path, [metric.as_dict() for metric in result.feature_horizon_metrics])
-    warnings_payload = {
+    _write_bucket_metrics_csv(paths.feature_bucket_metrics_path, [metric.as_dict() for metric in result.feature_bucket_metrics])
+    _write_horizon_metrics_csv(paths.feature_horizon_metrics_path, [metric.as_dict() for metric in result.feature_horizon_metrics])
+    warnings_payload = apply_artifact_contract({
         "schema_version": 1,
         "artifact_type": "forward_return_diagnostic_warnings",
-        "diagnostic_only": True,
-        "promotion_evidence": False,
-        "approved_profile_evidence": False,
-        "live_readiness_evidence": False,
-        "capital_allocation_evidence": False,
-        **diagnostic_feature_mining_taxonomy(),
+        "measurement_contract": result.measurement_contract.as_dict(),
         "warnings": list(result.warnings),
         "diagnostic_status": result.diagnostic_status,
         "fail_reasons": list(result.fail_reasons),
-    }
+        "degraded_override": result.degraded_override,
+        "degraded_exit_policy": dict(result.degraded_exit_policy),
+    })
     validate_forward_diagnostics_report_flags(warnings_payload)
     write_json_atomic(paths.warnings_path, warnings_payload)
 
-    report = {
+    report = apply_artifact_contract({
         "schema_version": 1,
         "artifact_type": "forward_return_diagnostic_report",
-        "diagnostic_only": True,
-        "promotion_evidence": False,
-        "approved_profile_evidence": False,
-        "live_readiness_evidence": False,
-        "capital_allocation_evidence": False,
-        **diagnostic_feature_mining_taxonomy(),
         "experiment_id": manifest.experiment_id,
         "manifest_hash": manifest.manifest_hash(),
         "split_name": result.split_name,
@@ -94,6 +85,7 @@ def write_forward_diagnostics_report(
             "intrabar_included": result.intrabar_included,
             "mfe_mae_basis": result.mfe_mae_basis,
         },
+        "measurement_contract": result.measurement_contract.as_dict(),
         "bucket_method": result.bucket_method,
         "feature_names": list(result.feature_names),
         "horizon_steps": list(result.horizon_steps),
@@ -108,6 +100,8 @@ def write_forward_diagnostics_report(
         "diagnostic_status": result.diagnostic_status,
         "fail_reasons": list(result.fail_reasons),
         "final_holdout_diagnostic_override": result.final_holdout_diagnostic_override,
+        "degraded_override": result.degraded_override,
+        "degraded_exit_policy": dict(result.degraded_exit_policy),
         "warnings": list(result.warnings),
         "artifact_paths": {
             "report": str(paths.report_path),
@@ -118,7 +112,7 @@ def write_forward_diagnostics_report(
         "feature_bucket_metrics_hash": _file_hash(paths.feature_bucket_metrics_path),
         "feature_horizon_metrics_hash": _file_hash(paths.feature_horizon_metrics_path),
         "warnings_hash": _file_hash(paths.warnings_path),
-    }
+    })
     validate_forward_diagnostics_report_flags(report)
     report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
     write_json_atomic(paths.report_path, report)
@@ -126,36 +120,8 @@ def write_forward_diagnostics_report(
 
 
 def validate_forward_diagnostics_report_flags(payload: dict[str, Any]) -> None:
-    if payload.get("diagnostic_only") is not True:
-        raise ValueError("forward diagnostics report must be diagnostic_only")
-    if any(
-        bool(payload.get(field))
-        for field in (
-            "promotion_evidence",
-            "approved_profile_evidence",
-            "live_readiness_evidence",
-            "capital_allocation_evidence",
-        )
-    ):
-        raise ValueError("forward diagnostics report must remain diagnostic-only")
-    if payload.get("non_promotable") is not True:
-        raise ValueError("forward diagnostics report must be non_promotable")
-    if payload.get("promotion_eligible") is not False:
-        raise ValueError("forward diagnostics report must not be promotion_eligible")
-    if payload.get("promotion_grade") is not False:
-        raise ValueError("forward diagnostics report must not be promotion_grade")
-    if payload.get("evidence_scope") != "diagnostic_feature_mining":
-        raise ValueError("forward diagnostics report evidence_scope must be diagnostic_feature_mining")
-    forbidden_uses = payload.get("forbidden_uses")
-    if not isinstance(forbidden_uses, list) or not {
-        "strategy_promotion",
-        "approved_profile",
-        "live_readiness",
-        "capital_allocation",
-    }.issubset({str(item) for item in forbidden_uses}):
-        raise ValueError("forward diagnostics report forbidden_uses incomplete")
-    if not str(payload.get("operator_next_action") or "").strip():
-        raise ValueError("forward diagnostics report operator_next_action required")
+    validate_artifact_contract(payload)
+    _validate_measurement_contract_payload(payload)
 
 
 def validate_forward_diagnostics_split_policy(result: ForwardDiagnosticsResult) -> None:
@@ -172,7 +138,7 @@ def validate_forward_diagnostics_split_policy(result: ForwardDiagnosticsResult) 
         raise ValueError(FINAL_HOLDOUT_WARNING_REASON)
 
 
-def _write_metrics_csv(path: Path, rows: list[dict[str, object]]) -> None:
+def _write_bucket_metrics_csv(path: Path, rows: list[dict[str, object]]) -> None:
     fieldnames = [
         "feature_name",
         "bucket_id",
@@ -183,6 +149,16 @@ def _write_metrics_csv(path: Path, rows: list[dict[str, object]]) -> None:
         "intrabar_included",
         "mfe_mae_basis",
         "count",
+        "sample_start_ts",
+        "sample_end_ts",
+        "return_basis",
+        "cost_adjustment",
+        "execution_simulation",
+        "fill_simulation",
+        "mean_gross_forward_return",
+        "median_gross_forward_return",
+        "p10_gross_forward_return",
+        "p90_gross_forward_return",
         "mean_forward_return",
         "median_forward_return",
         "win_rate",
@@ -195,6 +171,44 @@ def _write_metrics_csv(path: Path, rows: list[dict[str, object]]) -> None:
         "mfe_mae_ratio",
         "warnings",
     ]
+    _write_metrics_csv(path, rows, fieldnames=fieldnames)
+
+
+def _write_horizon_metrics_csv(path: Path, rows: list[dict[str, object]]) -> None:
+    fieldnames = [
+        "feature_name",
+        "horizon_label",
+        "entry_price_mode",
+        "path_start_policy",
+        "intrabar_included",
+        "mfe_mae_basis",
+        "count",
+        "sample_start_ts",
+        "sample_end_ts",
+        "return_basis",
+        "cost_adjustment",
+        "execution_simulation",
+        "fill_simulation",
+        "mean_gross_forward_return",
+        "median_gross_forward_return",
+        "p10_gross_forward_return",
+        "p90_gross_forward_return",
+        "mean_forward_return",
+        "median_forward_return",
+        "win_rate",
+        "p10_forward_return",
+        "p90_forward_return",
+        "mean_mfe",
+        "median_mfe",
+        "mean_mae",
+        "median_mae",
+        "mfe_mae_ratio",
+        "warnings",
+    ]
+    _write_metrics_csv(path, rows, fieldnames=fieldnames)
+
+
+def _write_metrics_csv(path: Path, rows: list[dict[str, object]], *, fieldnames: list[str]) -> None:
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=fieldnames, extrasaction="ignore", lineterminator="\n")
     writer.writeheader()
@@ -207,3 +221,20 @@ def _write_metrics_csv(path: Path, rows: list[dict[str, object]]) -> None:
 
 def _file_hash(path: Path) -> str:
     return sha256_prefixed(path.read_text(encoding="utf-8"))
+
+
+def _validate_measurement_contract_payload(payload: dict[str, Any]) -> None:
+    contract = payload.get("measurement_contract")
+    if not isinstance(contract, dict):
+        raise ValueError("forward diagnostics measurement_contract required")
+    expected = {
+        "return_basis": "gross_forward_return",
+        "cost_adjustment": "none",
+        "diagnostic_cost_model": "none",
+        "execution_simulation": False,
+        "fill_simulation": False,
+        "order_lifecycle_simulation": False,
+        "operator_interpretation": "feature_mining_only_not_expected_pnl",
+    }
+    if contract != expected:
+        raise ValueError("forward diagnostics measurement_contract mismatch")

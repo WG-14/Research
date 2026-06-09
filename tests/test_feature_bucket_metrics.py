@@ -147,6 +147,8 @@ def test_bucket_metrics_include_mean_and_median() -> None:
 
     assert metric.mean_forward_return == 0.02
     assert metric.median_forward_return == 0.02
+    assert metric.mean_gross_forward_return == 0.02
+    assert metric.median_gross_forward_return == 0.02
 
 
 def test_bucket_metrics_include_win_rate() -> None:
@@ -165,6 +167,51 @@ def test_empty_bucket_metrics_use_none_not_zero() -> None:
 
     assert empty.mean_forward_return is None
     assert empty.median_forward_return is None
+    assert empty.mean_gross_forward_return is None
+    assert empty.sample_start_ts is None
+    assert empty.sample_end_ts is None
+
+
+def test_bucket_metrics_use_gross_forward_return_column_names() -> None:
+    metric = compute_feature_bucket_metrics(
+        observations=_obs([0.02]),
+        bucket_method="quantile:1",
+        feature_specs=SMA_GAP_SPEC,
+        min_bucket_count=1,
+    )[0]
+    payload = metric.as_dict()
+
+    assert payload["return_basis"] == "gross_forward_return"
+    assert payload["mean_gross_forward_return"] == 0.02
+    assert payload["mean_forward_return"] == payload["mean_gross_forward_return"]
+
+
+def test_bucket_metrics_include_sample_start_and_end_ts() -> None:
+    metric = compute_feature_bucket_metrics(
+        observations=_obs([0.01, 0.02]),
+        bucket_method="quantile:1",
+        feature_specs=SMA_GAP_SPEC,
+        min_bucket_count=1,
+    )[0]
+
+    assert metric.sample_start_ts == 0
+    assert metric.sample_end_ts == 1
+
+
+def test_metrics_csv_header_includes_gross_return_and_sample_ts(tmp_path) -> None:
+    import csv
+
+    from bithumb_bot.research.forward_diagnostics_report import write_forward_diagnostics_report
+    from tests.test_forward_diagnostics_report import _manager, _manifest, _result
+
+    manager = _manager(tmp_path)
+    write_forward_diagnostics_report(manager=manager, manifest=_manifest(), result=_result())
+    csv_path = manager.data_dir() / "derived/research/exp1/forward_diagnostics/feature_bucket_metrics.csv"
+    header = next(csv.reader(csv_path.read_text(encoding="utf-8").splitlines()))
+
+    assert "mean_gross_forward_return" in header
+    assert "sample_start_ts" in header
+    assert "sample_end_ts" in header
 
 
 def test_low_sample_count_warning_is_machine_readable() -> None:

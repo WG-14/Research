@@ -102,6 +102,27 @@ class UnitCandleAdapter:
         }
 
 
+def test_sqlite_dataset_quality_records_source_hash_status_when_missing(tmp_path: Path) -> None:
+    manifest = _manifest()
+    snapshot = DatasetSnapshot(
+        snapshot_id=manifest.dataset.snapshot_id,
+        source="sqlite_candles",
+        market=manifest.market,
+        interval=manifest.interval,
+        split_name="train",
+        date_range=manifest.dataset.split.train,
+        candles=(
+            Candle(manifest.dataset.split.train.start_ts_ms(), 100.0, 101.0, 99.0, 100.0, 1.0),
+        ),
+        source_content_hash=None,
+    )
+    report = _build_source_agnostic_dataset_quality_report(db_path=None, snapshot=snapshot).payload
+
+    assert report["source_content_hash_status"] == "derived_from_materialized_snapshot"
+    assert report["source_hash_status"] == "derived_from_materialized_snapshot"
+    assert report["source_locator_policy"] == "runtime_db_path_excluded_from_dataset_hash"
+
+
 class UnitTopOfBookAdapter:
     source = "unit_top_of_book_source"
     adapter_name = "unit_top_of_book_adapter"

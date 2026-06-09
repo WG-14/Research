@@ -22,6 +22,27 @@ def _source(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
+def _forward_diagnostics_contract_payload() -> dict[str, object]:
+    return {
+        "artifact_type": "forward_return_diagnostic_report",
+        "diagnostic_only": True,
+        "promotion_evidence": False,
+        "approved_profile_evidence": False,
+        "live_readiness_evidence": False,
+        "capital_allocation_evidence": False,
+        **diagnostic_feature_mining_taxonomy(),
+        "measurement_contract": {
+            "return_basis": "gross_forward_return",
+            "cost_adjustment": "none",
+            "diagnostic_cost_model": "none",
+            "execution_simulation": False,
+            "fill_simulation": False,
+            "order_lifecycle_simulation": False,
+            "operator_interpretation": "feature_mining_only_not_expected_pnl",
+        },
+    }
+
+
 def test_forward_diagnostics_not_registered_as_strategy_plugin() -> None:
     plugin_names = {plugin.name for plugin in list_research_strategy_plugins()}
 
@@ -76,12 +97,7 @@ def test_forward_diagnostics_modules_live_under_research_namespace() -> None:
 
 def test_forward_diagnostics_report_remains_diagnostic_only_after_policy_fields_added() -> None:
     payload = {
-        "diagnostic_only": True,
-        "promotion_evidence": False,
-        "approved_profile_evidence": False,
-        "live_readiness_evidence": False,
-        "capital_allocation_evidence": False,
-        **diagnostic_feature_mining_taxonomy(),
+        **_forward_diagnostics_contract_payload(),
         "calculation_policy": {
             "entry_price_mode": "signal_close",
             "path_start_policy": "next_candle_after_signal_close",
@@ -94,14 +110,7 @@ def test_forward_diagnostics_report_remains_diagnostic_only_after_policy_fields_
 
 
 def test_forward_diagnostics_report_cannot_be_promotion_evidence() -> None:
-    base_payload = {
-        "diagnostic_only": True,
-        "promotion_evidence": False,
-        "approved_profile_evidence": False,
-        "live_readiness_evidence": False,
-        "capital_allocation_evidence": False,
-        **diagnostic_feature_mining_taxonomy(),
-    }
+    base_payload = _forward_diagnostics_contract_payload()
     for field in (
         "promotion_evidence",
         "approved_profile_evidence",
@@ -146,13 +155,7 @@ def test_forward_diagnostics_failure_artifact_uses_same_diagnostic_taxonomy() ->
 
 def test_forward_diagnostics_coverage_artifact_remains_diagnostic_only() -> None:
     payload = {
-        "artifact_type": "forward_return_diagnostic_report",
-        "diagnostic_only": True,
-        "promotion_evidence": False,
-        "approved_profile_evidence": False,
-        "live_readiness_evidence": False,
-        "capital_allocation_evidence": False,
-        **diagnostic_feature_mining_taxonomy(),
+        **_forward_diagnostics_contract_payload(),
         "coverage": {"feature_horizon": []},
     }
 

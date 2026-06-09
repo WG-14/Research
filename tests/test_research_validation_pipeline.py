@@ -11,6 +11,34 @@ from bithumb_bot.research import validation_pipeline as pipeline
 from bithumb_bot.storage_io import write_json_atomic
 
 
+def test_validation_pipeline_rejects_forward_diagnostics_report_as_candidate_report() -> None:
+    reasons = pipeline._report_evidence_rejection_reasons(
+        {
+            "artifact_type": "forward_return_diagnostic_report",
+            "diagnostic_only": True,
+            "promotion_evidence": False,
+            "approved_profile_evidence": False,
+            "live_readiness_evidence": False,
+            "capital_allocation_evidence": False,
+            "evidence_scope": "diagnostic_feature_mining",
+            "promotion_eligible": False,
+            "promotion_grade": False,
+            "non_promotable": True,
+            "forbidden_uses": [
+                "strategy_promotion",
+                "approved_profile",
+                "live_readiness",
+                "capital_allocation",
+            ],
+            "operator_next_action": "run_research_validate_from_fixed_manifest",
+        },
+        label="backtest",
+    )
+
+    assert "backtest_diagnostic_feature_mining_not_promotable" in reasons
+    assert "backtest_forbidden_use:strategy_promotion" in reasons
+
+
 def _manager(tmp_path: Path, monkeypatch) -> PathManager:
     monkeypatch.setenv("MODE", "paper")
     for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):

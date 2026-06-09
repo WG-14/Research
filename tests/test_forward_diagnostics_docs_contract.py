@@ -43,6 +43,7 @@ def test_forward_diagnostics_runbook_forbidden_uses_match_report_flags(tmp_path)
     for field in (
         "diagnostic_only",
         "final_holdout_diagnostic_override",
+        "measurement_contract",
         "warnings",
         "evidence_scope",
         "promotion_eligible",
@@ -64,6 +65,26 @@ def test_forward_diagnostics_cli_help_matches_runbook_holdout_override(capsys) -
     help_text = capsys.readouterr().out
     assert "--allow-final-holdout-diagnostics" in RUNBOOK.read_text(encoding="utf-8")
     assert "--allow-final-holdout-diagnostics" in help_text
+
+
+def test_forward_diagnostics_cli_help_matches_runbook_degraded_override(capsys) -> None:
+    parser = build_parser(command_registry())
+
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["research-forward-diagnostics", "--help"])
+
+    assert exc.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--allow-degraded-diagnostics" in RUNBOOK.read_text(encoding="utf-8")
+    assert "--allow-degraded-diagnostics" in help_text
+
+
+def test_runbook_and_report_schema_use_same_return_basis(tmp_path) -> None:
+    source = RUNBOOK.read_text(encoding="utf-8")
+    report = write_forward_diagnostics_report(manager=_manager(tmp_path), manifest=_manifest(), result=_result())
+
+    assert '"return_basis": "gross_forward_return"' in source
+    assert report["measurement_contract"]["return_basis"] == "gross_forward_return"
 
 
 def test_forward_diagnostics_report_flags_reject_forbidden_evidence_true(tmp_path) -> None:

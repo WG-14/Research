@@ -11,6 +11,7 @@ from bithumb_bot.research.feature_provider_registry import (
     FeatureProviderSpec,
 )
 from bithumb_bot.research.forward_targets import ForwardTarget
+from bithumb_bot.research.forward_targets import forward_diagnostics_measurement_contract
 
 
 @dataclass(frozen=True)
@@ -24,11 +25,13 @@ class FeatureBucketMetric:
     intrabar_included: bool | None
     mfe_mae_basis: str | None
     count: int
-    mean_forward_return: float | None
-    median_forward_return: float | None
+    sample_start_ts: int | None
+    sample_end_ts: int | None
+    mean_gross_forward_return: float | None
+    median_gross_forward_return: float | None
     win_rate: float | None
-    p10_forward_return: float | None
-    p90_forward_return: float | None
+    p10_gross_forward_return: float | None
+    p90_gross_forward_return: float | None
     mean_mfe: float | None
     median_mfe: float | None
     mean_mae: float | None
@@ -36,7 +39,24 @@ class FeatureBucketMetric:
     mfe_mae_ratio: float | None
     warnings: tuple[str, ...]
 
+    @property
+    def mean_forward_return(self) -> float | None:
+        return self.mean_gross_forward_return
+
+    @property
+    def median_forward_return(self) -> float | None:
+        return self.median_gross_forward_return
+
+    @property
+    def p10_forward_return(self) -> float | None:
+        return self.p10_gross_forward_return
+
+    @property
+    def p90_forward_return(self) -> float | None:
+        return self.p90_gross_forward_return
+
     def as_dict(self) -> dict[str, object]:
+        contract = forward_diagnostics_measurement_contract()
         return {
             "feature_name": self.feature_name,
             "bucket_id": self.bucket_id,
@@ -47,11 +67,21 @@ class FeatureBucketMetric:
             "intrabar_included": self.intrabar_included,
             "mfe_mae_basis": self.mfe_mae_basis,
             "count": self.count,
-            "mean_forward_return": self.mean_forward_return,
-            "median_forward_return": self.median_forward_return,
+            "sample_start_ts": self.sample_start_ts,
+            "sample_end_ts": self.sample_end_ts,
+            "return_basis": contract.return_basis,
+            "cost_adjustment": contract.cost_adjustment,
+            "execution_simulation": contract.execution_simulation,
+            "fill_simulation": contract.fill_simulation,
+            "mean_gross_forward_return": self.mean_gross_forward_return,
+            "median_gross_forward_return": self.median_gross_forward_return,
+            "mean_forward_return": self.mean_gross_forward_return,
+            "median_forward_return": self.median_gross_forward_return,
             "win_rate": self.win_rate,
-            "p10_forward_return": self.p10_forward_return,
-            "p90_forward_return": self.p90_forward_return,
+            "p10_gross_forward_return": self.p10_gross_forward_return,
+            "p90_gross_forward_return": self.p90_gross_forward_return,
+            "p10_forward_return": self.p10_gross_forward_return,
+            "p90_forward_return": self.p90_gross_forward_return,
             "mean_mfe": self.mean_mfe,
             "median_mfe": self.median_mfe,
             "mean_mae": self.mean_mae,
@@ -254,11 +284,13 @@ def _metric_for_rows(
             intrabar_included=None,
             mfe_mae_basis=None,
             count=0,
-            mean_forward_return=None,
-            median_forward_return=None,
+            sample_start_ts=None,
+            sample_end_ts=None,
+            mean_gross_forward_return=None,
+            median_gross_forward_return=None,
             win_rate=None,
-            p10_forward_return=None,
-            p90_forward_return=None,
+            p10_gross_forward_return=None,
+            p90_gross_forward_return=None,
             mean_mfe=None,
             median_mfe=None,
             mean_mae=None,
@@ -268,6 +300,7 @@ def _metric_for_rows(
         )
 
     returns = tuple(float(row.target.gross_forward_return) for row in rows)
+    entry_timestamps = tuple(int(row.target.entry_ts) for row in rows)
     mfes = tuple(float(row.target.mfe) for row in rows)
     maes = tuple(float(row.target.mae) for row in rows)
     mean_return = sum(returns) / count
@@ -295,11 +328,13 @@ def _metric_for_rows(
         intrabar_included=policy.intrabar_included,
         mfe_mae_basis=policy.mfe_mae_basis,
         count=count,
-        mean_forward_return=mean_return,
-        median_forward_return=median_return,
+        sample_start_ts=min(entry_timestamps),
+        sample_end_ts=max(entry_timestamps),
+        mean_gross_forward_return=mean_return,
+        median_gross_forward_return=median_return,
         win_rate=sum(1 for value in returns if value > 0.0) / count,
-        p10_forward_return=_percentile(returns, 0.10),
-        p90_forward_return=_percentile(returns, 0.90),
+        p10_gross_forward_return=_percentile(returns, 0.10),
+        p90_gross_forward_return=_percentile(returns, 0.90),
         mean_mfe=mean_mfe,
         median_mfe=float(median(mfes)),
         mean_mae=mean_mae,

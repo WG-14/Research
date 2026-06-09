@@ -50,6 +50,34 @@ from bithumb_bot.evidence_chain import (
 from bithumb_bot.storage_io import write_json_atomic
 
 
+def test_promotion_gate_rejects_forward_diagnostics_report() -> None:
+    ok, reasons = validate_backtest_candidate_for_promotion(
+        {
+            "artifact_type": "forward_return_diagnostic_report",
+            "diagnostic_only": True,
+            "promotion_evidence": False,
+            "approved_profile_evidence": False,
+            "live_readiness_evidence": False,
+            "capital_allocation_evidence": False,
+            "evidence_scope": "diagnostic_feature_mining",
+            "promotion_eligible": False,
+            "promotion_grade": False,
+            "non_promotable": True,
+            "forbidden_uses": [
+                "strategy_promotion",
+                "approved_profile",
+                "live_readiness",
+                "capital_allocation",
+            ],
+            "operator_next_action": "run_research_validate_from_fixed_manifest",
+        }
+    )
+
+    assert ok is False
+    assert "diagnostic_feature_mining_not_promotable" in reasons
+    assert "forbidden_use:strategy_promotion" in reasons
+
+
 def _manager(tmp_path: Path, monkeypatch) -> PathManager:
     monkeypatch.setenv("MODE", "paper")
     for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):

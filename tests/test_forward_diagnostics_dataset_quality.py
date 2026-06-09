@@ -51,11 +51,26 @@ def test_report_content_hash_changes_when_dataset_quality_hash_changes(tmp_path)
 
 
 def test_dataset_quality_fail_is_recorded_in_diagnostic_report(tmp_path) -> None:
+    report_hash = "sha256:" + "3" * 64
+    dataset_hash = "sha256:" + "4" * 64
     quality = ForwardDiagnosticsDatasetQuality(
         quality_gate_status="FAIL",
         quality_gate_reasons=("missing_candles",),
-        dataset_quality_report_hash="sha256:" + "3" * 64,
-        dataset_content_hash="sha256:" + "4" * 64,
+        dataset_quality_report_hash=report_hash,
+        dataset_quality_report_payload={
+            "artifact_type": "dataset_quality_report",
+            "content_hash": report_hash,
+            "dataset_content_hash": dataset_hash,
+            "canonical_snapshot_hash": dataset_hash,
+            "source_content_hash_status": "derived_from_materialized_snapshot",
+            "source_schema_hash_status": "not_applicable",
+            "source_locator_policy": "source_locator_excluded_from_dataset_hash",
+        },
+        dataset_content_hash=dataset_hash,
+        canonical_snapshot_hash=dataset_hash,
+        source_content_hash_status="derived_from_materialized_snapshot",
+        source_schema_hash_status="not_applicable",
+        source_locator_policy="source_locator_excluded_from_dataset_hash",
     )
     report = write_forward_diagnostics_report(
         manager=_manager(tmp_path),
@@ -79,8 +94,11 @@ def test_dataset_quality_fail_is_recorded_in_diagnostic_report(tmp_path) -> None
 
 
 def test_dataset_quality_fail_policy_is_degraded() -> None:
+    snapshot = _snapshot()
+    report_hash = "sha256:" + "5" * 64
+    dataset_hash = snapshot.content_hash()
     result = run_forward_diagnostics_on_snapshot(
-        snapshot=_snapshot(),
+        snapshot=snapshot,
         feature_names=("range_ratio",),
         horizon_steps=(1,),
         bucket_method="quantile:1",
@@ -88,8 +106,21 @@ def test_dataset_quality_fail_policy_is_degraded() -> None:
         dataset_quality=ForwardDiagnosticsDatasetQuality(
             quality_gate_status="FAIL",
             quality_gate_reasons=("missing_candles",),
-            dataset_quality_report_hash="sha256:" + "5" * 64,
-            dataset_content_hash=_snapshot().content_hash(),
+            dataset_quality_report_hash=report_hash,
+            dataset_quality_report_payload={
+                "artifact_type": "dataset_quality_report",
+                "content_hash": report_hash,
+                "dataset_content_hash": dataset_hash,
+                "canonical_snapshot_hash": dataset_hash,
+                "source_content_hash_status": "derived_from_materialized_snapshot",
+                "source_schema_hash_status": "not_applicable",
+                "source_locator_policy": "source_locator_excluded_from_dataset_hash",
+            },
+            dataset_content_hash=dataset_hash,
+            canonical_snapshot_hash=dataset_hash,
+            source_content_hash_status="derived_from_materialized_snapshot",
+            source_schema_hash_status="not_applicable",
+            source_locator_policy="source_locator_excluded_from_dataset_hash",
         ),
     )
 

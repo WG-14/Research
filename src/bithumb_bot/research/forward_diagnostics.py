@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from bithumb_bot.research.dataset_snapshot import (
@@ -17,6 +17,7 @@ from bithumb_bot.research.feature_bucket_metrics import (
     FeatureObservation,
     compute_feature_bucket_metrics,
 )
+from bithumb_bot.research.feature_horizon_metrics import FeatureHorizonMetric, compute_feature_horizon_metrics
 from bithumb_bot.research.feature_diagnostic_features import (
     AsOfCandleView,
     FeatureValue,
@@ -27,11 +28,13 @@ from bithumb_bot.research.feature_provider_registry import (
     validate_feature_value_against_spec,
 )
 from bithumb_bot.research.forward_targets import (
+    ForwardDiagnosticsMeasurementContract,
     ForwardTarget,
     HorizonDuration,
     build_horizon_durations,
     compute_forward_targets,
     forward_target_calculation_policy,
+    forward_diagnostics_measurement_contract,
 )
 from bithumb_bot.research.hashing import sha256_prefixed
 from bithumb_bot.research.split_usage_policy import (
@@ -67,7 +70,10 @@ class DatasetProvenance:
     content_hash: str
     source_uri: str | None
     source_content_hash: str | None
+    source_content_hash_status: str
     source_schema_hash: str | None
+    source_schema_hash_status: str
+    source_locator_policy: str
     adapter_provenance_hash: str | None
 
     def as_dict(self) -> dict[str, object]:
@@ -81,7 +87,10 @@ class DatasetProvenance:
             "content_hash": self.content_hash,
             "source_uri": self.source_uri,
             "source_content_hash": self.source_content_hash,
+            "source_content_hash_status": self.source_content_hash_status,
             "source_schema_hash": self.source_schema_hash,
+            "source_schema_hash_status": self.source_schema_hash_status,
+            "source_locator_policy": self.source_locator_policy,
             "adapter_provenance_hash": self.adapter_provenance_hash,
         }
 
@@ -91,15 +100,39 @@ class ForwardDiagnosticsDatasetQuality:
     quality_gate_status: str
     quality_gate_reasons: tuple[str, ...]
     dataset_quality_report_hash: str
+    dataset_quality_report_payload: dict[str, object]
     dataset_content_hash: str
+    canonical_snapshot_hash: str
+    source_content_hash_status: str
+    source_schema_hash_status: str
+    source_locator_policy: str
     fail_policy: str = DATASET_QUALITY_FAIL_POLICY
+
+    def __post_init__(self) -> None:
+        if not self.dataset_quality_report_hash.startswith("sha256:"):
+            raise ValueError("dataset_quality_report_hash must be sha256-prefixed")
+        if not self.dataset_quality_report_payload:
+            raise ValueError("dataset_quality_report_payload required")
+        if not self.canonical_snapshot_hash.startswith("sha256:"):
+            raise ValueError("canonical_snapshot_hash must be sha256-prefixed")
+        if not self.source_content_hash_status:
+            raise ValueError("source_content_hash_status required")
+        if not self.source_schema_hash_status:
+            raise ValueError("source_schema_hash_status required")
+        if not self.source_locator_policy:
+            raise ValueError("source_locator_policy required")
 
     def as_dict(self) -> dict[str, object]:
         return {
             "quality_gate_status": self.quality_gate_status,
             "quality_gate_reasons": list(self.quality_gate_reasons),
             "dataset_quality_report_hash": self.dataset_quality_report_hash,
+            "dataset_quality_report_payload": dict(self.dataset_quality_report_payload),
             "dataset_content_hash": self.dataset_content_hash,
+            "canonical_snapshot_hash": self.canonical_snapshot_hash,
+            "source_content_hash_status": self.source_content_hash_status,
+            "source_schema_hash_status": self.source_schema_hash_status,
+            "source_locator_policy": self.source_locator_policy,
             "fail_policy": self.fail_policy,
         }
 
@@ -122,12 +155,17 @@ class ForwardDiagnosticsResult:
     feature_provider_specs: tuple[FeatureProviderSpec, ...]
     dataset_quality: ForwardDiagnosticsDatasetQuality
     feature_bucket_metrics: tuple[FeatureBucketMetric, ...]
-    feature_horizon_metrics: tuple[FeatureBucketMetric, ...]
+    feature_horizon_metrics: tuple[FeatureHorizonMetric, ...]
     warnings: tuple[dict[str, object], ...]
     dataset: DatasetProvenance
     interval: str = "1m"
     horizon_durations: tuple[HorizonDuration, ...] = ()
     final_holdout_diagnostic_override: bool = False
+    degraded_override: bool = False
+    degraded_exit_policy: dict[str, object] = field(default_factory=dict)
+    measurement_contract: ForwardDiagnosticsMeasurementContract = field(
+        default_factory=forward_diagnostics_measurement_contract
+    )
 
     def __post_init__(self) -> None:
         if not self.horizon_durations:
@@ -142,6 +180,10 @@ class ForwardDiagnosticsResult:
             raise ValueError("diagnostic_status must be sourced from availability.status")
         if tuple(self.fail_reasons) != tuple(self.availability.fail_reasons):
             raise ValueError("fail_reasons must be sourced from availability.fail_reasons")
+        if self.measurement_contract != forward_diagnostics_measurement_contract():
+            raise ValueError("forward diagnostics result measurement_contract must be gross-only diagnostics")
+        if self.diagnostic_status == "degraded" and "allow_degraded_diagnostics" not in self.degraded_exit_policy:
+            object.__setattr__(self, "degraded_exit_policy", _degraded_exit_policy(self.degraded_override))
 
     @property
     def diagnostic_status(self) -> str:
@@ -167,6 +209,7 @@ class ForwardDiagnosticsResult:
                 "intrabar_included": self.intrabar_included,
                 "mfe_mae_basis": self.mfe_mae_basis,
             },
+            "measurement_contract": self.measurement_contract.as_dict(),
             "sample_count": self.sample_count,
             "target_count": self.target_count,
             "availability": self.availability.as_dict(),
@@ -180,6 +223,8 @@ class ForwardDiagnosticsResult:
             "diagnostic_status": self.diagnostic_status,
             "fail_reasons": list(self.fail_reasons),
             "final_holdout_diagnostic_override": self.final_holdout_diagnostic_override,
+            "degraded_override": self.degraded_override,
+            "degraded_exit_policy": dict(self.degraded_exit_policy),
         }
 
 
@@ -194,6 +239,7 @@ def run_forward_diagnostics(
     entry_price_mode: str = "next_open",
     min_bucket_count: int = 30,
     final_holdout_diagnostic_override: bool = False,
+    degraded_override: bool = False,
 ) -> ForwardDiagnosticsResult:
     validate_split_usage(
         split_name=split_name,
@@ -215,6 +261,7 @@ def run_forward_diagnostics(
         entry_price_mode=entry_price_mode,
         min_bucket_count=min_bucket_count,
         final_holdout_diagnostic_override=final_holdout_diagnostic_override,
+        degraded_override=degraded_override,
         dataset_quality=forward_diagnostics_dataset_quality(
             snapshot=snapshot,
             quality_report=dataset_quality_report,
@@ -233,6 +280,7 @@ def run_forward_diagnostics_on_snapshot(
     min_bucket_count: int = 30,
     experiment_id: str | None = None,
     final_holdout_diagnostic_override: bool = False,
+    degraded_override: bool = False,
     dataset_quality: ForwardDiagnosticsDatasetQuality | None = None,
 ) -> ForwardDiagnosticsResult:
     policy_warnings = validate_split_usage(
@@ -305,11 +353,10 @@ def run_forward_diagnostics_on_snapshot(
         feature_specs=provider_specs,
         min_bucket_count=min_bucket_count,
     )
-    horizon_metrics = compute_feature_bucket_metrics(
+    horizon_metrics = compute_feature_horizon_metrics(
         observations=observations,
-        bucket_method="quantile:1",
         feature_specs=provider_specs,
-        min_bucket_count=min_bucket_count,
+        min_sample_count=min_bucket_count,
     )
     metric_warnings = tuple(_metric_warning_rows(bucket_metrics))
     metric_warnings += tuple(
@@ -339,6 +386,8 @@ def run_forward_diagnostics_on_snapshot(
         warnings=metric_warnings + policy_warnings,
         dataset=dataset_provenance(snapshot),
         final_holdout_diagnostic_override=bool(final_holdout_diagnostic_override),
+        degraded_override=bool(degraded_override),
+        degraded_exit_policy=_degraded_exit_policy(bool(degraded_override)),
     )
 
 
@@ -363,7 +412,7 @@ def _metric_warning_rows(metrics: tuple[FeatureBucketMetric, ...]) -> tuple[dict
                 {
                     "reason": str(warning),
                     "feature_name": metric.feature_name,
-                    "bucket_id": metric.bucket_id,
+                    "bucket_id": getattr(metric, "bucket_id", None),
                     "horizon_label": metric.horizon_label,
                 }
             )
@@ -406,7 +455,10 @@ def dataset_provenance(snapshot: DatasetSnapshot) -> DatasetProvenance:
         content_hash=snapshot.content_hash(),
         source_uri=snapshot.source_uri,
         source_content_hash=snapshot.source_content_hash,
+        source_content_hash_status=_source_content_hash_status(snapshot),
         source_schema_hash=snapshot.source_schema_hash,
+        source_schema_hash_status=_source_schema_hash_status(snapshot),
+        source_locator_policy=_source_locator_policy(snapshot),
         adapter_provenance_hash=adapter_hash,
     )
 
@@ -417,25 +469,77 @@ def forward_diagnostics_dataset_quality(
     quality_report: DatasetQualityReport | None = None,
 ) -> ForwardDiagnosticsDatasetQuality:
     if quality_report is not None:
+        payload = dict(quality_report.payload)
         return ForwardDiagnosticsDatasetQuality(
             quality_gate_status=quality_report.quality_gate_status,
             quality_gate_reasons=quality_report.quality_gate_reasons,
             dataset_quality_report_hash=quality_report.content_hash,
+            dataset_quality_report_payload=payload,
             dataset_content_hash=str(
                 quality_report.payload.get("dataset_content_hash") or snapshot.content_hash()
             ),
+            canonical_snapshot_hash=str(quality_report.payload.get("canonical_snapshot_hash") or snapshot.content_hash()),
+            source_content_hash_status=str(
+                quality_report.payload.get("source_content_hash_status")
+                or quality_report.payload.get("source_hash_status")
+                or _source_content_hash_status(snapshot)
+            ),
+            source_schema_hash_status=str(
+                quality_report.payload.get("source_schema_hash_status") or _source_schema_hash_status(snapshot)
+            ),
+            source_locator_policy=str(
+                quality_report.payload.get("source_locator_policy") or _source_locator_policy(snapshot)
+            ),
         )
     dataset_content_hash = snapshot.content_hash()
+    payload = {
+        "artifact_type": "forward_diagnostics_inline_dataset_quality",
+        "quality_gate_status": "PASS",
+        "quality_gate_reasons": [],
+        "dataset_content_hash": dataset_content_hash,
+        "canonical_snapshot_hash": dataset_content_hash,
+        "source_content_hash_status": _source_content_hash_status(snapshot),
+        "source_schema_hash_status": _source_schema_hash_status(snapshot),
+        "source_locator_policy": _source_locator_policy(snapshot),
+    }
+    payload["content_hash"] = sha256_prefixed(payload)
     return ForwardDiagnosticsDatasetQuality(
         quality_gate_status="PASS",
         quality_gate_reasons=(),
-        dataset_quality_report_hash=sha256_prefixed(
-            {
-                "artifact_type": "forward_diagnostics_inline_dataset_quality",
-                "quality_gate_status": "PASS",
-                "quality_gate_reasons": [],
-                "dataset_content_hash": dataset_content_hash,
-            }
-        ),
+        dataset_quality_report_hash=str(payload["content_hash"]),
+        dataset_quality_report_payload=payload,
         dataset_content_hash=dataset_content_hash,
+        canonical_snapshot_hash=dataset_content_hash,
+        source_content_hash_status=_source_content_hash_status(snapshot),
+        source_schema_hash_status=_source_schema_hash_status(snapshot),
+        source_locator_policy=_source_locator_policy(snapshot),
     )
+
+
+def _source_content_hash_status(snapshot: DatasetSnapshot) -> str:
+    if snapshot.source_content_hash:
+        return "present"
+    return "derived_from_materialized_snapshot"
+
+
+def _source_schema_hash_status(snapshot: DatasetSnapshot) -> str:
+    if snapshot.source_schema_hash:
+        return "present"
+    if snapshot.source == "sqlite_candles":
+        return "derived_from_sqlite_schema"
+    return "not_applicable"
+
+
+def _source_locator_policy(snapshot: DatasetSnapshot) -> str:
+    if snapshot.source == "sqlite_candles":
+        return "runtime_db_path_excluded_from_dataset_hash"
+    return "source_locator_excluded_from_dataset_hash"
+
+
+def _degraded_exit_policy(allow_degraded: bool) -> dict[str, object]:
+    return {
+        "allow_degraded_diagnostics": bool(allow_degraded),
+        "degraded_without_override_exit_code": 1,
+        "degraded_with_override_exit_code": 0,
+        "automation_policy": "degraded_requires_explicit_override",
+    }

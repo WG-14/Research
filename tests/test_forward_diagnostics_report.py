@@ -18,6 +18,7 @@ from bithumb_bot.research.forward_diagnostics import (
     ForwardDiagnosticsResult,
 )
 from bithumb_bot.research.forward_targets import build_horizon_durations
+from bithumb_bot.research.hashing import report_content_hash_payload, sha256_prefixed
 from bithumb_bot.research.forward_diagnostics_report import (
     validate_forward_diagnostics_report_flags,
     write_forward_diagnostics_report,
@@ -61,11 +62,13 @@ def _metric(
         intrabar_included=intrabar_included,
         mfe_mae_basis=mfe_mae_basis,
         count=1,
-        mean_forward_return=value,
-        median_forward_return=value,
+        sample_start_ts=1,
+        sample_end_ts=1,
+        mean_gross_forward_return=value,
+        median_gross_forward_return=value,
         win_rate=1.0,
-        p10_forward_return=value,
-        p90_forward_return=value,
+        p10_gross_forward_return=value,
+        p90_gross_forward_return=value,
         mean_mfe=0.02,
         median_mfe=0.02,
         mean_mae=-0.01,
@@ -86,7 +89,10 @@ def _dataset(*, content_hash: str = "sha256:" + "2" * 64, split_name: str = "tra
         content_hash=content_hash,
         source_uri=None,
         source_content_hash=None,
+        source_content_hash_status="derived_from_materialized_snapshot",
         source_schema_hash=None,
+        source_schema_hash_status="not_applicable",
+        source_locator_policy="source_locator_excluded_from_dataset_hash",
         adapter_provenance_hash=None,
     )
 
@@ -126,7 +132,20 @@ def _dataset_quality(
         quality_gate_status=status,
         quality_gate_reasons=() if status == "PASS" else ("missing_candles",),
         dataset_quality_report_hash=report_hash,
+        dataset_quality_report_payload={
+            "artifact_type": "dataset_quality_report",
+            "content_hash": report_hash,
+            "dataset_content_hash": dataset_content_hash,
+            "canonical_snapshot_hash": dataset_content_hash,
+            "source_content_hash_status": "derived_from_materialized_snapshot",
+            "source_schema_hash_status": "not_applicable",
+            "source_locator_policy": "source_locator_excluded_from_dataset_hash",
+        },
         dataset_content_hash=dataset_content_hash,
+        canonical_snapshot_hash=dataset_content_hash,
+        source_content_hash_status="derived_from_materialized_snapshot",
+        source_schema_hash_status="not_applicable",
+        source_locator_policy="source_locator_excluded_from_dataset_hash",
     )
 
 
@@ -147,6 +166,7 @@ def _result(
     split_name: str = "train",
     horizon_steps: tuple[int, ...] = (1,),
     interval: str = "1m",
+    degraded_override: bool = False,
 ) -> ForwardDiagnosticsResult:
     return ForwardDiagnosticsResult(
         experiment_id="exp1",
@@ -187,6 +207,7 @@ def _result(
         warnings=warnings,
         dataset=dataset or _dataset(split_name=split_name),
         final_holdout_diagnostic_override=final_holdout_diagnostic_override,
+        degraded_override=degraded_override,
     )
 
 
@@ -244,6 +265,16 @@ def test_forward_diagnostics_report_content_hash_changes_when_metrics_change(tmp
     assert first["content_hash"] != second["content_hash"]
 
 
+def test_forward_diagnostics_report_content_hash_changes_when_measurement_contract_changes(tmp_path: Path) -> None:
+    report = write_forward_diagnostics_report(manager=_manager(tmp_path), manifest=_manifest(), result=_result())
+    changed = dict(report)
+    changed.pop("content_hash")
+    changed["measurement_contract"] = dict(report["measurement_contract"])
+    changed["measurement_contract"]["return_basis"] = "unit_changed_return_basis"
+
+    assert report["content_hash"] != sha256_prefixed(report_content_hash_payload(changed))
+
+
 def test_forward_diagnostics_report_includes_path_policy(tmp_path: Path) -> None:
     report = write_forward_diagnostics_report(
         manager=_manager(tmp_path),
@@ -277,7 +308,10 @@ def test_forward_diagnostics_report_includes_dataset_provenance(tmp_path: Path) 
         "content_hash": "sha256:" + "2" * 64,
         "source_uri": None,
         "source_content_hash": None,
+        "source_content_hash_status": "derived_from_materialized_snapshot",
         "source_schema_hash": None,
+        "source_schema_hash_status": "not_applicable",
+        "source_locator_policy": "source_locator_excluded_from_dataset_hash",
         "adapter_provenance_hash": None,
     }
 
@@ -313,6 +347,69 @@ def test_report_includes_dataset_quality_status_and_hash(tmp_path: Path) -> None
     assert report["dataset_quality"]["quality_gate_status"] == "PASS"
     assert report["dataset_quality"]["quality_gate_reasons"] == []
     assert report["dataset_quality"]["dataset_quality_report_hash"] == "sha256:" + "4" * 64
+    assert "dataset_quality_report_payload" in report["dataset_quality"]
+    assert report["dataset_quality"]["canonical_snapshot_hash"] == "sha256:" + "2" * 64
+
+
+def test_forward_diagnostics_metrics_csv_includes_sample_time_range(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    write_forward_diagnostics_report(manager=manager, manifest=_manifest(), result=_result())
+    csv_text = (
+        manager.data_dir()
+        / "derived/research/exp1/forward_diagnostics/feature_bucket_metrics.csv"
+    ).read_text(encoding="utf-8")
+
+    assert "sample_start_ts" in csv_text.splitlines()[0]
+    assert "sample_end_ts" in csv_text.splitlines()[0]
+
+
+def test_report_content_hash_changes_when_sample_time_range_changes(tmp_path: Path) -> None:
+    first = write_forward_diagnostics_report(manager=_manager(tmp_path / "a"), manifest=_manifest(), result=_result())
+    metric = _metric(0.01)
+    changed_metric = FeatureBucketMetric(
+        feature_name=metric.feature_name,
+        bucket_id=metric.bucket_id,
+        bucket_label=metric.bucket_label,
+        horizon_label=metric.horizon_label,
+        entry_price_mode=metric.entry_price_mode,
+        path_start_policy=metric.path_start_policy,
+        intrabar_included=metric.intrabar_included,
+        mfe_mae_basis=metric.mfe_mae_basis,
+        count=metric.count,
+        sample_start_ts=10,
+        sample_end_ts=10,
+        mean_gross_forward_return=metric.mean_gross_forward_return,
+        median_gross_forward_return=metric.median_gross_forward_return,
+        win_rate=metric.win_rate,
+        p10_gross_forward_return=metric.p10_gross_forward_return,
+        p90_gross_forward_return=metric.p90_gross_forward_return,
+        mean_mfe=metric.mean_mfe,
+        median_mfe=metric.median_mfe,
+        mean_mae=metric.mean_mae,
+        median_mae=metric.median_mae,
+        mfe_mae_ratio=metric.mfe_mae_ratio,
+        warnings=metric.warnings,
+    )
+    result = _result()
+    object.__setattr__(result, "feature_bucket_metrics", (changed_metric,))
+    object.__setattr__(result, "feature_horizon_metrics", (changed_metric,))
+    second = write_forward_diagnostics_report(manager=_manager(tmp_path / "b"), manifest=_manifest(), result=result)
+
+    assert first["content_hash"] != second["content_hash"]
+
+
+def test_feature_horizon_metrics_csv_has_aggregate_schema(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    write_forward_diagnostics_report(manager=manager, manifest=_manifest(), result=_result())
+    header = (
+        manager.data_dir()
+        / "derived/research/exp1/forward_diagnostics/feature_horizon_metrics.csv"
+    ).read_text(encoding="utf-8").splitlines()[0].split(",")
+
+    assert "bucket_id" not in header
+    assert "bucket_label" not in header
+    assert "mean_gross_forward_return" in header
+    assert "return_basis" in header
 
 
 def test_report_includes_requested_feature_horizon_coverage(tmp_path: Path) -> None:

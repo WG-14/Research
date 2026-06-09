@@ -496,9 +496,21 @@ def test_approved_profile_rejects_forward_diagnostics_report_as_source_evidence(
         {
             "artifact_type": "forward_return_diagnostic_report",
             "diagnostic_only": True,
+            "promotion_evidence": False,
+            "approved_profile_evidence": False,
+            "live_readiness_evidence": False,
+            "capital_allocation_evidence": False,
             "evidence_scope": "diagnostic_feature_mining",
             "non_promotable": True,
             "promotion_eligible": False,
+            "promotion_grade": False,
+            "forbidden_uses": [
+                "strategy_promotion",
+                "approved_profile",
+                "live_readiness",
+                "capital_allocation",
+            ],
+            "operator_next_action": "run_research_validate_from_fixed_manifest",
         }
     )
     promotion["candidate_profile"] = candidate_profile
@@ -512,6 +524,7 @@ def test_approved_profile_rejects_forward_diagnostics_report_as_source_evidence(
     message = str(exc.value)
     assert "diagnostic_feature_mining_not_promotable" in message
     assert "non_promotable_evidence_artifact" in message
+    assert "forbidden_use:approved_profile" in message
 
 
 def test_promotion_artifact_rejects_nested_candidate_profile_compatibility_fallback() -> None:

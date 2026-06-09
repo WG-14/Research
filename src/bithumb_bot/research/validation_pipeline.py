@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from bithumb_bot.paths import PathManager, PathPolicyError
 from bithumb_bot.storage_io import write_json_atomic
-from bithumb_bot.evidence_safety import smoke_only_evidence_rejection_reasons
+from bithumb_bot.evidence_safety import evidence_rejection_reasons
 
 from .deployment_policy import is_production_bound_target
 from .experiment_manifest import ExperimentManifest
@@ -303,7 +303,7 @@ def verify_validation_run_payload(
     require_pass: bool = True,
 ) -> list[str]:
     reasons: list[str] = []
-    smoke_reasons = smoke_only_evidence_rejection_reasons(payload)
+    smoke_reasons = evidence_rejection_reasons(payload)
     if smoke_reasons:
         reasons.extend(f"validation_run_{reason}" for reason in smoke_reasons)
         reasons.append("regenerate_via_research_validate")
@@ -878,7 +878,7 @@ def _stage_walk_forward(
 
 
 def _report_evidence_rejection_reasons(report: dict[str, Any], *, label: str) -> list[str]:
-    reasons = [f"{label}_{reason}" for reason in smoke_only_evidence_rejection_reasons(report)]
+    reasons = [f"{label}_{reason}" for reason in evidence_rejection_reasons(report)]
     if report.get("compatibility_fallback") is True or report.get("research_compatibility_execution_fallback") is True:
         reasons.append(f"{label}_compatibility_fallback_not_promotion_grade")
     if reasons:

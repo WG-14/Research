@@ -13,6 +13,52 @@ PATH_START_ENTRY_CANDLE = "entry_candle"
 PATH_START_NEXT_CANDLE_AFTER_SIGNAL_CLOSE = "next_candle_after_signal_close"
 MFE_MAE_BASIS_ENTRY_TO_EXIT_OHLC = "ohlc_entry_to_exit_candles"
 MFE_MAE_BASIS_FUTURE_ONLY_OHLC = "ohlc_future_candles_only"
+FORWARD_DIAGNOSTICS_RETURN_BASIS = "gross_forward_return"
+FORWARD_DIAGNOSTICS_COST_ADJUSTMENT = "none"
+FORWARD_DIAGNOSTICS_COST_MODEL = "none"
+FORWARD_DIAGNOSTICS_OPERATOR_INTERPRETATION = "feature_mining_only_not_expected_pnl"
+
+
+@dataclass(frozen=True)
+class ForwardDiagnosticsMeasurementContract:
+    return_basis: str = FORWARD_DIAGNOSTICS_RETURN_BASIS
+    cost_adjustment: str = FORWARD_DIAGNOSTICS_COST_ADJUSTMENT
+    diagnostic_cost_model: str = FORWARD_DIAGNOSTICS_COST_MODEL
+    execution_simulation: bool = False
+    fill_simulation: bool = False
+    order_lifecycle_simulation: bool = False
+    operator_interpretation: str = FORWARD_DIAGNOSTICS_OPERATOR_INTERPRETATION
+
+    def __post_init__(self) -> None:
+        if self.return_basis != FORWARD_DIAGNOSTICS_RETURN_BASIS:
+            raise ValueError("forward diagnostics measurement_contract.return_basis must be gross_forward_return")
+        if self.cost_adjustment != FORWARD_DIAGNOSTICS_COST_ADJUSTMENT:
+            raise ValueError("forward diagnostics measurement_contract.cost_adjustment must be none")
+        if self.diagnostic_cost_model != FORWARD_DIAGNOSTICS_COST_MODEL:
+            raise ValueError("forward diagnostics measurement_contract.diagnostic_cost_model must be none")
+        if self.execution_simulation is not False:
+            raise ValueError("forward diagnostics must not enable execution_simulation")
+        if self.fill_simulation is not False:
+            raise ValueError("forward diagnostics must not enable fill_simulation")
+        if self.order_lifecycle_simulation is not False:
+            raise ValueError("forward diagnostics must not enable order_lifecycle_simulation")
+        if self.operator_interpretation != FORWARD_DIAGNOSTICS_OPERATOR_INTERPRETATION:
+            raise ValueError("forward diagnostics measurement_contract.operator_interpretation mismatch")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "return_basis": self.return_basis,
+            "cost_adjustment": self.cost_adjustment,
+            "diagnostic_cost_model": self.diagnostic_cost_model,
+            "execution_simulation": self.execution_simulation,
+            "fill_simulation": self.fill_simulation,
+            "order_lifecycle_simulation": self.order_lifecycle_simulation,
+            "operator_interpretation": self.operator_interpretation,
+        }
+
+
+def forward_diagnostics_measurement_contract() -> ForwardDiagnosticsMeasurementContract:
+    return ForwardDiagnosticsMeasurementContract()
 
 
 @dataclass(frozen=True)

@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from bithumb_bot.evidence_safety import diagnostic_feature_mining_taxonomy
 from bithumb_bot.config import PATH_MANAGER, settings
+from bithumb_bot.research.artifact_contract import apply_artifact_contract
 from bithumb_bot.research.experiment_manifest import ManifestValidationError, load_manifest
 from bithumb_bot.research.forward_diagnostics import ForwardDiagnosticsUnavailableError, run_forward_diagnostics
 from bithumb_bot.research.forward_diagnostics_failure_report import (
@@ -35,6 +35,7 @@ def cmd_research_forward_diagnostics(
     out_path: str | None = None,
     as_json: bool = False,
     allow_final_holdout_diagnostics: bool = False,
+    allow_degraded_diagnostics: bool = False,
 ) -> int:
     manifest = None
     split = str(split_name)
@@ -55,6 +56,7 @@ def cmd_research_forward_diagnostics(
             entry_price_mode=str(entry_price),
             min_bucket_count=int(min_bucket_count),
             final_holdout_diagnostic_override=bool(allow_final_holdout_diagnostics and split == "final_holdout"),
+            degraded_override=bool(allow_degraded_diagnostics),
         )
         report = write_forward_diagnostics_report(manager=PATH_MANAGER, manifest=manifest, result=result)
         if out_path:
@@ -68,6 +70,8 @@ def cmd_research_forward_diagnostics(
                 f"features={','.join(feature_names)} horizons={','.join(str(item) for item in horizon_steps)} "
                 f"report={report['artifact_paths']['report']}"
             )
+        if result.diagnostic_status == "degraded" and not allow_degraded_diagnostics:
+            return 1
         return 0
     except ForwardDiagnosticsUnavailableError as exc:
         if manifest is not None:
@@ -81,21 +85,15 @@ def cmd_research_forward_diagnostics(
                 availability=exc.availability,
             )
         else:
-            failure_payload = {
+            failure_payload = apply_artifact_contract({
                 "schema_version": 1,
                 "artifact_type": "forward_return_diagnostic_failure",
-                "diagnostic_only": True,
-                "promotion_evidence": False,
-                "approved_profile_evidence": False,
-                "live_readiness_evidence": False,
-                "capital_allocation_evidence": False,
-                **diagnostic_feature_mining_taxonomy(),
                 "diagnostic_status": "unavailable",
                 "fail_reasons": list(exc.fail_reasons),
                 "split_name": split,
                 "feature_names": list(feature_names),
                 "horizon_steps": list(horizon_steps),
-            }
+            })
         if out_path:
             _write_explicit_json(Path(out_path), failure_payload)
         if as_json:
@@ -190,15 +188,9 @@ def _generic_failure_payload(
     horizon_steps: tuple[int, ...],
 ) -> dict[str, Any]:
     error_type = type(exc).__name__
-    return {
+    return apply_artifact_contract({
         "schema_version": 1,
         "artifact_type": FAILURE_ARTIFACT_TYPE,
-        "diagnostic_only": True,
-        "promotion_evidence": False,
-        "approved_profile_evidence": False,
-        "live_readiness_evidence": False,
-        "capital_allocation_evidence": False,
-        **diagnostic_feature_mining_taxonomy(),
         "diagnostic_status": "unavailable",
         "fail_reasons": [_generic_failure_reason(exc)],
         "error_type": error_type,
@@ -206,7 +198,7 @@ def _generic_failure_payload(
         "split_name": split_name,
         "feature_names": list(feature_names),
         "horizon_steps": list(horizon_steps),
-    }
+    })
 
 
 def _generic_failure_reason(exc: ManifestValidationError | OSError | ValueError | IndexError) -> str:

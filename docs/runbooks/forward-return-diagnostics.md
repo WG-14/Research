@@ -54,6 +54,7 @@ uv run bithumb-bot research-forward-diagnostics \
   --bucket quantile:10 \
   --entry-price next_open \
   --min-bucket-count 30 \
+  --allow-degraded-diagnostics \
   --json
 ```
 
@@ -92,10 +93,41 @@ machine-readable `forbidden_uses`, and `operator_next_action`. It records a
 `intrabar_included`, and `mfe_mae_basis`; the metrics CSV outputs include the
 same policy columns.
 
+The report and warnings artifact also record this first-class measurement
+contract:
+
+```json
+{
+  "return_basis": "gross_forward_return",
+  "cost_adjustment": "none",
+  "diagnostic_cost_model": "none",
+  "execution_simulation": false,
+  "fill_simulation": false,
+  "order_lifecycle_simulation": false,
+  "operator_interpretation": "feature_mining_only_not_expected_pnl"
+}
+```
+
+`calculation_policy` only describes entry price, path start, intrabar handling,
+and MFE/MAE basis. Return basis, costs, fills, execution simulation, and order
+lifecycle semantics belong to `measurement_contract`.
+
+Both metric CSV files include `return_basis=gross_forward_return`,
+`cost_adjustment=none`, `execution_simulation=false`, `fill_simulation=false`,
+`sample_start_ts`, `sample_end_ts`, and gross-return columns such as
+`mean_gross_forward_return`. The sample time range is based on forward target
+`entry_ts`, the timestamp where the gross forward-return measurement starts.
+Compatibility alias columns such as `mean_forward_return` may exist, but they
+are derived from the gross-return fields and are not cost-adjusted returns.
+
 Horizon labels in metric CSV outputs remain candle-step labels such as `5c`.
 The report also records `interval` and `horizon_durations`; for example,
 `horizon_steps=5` on `interval=5m` records `horizon_label=5c` and
 `horizon_duration_label=25m`.
+
+`feature_bucket_metrics.csv` contains quantile or category bucket rows. By
+contrast, `feature_horizon_metrics.csv` contains one aggregate row per
+feature/horizon and does not contain `bucket_id` or `bucket_label`.
 
 Categorical feature provider specs may declare a `category_universe`. Declared
 but unobserved categories appear as zero-count category buckets, and observed
@@ -108,6 +140,17 @@ forward-return diagnostics output must not be used as strategy promotion evidenc
 forward-return diagnostics output must not be used as approved profile evidence
 forward-return diagnostics output must not be used as live readiness evidence
 forward-return diagnostics output must not be used as capital allocation evidence
+
+## Degraded diagnostics
+
+`diagnostic_status=available` exits with code `0`.
+`diagnostic_status=degraded` still writes the diagnostic report, but exits with
+code `1` unless `--allow-degraded-diagnostics` is passed. With that explicit
+override, degraded diagnostics exit with code `0`. The report records
+`degraded_override` and `degraded_exit_policy` so automation can distinguish
+unqualified success from an operator-accepted degraded diagnostic. Unavailable
+diagnostics write a failure artifact and exit with code `1` regardless of the
+degraded override.
 
 ## Not promotion evidence
 

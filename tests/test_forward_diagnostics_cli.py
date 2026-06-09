@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,6 +30,7 @@ def test_research_forward_diagnostics_help_exposes_required_options(capsys: pyte
         "--entry-price",
         "--min-bucket-count",
         "--allow-final-holdout-diagnostics",
+        "--allow-degraded-diagnostics",
         "--out",
         "--json",
     ):
@@ -82,6 +84,25 @@ def test_research_forward_diagnostics_defaults_to_next_open_entry_price() -> Non
     )
 
     assert args.entry_price == "next_open"
+
+
+def test_research_forward_diagnostics_parser_exposes_allow_degraded_diagnostics() -> None:
+    args = _parser().parse_args(
+        [
+            "research-forward-diagnostics",
+            "--manifest",
+            "manifest.json",
+            "--features",
+            "sma_gap",
+            "--horizons",
+            "1",
+            "--bucket",
+            "quantile:10",
+            "--allow-degraded-diagnostics",
+        ]
+    )
+
+    assert args.allow_degraded_diagnostics is True
 
 
 def test_research_forward_diagnostics_rejects_unknown_split() -> None:
@@ -255,7 +276,7 @@ def test_research_forward_diagnostics_accepts_final_holdout_with_explicit_overri
 
     def fake_run_forward_diagnostics(**kwargs):
         calls.update(kwargs)
-        return object()
+        return SimpleNamespace(diagnostic_status="available")
 
     def fake_write_forward_diagnostics_report(*, manager, manifest, result):
         calls["reported_result"] = result
@@ -284,7 +305,7 @@ def test_cli_json_success_outputs_parseable_json(monkeypatch, capsys) -> None:
     import bithumb_bot.research.forward_diagnostics_cli as cli
 
     monkeypatch.setattr(cli, "load_manifest", lambda path: type("Manifest", (), {"experiment_id": "exp1", "manifest_hash": lambda self: "sha256:" + "1" * 64})())
-    monkeypatch.setattr(cli, "run_forward_diagnostics", lambda **kwargs: object())
+    monkeypatch.setattr(cli, "run_forward_diagnostics", lambda **kwargs: SimpleNamespace(diagnostic_status="available"))
     monkeypatch.setattr(
         cli,
         "write_forward_diagnostics_report",

@@ -533,6 +533,9 @@ def _build_source_agnostic_dataset_quality_report(
         "dataset_content_hash": snapshot.content_hash(),
         "canonical_snapshot_hash": snapshot.content_hash(),
         "source_content_hash": snapshot.source_content_hash or snapshot.content_hash(),
+        "source_content_hash_status": (
+            "present" if snapshot.source_content_hash else "derived_from_materialized_snapshot"
+        ),
         "source_schema_hash": (
             snapshot.source_schema_hash
             or (
@@ -541,12 +544,17 @@ def _build_source_agnostic_dataset_quality_report(
                 else "not_applicable:source_schema_unavailable"
             )
         ),
-        "source_hash_status": "present",
+        "source_hash_status": "present" if snapshot.source_content_hash else "derived_from_materialized_snapshot",
         "source_schema_hash_status": (
             "present"
             if snapshot.source_schema_hash
             or (snapshot.source == "sqlite_candles" and db_path is not None)
             else "not_applicable"
+        ),
+        "source_locator_policy": (
+            "runtime_db_path_excluded_from_dataset_hash"
+            if snapshot.source == "sqlite_candles"
+            else "source_locator_excluded_from_dataset_hash"
         ),
         "adapter_provenance": adapter_provenance or snapshot.adapter_provenance or {},
         "adapter_provenance_hash": sha256_prefixed(adapter_provenance or snapshot.adapter_provenance or {}),

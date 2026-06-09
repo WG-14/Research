@@ -16,7 +16,7 @@ from .canonical_decision import (
     validate_canonical_decision_payload,
 )
 from .position_authority import classify_decision_position_state, position_authority_supports_positive_equivalence
-from .evidence_safety import smoke_only_evidence_rejection_reasons
+from .evidence_safety import evidence_rejection_reasons
 from .lifecycle_evidence import (
     CanonicalLifecycleEvidenceBundle,
     validate_lifecycle_evidence_scope,
@@ -535,7 +535,7 @@ PROMOTION_GRADE_DECISION_EQUIVALENCE_REQUIRED_TRUE_FIELDS = (
 def promotion_grade_decision_equivalence_fail_reasons(report: dict[str, Any]) -> tuple[str, ...]:
     """Return fail-closed reasons when a report is not promotion-grade v2 evidence."""
     reasons: list[str] = []
-    reasons.extend(f"decision_equivalence_{reason}" for reason in smoke_only_evidence_rejection_reasons(report))
+    reasons.extend(f"decision_equivalence_{reason}" for reason in evidence_rejection_reasons(report))
     for field in PROMOTION_GRADE_DECISION_EQUIVALENCE_REQUIRED_TRUE_FIELDS:
         if report.get(field) is not True:
             reasons.append(f"decision_equivalence_{field}_not_true")
