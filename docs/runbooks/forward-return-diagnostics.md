@@ -14,7 +14,8 @@ approved profile, runtime replay, and live execution boundaries.
   `final_holdout` requires the explicit `--allow-final-holdout-diagnostics`
   override and records contamination-risk metadata in the report.
 - A comma-separated feature list.
-- A comma-separated positive integer horizon list.
+- A comma-separated positive integer horizon list. Horizon values are candle
+  steps, not wall-clock duration strings; `--horizons 5` means five candles.
 - A bucket method such as `quantile:10`.
 - An entry price mode: `next_open` or `signal_close`.
 
@@ -90,6 +91,16 @@ machine-readable `forbidden_uses`, and `operator_next_action`. It records a
 `calculation_policy` block containing `entry_price_mode`, `path_start_policy`,
 `intrabar_included`, and `mfe_mae_basis`; the metrics CSV outputs include the
 same policy columns.
+
+Horizon labels in metric CSV outputs remain candle-step labels such as `5c`.
+The report also records `interval` and `horizon_durations`; for example,
+`horizon_steps=5` on `interval=5m` records `horizon_label=5c` and
+`horizon_duration_label=25m`.
+
+Categorical feature provider specs may declare a `category_universe`. Declared
+but unobserved categories appear as zero-count category buckets, and observed
+values outside the declared universe emit machine-readable category drift
+warnings such as `unknown_category_value`.
 
 ## Diagnostic-only policy
 

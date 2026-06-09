@@ -24,9 +24,12 @@ from bithumb_bot.research.feature_diagnostic_features import (
 from bithumb_bot.research.feature_provider_registry import (
     FeatureProviderSpec,
     feature_provider_specs_for_names,
+    validate_feature_value_against_spec,
 )
 from bithumb_bot.research.forward_targets import (
     ForwardTarget,
+    HorizonDuration,
+    build_horizon_durations,
     compute_forward_targets,
     forward_target_calculation_policy,
 )
@@ -122,9 +125,17 @@ class ForwardDiagnosticsResult:
     feature_horizon_metrics: tuple[FeatureBucketMetric, ...]
     warnings: tuple[dict[str, object], ...]
     dataset: DatasetProvenance
+    interval: str = "1m"
+    horizon_durations: tuple[HorizonDuration, ...] = ()
     final_holdout_diagnostic_override: bool = False
 
     def __post_init__(self) -> None:
+        if not self.horizon_durations:
+            object.__setattr__(
+                self,
+                "horizon_durations",
+                build_horizon_durations(interval=self.interval, horizon_steps=self.horizon_steps),
+            )
         if self.availability.status == "available" and self.sample_count <= 0:
             raise ValueError("available diagnostics require positive sample_count")
         if self.diagnostic_status != self.availability.status:
@@ -146,6 +157,8 @@ class ForwardDiagnosticsResult:
             "split_name": self.split_name,
             "feature_names": list(self.feature_names),
             "horizon_steps": list(self.horizon_steps),
+            "interval": self.interval,
+            "horizon_durations": [row.as_dict() for row in self.horizon_durations],
             "bucket_method": self.bucket_method,
             "entry_price_mode": self.entry_price_mode,
             "calculation_policy": {
@@ -229,6 +242,7 @@ def run_forward_diagnostics_on_snapshot(
     )
     features = _normalize_feature_names(feature_names)
     horizons = _normalize_horizons(horizon_steps)
+    horizon_durations = build_horizon_durations(interval=snapshot.interval, horizon_steps=horizons)
     provider_specs = feature_provider_specs_for_names(features)
     observations: list[FeatureObservation] = []
     target_count = 0
@@ -255,6 +269,7 @@ def run_forward_diagnostics_on_snapshot(
             value = spec.provider.compute(view=view)
             if value is None:
                 continue
+            validate_feature_value_against_spec(spec, value)
             values.append(value)
             for target in targets:
                 key = (spec.name, target.horizon_label)
@@ -287,22 +302,18 @@ def run_forward_diagnostics_on_snapshot(
     bucket_metrics = compute_feature_bucket_metrics(
         observations=observations,
         bucket_method=bucket_method,
+        feature_specs=provider_specs,
         min_bucket_count=min_bucket_count,
     )
     horizon_metrics = compute_feature_bucket_metrics(
         observations=observations,
         bucket_method="quantile:1",
+        feature_specs=provider_specs,
         min_bucket_count=min_bucket_count,
     )
-    metric_warnings = tuple(
-        {
-            "feature_name": metric.feature_name,
-            "bucket_id": metric.bucket_id,
-            "horizon_label": metric.horizon_label,
-            "warnings": list(metric.warnings),
-        }
-        for metric in bucket_metrics
-        if metric.warnings
+    metric_warnings = tuple(_metric_warning_rows(bucket_metrics))
+    metric_warnings += tuple(
+        row for row in _metric_warning_rows(horizon_metrics) if row not in metric_warnings
     )
     calculation_policy = forward_target_calculation_policy(entry_price_mode)
     return ForwardDiagnosticsResult(
@@ -310,6 +321,8 @@ def run_forward_diagnostics_on_snapshot(
         split_name=snapshot.split_name,
         feature_names=features,
         horizon_steps=horizons,
+        interval=snapshot.interval,
+        horizon_durations=horizon_durations,
         bucket_method=bucket_method,
         entry_price_mode=str(calculation_policy["entry_price_mode"]),
         path_start_policy=str(calculation_policy["path_start_policy"]),
@@ -340,6 +353,21 @@ def _availability_warnings(
     if dataset_quality.quality_gate_status == "FAIL":
         warnings.append("dataset_quality_failed")
     return tuple(dict.fromkeys(warnings))
+
+
+def _metric_warning_rows(metrics: tuple[FeatureBucketMetric, ...]) -> tuple[dict[str, object], ...]:
+    rows: list[dict[str, object]] = []
+    for metric in metrics:
+        for warning in metric.warnings:
+            rows.append(
+                {
+                    "reason": str(warning),
+                    "feature_name": metric.feature_name,
+                    "bucket_id": metric.bucket_id,
+                    "horizon_label": metric.horizon_label,
+                }
+            )
+    return tuple(rows)
 
 
 def _observations_for_values(

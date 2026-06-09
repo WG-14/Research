@@ -17,6 +17,7 @@ from bithumb_bot.research.forward_diagnostics import (
     ForwardDiagnosticsDatasetQuality,
     ForwardDiagnosticsResult,
 )
+from bithumb_bot.research.forward_targets import build_horizon_durations
 from bithumb_bot.research.forward_diagnostics_report import (
     validate_forward_diagnostics_report_flags,
     write_forward_diagnostics_report,
@@ -144,12 +145,16 @@ def _result(
     final_holdout_diagnostic_override: bool = False,
     warnings: tuple[dict[str, object], ...] = (),
     split_name: str = "train",
+    horizon_steps: tuple[int, ...] = (1,),
+    interval: str = "1m",
 ) -> ForwardDiagnosticsResult:
     return ForwardDiagnosticsResult(
         experiment_id="exp1",
         split_name=split_name,
         feature_names=("sma_gap",),
-        horizon_steps=(1,),
+        horizon_steps=horizon_steps,
+        interval=interval,
+        horizon_durations=build_horizon_durations(interval=interval, horizon_steps=horizon_steps),
         bucket_method="quantile:1",
         entry_price_mode=entry_price_mode,
         path_start_policy=path_start_policy,
@@ -286,6 +291,20 @@ def test_report_includes_feature_provider_specs(tmp_path: Path) -> None:
     assert report["feature_provider_specs"][0]["bucketizer_type"] == "quantile"
     assert report["feature_provider_specs"][0]["definition_hash"].startswith("sha256:")
     assert report["feature_provider_specs"][0]["causal_inputs"] == ["candle.close"]
+    assert report["feature_provider_specs"][0]["category_universe"] == []
+
+
+def test_report_includes_horizon_duration_semantics(tmp_path: Path) -> None:
+    report = write_forward_diagnostics_report(
+        manager=_manager(tmp_path),
+        manifest=_manifest(),
+        result=_result(horizon_steps=(5,), interval="5m"),
+    )
+
+    assert report["interval"] == "5m"
+    assert report["horizon_steps"] == [5]
+    assert report["horizon_durations"][0]["horizon_label"] == "5c"
+    assert report["horizon_durations"][0]["horizon_duration_label"] == "25m"
 
 
 def test_report_includes_dataset_quality_status_and_hash(tmp_path: Path) -> None:

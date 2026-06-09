@@ -184,6 +184,24 @@ def test_core_rejects_final_holdout_without_override() -> None:
     assert exc.value.reason == "final_holdout_diagnostic_override_required"
 
 
+def test_cli_final_holdout_without_override_returns_nonzero(monkeypatch, tmp_path: Path) -> None:
+    import bithumb_bot.research.forward_diagnostics_cli as cli
+
+    monkeypatch.setattr(cli, "PATH_MANAGER", _manager(tmp_path))
+    monkeypatch.setattr(cli, "load_manifest", lambda path: _manifest())
+
+    code = cli.cmd_research_forward_diagnostics(
+        manifest_path="manifest.json",
+        split_name="final_holdout",
+        features=("sma_gap",),
+        horizons=(1,),
+        bucket="quantile:10",
+        allow_final_holdout_diagnostics=False,
+    )
+
+    assert code == 1
+
+
 def test_snapshot_core_rejects_final_holdout_without_override() -> None:
     test_core_rejects_final_holdout_without_override()
 

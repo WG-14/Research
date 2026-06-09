@@ -128,6 +128,22 @@ def test_forward_diagnostics_failure_artifact_remains_diagnostic_only() -> None:
     validate_forward_diagnostics_failure_flags(payload)
 
 
+def test_forward_diagnostics_failure_artifact_uses_same_diagnostic_taxonomy() -> None:
+    payload = {
+        "artifact_type": "forward_return_diagnostic_failure",
+        "diagnostic_only": True,
+        "promotion_evidence": False,
+        "approved_profile_evidence": False,
+        "live_readiness_evidence": False,
+        "capital_allocation_evidence": False,
+        **diagnostic_feature_mining_taxonomy(),
+    }
+
+    for key, value in diagnostic_feature_mining_taxonomy().items():
+        assert payload[key] == value
+    validate_forward_diagnostics_failure_flags(payload)
+
+
 def test_forward_diagnostics_coverage_artifact_remains_diagnostic_only() -> None:
     payload = {
         "artifact_type": "forward_return_diagnostic_report",

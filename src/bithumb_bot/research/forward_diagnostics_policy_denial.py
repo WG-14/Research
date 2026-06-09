@@ -98,3 +98,13 @@ def validate_forward_diagnostics_policy_denial_flags(payload: dict[str, Any]) ->
         raise ValueError("forward diagnostics policy denial must be non_promotable")
     if payload.get("evidence_scope") != "diagnostic_feature_mining":
         raise ValueError("forward diagnostics policy denial evidence_scope mismatch")
+    forbidden_uses = payload.get("forbidden_uses")
+    if not isinstance(forbidden_uses, list) or not {
+        "strategy_promotion",
+        "approved_profile",
+        "live_readiness",
+        "capital_allocation",
+    }.issubset({str(item) for item in forbidden_uses}):
+        raise ValueError("forward diagnostics policy denial forbidden_uses incomplete")
+    if not str(payload.get("operator_next_action") or "").strip():
+        raise ValueError("forward diagnostics policy denial operator_next_action required")

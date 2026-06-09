@@ -92,3 +92,18 @@ def test_policy_denial_includes_non_promotable_taxonomy() -> None:
         "live_readiness",
         "capital_allocation",
     }
+
+
+def test_forward_diagnostics_policy_denial_artifact_is_non_promotable() -> None:
+    payload = _payload()
+
+    assert payload["diagnostic_only"] is True
+    assert payload["promotion_evidence"] is False
+    assert payload["approved_profile_evidence"] is False
+    assert payload["live_readiness_evidence"] is False
+    assert payload["capital_allocation_evidence"] is False
+    assert payload["promotion_eligible"] is False
+    assert payload["promotion_grade"] is False
+    assert payload["non_promotable"] is True
+    assert payload["evidence_scope"] == "diagnostic_feature_mining"
+    validate_forward_diagnostics_policy_denial_flags(payload)

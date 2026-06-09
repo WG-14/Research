@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from bithumb_bot.public_api_minute_candles import interval_to_minute_unit
 from bithumb_bot.research.dataset_snapshot import Candle
 
 
@@ -47,6 +48,49 @@ class ForwardTarget:
     path_start_policy: str
     intrabar_included: bool
     mfe_mae_basis: str
+
+
+@dataclass(frozen=True)
+class HorizonDuration:
+    horizon_steps: int
+    horizon_label: str
+    interval: str
+    horizon_duration_ms: int
+    horizon_duration_label: str
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "horizon_steps": self.horizon_steps,
+            "horizon_label": self.horizon_label,
+            "interval": self.interval,
+            "horizon_duration_ms": self.horizon_duration_ms,
+            "horizon_duration_label": self.horizon_duration_label,
+        }
+
+
+def build_horizon_durations(
+    *,
+    interval: str,
+    horizon_steps: tuple[int, ...],
+) -> tuple[HorizonDuration, ...]:
+    minute_unit = interval_to_minute_unit(interval)
+    normalized_interval = str(interval).strip().lower()
+    durations: list[HorizonDuration] = []
+    for raw_steps in horizon_steps:
+        steps = int(raw_steps)
+        if steps <= 0:
+            raise ValueError("horizon_steps must be positive")
+        duration_minutes = steps * minute_unit
+        durations.append(
+            HorizonDuration(
+                horizon_steps=steps,
+                horizon_label=f"{steps}c",
+                interval=normalized_interval,
+                horizon_duration_ms=duration_minutes * 60_000,
+                horizon_duration_label=f"{duration_minutes}m",
+            )
+        )
+    return tuple(durations)
 
 
 def forward_target_calculation_policy(entry_price_mode: str) -> dict[str, object]:

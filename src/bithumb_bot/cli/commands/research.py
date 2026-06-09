@@ -168,7 +168,12 @@ def _build_forward_diagnostics(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--split", default="train", choices=("train", "validation", "final_holdout"))
     parser.add_argument("--features", required=True, type=_parse_csv_strings("--features"))
-    parser.add_argument("--horizons", required=True, type=_parse_csv_ints("--horizons"))
+    parser.add_argument(
+        "--horizons",
+        required=True,
+        type=_parse_csv_ints("--horizons"),
+        help="comma-separated positive candle-step integers such as 1,3,5; duration strings are not accepted",
+    )
     parser.add_argument("--bucket", required=True)
     parser.add_argument(
         "--entry-price",

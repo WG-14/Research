@@ -11,6 +11,8 @@ from bithumb_bot.research.forward_diagnostics import (
     run_forward_diagnostics_on_snapshot,
 )
 import bithumb_bot.research.forward_diagnostics as forward_diagnostics
+from bithumb_bot.research.forward_diagnostics_report import write_forward_diagnostics_report
+from tests.test_forward_diagnostics_report import _manager, _manifest
 
 
 def _snapshot() -> DatasetSnapshot:
@@ -80,3 +82,23 @@ def test_forward_diagnostics_cli_does_not_rehydrate_result_from_dict() -> None:
     assert "ForwardDiagnosticsResult(" not in source
     assert "result_payload" not in source
     assert '["feature_bucket_metrics"]' not in source
+
+
+def test_forward_diagnostics_report_writer_accepts_only_typed_result(tmp_path) -> None:
+    result = run_forward_diagnostics_on_snapshot(
+        snapshot=_snapshot(),
+        feature_names=("rolling_return",),
+        horizon_steps=(1,),
+        bucket_method="quantile:2",
+        min_bucket_count=1,
+    )
+
+    report = write_forward_diagnostics_report(manager=_manager(tmp_path), manifest=_manifest(), result=result)
+    assert report["artifact_type"] == "forward_return_diagnostic_report"
+
+    try:
+        write_forward_diagnostics_report(manager=_manager(tmp_path / "bad"), manifest=_manifest(), result=result.as_dict())  # type: ignore[arg-type]
+    except TypeError as exc:
+        assert "ForwardDiagnosticsResult" in str(exc)
+    else:
+        raise AssertionError("dict result payload must not be accepted by report writer")

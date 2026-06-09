@@ -5,6 +5,11 @@ from statistics import median
 from typing import Iterable
 
 from bithumb_bot.research.feature_diagnostic_features import FeatureValue
+from bithumb_bot.research.feature_provider_registry import (
+    CATEGORY_FEATURE_VALUE_TYPES,
+    NUMERIC_FEATURE_VALUE_TYPES,
+    FeatureProviderSpec,
+)
 from bithumb_bot.research.forward_targets import ForwardTarget
 
 
@@ -62,13 +67,23 @@ class FeatureObservation:
     target: ForwardTarget
 
 
+@dataclass(frozen=True)
+class FeatureBucketPolicy:
+    feature_name: str
+    value_type: str
+    bucketizer_type: str
+    category_universe: tuple[str, ...] = ()
+
+
 def compute_feature_bucket_metrics(
     *,
     observations: Iterable[FeatureObservation],
     bucket_method: str,
+    feature_specs: tuple[FeatureProviderSpec, ...],
     min_bucket_count: int = 30,
 ) -> tuple[FeatureBucketMetric, ...]:
     bucket_count = _parse_bucket_method(bucket_method)
+    policies = build_bucket_policies_from_specs(feature_specs)
     grouped: dict[tuple[str, str], list[FeatureObservation]] = {}
     for observation in observations:
         key = (observation.feature.name, observation.target.horizon_label)
@@ -78,27 +93,58 @@ def compute_feature_bucket_metrics(
     for key in sorted(grouped):
         feature_name, horizon_label = key
         rows = grouped[key]
+        try:
+            policy = policies[feature_name]
+        except KeyError as exc:
+            raise ValueError(f"missing feature bucket policy for feature={feature_name!r}") from exc
         value_types = {row.feature.value_type for row in rows}
         if len(value_types) != 1:
             raise ValueError(f"mixed feature value types for feature={feature_name!r} horizon={horizon_label!r}")
         value_type = next(iter(value_types))
-        if _is_category_value_type(value_type):
+        if value_type != policy.value_type:
+            raise ValueError(
+                f"feature value_type {value_type!r} does not match bucket policy "
+                f"{policy.value_type!r} for feature={feature_name!r}"
+            )
+        if policy.bucketizer_type == "category":
+            if not _is_category_value_type(policy.value_type):
+                raise ValueError(
+                    f"category bucketizer requires categorical value_type for feature={feature_name!r}"
+                )
             category_buckets = _category_buckets(rows)
-            for category_key in sorted(category_buckets):
+            unknown_categories = tuple(
+                sorted(set(category_buckets) - set(policy.category_universe))
+            ) if policy.category_universe else ()
+            category_keys = set(category_buckets)
+            category_keys.update(policy.category_universe)
+            for category_key in sorted(category_keys):
+                warnings: tuple[str, ...] = ()
+                if policy.category_universe and category_key not in category_buckets:
+                    warnings = ("category_universe_missing", "category_coverage_drift")
+                elif category_key in unknown_categories:
+                    warnings = ("unknown_category_value", "category_coverage_drift")
                 metrics.append(
                     _metric_for_rows(
                         feature_name=feature_name,
                         horizon_label=horizon_label,
                         bucket_id=f"category:{category_key}",
                         bucket_label=f"category {category_key}",
-                        rows=category_buckets[category_key],
+                        rows=category_buckets.get(category_key, []),
                         min_bucket_count=min_bucket_count,
+                        extra_warnings=warnings,
                     )
                 )
             continue
 
-        if not _is_numeric_value_type(value_type):
-            raise ValueError(f"unsupported feature value_type={value_type!r} for feature={feature_name!r}")
+        if policy.bucketizer_type != "quantile":
+            raise ValueError(f"unsupported bucketizer_type={policy.bucketizer_type!r} for feature={feature_name!r}")
+        if not _is_numeric_value_type(policy.value_type):
+            raise ValueError(f"quantile bucketizer requires numeric value_type for feature={feature_name!r}")
+        for row in rows:
+            if not _is_numeric_value_type(row.feature.value_type):
+                raise ValueError(f"quantile bucketizer requires numeric observations for feature={feature_name!r}")
+            if not isinstance(row.feature.value, int | float):
+                raise ValueError(f"quantile bucketizer requires numeric values for feature={feature_name!r}")
         sorted_rows = sorted(rows, key=_observation_sort_key)
         buckets = _bucket_observations(sorted_rows, bucket_count=bucket_count)
         for bucket_index in range(bucket_count):
@@ -111,9 +157,42 @@ def compute_feature_bucket_metrics(
                     bucket_label=f"quantile {bucket_index + 1}/{bucket_count}",
                     rows=bucket_rows,
                     min_bucket_count=min_bucket_count,
+                    extra_warnings=(),
                 )
             )
     return tuple(metrics)
+
+
+def build_bucket_policies_from_specs(
+    feature_specs: tuple[FeatureProviderSpec, ...],
+) -> dict[str, FeatureBucketPolicy]:
+    policies: dict[str, FeatureBucketPolicy] = {}
+    for spec in feature_specs:
+        if spec.name in policies:
+            raise ValueError(f"duplicate feature bucket policy for feature={spec.name!r}")
+        policy = FeatureBucketPolicy(
+            feature_name=spec.name,
+            value_type=str(spec.value_type),
+            bucketizer_type=str(spec.bucketizer_type),
+            category_universe=tuple(str(item) for item in spec.category_universe),
+        )
+        _validate_bucket_policy(policy)
+        policies[spec.name] = policy
+    return policies
+
+
+def _validate_bucket_policy(policy: FeatureBucketPolicy) -> None:
+    if policy.bucketizer_type == "quantile":
+        if not _is_numeric_value_type(policy.value_type):
+            raise ValueError(f"quantile bucketizer requires numeric value_type for feature={policy.feature_name!r}")
+        if policy.category_universe:
+            raise ValueError(f"quantile bucketizer must not declare category_universe for feature={policy.feature_name!r}")
+        return
+    if policy.bucketizer_type == "category":
+        if not _is_category_value_type(policy.value_type):
+            raise ValueError(f"category bucketizer requires categorical value_type for feature={policy.feature_name!r}")
+        return
+    raise ValueError(f"unsupported bucketizer_type={policy.bucketizer_type!r} for feature={policy.feature_name!r}")
 
 
 def _parse_bucket_method(bucket_method: str) -> int:
@@ -160,6 +239,7 @@ def _metric_for_rows(
     bucket_label: str,
     rows: list[FeatureObservation],
     min_bucket_count: int,
+    extra_warnings: tuple[str, ...],
 ) -> FeatureBucketMetric:
     count = len(rows)
     policy = _policy_for_rows(rows)
@@ -184,7 +264,7 @@ def _metric_for_rows(
             mean_mae=None,
             median_mae=None,
             mfe_mae_ratio=None,
-            warnings=("low_sample_count",),
+            warnings=tuple(dict.fromkeys(("low_sample_count",) + tuple(extra_warnings))),
         )
 
     returns = tuple(float(row.target.gross_forward_return) for row in rows)
@@ -204,6 +284,7 @@ def _metric_for_rows(
         warnings.append("high_mae_relative_to_mfe")
     if not policy.consistent:
         warnings.append("mixed_calculation_policy")
+    warnings.extend(extra_warnings)
     return FeatureBucketMetric(
         feature_name=feature_name,
         bucket_id=bucket_id,
@@ -224,16 +305,16 @@ def _metric_for_rows(
         mean_mae=mean_mae,
         median_mae=float(median(maes)),
         mfe_mae_ratio=(mean_mfe / abs_mean_mae) if abs_mean_mae > 0.0 else None,
-        warnings=tuple(warnings),
+        warnings=tuple(dict.fromkeys(warnings)),
     )
 
 
 def _is_numeric_value_type(value_type: str) -> bool:
-    return str(value_type).lower() in {"float", "int", "number"}
+    return str(value_type).lower() in NUMERIC_FEATURE_VALUE_TYPES
 
 
 def _is_category_value_type(value_type: str) -> bool:
-    return str(value_type).lower() in {"str", "string", "bool", "category"}
+    return str(value_type).lower() in CATEGORY_FEATURE_VALUE_TYPES
 
 
 def _category_buckets(rows: list[FeatureObservation]) -> dict[str, list[FeatureObservation]]:

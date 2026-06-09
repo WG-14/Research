@@ -52,6 +52,8 @@ def write_forward_diagnostics_report(
     manifest: ExperimentManifest,
     result: ForwardDiagnosticsResult,
 ) -> dict[str, Any]:
+    if not isinstance(result, ForwardDiagnosticsResult):
+        raise TypeError("write_forward_diagnostics_report requires ForwardDiagnosticsResult")
     validate_forward_diagnostics_split_policy(result)
     paths = forward_diagnostics_report_paths(manager=manager, experiment_id=manifest.experiment_id)
     _write_metrics_csv(paths.feature_bucket_metrics_path, [metric.as_dict() for metric in result.feature_bucket_metrics])
@@ -95,6 +97,8 @@ def write_forward_diagnostics_report(
         "bucket_method": result.bucket_method,
         "feature_names": list(result.feature_names),
         "horizon_steps": list(result.horizon_steps),
+        "interval": result.interval,
+        "horizon_durations": [row.as_dict() for row in result.horizon_durations],
         "sample_count": result.sample_count,
         "target_count": result.target_count,
         "availability": result.availability.as_dict(),

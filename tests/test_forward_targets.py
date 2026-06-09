@@ -5,6 +5,7 @@ import pytest
 from bithumb_bot.research.dataset_snapshot import Candle
 from bithumb_bot.research.forward_targets import (
     PATH_START_NEXT_CANDLE_AFTER_SIGNAL_CLOSE,
+    build_horizon_durations,
     build_forward_target_window,
     compute_forward_target,
 )
@@ -212,3 +213,12 @@ def test_forward_target_skips_when_horizon_exceeds_available_candles() -> None:
 def test_forward_target_rejects_unknown_entry_price_mode() -> None:
     with pytest.raises(ValueError, match="unknown entry_price_mode"):
         compute_forward_target(candles=_candles(), index=0, horizon_steps=1, entry_price_mode="unknown")
+
+
+def test_horizon_duration_uses_interval_and_preserves_candle_label() -> None:
+    durations = build_horizon_durations(interval="5m", horizon_steps=(5,))
+
+    assert durations[0].horizon_steps == 5
+    assert durations[0].horizon_label == "5c"
+    assert durations[0].horizon_duration_ms == 1_500_000
+    assert durations[0].horizon_duration_label == "25m"
