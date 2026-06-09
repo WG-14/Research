@@ -489,6 +489,31 @@ def test_promotion_artifact_rejects_nested_candidate_profile_smoke_markers() -> 
         verify_promotion_artifact(promotion)
 
 
+def test_approved_profile_rejects_forward_diagnostics_report_as_source_evidence() -> None:
+    promotion = _promotion()
+    candidate_profile = dict(promotion["candidate_profile"])  # type: ignore[arg-type]
+    candidate_profile.update(
+        {
+            "artifact_type": "forward_return_diagnostic_report",
+            "diagnostic_only": True,
+            "evidence_scope": "diagnostic_feature_mining",
+            "non_promotable": True,
+            "promotion_eligible": False,
+        }
+    )
+    promotion["candidate_profile"] = candidate_profile
+    promotion["content_hash"] = sha256_prefixed(
+        content_hash_payload({k: v for k, v in promotion.items() if k != "content_hash"})
+    )
+
+    with pytest.raises(ApprovedProfileError) as exc:
+        verify_promotion_artifact(promotion)
+
+    message = str(exc.value)
+    assert "diagnostic_feature_mining_not_promotable" in message
+    assert "non_promotable_evidence_artifact" in message
+
+
 def test_promotion_artifact_rejects_nested_candidate_profile_compatibility_fallback() -> None:
     promotion = _promotion()
     candidate_profile = dict(promotion["candidate_profile"])  # type: ignore[arg-type]

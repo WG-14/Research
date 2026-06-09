@@ -31,9 +31,13 @@ from bithumb_bot.research.forward_targets import (
     forward_target_calculation_policy,
 )
 from bithumb_bot.research.hashing import sha256_prefixed
+from bithumb_bot.research.split_usage_policy import (
+    FINAL_HOLDOUT_DIAGNOSTIC_CONTAMINATION_RISK,
+    validate_split_usage,
+)
 
 
-FINAL_HOLDOUT_WARNING_REASON = "final_holdout_diagnostic_contamination_risk"
+FINAL_HOLDOUT_WARNING_REASON = FINAL_HOLDOUT_DIAGNOSTIC_CONTAMINATION_RISK
 DATASET_QUALITY_FAIL_POLICY = "degraded"
 
 
@@ -178,6 +182,11 @@ def run_forward_diagnostics(
     min_bucket_count: int = 30,
     final_holdout_diagnostic_override: bool = False,
 ) -> ForwardDiagnosticsResult:
+    validate_split_usage(
+        split_name=split_name,
+        purpose="feature_mining",
+        explicit_override=final_holdout_diagnostic_override,
+    )
     snapshot = load_dataset_split(
         db_path=db_path,
         manifest=manifest,
@@ -213,6 +222,11 @@ def run_forward_diagnostics_on_snapshot(
     final_holdout_diagnostic_override: bool = False,
     dataset_quality: ForwardDiagnosticsDatasetQuality | None = None,
 ) -> ForwardDiagnosticsResult:
+    policy_warnings = validate_split_usage(
+        split_name=snapshot.split_name,
+        purpose="feature_mining",
+        explicit_override=final_holdout_diagnostic_override,
+    )
     features = _normalize_feature_names(feature_names)
     horizons = _normalize_horizons(horizon_steps)
     provider_specs = feature_provider_specs_for_names(features)
@@ -290,14 +304,6 @@ def run_forward_diagnostics_on_snapshot(
         for metric in bucket_metrics
         if metric.warnings
     )
-    policy_warnings: tuple[dict[str, object], ...] = ()
-    if final_holdout_diagnostic_override:
-        policy_warnings = (
-            {
-                "reason": FINAL_HOLDOUT_WARNING_REASON,
-                "split_name": snapshot.split_name,
-            },
-        )
     calculation_policy = forward_target_calculation_policy(entry_price_mode)
     return ForwardDiagnosticsResult(
         experiment_id=str(experiment_id or snapshot.snapshot_id),

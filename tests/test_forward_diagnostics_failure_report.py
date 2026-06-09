@@ -40,6 +40,58 @@ def test_failure_artifact_is_diagnostic_only() -> None:
     assert payload["approved_profile_evidence"] is False
     assert payload["live_readiness_evidence"] is False
     assert payload["capital_allocation_evidence"] is False
+    assert payload["diagnostic_status"] == "unavailable"
+
+
+def test_forward_diagnostics_failure_includes_non_promotable_taxonomy() -> None:
+    payload = build_forward_diagnostics_failure_payload(
+        manifest=_manifest(),
+        split_name="train",
+        feature_names=("range_ratio",),
+        horizon_steps=(1,),
+        fail_reasons=("no_forward_targets",),
+        availability=_availability(),
+    )
+
+    assert payload["evidence_scope"] == "diagnostic_feature_mining"
+    assert payload["promotion_eligible"] is False
+    assert payload["promotion_grade"] is False
+    assert payload["non_promotable"] is True
+    assert set(payload["forbidden_uses"]) >= {
+        "strategy_promotion",
+        "approved_profile",
+        "live_readiness",
+        "capital_allocation",
+    }
+    assert payload["operator_next_action"] == "run_research_validate_from_fixed_manifest"
+
+
+def test_forward_diagnostics_forbidden_uses_are_machine_readable() -> None:
+    payload = build_forward_diagnostics_failure_payload(
+        manifest=_manifest(),
+        split_name="train",
+        feature_names=("range_ratio",),
+        horizon_steps=(1,),
+        fail_reasons=("no_forward_targets",),
+        availability=_availability(),
+    )
+
+    assert isinstance(payload["forbidden_uses"], list)
+    assert all(isinstance(item, str) for item in payload["forbidden_uses"])
+
+
+def test_availability_failure_uses_unavailable_status() -> None:
+    payload = build_forward_diagnostics_failure_payload(
+        manifest=_manifest(),
+        split_name="train",
+        feature_names=("range_ratio",),
+        horizon_steps=(1,),
+        fail_reasons=("no_forward_targets",),
+        availability=_availability(),
+    )
+
+    assert payload["artifact_type"] == "forward_return_diagnostic_failure"
+    assert payload["diagnostic_status"] == "unavailable"
 
 
 def test_failure_artifact_cannot_be_promotion_evidence() -> None:

@@ -724,6 +724,23 @@ def test_backtest_candidate_smoke_markers_fail_closed_for_promotion() -> None:
     assert "promotion_grade_validation_required" in reasons
 
 
+def test_promotion_gate_rejects_forward_diagnostics_report() -> None:
+    candidate = _production_candidate(
+        artifact_type="forward_return_diagnostic_report",
+        diagnostic_only=True,
+        evidence_scope="diagnostic_feature_mining",
+        non_promotable=True,
+        promotion_eligible=False,
+    )
+    candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+
+    allowed, reasons = validate_backtest_candidate_for_promotion(candidate)
+
+    assert not allowed
+    assert "diagnostic_feature_mining_not_promotable" in reasons
+    assert "non_promotable_evidence_artifact" in reasons
+
+
 def test_backtest_candidate_standalone_marker_alone_fails_closed_for_promotion() -> None:
     candidate = _production_candidate(
         standalone_backtest_not_full_validation=True,

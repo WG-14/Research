@@ -8,7 +8,7 @@ from typing import Any
 
 from bithumb_bot.paths import PathManager, PathPolicyError
 from bithumb_bot.storage_io import write_json_atomic
-from bithumb_bot.evidence_safety import smoke_only_evidence_rejection_reasons
+from bithumb_bot.evidence_safety import evidence_rejection_reasons
 from bithumb_bot.execution_reality_contract import (
     evaluate_execution_reality_policy,
     capability_contract_hash_matches,
@@ -630,7 +630,7 @@ def validate_backtest_candidate_for_promotion(candidate: dict[str, Any] | None) 
     reasons: list[str] = []
     if not candidate:
         return False, ["backtest_candidate_not_found", "candidate_not_found"]
-    smoke_reasons = smoke_only_evidence_rejection_reasons(candidate)
+    smoke_reasons = evidence_rejection_reasons(candidate)
     if smoke_reasons:
         reasons.extend(f"backtest_{reason}" for reason in smoke_reasons)
         reasons.extend(smoke_reasons)
@@ -1506,7 +1506,7 @@ def promote_candidate(
 
     with candidate_report_path.open("r", encoding="utf-8") as handle:
         report = json.load(handle)
-    smoke_report_reasons = smoke_only_evidence_rejection_reasons(report)
+    smoke_report_reasons = evidence_rejection_reasons(report)
     if smoke_report_reasons:
         raise PromotionGateError(
             "promotion refused: "

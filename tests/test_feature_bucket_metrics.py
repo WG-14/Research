@@ -37,12 +37,69 @@ def _obs(values: list[float]) -> list[FeatureObservation]:
     ]
 
 
+def _category_obs(values: list[object], *, value_type: str = "str") -> list[FeatureObservation]:
+    return [
+        FeatureObservation(
+            feature=FeatureValue(name="regime", value=value, value_type=value_type),
+            target=_target(index, 0.01 if str(value) == "trend_up" else -0.01),
+        )
+        for index, value in enumerate(values)
+    ]
+
+
 def test_quantile_bucket_metrics_are_deterministic() -> None:
     first = compute_feature_bucket_metrics(observations=_obs([0.01] * 20), bucket_method="quantile:10")
     second = compute_feature_bucket_metrics(observations=_obs([0.01] * 20), bucket_method="quantile:10")
 
     assert first == second
     assert [metric.bucket_id for metric in first] == [f"q{index:02d}" for index in range(10)]
+
+
+def test_string_feature_uses_category_buckets_not_quantiles() -> None:
+    metrics = compute_feature_bucket_metrics(
+        observations=_category_obs(["trend_up", "range"], value_type="str"),
+        bucket_method="quantile:10",
+        min_bucket_count=1,
+    )
+    bucket_ids = {metric.bucket_id for metric in metrics}
+
+    assert bucket_ids == {"category:range", "category:trend_up"}
+    assert all(bucket_id.startswith("category:") for bucket_id in bucket_ids)
+    assert not any(bucket_id.startswith("q") for bucket_id in bucket_ids)
+
+
+def test_bool_feature_uses_true_false_category_buckets() -> None:
+    metrics = compute_feature_bucket_metrics(
+        observations=_category_obs([True, False], value_type="bool"),
+        bucket_method="quantile:10",
+        min_bucket_count=1,
+    )
+
+    assert {metric.bucket_id for metric in metrics} == {"category:false", "category:true"}
+
+
+def test_category_bucket_preserves_metric_values_per_category() -> None:
+    metrics = compute_feature_bucket_metrics(
+        observations=_category_obs(["trend_up", "trend_up", "range"], value_type="category"),
+        bucket_method="quantile:10",
+        min_bucket_count=1,
+    )
+    by_bucket = {metric.bucket_id: metric for metric in metrics}
+
+    assert by_bucket["category:trend_up"].count == 2
+    assert by_bucket["category:trend_up"].mean_forward_return == 0.01
+    assert by_bucket["category:range"].count == 1
+    assert by_bucket["category:range"].mean_forward_return == -0.01
+
+
+def test_numeric_feature_still_uses_quantile_buckets() -> None:
+    metrics = compute_feature_bucket_metrics(
+        observations=_obs([0.01, -0.01]),
+        bucket_method="quantile:2",
+        min_bucket_count=1,
+    )
+
+    assert [metric.bucket_id for metric in metrics] == ["q00", "q01"]
 
 
 def test_bucket_metrics_include_mean_and_median() -> None:

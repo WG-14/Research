@@ -6,9 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from bithumb_bot.evidence_safety import diagnostic_feature_mining_taxonomy
 from bithumb_bot.paths import PathManager
 from bithumb_bot.research.experiment_manifest import ExperimentManifest
-from bithumb_bot.research.forward_diagnostics import ForwardDiagnosticsResult
+from bithumb_bot.research.forward_diagnostics import FINAL_HOLDOUT_WARNING_REASON, ForwardDiagnosticsResult
 from bithumb_bot.research.hashing import report_content_hash_payload, sha256_prefixed
 from bithumb_bot.storage_io import write_json_atomic, write_text_atomic
 
@@ -51,6 +52,7 @@ def write_forward_diagnostics_report(
     manifest: ExperimentManifest,
     result: ForwardDiagnosticsResult,
 ) -> dict[str, Any]:
+    validate_forward_diagnostics_split_policy(result)
     paths = forward_diagnostics_report_paths(manager=manager, experiment_id=manifest.experiment_id)
     _write_metrics_csv(paths.feature_bucket_metrics_path, [metric.as_dict() for metric in result.feature_bucket_metrics])
     _write_metrics_csv(paths.feature_horizon_metrics_path, [metric.as_dict() for metric in result.feature_horizon_metrics])
@@ -62,6 +64,7 @@ def write_forward_diagnostics_report(
         "approved_profile_evidence": False,
         "live_readiness_evidence": False,
         "capital_allocation_evidence": False,
+        **diagnostic_feature_mining_taxonomy(),
         "warnings": list(result.warnings),
         "diagnostic_status": result.diagnostic_status,
         "fail_reasons": list(result.fail_reasons),
@@ -77,6 +80,7 @@ def write_forward_diagnostics_report(
         "approved_profile_evidence": False,
         "live_readiness_evidence": False,
         "capital_allocation_evidence": False,
+        **diagnostic_feature_mining_taxonomy(),
         "experiment_id": manifest.experiment_id,
         "manifest_hash": manifest.manifest_hash(),
         "split_name": result.split_name,
@@ -130,6 +134,38 @@ def validate_forward_diagnostics_report_flags(payload: dict[str, Any]) -> None:
         )
     ):
         raise ValueError("forward diagnostics report must remain diagnostic-only")
+    if payload.get("non_promotable") is not True:
+        raise ValueError("forward diagnostics report must be non_promotable")
+    if payload.get("promotion_eligible") is not False:
+        raise ValueError("forward diagnostics report must not be promotion_eligible")
+    if payload.get("promotion_grade") is not False:
+        raise ValueError("forward diagnostics report must not be promotion_grade")
+    if payload.get("evidence_scope") != "diagnostic_feature_mining":
+        raise ValueError("forward diagnostics report evidence_scope must be diagnostic_feature_mining")
+    forbidden_uses = payload.get("forbidden_uses")
+    if not isinstance(forbidden_uses, list) or not {
+        "strategy_promotion",
+        "approved_profile",
+        "live_readiness",
+        "capital_allocation",
+    }.issubset({str(item) for item in forbidden_uses}):
+        raise ValueError("forward diagnostics report forbidden_uses incomplete")
+    if not str(payload.get("operator_next_action") or "").strip():
+        raise ValueError("forward diagnostics report operator_next_action required")
+
+
+def validate_forward_diagnostics_split_policy(result: ForwardDiagnosticsResult) -> None:
+    if result.split_name != "final_holdout":
+        return
+    if result.final_holdout_diagnostic_override is not True:
+        raise ValueError("final_holdout_diagnostic_override_required")
+    warning_reasons = {
+        str(warning.get("reason") or "")
+        for warning in result.warnings
+        if isinstance(warning, dict)
+    }
+    if FINAL_HOLDOUT_WARNING_REASON not in warning_reasons:
+        raise ValueError(FINAL_HOLDOUT_WARNING_REASON)
 
 
 def _write_metrics_csv(path: Path, rows: list[dict[str, object]]) -> None:

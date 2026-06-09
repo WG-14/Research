@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from bithumb_bot.evidence_safety import diagnostic_feature_mining_taxonomy
 from bithumb_bot.paths import PathManager
 from bithumb_bot.research.diagnostic_availability import DiagnosticAvailability
 from bithumb_bot.research.experiment_manifest import ExperimentManifest
@@ -34,6 +35,7 @@ def build_forward_diagnostics_failure_payload(
         "approved_profile_evidence": False,
         "live_readiness_evidence": False,
         "capital_allocation_evidence": False,
+        **diagnostic_feature_mining_taxonomy(),
         "diagnostic_status": "unavailable",
         "fail_reasons": list(fail_reasons),
         "manifest_hash": manifest.manifest_hash(),
@@ -85,6 +87,22 @@ def validate_forward_diagnostics_failure_flags(payload: dict[str, Any]) -> None:
             "approved_profile_evidence",
             "live_readiness_evidence",
             "capital_allocation_evidence",
+            "promotion_eligible",
+            "promotion_grade",
         )
     ):
         raise ValueError("forward diagnostics failure artifact must remain diagnostic-only")
+    if payload.get("non_promotable") is not True:
+        raise ValueError("forward diagnostics failure artifact must be non_promotable")
+    if payload.get("evidence_scope") != "diagnostic_feature_mining":
+        raise ValueError("forward diagnostics failure artifact evidence_scope mismatch")
+    forbidden_uses = payload.get("forbidden_uses")
+    if not isinstance(forbidden_uses, list) or not {
+        "strategy_promotion",
+        "approved_profile",
+        "live_readiness",
+        "capital_allocation",
+    }.issubset({str(item) for item in forbidden_uses}):
+        raise ValueError("forward diagnostics failure artifact forbidden_uses incomplete")
+    if not str(payload.get("operator_next_action") or "").strip():
+        raise ValueError("forward diagnostics failure artifact operator_next_action required")

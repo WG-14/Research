@@ -5,8 +5,13 @@ from pathlib import Path
 import pytest
 
 from bithumb_bot.cli.registry import command_registry
+from bithumb_bot.evidence_safety import diagnostic_feature_mining_taxonomy
+from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
+from bithumb_bot.research.experiment_manifest import DateRange
 from bithumb_bot.research.forward_diagnostics_failure_report import validate_forward_diagnostics_failure_flags
+from bithumb_bot.research.forward_diagnostics import run_forward_diagnostics_on_snapshot
 from bithumb_bot.research.forward_diagnostics_report import validate_forward_diagnostics_report_flags
+from bithumb_bot.research.split_usage_policy import SplitUsagePolicyError
 from bithumb_bot.research.strategy_registry import list_research_strategy_plugins
 
 
@@ -76,6 +81,7 @@ def test_forward_diagnostics_report_remains_diagnostic_only_after_policy_fields_
         "approved_profile_evidence": False,
         "live_readiness_evidence": False,
         "capital_allocation_evidence": False,
+        **diagnostic_feature_mining_taxonomy(),
         "calculation_policy": {
             "entry_price_mode": "signal_close",
             "path_start_policy": "next_candle_after_signal_close",
@@ -94,6 +100,7 @@ def test_forward_diagnostics_report_cannot_be_promotion_evidence() -> None:
         "approved_profile_evidence": False,
         "live_readiness_evidence": False,
         "capital_allocation_evidence": False,
+        **diagnostic_feature_mining_taxonomy(),
     }
     for field in (
         "promotion_evidence",
@@ -115,6 +122,7 @@ def test_forward_diagnostics_failure_artifact_remains_diagnostic_only() -> None:
         "approved_profile_evidence": False,
         "live_readiness_evidence": False,
         "capital_allocation_evidence": False,
+        **diagnostic_feature_mining_taxonomy(),
     }
 
     validate_forward_diagnostics_failure_flags(payload)
@@ -128,6 +136,7 @@ def test_forward_diagnostics_coverage_artifact_remains_diagnostic_only() -> None
         "approved_profile_evidence": False,
         "live_readiness_evidence": False,
         "capital_allocation_evidence": False,
+        **diagnostic_feature_mining_taxonomy(),
         "coverage": {"feature_horizon": []},
     }
 
@@ -139,3 +148,33 @@ def test_forward_diagnostics_command_remains_read_only() -> None:
 
     assert spec.domain == "research"
     assert spec.read_only is True
+
+
+def test_final_holdout_policy_is_not_cli_only() -> None:
+    candles = tuple(
+        Candle(ts=index, open=100 + index, high=102 + index, low=99 + index, close=101 + index, volume=10 + index)
+        for index in range(25)
+    )
+    snapshot = DatasetSnapshot(
+        snapshot_id="snapshot-final-holdout",
+        source="test",
+        market="BTC_KRW",
+        interval="1m",
+        split_name="final_holdout",
+        date_range=DateRange("2026-01-01", "2026-01-02"),
+        candles=candles,
+    )
+
+    with pytest.raises(SplitUsagePolicyError):
+        run_forward_diagnostics_on_snapshot(
+            snapshot=snapshot,
+            feature_names=("sma_gap",),
+            horizon_steps=(1,),
+            bucket_method="quantile:1",
+            final_holdout_diagnostic_override=False,
+            min_bucket_count=1,
+        )
+
+
+def test_core_direct_call_cannot_bypass_final_holdout_policy() -> None:
+    test_final_holdout_policy_is_not_cli_only()

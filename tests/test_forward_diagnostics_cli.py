@@ -170,6 +170,81 @@ def test_research_forward_diagnostics_rejects_final_holdout_without_override() -
     assert code == 1
 
 
+def test_cli_final_holdout_policy_denial_returns_code_1(monkeypatch, tmp_path) -> None:
+    import bithumb_bot.research.forward_diagnostics_cli as cli
+    from tests.test_forward_diagnostics_report import _manager, _manifest
+
+    monkeypatch.setattr(cli, "PATH_MANAGER", _manager(tmp_path))
+    monkeypatch.setattr(cli, "load_manifest", lambda path: _manifest())
+
+    code = cli.cmd_research_forward_diagnostics(
+        manifest_path="manifest.json",
+        split_name="final_holdout",
+        features=("sma_gap",),
+        horizons=(1,),
+        bucket="quantile:10",
+        allow_final_holdout_diagnostics=False,
+    )
+
+    assert code == 1
+
+
+def test_cli_json_final_holdout_without_override_outputs_policy_denial_json(monkeypatch, capsys, tmp_path) -> None:
+    import bithumb_bot.research.forward_diagnostics_cli as cli
+    from tests.test_forward_diagnostics_report import _manager, _manifest
+
+    manager = _manager(tmp_path)
+    monkeypatch.setattr(cli, "PATH_MANAGER", manager)
+    monkeypatch.setattr(cli, "load_manifest", lambda path: _manifest())
+
+    code = cli.cmd_research_forward_diagnostics(
+        manifest_path="manifest.json",
+        split_name="final_holdout",
+        features=("sma_gap",),
+        horizons=(1,),
+        bucket="quantile:10",
+        as_json=True,
+        allow_final_holdout_diagnostics=False,
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert code == 1
+    assert payload["artifact_type"] == "forward_return_diagnostic_policy_denial"
+    assert payload["diagnostic_status"] == "policy_denied"
+    assert payload["reason"] == "final_holdout_diagnostic_override_required"
+    assert payload["split_name"] == "final_holdout"
+    assert payload["diagnostic_only"] is True
+    assert payload["promotion_evidence"] is False
+    assert payload["artifact_paths"]["policy_denial"] == str(
+        manager.data_dir() / "reports/research/exp1/forward_diagnostics_policy_denial.json"
+    )
+    assert (manager.data_dir() / "reports/research/exp1/forward_diagnostics_policy_denial.json").exists()
+
+
+def test_cli_json_final_holdout_policy_denial_has_no_human_prefix(monkeypatch, capsys, tmp_path) -> None:
+    import bithumb_bot.research.forward_diagnostics_cli as cli
+    from tests.test_forward_diagnostics_report import _manager, _manifest
+
+    monkeypatch.setattr(cli, "PATH_MANAGER", _manager(tmp_path))
+    monkeypatch.setattr(cli, "load_manifest", lambda path: _manifest())
+
+    code = cli.cmd_research_forward_diagnostics(
+        manifest_path="manifest.json",
+        split_name="final_holdout",
+        features=("sma_gap",),
+        horizons=(1,),
+        bucket="quantile:10",
+        as_json=True,
+        allow_final_holdout_diagnostics=False,
+    )
+    output = capsys.readouterr().out
+
+    assert code == 1
+    assert not output.startswith("[RESEARCH-FORWARD-DIAGNOSTICS]")
+    json.loads(output)
+
+
 def test_research_forward_diagnostics_accepts_final_holdout_with_explicit_override(monkeypatch) -> None:
     import bithumb_bot.research.forward_diagnostics_cli as cli
 

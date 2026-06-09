@@ -67,6 +67,11 @@ Reports produced with that override record
 `final_holdout_diagnostic_override=true` and include the machine-readable warning
 `final_holdout_diagnostic_contamination_risk`.
 
+Registry accounting is not used for this diagnostic override. The experiment
+registry is reserved for research-validation and promotion custody accounting;
+forward-return diagnostics remain report-only policy evidence through the
+override flag and contamination-risk warning.
+
 ## Outputs
 
 ```text
@@ -79,9 +84,12 @@ DATA_ROOT/<mode>/derived/research/<experiment_id>/forward_diagnostics/warnings.j
 
 The report has `artifact_type=forward_return_diagnostic_report`,
 `diagnostic_only=true`, and false promotion/readiness/capital allocation
-evidence flags. It also records a `calculation_policy` block containing
-`entry_price_mode`, `path_start_policy`, `intrabar_included`, and
-`mfe_mae_basis`; the metrics CSV outputs include the same policy columns.
+evidence flags. It also records `evidence_scope=diagnostic_feature_mining`,
+`promotion_eligible=false`, `promotion_grade=false`, `non_promotable=true`,
+machine-readable `forbidden_uses`, and `operator_next_action`. It records a
+`calculation_policy` block containing `entry_price_mode`, `path_start_policy`,
+`intrabar_included`, and `mfe_mae_basis`; the metrics CSV outputs include the
+same policy columns.
 
 ## Diagnostic-only policy
 

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from bithumb_bot.evidence_safety import diagnostic_feature_mining_taxonomy
 from bithumb_bot.config import PATH_MANAGER, settings
 from bithumb_bot.research.experiment_manifest import ManifestValidationError, load_manifest
 from bithumb_bot.research.forward_diagnostics import ForwardDiagnosticsUnavailableError, run_forward_diagnostics
@@ -12,6 +13,11 @@ from bithumb_bot.research.forward_diagnostics_failure_report import (
     write_forward_diagnostics_failure_artifact,
 )
 from bithumb_bot.research.forward_diagnostics_report import write_forward_diagnostics_report
+from bithumb_bot.research.forward_diagnostics_policy_denial import (
+    build_forward_diagnostics_policy_denial_payload,
+    write_forward_diagnostics_policy_denial_artifact,
+)
+from bithumb_bot.research.split_usage_policy import SplitUsagePolicyError
 
 
 ALLOWED_SPLITS = frozenset({"train", "validation", "final_holdout"})
@@ -36,8 +42,6 @@ def cmd_research_forward_diagnostics(
     horizon_steps = tuple(horizons)
     try:
         split = _normalize_split(split_name)
-        if split == "final_holdout" and not allow_final_holdout_diagnostics:
-            raise ValueError("final_holdout diagnostics require --allow-final-holdout-diagnostics")
         feature_names = _normalize_features(features)
         horizon_steps = _normalize_horizons(horizons)
         manifest = load_manifest(manifest_path)
@@ -85,6 +89,7 @@ def cmd_research_forward_diagnostics(
                 "approved_profile_evidence": False,
                 "live_readiness_evidence": False,
                 "capital_allocation_evidence": False,
+                **diagnostic_feature_mining_taxonomy(),
                 "diagnostic_status": "unavailable",
                 "fail_reasons": list(exc.fail_reasons),
                 "split_name": split,
@@ -97,6 +102,31 @@ def cmd_research_forward_diagnostics(
             print(json.dumps(failure_payload, ensure_ascii=False, sort_keys=True, indent=2))
         else:
             print(f"[RESEARCH-FORWARD-DIAGNOSTICS] error={exc}")
+        return 1
+    except SplitUsagePolicyError as exc:
+        if manifest is not None:
+            failure_payload = write_forward_diagnostics_policy_denial_artifact(
+                manager=PATH_MANAGER,
+                manifest=manifest,
+                reason=exc.reason,
+                split_name=exc.split_name,
+                feature_names=feature_names,
+                horizon_steps=horizon_steps,
+            )
+        else:
+            failure_payload = build_forward_diagnostics_policy_denial_payload(
+                manifest=None,
+                reason=exc.reason,
+                split_name=exc.split_name,
+                feature_names=feature_names,
+                horizon_steps=horizon_steps,
+            )
+        if out_path:
+            _write_explicit_json(Path(out_path), failure_payload)
+        if as_json:
+            print(json.dumps(failure_payload, ensure_ascii=False, sort_keys=True, indent=2))
+        else:
+            print(f"[RESEARCH-FORWARD-DIAGNOSTICS] error={exc.reason}")
         return 1
     except (ManifestValidationError, OSError, ValueError, IndexError) as exc:
         if as_json:
@@ -168,6 +198,7 @@ def _generic_failure_payload(
         "approved_profile_evidence": False,
         "live_readiness_evidence": False,
         "capital_allocation_evidence": False,
+        **diagnostic_feature_mining_taxonomy(),
         "diagnostic_status": "unavailable",
         "fail_reasons": [_generic_failure_reason(exc)],
         "error_type": error_type,

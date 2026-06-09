@@ -13,10 +13,14 @@ from bithumb_bot.research.feature_bucket_metrics import FeatureBucketMetric
 from bithumb_bot.research.feature_provider_registry import FeatureProviderSpec, feature_provider_specs_for_names
 from bithumb_bot.research.forward_diagnostics import (
     DatasetProvenance,
+    FINAL_HOLDOUT_WARNING_REASON,
     ForwardDiagnosticsDatasetQuality,
     ForwardDiagnosticsResult,
 )
-from bithumb_bot.research.forward_diagnostics_report import write_forward_diagnostics_report
+from bithumb_bot.research.forward_diagnostics_report import (
+    validate_forward_diagnostics_report_flags,
+    write_forward_diagnostics_report,
+)
 
 
 def _manager(tmp_path: Path) -> PathManager:
@@ -70,13 +74,13 @@ def _metric(
     )
 
 
-def _dataset(*, content_hash: str = "sha256:" + "2" * 64) -> DatasetProvenance:
+def _dataset(*, content_hash: str = "sha256:" + "2" * 64, split_name: str = "train") -> DatasetProvenance:
     return DatasetProvenance(
         snapshot_id="snapshot1",
         source="test_source",
         market="BTC_KRW",
         interval="1m",
-        split_name="train",
+        split_name=split_name,
         date_range={"start": "2026-01-01", "end": "2026-01-02"},
         content_hash=content_hash,
         source_uri=None,
@@ -139,10 +143,11 @@ def _result(
     feature_provider_specs: tuple[FeatureProviderSpec, ...] | None = None,
     final_holdout_diagnostic_override: bool = False,
     warnings: tuple[dict[str, object], ...] = (),
+    split_name: str = "train",
 ) -> ForwardDiagnosticsResult:
     return ForwardDiagnosticsResult(
         experiment_id="exp1",
-        split_name="train",
+        split_name=split_name,
         feature_names=("sma_gap",),
         horizon_steps=(1,),
         bucket_method="quantile:1",
@@ -175,7 +180,7 @@ def _result(
             ),
         ),
         warnings=warnings,
-        dataset=dataset or _dataset(),
+        dataset=dataset or _dataset(split_name=split_name),
         final_holdout_diagnostic_override=final_holdout_diagnostic_override,
     )
 
@@ -189,6 +194,22 @@ def test_forward_diagnostics_report_writes_diagnostic_only_flags(tmp_path: Path)
     assert report["approved_profile_evidence"] is False
     assert report["live_readiness_evidence"] is False
     assert report["capital_allocation_evidence"] is False
+
+
+def test_forward_diagnostics_report_includes_non_promotable_taxonomy(tmp_path: Path) -> None:
+    report = write_forward_diagnostics_report(manager=_manager(tmp_path), manifest=_manifest(), result=_result())
+
+    assert report["evidence_scope"] == "diagnostic_feature_mining"
+    assert report["promotion_eligible"] is False
+    assert report["promotion_grade"] is False
+    assert report["non_promotable"] is True
+    assert set(report["forbidden_uses"]) >= {
+        "strategy_promotion",
+        "approved_profile",
+        "live_readiness",
+        "capital_allocation",
+    }
+    assert report["operator_next_action"] == "run_research_validate_from_fixed_manifest"
 
 
 def test_forward_diagnostics_report_writes_under_research_report_and_derived_paths(tmp_path: Path) -> None:
@@ -382,10 +403,85 @@ def test_report_content_hash_changes_when_path_policy_changes(tmp_path: Path) ->
 
 
 def test_forward_diagnostics_report_rejects_promotion_evidence_true(tmp_path: Path) -> None:
-    from bithumb_bot.research.forward_diagnostics_report import validate_forward_diagnostics_report_flags
-
     payload = write_forward_diagnostics_report(manager=_manager(tmp_path), manifest=_manifest(), result=_result())
     payload["promotion_evidence"] = True
 
     with pytest.raises(ValueError, match="diagnostic-only"):
+        validate_forward_diagnostics_report_flags(payload)
+
+
+def test_report_writer_rejects_final_holdout_without_override(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+
+    with pytest.raises(ValueError, match="final_holdout_diagnostic_override_required"):
+        write_forward_diagnostics_report(
+            manager=manager,
+            manifest=_manifest(),
+            result=_result(split_name="final_holdout", final_holdout_diagnostic_override=False),
+        )
+
+    assert not (manager.data_dir() / "reports/research/exp1/forward_diagnostics_report.json").exists()
+    assert not (manager.data_dir() / "derived/research/exp1/forward_diagnostics/warnings.json").exists()
+
+
+def test_report_writer_rejects_final_holdout_override_without_warning(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+
+    with pytest.raises(ValueError, match=FINAL_HOLDOUT_WARNING_REASON):
+        write_forward_diagnostics_report(
+            manager=manager,
+            manifest=_manifest(),
+            result=_result(split_name="final_holdout", final_holdout_diagnostic_override=True, warnings=()),
+        )
+
+    assert not (manager.data_dir() / "reports/research/exp1/forward_diagnostics_report.json").exists()
+
+
+def test_report_writer_accepts_final_holdout_with_override_warning(tmp_path: Path) -> None:
+    report = write_forward_diagnostics_report(
+        manager=_manager(tmp_path),
+        manifest=_manifest(),
+        result=_result(
+            split_name="final_holdout",
+            final_holdout_diagnostic_override=True,
+            warnings=({"reason": FINAL_HOLDOUT_WARNING_REASON, "split_name": "final_holdout"},),
+        ),
+    )
+
+    assert report["split_name"] == "final_holdout"
+    assert report["final_holdout_diagnostic_override"] is True
+    assert {warning["reason"] for warning in report["warnings"]} == {FINAL_HOLDOUT_WARNING_REASON}
+
+
+def test_report_writer_accepts_train_without_holdout_warning(tmp_path: Path) -> None:
+    report = write_forward_diagnostics_report(
+        manager=_manager(tmp_path),
+        manifest=_manifest(),
+        result=_result(split_name="train", final_holdout_diagnostic_override=False, warnings=()),
+    )
+
+    assert report["split_name"] == "train"
+    assert report["warnings"] == []
+
+
+def test_report_flag_validator_rejects_all_forbidden_evidence_flags(tmp_path: Path) -> None:
+    base = write_forward_diagnostics_report(manager=_manager(tmp_path), manifest=_manifest(), result=_result())
+
+    for field in (
+        "promotion_evidence",
+        "approved_profile_evidence",
+        "live_readiness_evidence",
+        "capital_allocation_evidence",
+    ):
+        payload = dict(base)
+        payload[field] = True
+        with pytest.raises(ValueError, match="diagnostic-only"):
+            validate_forward_diagnostics_report_flags(payload)
+
+
+def test_forward_diagnostics_report_validator_rejects_promotable_taxonomy(tmp_path: Path) -> None:
+    payload = write_forward_diagnostics_report(manager=_manager(tmp_path), manifest=_manifest(), result=_result())
+    payload["non_promotable"] = False
+
+    with pytest.raises(ValueError, match="non_promotable"):
         validate_forward_diagnostics_report_flags(payload)

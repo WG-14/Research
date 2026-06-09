@@ -23,7 +23,7 @@ from .evidence_chain import (
     validate_candidate_regime_policy_equivalence_evidence,
     validate_profile_transition_evidence,
 )
-from .evidence_safety import smoke_only_evidence_rejection_reasons
+from .evidence_safety import evidence_rejection_reasons
 from .promotion_provenance import (
     payload_has_promotion_provenance_markers,
     validate_promotion_artifact_provenance,
@@ -327,7 +327,7 @@ def verify_promotion_artifact(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(profile, dict):
         raise ApprovedProfileError("promotion_candidate_profile_missing")
     for source_name, source in (("promotion", payload), ("candidate_profile", profile)):
-        smoke_reasons = smoke_only_evidence_rejection_reasons(source)
+        smoke_reasons = evidence_rejection_reasons(source)
         if smoke_reasons:
             raise ApprovedProfileError(
                 f"{source_name}_smoke_evidence_not_promotable:"
