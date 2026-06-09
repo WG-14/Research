@@ -53,3 +53,4 @@ def test_diagnostic_feature_mining_artifact_rejected_as_promotion_evidence() -> 
 
     assert "diagnostic_feature_mining_not_promotable" in reasons
     assert "forbidden_use:strategy_promotion" in reasons
+    assert "forbidden_use:live_readiness" in reasons

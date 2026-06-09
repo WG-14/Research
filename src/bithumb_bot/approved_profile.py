@@ -1065,6 +1065,7 @@ def verify_profile_evidence_artifacts(profile: dict[str, Any]) -> None:
             recorded_hash = str(payload.get("content_hash") or "").strip()
             if recorded_hash != expected_hash:
                 raise ApprovedProfileError(f"{hash_key}_mismatch")
+            _reject_evidence_artifact_contract_reasons(payload, label=label)
             semantic_hash = validate_profile_transition_evidence(
                 payload,
                 label=label,
@@ -1084,6 +1085,14 @@ def verify_profile_evidence_artifacts(profile: dict[str, Any]) -> None:
             raise ApprovedProfileError(str(exc)) from exc
         if semantic_hash != expected_hash:
             raise ApprovedProfileError(f"{hash_key}_mismatch")
+
+
+def _reject_evidence_artifact_contract_reasons(payload: dict[str, Any], *, label: str) -> None:
+    reasons = evidence_rejection_reasons(payload)
+    if reasons:
+        raise ApprovedProfileError(
+            f"{label}_artifact_not_acceptable:" + ",".join(reasons)
+        )
 
 
 def load_profile_or_promotion_regime_policy(
@@ -2113,8 +2122,10 @@ def _validate_transition_evidence_file(
     expected_hash: str | None,
 ) -> None:
     try:
+        payload = _load_json(path)
+        _reject_evidence_artifact_contract_reasons(payload, label=label)
         semantic_hash = validate_profile_transition_evidence(
-            _load_json(path),
+            payload,
             label=label,
             expected_type=expected_type,
             expected_mode=expected_mode,

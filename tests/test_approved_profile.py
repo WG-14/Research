@@ -25,6 +25,7 @@ from bithumb_bot.approved_profile import (
     strategy_parameter_env_keys_for_profile,
     validate_approved_profile,
     verify_profile_source_artifact,
+    verify_profile_evidence_artifacts,
     verify_promotion_artifact,
     write_approved_profile_atomic,
 )
@@ -525,6 +526,43 @@ def test_approved_profile_rejects_forward_diagnostics_report_as_source_evidence(
     assert "diagnostic_feature_mining_not_promotable" in message
     assert "non_promotable_evidence_artifact" in message
     assert "forbidden_use:approved_profile" in message
+
+
+def test_live_readiness_evidence_rejects_forward_diagnostics_report(tmp_path: Path) -> None:
+    promotion_path = tmp_path / "promotion.json"
+    write_json_atomic(promotion_path, _promotion())
+    profile = _profile(source_promotion_path=str(promotion_path))
+    diagnostic_payload: dict[str, object] = {
+        "artifact_type": "forward_return_diagnostic_report",
+        "diagnostic_only": True,
+        "promotion_evidence": False,
+        "approved_profile_evidence": False,
+        "live_readiness_evidence": False,
+        "capital_allocation_evidence": False,
+        "evidence_scope": "diagnostic_feature_mining",
+        "promotion_eligible": False,
+        "promotion_grade": False,
+        "non_promotable": True,
+        "forbidden_uses": [
+            "strategy_promotion",
+            "approved_profile",
+            "live_readiness",
+            "capital_allocation",
+        ],
+        "operator_next_action": "run_research_validate_from_fixed_manifest",
+    }
+    diagnostic_payload["content_hash"] = sha256_prefixed(content_hash_payload(diagnostic_payload))
+    evidence_path = tmp_path / "forward_diagnostics_report.json"
+    write_json_atomic(evidence_path, diagnostic_payload)
+    profile["live_readiness_evidence_path"] = str(evidence_path.resolve())
+    profile["live_readiness_evidence_content_hash"] = diagnostic_payload["content_hash"]
+
+    with pytest.raises(ApprovedProfileError) as exc:
+        verify_profile_evidence_artifacts(profile)
+
+    message = str(exc.value)
+    assert "diagnostic_feature_mining_not_promotable" in message
+    assert "forbidden_use:live_readiness" in message
 
 
 def test_promotion_artifact_rejects_nested_candidate_profile_compatibility_fallback() -> None:
