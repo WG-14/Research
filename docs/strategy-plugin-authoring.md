@@ -215,6 +215,41 @@ Research-only plugins are not promotion evidence. If promotion is attempted befo
 
 `threshold_research_only` is the minimal built-in template for this path. It demonstrates that a strategy can be added without runtime replay, live, approved-profile, or adapter boilerplate. `canary_non_sma` is not the minimal template; it remains a promotion-grade architecture proof.
 
+### Level 1 Performance Contract
+
+Level 1 research plugins may run on large snapshots. Correct decision output is
+not sufficient if the event builder performs O(N^2) work over candles. Do not
+perform full dataset materialization inside per-candle loops, and do not scan
+the entire snapshot once per candle to rebuild candle, OHLCV, or rolling-feature
+inputs.
+
+Forbidden:
+
+```python
+for candle in dataset.candles:
+    candles = tuple(dataset.candles)
+    closes = tuple(float(item.close) for item in candles)
+```
+
+Allowed:
+
+```python
+candles = tuple(dataset.candles)
+closes = tuple(float(item.close) for item in candles)
+
+for index, candle in enumerate(candles):
+    ...
+```
+
+Prefer a prepared/cache path such as `prepare_candle_arrays(dataset)` for
+candle-only OHLCV inputs. Use precompute steps for candle arrays once at event-builder start,
+or obtain them from an equivalent prepared context. Rolling features should use
+prepared arrays, rolling caches, or bounded-window state where possible.
+
+Research-backtest parallelism is candidate-scenario level. It can run multiple
+candidate/scenario work units at once, but it does not fix plugin-internal
+O(N^2) computation inside a single event builder.
+
 ## Level 2: Replay-Compatible Path
 
 Use `bithumb_bot.strategy_authoring.ReplayCompatibleStrategyPlugin`,

@@ -56,11 +56,22 @@ class ResearchWorkResult:
             payload.setdefault("failure_reason", self.failure_reason)
         if self.failure_evidence is not None:
             payload.setdefault("resource_guard", self.failure_evidence)
+            _promote_resource_guard_summary(payload, self.failure_evidence)
         payload.setdefault("content_hash", self.content_hash)
         return payload
 
 
 ResearchWorker = Callable[[Any], ResearchWorkResult]
+
+
+def _promote_resource_guard_summary(payload: dict[str, Any], resource_guard: dict[str, Any]) -> None:
+    if "elapsed_s" in resource_guard:
+        payload.setdefault("wall_seconds", resource_guard.get("elapsed_s"))
+    if "candles_processed" in resource_guard:
+        payload.setdefault("candles_processed", resource_guard.get("candles_processed"))
+    reasons = resource_guard.get("reasons")
+    if isinstance(reasons, (list, tuple)):
+        payload.setdefault("resource_limit_reasons", [str(item) for item in reasons])
 
 
 def _worker_process_evidence(result: ResearchWorkResult) -> dict[str, Any]:

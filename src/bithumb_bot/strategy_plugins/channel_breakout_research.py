@@ -9,6 +9,7 @@ from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
 from bithumb_bot.research.decision_event import ResearchDecisionEvent
 from bithumb_bot.research.execution_timing import candle_close_ts
 from bithumb_bot.research.experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
+from bithumb_bot.research.prepared_candles import PreparedCandleArrays, prepare_candle_arrays
 from bithumb_bot.research.strategy_registry import ResearchStrategyPlugin
 from bithumb_bot.research.strategy_spec import (
     StrategyParameterSchema,
@@ -20,6 +21,14 @@ from bithumb_bot.strategy_authoring import research_plugin_from_event_builder
 
 
 CHANNEL_BREAKOUT_STRATEGY_NAME = "channel_breakout_with_regime_filter"
+
+CHANNEL_BREAKOUT_COMPLEXITY_METADATA = {
+    "schema_version": 1,
+    "complexity_class": "linear_precomputed_ohlcv",
+    "expected_us_per_candle": 25,
+    "precompute_required": True,
+    "precompute_path": "prepare_channel_breakout_context",
+}
 
 CHANNEL_BREAKOUT_SPEC = StrategySpec(
     strategy_name=CHANNEL_BREAKOUT_STRATEGY_NAME,
@@ -130,18 +139,28 @@ def decide_channel_breakout_snapshot(
     candle_index: int,
     dataset: DatasetSnapshot,
     parameter_values: dict[str, Any],
+    candles: tuple[Candle, ...] | None = None,
+    closes: tuple[float, ...] | None = None,
+    highs: tuple[float, ...] | None = None,
+    lows: tuple[float, ...] | None = None,
+    volumes: tuple[float, ...] | None = None,
 ) -> dict[str, Any]:
-    candles = tuple(dataset.candles)
+    if candles is None:
+        candles = tuple(dataset.candles)
+    if closes is None:
+        closes = tuple(float(item.close) for item in candles)
+    if highs is None:
+        highs = tuple(float(item.high) for item in candles)
+    if lows is None:
+        lows = tuple(float(item.low) for item in candles)
+    if volumes is None:
+        volumes = tuple(float(item.volume) for item in candles)
     lookback = int(parameter_values["CHANNEL_BREAKOUT_LOOKBACK"])
     range_window = int(parameter_values["CHANNEL_BREAKOUT_RANGE_WINDOW"])
     volume_window = int(parameter_values["CHANNEL_BREAKOUT_VOLUME_WINDOW"])
     min_required_prior = max(lookback, range_window, volume_window)
     close = float(candle.close)
     volume = float(candle.volume)
-    closes = tuple(float(item.close) for item in candles)
-    highs = tuple(float(item.high) for item in candles)
-    lows = tuple(float(item.low) for item in candles)
-    volumes = tuple(float(item.volume) for item in candles)
 
     if candle_index < min_required_prior:
         regime = classify_market_regime_from_arrays(
@@ -260,6 +279,10 @@ def decide_channel_breakout_snapshot(
     return decision
 
 
+def prepare_channel_breakout_context(dataset: DatasetSnapshot) -> PreparedCandleArrays:
+    return prepare_candle_arrays(dataset)
+
+
 def build_channel_breakout_research_events(
     *,
     dataset: DatasetSnapshot,
@@ -271,13 +294,20 @@ def build_channel_breakout_research_events(
     context: Any | None = None,
 ) -> tuple[ResearchDecisionEvent, ...]:
     del fee_rate, slippage_bps, portfolio_policy, context
+    prepared = prepare_channel_breakout_context(dataset)
+    candles = prepared.candles
     events: list[ResearchDecisionEvent] = []
-    for candle_index, candle in enumerate(dataset.candles):
+    for candle_index, candle in enumerate(candles):
         decision = decide_channel_breakout_snapshot(
             candle=candle,
             candle_index=candle_index,
             dataset=dataset,
             parameter_values=parameter_values,
+            candles=candles,
+            closes=prepared.closes,
+            highs=prepared.highs,
+            lows=prepared.lows,
+            volumes=prepared.volumes,
         )
         signal = str(decision.get("signal") or "HOLD").upper()
         feature_snapshot = dict(decision.get("feature_snapshot") or {})
@@ -337,3 +367,9 @@ CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN = research_plugin_from_event_builder(
     diagnostics_namespace=CHANNEL_BREAKOUT_SPEC.strategy_name,
     research_parameter_materializer=materialize_channel_breakout_parameters,
 ).to_research_strategy_plugin()
+
+object.__setattr__(
+    CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN,
+    "complexity_metadata",
+    CHANNEL_BREAKOUT_COMPLEXITY_METADATA,
+)

@@ -17,6 +17,7 @@ REQUIRED_LIMIT_FIELDS = (
     "max_estimated_hash_payload_bytes",
     "max_estimated_artifact_bytes",
     "max_estimated_artifact_file_count",
+    "max_estimated_plugin_runtime_us",
 )
 ESTIMATE_TO_LIMIT_FIELDS = (
     ("estimated_tick_events", "max_estimated_tick_events"),
@@ -25,6 +26,7 @@ ESTIMATE_TO_LIMIT_FIELDS = (
     ("estimated_hash_payload_bytes", "max_estimated_hash_payload_bytes"),
     ("estimated_artifact_bytes", "max_estimated_artifact_bytes"),
     ("estimated_artifact_file_count", "max_estimated_artifact_file_count"),
+    ("estimated_plugin_runtime_us", "max_estimated_plugin_runtime_us"),
 )
 
 
@@ -102,6 +104,7 @@ def main() -> int:
             "estimated_hash_payload_bytes": summary["total_estimated_hash_payload_bytes"],
             "estimated_artifact_bytes": summary["total_estimated_artifact_bytes"],
             "estimated_artifact_file_count": summary["total_estimated_artifact_file_count"],
+            "estimated_plugin_runtime_us": summary.get("total_estimated_plugin_runtime_us", 0),
         }
 
     violations = check_estimate(estimate, budgets[args.suite])
@@ -115,6 +118,8 @@ def main() -> int:
 
 
 def _non_negative_int(payload: dict[str, Any], field: str, *, source: str) -> int:
+    if field == "estimated_plugin_runtime_us" and field not in payload:
+        return 0
     value = payload.get(field)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise SystemExit(f"{source} field {field} must be a non-negative integer")

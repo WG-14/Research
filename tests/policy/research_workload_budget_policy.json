@@ -8,7 +8,8 @@
       "max_estimated_artifact_write_count": 250,
       "max_estimated_hash_payload_bytes": 2000000,
       "max_estimated_artifact_bytes": 67108864,
-      "max_estimated_artifact_file_count": 500
+      "max_estimated_artifact_file_count": 500,
+      "max_estimated_plugin_runtime_us": 5000000
     },
     "research-nightly": {
       "max_estimated_tick_events": 2500000,
@@ -16,7 +17,8 @@
       "max_estimated_artifact_write_count": 20000,
       "max_estimated_hash_payload_bytes": 268435456,
       "max_estimated_artifact_bytes": 536870912,
-      "max_estimated_artifact_file_count": 25000
+      "max_estimated_artifact_file_count": 25000,
+      "max_estimated_plugin_runtime_us": 300000000
     },
     "full": {
       "max_estimated_tick_events": 3000000,
@@ -24,7 +26,8 @@
       "max_estimated_artifact_write_count": 25000,
       "max_estimated_hash_payload_bytes": 335544320,
       "max_estimated_artifact_bytes": 805306368,
-      "max_estimated_artifact_file_count": 30000
+      "max_estimated_artifact_file_count": 30000,
+      "max_estimated_plugin_runtime_us": 360000000
     }
   }
 }

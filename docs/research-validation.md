@@ -281,6 +281,65 @@ process policy and available start methods so the plan hash captures the
 declared reproducibility contract; effective values are recorded once the
 parallel pool is actually created.
 
+`PYTEST_XDIST_WORKERS` is a pytest worker setting, not a research CLI worker
+setting. It controls pytest process parallelism for test commands and does not
+make `research-backtest` or `research-forward-diagnostics` use that worker
+count.
+
+`research-forward-diagnostics` is currently single-process. It calls the
+forward diagnostics runner directly and does not accept research worker or
+max-worker options.
+
+`research-backtest` parallelism is configured in the manifest with
+`research_run.execution.mode=parallel` and `max_workers`. The parallel work unit
+is `candidate_scenario`, so speedup is bounded by candidate/scenario task count
+and plugin-internal work inside one task. Effective workers may be reduced by
+`BITHUMB_RESEARCH_MAX_WORKERS` or `BITHUMB_TOTAL_PROCESS_BUDGET`.
+
+```json
+"research_run": {
+  "execution": {
+    "mode": "parallel",
+    "max_workers": 8,
+    "process_start_method": "auto_safe",
+    "work_unit": "candidate_scenario"
+  }
+}
+```
+
+### Same-Manifest Performance Comparisons
+
+Use the same manifest when comparing serial vs parallel runs or before/after
+plugin optimizations. Keep `parameter_space`, dataset split ranges,
+`execution_model`, resource limits, and parallel worker count identical. Use
+only `experiment_id` as the normal label difference. If the manifest hash
+differs for any other reason, record the reason before treating the measurement
+as comparable. Increasing `max_runtime_s_per_candidate_split` is not the default
+fix for `candidate_resource_limit_exceeded`; first compare equivalent workloads
+and inspect plugin complexity, event-builder behavior, and failure reasons.
+
+Example before/after procedure:
+
+```bash
+cp manifest.json /tmp/research_before.json
+cp manifest.json /tmp/research_after.json
+jq '.experiment_id = "channel_breakout_before"' /tmp/research_before.json > /tmp/research_before.labeled.json
+jq '.experiment_id = "channel_breakout_after"' /tmp/research_after.json > /tmp/research_after.labeled.json
+
+/usr/bin/time -v uv run bithumb-bot research-backtest --manifest /tmp/research_before.labeled.json
+/usr/bin/time -v uv run bithumb-bot research-backtest --manifest /tmp/research_after.labeled.json
+
+REPORT="$(find "$DATA_ROOT/paper/reports/research" -name backtest_report.json -print | sort | tail -1)"
+jq '.execution_observability' "$REPORT"
+jq -r '.execution_observability.work_units[]
+  | [.status, (.failure_reason // "none"), (.wall_seconds // "missing"),
+     (.candles_processed // "missing"),
+     ((.resource_limit_reasons // []) | join(","))]
+  | @tsv' "$REPORT"
+jq -r '[.execution_observability.work_units[].failure_reason // "none"]
+  | group_by(.)[] | "\(.[0])\t\(length)"' "$REPORT"
+```
+
 Nested parallelism is controlled by explicit caps. Set
 `BITHUMB_RESEARCH_MAX_WORKERS` to cap inner research workers. Set
 `BITHUMB_TOTAL_PROCESS_BUDGET` when an outer runner, such as xdist, should

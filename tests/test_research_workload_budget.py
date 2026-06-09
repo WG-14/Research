@@ -319,6 +319,7 @@ def test_research_workload_budget_script_passes_bounded_synthetic_estimate(tmp_p
                 "estimated_hash_payload_bytes": 1024,
                 "estimated_artifact_bytes": 1024,
                 "estimated_artifact_file_count": 2,
+                "estimated_plugin_runtime_us": 500,
             }
         ),
         encoding="utf-8",
@@ -346,6 +347,7 @@ def test_research_workload_budget_script_fails_oversized_synthetic_estimate(tmp_
                 "estimated_hash_payload_bytes": 2_000_001,
                 "estimated_artifact_bytes": 64 * 1024 * 1024 + 1,
                 "estimated_artifact_file_count": 501,
+                "estimated_plugin_runtime_us": 5_000_001,
             }
         ),
         encoding="utf-8",
@@ -363,6 +365,7 @@ def test_research_workload_budget_script_fails_oversized_synthetic_estimate(tmp_
     assert "suite=fast field=estimated_tick_events observed=25001 limit=25000" in output
     assert "suite=fast field=estimated_audit_stream_rows observed=1 limit=0" in output
     assert "suite=fast field=estimated_artifact_bytes observed=67108865 limit=67108864" in output
+    assert "suite=fast field=estimated_plugin_runtime_us observed=5000001 limit=5000000" in output
 
 
 def test_research_workload_budget_policy_requires_suite_fields(tmp_path: Path) -> None:
@@ -390,6 +393,7 @@ def test_research_workload_budget_policy_requires_suite_fields(tmp_path: Path) -
                 "estimated_hash_payload_bytes": 1,
                 "estimated_artifact_bytes": 1,
                 "estimated_artifact_file_count": 1,
+                "estimated_plugin_runtime_us": 1,
             }
         ),
         encoding="utf-8",
@@ -413,6 +417,32 @@ def test_research_workload_budget_policy_requires_suite_fields(tmp_path: Path) -
 
     assert proc.returncode != 0
     assert "policy suite=fast field max_estimated_tick_events" in (proc.stdout + proc.stderr)
+
+
+def test_research_workload_budget_script_allows_legacy_estimate_without_plugin_runtime(tmp_path: Path) -> None:
+    estimate = tmp_path / "estimate.json"
+    estimate.write_text(
+        json.dumps(
+            {
+                "estimated_tick_events": 10,
+                "estimated_audit_stream_rows": 0,
+                "estimated_artifact_write_count": 2,
+                "estimated_hash_payload_bytes": 1024,
+                "estimated_artifact_bytes": 1024,
+                "estimated_artifact_file_count": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [sys.executable, "scripts/check_research_workload_budget.py", "--suite", "fast", "--estimate-json", str(estimate)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
 def test_research_workload_budget_default_inventory_path_includes_artifact_bytes() -> None:

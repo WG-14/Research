@@ -10,11 +10,13 @@ from bithumb_bot.research.strategy_spec import StrategySpecError
 from bithumb_bot.strategy_contract_testing import assert_research_only_contract
 from bithumb_bot.strategy_plugin_inventory import build_strategy_plugin_inventory
 from bithumb_bot.strategy_plugins.channel_breakout_research import (
+    CHANNEL_BREAKOUT_COMPLEXITY_METADATA,
     CHANNEL_BREAKOUT_SPEC,
     CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN,
     build_channel_breakout_research_events,
     decide_channel_breakout_snapshot,
     materialize_channel_breakout_parameters,
+    prepare_channel_breakout_context,
 )
 
 
@@ -272,6 +274,120 @@ def test_event_builder_emits_required_event_fields() -> None:
     assert event.strategy_diagnostics["regime_filter_enabled"] is False
 
 
+def test_decide_snapshot_accepts_precomputed_arrays() -> None:
+    dataset = _dataset()
+    params = _materialized(
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+    prepared = prepare_channel_breakout_context(dataset)
+
+    decision = decide_channel_breakout_snapshot(
+        candle=prepared.candles[-1],
+        candle_index=len(prepared.candles) - 1,
+        dataset=dataset,
+        parameter_values=params,
+        candles=prepared.candles,
+        closes=prepared.closes,
+        highs=prepared.highs,
+        lows=prepared.lows,
+        volumes=prepared.volumes,
+    )
+
+    assert decision["signal"] == "BUY"
+    assert decision["feature_snapshot"]["rolling_high"] == 104.0
+
+
+def test_decide_snapshot_legacy_dataset_path_still_works() -> None:
+    dataset = _dataset()
+    params = _materialized(
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    decision = decide_channel_breakout_snapshot(
+        candle=dataset.candles[-1],
+        candle_index=len(dataset.candles) - 1,
+        dataset=dataset,
+        parameter_values=params,
+    )
+
+    assert decision["signal"] == "BUY"
+    assert decision["feature_snapshot"]["rolling_high"] == 104.0
+
+
+def test_event_builder_precomputes_ohlcv_arrays_once() -> None:
+    candles = _CountingCandles(_synthetic_candles(25))
+    dataset = _dataset(candles=candles)  # type: ignore[arg-type]
+    params = _materialized()
+
+    events = build_channel_breakout_research_events(
+        dataset=dataset,
+        parameter_values=params,
+        fee_rate=0.001,
+        slippage_bps=0.0,
+        execution_timing_policy=ExecutionTimingPolicy(decision_guard_ms=0),
+        portfolio_policy=legacy_research_portfolio_policy(),
+    )
+
+    assert len(events) == len(candles)
+    assert candles.iteration_count == 1
+
+
+def test_event_builder_does_not_materialize_dataset_per_candle() -> None:
+    candles = _CountingCandles(_synthetic_candles(10_000))
+    dataset = _dataset(candles=candles)  # type: ignore[arg-type]
+    params = _materialized()
+
+    events = build_channel_breakout_research_events(
+        dataset=dataset,
+        parameter_values=params,
+        fee_rate=0.001,
+        slippage_bps=0.0,
+        execution_timing_policy=ExecutionTimingPolicy(decision_guard_ms=0),
+        portfolio_policy=legacy_research_portfolio_policy(),
+    )
+
+    assert len(events) == len(candles)
+    assert candles.iteration_count == 1
+
+
+def test_channel_breakout_context_builder_used_once_per_backtest(monkeypatch: pytest.MonkeyPatch) -> None:
+    import bithumb_bot.strategy_plugins.channel_breakout_research as module
+
+    dataset = _dataset(candles=_synthetic_candles(12))
+    calls = 0
+    original = module.prepare_channel_breakout_context
+
+    def spy_prepare_context(dataset: DatasetSnapshot):
+        nonlocal calls
+        calls += 1
+        return original(dataset)
+
+    monkeypatch.setattr(module, "prepare_channel_breakout_context", spy_prepare_context)
+
+    events = module.build_channel_breakout_research_events(
+        dataset=dataset,
+        parameter_values=_materialized(),
+        fee_rate=0.001,
+        slippage_bps=0.0,
+        execution_timing_policy=ExecutionTimingPolicy(decision_guard_ms=0),
+        portfolio_policy=legacy_research_portfolio_policy(),
+    )
+
+    assert len(events) == len(dataset.candles)
+    assert calls == 1
+
+
+def test_channel_breakout_declares_linear_complexity() -> None:
+    assert CHANNEL_BREAKOUT_COMPLEXITY_METADATA["complexity_class"] == "linear_precomputed_ohlcv"
+    assert CHANNEL_BREAKOUT_COMPLEXITY_METADATA["precompute_required"] is True
+    assert (
+        getattr(CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN, "complexity_metadata")
+        == CHANNEL_BREAKOUT_COMPLEXITY_METADATA
+    )
+
+
 _REQUIRED_FEATURE_FIELDS = {
     "schema_version",
     "candle_index",
@@ -291,3 +407,33 @@ _REQUIRED_FEATURE_FIELDS = {
     "composite_regime",
     "blocked_filters",
 }
+
+
+class _CountingCandles:
+    def __init__(self, candles: tuple[Candle, ...]) -> None:
+        self._candles = candles
+        self.iteration_count = 0
+
+    def __iter__(self):
+        self.iteration_count += 1
+        return iter(self._candles)
+
+    def __len__(self) -> int:
+        return len(self._candles)
+
+    def __getitem__(self, index):
+        return self._candles[index]
+
+
+def _synthetic_candles(count: int) -> tuple[Candle, ...]:
+    return tuple(
+        Candle(
+            ts=index * 60_000,
+            open=100.0 + index * 0.01,
+            high=101.0 + index * 0.01,
+            low=99.0 + index * 0.01,
+            close=100.5 + index * 0.01,
+            volume=100.0 + (index % 10),
+        )
+        for index in range(count)
+    )

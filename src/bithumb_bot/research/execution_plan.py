@@ -82,6 +82,14 @@ def build_research_execution_plan(
             max(0, split_count - walk_forward_split_count) + walk_forward_split_count
         )
     dataset_candles = sum(len(snapshot.candles) for snapshot in snapshots.values())
+    plugin_complexity = _plugin_complexity_metadata(manifest.strategy_name)
+    plugin_expected_us_per_candle = _plugin_expected_us_per_candle(plugin_complexity)
+    estimated_plugin_runtime_us = (
+        int(dataset_candles)
+        * len(candidates)
+        * len(manifest.execution_model.scenarios)
+        * plugin_expected_us_per_candle
+    )
     run_environment = build_run_environment(
         manifest=manifest,
         db_path=db_path,
@@ -106,6 +114,8 @@ def build_research_execution_plan(
             * len(candidates)
             * len(manifest.execution_model.scenarios)
         ),
+        "plugin_complexity": plugin_complexity,
+        "estimated_plugin_runtime_us": estimated_plugin_runtime_us,
         "execution_mode": manifest.research_run.execution.mode,
         "max_workers": manifest.research_run.execution.max_workers,
         "process_start_method": manifest.research_run.execution.process_start_method,
@@ -142,6 +152,8 @@ def build_research_execution_plan(
         "walk_forward_window_count": walk_forward_split_count // 2,
         "estimated_strategy_runs": plan["estimated_strategy_runs"],
         "estimated_tick_events": plan["estimated_candle_evaluations"],
+        "plugin_complexity": plugin_complexity,
+        "estimated_plugin_runtime_us": estimated_plugin_runtime_us,
         "approx_snapshot_candle_count": plan["dataset_candles"],
         "audit_mode": manifest.research_run.audit_trail.mode,
         "report_detail": manifest.research_run.report_detail,
@@ -357,3 +369,41 @@ def _estimated_artifact_bytes(
         else 0
     )
     return int(report_bytes + candidate_json_bytes + candidate_journal_bytes + hash_payload_bytes + audit_bytes + decision_jsonl_bytes)
+
+
+def _plugin_complexity_metadata(strategy_name: str) -> dict[str, Any]:
+    try:
+        from .strategy_registry import resolve_research_strategy_plugin
+
+        plugin = resolve_research_strategy_plugin(strategy_name)
+    except Exception:
+        return {
+            "schema_version": 1,
+            "strategy_name": str(strategy_name),
+            "complexity_class": "unknown",
+            "expected_us_per_candle": None,
+            "precompute_required": None,
+        }
+    raw = getattr(plugin, "complexity_metadata", None)
+    if not isinstance(raw, dict):
+        return {
+            "schema_version": 1,
+            "strategy_name": plugin.name,
+            "complexity_class": "unknown",
+            "expected_us_per_candle": None,
+            "precompute_required": None,
+        }
+    payload = dict(raw)
+    payload.setdefault("schema_version", 1)
+    payload["strategy_name"] = plugin.name
+    payload.setdefault("complexity_class", "unknown")
+    payload.setdefault("expected_us_per_candle", None)
+    payload.setdefault("precompute_required", None)
+    return payload
+
+
+def _plugin_expected_us_per_candle(plugin_complexity: dict[str, Any]) -> int:
+    value = plugin_complexity.get("expected_us_per_candle")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return int(value)

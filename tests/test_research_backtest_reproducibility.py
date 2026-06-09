@@ -1787,6 +1787,46 @@ def test_research_execution_plan_records_parallel_policy(tmp_path, monkeypatch) 
     assert plan["plan_hash"].startswith("sha256:")
 
 
+def test_execution_plan_includes_channel_breakout_complexity_estimate(tmp_path) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    payload = _manifest()
+    payload["strategy_name"] = "channel_breakout_with_regime_filter"
+    payload["parameter_space"] = {
+        "CHANNEL_BREAKOUT_LOOKBACK": [3],
+        "CHANNEL_BREAKOUT_RANGE_WINDOW": [3],
+        "CHANNEL_BREAKOUT_VOLUME_WINDOW": [3],
+        "CHANNEL_BREAKOUT_RANGE_RATIO_MIN": [1.0],
+        "CHANNEL_BREAKOUT_VOLUME_RATIO_MIN": [1.0],
+        "CHANNEL_BREAKOUT_REGIME_FILTER_ENABLED": [False],
+    }
+    manifest = parse_manifest(payload)
+    snapshots = {
+        split_name: validation_protocol.load_dataset_split(db_path=db_path, manifest=manifest, split_name=split_name)
+        for split_name in ("train", "validation", "final_holdout")
+    }
+    quality_reports = validation_protocol._quality_reports(db_path=db_path, snapshots=snapshots)
+
+    plan = build_research_execution_plan(
+        manifest=manifest,
+        snapshots=snapshots,
+        quality_reports=quality_reports,
+        db_path=db_path,
+        repository_version="unit",
+        created_at="2026-05-03T00:00:00+00:00",
+    ).as_dict()
+
+    assert plan["plugin_complexity"]["strategy_name"] == "channel_breakout_with_regime_filter"
+    assert plan["plugin_complexity"]["complexity_class"] == "linear_precomputed_ohlcv"
+    assert plan["plugin_complexity"]["precompute_required"] is True
+    assert plan["estimated_plugin_runtime_us"] == (
+        plan["estimated_candle_evaluations"]
+        * plan["plugin_complexity"]["expected_us_per_candle"]
+    )
+    assert plan["workload_estimate"]["plugin_complexity"] == plan["plugin_complexity"]
+    assert plan["workload_estimate"]["estimated_plugin_runtime_us"] == plan["estimated_plugin_runtime_us"]
+
+
 def test_serial_work_unit_order_is_deterministic() -> None:
     payload = _manifest()
     payload["parameter_space"] = {
@@ -4091,6 +4131,8 @@ def test_parallel_research_failure_is_committed_by_main_process(tmp_path, monkey
     assert report["execution_observability"]["actual_execution_mode"] == "parallel_worker_initializer"
     assert report["execution_observability"]["worker_context_mode"] == "worker_initializer"
     assert report["execution_observability"]["parallel_executor_used"] is True
+    assert report["execution_observability"]["requested_parallel_task_count"] == 2
+    assert report["execution_observability"]["actual_parallel_task_count"] == 2
     assert report["execution_observability"]["requested_process_start_method"] == "auto_safe"
     assert report["execution_observability"]["effective_process_start_method"] in {"forkserver", "spawn"}
     assert report["execution_observability"]["available_process_start_methods"]
@@ -4211,6 +4253,49 @@ def test_failed_future_normalization_preserves_stable_content_hash() -> None:
     assert normalized.base_result is not None
     assert normalized.content_hash == failed.content_hash
     assert normalized.observability_payload()["content_hash"] == normalized.content_hash
+
+
+def test_resource_limit_failure_observability_includes_elapsed_and_candles() -> None:
+    manifest = parse_manifest(_manifest())
+    snapshots = {
+        "train": _snapshot_from_closes([100.0, 101.0, 102.0]),
+        "validation": _snapshot_from_closes([100.0, 99.0, 101.0]),
+    }
+    work_unit = validation_protocol.build_research_work_unit(
+        manifest=manifest,
+        snapshots=snapshots,
+        params={"SMA_SHORT": 2, "SMA_LONG": 4},
+        candidate_index=0,
+        scenario=manifest.execution_model.scenarios[0],
+        scenario_index=0,
+        scenario_id="scenario_1",
+        manifest_hash=manifest.manifest_hash(),
+    )
+    result = ResearchWorkResult(
+        work_unit=work_unit,
+        work_unit_hash=work_unit.work_unit_hash,
+        candidate_index=0,
+        candidate_id=work_unit.candidate_id,
+        scenario_index=0,
+        scenario_id="scenario_1",
+        status="failed",
+        failure_reason="candidate_resource_limit_exceeded",
+        failure_evidence={
+            "status": "TRIPPED",
+            "elapsed_s": 300.123,
+            "candles_processed": 12_345,
+            "reasons": ["max_runtime_exceeded"],
+        },
+    )
+
+    payload = result.observability_payload()
+
+    assert payload["status"] == "failed"
+    assert payload["failure_reason"] == "candidate_resource_limit_exceeded"
+    assert payload["wall_seconds"] == pytest.approx(300.123)
+    assert payload["candles_processed"] == 12_345
+    assert payload["resource_limit_reasons"] == ["max_runtime_exceeded"]
+    assert payload["resource_guard"]["status"] == "TRIPPED"
 
 
 def test_full_decisions_external_jsonl_maps_to_complete_external_audit_policy() -> None:
