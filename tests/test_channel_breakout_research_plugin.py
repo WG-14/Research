@@ -158,23 +158,21 @@ def test_new_entry_mode_is_behavior_affecting_parameter() -> None:
     assert "ENTRY_MODE" in CHANNEL_BREAKOUT_SPEC.behavior_affecting_parameter_names
 
 
-def test_pullback_mode_does_not_emit_buy_on_initial_breakout_candle() -> None:
-    dataset = _dataset()
-    params = _materialized(
-        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
-        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
-        ENTRY_MODE="pullback_after_breakout",
-    )
-
-    decision = decide_channel_breakout_snapshot(
-        candle=dataset.candles[-1],
-        candle_index=len(dataset.candles) - 1,
-        dataset=dataset,
-        parameter_values=params,
-    )
-
-    assert decision["signal"] == "HOLD"
-    assert "pullback_after_breakout_waiting_for_pullback" in decision["feature_snapshot"]["blocked_filters"]
+@pytest.mark.parametrize(
+    "entry_mode",
+    [
+        "pullback_after_breakout",
+        "delayed_confirmation",
+        "contrarian_after_exhaustion",
+    ],
+)
+def test_channel_breakout_unsupported_entry_mode_fails_fast(entry_mode: str) -> None:
+    with pytest.raises(StrategySpecError, match="ENTRY_MODE unsupported"):
+        _materialized(
+            CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+            CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+            ENTRY_MODE=entry_mode,
+        )
 
 
 def test_channel_breakout_emits_diagnostic_count_defaults() -> None:

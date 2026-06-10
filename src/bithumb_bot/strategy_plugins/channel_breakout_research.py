@@ -180,6 +180,7 @@ def materialize_channel_breakout_parameters(
         raise StrategySpecError(
             "STRATEGY_EXIT_RULES contains unsupported rule(s): " + ",".join(unsupported)
         )
+    _validate_supported_entry_mode(values.get("ENTRY_MODE"))
     return values
 
 
@@ -292,13 +293,7 @@ def decide_channel_breakout_snapshot(
             blocked_filters.append("chop_regime")
 
     blocked = tuple(blocked_filters)
-    entry_mode = str(parameter_values.get("ENTRY_MODE") or "immediate_breakout")
-    if not blocked and entry_mode == "pullback_after_breakout":
-        blocked_filters.append("pullback_after_breakout_waiting_for_pullback")
-    elif not blocked and entry_mode == "delayed_confirmation":
-        blocked_filters.append("delayed_confirmation_waiting")
-    elif not blocked and entry_mode == "contrarian_after_exhaustion":
-        blocked_filters.append("contrarian_after_exhaustion_no_exhaustion_reversal")
+    entry_mode = _validate_supported_entry_mode(parameter_values.get("ENTRY_MODE"))
     blocked = tuple(blocked_filters)
     signal = "BUY" if not blocked else "HOLD"
     feature_snapshot = {
@@ -415,6 +410,16 @@ def _normalize_exit_rules(raw: object) -> tuple[str, ...]:
     if not isinstance(raw, str):
         raise StrategySpecError("STRATEGY_EXIT_RULES must be str")
     return tuple(token.strip().lower() for token in raw.split(",") if token.strip())
+
+
+def _validate_supported_entry_mode(raw: object) -> str:
+    entry_mode = str(raw or "immediate_breakout").strip()
+    if entry_mode != "immediate_breakout":
+        raise StrategySpecError(
+            "ENTRY_MODE unsupported for channel_breakout_with_regime_filter: "
+            f"{entry_mode}; supported entry modes: immediate_breakout"
+        )
+    return entry_mode
 
 
 CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN = research_plugin_from_event_builder(
