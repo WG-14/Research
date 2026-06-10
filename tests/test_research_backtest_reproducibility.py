@@ -374,6 +374,66 @@ def test_persisted_report_contains_candidate_evaluation_substages(tmp_path, monk
             assert item["candidate_count"] > 0
 
 
+def test_persisted_report_contains_final_candidate_profile_hash_observability(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "post_statistical_observability.sqlite"
+    _create_db(db_path)
+    payload = _production_bound_statistical_manifest()
+    payload["experiment_id"] = "persisted_post_statistical_observability"
+    payload["research_run"] = {"report_detail": "summary", "execution": {"mode": "serial"}}
+    manager = _research_manager(tmp_path, monkeypatch)
+
+    report = _run_contract_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    persisted = json.loads(Path(report["artifact_paths"]["report_path"]).read_text(encoding="utf-8"))
+    stage_timings = persisted["execution_observability"]["stage_timings"]
+    stage_names = {item["stage"] for item in stage_timings}
+    for stage in (
+        "candidate_profile_hash.profile_build",
+        "candidate_profile_hash.profile_hash",
+        "candidate_profile_hash.behavior_profile_build",
+        "candidate_profile_hash.behavior_profile_hash",
+        "candidate_profile_hash.post_statistical_profile_build",
+        "candidate_profile_hash.post_statistical_profile_hash",
+    ):
+        assert stage in stage_names
+
+    post_hash_stage = next(
+        item for item in stage_timings
+        if item["stage"] == "candidate_profile_hash.post_statistical_profile_hash"
+    )
+    assert post_hash_stage["stage"].startswith("candidate_profile_hash.")
+    for field in (
+        "wall_seconds",
+        "candidate_count",
+        "hash_call_count",
+        "observed_hash_payload_bytes",
+        "largest_hash_payload_bytes",
+        "largest_hash_label",
+    ):
+        assert field in post_hash_stage
+    assert post_hash_stage["candidate_count"] > 0
+    assert post_hash_stage["hash_call_count"] > 0
+    assert post_hash_stage["observed_hash_payload_bytes"] > 0
+    assert post_hash_stage["largest_hash_payload_bytes"] > 0
+    assert post_hash_stage["largest_hash_label"] == "candidate_profile_hash.post_statistical_profile_hash"
+
+    observability = persisted["execution_observability"]["candidate_profile_hash_observability"]
+    post_statistical = observability["post_statistical_profile_hash"]
+    for field in (
+        "hash_call_count",
+        "observed_hash_payload_bytes",
+        "largest_hash_payload_bytes",
+        "largest_hash_label",
+    ):
+        assert field in post_statistical
+        assert post_statistical[field] == post_hash_stage[field]
+
+
 def test_persisted_report_summary_matches_returned_write_result(tmp_path, monkeypatch) -> None:
     manager = _research_manager(tmp_path, monkeypatch)
 

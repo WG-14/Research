@@ -8,6 +8,7 @@ from tests.factories.research_reports import minimal_candidate_payload, minimal_
 from tests.test_research_backtest_reproducibility import (
     _create_db,
     _manifest,
+    _production_bound_statistical_manifest,
     _research_manager,
     _run_contract_research_backtest,
 )
@@ -30,6 +31,20 @@ def _run_report(tmp_path, monkeypatch, *, experiment_id: str) -> dict[str, objec
 def _observability(report: dict[str, object]) -> dict[str, object]:
     persisted = json.loads(Path(report["artifact_paths"]["report_path"]).read_text(encoding="utf-8"))
     return persisted["execution_observability"]["candidate_profile_hash_observability"]
+
+
+def _run_statistical_report(tmp_path, monkeypatch, *, experiment_id: str) -> dict[str, object]:
+    db_path = tmp_path / f"{experiment_id}.sqlite"
+    _create_db(db_path)
+    payload = _production_bound_statistical_manifest()
+    payload["experiment_id"] = experiment_id
+    payload["research_run"] = {"report_detail": "summary", "execution": {"mode": "serial"}}
+    return _run_contract_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=_research_manager(tmp_path, monkeypatch),
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
 
 
 def test_candidate_profile_hash_records_hash_call_count(tmp_path, monkeypatch) -> None:
@@ -79,3 +94,22 @@ def test_candidate_profile_hash_bytes_stay_bounded_for_large_payload() -> None:
         sha256_prefixed(behavior_profile, label="candidate_behavior_profile_hash")
 
     assert observer.observed_hash_payload_bytes < 80_000
+
+
+def test_post_statistical_candidate_profile_rehash_is_observed(tmp_path, monkeypatch) -> None:
+    report = _run_statistical_report(
+        tmp_path,
+        monkeypatch,
+        experiment_id="post_statistical_candidate_profile_hash_observed",
+    )
+    persisted = json.loads(Path(report["artifact_paths"]["report_path"]).read_text(encoding="utf-8"))
+    observability = persisted["execution_observability"]["candidate_profile_hash_observability"]
+    post_statistical = observability["post_statistical_profile_hash"]
+
+    assert observability["candidate_count"] > 0
+    assert post_statistical["hash_call_count"] > 0
+    assert post_statistical["observed_hash_payload_bytes"] > 0
+    assert post_statistical["largest_hash_payload_bytes"] > 0
+    assert post_statistical["largest_hash_label"] == (
+        "candidate_profile_hash.post_statistical_profile_hash"
+    )

@@ -154,6 +154,12 @@ class CandidateEvaluationResult:
     candidate_profile_hash_observability: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class StatisticalSelectionAttachmentObservability:
+    substage_timings: list[dict[str, Any]]
+    candidate_profile_hash_observability: dict[str, Any]
+
+
 class CandidateScenarioEvaluator(Protocol):
     def evaluate(self, work_unit: ResearchWorkUnit, context: EvaluationContext) -> ResearchWorkResult:
         ...
@@ -3911,7 +3917,7 @@ def _report_payload(
                 evidence=statistical_evidence,
                 artifact_context=artifact_context,
             )
-        _attach_statistical_selection_to_candidates(
+        attachment_observability = _attach_statistical_selection_to_candidates(
             candidates=candidates,
             required=statistical_validation_required(manifest),
             contract=statistical_contract,
@@ -3919,6 +3925,21 @@ def _report_payload(
             evidence=statistical_evidence,
             evidence_path=statistical_evidence_path,
         )
+        if isinstance(execution_observability, dict):
+            execution_observability.setdefault("stage_timings", []).extend(
+                attachment_observability.substage_timings
+            )
+            profile_observability = execution_observability.setdefault(
+                "candidate_profile_hash_observability",
+                _empty_hash_observability(),
+            )
+            _merge_hash_observability(
+                profile_observability,
+                attachment_observability.candidate_profile_hash_observability,
+            )
+            profile_observability["post_statistical_profile_hash"] = dict(
+                attachment_observability.candidate_profile_hash_observability
+            )
     final_selection = apply_final_selection_contract(
         contract=manifest.final_selection,
         candidates=candidates,
@@ -4429,7 +4450,7 @@ def _attach_statistical_selection_to_candidates(
     selection_hash: str,
     evidence: dict[str, Any] | None,
     evidence_path: Path | None,
-) -> None:
+) -> StatisticalSelectionAttachmentObservability:
     evidence_hash = evidence.get("content_hash") if isinstance(evidence, dict) else None
     gate_result = evidence.get("statistical_gate_result") if isinstance(evidence, dict) else None
     gate_reasons = evidence.get("gate_fail_reasons") if isinstance(evidence, dict) else []
@@ -4480,6 +4501,9 @@ def _attach_statistical_selection_to_candidates(
     official_promotion_grade_wrc_generation_available = (
         evidence.get("official_promotion_grade_wrc_generation_available") if isinstance(evidence, dict) else False
     )
+    profile_build_wall_seconds = 0.0
+    profile_hash_wall_seconds = 0.0
+    profile_hash_observability = _empty_hash_observability()
     for candidate in candidates:
         candidate["statistical_validation_required"] = required
         candidate["statistical_validation_contract"] = contract
@@ -4516,7 +4540,34 @@ def _attach_statistical_selection_to_candidates(
         )
         candidate["effective_trial_count"] = effective_trial_count
         candidate.pop("candidate_profile_hash", None)
-        candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+        profile_build_started = time.perf_counter()
+        final_profile = build_candidate_profile(candidate)
+        profile_build_wall_seconds += time.perf_counter() - profile_build_started
+
+        profile_hash_started = time.perf_counter()
+        with observe_hashing() as profile_hash_observer:
+            candidate["candidate_profile_hash"] = sha256_prefixed(
+                final_profile,
+                label="candidate_profile_hash.post_statistical_profile_hash",
+            )
+        profile_hash_wall_seconds += time.perf_counter() - profile_hash_started
+        _merge_hash_observability(profile_hash_observability, profile_hash_observer.as_dict())
+    return StatisticalSelectionAttachmentObservability(
+        substage_timings=[
+            {
+                "stage": "candidate_profile_hash.post_statistical_profile_build",
+                "wall_seconds": round(profile_build_wall_seconds, 6),
+                "candidate_count": len(candidates),
+            },
+            {
+                "stage": "candidate_profile_hash.post_statistical_profile_hash",
+                "wall_seconds": round(profile_hash_wall_seconds, 6),
+                "candidate_count": len(candidates),
+                **profile_hash_observability,
+            },
+        ],
+        candidate_profile_hash_observability=profile_hash_observability,
+    )
 
 
 def _report_base_cost_assumption(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:

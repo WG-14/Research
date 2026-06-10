@@ -10,6 +10,7 @@ from tests.factories.research_reports import minimal_candidate_payload
 from tests.test_research_backtest_reproducibility import (
     _create_db,
     _manifest,
+    _production_bound_statistical_manifest,
     _research_manager,
     _run_contract_research_backtest,
 )
@@ -19,6 +20,20 @@ def _run_report(tmp_path, monkeypatch, *, experiment_id: str) -> dict[str, objec
     db_path = tmp_path / f"{experiment_id}.sqlite"
     _create_db(db_path)
     payload = _manifest()
+    payload["experiment_id"] = experiment_id
+    payload["research_run"] = {"report_detail": "summary", "execution": {"mode": "serial"}}
+    return _run_contract_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=_research_manager(tmp_path, monkeypatch),
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+
+def _run_statistical_report(tmp_path, monkeypatch, *, experiment_id: str) -> dict[str, object]:
+    db_path = tmp_path / f"{experiment_id}.sqlite"
+    _create_db(db_path)
+    payload = _production_bound_statistical_manifest()
     payload["experiment_id"] = experiment_id
     payload["research_run"] = {"report_detail": "summary", "execution": {"mode": "serial"}}
     return _run_contract_research_backtest(
@@ -92,3 +107,30 @@ def test_behavior_profile_accepts_shared_base_profile() -> None:
         candidate
     )
     assert sha256_prefixed(build_candidate_behavior_profile(candidate, base_profile=base_profile)).startswith("sha256:")
+
+
+def test_post_statistical_candidate_profile_rehash_records_timing(tmp_path, monkeypatch) -> None:
+    report = _run_statistical_report(
+        tmp_path,
+        monkeypatch,
+        experiment_id="post_statistical_candidate_profile_hash_timing",
+    )
+
+    timings = _persisted_timings(report)
+    for stage in (
+        "candidate_profile_hash.profile_build",
+        "candidate_profile_hash.profile_hash",
+        "candidate_profile_hash.behavior_profile_build",
+        "candidate_profile_hash.behavior_profile_hash",
+        "candidate_profile_hash.post_statistical_profile_build",
+        "candidate_profile_hash.post_statistical_profile_hash",
+    ):
+        assert stage in timings
+        assert timings[stage]["wall_seconds"] >= 0
+        assert timings[stage]["candidate_count"] > 0
+
+    post_hash = timings["candidate_profile_hash.post_statistical_profile_hash"]
+    assert post_hash["hash_call_count"] > 0
+    assert post_hash["observed_hash_payload_bytes"] > 0
+    assert post_hash["largest_hash_payload_bytes"] > 0
+    assert post_hash["largest_hash_label"] == "candidate_profile_hash.post_statistical_profile_hash"
