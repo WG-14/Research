@@ -365,6 +365,13 @@ def test_persisted_report_contains_candidate_evaluation_substages(tmp_path, monk
     assert "candidate_evaluation.parallel_worker_execution" in stage_names
     assert "candidate_evaluation.candidate_payload_aggregation" in stage_names
     assert "candidate_evaluation.candidate_result_artifact_write" in stage_names
+    assert "candidate_profile_hash.profile_build" in stage_names
+    assert "candidate_profile_hash.profile_hash" in stage_names
+    assert "candidate_profile_hash.behavior_profile_build" in stage_names
+    assert "candidate_profile_hash.behavior_profile_hash" in stage_names
+    for item in persisted["execution_observability"]["stage_timings"]:
+        if str(item["stage"]).startswith("candidate_profile_hash."):
+            assert item["candidate_count"] > 0
 
 
 def test_persisted_report_summary_matches_returned_write_result(tmp_path, monkeypatch) -> None:
@@ -2580,6 +2587,14 @@ def test_candidate_profile_hash_remains_promotion_bound_while_behavior_hash_is_l
     assert "candidate_profile_hash_mismatch" in tampered_reasons
 
 
+def test_candidate_profile_hash_stable_for_same_candidate() -> None:
+    candidate = _factory_candidate(experiment_id="candidate_profile_stable")
+
+    assert sha256_prefixed(build_candidate_profile(candidate)) == sha256_prefixed(
+        build_candidate_profile(json.loads(json.dumps(candidate)))
+    )
+
+
 @pytest.mark.contract
 def test_candidate_behavior_profile_hash_excludes_nested_resource_usage_experiment_id() -> None:
     candidate = _factory_candidate(experiment_id="behavior_profile_resource_usage_base")
@@ -2624,7 +2639,7 @@ def test_candidate_behavior_profile_hash_excludes_nested_runtime_provenance_arti
             if isinstance(resource_usage, dict):
                 resource_usage.update(runtime_provenance_fields)
 
-    assert sha256_prefixed(build_candidate_profile(changed)) != base_profile_hash
+    assert sha256_prefixed(build_candidate_profile(changed)) == base_profile_hash
     assert sha256_prefixed(build_candidate_behavior_profile(changed)) == base_behavior_hash
 
 

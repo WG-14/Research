@@ -63,7 +63,7 @@ from .executor import (
     sort_work_results_deterministically,
 )
 from .final_selection import apply_final_selection_contract
-from .hashing import content_hash_payload, sha256_prefixed
+from .hashing import content_hash_payload, observe_hashing, sha256_prefixed
 from .family_registry import (
     append_family_trial_registry_row,
     family_trial_registry_path,
@@ -151,6 +151,7 @@ class CandidateEvaluationResult:
     execution_boundary: dict[str, Any]
     substage_timings: list[dict[str, Any]]
     candidate_artifact_observability: dict[str, Any]
+    candidate_profile_hash_observability: dict[str, Any]
 
 
 class CandidateScenarioEvaluator(Protocol):
@@ -369,8 +370,32 @@ def _prefixed_stage_timings(prefix: str, timings: list[dict[str, Any]]) -> list[
         stage = str(item.get("stage") or "").strip()
         if not stage:
             continue
+        if stage == "candidate_profile_hash" or stage.startswith("candidate_profile_hash."):
+            prefixed.append({"stage": stage, **{k: v for k, v in item.items() if k != "stage"}})
         prefixed.append({"stage": f"{prefix}.{stage}", **{k: v for k, v in item.items() if k != "stage"}})
     return prefixed
+
+
+def _empty_hash_observability() -> dict[str, Any]:
+    return {
+        "hash_call_count": 0,
+        "observed_hash_payload_bytes": 0,
+        "largest_hash_payload_bytes": 0,
+        "largest_hash_label": None,
+    }
+
+
+def _merge_hash_observability(target: dict[str, Any], observed: dict[str, Any]) -> None:
+    target["hash_call_count"] = int(target.get("hash_call_count") or 0) + int(
+        observed.get("hash_call_count") or 0
+    )
+    target["observed_hash_payload_bytes"] = int(
+        target.get("observed_hash_payload_bytes") or 0
+    ) + int(observed.get("observed_hash_payload_bytes") or 0)
+    observed_largest = int(observed.get("largest_hash_payload_bytes") or 0)
+    if observed_largest > int(target.get("largest_hash_payload_bytes") or 0):
+        target["largest_hash_payload_bytes"] = observed_largest
+        target["largest_hash_label"] = observed.get("largest_hash_label")
 
 
 def _estimated_strategy_runs(
@@ -897,6 +922,9 @@ def run_research_backtest(
         snapshots=snapshots,
     )
     execution_observability["candidate_artifact_write"] = dict(evaluation.candidate_artifact_observability)
+    execution_observability["candidate_profile_hash_observability"] = dict(
+        evaluation.candidate_profile_hash_observability
+    )
     report = _report_payload(
         manifest=manifest,
         snapshots=tuple(snapshots.values()),
@@ -1118,6 +1146,9 @@ def run_research_walk_forward(
         snapshots=snapshots,
     )
     execution_observability["candidate_artifact_write"] = dict(evaluation.candidate_artifact_observability)
+    execution_observability["candidate_profile_hash_observability"] = dict(
+        evaluation.candidate_profile_hash_observability
+    )
     report = _report_payload(
         manifest=manifest,
         snapshots=tuple(snapshots.values()),
@@ -2095,15 +2126,47 @@ def _evaluate_candidates(
         production_bound=manifest.deployment_tier != "research_only",
     )
     profile_hash_wall_seconds = 0.0
+    profile_build_wall_seconds = 0.0
+    behavior_profile_build_wall_seconds = 0.0
+    behavior_profile_hash_wall_seconds = 0.0
+    profile_hash_observability = _empty_hash_observability()
+    behavior_profile_hash_observability = _empty_hash_observability()
+    candidate_profile_hash_observability = _empty_hash_observability()
     artifact_write_wall_seconds = 0.0
     append_complete_wall_seconds = 0.0
     for candidate_payload in rows:
-        profile_started = time.perf_counter()
-        candidate_payload["candidate_behavior_profile_hash"] = sha256_prefixed(
-            build_candidate_behavior_profile(candidate_payload)
+        total_started = time.perf_counter()
+        profile_build_started = time.perf_counter()
+        candidate_profile = build_candidate_profile(candidate_payload)
+        profile_build_wall_seconds += time.perf_counter() - profile_build_started
+
+        behavior_profile_build_started = time.perf_counter()
+        behavior_profile = build_candidate_behavior_profile(
+            candidate_payload,
+            base_profile=candidate_profile,
         )
-        candidate_payload["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate_payload))
-        profile_hash_wall_seconds += time.perf_counter() - profile_started
+        behavior_profile_build_wall_seconds += time.perf_counter() - behavior_profile_build_started
+
+        profile_hash_started = time.perf_counter()
+        with observe_hashing() as profile_hash_observer:
+            candidate_payload["candidate_profile_hash"] = sha256_prefixed(
+                candidate_profile,
+                label="candidate_profile_hash",
+            )
+        profile_hash_wall_seconds += time.perf_counter() - profile_hash_started
+        _merge_hash_observability(profile_hash_observability, profile_hash_observer.as_dict())
+        _merge_hash_observability(candidate_profile_hash_observability, profile_hash_observer.as_dict())
+
+        behavior_profile_hash_started = time.perf_counter()
+        with observe_hashing() as behavior_hash_observer:
+            candidate_payload["candidate_behavior_profile_hash"] = sha256_prefixed(
+                behavior_profile,
+                label="candidate_behavior_profile_hash",
+            )
+        behavior_profile_hash_wall_seconds += time.perf_counter() - behavior_profile_hash_started
+        _merge_hash_observability(behavior_profile_hash_observability, behavior_hash_observer.as_dict())
+        _merge_hash_observability(candidate_profile_hash_observability, behavior_hash_observer.as_dict())
+        profile_total_wall_seconds = time.perf_counter() - total_started
         store = artifact_context or ResearchArtifactContext(
             manager=manager,
             experiment_id=manifest.experiment_id,
@@ -2130,6 +2193,12 @@ def _evaluate_candidates(
             },
         )
         append_complete_wall_seconds += time.perf_counter() - append_started
+        candidate_payload.setdefault("runtime_observability", {})
+        if isinstance(candidate_payload["runtime_observability"], dict):
+            candidate_payload["runtime_observability"]["candidate_profile_hash_total_wall_seconds"] = round(
+                profile_total_wall_seconds,
+                6,
+            )
     candidate_artifact_observability["candidate_result_write_wall_seconds"] = round(
         artifact_write_wall_seconds,
         6,
@@ -2137,8 +2206,58 @@ def _evaluate_candidates(
     substage_timings.append(
         {
             "stage": "candidate_profile_hash",
+            "wall_seconds": round(
+                profile_build_wall_seconds
+                + profile_hash_wall_seconds
+                + behavior_profile_build_wall_seconds
+                + behavior_profile_hash_wall_seconds,
+                6,
+            ),
+            "candidate_count": len(rows),
+        }
+    )
+    substage_timings.append(
+        {
+            "stage": "candidate_profile_hash.profile_build",
+            "wall_seconds": round(profile_build_wall_seconds, 6),
+            "candidate_count": len(rows),
+        }
+    )
+    substage_timings.append(
+        {
+            "stage": "candidate_profile_hash.profile_hash",
             "wall_seconds": round(profile_hash_wall_seconds, 6),
             "candidate_count": len(rows),
+            **profile_hash_observability,
+        }
+    )
+    substage_timings.append(
+        {
+            "stage": "candidate_profile_hash.behavior_profile_build",
+            "wall_seconds": round(behavior_profile_build_wall_seconds, 6),
+            "candidate_count": len(rows),
+        }
+    )
+    substage_timings.append(
+        {
+            "stage": "candidate_profile_hash.behavior_profile_hash",
+            "wall_seconds": round(behavior_profile_hash_wall_seconds, 6),
+            "candidate_count": len(rows),
+            **behavior_profile_hash_observability,
+        }
+    )
+    substage_timings.append(
+        {
+            "stage": "candidate_profile_hash.total",
+            "wall_seconds": round(
+                profile_build_wall_seconds
+                + profile_hash_wall_seconds
+                + behavior_profile_build_wall_seconds
+                + behavior_profile_hash_wall_seconds,
+                6,
+            ),
+            "candidate_count": len(rows),
+            **candidate_profile_hash_observability,
         }
     )
     substage_timings.append(
@@ -2160,6 +2279,12 @@ def _evaluate_candidates(
         execution_boundary=execution_boundary,
         substage_timings=substage_timings,
         candidate_artifact_observability=candidate_artifact_observability,
+        candidate_profile_hash_observability={
+            **candidate_profile_hash_observability,
+            "candidate_count": len(rows),
+            "profile_hash": dict(profile_hash_observability),
+            "behavior_profile_hash": dict(behavior_profile_hash_observability),
+        },
     )
 
 

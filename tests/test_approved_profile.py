@@ -1156,6 +1156,25 @@ def test_profile_generation_rejects_tampered_candidate_profile_hash(tmp_path: Pa
     assert not out.exists()
 
 
+def test_approved_profile_verifies_bounded_candidate_profile_hash() -> None:
+    promotion = _promotion()
+    profile = dict(promotion["candidate_profile"])  # type: ignore[index]
+    assert "scenario_results" not in profile
+    assert "scenario_result_evidence_hashes" in profile
+
+    verified = verify_promotion_artifact(promotion)
+    assert verified["candidate_profile_hash"] == promotion["candidate_profile_hash"]
+
+    tampered = dict(promotion)
+    tampered["candidate_profile_hash"] = "sha256:tampered"
+    tampered["verified_candidate_profile_hash"] = "sha256:tampered"
+    tampered["strategy_profile_hash"] = "sha256:tampered"
+    tampered.pop("content_hash", None)
+    tampered["content_hash"] = sha256_prefixed(content_hash_payload(tampered))
+    with pytest.raises(ApprovedProfileError, match="promotion_candidate_profile_hash_mismatch"):
+        verify_promotion_artifact(tampered)
+
+
 def test_profile_generate_outputs_execution_capability_summary(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

@@ -28,6 +28,7 @@ from bithumb_bot.research.metrics_gate_policy import metrics_gate_policy_hash
 from bithumb_bot.research.promotion_gate import (
     PromotionGateError,
     build_candidate_profile,
+    evaluate_candidate_for_promotion,
     promote_candidate,
     validate_backtest_candidate_for_promotion,
 )
@@ -4985,6 +4986,41 @@ def test_candidate_profile_hash_changes_when_pending_execution_summary_changes()
     pending = _candidate(execution_event_summary=pending_summary)
 
     assert complete["candidate_profile_hash"] != pending["candidate_profile_hash"]
+
+
+def test_candidate_profile_hash_matches_bounded_profile_contract() -> None:
+    candidate = _candidate()
+    candidate["scenario_results"][0]["train_resource_usage"] = {
+        "stage_trace": [{"payload": "runtime"}] * 100,
+        "experiment_id": "runtime-only",
+    }
+    candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+
+    ok, reasons = evaluate_candidate_for_promotion(candidate)
+
+    assert ok
+    assert "candidate_profile_hash_mismatch" not in reasons
+    profile = build_candidate_profile(candidate)
+    assert "scenario_results" not in profile
+    assert profile["scenario_result_evidence_hashes"]
+
+
+def test_candidate_profile_hash_stable_with_runtime_only_profile_fields() -> None:
+    candidate = _candidate()
+    base_hash = sha256_prefixed(build_candidate_profile(candidate))
+    changed = json.loads(json.dumps(candidate))
+    changed.update(
+        {
+            "runtime_observability": {"wall_seconds": 999.0},
+            "report_path": "/runtime/reports/changed.json",
+            "worker_pid": 12345,
+        }
+    )
+    for scenario in changed.get("scenario_results") or []:
+        scenario["runtime_observability"] = {"wall_seconds": 999.0}
+        scenario["train_resource_usage"] = {"stage_trace": [{"payload": "changed"}] * 100}
+
+    assert sha256_prefixed(build_candidate_profile(changed)) == base_hash
 
 
 def test_promotion_refuses_missing_final_holdout_evidence(tmp_path, monkeypatch) -> None:

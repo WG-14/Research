@@ -89,6 +89,237 @@ _CANDIDATE_MEMORY_OBSERVABILITY_KEYS = {
     "rss_delta_mb",
     "memory_sample_source",
 }
+_CANDIDATE_BEHAVIOR_PROFILE_KEYS = frozenset(
+    {
+        "strategy_name",
+        "strategy_spec",
+        "strategy_spec_hash",
+        "strategy_plugin_contract",
+        "strategy_plugin_contract_hash",
+        "exit_policy",
+        "exit_policy_hash",
+        "exit_policy_contract_hash",
+        "exit_policy_config",
+        "exit_policy_config_hash",
+        "exit_policy_source",
+        "exit_policy_materialization_mode",
+        "behavior_hash",
+        "decision_behavior_hash",
+        "trade_ledger_hash",
+        "equity_curve_hash",
+        "composite_behavior_hash",
+        "train_composite_behavior_hash",
+        "validation_composite_behavior_hash",
+        "final_holdout_composite_behavior_hash",
+        "validation_behavior_hash",
+        "candidate_id",
+        "parameter_values",
+        "parameter_values_raw",
+        "effective_strategy_parameters",
+        "effective_strategy_parameters_hash",
+        "strategy_parameter_source_map",
+        "candidate_regime_policy_applied_in_research",
+        "cost_model",
+        "base_cost_assumption",
+        "cost_assumption_contract",
+        "portfolio_policy",
+        "portfolio_policy_hash",
+        "simulation_policy_hash",
+        "dataset_snapshot_id",
+        "dataset_content_hash",
+        "dataset_quality_hash",
+        "dataset_quality_gate_status",
+        "dataset_quality_gate_reasons",
+        "dataset_quality_report_hashes",
+        "top_of_book_quality_summary",
+        "execution_timing_policy",
+        "execution_reality_contract",
+        "execution_contract_hash",
+        "execution_capability_contract",
+        "execution_capability_contract_hash",
+        "evidence_tier",
+        "unavailable_required_capabilities",
+        "execution_reality_summary",
+        "execution_event_summary",
+        "train_execution_event_summary",
+        "validation_execution_event_summary",
+        "final_holdout_execution_event_summary",
+        "strategy_diagnostics",
+        "train_strategy_diagnostics",
+        "validation_strategy_diagnostics",
+        "final_holdout_strategy_diagnostics",
+        "regime_classifier_version",
+        "allowed_live_regimes",
+        "blocked_live_regimes",
+        "scenario_policy",
+        "scenario_behavior_evidence_hashes",
+        "scenario_pass_count",
+        "scenario_fail_count",
+        "required_scenario_count",
+        "final_holdout_present",
+        "final_holdout_metrics",
+        "validation_metrics",
+        "metrics_schema_version",
+        "validation_metrics_v2",
+        "final_holdout_metrics_v2",
+        "walk_forward_metrics",
+        "execution_model",
+    }
+)
+
+
+def candidate_scenario_evidence_hash_input(result: dict[str, Any]) -> dict[str, Any]:
+    """Bounded scenario evidence for candidate profile identity."""
+    return {
+        "schema_version": 1,
+        "scenario_id": result.get("scenario_id"),
+        "scenario_index": result.get("scenario_index"),
+        "scenario_type": result.get("scenario_type"),
+        "scenario_role": result.get("scenario_role"),
+        "scenario_acceptance_gate_result": result.get("scenario_acceptance_gate_result"),
+        "scenario_fail_reasons": list(result.get("scenario_fail_reasons") or []),
+        "behavior_hash": result.get("behavior_hash"),
+        "decision_behavior_hash": result.get("decision_behavior_hash"),
+        "trade_ledger_hash": result.get("trade_ledger_hash"),
+        "equity_curve_hash": result.get("equity_curve_hash"),
+        "composite_behavior_hash": result.get("composite_behavior_hash"),
+        "train_behavior_hash": result.get("train_behavior_hash"),
+        "train_composite_behavior_hash": result.get("train_composite_behavior_hash"),
+        "validation_behavior_hash": result.get("validation_behavior_hash"),
+        "validation_composite_behavior_hash": result.get("validation_composite_behavior_hash"),
+        "final_holdout_behavior_hash": result.get("final_holdout_behavior_hash"),
+        "final_holdout_composite_behavior_hash": result.get("final_holdout_composite_behavior_hash"),
+        "metrics_hash": _hash_compact_value(
+            {
+                "validation_metrics": result.get("validation_metrics"),
+                "validation_metrics_v2": result.get("validation_metrics_v2"),
+                "final_holdout_metrics": result.get("final_holdout_metrics"),
+                "final_holdout_metrics_v2": result.get("final_holdout_metrics_v2"),
+                "walk_forward_metrics": result.get("walk_forward_metrics"),
+            },
+            label="candidate_profile_hash.scenario_metrics",
+        ),
+        "execution_contract_hash": result.get("execution_contract_hash"),
+        "execution_capability_contract_hash": result.get("execution_capability_contract_hash"),
+        "resource_guard": _bounded_mapping_summary(result.get("resource_guard")),
+        "retained_detail_summary": _bounded_mapping_summary(result.get("retained_detail_summary")),
+        "train_resource_usage": _resource_usage_summary(result.get("train_resource_usage")),
+        "validation_resource_usage": _resource_usage_summary(result.get("validation_resource_usage")),
+        "final_holdout_resource_usage": _resource_usage_summary(result.get("final_holdout_resource_usage")),
+    }
+
+
+def candidate_scenario_behavior_evidence_hash_input(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "scenario_id": result.get("scenario_id"),
+        "scenario_index": result.get("scenario_index"),
+        "scenario_type": result.get("scenario_type"),
+        "scenario_role": result.get("scenario_role"),
+        "behavior_hash": result.get("behavior_hash"),
+        "decision_behavior_hash": result.get("decision_behavior_hash"),
+        "trade_ledger_hash": result.get("trade_ledger_hash"),
+        "equity_curve_hash": result.get("equity_curve_hash"),
+        "composite_behavior_hash": result.get("composite_behavior_hash"),
+        "train_behavior_hash": result.get("train_behavior_hash"),
+        "train_composite_behavior_hash": result.get("train_composite_behavior_hash"),
+        "validation_behavior_hash": result.get("validation_behavior_hash"),
+        "validation_composite_behavior_hash": result.get("validation_composite_behavior_hash"),
+        "final_holdout_behavior_hash": result.get("final_holdout_behavior_hash"),
+        "final_holdout_composite_behavior_hash": result.get("final_holdout_composite_behavior_hash"),
+    }
+
+
+def _candidate_scenario_evidence_hashes(candidate: dict[str, Any]) -> list[str]:
+    existing = candidate.get("scenario_result_evidence_hashes")
+    if isinstance(existing, list) and not candidate.get("scenario_results"):
+        return list(existing)
+    return [
+        sha256_prefixed(
+            candidate_scenario_evidence_hash_input(item),
+            label="candidate_profile_hash.scenario_result_evidence",
+        )
+        for item in candidate.get("scenario_results") or []
+        if isinstance(item, dict)
+    ]
+
+
+def _candidate_scenario_behavior_evidence_hashes(candidate: dict[str, Any]) -> list[str]:
+    existing = candidate.get("scenario_behavior_evidence_hashes")
+    if isinstance(existing, list) and not candidate.get("scenario_results"):
+        return list(existing)
+    return [
+        sha256_prefixed(
+            candidate_scenario_behavior_evidence_hash_input(item),
+            label="candidate_profile_hash.scenario_behavior_evidence",
+        )
+        for item in candidate.get("scenario_results") or []
+        if isinstance(item, dict)
+    ]
+
+
+def _scenario_result_evidence_summary(candidate: dict[str, Any], hashes: list[str]) -> dict[str, Any]:
+    existing = candidate.get("scenario_result_evidence_summary")
+    if isinstance(existing, dict) and not candidate.get("scenario_results"):
+        return dict(existing)
+    scenario_results = [item for item in candidate.get("scenario_results") or [] if isinstance(item, dict)]
+    return {
+        "schema_version": 1,
+        "scenario_result_count": len(scenario_results),
+        "scenario_ids": [item.get("scenario_id") for item in scenario_results],
+        "scenario_indexes": [item.get("scenario_index") for item in scenario_results],
+        "scenario_roles": [item.get("scenario_role") for item in scenario_results],
+        "scenario_acceptance_gate_results": [
+            item.get("scenario_acceptance_gate_result") for item in scenario_results
+        ],
+        "scenario_result_evidence_hash_count": len(hashes),
+    }
+
+
+def _hash_compact_value(value: Any, *, label: str) -> str | None:
+    if value is None:
+        return None
+    return sha256_prefixed(value, label=label)
+
+
+def _bounded_mapping_summary(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    summary: dict[str, Any] = {"schema_version": 1}
+    for key in (
+        "status",
+        "reason",
+        "stage",
+        "split",
+        "candidate_id",
+        "scenario_id",
+        "scenario_index",
+        "content_hash",
+        "hash",
+    ):
+        if key in value:
+            summary[key] = value.get(key)
+    return summary
+
+
+def _bounded_diagnostics_summary(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    summary = _bounded_mapping_summary(value) or {"schema_version": 1}
+    for key in ("schema_version", "source", "status", "diagnostic_hash", "content_hash"):
+        if key in value:
+            summary[key] = value.get(key)
+    return summary
+
+
+def _resource_usage_summary(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    summary: dict[str, Any] = {"schema_version": 1}
+    for key in ("resource_usage_hash", "content_hash", "behavior_hash"):
+        if key in value:
+            summary[key] = value.get(key)
+    return summary if len(summary) > 1 else None
 
 
 def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -133,6 +364,8 @@ def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
     )
     exit_policy = dict(exit_materialization["exit_policy"])
     resolved_exit_policy_hash = str(exit_materialization["exit_policy_hash"])
+    scenario_result_evidence_hashes = _candidate_scenario_evidence_hashes(candidate)
+    scenario_behavior_evidence_hashes = _candidate_scenario_behavior_evidence_hashes(candidate)
     profile = {
         "strategy_name": candidate.get("strategy_name"),
         "strategy_spec": candidate.get("strategy_spec"),
@@ -225,17 +458,22 @@ def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
         "train_execution_event_summary": candidate.get("train_execution_event_summary"),
         "validation_execution_event_summary": candidate.get("validation_execution_event_summary"),
         "final_holdout_execution_event_summary": candidate.get("final_holdout_execution_event_summary"),
-        "strategy_diagnostics": candidate.get("strategy_diagnostics"),
-        "train_strategy_diagnostics": candidate.get("train_strategy_diagnostics"),
-        "validation_strategy_diagnostics": candidate.get("validation_strategy_diagnostics"),
-        "final_holdout_strategy_diagnostics": candidate.get("final_holdout_strategy_diagnostics"),
+        "strategy_diagnostics": _bounded_diagnostics_summary(candidate.get("strategy_diagnostics")),
+        "train_strategy_diagnostics": _bounded_diagnostics_summary(candidate.get("train_strategy_diagnostics")),
+        "validation_strategy_diagnostics": _bounded_diagnostics_summary(candidate.get("validation_strategy_diagnostics")),
+        "final_holdout_strategy_diagnostics": _bounded_diagnostics_summary(candidate.get("final_holdout_strategy_diagnostics")),
         "regime_classifier_version": candidate.get("regime_classifier_version"),
         "allowed_live_regimes": candidate.get("allowed_live_regimes"),
         "blocked_live_regimes": candidate.get("blocked_live_regimes"),
         "acceptance_gate_result": candidate.get("acceptance_gate_result"),
         "scenario_policy": candidate.get("scenario_policy"),
         "deployment_tier": candidate.get("deployment_tier") or "research_only",
-        "scenario_results": candidate.get("scenario_results"),
+        "scenario_result_evidence_hashes": scenario_result_evidence_hashes,
+        "scenario_result_evidence_summary": _scenario_result_evidence_summary(
+            candidate,
+            scenario_result_evidence_hashes,
+        ),
+        "scenario_behavior_evidence_hashes": scenario_behavior_evidence_hashes,
         "scenario_pass_count": candidate.get("scenario_pass_count"),
         "scenario_fail_count": candidate.get("scenario_fail_count"),
         "required_scenario_count": candidate.get("required_scenario_count"),
@@ -421,138 +659,22 @@ def _legacy_stop_loss_exit_policy_schema_is_current(exit_policy: object) -> bool
     )
 
 
-def build_candidate_behavior_profile(candidate: dict[str, Any]) -> dict[str, Any]:
+def build_candidate_behavior_profile(
+    candidate: dict[str, Any],
+    *,
+    base_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Behavior-only candidate identity, separate from evaluation/promotion provenance."""
-    profile = build_candidate_profile(candidate)
-    for key in (
-        "source_experiment",
-        "manifest_hash",
-        "experiment_family_id",
-        "hypothesis_id",
-        "hypothesis_status",
-        "hypothesis_identity_source",
-        "experiment_family_identity_source",
-        "deployment_tier",
-        "candidate_regime_policy_required_for_live",
-        "candidate_regime_policy_equivalence_required",
-        "candidate_regime_policy_equivalence_evidence_hash",
-        "candidate_regime_policy_equivalence_evidence_path",
-        "candidate_regime_policy_equivalence_evidence_status",
-        "decision_equivalence_report_path",
-        "decision_equivalence_content_hash",
-        "decision_equivalence_status",
-        "candidate_profile_evidence_contract_hash",
-        "candidate_regime_policy_limitation_reasons",
-        "acceptance_gate_result",
-        "final_holdout_required_for_promotion",
-        "metrics_gate_policy",
-        "metrics_gate_policy_hash",
-        "metrics_contract_required",
-        "has_execution_calibration_warning",
-        "execution_calibration_warning_reasons",
-        "execution_calibration_required",
-        "execution_calibration_strictness",
-        "execution_calibration_gate",
-        "execution_calibration_artifact_hash",
-        "execution_calibration_artifact_hashes",
-        "execution_calibration_policy_source",
-        "production_calibration_policy_result",
-        "production_calibration_policy_reasons",
-        "stress_suite_required",
-        "stress_suite_contract",
-        "stress_suite_contract_hash",
-        "validation_stress_suite",
-        "final_holdout_stress_suite",
-        "stress_suite_gate_result",
-        "stress_suite_fail_reasons",
-        "statistical_validation_required",
-        "statistical_validation_contract",
-        "evidence_grade",
-        "statistical_method",
-        "return_panel_path",
-        "family_trial_registry_path",
-        "family_trial_registry_prior_hash",
-        "family_trial_registry_row_hash",
-        "experiment_registry_path",
-        "experiment_registry_prior_hash",
-        "experiment_registry_row_hash",
-        "experiment_registry_completion_row_hash",
-        "experiment_registry_bound_evidence_hash",
-        "experiment_registry_evidence_hash_phase",
-        "computed_attempt_index",
-        "computed_holdout_reuse_count",
-        "declared_attempt_index",
-        "declared_holdout_reuse_count",
-        "research_freedom_hash",
-        "registry_gate_result",
-        "registry_gate_fail_reasons",
-        "final_holdout_fingerprint",
-        "final_holdout_identity_hash",
-        "final_holdout_content_hash",
-        "final_holdout_reuse_key_hash",
-        "final_holdout_split_hash",
-        "benchmark",
-        "primary_metric",
-        "primary_metric_source",
-        "selection_universe_hash",
-        "candidate_metric_values_hash",
-        "candidate_metric_values_summary",
-        "metric_value_count",
-        "missing_metric_count",
-        "statistical_evidence_hash",
-        "statistical_gate_result",
-        "statistical_gate_fail_reasons",
-        "white_reality_check_p_value",
-        "summary_metric_max_bootstrap_p_value",
-        "white_reality_check_method",
-        "return_panel_hash",
-        "bootstrap_sampling_contract_hash",
-        "promotion_grade_limitations",
-        "official_promotion_grade_wrc_generation_available",
-        "effective_trial_count",
-        "return_unit",
-        "return_panel_observation_count",
-    ):
-        profile.pop(key, None)
-    if isinstance(profile.get("scenario_results"), list):
-        profile["scenario_results"] = [
-            _candidate_behavior_scenario_result(item)
-            for item in profile["scenario_results"]
-            if isinstance(item, dict)
-        ]
-    return _strip_candidate_behavior_runtime_fields(profile)
-
-
-def _candidate_behavior_scenario_result(result: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: _strip_candidate_behavior_runtime_fields(value)
-        for key, value in result.items()
-        if key
-        not in {
-            "scenario_acceptance_gate_result",
-            "scenario_fail_reasons",
-            "resource_guard",
-            "failure_artifact_ref",
-            "failure_artifact_path",
-            "retained_detail_summary",
-            "train_audit_trace_index",
-            "validation_audit_trace_index",
-            "final_holdout_audit_trace_index",
-            "validation_equity_curve",
-            "final_holdout_equity_curve",
-            "execution_calibration_gate",
-            "metrics_gate_policy",
-            "metrics_gate_policy_hash",
-            "metrics_contract_required",
-            "stress_suite_contract",
-            "stress_suite_contract_hash",
-            "validation_stress_suite",
-            "final_holdout_stress_suite",
-            "stress_suite_gate_result",
-            "stress_suite_fail_reasons",
-        }
-        | _CANDIDATE_BEHAVIOR_RUNTIME_KEYS
+    profile = base_profile if base_profile is not None else build_candidate_profile(candidate)
+    behavior_profile = {
+        key: profile.get(key)
+        for key in sorted(_CANDIDATE_BEHAVIOR_PROFILE_KEYS)
+        if key in profile
     }
+    behavior_profile["scenario_behavior_evidence_hashes"] = list(
+        profile.get("scenario_behavior_evidence_hashes") or []
+    )
+    return _strip_candidate_behavior_runtime_fields(behavior_profile)
 
 
 def _strip_candidate_behavior_runtime_fields(value: Any) -> Any:
