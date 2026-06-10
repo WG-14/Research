@@ -2975,16 +2975,26 @@ def _write_failed_candidate_evidence(
 def _apply_scenario_policy(*, manifest: ExperimentManifest, candidate: dict[str, Any]) -> None:
     policy = manifest.execution_model.scenario_policy
     scenario_results = list(candidate.get("scenario_results") or [])
-    pass_results = [item for item in scenario_results if item.get("scenario_acceptance_gate_result") == "PASS"]
-    fail_results = [item for item in scenario_results if item.get("scenario_acceptance_gate_result") != "PASS"]
+    diagnostic_results = [item for item in scenario_results if _scenario_is_diagnostic_only(item)]
+    required_results = [item for item in scenario_results if not _scenario_is_diagnostic_only(item)]
+    pass_results = [item for item in required_results if item.get("scenario_acceptance_gate_result") == "PASS"]
+    fail_results = [item for item in required_results if item.get("scenario_acceptance_gate_result") != "PASS"]
     candidate["scenario_pass_count"] = len(pass_results)
     candidate["scenario_fail_count"] = len(fail_results)
-    candidate["required_scenario_count"] = len(scenario_results)
+    candidate["required_scenario_count"] = len(required_results)
+    candidate["diagnostic_scenario_count"] = len(diagnostic_results)
     reasons: list[str] = []
-    primary = pass_results[0] if pass_results else (scenario_results[0] if scenario_results else None)
-    candidate["required_scenario_ids"] = [str(item.get("scenario_id")) for item in scenario_results]
+    base_results = [item for item in required_results if item.get("scenario_role") == "base"]
+    primary = (
+        next((item for item in base_results if item.get("scenario_acceptance_gate_result") == "PASS"), None)
+        or (pass_results[0] if pass_results else None)
+        or (base_results[0] if base_results else None)
+        or (required_results[0] if required_results else None)
+    )
+    candidate["required_scenario_ids"] = [str(item.get("scenario_id")) for item in required_results]
+    candidate["diagnostic_scenario_ids"] = [str(item.get("scenario_id")) for item in diagnostic_results]
 
-    if not scenario_results:
+    if not required_results:
         reasons.append("scenario_result_missing")
     elif policy == "legacy_cost_model_single_pass":
         if not pass_results:
@@ -2993,15 +3003,15 @@ def _apply_scenario_policy(*, manifest: ExperimentManifest, candidate: dict[str,
                     reasons.append(str(reason))
             reasons.append("scenario_policy_no_passing_base_scenario")
     elif policy == "single_scenario":
-        if len(scenario_results) != 1:
+        if len(required_results) != 1:
             reasons.append("scenario_policy_unsupported")
         elif not pass_results:
-            for reason in scenario_results[0].get("scenario_fail_reasons") or []:
+            for reason in required_results[0].get("scenario_fail_reasons") or []:
                 reasons.append(str(reason))
             reasons.append("scenario_policy_required_scenario_failed")
     elif policy == "must_pass_base_and_survive_stress":
-        base_results = [item for item in scenario_results if item.get("scenario_role") == "base"]
-        stress_results = [item for item in scenario_results if item.get("scenario_role") == "stress"]
+        base_results = [item for item in required_results if item.get("scenario_role") == "base"]
+        stress_results = [item for item in required_results if item.get("scenario_role") == "stress"]
         if not any(item.get("scenario_acceptance_gate_result") == "PASS" for item in base_results):
             reasons.append("scenario_policy_no_passing_base_scenario")
         if not any(item.get("scenario_acceptance_gate_result") == "PASS" for item in stress_results):
@@ -3020,6 +3030,13 @@ def _apply_scenario_policy(*, manifest: ExperimentManifest, candidate: dict[str,
     candidate["_primary_scenario_result"] = primary
     candidate["acceptance_gate_result"] = "PASS" if not reasons else "FAIL"
     candidate["gate_fail_reasons"] = reasons
+
+
+def _scenario_is_diagnostic_only(scenario: dict[str, Any]) -> bool:
+    if str(scenario.get("scenario_role") or "") == "diagnostic_zero_cost":
+        return True
+    assumption = scenario.get("cost_assumption")
+    return isinstance(assumption, dict) and assumption.get("role") == "diagnostic_zero_cost"
 
 
 def _attach_candidate_diagnostic_blocks(
@@ -3047,6 +3064,10 @@ def _attach_candidate_diagnostic_blocks(
             set(candidate.get("gate_fail_reasons") or []) | {"research_only_not_live_eligible"}
         )
     candidate["cost_sensitivity"] = _cost_sensitivity_summary(candidate.get("scenario_results") or [])
+    candidate["position_sizing_sensitivity"] = _position_sizing_sensitivity_summary(
+        base_policy=manifest.portfolio_policy,
+        candidate=candidate,
+    )
     if manifest.research_run.diagnostic_mode == "exploratory":
         candidate["exploratory_result"] = {
             "diagnostic_mode": "exploratory",
@@ -3061,10 +3082,6 @@ def _attach_candidate_diagnostic_blocks(
             "promotion_gate_evaluated": False,
             "promotion_gate_non_authoritative": True,
         }
-        candidate["position_sizing_sensitivity"] = _position_sizing_sensitivity_summary(
-            base_policy=manifest.portfolio_policy,
-            candidate=candidate,
-        )
         candidate["acceptance_gate_result"] = "FAIL"
         candidate["acceptance_gate_status"] = "diagnostic_only"
         candidate["gate_fail_reasons"] = sorted(
@@ -3192,30 +3209,126 @@ def _position_sizing_sensitivity_summary(
     candidate: dict[str, Any],
 ) -> dict[str, Any]:
     starting_cash = float(base_policy.starting_cash_krw)
+    base_fraction = float(base_policy.position_sizing.buy_fraction)
+    trades = _position_sizing_replay_trades(candidate)
     results: dict[str, dict[str, Any]] = {}
     for fraction in (0.99, 0.50, 0.25, 0.10):
         policy_payload = base_policy.as_dict()
         policy_payload["position_sizing"] = dict(policy_payload["position_sizing"])
         policy_payload["position_sizing"]["buy_fraction"] = fraction
-        results[f"{fraction:.2f}"] = {
-            "status": "missing",
-            "validation_return_pct": None,
-            "validation_max_drawdown_pct": None,
-            "validation_profit_factor": None,
-            "portfolio_policy_hash": sha256_prefixed(policy_payload),
-            "starting_cash_krw": starting_cash,
-            "diagnostic_only": True,
-            "simulation_method": "independent_portfolio_simulation_unavailable",
-            "missing_reason": "independent_position_sizing_replay_not_available",
-        }
+        replay = _simulate_position_sizing_fraction(
+            trades=trades,
+            starting_cash=starting_cash,
+            buy_fraction=fraction,
+            base_buy_fraction=base_fraction,
+        )
+        replay.update(
+            {
+                "portfolio_policy_hash": sha256_prefixed(policy_payload),
+                "starting_cash_krw": starting_cash,
+                "buy_fraction": fraction,
+                "diagnostic_only": True,
+                "simulation_method": "independent_closed_trade_portfolio_replay",
+            }
+        )
+        results[f"{fraction:.2f}"] = replay
     return {
         "by_buy_fraction": results,
         "promotion_authority": "diagnostic_only_excluded_from_promotion",
         "primary_metrics_overridden": False,
-        "status": "missing",
+        "status": "available" if trades else "missing",
         "direct_linear_scaling_used": False,
-        "missing_reason": "independent_position_sizing_replay_not_available",
+        **({} if trades else {"missing_reason": "validation_closed_trade_replay_inputs_missing"}),
     }
+
+
+def _position_sizing_replay_trades(candidate: dict[str, Any]) -> list[dict[str, Any]]:
+    trades = candidate.get("validation_closed_trades")
+    if not isinstance(trades, list):
+        for scenario in candidate.get("scenario_results") or []:
+            if not isinstance(scenario, dict) or scenario.get("scenario_role") != "base":
+                continue
+            scenario_trades = scenario.get("validation_closed_trades")
+            if isinstance(scenario_trades, list):
+                trades = scenario_trades
+                break
+    return [dict(trade) for trade in trades if isinstance(trade, dict)] if isinstance(trades, list) else []
+
+
+def _simulate_position_sizing_fraction(
+    *,
+    trades: list[dict[str, Any]],
+    starting_cash: float,
+    buy_fraction: float,
+    base_buy_fraction: float,
+) -> dict[str, Any]:
+    if not trades:
+        return {
+            "status": "missing",
+            "validation_return_pct": None,
+            "validation_max_drawdown_pct": None,
+            "validation_profit_factor": None,
+            "validation_trade_count": 0,
+            "missing_reason": "validation_closed_trade_replay_inputs_missing",
+        }
+    cash = float(starting_cash)
+    peak = cash
+    max_drawdown_pct = 0.0
+    wins = 0.0
+    losses = 0.0
+    applied = 0
+    for trade in sorted(trades, key=lambda item: int(item.get("exit_ts") or item.get("entry_ts") or 0)):
+        trade_return_pct = _closed_trade_return_pct(
+            trade,
+            starting_cash=starting_cash,
+            base_buy_fraction=base_buy_fraction,
+        )
+        if trade_return_pct is None:
+            continue
+        pnl = max(0.0, cash * float(buy_fraction)) * (trade_return_pct / 100.0)
+        cash += pnl
+        applied += 1
+        if pnl > 0.0:
+            wins += pnl
+        elif pnl < 0.0:
+            losses += abs(pnl)
+        peak = max(peak, cash)
+        if peak > 0.0:
+            max_drawdown_pct = max(max_drawdown_pct, ((peak - cash) / peak) * 100.0)
+    profit_factor = None
+    if losses > 0.0:
+        profit_factor = wins / losses
+    elif wins > 0.0:
+        profit_factor = 1_000_000_000_000.0
+    return {
+        "status": "available" if applied else "missing",
+        "validation_return_pct": ((cash / starting_cash) - 1.0) * 100.0 if starting_cash > 0.0 and applied else None,
+        "validation_max_drawdown_pct": max_drawdown_pct if applied else None,
+        "validation_profit_factor": profit_factor if applied else None,
+        "validation_profit_factor_unbounded": bool(applied and losses == 0.0 and wins > 0.0),
+        "validation_trade_count": applied,
+    }
+
+
+def _closed_trade_return_pct(
+    trade: dict[str, Any],
+    *,
+    starting_cash: float,
+    base_buy_fraction: float,
+) -> float | None:
+    value = _safe_metric_float(trade.get("return_pct"))
+    if value is not None:
+        return value
+    net_pnl = _safe_metric_float(trade.get("net_pnl"))
+    if net_pnl is None:
+        return None
+    entry_notional = _safe_metric_float(trade.get("entry_notional"))
+    if entry_notional is not None and entry_notional > 0.0:
+        return (net_pnl / entry_notional) * 100.0
+    baseline_notional = float(starting_cash) * max(float(base_buy_fraction), 1e-12)
+    if baseline_notional <= 0.0:
+        return None
+    return (net_pnl / baseline_notional) * 100.0
 
 
 def _combined_calibration_gate(scenario_results: list[dict[str, Any]]) -> dict[str, Any]:

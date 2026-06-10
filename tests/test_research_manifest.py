@@ -762,8 +762,11 @@ def test_manifest_parses_execution_model_scenarios() -> None:
 
     assert manifest.execution_model.source == "execution_model"
     assert manifest.execution_model.calibration_required is True
-    assert len(manifest.execution_model.scenarios) == 16
+    assert len(manifest.execution_model.scenarios) == 17
     assert {scenario.type for scenario in manifest.execution_model.scenarios} == {"stress"}
+    assert manifest.execution_model.scenarios[0].scenario_role == "diagnostic_zero_cost"
+    assert manifest.execution_model.scenarios[0].cost_assumption is not None
+    assert manifest.execution_model.scenarios[0].cost_assumption.promotable_as_base is False
 
 
 def test_execution_model_single_generated_scenario_defaults_to_single_scenario_policy() -> None:
@@ -776,9 +779,13 @@ def test_execution_model_single_generated_scenario_defaults_to_single_scenario_p
 
     manifest = parse_manifest(payload)
 
-    assert len(manifest.execution_model.scenarios) == 1
+    assert len(manifest.execution_model.scenarios) == 2
     assert manifest.execution_model.scenario_policy == "single_scenario"
-    assert manifest.execution_model.scenarios[0].scenario_policy == "single_scenario"
+    assert [scenario.scenario_role for scenario in manifest.execution_model.scenarios] == [
+        "diagnostic_zero_cost",
+        "base",
+    ]
+    assert all(scenario.scenario_policy == "single_scenario" for scenario in manifest.execution_model.scenarios)
 
 
 def test_execution_model_multiple_generated_scenarios_defaults_to_base_and_stress_policy() -> None:
@@ -791,10 +798,18 @@ def test_execution_model_multiple_generated_scenarios_defaults_to_base_and_stres
 
     manifest = parse_manifest(payload)
 
-    assert len(manifest.execution_model.scenarios) == 2
+    assert len(manifest.execution_model.scenarios) == 3
     assert manifest.execution_model.scenario_policy == "must_pass_base_and_survive_stress"
-    assert [scenario.scenario_role for scenario in manifest.execution_model.scenarios] == ["base", "stress"]
-    assert {scenario.scenario_role_source for scenario in manifest.execution_model.scenarios} == {"derived"}
+    assert [scenario.scenario_role for scenario in manifest.execution_model.scenarios] == [
+        "diagnostic_zero_cost",
+        "base",
+        "stress",
+    ]
+    assert {
+        scenario.scenario_role_source
+        for scenario in manifest.execution_model.scenarios
+        if scenario.scenario_role != "diagnostic_zero_cost"
+    } == {"derived"}
 
 
 def test_legacy_cost_model_manifest_keeps_legacy_single_pass_policy() -> None:
@@ -815,8 +830,15 @@ def test_manifest_supplied_scenario_role_is_applied_to_generated_scenarios() -> 
 
     manifest = parse_manifest(payload)
 
-    assert {scenario.scenario_role for scenario in manifest.execution_model.scenarios} == {"base"}
-    assert {scenario.scenario_role_source for scenario in manifest.execution_model.scenarios} == {"manifest"}
+    assert {scenario.scenario_role for scenario in manifest.execution_model.scenarios} == {
+        "base",
+        "diagnostic_zero_cost",
+    }
+    assert {
+        scenario.scenario_role_source
+        for scenario in manifest.execution_model.scenarios
+        if scenario.scenario_role != "diagnostic_zero_cost"
+    } == {"manifest"}
 
 
 @pytest.mark.parametrize("role", ["base", "stress"])
@@ -850,8 +872,11 @@ def test_manifest_allows_scalar_role_with_single_scenario_policy_for_legacy_pars
     manifest = parse_manifest(payload)
 
     assert manifest.execution_model.scenario_policy == "single_scenario"
-    assert len(manifest.execution_model.scenarios) == 2
-    assert {scenario.scenario_role for scenario in manifest.execution_model.scenarios} == {"base"}
+    assert len(manifest.execution_model.scenarios) == 3
+    assert {scenario.scenario_role for scenario in manifest.execution_model.scenarios} == {
+        "base",
+        "diagnostic_zero_cost",
+    }
 
 
 def test_manifest_allows_derived_roles_with_base_and_stress_policy() -> None:
@@ -865,8 +890,16 @@ def test_manifest_allows_derived_roles_with_base_and_stress_policy() -> None:
 
     manifest = parse_manifest(payload)
 
-    assert [scenario.scenario_role for scenario in manifest.execution_model.scenarios] == ["base", "stress"]
-    assert {scenario.scenario_role_source for scenario in manifest.execution_model.scenarios} == {"derived"}
+    assert [scenario.scenario_role for scenario in manifest.execution_model.scenarios] == [
+        "diagnostic_zero_cost",
+        "base",
+        "stress",
+    ]
+    assert {
+        scenario.scenario_role_source
+        for scenario in manifest.execution_model.scenarios
+        if scenario.scenario_role != "diagnostic_zero_cost"
+    } == {"derived"}
 
 
 def test_manifest_rejects_invalid_scenario_role() -> None:

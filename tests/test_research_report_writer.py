@@ -305,6 +305,37 @@ def test_summary_candidate_result_keeps_cost_sensitivity_summary() -> None:
     assert summary["cost_sensitivity"]["fee_drag_ratio"] == 0.4
 
 
+def test_summary_candidate_result_keeps_position_sizing_sensitivity_summary() -> None:
+    candidate = {
+        "parameter_candidate_id": "candidate_001",
+        "position_sizing_sensitivity": {
+            "status": "available",
+            "by_buy_fraction": {
+                "0.99": {
+                    "validation_return_pct": 3.0,
+                    "validation_max_drawdown_pct": 1.0,
+                    "validation_profit_factor": 2.0,
+                    "portfolio_policy_hash": "sha256:policy099",
+                },
+                "0.50": {
+                    "validation_return_pct": 2.0,
+                    "validation_max_drawdown_pct": 0.8,
+                    "validation_profit_factor": 1.8,
+                    "portfolio_policy_hash": "sha256:policy050",
+                },
+            },
+        },
+        "scenario_results": [],
+    }
+
+    summary = summarize_candidate_result(candidate, "summary")
+
+    assert summary["position_sizing_sensitivity"]["status"] == "available"
+    assert summary["position_sizing_sensitivity"]["by_buy_fraction"]["0.50"][
+        "validation_profit_factor"
+    ] == 1.8
+
+
 def test_summary_candidate_result_keeps_runtime_capability_summary() -> None:
     candidate = {
         "parameter_candidate_id": "candidate_001",

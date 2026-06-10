@@ -1566,6 +1566,10 @@ def _parse_execution_model(value: Any, cost_model: CostModel) -> ExecutionModelC
         scenario_policy=scenario_policy,
         scenarios=tuple(scenarios),
     )
+    scenarios = _with_diagnostic_zero_cost_scenario(
+        scenarios=tuple(scenarios),
+        scenario_policy=scenario_policy,
+    )
     return ExecutionModelConfig(
         scenarios=tuple(scenarios),
         source="execution_model",
@@ -1609,7 +1613,9 @@ def _parse_explicit_execution_scenario(
         raise ManifestValidationError("execution_model.scenarios.type must be fixed_bps, stress, or depth_walk")
     role = _optional_scenario_role(raw.get("scenario_role"))
     if role is None:
-        raise ManifestValidationError("execution_model.scenarios.scenario_role must be base or stress")
+        raise ManifestValidationError(
+            "execution_model.scenarios.scenario_role must be base, stress, or diagnostic_zero_cost"
+        )
     fee = _finite_non_negative_float(raw.get("fee_rate"), "execution_model.scenarios.fee_rate")
     slippage = _finite_non_negative_float(raw.get("slippage_bps"), "execution_model.scenarios.slippage_bps")
     return ExecutionScenario(
@@ -1859,13 +1865,61 @@ def _optional_scenario_role(value: Any) -> str | None:
     if isinstance(value, list):
         raise ManifestValidationError("execution_model.scenario_role must be a scalar base or stress value")
     role = str(value).strip()
-    if role not in {"base", "stress"}:
-        raise ManifestValidationError("execution_model.scenario_role must be base or stress")
+    if role not in {"base", "stress", "diagnostic_zero_cost"}:
+        raise ManifestValidationError(
+            "execution_model.scenario_role must be base, stress, or diagnostic_zero_cost"
+        )
     return role
 
 
 def _derived_scenario_role(index: int) -> str:
     return "base" if index == 0 else "stress"
+
+
+def _with_diagnostic_zero_cost_scenario(
+    *,
+    scenarios: tuple[ExecutionScenario, ...],
+    scenario_policy: str,
+) -> tuple[ExecutionScenario, ...]:
+    if scenario_policy not in {"single_scenario", "must_pass_base_and_survive_stress"}:
+        return scenarios
+    if any(
+        scenario.scenario_role == "diagnostic_zero_cost"
+        or (
+            scenario.cost_assumption is not None
+            and scenario.cost_assumption.role == "diagnostic_zero_cost"
+        )
+        for scenario in scenarios
+    ):
+        return scenarios
+    base = next((scenario for scenario in scenarios if scenario.scenario_role == "base"), scenarios[0])
+    diagnostic = ExecutionScenario(
+        type=base.type,
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        latency_ms=base.latency_ms,
+        partial_fill_rate=base.partial_fill_rate,
+        order_failure_rate=base.order_failure_rate,
+        market_order_extra_cost_bps=0.0,
+        seed=base.seed,
+        source=base.source,
+        scenario_policy=scenario_policy,
+        scenario_role="diagnostic_zero_cost",
+        scenario_role_source="derived_diagnostic",
+        cost_assumption=ScenarioCostAssumption(
+            label="diagnostic_zero_cost",
+            role="diagnostic_zero_cost",
+            fee_rate=0.0,
+            fee_source="diagnostic_zero_cost",
+            fee_authority_policy="diagnostic_only_excluded_from_promotion",
+            slippage_bps=0.0,
+            slippage_source="diagnostic_zero_cost",
+            promotable_as_base=False,
+            source="execution_model_diagnostic",
+            valid_for={"cost_sensitivity": True},
+        ),
+    )
+    return (diagnostic, *scenarios)
 
 
 def _validate_scenario_policy_role_consistency(
