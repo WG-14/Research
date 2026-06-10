@@ -199,14 +199,53 @@ class MaxHoldingTimeExitRule:
         )
 
 
+@dataclass(frozen=True)
+class TakeProfitExitRule:
+    take_profit_ratio: float
+    name: str = "take_profit"
+
+    def __post_init__(self) -> None:
+        value = float(self.take_profit_ratio)
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(f"take_profit_ratio must be finite and >= 0, got {value!r}")
+
+    def evaluate(
+        self,
+        *,
+        position: PositionContext,
+        candle_ts: int,
+        market_price: float,
+        signal_context: dict[str, object],
+    ) -> ExitRuleDecision:
+        threshold = float(self.take_profit_ratio)
+        unrealized_pnl_ratio = float(position.unrealized_pnl_ratio)
+        should_exit = bool(
+            position.in_position
+            and threshold > 0.0
+            and unrealized_pnl_ratio >= threshold
+        )
+        return ExitRuleDecision(
+            should_exit=should_exit,
+            reason="exit by take profit" if should_exit else "take profit not triggered",
+            context={
+                "rule": self.name,
+                "threshold_ratio": threshold,
+                "unrealized_pnl_ratio": unrealized_pnl_ratio,
+                "candle_ts": int(candle_ts),
+                "market_price": float(market_price),
+            },
+        )
+
+
 def create_exit_rules(
     *,
     rule_names: list[str],
     max_holding_sec: float,
     stop_loss_ratio: float = 0.0,
+    take_profit_ratio: float = 0.0,
 ) -> list[ExitRule]:
     rules: list[ExitRule] = []
-    priority = {"stop_loss": 0, "max_holding_time": 1}
+    priority = {"stop_loss": 0, "take_profit": 1, "max_holding_time": 2}
     normalized_names = [str(raw_name).strip().lower() for raw_name in rule_names if str(raw_name).strip()]
     unknown = [name for name in normalized_names if name not in priority]
     if unknown:
@@ -216,9 +255,16 @@ def create_exit_rules(
         raise ValueError(f"stop_loss_ratio must be finite and >= 0, got {resolved_stop_loss_ratio!r}")
     if resolved_stop_loss_ratio > 0.0 and "stop_loss" not in normalized_names:
         raise ValueError("stop_loss_ratio is positive but STRATEGY_EXIT_RULES does not include stop_loss")
+    resolved_take_profit_ratio = float(take_profit_ratio)
+    if not math.isfinite(resolved_take_profit_ratio) or resolved_take_profit_ratio < 0.0:
+        raise ValueError(f"take_profit_ratio must be finite and >= 0, got {resolved_take_profit_ratio!r}")
+    if resolved_take_profit_ratio > 0.0 and "take_profit" not in normalized_names:
+        raise ValueError("take_profit_ratio is positive but STRATEGY_EXIT_RULES does not include take_profit")
     for name in sorted(dict.fromkeys(normalized_names), key=lambda item: priority[item]):
         if name == "stop_loss":
             rules.append(StopLossExitRule(stop_loss_ratio=resolved_stop_loss_ratio))
+        elif name == "take_profit":
+            rules.append(TakeProfitExitRule(take_profit_ratio=resolved_take_profit_ratio))
         elif name == "max_holding_time":
             rules.append(MaxHoldingTimeExitRule(max_holding_sec=float(max_holding_sec)))
     return rules

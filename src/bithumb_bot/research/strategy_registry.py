@@ -46,6 +46,7 @@ RuntimeFeatureSnapshotBuilder = Callable[..., Any]
 RuntimeEnvParameterExtractor = Callable[[dict[str, str]], dict[str, Any]]
 RuntimeSettingsParameterExtractor = Callable[[object], dict[str, Any]]
 DecisionPayloadAdapter = Callable[[dict[str, object], Any], dict[str, object]]
+DiagnosticCountBuilder = Callable[[dict[str, object]], dict[str, Any]]
 ExitSignalContextBuilder = Callable[[Any], dict[str, object]]
 ExitRuleFactory = Callable[
     [
@@ -68,6 +69,48 @@ ResearchExportNormalizer = Callable[
     list[dict[str, object]],
 ]
 RuntimeDataRequirementBuilder = Callable[[object | None], "ResearchStrategyDataRequirements"]
+
+
+def generic_diagnostics_count_builder(payload: dict[str, object]) -> dict[str, Any]:
+    raw_signal = str(payload.get("raw_signal") or "").upper()
+    final_signal = str(payload.get("final_signal") or "").upper()
+    entry_signal = str(payload.get("entry_signal") or "").upper()
+    blocked_filters = tuple(str(item) for item in payload.get("blocked_filters") or ())
+    defaults: dict[str, int] = {
+        "raw_signal_count": 0,
+        "final_signal_count": 0,
+        "entry_signal_count": 0,
+        "exit_signal_count": 0,
+    }
+    for blocked_filter in blocked_filters:
+        defaults[f"blocked_filter_distribution.{blocked_filter}"] = 0
+    entry_reason = str(payload.get("entry_reason") or "").strip()
+    exit_reason = str(payload.get("exit_reason") or payload.get("exit_rule") or "").strip()
+    if entry_reason:
+        defaults[f"entry_reason_distribution.{entry_reason}"] = 0
+    if exit_reason:
+        defaults[f"exit_reason_distribution.{exit_reason}"] = 0
+    counts: dict[str, int] = {}
+    if raw_signal in {"BUY", "SELL"}:
+        counts["raw_signal_count"] = 1
+    if final_signal in {"BUY", "SELL"}:
+        counts["final_signal_count"] = 1
+    if entry_signal == "BUY":
+        counts["entry_signal_count"] = 1
+    if str(payload.get("exit_signal") or "").upper() == "SELL":
+        counts["exit_signal_count"] = 1
+    for blocked_filter in blocked_filters:
+        key = f"blocked_filter_distribution.{blocked_filter}"
+        counts[key] = counts.get(key, 0) + 1
+    if entry_reason and final_signal == "BUY":
+        counts[f"entry_reason_distribution.{entry_reason}"] = 1
+    if exit_reason and final_signal == "SELL":
+        counts[f"exit_reason_distribution.{exit_reason}"] = 1
+    return {
+        "strategy_diagnostics_namespace": payload.get("strategy_diagnostics_namespace"),
+        "strategy_diagnostic_count_defaults": defaults,
+        "strategy_diagnostic_counts": counts,
+    }
 
 
 class ResearchStrategyRegistryError(ValueError):
@@ -421,6 +464,7 @@ class ResearchStrategyPlugin:
     exit_policy_materializer: ExitPolicyMaterializer | None = None
     research_policy_decision_builder: ResearchPolicyDecisionBuilder | None = None
     research_export_normalizer: ResearchExportNormalizer | None = None
+    diagnostics_count_builder: DiagnosticCountBuilder | None = None
     runtime_decision_adapter_factory: Callable[[], Any] | None = None
     runtime_feature_snapshot_builder: RuntimeFeatureSnapshotBuilder | None = None
     single_replay_bundle_builder: SingleReplayBundleBuilder | None = None
@@ -435,6 +479,8 @@ class ResearchStrategyPlugin:
     def __post_init__(self) -> None:
         if self.runtime_capabilities is None:
             raise ValueError(f"strategy runtime capabilities must be explicit: {self.name}")
+        if self.diagnostics_count_builder is None:
+            object.__setattr__(self, "diagnostics_count_builder", generic_diagnostics_count_builder)
         decision_contract_version = str(self.decision_contract_version or "").strip()
         if not decision_contract_version:
             raise ValueError(f"strategy decision contract version missing: {self.name}")
@@ -502,6 +548,21 @@ class ResearchStrategyPlugin:
             "runtime_data_requirements": data_requirements.capability_contract_payload(),
             "data_capability_contract": data_requirements.capability_contract_payload(),
             "runtime_data_requirement_builder_supported": self.runtime_data_requirement_builder is not None,
+            "diagnostics_contract": {
+                "schema_version": 1,
+                "strategy_diagnostic_count_defaults_supported": self.diagnostics_count_builder is not None,
+                "strategy_diagnostic_counts_supported": self.diagnostics_count_builder is not None,
+                "strategy_diagnostics_namespace": self.diagnostics_namespace,
+                "minimum_fields": [
+                    "strategy_diagnostic_count_defaults",
+                    "strategy_diagnostic_counts",
+                    "strategy_diagnostics_namespace",
+                    "raw_signal_count",
+                    "final_signal_count",
+                    "entry_signal_count",
+                    "blocked_filter_distribution",
+                ],
+            },
             "runtime_feature_snapshot_builder_supported": self.runtime_feature_snapshot_builder is not None,
             "runtime_data_requirement_builder_module": (
                 self.runtime_data_requirement_builder.__module__

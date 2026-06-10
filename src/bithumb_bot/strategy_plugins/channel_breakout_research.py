@@ -40,9 +40,19 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "CHANNEL_BREAKOUT_VOLUME_WINDOW",
         "CHANNEL_BREAKOUT_VOLUME_RATIO_MIN",
         "CHANNEL_BREAKOUT_REGIME_FILTER_ENABLED",
+        "ENTRY_MODE",
+        "CONFIRMATION_WINDOW_MIN",
+        "PULLBACK_RATIO",
+        "COOLDOWN_MIN",
+        "MAX_TRADES_PER_DAY",
         "STRATEGY_EXIT_RULES",
         "STRATEGY_EXIT_STOP_LOSS_RATIO",
         "STRATEGY_EXIT_MAX_HOLDING_MIN",
+        "TAKE_PROFIT_RATIO",
+        "TRAILING_STOP_RATIO",
+        "BREAK_EVEN_STOP_ENABLED",
+        "OPPOSITE_SIGNAL_EXIT_ENABLED",
+        "REGIME_CHANGE_EXIT_ENABLED",
     ),
     required_parameter_names=(
         "CHANNEL_BREAKOUT_LOOKBACK",
@@ -56,9 +66,19 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "CHANNEL_BREAKOUT_VOLUME_WINDOW",
         "CHANNEL_BREAKOUT_VOLUME_RATIO_MIN",
         "CHANNEL_BREAKOUT_REGIME_FILTER_ENABLED",
+        "ENTRY_MODE",
+        "CONFIRMATION_WINDOW_MIN",
+        "PULLBACK_RATIO",
+        "COOLDOWN_MIN",
+        "MAX_TRADES_PER_DAY",
         "STRATEGY_EXIT_RULES",
         "STRATEGY_EXIT_STOP_LOSS_RATIO",
         "STRATEGY_EXIT_MAX_HOLDING_MIN",
+        "TAKE_PROFIT_RATIO",
+        "TRAILING_STOP_RATIO",
+        "BREAK_EVEN_STOP_ENABLED",
+        "OPPOSITE_SIGNAL_EXIT_ENABLED",
+        "REGIME_CHANGE_EXIT_ENABLED",
     ),
     metadata_only_parameter_names=(),
     research_only_parameter_names=(),
@@ -66,9 +86,19 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "CHANNEL_BREAKOUT_RANGE_RATIO_MIN": 1.2,
         "CHANNEL_BREAKOUT_VOLUME_RATIO_MIN": 1.1,
         "CHANNEL_BREAKOUT_REGIME_FILTER_ENABLED": True,
+        "ENTRY_MODE": "immediate_breakout",
+        "CONFIRMATION_WINDOW_MIN": 0,
+        "PULLBACK_RATIO": 0.0,
+        "COOLDOWN_MIN": 0,
+        "MAX_TRADES_PER_DAY": 0,
         "STRATEGY_EXIT_RULES": "stop_loss,max_holding_time",
         "STRATEGY_EXIT_STOP_LOSS_RATIO": 0.01,
         "STRATEGY_EXIT_MAX_HOLDING_MIN": 30,
+        "TAKE_PROFIT_RATIO": 0.0,
+        "TRAILING_STOP_RATIO": 0.0,
+        "BREAK_EVEN_STOP_ENABLED": False,
+        "OPPOSITE_SIGNAL_EXIT_ENABLED": False,
+        "REGIME_CHANGE_EXIT_ENABLED": False,
     },
     parameter_schema=(
         StrategyParameterSchema("CHANNEL_BREAKOUT_LOOKBACK", "int", required=True, min_value=2, unit="candles"),
@@ -77,16 +107,36 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         StrategyParameterSchema("CHANNEL_BREAKOUT_VOLUME_WINDOW", "int", required=True, min_value=2, unit="candles"),
         StrategyParameterSchema("CHANNEL_BREAKOUT_VOLUME_RATIO_MIN", "float", min_value=0.0, unit="volume_ratio"),
         StrategyParameterSchema("CHANNEL_BREAKOUT_REGIME_FILTER_ENABLED", "bool", unit="enabled_flag"),
+        StrategyParameterSchema(
+            "ENTRY_MODE",
+            "str",
+            enum=(
+                "immediate_breakout",
+                "pullback_after_breakout",
+                "delayed_confirmation",
+                "contrarian_after_exhaustion",
+            ),
+            unit="entry_hypothesis",
+        ),
+        StrategyParameterSchema("CONFIRMATION_WINDOW_MIN", "int", min_value=0, unit="minutes"),
+        StrategyParameterSchema("PULLBACK_RATIO", "float", min_value=0.0, unit="price_ratio"),
+        StrategyParameterSchema("COOLDOWN_MIN", "int", min_value=0, unit="minutes"),
+        StrategyParameterSchema("MAX_TRADES_PER_DAY", "int", min_value=0, unit="count"),
         StrategyParameterSchema("STRATEGY_EXIT_RULES", "str", unit="comma_separated_exit_rule_names"),
         StrategyParameterSchema("STRATEGY_EXIT_STOP_LOSS_RATIO", "float", min_value=0.0, unit="unrealized_pnl_ratio"),
         StrategyParameterSchema("STRATEGY_EXIT_MAX_HOLDING_MIN", "int", min_value=0, unit="minutes"),
+        StrategyParameterSchema("TAKE_PROFIT_RATIO", "float", min_value=0.0, unit="unrealized_pnl_ratio"),
+        StrategyParameterSchema("TRAILING_STOP_RATIO", "float", min_value=0.0, unit="unrealized_pnl_ratio"),
+        StrategyParameterSchema("BREAK_EVEN_STOP_ENABLED", "bool", unit="enabled_flag"),
+        StrategyParameterSchema("OPPOSITE_SIGNAL_EXIT_ENABLED", "bool", unit="enabled_flag"),
+        StrategyParameterSchema("REGIME_CHANGE_EXIT_ENABLED", "bool", unit="enabled_flag"),
     ),
     decision_contract_version="research_channel_breakout_decision_contract.v1",
     required_data=("candles",),
     optional_data=(),
     exit_policy_schema={
         "schema_version": 1,
-        "rules": ("stop_loss", "max_holding_time"),
+        "rules": ("stop_loss", "take_profit", "max_holding_time"),
         "stop_loss": {
             "unit": "unrealized_pnl_ratio",
             "disabled_value": 0,
@@ -125,7 +175,7 @@ def materialize_channel_breakout_parameters(
         if int(values[name]) < 2:
             raise StrategySpecError(f"{name} must be >= 2")
     rules = _normalize_exit_rules(values.get("STRATEGY_EXIT_RULES") or "")
-    unsupported = sorted(set(rules) - {"stop_loss", "max_holding_time"})
+    unsupported = sorted(set(rules) - {"stop_loss", "take_profit", "max_holding_time"})
     if unsupported:
         raise StrategySpecError(
             "STRATEGY_EXIT_RULES contains unsupported rule(s): " + ",".join(unsupported)
@@ -201,6 +251,7 @@ def decide_channel_breakout_snapshot(
                 "schema_version": 1,
                 "blocked_filters": (),
                 "regime_filter_enabled": bool(parameter_values["CHANNEL_BREAKOUT_REGIME_FILTER_ENABLED"]),
+                "entry_mode": str(parameter_values.get("ENTRY_MODE") or "immediate_breakout"),
             },
         }
 
@@ -241,6 +292,14 @@ def decide_channel_breakout_snapshot(
             blocked_filters.append("chop_regime")
 
     blocked = tuple(blocked_filters)
+    entry_mode = str(parameter_values.get("ENTRY_MODE") or "immediate_breakout")
+    if not blocked and entry_mode == "pullback_after_breakout":
+        blocked_filters.append("pullback_after_breakout_waiting_for_pullback")
+    elif not blocked and entry_mode == "delayed_confirmation":
+        blocked_filters.append("delayed_confirmation_waiting")
+    elif not blocked and entry_mode == "contrarian_after_exhaustion":
+        blocked_filters.append("contrarian_after_exhaustion_no_exhaustion_reversal")
+    blocked = tuple(blocked_filters)
     signal = "BUY" if not blocked else "HOLD"
     feature_snapshot = {
         "schema_version": 1,
@@ -269,6 +328,7 @@ def decide_channel_breakout_snapshot(
             "schema_version": 1,
             "blocked_filters": blocked,
             "regime_filter_enabled": regime_filter_enabled,
+            "entry_mode": entry_mode,
         },
     }
     if signal == "BUY":

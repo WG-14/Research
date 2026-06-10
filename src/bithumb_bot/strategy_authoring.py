@@ -24,6 +24,7 @@ from bithumb_bot.research.strategy_registry import (
     RuntimeFeatureSnapshotBuilder,
     SingleReplayBundleBuilder,
     StrategyRuntimeCapabilities,
+    DiagnosticCountBuilder,
 )
 from bithumb_bot.research.strategy_spec import StrategySpec
 from bithumb_bot.strategy_evidence_contract import DecisionEvidenceContract
@@ -47,6 +48,7 @@ class ResearchOnlyStrategyPlugin:
     decision_contract_version: str | None = None
     diagnostics_namespace: str | None = None
     runtime_data_requirement_builder: RuntimeDataRequirementBuilder | None = None
+    diagnostics_count_builder: DiagnosticCountBuilder | None = None
 
     def __post_init__(self) -> None:
         name = str(self.strategy_name or "").strip().lower()
@@ -87,6 +89,7 @@ class ResearchOnlyStrategyPlugin:
             promotion_extension_payload=None,
             decision_evidence_contract=GENERIC_DECISION_EVIDENCE_CONTRACT,
             runtime_data_requirement_builder=self.runtime_data_requirement_builder,
+            diagnostics_count_builder=self.diagnostics_count_builder,
         )
 
 
@@ -249,6 +252,7 @@ class ReplayCompatibleStrategyPlugin:
             promotion_extension_payload=self.extension.contract_payload(),
             decision_evidence_contract=GENERIC_DECISION_EVIDENCE_CONTRACT,
             runtime_data_requirement_builder=normalized.runtime_data_requirement_builder,
+            diagnostics_count_builder=normalized.diagnostics_count_builder,
         )
 
 
@@ -303,6 +307,7 @@ def research_plugin_from_event_builder(
     diagnostics_namespace: str | None = None,
     research_parameter_materializer: ResearchParameterMaterializer | None = None,
     runtime_data_requirement_builder: RuntimeDataRequirementBuilder | None = None,
+    diagnostics_count_builder: DiagnosticCountBuilder | None = None,
 ) -> ResearchOnlyStrategyPlugin:
     return ResearchOnlyStrategyPlugin(
         strategy_name=strategy_name,
@@ -314,6 +319,7 @@ def research_plugin_from_event_builder(
         diagnostics_namespace=diagnostics_namespace,
         research_parameter_materializer=research_parameter_materializer,
         runtime_data_requirement_builder=runtime_data_requirement_builder,
+        diagnostics_count_builder=diagnostics_count_builder,
     )
 
 
@@ -437,6 +443,7 @@ def promotion_grade_plugin(
             extension.runtime_data_requirement_builder
             or normalized.runtime_data_requirement_builder
         ),
+        diagnostics_count_builder=normalized.diagnostics_count_builder,
     )
 
 

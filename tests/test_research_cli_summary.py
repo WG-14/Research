@@ -515,6 +515,76 @@ def test_summary_surfaces_strategy_diagnostics_and_entry_exit_next_action(capsys
     assert "next_action=review_entry_exit_channel_diagnostics" in output
 
 
+def test_cli_summary_prints_non_null_strategy_diagnostics_summary(capsys) -> None:
+    report = _report(candidates=[_candidate("candidate_001")], gate_result="FAIL")
+    report["candidates"][0]["validation_strategy_diagnostics"] = {
+        "raw_signal_count": 2,
+        "final_signal_count": 1,
+        "blocked_filter_distribution": {"volume_ratio_below_min": 1},
+        "exit_reason_distribution": {"take_profit": 1},
+        "strategy_diagnostics_namespace": "channel_breakout_with_regime_filter",
+    }
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+    output = capsys.readouterr().out
+
+    assert "strategy_diagnostics_summary=" in output
+    assert "top_exit_reasons=take_profit:1" in output
+
+
+def test_strategy_diagnostics_summary_uses_contract_counts(capsys) -> None:
+    report = _report(candidates=[_candidate("candidate_001")], gate_result="FAIL")
+    report["candidates"][0]["validation_strategy_diagnostics"] = {
+        "raw_signal_count": 2,
+        "final_signal_count": 1,
+        "entry_count": 1,
+        "blocked_filter_distribution": {"volume_ratio_below_min": 1},
+        "exit_reason_distribution": {"max_holding_time": 1},
+        "strategy_diagnostics_namespace": "channel_breakout_with_regime_filter",
+    }
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+    output = capsys.readouterr().out
+
+    assert "top_exit_reasons=max_holding_time:1" in output
+
+
+def test_exploratory_summary_prints_diagnostic_only(capsys) -> None:
+    report = _report(candidates=[_candidate("candidate_001", gate="PASS")], gate_result="PASS")
+    report["diagnostic_mode"] = "exploratory"
+    report["diagnostic_only"] = True
+    report["best_candidate_id"] = "candidate_001"
+
+    summary = build_research_run_summary(report)
+    _print_report_summary("RESEARCH-BACKTEST", report)
+    output = capsys.readouterr().out
+
+    assert summary.promotion_allowed is False
+    assert "diagnostic_only=1" in output
+    assert "diagnostic_mode=exploratory" in output
+    assert "promotion_allowed=0" in output
+    assert "next_action=revise_hypothesis_from_exploratory_diagnostics" in output
+
+
+def test_research_only_strategy_summary_marks_not_live_eligible(capsys) -> None:
+    report = _report(candidates=[_candidate("candidate_001")], gate_result="FAIL")
+    report["candidates"][0]["strategy_runtime_capabilities"] = {
+        "research_only": True,
+        "promotion_runtime_decisions_supported": False,
+        "runtime_replay_supported": False,
+        "live_dry_run_allowed": False,
+        "live_real_order_allowed": False,
+        "fail_closed_reason": "promotion_extension_missing",
+    }
+    report["candidates"][0]["promotion_interpretation"] = "research_only_not_live_eligible"
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+    output = capsys.readouterr().out
+
+    assert "research_only_not_live_eligible=1" in output
+    assert '"research_only": true' in output
+
+
 def test_summary_uses_none_for_missing_final_holdout_diagnostics(capsys) -> None:
     report = _report(candidates=[_candidate("candidate_001")], gate_result="FAIL")
     report["candidates"][0]["validation_strategy_diagnostics"] = {

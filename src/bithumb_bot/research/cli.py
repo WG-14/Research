@@ -639,6 +639,10 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     print(f"  promotion_allowed={1 if summary.promotion_allowed else 0}")
     print(f"  validation_run_complete={1 if report.get('validation_run_complete') else 0}")
     print(f"  diagnostic_only={1 if report.get('diagnostic_only') else 0}")
+    print(f"  diagnostic_mode={report.get('diagnostic_mode') or _nested(report, 'research_run', 'diagnostic_mode') or 'promotion_candidate'}")
+    runtime_status = _report_runtime_capability_status(report)
+    print(f"  research_only_not_live_eligible={1 if runtime_status.get('research_only_not_live_eligible') else 0}")
+    print(f"  strategy_runtime_capabilities={json.dumps(runtime_status.get('strategy_runtime_capabilities') or {}, sort_keys=True)}")
     print(f"  next_required_stage={report.get('next_required_stage') or 'none'}")
     if report.get("standalone_backtest_not_full_validation"):
         print("  reason=standalone_backtest_not_full_validation")
@@ -787,6 +791,39 @@ def _format_strategy_diagnostics_summary(summary: ResearchRunSummary) -> str:
         f"validation_worst_trade_mae_pct={_format_optional(summary.validation_worst_trade_mae_pct)} "
         f"final_holdout_worst_trade_mae_pct={_format_optional(summary.final_holdout_worst_trade_mae_pct)}"
     )
+
+
+def _report_runtime_capability_status(report: dict[str, object]) -> dict[str, object]:
+    candidates = report.get("candidates")
+    candidate: dict[str, object] | None = None
+    selected_id = str(report.get("selected_candidate_id") or report.get("best_candidate_id") or "")
+    if isinstance(candidates, list):
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            if selected_id and str(item.get("parameter_candidate_id") or item.get("candidate_id") or "") == selected_id:
+                candidate = item
+                break
+            if candidate is None:
+                candidate = item
+    capabilities = (
+        candidate.get("strategy_runtime_capabilities")
+        if isinstance(candidate, dict)
+        else report.get("strategy_runtime_capabilities")
+    )
+    capabilities = dict(capabilities) if isinstance(capabilities, dict) else {}
+    interpretation = (
+        candidate.get("promotion_interpretation")
+        if isinstance(candidate, dict)
+        else report.get("promotion_interpretation")
+    )
+    return {
+        "strategy_runtime_capabilities": capabilities,
+        "research_only_not_live_eligible": (
+            bool(capabilities.get("research_only"))
+            or str(interpretation or "") == "research_only_not_live_eligible"
+        ),
+    }
 
 
 def _print_metrics_v2_summary(report: dict[str, object]) -> None:

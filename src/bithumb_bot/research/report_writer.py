@@ -525,14 +525,14 @@ def _reference_first_report_payload(
     candidates = list(report_payload.get("candidates", []))
     report_detail = _report_detail(report_payload)
     derived_candidates_payload = {
-        "detail_policy": "summary_bounded" if report_detail == "summary" else "full",
+        "detail_policy": f"{report_detail}_bounded" if report_detail in {"index", "summary", "standard"} else "full",
         "candidates": [summarize_derived_candidate(candidate, report_detail) for candidate in candidates],
     }
     derived_candidates_hash = sha256_prefixed(
         report_content_hash_payload(derived_candidates_payload),
         label="derived_candidates_payload_hash",
     )
-    if report_detail == "summary":
+    if report_detail in {"index", "summary", "standard"}:
         report_payload["candidates"] = [summarize_report_candidate(candidate) for candidate in candidates]
         report_payload["derived_candidates_ref"] = _relative_artifact_ref(paths.derived_path, manager.data_dir().resolve())
         report_payload["derived_candidates_path"] = str(paths.derived_path.resolve())
@@ -542,7 +542,8 @@ def _reference_first_report_payload(
 def _report_detail(payload: dict[str, Any]) -> str:
     research_run = payload.get("research_run")
     if isinstance(research_run, dict):
-        return str(research_run.get("report_detail") or "full")
+        detail = str(research_run.get("report_detail") or "full").strip().lower()
+        return detail if detail in {"index", "summary", "standard", "full"} else "full"
     return "full"
 
 
@@ -571,8 +572,13 @@ def summarize_report_candidate(candidate: Any) -> dict[str, Any]:
         "candidate_profile_hash",
         "metrics_hash",
         "content_hash",
+        "cost_sensitivity",
+        "strategy_runtime_capabilities",
+        "promotion_interpretation",
+        "exploratory_result",
     )
     summary = {key: candidate[key] for key in summary_keys if key in candidate}
+    _copy_compact_diagnostics(summary, candidate)
     summary["candidate_payload_hash"] = sha256_prefixed(
         candidate_evidence_hash_inputs(candidate),
         label="candidate_evidence_hash",
@@ -581,16 +587,17 @@ def summarize_report_candidate(candidate: Any) -> dict[str, Any]:
 
 
 def summarize_derived_candidate(candidate: Any, report_detail: str) -> Any:
-    if report_detail != "summary":
-        return candidate
+    report_detail = _normalize_report_detail(report_detail)
+    if report_detail == "full":
+        return _strip_stage_trace_arrays(candidate)
     if not isinstance(candidate, dict):
         return {"candidate_repr_hash": sha256_prefixed({"repr": repr(candidate)}, label="candidate_repr_hash")}
-    summary = _derived_candidate_index_summary(candidate)
-    summary["derived_detail_policy"] = "summary_bounded"
+    summary = _derived_candidate_index_summary(candidate, include_compact=report_detail != "index")
+    summary["derived_detail_policy"] = f"{report_detail}_bounded"
     return summary
 
 
-def _derived_candidate_index_summary(candidate: dict[str, Any]) -> dict[str, Any]:
+def _derived_candidate_index_summary(candidate: dict[str, Any], *, include_compact: bool = True) -> dict[str, Any]:
     summary_keys = (
         "experiment_id",
         "manifest_hash",
@@ -625,12 +632,20 @@ def _derived_candidate_index_summary(candidate: dict[str, Any]) -> dict[str, Any
         "metrics_status",
         "metrics_v2_source",
         "retained_detail_summary",
+        "cost_sensitivity",
+        "position_sizing_sensitivity",
+        "strategy_runtime_capabilities",
+        "promotion_interpretation",
+        "exploratory_result",
     )
     summary = {key: candidate[key] for key in summary_keys if key in candidate}
+    if include_compact:
+        _copy_compact_diagnostics(summary, candidate)
     if "resource_guard" in candidate:
         summary["resource_guard"] = _compact_resource_guard(candidate["resource_guard"])
     summary["scenario_results"] = [
-        _derived_scenario_index_summary(scenario) for scenario in candidate.get("scenario_results") or []
+        _derived_scenario_index_summary(scenario, include_compact=include_compact)
+        for scenario in candidate.get("scenario_results") or []
     ]
     summary["candidate_payload_hash"] = sha256_prefixed(
         candidate_evidence_hash_inputs(candidate),
@@ -640,7 +655,7 @@ def _derived_candidate_index_summary(candidate: dict[str, Any]) -> dict[str, Any
     return summary
 
 
-def _derived_scenario_index_summary(scenario: Any) -> dict[str, Any]:
+def _derived_scenario_index_summary(scenario: Any, *, include_compact: bool = True) -> dict[str, Any]:
     if not isinstance(scenario, dict):
         return {"scenario_repr_hash": sha256_prefixed({"repr": repr(scenario)}, label="scenario_repr_hash")}
     summary_keys = (
@@ -678,6 +693,8 @@ def _derived_scenario_index_summary(scenario: Any) -> dict[str, Any]:
         "final_holdout_audit_trace_index",
     )
     summary = {key: scenario[key] for key in summary_keys if key in scenario}
+    if include_compact:
+        _copy_compact_diagnostics(summary, scenario)
     if "resource_guard" in scenario:
         summary["resource_guard"] = _compact_resource_guard(scenario["resource_guard"])
     summary["train_equity_curve"] = []
@@ -700,10 +717,15 @@ def _derived_scenario_index_summary(scenario: Any) -> dict[str, Any]:
 
 
 def summarize_candidate_result(candidate: Any, report_detail: str) -> Any:
-    if report_detail != "summary":
-        return candidate
+    report_detail = _normalize_report_detail(report_detail)
+    if report_detail == "full":
+        return _strip_stage_trace_arrays(candidate)
     if not isinstance(candidate, dict):
         return {"candidate_repr_hash": sha256_prefixed({"repr": repr(candidate)}, label="candidate_repr_hash")}
+    if report_detail == "index":
+        summary = _candidate_result_index_summary(candidate)
+        summary["candidate_result_detail_policy"] = "index_bounded"
+        return summary
     summary_keys = (
         "experiment_id",
         "manifest_hash",
@@ -713,7 +735,6 @@ def summarize_candidate_result(candidate: Any, report_detail: str) -> Any:
         "dataset_quality_gate_status",
         "dataset_quality_gate_reasons",
         "dataset_quality_report_hashes",
-        "top_of_book_quality_summary",
         "strategy_name",
         "parameter_candidate_id",
         "candidate_id",
@@ -751,17 +772,60 @@ def summarize_candidate_result(candidate: Any, report_detail: str) -> Any:
         "has_execution_calibration_warning",
         "execution_calibration_warning_reasons",
         "retained_detail_summary",
+        "cost_sensitivity",
+        "position_sizing_sensitivity",
+        "strategy_runtime_capabilities",
+        "promotion_interpretation",
+        "exploratory_result",
     )
     summary = {key: candidate[key] for key in summary_keys if key in candidate}
+    _copy_compact_diagnostics(summary, candidate)
     _compact_candidate_artifact_summary(summary)
     summary["scenario_results"] = [
-        _scenario_result_summary(scenario) for scenario in candidate.get("scenario_results") or []
+        _scenario_result_summary(scenario, include_closed_trade_summary=report_detail == "standard")
+        for scenario in candidate.get("scenario_results") or []
     ]
     summary["candidate_payload_hash"] = sha256_prefixed(
         candidate_evidence_hash_inputs(candidate),
         label="candidate_result_evidence_hash",
     )
-    summary["candidate_result_detail_policy"] = "summary_bounded"
+    summary["candidate_result_detail_policy"] = f"{report_detail}_bounded"
+    return summary
+
+
+def _normalize_report_detail(report_detail: str) -> str:
+    detail = str(report_detail or "full").strip().lower()
+    return detail if detail in {"index", "summary", "standard", "full"} else "full"
+
+
+def _candidate_result_index_summary(candidate: dict[str, Any]) -> dict[str, Any]:
+    summary_keys = (
+        "experiment_id",
+        "manifest_hash",
+        "strategy_name",
+        "parameter_candidate_id",
+        "candidate_id",
+        "candidate_profile_hash",
+        "candidate_behavior_profile_hash",
+        "acceptance_gate_result",
+        "acceptance_gate_status",
+        "gate_fail_reasons",
+        "evaluation_status",
+        "metrics_status",
+        "metrics_hash",
+        "behavior_hash",
+        "strategy_behavior_hash",
+        "content_hash",
+    )
+    summary = {key: candidate[key] for key in summary_keys if key in candidate}
+    summary["scenario_results"] = [
+        _derived_scenario_index_summary(scenario, include_compact=False)
+        for scenario in candidate.get("scenario_results") or []
+    ]
+    summary["candidate_payload_hash"] = sha256_prefixed(
+        candidate_evidence_hash_inputs(candidate),
+        label="candidate_result_index_evidence_hash",
+    )
     return summary
 
 
@@ -910,7 +974,11 @@ def summarize_resource_usage_for_candidate_artifact(resource_usage: Any) -> Any:
     return summary
 
 
-def _scenario_result_summary(scenario: Any) -> dict[str, Any]:
+def _scenario_result_summary(
+    scenario: Any,
+    *,
+    include_closed_trade_summary: bool = False,
+) -> dict[str, Any]:
     if not isinstance(scenario, dict):
         return {"scenario_repr_hash": sha256_prefixed({"repr": repr(scenario)}, label="scenario_repr_hash")}
     summary_keys = (
@@ -924,8 +992,6 @@ def _scenario_result_summary(scenario: Any) -> dict[str, Any]:
         "validation_metrics_v2",
         "final_holdout_metrics",
         "final_holdout_metrics_v2",
-        "train_metrics",
-        "train_metrics_v2",
         "walk_forward_metrics",
         "regime_gate_result",
         "market_regime_bucket_performance",
@@ -967,6 +1033,13 @@ def _scenario_result_summary(scenario: Any) -> dict[str, Any]:
         "final_holdout_audit_trace_index",
     )
     summary = {key: scenario[key] for key in summary_keys if key in scenario}
+    _copy_compact_diagnostics(summary, scenario)
+    for key in ("train_strategy_diagnostics", "final_holdout_strategy_diagnostics"):
+        summary.pop(key, None)
+    if include_closed_trade_summary:
+        summary["validation_closed_trade_summary"] = _closed_trade_summary(
+            scenario.get("validation_closed_trades")
+        )
     _compact_candidate_artifact_summary(summary)
     for key in (
         "train_resource_usage",
@@ -985,6 +1058,81 @@ def _scenario_result_summary(scenario: Any) -> dict[str, Any]:
     )
     _ensure_scenario_retained_detail_evidence(summary)
     return summary
+
+
+def _copy_compact_diagnostics(target: dict[str, Any], source: dict[str, Any]) -> None:
+    for key in (
+        "train_strategy_diagnostics",
+        "validation_strategy_diagnostics",
+        "final_holdout_strategy_diagnostics",
+        "strategy_diagnostics",
+    ):
+        if key in source:
+            target[key] = _compact_strategy_diagnostics(source.get(key))
+
+
+def _compact_strategy_diagnostics(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    compact: dict[str, Any] = {}
+    for key in (
+        "schema_version",
+        "raw_signal_count",
+        "final_signal_count",
+        "entry_signal_count",
+        "entry_count",
+        "exit_count",
+        "blocked_filter_distribution",
+        "entry_reason_distribution",
+        "exit_reason_distribution",
+        "exit_rule_distribution",
+        "return_by_exit_reason",
+        "avg_holding_minutes_by_exit_reason",
+        "mae_mfe_by_exit_reason",
+        "p95_mae_pct",
+        "p95_mfe_pct",
+        "worst_trade_mae_pct",
+        "strategy_diagnostics_namespace",
+    ):
+        if key in value:
+            compact[key] = value[key]
+    for key, raw in (
+        ("blocked_filter_distribution", value.get("blocked_filter_distribution")),
+        ("entry_reason_distribution", value.get("entry_reason_distribution")),
+        ("exit_reason_distribution", value.get("exit_reason_distribution")),
+    ):
+        compact.setdefault(key, dict(raw) if isinstance(raw, dict) else {})
+    compact.setdefault("strategy_diagnostics_namespace", value.get("strategy_diagnostics_namespace"))
+    return compact
+
+
+def _closed_trade_summary(value: Any) -> dict[str, Any]:
+    trades = [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+    return {
+        "closed_trade_count": len(trades),
+        "closed_trade_hash": sha256_prefixed(trades, label="closed_trade_summary_hash"),
+    }
+
+
+def _strip_stage_trace_arrays(value: Any) -> Any:
+    if isinstance(value, dict):
+        stripped: dict[str, Any] = {}
+        for key, item in value.items():
+            if key == "stage_trace":
+                if isinstance(item, (list, tuple)):
+                    stripped["stage_trace_count"] = len(item)
+                    stripped["stage_trace_hash"] = sha256_prefixed(
+                        _bounded_collection_evidence(item),
+                        label="stage_trace_bounded_evidence_hash",
+                    )
+                continue
+            stripped[key] = _strip_stage_trace_arrays(item)
+        return stripped
+    if isinstance(value, list):
+        return [_strip_stage_trace_arrays(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_strip_stage_trace_arrays(item) for item in value)
+    return value
 
 
 def _ensure_scenario_retained_detail_evidence(summary: dict[str, Any]) -> None:

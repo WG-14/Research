@@ -7,6 +7,7 @@ from bithumb_bot.research.execution_timing import candle_close_ts
 from bithumb_bot.research.experiment_manifest import DateRange, ExecutionTimingPolicy, legacy_research_portfolio_policy
 from bithumb_bot.research.strategy_registry import resolve_research_strategy_plugin, strategy_runtime_capability_issues
 from bithumb_bot.research.strategy_spec import StrategySpecError
+from bithumb_bot.research.strategy_spec import exit_policy_from_parameters, exit_policy_hash
 from bithumb_bot.strategy_contract_testing import assert_research_only_contract
 from bithumb_bot.strategy_plugin_inventory import build_strategy_plugin_inventory
 from bithumb_bot.strategy_plugins.channel_breakout_research import (
@@ -134,6 +135,81 @@ def test_buy_signal_uses_prior_rolling_high_and_order_intent() -> None:
     assert decision["feature_snapshot"]["blocked_filters"] == ()
 
 
+def test_channel_breakout_existing_defaults_preserve_immediate_breakout_behavior() -> None:
+    dataset = _dataset()
+    params = _materialized(
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    decision = decide_channel_breakout_snapshot(
+        candle=dataset.candles[-1],
+        candle_index=len(dataset.candles) - 1,
+        dataset=dataset,
+        parameter_values=params,
+    )
+
+    assert params["ENTRY_MODE"] == "immediate_breakout"
+    assert decision["signal"] == "BUY"
+    assert decision["strategy_diagnostics"]["entry_mode"] == "immediate_breakout"
+
+
+def test_new_entry_mode_is_behavior_affecting_parameter() -> None:
+    assert "ENTRY_MODE" in CHANNEL_BREAKOUT_SPEC.behavior_affecting_parameter_names
+
+
+def test_pullback_mode_does_not_emit_buy_on_initial_breakout_candle() -> None:
+    dataset = _dataset()
+    params = _materialized(
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+        ENTRY_MODE="pullback_after_breakout",
+    )
+
+    decision = decide_channel_breakout_snapshot(
+        candle=dataset.candles[-1],
+        candle_index=len(dataset.candles) - 1,
+        dataset=dataset,
+        parameter_values=params,
+    )
+
+    assert decision["signal"] == "HOLD"
+    assert "pullback_after_breakout_waiting_for_pullback" in decision["feature_snapshot"]["blocked_filters"]
+
+
+def test_channel_breakout_emits_diagnostic_count_defaults() -> None:
+    plugin = CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN
+    payload = {
+        "raw_signal": "HOLD",
+        "final_signal": "HOLD",
+        "entry_signal": "HOLD",
+        "blocked_filters": ("volume_ratio_below_min",),
+        "strategy_diagnostics_namespace": plugin.diagnostics_namespace,
+    }
+
+    contract = plugin.diagnostics_count_builder(payload)
+
+    defaults = contract["strategy_diagnostic_count_defaults"]
+    assert defaults["raw_signal_count"] == 0
+    assert defaults["blocked_filter_distribution.volume_ratio_below_min"] == 0
+
+
+def test_channel_breakout_counts_blocked_filters() -> None:
+    plugin = CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN
+    payload = {
+        "raw_signal": "HOLD",
+        "final_signal": "HOLD",
+        "entry_signal": "HOLD",
+        "blocked_filters": ("volume_ratio_below_min", "downtrend_regime"),
+        "strategy_diagnostics_namespace": plugin.diagnostics_namespace,
+    }
+
+    counts = plugin.diagnostics_count_builder(payload)["strategy_diagnostic_counts"]
+
+    assert counts["blocked_filter_distribution.volume_ratio_below_min"] == 1
+    assert counts["blocked_filter_distribution.downtrend_regime"] == 1
+
+
 def test_volume_ratio_block_holds() -> None:
     dataset = _dataset()
     params = _materialized(
@@ -232,6 +308,51 @@ def test_common_exit_rules_are_accepted() -> None:
     values = _materialized(STRATEGY_EXIT_RULES="stop_loss,max_holding_time")
 
     assert values["STRATEGY_EXIT_RULES"] == "stop_loss,max_holding_time"
+
+
+def test_exit_policy_hash_changes_when_take_profit_changes() -> None:
+    base = _materialized(STRATEGY_EXIT_RULES="stop_loss,take_profit,max_holding_time", TAKE_PROFIT_RATIO=0.01)
+    changed = _materialized(STRATEGY_EXIT_RULES="stop_loss,take_profit,max_holding_time", TAKE_PROFIT_RATIO=0.02)
+
+    assert "TAKE_PROFIT_RATIO" in CHANNEL_BREAKOUT_SPEC.accepted_parameter_names
+    assert "TAKE_PROFIT_RATIO" in CHANNEL_BREAKOUT_SPEC.behavior_affecting_parameter_names
+    assert exit_policy_hash(exit_policy_from_parameters(CHANNEL_BREAKOUT_SPEC.strategy_name, base)) != exit_policy_hash(
+        exit_policy_from_parameters(CHANNEL_BREAKOUT_SPEC.strategy_name, changed)
+    )
+
+
+def test_existing_stop_loss_max_holding_behavior_is_unchanged() -> None:
+    values = _materialized()
+    policy = exit_policy_from_parameters(CHANNEL_BREAKOUT_SPEC.strategy_name, values)
+
+    assert policy["common_rules"] == ["stop_loss", "max_holding_time"]
+    assert policy["stop_loss"]["stop_loss_ratio"] == 0.01
+    assert policy["max_holding_time"]["max_holding_min"] == 30
+
+
+def test_exit_reason_distribution_records_take_profit() -> None:
+    from bithumb_bot.research.backtest_support import BacktestAccumulator
+    from bithumb_bot.research.backtest_types import BacktestRunContext
+
+    accumulator = BacktestAccumulator(
+        context=BacktestRunContext(report_detail="summary"),
+        total_candles=1,
+        diagnostics_namespace=CHANNEL_BREAKOUT_SPEC.strategy_name,
+    )
+
+    diagnostics = accumulator.strategy_diagnostics(
+        trades=[
+            {
+                "side": "SELL",
+                "is_portfolio_applied_trade": True,
+                "exit_rule": "take_profit",
+                "net_pnl": 10.0,
+                "holding_minutes": 5.0,
+            }
+        ]
+    )
+
+    assert diagnostics["exit_reason_distribution"]["take_profit"] == 1
 
 
 def test_event_builder_emits_required_event_fields() -> None:

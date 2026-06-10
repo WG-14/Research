@@ -318,6 +318,9 @@ class DefaultRiskGate:
                         dict(context.active_exit_policy.get("max_holding_time") or {}).get("max_holding_min", 0.0)
                     )
                     * 60.0,
+                    take_profit_ratio=float(
+                        dict(context.active_exit_policy.get("take_profit") or {}).get("take_profit_ratio", 0.0)
+                    ),
                 )
                 strategy_exit_rules = []
                 if plugin.exit_rule_factory is not None:

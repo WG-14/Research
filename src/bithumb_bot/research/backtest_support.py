@@ -47,23 +47,23 @@ class BacktestAccumulator:
     @property
     def report_detail(self) -> str:
         detail = str(self.context.report_detail or "full").strip().lower()
-        return detail if detail in {"summary", "standard", "full"} else "full"
+        return detail if detail in {"index", "summary", "standard", "full"} else "full"
 
     def retain_full_detail(self) -> bool:
         return self.report_detail == "full"
 
     def retain_decision(self) -> bool:
-        if self.report_detail == "full":
-            return True
         limit = self.context.resource_limits.max_decisions_retained
+        if self.report_detail == "full" and limit is None:
+            return True
         if limit is None:
             return True
         return self.retained_decision_count < int(limit)
 
     def retain_equity_point(self) -> bool:
-        if self.report_detail == "full":
-            return True
         limit = self.context.resource_limits.max_equity_points_retained
+        if self.report_detail == "full" and limit is None:
+            return True
         if limit is None:
             return True
         return self.retained_equity_point_count < int(limit)
@@ -295,6 +295,18 @@ class BacktestAccumulator:
         )
         for key in sorted(self.strategy_diagnostic_counts):
             payload[key] = int(self.strategy_diagnostic_counts[key])
+        _expand_diagnostic_distributions(payload)
+        if "entry_count" not in payload:
+            payload["entry_count"] = int(payload.get("entry_signal_count") or 0)
+        if "exit_count" not in payload:
+            payload["exit_count"] = int(payload.get("exit_signal_count") or 0)
+        payload.setdefault("raw_signal_count", 0)
+        payload.setdefault("final_signal_count", 0)
+        payload.setdefault("entry_signal_count", 0)
+        payload.setdefault("blocked_filter_distribution", {})
+        payload.setdefault("entry_reason_distribution", {})
+        payload.setdefault("exit_reason_distribution", {})
+        payload.setdefault("p95_mfe_pct", _percentile(list(payload.get("mfe_pct_by_trade") or []), 0.95))
         strategy_specific = dict(payload)
         payload["strategy_specific_diagnostics"] = {self.diagnostics_namespace: strategy_specific}
         return payload
@@ -394,6 +406,31 @@ def _diagnostic_count_increments(payload: dict[str, object]) -> dict[str, int]:
 
 def _diagnostic_key_is_public(key: str) -> bool:
     return bool(key) and not key.startswith("_")
+
+
+def _expand_diagnostic_distributions(payload: dict[str, object]) -> None:
+    distributions: dict[str, dict[str, int]] = {}
+    for key, value in list(payload.items()):
+        if "." not in key:
+            continue
+        prefix, label = key.split(".", 1)
+        if prefix not in {
+            "blocked_filter_distribution",
+            "entry_reason_distribution",
+            "exit_reason_distribution",
+            "exit_rule_distribution",
+        }:
+            continue
+        if not label:
+            continue
+        bucket = distributions.setdefault(prefix, {})
+        bucket[label] = bucket.get(label, 0) + int(value)
+    for prefix, values in distributions.items():
+        existing = payload.get(prefix)
+        merged = dict(existing) if isinstance(existing, dict) else {}
+        for label, count in values.items():
+            merged[label] = int(merged.get(label, 0)) + int(count)
+        payload[prefix] = dict(sorted(merged.items()))
 
 
 def _generic_strategy_diagnostics_from_trades(

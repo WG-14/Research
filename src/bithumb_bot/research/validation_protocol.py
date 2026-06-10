@@ -2122,6 +2122,11 @@ def _evaluate_candidates(
             candidate_payload["gate_fail_reasons"] = sorted(
                 set(candidate_payload.get("gate_fail_reasons") or ()) | set(policy_result.reasons)
             )
+        _attach_candidate_diagnostic_blocks(
+            candidate=candidate_payload,
+            manifest=manifest,
+            strategy_plugin=strategy_plugin,
+        )
         rows.append(candidate_payload)
     substage_timings.append(
         _stage_timing("candidate_payload_aggregation", candidate_payload_started, candidate_count=len(rows))
@@ -3015,6 +3020,192 @@ def _apply_scenario_policy(*, manifest: ExperimentManifest, candidate: dict[str,
     candidate["_primary_scenario_result"] = primary
     candidate["acceptance_gate_result"] = "PASS" if not reasons else "FAIL"
     candidate["gate_fail_reasons"] = reasons
+
+
+def _attach_candidate_diagnostic_blocks(
+    *,
+    candidate: dict[str, Any],
+    manifest: ExperimentManifest,
+    strategy_plugin: Any,
+) -> None:
+    capabilities = strategy_plugin.runtime_capabilities.as_dict()
+    candidate["strategy_runtime_capabilities"] = {
+        key: capabilities.get(key)
+        for key in (
+            "research_only",
+            "promotion_runtime_decisions_supported",
+            "runtime_replay_supported",
+            "live_dry_run_allowed",
+            "live_real_order_allowed",
+            "fail_closed_reason",
+        )
+    }
+    if bool(capabilities.get("research_only")):
+        candidate["promotion_interpretation"] = "research_only_not_live_eligible"
+        candidate["acceptance_gate_result"] = "FAIL"
+        candidate["gate_fail_reasons"] = sorted(
+            set(candidate.get("gate_fail_reasons") or []) | {"research_only_not_live_eligible"}
+        )
+    candidate["cost_sensitivity"] = _cost_sensitivity_summary(candidate.get("scenario_results") or [])
+    if manifest.research_run.diagnostic_mode == "exploratory":
+        candidate["exploratory_result"] = {
+            "diagnostic_mode": "exploratory",
+            "raw_edge_summary": _raw_edge_summary(candidate),
+            "cost_sensitivity": candidate["cost_sensitivity"],
+            "feature_bucket_performance": candidate.get("market_regime_bucket_performance"),
+            "regime_bucket_performance": candidate.get("market_regime_bucket_performance"),
+            "failure_diagnostics": {
+                "gate_fail_reasons": list(candidate.get("gate_fail_reasons") or []),
+                "validation_strategy_diagnostics": candidate.get("validation_strategy_diagnostics") or {},
+            },
+            "promotion_gate_evaluated": False,
+            "promotion_gate_non_authoritative": True,
+        }
+        candidate["position_sizing_sensitivity"] = _position_sizing_sensitivity_summary(
+            base_policy=manifest.portfolio_policy,
+            candidate=candidate,
+        )
+        candidate["acceptance_gate_result"] = "FAIL"
+        candidate["acceptance_gate_status"] = "diagnostic_only"
+        candidate["gate_fail_reasons"] = sorted(
+            set(candidate.get("gate_fail_reasons") or []) | {"exploratory_mode_not_promotable"}
+        )
+
+
+def _cost_sensitivity_summary(scenario_results: list[dict[str, Any]]) -> dict[str, Any]:
+    by_role: dict[str, dict[str, Any]] = {}
+    for scenario in scenario_results:
+        if not isinstance(scenario, dict):
+            continue
+        role = _cost_sensitivity_role(scenario)
+        by_role.setdefault(role, _scenario_cost_metrics(scenario))
+    if "zero_cost" not in by_role:
+        base = next((item for item in scenario_results if isinstance(item, dict)), {})
+        by_role["zero_cost"] = {
+            **_scenario_cost_metrics(base),
+            "scenario_role": "diagnostic_zero_cost",
+            "fee_rate": 0,
+            "slippage_bps": 0,
+            "promotable_as_base": False,
+        }
+    if "base_cost" not in by_role and scenario_results:
+        by_role["base_cost"] = _scenario_cost_metrics(scenario_results[0])
+    if "stress_cost" not in by_role:
+        stress = next(
+            (
+                item for item in scenario_results
+                if isinstance(item, dict) and item.get("scenario_role") == "stress"
+            ),
+            scenario_results[-1] if scenario_results else {},
+        )
+        by_role["stress_cost"] = _scenario_cost_metrics(stress if isinstance(stress, dict) else {})
+    zero_return = _safe_metric_float(by_role["zero_cost"].get("validation_return_pct"))
+    base_return = _safe_metric_float(by_role["base_cost"].get("validation_return_pct"))
+    stress_return = _safe_metric_float(by_role["stress_cost"].get("validation_return_pct"))
+    fee_total = _safe_metric_float(by_role["base_cost"].get("fee_total"))
+    slippage_total = _safe_metric_float(by_role["base_cost"].get("slippage_total"))
+    return {
+        "zero_cost": by_role["zero_cost"],
+        "base_cost": by_role["base_cost"],
+        "stress_cost": by_role["stress_cost"],
+        "fee_drag_ratio": _drag_ratio(zero_return, base_return, fee_total),
+        "slippage_drag_ratio": _drag_ratio(base_return, stress_return, slippage_total),
+        "cost_breakeven_trade_edge": _cost_breakeven_trade_edge(by_role["base_cost"]),
+        "promotion_authority": "diagnostic_only_zero_cost_excluded_from_promotion",
+    }
+
+
+def _cost_sensitivity_role(scenario: dict[str, Any]) -> str:
+    cost = scenario.get("cost_assumption")
+    if isinstance(cost, dict) and cost.get("role") == "diagnostic_zero_cost":
+        return "zero_cost"
+    fee = float(scenario.get("cost_model", {}).get("fee_rate", scenario.get("fee_rate", 0.0)) or 0.0) if isinstance(scenario.get("cost_model"), dict) else 0.0
+    slippage = float(scenario.get("cost_model", {}).get("slippage_bps", scenario.get("slippage_bps", 0.0)) or 0.0) if isinstance(scenario.get("cost_model"), dict) else 0.0
+    if fee == 0.0 and slippage == 0.0:
+        return "zero_cost"
+    return "stress_cost" if scenario.get("scenario_role") == "stress" else "base_cost"
+
+
+def _scenario_cost_metrics(scenario: dict[str, Any]) -> dict[str, Any]:
+    metrics = scenario.get("validation_metrics_v2") if isinstance(scenario.get("validation_metrics_v2"), dict) else {}
+    legacy = scenario.get("validation_metrics") if isinstance(scenario.get("validation_metrics"), dict) else {}
+    cost_model = scenario.get("cost_model") if isinstance(scenario.get("cost_model"), dict) else {}
+    cost_assumption = scenario.get("cost_assumption") if isinstance(scenario.get("cost_assumption"), dict) else {}
+    diagnostic_zero_cost = cost_assumption.get("role") == "diagnostic_zero_cost"
+    return {
+        "validation_return_pct": metrics.get("total_return_pct", legacy.get("total_return_pct")),
+        "validation_profit_factor": metrics.get("profit_factor", legacy.get("profit_factor")),
+        "validation_trade_count": metrics.get("trade_count", legacy.get("trade_count")),
+        "fee_total": metrics.get("fee_total", legacy.get("fee_total")),
+        "slippage_total": metrics.get("slippage_total", legacy.get("slippage_total")),
+        "scenario_role": scenario.get("scenario_role"),
+        "fee_rate": cost_model.get("fee_rate"),
+        "slippage_bps": cost_model.get("slippage_bps"),
+        "promotable_as_base": False if diagnostic_zero_cost or scenario.get("scenario_role") == "diagnostic_zero_cost" else None,
+    }
+
+
+def _safe_metric_float(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _drag_ratio(reference: float | None, observed: float | None, cost_total: float | None) -> float | None:
+    if reference is None or observed is None:
+        return 0.0 if cost_total is not None else None
+    denominator = abs(reference) if abs(reference) > 1e-12 else 1.0
+    return (reference - observed) / denominator
+
+
+def _cost_breakeven_trade_edge(base_cost: dict[str, Any]) -> float | None:
+    trades = _safe_metric_float(base_cost.get("validation_trade_count"))
+    if trades is None or trades <= 0:
+        return None
+    fee = _safe_metric_float(base_cost.get("fee_total")) or 0.0
+    slippage = _safe_metric_float(base_cost.get("slippage_total")) or 0.0
+    return (fee + slippage) / trades
+
+
+def _raw_edge_summary(candidate: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = candidate.get("validation_strategy_diagnostics")
+    metrics = candidate.get("validation_metrics_v2")
+    return {
+        "validation_return_pct": metrics.get("total_return_pct") if isinstance(metrics, dict) else None,
+        "raw_signal_count": diagnostics.get("raw_signal_count") if isinstance(diagnostics, dict) else None,
+        "final_signal_count": diagnostics.get("final_signal_count") if isinstance(diagnostics, dict) else None,
+    }
+
+
+def _position_sizing_sensitivity_summary(
+    *,
+    base_policy: Any,
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    metrics = candidate.get("validation_metrics_v2") if isinstance(candidate.get("validation_metrics_v2"), dict) else {}
+    starting_cash = float(base_policy.starting_cash_krw)
+    results: dict[str, dict[str, Any]] = {}
+    for fraction in (0.99, 0.50, 0.25, 0.10):
+        policy_payload = base_policy.as_dict()
+        policy_payload["position_sizing"] = dict(policy_payload["position_sizing"])
+        policy_payload["position_sizing"]["buy_fraction"] = fraction
+        scale = fraction / float(base_policy.position_sizing.buy_fraction or 1.0)
+        results[f"{fraction:.2f}"] = {
+            "validation_return_pct": (_safe_metric_float(metrics.get("total_return_pct")) or 0.0) * scale,
+            "validation_max_drawdown_pct": (_safe_metric_float(metrics.get("max_drawdown_pct")) or 0.0) * scale,
+            "validation_profit_factor": metrics.get("profit_factor"),
+            "portfolio_policy_hash": sha256_prefixed(policy_payload),
+            "starting_cash_krw": starting_cash,
+            "diagnostic_only": True,
+        }
+    return {
+        "by_buy_fraction": results,
+        "promotion_authority": "diagnostic_only_excluded_from_promotion",
+        "primary_metrics_overridden": False,
+    }
 
 
 def _combined_calibration_gate(scenario_results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -4087,6 +4278,9 @@ def _report_payload(
         "portfolio_policy_hash": portfolio_policy_hash,
         "simulation_policy_hash": simulation_policy_hash,
         "research_run": manifest.research_run.as_dict(),
+        "diagnostic_mode": manifest.research_run.diagnostic_mode,
+        "diagnostic_only": manifest.research_run.diagnostic_mode == "exploratory",
+        "promotion_gate_non_authoritative": manifest.research_run.diagnostic_mode == "exploratory",
         "execution_policy": manifest.research_run.execution.as_dict(),
         "execution_plan": execution_plan.as_dict() if execution_plan is not None else None,
         "workload_estimate": _report_workload_estimate(

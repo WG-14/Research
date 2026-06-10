@@ -227,6 +227,25 @@ def _builtin_export_object_paths() -> set[str]:
     return {plugin_export.object_path for plugin_export in iter_builtin_strategy_plugin_exports()}
 
 
+def test_research_only_plugin_capabilities_are_explicit() -> None:
+    plugin = resolve_research_strategy_plugin("channel_breakout_with_regime_filter")
+    capabilities = plugin.runtime_capabilities.as_dict()
+
+    assert capabilities["research_only"] is True
+    assert capabilities["promotion_runtime_decisions_supported"] is False
+    assert capabilities["runtime_replay_supported"] is False
+    assert capabilities["live_dry_run_allowed"] is False
+    assert capabilities["live_real_order_allowed"] is False
+    assert capabilities["fail_closed_reason"] == "promotion_extension_missing"
+
+
+def test_new_channel_breakout_variant_is_registered() -> None:
+    plugin = resolve_research_strategy_plugin("channel_breakout_with_regime_filter")
+
+    assert plugin.name == "channel_breakout_with_regime_filter"
+    assert "ENTRY_MODE" in plugin.spec.behavior_affecting_parameter_names
+
+
 def _iter_public_plugin_export_paths(
     root: Path = Path("src/bithumb_bot/strategy_plugins"),
     *,

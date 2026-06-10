@@ -235,6 +235,156 @@ def test_candidate_result_summary_is_reference_first_bounded() -> None:
     assert scenario["equity_curve_hash"] == "sha256:equity"
 
 
+def test_summarize_candidate_result_keeps_compact_diagnostics_fields() -> None:
+    candidate = {
+        "parameter_candidate_id": "candidate_001",
+        "candidate_profile_hash": "sha256:profile",
+        "validation_strategy_diagnostics": {
+            "raw_signal_count": 3,
+            "final_signal_count": 1,
+            "entry_count": 1,
+            "exit_count": 0,
+            "blocked_filter_distribution": {"volume_ratio_below_min": 2},
+            "entry_reason_distribution": {"entry_allowed": 1},
+            "exit_reason_distribution": {},
+            "p95_mae_pct": -1.0,
+            "p95_mfe_pct": 2.0,
+            "worst_trade_mae_pct": -3.0,
+            "strategy_diagnostics_namespace": "channel_breakout_with_regime_filter",
+            "mae_pct_by_trade": [-3.0, -1.0],
+        },
+        "strategy_diagnostics": {"strategy_diagnostics_namespace": "channel_breakout_with_regime_filter"},
+        "scenario_results": [
+            {
+                "scenario_id": "scenario_001",
+                "validation_strategy_diagnostics": {
+                    "raw_signal_count": 3,
+                    "final_signal_count": 1,
+                    "entry_count": 1,
+                    "exit_count": 0,
+                    "blocked_filter_distribution": {"volume_ratio_below_min": 2},
+                    "entry_reason_distribution": {"entry_allowed": 1},
+                    "exit_reason_distribution": {},
+                    "p95_mae_pct": -1.0,
+                    "p95_mfe_pct": 2.0,
+                    "worst_trade_mae_pct": -3.0,
+                    "strategy_diagnostics_namespace": "channel_breakout_with_regime_filter",
+                    "mae_pct_by_trade": [-3.0, -1.0],
+                },
+            }
+        ],
+    }
+
+    summary = summarize_candidate_result(candidate, "summary")
+
+    diagnostics = summary["validation_strategy_diagnostics"]
+    assert diagnostics["raw_signal_count"] == 3
+    assert diagnostics["blocked_filter_distribution"] == {"volume_ratio_below_min": 2}
+    assert diagnostics["p95_mfe_pct"] == 2.0
+    assert "mae_pct_by_trade" not in diagnostics
+    assert summary["scenario_results"][0]["validation_strategy_diagnostics"] == diagnostics
+
+
+def test_summary_candidate_result_keeps_cost_sensitivity_summary() -> None:
+    candidate = {
+        "parameter_candidate_id": "candidate_001",
+        "cost_sensitivity": {
+            "zero_cost": {"validation_return_pct": 5.0},
+            "base_cost": {"validation_return_pct": 3.0},
+            "stress_cost": {"validation_return_pct": 1.0},
+            "fee_drag_ratio": 0.4,
+            "slippage_drag_ratio": 0.2,
+            "cost_breakeven_trade_edge": 10.0,
+        },
+        "scenario_results": [],
+    }
+
+    summary = summarize_candidate_result(candidate, "summary")
+
+    assert summary["cost_sensitivity"]["zero_cost"]["validation_return_pct"] == 5.0
+    assert summary["cost_sensitivity"]["fee_drag_ratio"] == 0.4
+
+
+def test_summary_candidate_result_keeps_runtime_capability_summary() -> None:
+    candidate = {
+        "parameter_candidate_id": "candidate_001",
+        "strategy_runtime_capabilities": {
+            "research_only": True,
+            "promotion_runtime_decisions_supported": False,
+            "runtime_replay_supported": False,
+            "live_dry_run_allowed": False,
+            "live_real_order_allowed": False,
+            "fail_closed_reason": "promotion_extension_missing",
+        },
+        "promotion_interpretation": "research_only_not_live_eligible",
+        "scenario_results": [],
+    }
+
+    summary = summarize_candidate_result(candidate, "summary")
+
+    assert summary["strategy_runtime_capabilities"]["research_only"] is True
+    assert summary["promotion_interpretation"] == "research_only_not_live_eligible"
+
+
+def test_report_detail_index_excludes_compact_diagnostics() -> None:
+    candidate = {
+        "parameter_candidate_id": "candidate_001",
+        "acceptance_gate_result": "FAIL",
+        "validation_strategy_diagnostics": {"blocked_filter_distribution": {"x": 1}},
+        "scenario_results": [],
+    }
+
+    summary = summarize_candidate_result(candidate, "index")
+
+    assert summary["candidate_result_detail_policy"] == "index_bounded"
+    assert "validation_strategy_diagnostics" not in summary
+
+
+def test_report_detail_summary_includes_compact_diagnostics() -> None:
+    candidate = {
+        "parameter_candidate_id": "candidate_001",
+        "validation_strategy_diagnostics": {"blocked_filter_distribution": {"x": 1}},
+        "scenario_results": [],
+    }
+
+    summary = summarize_candidate_result(candidate, "summary")
+
+    assert summary["candidate_result_detail_policy"] == "summary_bounded"
+    assert summary["validation_strategy_diagnostics"]["blocked_filter_distribution"] == {"x": 1}
+
+
+def test_report_detail_standard_includes_closed_trade_summary() -> None:
+    candidate = {
+        "parameter_candidate_id": "candidate_001",
+        "scenario_results": [
+            {
+                "scenario_id": "scenario_001",
+                "validation_closed_trades": [{"side": "SELL", "net_pnl": 1.0}],
+            }
+        ],
+    }
+
+    summary = summarize_candidate_result(candidate, "standard")
+
+    scenario = summary["scenario_results"][0]
+    assert summary["candidate_result_detail_policy"] == "standard_bounded"
+    assert scenario["validation_closed_trade_summary"]["closed_trade_count"] == 1
+
+
+def test_report_detail_full_includes_retained_decisions_when_limits_allow() -> None:
+    candidate = {
+        "parameter_candidate_id": "candidate_001",
+        "decisions": [{"ts": 1}],
+        "validation_resource_usage": {"stage_trace": [{"stage": "validation"}]},
+    }
+
+    full = summarize_candidate_result(candidate, "full")
+
+    assert full["decisions"] == [{"ts": 1}]
+    assert "stage_trace" not in full["validation_resource_usage"]
+    assert full["validation_resource_usage"]["stage_trace_count"] == 1
+
+
 def test_candidate_result_summary_omits_resource_usage_stage_trace() -> None:
     candidate = {
         "parameter_candidate_id": "candidate_001",

@@ -66,6 +66,8 @@ def build_research_run_summary(report: dict[str, object]) -> ResearchRunSummary:
         and report.get("promotion_eligibility_gate_result", report.get("gate_result")) == "PASS"
         and not statistical_gate_failed
         and not final_selection_gate_failed
+        and not bool(report.get("diagnostic_only"))
+        and str(report.get("diagnostic_mode") or "promotion_candidate") != "exploratory"
     )
     has_pass_candidate = any(candidate.get("acceptance_gate_result") == "PASS" for candidate in candidates)
     nearest_candidate = candidates[0] if candidates and not has_pass_candidate else None
@@ -110,7 +112,7 @@ def build_research_run_summary(report: dict[str, object]) -> ResearchRunSummary:
             promotion_allowed=promotion_allowed,
             has_candidates=bool(candidates),
             top_fail_reasons=fail_reasons,
-            gate_result=report.get("gate_result"),
+            gate_result="EXPLORATORY" if report.get("diagnostic_only") else report.get("gate_result"),
             statistical_gate_failed=statistical_gate_failed,
             final_selection_gate_failed=final_selection_gate_failed,
             promotion_eligibility_failed=promotion_eligibility_failed,
@@ -244,6 +246,8 @@ def _next_action(
 ) -> str:
     if promotion_allowed:
         return "review_promotion_candidate"
+    if gate_result == "EXPLORATORY" or gate_result == "DIAGNOSTIC_ONLY":
+        return "revise_hypothesis_from_exploratory_diagnostics"
     if final_selection_gate_failed:
         return "do_not_promote_review_final_selection_contract"
     if statistical_gate_failed:

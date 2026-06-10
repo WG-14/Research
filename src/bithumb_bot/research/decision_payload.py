@@ -176,14 +176,19 @@ class DecisionPayloadBuilder:
                 payload[key] = risk_payload[key]
         if "risk_decision" in risk_payload:
             payload["risk_decision"] = risk_payload["risk_decision"]
-        if strategy_plugin.name == "sma_with_filter" and "strategy_diagnostic_counts" not in payload:
-            from bithumb_bot.research.sma_with_filter_plugin import (
-                _diagnostic_count_defaults,
-                _diagnostic_counts,
-            )
-
-            payload["strategy_diagnostic_count_defaults"] = _diagnostic_count_defaults()
-            payload["strategy_diagnostic_counts"] = _diagnostic_counts(payload)
+        if (
+            getattr(strategy_plugin, "diagnostics_count_builder", None) is not None
+            and "strategy_diagnostic_counts" not in payload
+        ):
+            diagnostic_contract = strategy_plugin.diagnostics_count_builder(payload)
+            if not isinstance(diagnostic_contract, dict):
+                raise TypeError("strategy_diagnostics_count_builder_must_return_dict")
+            defaults = diagnostic_contract.get("strategy_diagnostic_count_defaults")
+            counts = diagnostic_contract.get("strategy_diagnostic_counts")
+            if isinstance(defaults, dict):
+                payload["strategy_diagnostic_count_defaults"] = defaults
+            if isinstance(counts, dict):
+                payload["strategy_diagnostic_counts"] = counts
             payload["strategy_diagnostic_counts_authority"] = "diagnostic_non_authoritative"
         if policy_decision is not None:
             payload["pure_policy_hash"] = policy_decision.policy_hash

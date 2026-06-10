@@ -534,6 +534,7 @@ class ResearchExecutionPolicy:
 @dataclass(frozen=True)
 class ResearchRunPolicy:
     report_detail: str = "summary"
+    diagnostic_mode: str = "promotion_candidate"
     artifact_policy: ResearchArtifactPolicy = field(default_factory=ResearchArtifactPolicy)
     audit_trail: ResearchAuditTrailPolicy = field(default_factory=ResearchAuditTrailPolicy)
     resource_limits: ResearchResourceLimits = field(default_factory=ResearchResourceLimits)
@@ -543,6 +544,7 @@ class ResearchRunPolicy:
     def as_dict(self) -> dict[str, object]:
         return {
             "report_detail": self.report_detail,
+            "diagnostic_mode": self.diagnostic_mode,
             "artifact_policy": self.artifact_policy.as_dict(),
             "audit_trail": self.audit_trail.as_dict(),
             "resource_limits": self.resource_limits.as_dict(),
@@ -2579,13 +2581,24 @@ def _parse_research_run(value: Any) -> ResearchRunPolicy:
         return ResearchRunPolicy()
     if not isinstance(value, dict):
         raise ManifestValidationError("research_run must be an object")
-    allowed_fields = {"report_detail", "artifact_policy", "audit_trail", "resource_limits", "heartbeat", "execution"}
+    allowed_fields = {
+        "report_detail",
+        "diagnostic_mode",
+        "artifact_policy",
+        "audit_trail",
+        "resource_limits",
+        "heartbeat",
+        "execution",
+    }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
         raise ManifestValidationError(f"research_run unsupported fields: {','.join(unknown)}")
     report_detail = str(value.get("report_detail") or "summary").strip().lower()
-    if report_detail not in {"summary", "standard", "full"}:
-        raise ManifestValidationError("research_run.report_detail must be summary, standard, or full")
+    if report_detail not in {"index", "summary", "standard", "full"}:
+        raise ManifestValidationError("research_run.report_detail must be index, summary, standard, or full")
+    diagnostic_mode = str(value.get("diagnostic_mode") or "promotion_candidate").strip().lower()
+    if diagnostic_mode not in {"promotion_candidate", "exploratory"}:
+        raise ManifestValidationError("research_run.diagnostic_mode must be exploratory or promotion_candidate")
     artifact_policy = _parse_research_artifact_policy(value.get("artifact_policy"))
     audit_trail = _parse_research_audit_trail(value.get("audit_trail"))
     if artifact_policy.full_decisions_external_jsonl and value.get("audit_trail") is None:
@@ -2599,6 +2612,7 @@ def _parse_research_run(value: Any) -> ResearchRunPolicy:
         )
     policy = ResearchRunPolicy(
         report_detail=report_detail,
+        diagnostic_mode=diagnostic_mode,
         artifact_policy=artifact_policy,
         audit_trail=audit_trail,
         resource_limits=_parse_research_resource_limits(value.get("resource_limits")),

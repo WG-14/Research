@@ -421,7 +421,7 @@ def materialized_strategy_parameters_hash(parameter_values: dict[str, Any]) -> s
     return sha256_prefixed(dict(parameter_values))
 
 
-COMMON_EXIT_RULE_NAMES = frozenset({"stop_loss", "max_holding_time"})
+COMMON_EXIT_RULE_NAMES = frozenset({"stop_loss", "max_holding_time", "take_profit"})
 
 
 def exit_policy_materialization_from_parameters(
@@ -497,6 +497,7 @@ def _no_exit_policy(strategy_name: str) -> dict[str, Any]:
         "entry_exit_policy": "strategy_emits_no_exit_intent",
         "stop_loss": {"enabled": False, "disabled_when_zero": True},
         "max_holding_time": {"enabled": False, "disabled_when_zero": True},
+        "take_profit": {"enabled": False, "disabled_when_zero": True},
     }
 
 
@@ -507,6 +508,7 @@ def _common_exit_policy_from_parameters(strategy_name: str, parameter_values: di
     common_rules = tuple(rule for rule in rules if rule in COMMON_EXIT_RULE_NAMES)
     stop_loss_ratio = float(values.get("STRATEGY_EXIT_STOP_LOSS_RATIO") or 0.0)
     max_holding_min = int(values.get("STRATEGY_EXIT_MAX_HOLDING_MIN") or 0)
+    take_profit_ratio = float(values.get("TAKE_PROFIT_RATIO") or 0.0)
     return {
         "schema_version": 1,
         "strategy_name": strategy_name,
@@ -529,6 +531,12 @@ def _common_exit_policy_from_parameters(strategy_name: str, parameter_values: di
             "max_holding_min": max_holding_min,
             "disabled_when_zero": True,
         },
+        "take_profit": {
+            "enabled": "take_profit" in rules and take_profit_ratio > 0.0,
+            "take_profit_ratio": take_profit_ratio,
+            "disabled_when_zero": True,
+            "evaluation_price_basis": "closed_candle_mark",
+        },
     }
 
 
@@ -539,6 +547,7 @@ def _common_exit_policy_config(policy: dict[str, Any]) -> dict[str, Any]:
         "rules": list(policy.get("rules") or []),
         "stop_loss": dict(policy.get("stop_loss") or {}),
         "max_holding_time": dict(policy.get("max_holding_time") or {}),
+        "take_profit": dict(policy.get("take_profit") or {}),
     }
 
 
@@ -556,19 +565,18 @@ def _validate_exit_policy_parameter_values(parameter_space: dict[str, tuple[obje
         for raw_rules in rules_values:
             _validate_common_exit_rule_names(raw_rules, allow_strategy_owned_rule="opposite_cross")
     ratio_values = parameter_space.get("STRATEGY_EXIT_STOP_LOSS_RATIO")
-    if ratio_values is None:
-        return
-    for raw_ratio in ratio_values:
-        ratio = _non_negative_float("STRATEGY_EXIT_STOP_LOSS_RATIO", raw_ratio)
-        if ratio <= 0.0 or rules_values is None:
-            continue
-        for raw_rules in rules_values:
-            rules = _normalize_exit_rule_names(str(raw_rules or ""))
-            if "stop_loss" not in rules:
-                raise StrategySpecError(
-                    "STRATEGY_EXIT_STOP_LOSS_RATIO is positive but "
-                    "STRATEGY_EXIT_RULES does not include stop_loss"
-                )
+    _validate_ratio_rule_pair(
+        values=ratio_values,
+        rules_values=rules_values,
+        parameter_name="STRATEGY_EXIT_STOP_LOSS_RATIO",
+        rule_name="stop_loss",
+    )
+    _validate_ratio_rule_pair(
+        values=parameter_space.get("TAKE_PROFIT_RATIO"),
+        rules_values=rules_values,
+        parameter_name="TAKE_PROFIT_RATIO",
+        rule_name="take_profit",
+    )
 
 
 def _validate_exit_policy_materialized_values(values: dict[str, Any]) -> None:
@@ -576,6 +584,7 @@ def _validate_exit_policy_materialized_values(values: dict[str, Any]) -> None:
         "STRATEGY_EXIT_STOP_LOSS_RATIO",
         values.get("STRATEGY_EXIT_STOP_LOSS_RATIO", 0.0),
     )
+    take_profit_ratio = _non_negative_float("TAKE_PROFIT_RATIO", values.get("TAKE_PROFIT_RATIO", 0.0))
     _validate_common_exit_rule_names(
         values.get("STRATEGY_EXIT_RULES") or "",
         allow_strategy_owned_rule="opposite_cross",
@@ -585,6 +594,29 @@ def _validate_exit_policy_materialized_values(values: dict[str, Any]) -> None:
         raise StrategySpecError(
             "STRATEGY_EXIT_STOP_LOSS_RATIO is positive but STRATEGY_EXIT_RULES does not include stop_loss"
         )
+    if take_profit_ratio > 0.0 and "take_profit" not in rules:
+        raise StrategySpecError("TAKE_PROFIT_RATIO is positive but STRATEGY_EXIT_RULES does not include take_profit")
+
+
+def _validate_ratio_rule_pair(
+    *,
+    values: tuple[object, ...] | None,
+    rules_values: tuple[object, ...] | None,
+    parameter_name: str,
+    rule_name: str,
+) -> None:
+    if values is None:
+        return
+    for raw_ratio in values:
+        ratio = _non_negative_float(parameter_name, raw_ratio)
+        if ratio <= 0.0 or rules_values is None:
+            continue
+        for raw_rules in rules_values:
+            rules = _normalize_exit_rule_names(str(raw_rules or ""))
+            if rule_name not in rules:
+                raise StrategySpecError(
+                    f"{parameter_name} is positive but STRATEGY_EXIT_RULES does not include {rule_name}"
+                )
 
 
 def _non_negative_float(name: str, value: object) -> float:

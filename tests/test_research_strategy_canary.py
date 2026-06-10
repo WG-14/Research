@@ -18,6 +18,7 @@ from bithumb_bot.research.decision_event import ResearchDecisionEvent
 from bithumb_bot.research.execution_model import ExecutionFill, ExecutionRequest, FixedBpsExecutionModel
 from bithumb_bot.research.experiment_manifest import DateRange, parse_manifest
 from bithumb_bot.research.strategy_registry import resolve_research_strategy, resolve_research_strategy_plugin
+from bithumb_bot.research.strategy_registry import list_research_strategy_plugins
 from bithumb_bot.research.strategy_spec import StrategySpecError, validate_parameter_space_against_strategy_spec
 from bithumb_bot.research.validation_protocol import run_research_backtest
 
@@ -116,6 +117,24 @@ def test_buy_and_hold_baseline_is_independent_executable_canary() -> None:
     assert plugin.spec.spec_hash() != resolve_research_strategy_plugin("sma_with_filter").spec.spec_hash()
     assert plugin.runtime_replay_builder is None
     assert plugin.diagnostics_namespace == "buy_and_hold_baseline"
+
+
+def test_builtin_research_plugins_expose_minimum_diagnostics_contract() -> None:
+    required = {
+        "strategy_diagnostic_count_defaults",
+        "strategy_diagnostic_counts",
+        "strategy_diagnostics_namespace",
+        "raw_signal_count",
+        "final_signal_count",
+        "entry_signal_count",
+        "blocked_filter_distribution",
+    }
+
+    for plugin in list_research_strategy_plugins():
+        contract = plugin.contract_payload()["diagnostics_contract"]
+        assert contract["strategy_diagnostic_count_defaults_supported"] is True
+        assert contract["strategy_diagnostic_counts_supported"] is True
+        assert required <= set(contract["minimum_fields"])
 
 
 def test_buy_and_hold_baseline_uses_common_execution_kernel() -> None:
