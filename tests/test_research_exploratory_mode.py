@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import argparse
 from types import SimpleNamespace
 
+from bithumb_bot.cli.commands.research import command_specs
 from bithumb_bot.research.experiment_manifest import legacy_research_portfolio_policy
 from bithumb_bot.research.run_summary import build_research_run_summary
 from bithumb_bot.research.validation_protocol import _attach_candidate_diagnostic_blocks
@@ -77,3 +79,23 @@ def test_exploratory_mode_keeps_acceptance_gate_non_authoritative() -> None:
 
     assert candidate["acceptance_gate_status"] == "diagnostic_only"
     assert "exploratory_mode_not_promotable" in candidate["gate_fail_reasons"]
+
+
+def test_research_backtest_cli_accepts_exploratory_diagnostic_mode() -> None:
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    spec = next(item for item in command_specs() if item.name == "research-backtest")
+    spec.register_parser(subparsers)
+
+    args = parser.parse_args(
+        [
+            "research-backtest",
+            "--manifest",
+            "manifest.json",
+            "--diagnostic-mode",
+            "exploratory",
+        ]
+    )
+
+    assert args.command == "research-backtest"
+    assert args.diagnostic_mode == "exploratory"

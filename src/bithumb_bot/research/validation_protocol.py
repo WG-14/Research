@@ -3080,13 +3080,19 @@ def _cost_sensitivity_summary(scenario_results: list[dict[str, Any]]) -> dict[st
         role = _cost_sensitivity_role(scenario)
         by_role.setdefault(role, _scenario_cost_metrics(scenario))
     if "zero_cost" not in by_role:
-        base = next((item for item in scenario_results if isinstance(item, dict)), {})
         by_role["zero_cost"] = {
-            **_scenario_cost_metrics(base),
+            "status": "missing",
+            "synthetic": True,
+            "validation_return_pct": None,
+            "validation_profit_factor": None,
+            "validation_trade_count": None,
+            "fee_total": None,
+            "slippage_total": None,
             "scenario_role": "diagnostic_zero_cost",
             "fee_rate": 0,
             "slippage_bps": 0,
             "promotable_as_base": False,
+            "missing_reason": "real_zero_cost_scenario_result_absent",
         }
     if "base_cost" not in by_role and scenario_results:
         by_role["base_cost"] = _scenario_cost_metrics(scenario_results[0])
@@ -3185,26 +3191,30 @@ def _position_sizing_sensitivity_summary(
     base_policy: Any,
     candidate: dict[str, Any],
 ) -> dict[str, Any]:
-    metrics = candidate.get("validation_metrics_v2") if isinstance(candidate.get("validation_metrics_v2"), dict) else {}
     starting_cash = float(base_policy.starting_cash_krw)
     results: dict[str, dict[str, Any]] = {}
     for fraction in (0.99, 0.50, 0.25, 0.10):
         policy_payload = base_policy.as_dict()
         policy_payload["position_sizing"] = dict(policy_payload["position_sizing"])
         policy_payload["position_sizing"]["buy_fraction"] = fraction
-        scale = fraction / float(base_policy.position_sizing.buy_fraction or 1.0)
         results[f"{fraction:.2f}"] = {
-            "validation_return_pct": (_safe_metric_float(metrics.get("total_return_pct")) or 0.0) * scale,
-            "validation_max_drawdown_pct": (_safe_metric_float(metrics.get("max_drawdown_pct")) or 0.0) * scale,
-            "validation_profit_factor": metrics.get("profit_factor"),
+            "status": "missing",
+            "validation_return_pct": None,
+            "validation_max_drawdown_pct": None,
+            "validation_profit_factor": None,
             "portfolio_policy_hash": sha256_prefixed(policy_payload),
             "starting_cash_krw": starting_cash,
             "diagnostic_only": True,
+            "simulation_method": "independent_portfolio_simulation_unavailable",
+            "missing_reason": "independent_position_sizing_replay_not_available",
         }
     return {
         "by_buy_fraction": results,
         "promotion_authority": "diagnostic_only_excluded_from_promotion",
         "primary_metrics_overridden": False,
+        "status": "missing",
+        "direct_linear_scaling_used": False,
+        "missing_reason": "independent_position_sizing_replay_not_available",
     }
 
 

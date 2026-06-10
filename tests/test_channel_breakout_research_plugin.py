@@ -321,6 +321,50 @@ def test_exit_policy_hash_changes_when_take_profit_changes() -> None:
     )
 
 
+def test_exit_policy_hash_changes_when_trailing_stop_changes() -> None:
+    base = _materialized(TRAILING_STOP_RATIO=0.01)
+    changed = _materialized(TRAILING_STOP_RATIO=0.02)
+
+    assert "TRAILING_STOP_RATIO" in CHANNEL_BREAKOUT_SPEC.accepted_parameter_names
+    assert "TRAILING_STOP_RATIO" in CHANNEL_BREAKOUT_SPEC.behavior_affecting_parameter_names
+    assert exit_policy_hash(exit_policy_from_parameters(CHANNEL_BREAKOUT_SPEC.strategy_name, base)) != exit_policy_hash(
+        exit_policy_from_parameters(CHANNEL_BREAKOUT_SPEC.strategy_name, changed)
+    )
+
+
+def test_exit_policy_hash_changes_when_break_even_stop_changes() -> None:
+    base = _materialized(BREAK_EVEN_STOP_ENABLED=False)
+    changed = _materialized(BREAK_EVEN_STOP_ENABLED=True)
+
+    assert "BREAK_EVEN_STOP_ENABLED" in CHANNEL_BREAKOUT_SPEC.accepted_parameter_names
+    assert "BREAK_EVEN_STOP_ENABLED" in CHANNEL_BREAKOUT_SPEC.behavior_affecting_parameter_names
+    assert exit_policy_hash(exit_policy_from_parameters(CHANNEL_BREAKOUT_SPEC.strategy_name, base)) != exit_policy_hash(
+        exit_policy_from_parameters(CHANNEL_BREAKOUT_SPEC.strategy_name, changed)
+    )
+
+
+def test_exit_policy_hash_changes_when_opposite_signal_exit_changes() -> None:
+    base = _materialized(OPPOSITE_SIGNAL_EXIT_ENABLED=False)
+    changed = _materialized(OPPOSITE_SIGNAL_EXIT_ENABLED=True)
+
+    assert "OPPOSITE_SIGNAL_EXIT_ENABLED" in CHANNEL_BREAKOUT_SPEC.accepted_parameter_names
+    assert "OPPOSITE_SIGNAL_EXIT_ENABLED" in CHANNEL_BREAKOUT_SPEC.behavior_affecting_parameter_names
+    assert exit_policy_hash(exit_policy_from_parameters(CHANNEL_BREAKOUT_SPEC.strategy_name, base)) != exit_policy_hash(
+        exit_policy_from_parameters(CHANNEL_BREAKOUT_SPEC.strategy_name, changed)
+    )
+
+
+def test_exit_policy_hash_changes_when_regime_change_exit_changes() -> None:
+    base = _materialized(REGIME_CHANGE_EXIT_ENABLED=False)
+    changed = _materialized(REGIME_CHANGE_EXIT_ENABLED=True)
+
+    assert "REGIME_CHANGE_EXIT_ENABLED" in CHANNEL_BREAKOUT_SPEC.accepted_parameter_names
+    assert "REGIME_CHANGE_EXIT_ENABLED" in CHANNEL_BREAKOUT_SPEC.behavior_affecting_parameter_names
+    assert exit_policy_hash(exit_policy_from_parameters(CHANNEL_BREAKOUT_SPEC.strategy_name, base)) != exit_policy_hash(
+        exit_policy_from_parameters(CHANNEL_BREAKOUT_SPEC.strategy_name, changed)
+    )
+
+
 def test_existing_stop_loss_max_holding_behavior_is_unchanged() -> None:
     values = _materialized()
     policy = exit_policy_from_parameters(CHANNEL_BREAKOUT_SPEC.strategy_name, values)

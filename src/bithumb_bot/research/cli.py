@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from time import monotonic
 
@@ -47,12 +48,22 @@ def _notify_research_command_finished(command: str, started_at: float, rc: int, 
     )
 
 
-def cmd_research_backtest(*, manifest_path: str, execution_calibration_path: str | None = None) -> int:
+def cmd_research_backtest(
+    *,
+    manifest_path: str,
+    execution_calibration_path: str | None = None,
+    diagnostic_mode: str | None = None,
+) -> int:
     started_at = monotonic()
     rc = 1
     try:
         try:
             manifest = load_manifest(manifest_path)
+            if diagnostic_mode is not None:
+                manifest = replace(
+                    manifest,
+                    research_run=replace(manifest.research_run, diagnostic_mode=diagnostic_mode),
+                )
             calibration = load_calibration_artifact(execution_calibration_path) if execution_calibration_path else None
             report = run_research_backtest(
                 manifest=manifest,
@@ -63,6 +74,7 @@ def cmd_research_backtest(*, manifest_path: str, execution_calibration_path: str
                 command_args={
                     "manifest": manifest_path,
                     "execution_calibration": execution_calibration_path,
+                    "diagnostic_mode": diagnostic_mode,
                 },
                 progress_callback=_print_research_backtest_progress,
             )
@@ -92,6 +104,7 @@ def cmd_research_backtest(*, manifest_path: str, execution_calibration_path: str
             rc,
             manifest=manifest_path,
             execution_calibration=execution_calibration_path,
+            diagnostic_mode=diagnostic_mode,
         )
 
 

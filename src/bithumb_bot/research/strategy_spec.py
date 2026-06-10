@@ -509,6 +509,10 @@ def _common_exit_policy_from_parameters(strategy_name: str, parameter_values: di
     stop_loss_ratio = float(values.get("STRATEGY_EXIT_STOP_LOSS_RATIO") or 0.0)
     max_holding_min = int(values.get("STRATEGY_EXIT_MAX_HOLDING_MIN") or 0)
     take_profit_ratio = float(values.get("TAKE_PROFIT_RATIO") or 0.0)
+    trailing_stop_ratio = float(values.get("TRAILING_STOP_RATIO") or 0.0)
+    break_even_stop_enabled = bool(values.get("BREAK_EVEN_STOP_ENABLED"))
+    opposite_signal_exit_enabled = bool(values.get("OPPOSITE_SIGNAL_EXIT_ENABLED"))
+    regime_change_exit_enabled = bool(values.get("REGIME_CHANGE_EXIT_ENABLED"))
     return {
         "schema_version": 1,
         "strategy_name": strategy_name,
@@ -537,6 +541,24 @@ def _common_exit_policy_from_parameters(strategy_name: str, parameter_values: di
             "disabled_when_zero": True,
             "evaluation_price_basis": "closed_candle_mark",
         },
+        "trailing_stop": {
+            "enabled": trailing_stop_ratio > 0.0,
+            "trailing_stop_ratio": trailing_stop_ratio,
+            "disabled_when_zero": True,
+            "evaluation_status": "diagnostic_policy_bound_not_runtime_evaluated",
+        },
+        "break_even_stop": {
+            "enabled": break_even_stop_enabled,
+            "evaluation_status": "diagnostic_policy_bound_not_runtime_evaluated",
+        },
+        "opposite_signal_exit": {
+            "enabled": opposite_signal_exit_enabled,
+            "evaluation_status": "diagnostic_policy_bound_not_runtime_evaluated",
+        },
+        "regime_change_exit": {
+            "enabled": regime_change_exit_enabled,
+            "evaluation_status": "diagnostic_policy_bound_not_runtime_evaluated",
+        },
     }
 
 
@@ -548,6 +570,10 @@ def _common_exit_policy_config(policy: dict[str, Any]) -> dict[str, Any]:
         "stop_loss": dict(policy.get("stop_loss") or {}),
         "max_holding_time": dict(policy.get("max_holding_time") or {}),
         "take_profit": dict(policy.get("take_profit") or {}),
+        "trailing_stop": dict(policy.get("trailing_stop") or {}),
+        "break_even_stop": dict(policy.get("break_even_stop") or {}),
+        "opposite_signal_exit": dict(policy.get("opposite_signal_exit") or {}),
+        "regime_change_exit": dict(policy.get("regime_change_exit") or {}),
     }
 
 

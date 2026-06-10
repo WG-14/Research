@@ -10,7 +10,13 @@ from ._helpers import make_spec
 def _backtest(args: argparse.Namespace, _context) -> int:
     from bithumb_bot.research.cli import cmd_research_backtest
 
-    return int(cmd_research_backtest(manifest_path=str(args.manifest), execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None))
+    return int(
+        cmd_research_backtest(
+            manifest_path=str(args.manifest),
+            execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None,
+            diagnostic_mode=str(args.diagnostic_mode) if args.diagnostic_mode else None,
+        )
+    )
 
 
 def _verify_audit(args: argparse.Namespace, _context) -> int:
@@ -126,7 +132,7 @@ def _promotion_provenance_verify(args: argparse.Namespace, _context) -> int:
 def command_specs() -> list[CommandSpec]:
     common = dict(domain="research", read_only=True, produces_artifact=True, json_output_supported=True)
     return [
-        make_spec("research-backtest", handler=_backtest, help="run a reproducible research backtest from a manifest", description="Run pure replay/simulation from a research manifest. Writes deterministic candidate and report artifacts under PathManager-managed research paths.", build=_build_manifest_calibration, **common),
+        make_spec("research-backtest", handler=_backtest, help="run a reproducible research backtest from a manifest", description="Run pure replay/simulation from a research manifest. Writes deterministic candidate and report artifacts under PathManager-managed research paths.", build=_build_backtest, **common),
         make_spec("research-verify-audit", handler=_verify_audit, help="verify research audit trace manifest and JSONL hash chains", build=lambda p: p.add_argument("--experiment-id", required=True), **common),
         make_spec("research-validate", handler=_validate, help="run the fail-closed end-to-end research validation pipeline", description="Run readiness, backtest, required walk-forward, promotion generation, and reproduce from one fixed manifest and write a hash-bound ValidationRun artifact.", build=_build_validate, **common),
         make_spec("research-readiness", handler=_readiness, help="check manifest data readiness before research execution", description="Read-only manifest readiness report for configured DB candle coverage, top-of-book coverage, calibration, and walk-forward prerequisites.", build=_build_readiness, **common),
@@ -150,6 +156,15 @@ def command_specs() -> list[CommandSpec]:
 def _build_manifest_calibration(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--execution-calibration")
+
+
+def _build_backtest(parser: argparse.ArgumentParser) -> None:
+    _build_manifest_calibration(parser)
+    parser.add_argument(
+        "--diagnostic-mode",
+        choices=("promotion_candidate", "exploratory"),
+        help="override research_run.diagnostic_mode for this manifest-backed backtest run",
+    )
 
 
 def _build_validate(parser: argparse.ArgumentParser) -> None:

@@ -45,3 +45,19 @@ def test_cost_drag_fields_are_persisted_in_candidate_result_summary() -> None:
     assert summary["fee_drag_ratio"] is not None
     assert summary["slippage_drag_ratio"] is not None
     assert summary["cost_breakeven_trade_edge"] == 37.5
+
+
+def test_cost_sensitivity_requires_real_zero_cost_scenario_or_marks_missing() -> None:
+    summary = _cost_sensitivity_summary([_scenario("base_cost", return_pct=3.0)])
+
+    assert summary["zero_cost"]["status"] == "missing"
+    assert summary["zero_cost"]["synthetic"] is True
+    assert summary["zero_cost"]["validation_return_pct"] is None
+    assert summary["zero_cost"]["missing_reason"] == "real_zero_cost_scenario_result_absent"
+
+
+def test_cost_sensitivity_zero_cost_is_not_copied_from_base_metrics() -> None:
+    summary = _cost_sensitivity_summary([_scenario("base_cost", return_pct=3.0)])
+
+    assert summary["base_cost"]["validation_return_pct"] == 3.0
+    assert summary["zero_cost"]["validation_return_pct"] != summary["base_cost"]["validation_return_pct"]
