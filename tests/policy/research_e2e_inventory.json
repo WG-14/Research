@@ -700,6 +700,35 @@
       "lower_level_contract_available": true,
       "replacement_contract_test": "tests/test_research_report_writer.py::test_report_write_stage_timing_payload_matches_artifact_summary",
       "e2e_canary_group": "research_artifact_observability"
+    },
+    {
+      "nodeid": "tests/test_research_backtest_reproducibility.py::test_persisted_report_contains_candidate_evaluation_substages",
+      "markers": [
+        "research_e2e"
+      ],
+      "reason": "verifies persisted production research candidate-evaluation substage observability through the report boundary",
+      "expected_workload": {
+        "strategy_runs": "single contract production backtest",
+        "tick_scope": "small fixture dataset",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0,
+        "estimated_artifact_write_count": 3,
+        "estimated_hash_payload_bytes": 12000,
+        "estimated_artifact_bytes": 24000,
+        "estimated_artifact_file_count": 3
+      },
+      "duration_budget_seconds": 45,
+      "domain": "research_artifact_observability",
+      "last_measured_seconds": 3,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "artifact_persistence_boundary",
+      "lower_level_contract_available": true,
+      "replacement_contract_test": "tests/test_research_report_writer.py::test_candidate_evaluation_substage_timings_are_reported",
+      "e2e_canary_group": "research_artifact_observability"
     }
   ]
 }

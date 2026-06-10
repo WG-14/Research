@@ -387,6 +387,12 @@ def minimal_research_report(**overrides: Any) -> dict[str, Any]:
             "uses_production_evaluator": False,
             "uses_real_parallel_executor": False,
         },
+        "workload_estimate_comparison": {
+            "estimated_hash_payload_bytes": 4096,
+            "observed_hash_payload_bytes": 4096,
+            "hash_payload_ratio": 1.0,
+            "status": "PASS",
+        },
         "audit_trail_policy": {"mode": "summary_only"},
         "audit_trail_status": "DISABLED",
         "execution_observability": {
