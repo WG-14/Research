@@ -247,6 +247,26 @@ def test_summarize_candidate_result_keeps_compact_diagnostics_fields() -> None:
             "blocked_filter_distribution": {"volume_ratio_below_min": 2},
             "entry_reason_distribution": {"entry_allowed": 1},
             "exit_reason_distribution": {},
+            "exit_rule_distribution": {"take_profit": 1},
+            "return_by_exit_reason": {
+                "take_profit": {
+                    "count": 1,
+                    "avg_return_pct": 0.02,
+                    "total_return_pct": 0.02,
+                    "avg_pnl": 10.0,
+                    "total_pnl": 10.0,
+                }
+            },
+            "avg_holding_minutes_by_exit_reason": {"take_profit": 5.0},
+            "mae_mfe_by_exit_reason": {
+                "take_profit": {
+                    "count": 1,
+                    "avg_mae_pct": -0.003,
+                    "min_mae_pct": -0.003,
+                    "avg_mfe_pct": 0.025,
+                    "max_mfe_pct": 0.025,
+                }
+            },
             "p95_mae_pct": -1.0,
             "p95_mfe_pct": 2.0,
             "worst_trade_mae_pct": -3.0,
@@ -265,6 +285,26 @@ def test_summarize_candidate_result_keeps_compact_diagnostics_fields() -> None:
                     "blocked_filter_distribution": {"volume_ratio_below_min": 2},
                     "entry_reason_distribution": {"entry_allowed": 1},
                     "exit_reason_distribution": {},
+                    "exit_rule_distribution": {"take_profit": 1},
+                    "return_by_exit_reason": {
+                        "take_profit": {
+                            "count": 1,
+                            "avg_return_pct": 0.02,
+                            "total_return_pct": 0.02,
+                            "avg_pnl": 10.0,
+                            "total_pnl": 10.0,
+                        }
+                    },
+                    "avg_holding_minutes_by_exit_reason": {"take_profit": 5.0},
+                    "mae_mfe_by_exit_reason": {
+                        "take_profit": {
+                            "count": 1,
+                            "avg_mae_pct": -0.003,
+                            "min_mae_pct": -0.003,
+                            "avg_mfe_pct": 0.025,
+                            "max_mfe_pct": 0.025,
+                        }
+                    },
                     "p95_mae_pct": -1.0,
                     "p95_mfe_pct": 2.0,
                     "worst_trade_mae_pct": -3.0,
@@ -280,9 +320,120 @@ def test_summarize_candidate_result_keeps_compact_diagnostics_fields() -> None:
     diagnostics = summary["validation_strategy_diagnostics"]
     assert diagnostics["raw_signal_count"] == 3
     assert diagnostics["blocked_filter_distribution"] == {"volume_ratio_below_min": 2}
+    assert diagnostics["exit_rule_distribution"] == {"take_profit": 1}
+    assert diagnostics["return_by_exit_reason"]["take_profit"]["total_pnl"] == 10.0
+    assert diagnostics["avg_holding_minutes_by_exit_reason"] == {"take_profit": 5.0}
+    assert diagnostics["mae_mfe_by_exit_reason"]["take_profit"]["max_mfe_pct"] == 0.025
     assert diagnostics["p95_mfe_pct"] == 2.0
     assert "mae_pct_by_trade" not in diagnostics
     assert summary["scenario_results"][0]["validation_strategy_diagnostics"] == diagnostics
+
+
+def _candidate_with_exit_diagnostics(exit_diagnostics: dict[str, object]) -> dict[str, object]:
+    return {
+        "parameter_candidate_id": "candidate_001",
+        "candidate_profile_hash": "sha256:profile",
+        "validation_strategy_diagnostics": {
+            "strategy_diagnostics_namespace": "channel_breakout_with_regime_filter",
+            **exit_diagnostics,
+        },
+        "decisions": [{"ts": 1, "signal": "SELL"}],
+        "equity_curve": [{"ts": 1, "equity": 1.0}],
+        "scenario_results": [
+            {
+                "scenario_id": "scenario_001",
+                "validation_strategy_diagnostics": {
+                    "strategy_diagnostics_namespace": "channel_breakout_with_regime_filter",
+                    **exit_diagnostics,
+                },
+                "validation_resource_usage": {"stage_trace": [{"stage": "validation"}]},
+            }
+        ],
+    }
+
+
+def test_summary_candidate_preserves_exit_rule_distribution() -> None:
+    summary = summarize_candidate_result(
+        _candidate_with_exit_diagnostics({"exit_rule_distribution": {"take_profit": 1}}),
+        "summary",
+    )
+
+    assert summary["validation_strategy_diagnostics"]["exit_rule_distribution"] == {"take_profit": 1}
+    assert summary["scenario_results"][0]["validation_strategy_diagnostics"]["exit_rule_distribution"] == {
+        "take_profit": 1
+    }
+    assert "decisions" not in summary
+    assert "equity_curve" not in summary
+    assert "stage_trace" not in summary["scenario_results"][0].get("validation_resource_usage", {})
+
+
+def test_summary_candidate_preserves_return_by_exit_reason() -> None:
+    diagnostics = {
+        "return_by_exit_reason": {
+            "take_profit": {
+                "count": 1,
+                "avg_return_pct": 0.02,
+                "total_return_pct": 0.02,
+                "avg_pnl": 10.0,
+                "total_pnl": 10.0,
+            }
+        }
+    }
+
+    summary = summarize_candidate_result(_candidate_with_exit_diagnostics(diagnostics), "summary")
+
+    assert summary["validation_strategy_diagnostics"]["return_by_exit_reason"] == diagnostics["return_by_exit_reason"]
+    assert (
+        summary["scenario_results"][0]["validation_strategy_diagnostics"]["return_by_exit_reason"]
+        == diagnostics["return_by_exit_reason"]
+    )
+    assert "decisions" not in summary
+    assert "equity_curve" not in summary
+    assert "stage_trace" not in summary["scenario_results"][0].get("validation_resource_usage", {})
+
+
+def test_summary_candidate_preserves_avg_holding_minutes_by_exit_reason() -> None:
+    diagnostics = {"avg_holding_minutes_by_exit_reason": {"take_profit": 5.0}}
+
+    summary = summarize_candidate_result(_candidate_with_exit_diagnostics(diagnostics), "summary")
+
+    assert (
+        summary["validation_strategy_diagnostics"]["avg_holding_minutes_by_exit_reason"]
+        == diagnostics["avg_holding_minutes_by_exit_reason"]
+    )
+    assert (
+        summary["scenario_results"][0]["validation_strategy_diagnostics"]["avg_holding_minutes_by_exit_reason"]
+        == diagnostics["avg_holding_minutes_by_exit_reason"]
+    )
+    assert "decisions" not in summary
+    assert "equity_curve" not in summary
+    assert "stage_trace" not in summary["scenario_results"][0].get("validation_resource_usage", {})
+
+
+def test_summary_candidate_preserves_mae_mfe_by_exit_reason() -> None:
+    diagnostics = {
+        "mae_mfe_by_exit_reason": {
+            "take_profit": {
+                "count": 1,
+                "avg_mae_pct": -0.003,
+                "min_mae_pct": -0.003,
+                "avg_mfe_pct": 0.025,
+                "max_mfe_pct": 0.025,
+            }
+        }
+    }
+
+    summary = summarize_candidate_result(_candidate_with_exit_diagnostics(diagnostics), "summary")
+
+    assert summary["validation_strategy_diagnostics"]["mae_mfe_by_exit_reason"] == diagnostics[
+        "mae_mfe_by_exit_reason"
+    ]
+    assert summary["scenario_results"][0]["validation_strategy_diagnostics"]["mae_mfe_by_exit_reason"] == diagnostics[
+        "mae_mfe_by_exit_reason"
+    ]
+    assert "decisions" not in summary
+    assert "equity_curve" not in summary
+    assert "stage_trace" not in summary["scenario_results"][0].get("validation_resource_usage", {})
 
 
 def test_summary_candidate_result_keeps_cost_sensitivity_summary() -> None:

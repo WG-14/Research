@@ -446,23 +446,57 @@ def _generic_strategy_diagnostics_from_trades(
         and str(trade.get("side") or "").upper() == "SELL"
     ]
     exit_reason_distribution: dict[str, int] = {}
+    exit_rule_distribution: dict[str, int] = {}
+    return_groups: dict[str, dict[str, list[float] | int]] = {}
+    holding_minutes_by_reason: dict[str, list[float]] = {}
+    excursion_groups: dict[str, dict[str, list[float] | int]] = {}
     mae_pct_by_trade: list[float] = []
     mfe_pct_by_trade: list[float] = []
     loss_holding_minutes: list[float] = []
     for trade in closed:
         reason = str(trade.get("exit_rule") or trade.get("exit_reason") or "unknown")
         exit_reason_distribution[reason] = exit_reason_distribution.get(reason, 0) + 1
-        if trade.get("mae_pct") is not None:
-            mae_pct_by_trade.append(float(trade.get("mae_pct") or 0.0))
-        if trade.get("mfe_pct") is not None:
-            mfe_pct_by_trade.append(float(trade.get("mfe_pct") or 0.0))
+        exit_rule_distribution[reason] = exit_rule_distribution.get(reason, 0) + 1
+        return_group = return_groups.setdefault(
+            reason,
+            {"count": 0, "return_pct": [], "pnl": []},
+        )
+        return_group["count"] = int(return_group["count"]) + 1
+        if trade.get("return_pct") is not None:
+            return_group["return_pct"].append(float(trade.get("return_pct") or 0.0))  # type: ignore[union-attr]
         pnl = trade.get("net_pnl") if trade.get("net_pnl") is not None else trade.get("closed_trade_pnl")
+        if pnl is not None:
+            return_group["pnl"].append(float(pnl))  # type: ignore[union-attr]
+        if trade.get("holding_minutes") is not None:
+            holding_minutes_by_reason.setdefault(reason, []).append(float(trade.get("holding_minutes") or 0.0))
+        excursion_group = excursion_groups.setdefault(
+            reason,
+            {"count": 0, "mae_pct": [], "mfe_pct": []},
+        )
+        if trade.get("mae_pct") is not None or trade.get("mfe_pct") is not None:
+            excursion_group["count"] = int(excursion_group["count"]) + 1
+        if trade.get("mae_pct") is not None:
+            mae_pct = float(trade.get("mae_pct") or 0.0)
+            mae_pct_by_trade.append(mae_pct)
+            excursion_group["mae_pct"].append(mae_pct)  # type: ignore[union-attr]
+        if trade.get("mfe_pct") is not None:
+            mfe_pct = float(trade.get("mfe_pct") or 0.0)
+            mfe_pct_by_trade.append(mfe_pct)
+            excursion_group["mfe_pct"].append(mfe_pct)  # type: ignore[union-attr]
         if pnl is not None and float(pnl) < 0.0 and trade.get("holding_minutes") is not None:
             loss_holding_minutes.append(float(trade.get("holding_minutes") or 0.0))
     payload = {
         "schema_version": 1,
         "strategy_diagnostics_namespace": str(namespace),
         "exit_reason_distribution": dict(sorted(exit_reason_distribution.items())),
+        "exit_rule_distribution": dict(sorted(exit_rule_distribution.items())),
+        "return_by_exit_reason": _return_summary_by_exit_reason(return_groups),
+        "avg_holding_minutes_by_exit_reason": {
+            reason: _average(values)
+            for reason, values in sorted(holding_minutes_by_reason.items())
+            if values
+        },
+        "mae_mfe_by_exit_reason": _mae_mfe_summary_by_exit_reason(excursion_groups),
         "mae_pct_by_trade": mae_pct_by_trade,
         "mfe_pct_by_trade": mfe_pct_by_trade,
         "p95_mae_pct": _percentile(mae_pct_by_trade, 0.95),
@@ -480,6 +514,46 @@ def _generic_strategy_diagnostics_from_trades(
     }
     payload["strategy_specific_diagnostics"] = {str(namespace): dict(payload)}
     return payload
+
+
+def _return_summary_by_exit_reason(
+    groups: dict[str, dict[str, list[float] | int]],
+) -> dict[str, dict[str, float | int | None]]:
+    summary: dict[str, dict[str, float | int | None]] = {}
+    for reason, group in sorted(groups.items()):
+        return_values = list(group.get("return_pct") or [])
+        pnl_values = list(group.get("pnl") or [])
+        summary[reason] = {
+            "count": int(group.get("count") or 0),
+            "avg_return_pct": _average(return_values) if return_values else None,
+            "total_return_pct": sum(return_values) if return_values else None,
+            "avg_pnl": _average(pnl_values) if pnl_values else None,
+            "total_pnl": sum(pnl_values) if pnl_values else None,
+        }
+    return summary
+
+
+def _mae_mfe_summary_by_exit_reason(
+    groups: dict[str, dict[str, list[float] | int]],
+) -> dict[str, dict[str, float | int | None]]:
+    summary: dict[str, dict[str, float | int | None]] = {}
+    for reason, group in sorted(groups.items()):
+        mae_values = list(group.get("mae_pct") or [])
+        mfe_values = list(group.get("mfe_pct") or [])
+        if not mae_values and not mfe_values:
+            continue
+        summary[reason] = {
+            "count": int(group.get("count") or 0),
+            "avg_mae_pct": _average(mae_values) if mae_values else None,
+            "min_mae_pct": min(mae_values) if mae_values else None,
+            "avg_mfe_pct": _average(mfe_values) if mfe_values else None,
+            "max_mfe_pct": max(mfe_values) if mfe_values else None,
+        }
+    return summary
+
+
+def _average(values: list[float]) -> float:
+    return sum(float(value) for value in values) / len(values)
 
 
 def _percentile(values: list[float], percentile: float) -> float | None:

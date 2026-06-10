@@ -395,6 +395,96 @@ def test_exit_reason_distribution_records_take_profit() -> None:
     )
 
     assert diagnostics["exit_reason_distribution"]["take_profit"] == 1
+    assert diagnostics["exit_rule_distribution"]["take_profit"] == 1
+
+
+def test_channel_breakout_runtime_exit_diagnostics_include_exit_rule_distribution() -> None:
+    from bithumb_bot.research.backtest_support import BacktestAccumulator
+    from bithumb_bot.research.backtest_types import BacktestRunContext
+
+    accumulator = BacktestAccumulator(
+        context=BacktestRunContext(report_detail="summary"),
+        total_candles=1,
+        diagnostics_namespace=CHANNEL_BREAKOUT_SPEC.strategy_name,
+    )
+
+    diagnostics = accumulator.strategy_diagnostics(
+        trades=[
+            {
+                "side": "SELL",
+                "is_portfolio_applied_trade": True,
+                "exit_rule": "take_profit",
+                "exit_reason": "price_target_reached",
+                "net_pnl": 10.0,
+                "return_pct": 0.02,
+                "holding_minutes": 5.0,
+                "mae_pct": -0.003,
+                "mfe_pct": 0.025,
+            }
+        ]
+    )
+
+    assert diagnostics["exit_rule_distribution"]["take_profit"] == 1
+    assert diagnostics["exit_reason_distribution"]["take_profit"] == 1
+    assert diagnostics["avg_holding_minutes_by_exit_reason"]["take_profit"] == 5.0
+    assert diagnostics["mae_mfe_by_exit_reason"]["take_profit"]["avg_mae_pct"] == -0.003
+    assert diagnostics["mae_mfe_by_exit_reason"]["take_profit"]["avg_mfe_pct"] == 0.025
+
+
+def test_channel_breakout_runtime_exit_diagnostics_include_return_by_exit_reason() -> None:
+    from bithumb_bot.research.backtest_support import BacktestAccumulator
+    from bithumb_bot.research.backtest_types import BacktestRunContext
+
+    accumulator = BacktestAccumulator(
+        context=BacktestRunContext(report_detail="summary"),
+        total_candles=1,
+        diagnostics_namespace=CHANNEL_BREAKOUT_SPEC.strategy_name,
+    )
+
+    diagnostics = accumulator.strategy_diagnostics(
+        trades=[
+            {
+                "side": "SELL",
+                "is_portfolio_applied_trade": True,
+                "exit_rule": "take_profit",
+                "return_pct": 0.02,
+                "net_pnl": 10.0,
+            },
+            {
+                "side": "SELL",
+                "is_portfolio_applied_trade": True,
+                "exit_rule": "take_profit",
+                "return_pct": 0.01,
+                "closed_trade_pnl": 4.0,
+            },
+        ]
+    )
+
+    take_profit_returns = diagnostics["return_by_exit_reason"]["take_profit"]
+    assert take_profit_returns["count"] == 2
+    assert take_profit_returns["avg_return_pct"] == pytest.approx(0.015)
+    assert take_profit_returns["total_return_pct"] == pytest.approx(0.03)
+    assert take_profit_returns["avg_pnl"] == 7.0
+    assert take_profit_returns["total_pnl"] == 14.0
+
+
+def test_channel_breakout_advanced_exit_rules_are_marked_diagnostic_only() -> None:
+    values = _materialized(
+        TRAILING_STOP_RATIO=0.02,
+        BREAK_EVEN_STOP_ENABLED=True,
+        OPPOSITE_SIGNAL_EXIT_ENABLED=True,
+        REGIME_CHANGE_EXIT_ENABLED=True,
+    )
+    policy = exit_policy_from_parameters(CHANNEL_BREAKOUT_SPEC.strategy_name, values)
+
+    for key in (
+        "trailing_stop",
+        "break_even_stop",
+        "opposite_signal_exit",
+        "regime_change_exit",
+    ):
+        assert policy[key]["enabled"] is True
+        assert policy[key]["evaluation_status"] == "diagnostic_policy_bound_not_runtime_evaluated"
 
 
 def test_event_builder_emits_required_event_fields() -> None:

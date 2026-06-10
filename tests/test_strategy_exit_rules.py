@@ -12,6 +12,7 @@ from bithumb_bot.strategy.exit_rules import (
     MaxHoldingTimeExitRule,
     OppositeCrossExitRule,
     StopLossExitRule,
+    TakeProfitExitRule,
     create_exit_rules,
     create_sma_exit_rules,
     merge_exit_rules,
@@ -742,6 +743,50 @@ def test_common_exit_rule_factory_scope_is_strategy_neutral() -> None:
     with pytest.raises(ValueError, match="unknown exit rule='opposite_cross'"):
         create_exit_rules(
             rule_names=["opposite_cross"],
+            max_holding_sec=60.0,
+        )
+
+
+def test_create_exit_rules_supports_take_profit() -> None:
+    rules = create_exit_rules(
+        rule_names=["max_holding_time", "take_profit", "stop_loss"],
+        max_holding_sec=60.0,
+        stop_loss_ratio=0.03,
+        take_profit_ratio=0.02,
+    )
+
+    assert [rule.name for rule in rules] == ["stop_loss", "take_profit", "max_holding_time"]
+    take_profit = next(rule for rule in rules if rule.name == "take_profit")
+    assert isinstance(take_profit, TakeProfitExitRule)
+    decision = take_profit.evaluate(
+        position=PositionContext(
+            in_position=True,
+            holding_time_sec=30.0,
+            unrealized_pnl=2.0,
+            unrealized_pnl_ratio=0.021,
+        ),
+        candle_ts=1_700_000_000_000,
+        market_price=102.0,
+        signal_context={"base_signal": "HOLD"},
+    )
+
+    assert decision.should_exit is True
+    assert decision.context["rule"] == "take_profit"
+
+
+@pytest.mark.parametrize(
+    "rule_name",
+    [
+        "trailing_stop",
+        "break_even_stop",
+        "opposite_signal_exit",
+        "regime_change_exit",
+    ],
+)
+def test_unsupported_advanced_exit_rules_are_diagnostic_only_or_fail_fast(rule_name: str) -> None:
+    with pytest.raises(ValueError, match=f"unknown exit rule='{rule_name}'"):
+        create_exit_rules(
+            rule_names=[rule_name],
             max_holding_sec=60.0,
         )
 
