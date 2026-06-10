@@ -148,6 +148,77 @@ def test_run_wide_artifact_context_accumulates_trace_scopes_and_reports(tmp_path
     assert context.total_bytes > 0
 
 
+def test_report_records_observed_hash_payload_bytes(tmp_path: Path, monkeypatch) -> None:
+    manager = _paper_manager(tmp_path, monkeypatch)
+
+    result = write_research_report(
+        manager=manager,
+        experiment_id="observed_hash_budget",
+        report_name="backtest",
+        payload={
+            "experiment_id": "observed_hash_budget",
+            "research_run": {"report_detail": "summary"},
+            "workload_estimate": {
+                "estimated_hash_payload_bytes": 1_000_000,
+                "estimated_artifact_bytes": 1_000_000,
+            },
+            "candidates": [{"candidate_id": "candidate_001", "behavior_hash": "sha256:behavior"}],
+        },
+    )
+
+    persisted = json.loads(result.paths.report_path.read_text(encoding="utf-8"))
+    assert persisted["artifact_observability"]["report_write"]["observed_hash_payload_bytes"] > 0
+    assert persisted["workload_estimate_comparison"]["observed_hash_payload_bytes"] > 0
+
+
+def test_observed_hash_payload_bytes_compared_to_estimate(tmp_path: Path, monkeypatch) -> None:
+    manager = _paper_manager(tmp_path, monkeypatch)
+
+    result = write_research_report(
+        manager=manager,
+        experiment_id="observed_hash_ratio",
+        report_name="backtest",
+        payload={
+            "experiment_id": "observed_hash_ratio",
+            "research_run": {"report_detail": "summary"},
+            "workload_estimate": {
+                "estimated_hash_payload_bytes": 1_000_000,
+                "estimated_artifact_bytes": 1_000_000,
+            },
+            "candidates": [{"candidate_id": "candidate_001", "behavior_hash": "sha256:behavior"}],
+        },
+    )
+
+    persisted = json.loads(result.paths.report_path.read_text(encoding="utf-8"))
+    comparison = persisted["workload_estimate_comparison"]
+    assert comparison["hash_payload_ratio"] is not None
+    assert comparison["status"] == "PASS"
+
+
+def test_hash_payload_budget_warning_when_observed_exceeds_threshold(tmp_path: Path, monkeypatch) -> None:
+    manager = _paper_manager(tmp_path, monkeypatch)
+
+    result = write_research_report(
+        manager=manager,
+        experiment_id="observed_hash_warn",
+        report_name="backtest",
+        payload={
+            "experiment_id": "observed_hash_warn",
+            "research_run": {"report_detail": "summary"},
+            "workload_estimate": {
+                "estimated_hash_payload_bytes": 1,
+                "estimated_artifact_bytes": 1,
+            },
+            "candidates": [{"candidate_id": "candidate_001", "behavior_hash": "sha256:behavior"}],
+        },
+    )
+
+    persisted = json.loads(result.paths.report_path.read_text(encoding="utf-8"))
+    comparison = persisted["workload_estimate_comparison"]
+    assert comparison["status"] in {"WARN", "FAIL"}
+    assert comparison["reasons"]
+
+
 def test_candidate_journal_and_trace_manifest_are_run_wide_accounted(tmp_path: Path, monkeypatch) -> None:
     manager = _paper_manager(tmp_path, monkeypatch)
     payload = _manifest()

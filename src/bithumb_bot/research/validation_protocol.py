@@ -85,7 +85,6 @@ from .metrics_contract import METRICS_SCHEMA_VERSION
 from .parameter_space import candidate_id, iter_parameter_candidates
 from .promotion_gate import build_candidate_behavior_profile, build_candidate_profile
 from .report_writer import (
-    persist_final_research_report_observability,
     summarize_candidate_result,
     write_research_report,
 )
@@ -150,6 +149,8 @@ class EvaluationContext:
 class CandidateEvaluationResult:
     candidates: list[dict[str, Any]]
     execution_boundary: dict[str, Any]
+    substage_timings: list[dict[str, Any]]
+    candidate_artifact_observability: dict[str, Any]
 
 
 class CandidateScenarioEvaluator(Protocol):
@@ -358,6 +359,18 @@ def _stage_timing(stage: str, started_at: float, **details: Any) -> dict[str, An
     }
     payload.update(details)
     return payload
+
+
+def _prefixed_stage_timings(prefix: str, timings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    prefixed: list[dict[str, Any]] = []
+    for item in timings:
+        if not isinstance(item, dict):
+            continue
+        stage = str(item.get("stage") or "").strip()
+        if not stage:
+            continue
+        prefixed.append({"stage": f"{prefix}.{stage}", **{k: v for k, v in item.items() if k != "stage"}})
+    return prefixed
 
 
 def _estimated_strategy_runs(
@@ -873,6 +886,9 @@ def run_research_backtest(
     )
     candidates = evaluation.candidates
     stage_timings.append(_stage_timing("candidate_evaluation", stage_started, candidate_count=len(candidates)))
+    stage_timings.extend(
+        _prefixed_stage_timings("candidate_evaluation", evaluation.substage_timings)
+    )
     execution_observability = _execution_observability_payload(
         manifest=manifest,
         stage_timings=stage_timings,
@@ -880,6 +896,7 @@ def run_research_backtest(
         execution_boundary=evaluation.execution_boundary,
         snapshots=snapshots,
     )
+    execution_observability["candidate_artifact_write"] = dict(evaluation.candidate_artifact_observability)
     report = _report_payload(
         manifest=manifest,
         snapshots=tuple(snapshots.values()),
@@ -897,6 +914,9 @@ def run_research_backtest(
         execution_observability=execution_observability,
         artifact_context=artifact_context,
     )
+    report.setdefault("artifact_observability", {})["candidate_results"] = dict(
+        evaluation.candidate_artifact_observability
+    )
     _emit_progress(
         progress_callback,
         stage="report_write",
@@ -912,6 +932,7 @@ def run_research_backtest(
         artifact_context=artifact_context,
     )
     paths = write_result.paths
+    stage_timings.extend(_prefixed_stage_timings("report_write", write_result.substage_timings or []))
     stage_timings.append(
         _stage_timing(
             "report_write",
@@ -924,16 +945,8 @@ def run_research_backtest(
         )
     )
     full_candidates = report.get("candidates")
-    persisted_report = json.loads(paths.report_path.read_text(encoding="utf-8"))
-    persist_final_research_report_observability(
-        paths=paths,
-        report_payload=persisted_report,
-        artifact_write_summary=write_result.artifact_write_summary,
-        stage_timings=stage_timings,
-    )
-    persisted_report = json.loads(paths.report_path.read_text(encoding="utf-8"))
     report.clear()
-    report.update(persisted_report)
+    report.update(write_result.report_payload or {})
     if manifest.research_run.report_detail == "summary":
         report["candidates"] = full_candidates
     _emit_progress(
@@ -1094,6 +1107,9 @@ def run_research_walk_forward(
     )
     candidates = evaluation.candidates
     stage_timings.append(_stage_timing("candidate_evaluation", stage_started, candidate_count=len(candidates)))
+    stage_timings.extend(
+        _prefixed_stage_timings("candidate_evaluation", evaluation.substage_timings)
+    )
     execution_observability = _execution_observability_payload(
         manifest=manifest,
         stage_timings=stage_timings,
@@ -1101,6 +1117,7 @@ def run_research_walk_forward(
         execution_boundary=evaluation.execution_boundary,
         snapshots=snapshots,
     )
+    execution_observability["candidate_artifact_write"] = dict(evaluation.candidate_artifact_observability)
     report = _report_payload(
         manifest=manifest,
         snapshots=tuple(snapshots.values()),
@@ -1118,6 +1135,9 @@ def run_research_walk_forward(
         execution_observability=execution_observability,
         artifact_context=artifact_context,
     )
+    report.setdefault("artifact_observability", {})["candidate_results"] = dict(
+        evaluation.candidate_artifact_observability
+    )
     _emit_progress(
         progress_callback,
         stage="report_write",
@@ -1133,6 +1153,7 @@ def run_research_walk_forward(
         artifact_context=artifact_context,
     )
     paths = write_result.paths
+    stage_timings.extend(_prefixed_stage_timings("report_write", write_result.substage_timings or []))
     stage_timings.append(
         _stage_timing(
             "report_write",
@@ -1145,16 +1166,8 @@ def run_research_walk_forward(
         )
     )
     full_candidates = report.get("candidates")
-    persisted_report = json.loads(paths.report_path.read_text(encoding="utf-8"))
-    persist_final_research_report_observability(
-        paths=paths,
-        report_payload=persisted_report,
-        artifact_write_summary=write_result.artifact_write_summary,
-        stage_timings=stage_timings,
-    )
-    persisted_report = json.loads(paths.report_path.read_text(encoding="utf-8"))
     report.clear()
-    report.update(persisted_report)
+    report.update(write_result.report_payload or {})
     if manifest.research_run.report_detail == "summary":
         report["candidates"] = full_candidates
     _emit_progress(
@@ -1181,6 +1194,13 @@ def _evaluate_candidates(
     candidate_evaluator: CandidateScenarioEvaluator | None = None,
     artifact_context: ResearchArtifactContext | None = None,
 ) -> CandidateEvaluationResult:
+    substage_timings: list[dict[str, Any]] = []
+    candidate_artifact_observability = {
+        "candidate_result_file_count": 0,
+        "candidate_result_total_bytes": 0,
+        "candidate_result_write_wall_seconds": 0.0,
+    }
+    build_work_tasks_started = time.perf_counter()
     raw_candidates = iter_parameter_candidates(manifest.parameter_space)
     aggregates: dict[str, dict[str, Any]] = {}
     manifest_hash = manifest.manifest_hash()
@@ -1247,6 +1267,9 @@ def _evaluate_candidates(
                     "work_unit": work_unit,
                 }
             )
+    substage_timings.append(
+        _stage_timing("build_work_tasks", build_work_tasks_started, task_count=len(work_tasks))
+    )
 
     evaluator = candidate_evaluator or ProductionCandidateScenarioEvaluator()
     parallel_executor_used = manifest.research_run.execution.mode == "parallel" and candidate_evaluator is None
@@ -1257,6 +1280,7 @@ def _evaluate_candidates(
         parallel_executor_used=parallel_executor_used,
     )
     if parallel_executor_used:
+        append_start_started = time.perf_counter()
         for task in work_tasks:
             _append_candidate_event(
                 manager=manager,
@@ -1271,6 +1295,9 @@ def _evaluate_candidates(
                     "work_unit_hash": task["work_unit"].work_unit_hash,
                 },
             )
+        substage_timings.append(
+            _stage_timing("append_candidate_start_events", append_start_started, event_count=len(work_tasks))
+        )
         worker_context = {
             "manifest": manifest,
             "snapshots": snapshots,
@@ -1279,6 +1306,7 @@ def _evaluate_candidates(
             "include_walk_forward": include_walk_forward,
             "raw_candidate_count": len(raw_candidates),
         }
+        worker_started = time.perf_counter()
         raw_results = execute_research_work_units_parallel(
             tasks=work_tasks,
             worker=_candidate_scenario_worker_from_context,
@@ -1288,6 +1316,15 @@ def _evaluate_candidates(
             initargs=(worker_context,),
             runtime_observability_sink=process_runtime_observability,
         )
+        substage_timings.append(
+            _stage_timing(
+                "parallel_worker_execution",
+                worker_started,
+                task_count=len(work_tasks),
+                max_workers=manifest.research_run.execution.max_workers,
+            )
+        )
+        result_collection_started = time.perf_counter()
         execution_boundary = _execution_boundary_observability(
             manifest=manifest,
             candidate_evaluator=candidate_evaluator,
@@ -1296,8 +1333,13 @@ def _evaluate_candidates(
                 process_runtime_observability[-1] if process_runtime_observability else None
             ),
         )
+        substage_timings.append(
+            _stage_timing("result_collection", result_collection_started, result_count=len(raw_results))
+        )
     else:
         raw_results = []
+        append_start_wall_seconds = 0.0
+        worker_wall_seconds = 0.0
         for task in work_tasks:
             work_unit = task["work_unit"]
             if not isinstance(work_unit, ResearchWorkUnit):
@@ -1323,6 +1365,7 @@ def _evaluate_candidates(
                     worker_pid=None,
                 ),
             )
+            append_started = time.perf_counter()
             _append_candidate_event(
                 manager=manager,
                 manifest=manifest,
@@ -1336,6 +1379,8 @@ def _evaluate_candidates(
                     "work_unit_hash": work_unit.work_unit_hash,
                 },
             )
+            append_start_wall_seconds += time.perf_counter() - append_started
+            worker_started = time.perf_counter()
             raw_results.extend(
                 execute_research_work_units_serial(
                     tasks=(
@@ -1360,13 +1405,45 @@ def _evaluate_candidates(
                     worker=lambda context: evaluator.evaluate(work_unit, context),
                 )
             )
+            worker_wall_seconds += time.perf_counter() - worker_started
+        substage_timings.append(
+            {
+                "stage": "append_candidate_start_events",
+                "wall_seconds": round(append_start_wall_seconds, 6),
+                "event_count": len(work_tasks),
+            }
+        )
+        substage_timings.append(
+            {
+                "stage": "parallel_worker_execution",
+                "wall_seconds": round(worker_wall_seconds, 6),
+                "task_count": len(work_tasks),
+                "max_workers": 1,
+                "execution_mode": "serial",
+            }
+        )
+        substage_timings.append(
+            {
+                "stage": "result_collection",
+                "wall_seconds": 0.0,
+                "result_count": len(raw_results),
+            }
+        )
+    sort_started = time.perf_counter()
     work_results = sort_work_results_deterministically(raw_results)
+    substage_timings.append(_stage_timing("sort_work_results", sort_started, result_count=len(work_results)))
+    normalize_started = time.perf_counter()
     work_results = [
         _normalize_failed_work_result_without_base(manifest=manifest, result=result)
         for result in work_results
     ]
+    substage_timings.append(_stage_timing("normalize_work_results", normalize_started, result_count=len(work_results)))
     if work_unit_observability is not None:
+        extend_started = time.perf_counter()
         work_unit_observability.extend(result.observability_payload() for result in work_results)
+        substage_timings.append(
+            _stage_timing("extend_work_unit_observability", extend_started, result_count=len(work_results))
+        )
     for result in work_results:
         if result.status == "failed":
             if result.base_result is not None:
@@ -1400,6 +1477,7 @@ def _evaluate_candidates(
                 wall_seconds=round(float((result.observability or {}).get("wall_seconds") or 0.0), 3),
                 candles_processed=int((result.observability or {}).get("candles_processed") or 0),
             )
+    gate_aggregation_started = time.perf_counter()
     base_results_by_scenario: dict[int, list[dict[str, Any]]] = {}
     for result in work_results:
         if result.base_result is None:
@@ -1840,7 +1918,16 @@ def _evaluate_candidates(
             )
             if candidate_payload.get("_primary_scenario_result") is None:
                 candidate_payload["_primary_scenario_result"] = scenario_result
+    substage_timings.append(
+        _stage_timing(
+            "scenario_gate_aggregation",
+            gate_aggregation_started,
+            scenario_count=len(manifest.execution_model.scenarios),
+            candidate_count=len(aggregates),
+        )
+    )
 
+    candidate_payload_started = time.perf_counter()
     rows: list[dict[str, Any]] = []
     for candidate_payload in aggregates.values():
         _apply_scenario_policy(manifest=manifest, candidate=candidate_payload)
@@ -1999,25 +2086,38 @@ def _evaluate_candidates(
                 set(candidate_payload.get("gate_fail_reasons") or ()) | set(policy_result.reasons)
             )
         rows.append(candidate_payload)
+    substage_timings.append(
+        _stage_timing("candidate_payload_aggregation", candidate_payload_started, candidate_count=len(rows))
+    )
     _mark_noop_behavior_hash_groups(
         rows=rows,
         behavior_parameter_names=set(strategy_spec.behavior_affecting_parameter_names),
         production_bound=manifest.deployment_tier != "research_only",
     )
+    profile_hash_wall_seconds = 0.0
+    artifact_write_wall_seconds = 0.0
+    append_complete_wall_seconds = 0.0
     for candidate_payload in rows:
+        profile_started = time.perf_counter()
         candidate_payload["candidate_behavior_profile_hash"] = sha256_prefixed(
             build_candidate_behavior_profile(candidate_payload)
         )
         candidate_payload["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate_payload))
+        profile_hash_wall_seconds += time.perf_counter() - profile_started
         store = artifact_context or ResearchArtifactContext(
             manager=manager,
             experiment_id=manifest.experiment_id,
             budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
         )
-        store.write_json_atomic(
+        write_started = time.perf_counter()
+        write_event = store.write_json_atomic(
             _candidate_result_path(manager, manifest.experiment_id, str(candidate_payload["parameter_candidate_id"])),
             summarize_candidate_result(candidate_payload, manifest.research_run.report_detail),
         )
+        artifact_write_wall_seconds += time.perf_counter() - write_started
+        candidate_artifact_observability["candidate_result_file_count"] += 1
+        candidate_artifact_observability["candidate_result_total_bytes"] += int(write_event.bytes)
+        append_started = time.perf_counter()
         _append_candidate_event(
             manager=manager,
             manifest=manifest,
@@ -2029,9 +2129,37 @@ def _evaluate_candidates(
                 "gate_fail_reasons": candidate_payload.get("gate_fail_reasons") or [],
             },
         )
+        append_complete_wall_seconds += time.perf_counter() - append_started
+    candidate_artifact_observability["candidate_result_write_wall_seconds"] = round(
+        artifact_write_wall_seconds,
+        6,
+    )
+    substage_timings.append(
+        {
+            "stage": "candidate_profile_hash",
+            "wall_seconds": round(profile_hash_wall_seconds, 6),
+            "candidate_count": len(rows),
+        }
+    )
+    substage_timings.append(
+        {
+            "stage": "candidate_result_artifact_write",
+            "wall_seconds": round(artifact_write_wall_seconds, 6),
+            **candidate_artifact_observability,
+        }
+    )
+    substage_timings.append(
+        {
+            "stage": "append_candidate_complete_events",
+            "wall_seconds": round(append_complete_wall_seconds, 6),
+            "event_count": len(rows),
+        }
+    )
     return CandidateEvaluationResult(
         candidates=sorted(rows, key=_candidate_rank_key),
         execution_boundary=execution_boundary,
+        substage_timings=substage_timings,
+        candidate_artifact_observability=candidate_artifact_observability,
     )
 
 

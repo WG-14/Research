@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -19,6 +22,7 @@ REPORT_TOP_LEVEL_HASH_EXCLUDED_FIELDS = frozenset(
         "execution_observability",
         "artifact_observability",
         "artifact_write_summary",
+        "workload_estimate_comparison",
         "run_environment",
     }
 )
@@ -60,12 +64,52 @@ def canonical_json_bytes(payload: Any) -> bytes:
     ).encode("utf-8")
 
 
-def sha256_hex(payload: Any) -> str:
-    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+@dataclass
+class HashObservability:
+    hash_call_count: int = 0
+    observed_hash_payload_bytes: int = 0
+    largest_hash_payload_bytes: int = 0
+    largest_hash_label: str | None = None
+
+    def record(self, *, payload_bytes: int, label: str | None) -> None:
+        self.hash_call_count += 1
+        self.observed_hash_payload_bytes += payload_bytes
+        if payload_bytes > self.largest_hash_payload_bytes:
+            self.largest_hash_payload_bytes = payload_bytes
+            self.largest_hash_label = label
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "hash_call_count": self.hash_call_count,
+            "observed_hash_payload_bytes": self.observed_hash_payload_bytes,
+            "largest_hash_payload_bytes": self.largest_hash_payload_bytes,
+            "largest_hash_label": self.largest_hash_label,
+        }
 
 
-def sha256_prefixed(payload: Any) -> str:
-    return f"sha256:{sha256_hex(payload)}"
+_HASH_OBSERVER: ContextVar[HashObservability | None] = ContextVar("research_hash_observer", default=None)
+
+
+@contextmanager
+def observe_hashing() -> Any:
+    observer = HashObservability()
+    token = _HASH_OBSERVER.set(observer)
+    try:
+        yield observer
+    finally:
+        _HASH_OBSERVER.reset(token)
+
+
+def sha256_hex(payload: Any, *, label: str | None = None) -> str:
+    payload_bytes = canonical_json_bytes(payload)
+    observer = _HASH_OBSERVER.get()
+    if observer is not None:
+        observer.record(payload_bytes=len(payload_bytes), label=label)
+    return hashlib.sha256(payload_bytes).hexdigest()
+
+
+def sha256_prefixed(payload: Any, *, label: str | None = None) -> str:
+    return f"sha256:{sha256_hex(payload, label=label)}"
 
 
 def content_hash_payload(payload: dict[str, Any]) -> dict[str, Any]:

@@ -470,6 +470,16 @@ def assert_fast_research_workload(
         f"actual={estimated_hash_payload_bytes} max={max_hash_payload_bytes} "
         f"estimate={json.dumps(estimate, sort_keys=True, default=repr)}"
     )
+    comparison = report.get("workload_estimate_comparison")
+    assert isinstance(comparison, dict), "research report must expose workload_estimate_comparison"
+    observed_hash_payload_bytes = comparison.get("observed_hash_payload_bytes")
+    assert isinstance(observed_hash_payload_bytes, Real) and not isinstance(observed_hash_payload_bytes, bool), (
+        "research workload_estimate_comparison observed_hash_payload_bytes must be numeric"
+    )
+    assert int(observed_hash_payload_bytes) == observed_hash_payload_bytes
+    assert int(observed_hash_payload_bytes) >= 0
+    assert comparison.get("hash_payload_ratio") is not None
+    assert comparison.get("status") in {"PASS", "WARN", "FAIL"}
     assert required_int("estimated_snapshot_hash_count") <= max_snapshot_hash_count
     uses_production_evaluator = estimate["uses_production_evaluator"]
     uses_real_parallel_executor = estimate["uses_real_parallel_executor"]

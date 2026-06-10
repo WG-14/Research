@@ -330,7 +330,56 @@ def test_persisted_report_contains_report_write_stage_timing(tmp_path, monkeypat
     assert report_write["artifact_file_count"] == summary["artifact_file_count"]
     assert report_write["derived_candidates_bytes"] == summary["derived_candidates_bytes"]
     assert report_write["report_bytes"] == summary["report_bytes"]
+    assert summary["file_write_wall_seconds"] >= 0
+    substage_names = {
+        item["stage"]
+        for item in persisted["artifact_observability"]["report_write"]["substage_timings"]
+    }
+    assert {"write_derived", "write_report", "persist_final_observability"} <= substage_names
+    persisted_stage_names = {
+        item["stage"] for item in persisted["execution_observability"]["stage_timings"]
+    }
+    assert "report_write.write_derived" in persisted_stage_names
+    assert "report_write.write_report" in persisted_stage_names
     assert persisted["artifact_write_summary"]["report_bytes"] == Path(report["artifact_paths"]["report_path"]).stat().st_size
+
+
+@pytest.mark.research_e2e
+def test_persisted_report_contains_candidate_evaluation_substages(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    payload = _manifest()
+    payload["experiment_id"] = "persisted_candidate_eval_substages"
+    payload["research_run"] = {"report_detail": "summary", "execution": {"mode": "serial"}}
+    manager = _research_manager(tmp_path, monkeypatch)
+
+    report = _run_contract_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    persisted = json.loads(Path(report["artifact_paths"]["report_path"]).read_text(encoding="utf-8"))
+    stage_names = {item["stage"] for item in persisted["execution_observability"]["stage_timings"]}
+    assert "candidate_evaluation.parallel_worker_execution" in stage_names
+    assert "candidate_evaluation.candidate_payload_aggregation" in stage_names
+    assert "candidate_evaluation.candidate_result_artifact_write" in stage_names
+
+
+def test_persisted_report_summary_matches_returned_write_result(tmp_path, monkeypatch) -> None:
+    manager = _research_manager(tmp_path, monkeypatch)
+
+    result = write_research_report(
+        manager=manager,
+        experiment_id="summary_write_result_match",
+        report_name="backtest",
+        payload=_summary_report_payload(experiment_id="summary_write_result_match"),
+    )
+
+    persisted = json.loads(result.paths.report_path.read_text(encoding="utf-8"))
+    assert persisted["artifact_write_summary"] == result.artifact_write_summary
+    assert persisted["content_hash"] == result.content_hash
 
 
 def _contract_evaluator() -> DeterministicResearchEvaluator:

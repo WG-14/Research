@@ -9,7 +9,7 @@ from typing import Any
 from bithumb_bot.paths import PathManager, PathPolicyError
 from bithumb_bot.storage_io import write_json_atomic as write_json_atomic_untracked
 from .artifact_store import ArtifactBudget, ArtifactStore, ResearchArtifactContext
-from .hashing import report_content_hash_payload, sha256_prefixed
+from .hashing import observe_hashing, report_content_hash_payload, sha256_prefixed
 
 
 @dataclass(frozen=True)
@@ -27,10 +27,35 @@ class ResearchReportWriteResult:
     paths: ResearchReportPaths
     content_hash: str
     artifact_write_summary: dict[str, Any]
+    report_payload: dict[str, Any] | None = None
+    substage_timings: list[dict[str, Any]] | None = None
 
     def __iter__(self):
         yield self.paths
         yield self.content_hash
+
+
+@dataclass
+class ReportFinalizationState:
+    paths: ResearchReportPaths
+    store: ArtifactStore | ResearchArtifactContext
+    report_payload: dict[str, Any]
+    derived_candidates_payload: dict[str, Any]
+    artifact_write_summary: dict[str, Any]
+    artifact_total_bytes_base: int = 0
+    content_hash: str = ""
+    substage_timings: list[dict[str, Any]] | None = None
+
+    def timing(self, stage: str, started_at: float, **details: Any) -> dict[str, Any]:
+        payload = {
+            "stage": stage,
+            "wall_seconds": round(time.perf_counter() - started_at, 6),
+        }
+        payload.update(details)
+        if self.substage_timings is None:
+            self.substage_timings = []
+        self.substage_timings.append(payload)
+        return payload
 
 
 def research_paths(manager: PathManager, experiment_id: str, report_name: str) -> ResearchReportPaths:
@@ -118,73 +143,306 @@ def write_research_report(
     started = time.perf_counter()
     paths = research_paths(manager, experiment_id, report_name)
     store = artifact_context or ArtifactStore(root=manager.data_dir(), budget=artifact_budget)
+    with observe_hashing() as hash_observer:
+        state = build_report_artifacts(
+            manager=manager,
+            paths=paths,
+            payload=payload,
+            store=store,
+        )
+        compute_report_hashes(state)
+        compute_artifact_write_summary(state)
+        write_report_artifacts(state)
+        state.artifact_write_summary["write_wall_seconds"] = time.perf_counter() - started
+        state.artifact_write_summary["finalization_wall_seconds"] = state.artifact_write_summary["write_wall_seconds"]
+        state.artifact_write_summary["file_write_wall_seconds"] = sum(
+            float(item.get("wall_seconds") or 0.0)
+            for item in state.substage_timings or []
+            if item.get("stage") in {"write_derived", "write_report", "final_report_rewrite"}
+        )
+        state.artifact_write_summary.update(
+            {
+                "hash_call_count": hash_observer.hash_call_count,
+                "observed_hash_call_count": hash_observer.hash_call_count,
+                "observed_hash_payload_bytes": hash_observer.observed_hash_payload_bytes,
+                "largest_hash_payload_bytes": hash_observer.largest_hash_payload_bytes,
+                "observed_largest_hash_payload_bytes": hash_observer.largest_hash_payload_bytes,
+                "largest_hash_label": hash_observer.largest_hash_label,
+                "observed_report_finalization_seconds": state.artifact_write_summary["finalization_wall_seconds"],
+            }
+        )
+        state.artifact_write_summary["substage_timings"] = list(state.substage_timings or [])
+        state.report_payload.setdefault("artifact_observability", {})["report_write"] = dict(
+            state.artifact_write_summary
+        )
+        sync_final_report_observability(state)
+        state.artifact_write_summary.update(
+            {
+                "hash_call_count": hash_observer.hash_call_count,
+                "observed_hash_call_count": hash_observer.hash_call_count,
+                "observed_hash_payload_bytes": hash_observer.observed_hash_payload_bytes,
+                "largest_hash_payload_bytes": hash_observer.largest_hash_payload_bytes,
+                "observed_largest_hash_payload_bytes": hash_observer.largest_hash_payload_bytes,
+                "largest_hash_label": hash_observer.largest_hash_label,
+            }
+        )
+        state.artifact_write_summary["substage_timings"] = list(state.substage_timings or [])
+        state.report_payload["artifact_write_summary"] = dict(state.artifact_write_summary)
+        state.report_payload.setdefault("artifact_observability", {})["report_write"] = dict(
+            state.artifact_write_summary
+        )
+        _sync_report_write_stage(state.report_payload, state.artifact_write_summary)
+        _sync_report_write_substages(state.report_payload, state.artifact_write_summary)
+        _sync_workload_estimate_comparison(state.report_payload, state.artifact_write_summary)
+        _rewrite_final_report_payload(state)
+    return ResearchReportWriteResult(
+        paths=state.paths,
+        content_hash=state.content_hash,
+        artifact_write_summary=state.artifact_write_summary,
+        report_payload=state.report_payload,
+        substage_timings=list(state.substage_timings or []),
+    )
+
+
+def build_report_artifacts(
+    *,
+    manager: PathManager,
+    paths: ResearchReportPaths,
+    payload: dict[str, Any],
+    store: ArtifactStore | ResearchArtifactContext,
+) -> ReportFinalizationState:
+    started = time.perf_counter()
     report_payload, derived_candidates_payload, derived_candidates_hash = _reference_first_report_payload(
         payload,
         paths=paths,
         manager=manager,
+    )
+    state = ReportFinalizationState(
+        paths=paths,
+        store=store,
+        report_payload=report_payload,
+        derived_candidates_payload=derived_candidates_payload,
+        artifact_write_summary={
+            "schema_version": 1,
+            "derived_candidates_path": str(paths.derived_path.resolve()),
+            "derived_candidates_ref": _relative_artifact_ref(paths.derived_path, manager.data_dir().resolve()),
+            "derived_candidates_hash": derived_candidates_hash,
+            "derived_candidates_bytes": 0,
+            "report_path": str(paths.report_path.resolve()),
+            "report_ref": _relative_artifact_ref(paths.report_path, manager.data_dir().resolve()),
+            "report_bytes": 0,
+            "artifact_file_count": _predicted_file_count(store, paths.derived_path, paths.report_path),
+            "artifact_total_bytes": 0,
+            "write_wall_seconds": 0.0,
+            "finalization_wall_seconds": 0.0,
+            "file_write_wall_seconds": 0.0,
+        },
+        substage_timings=[],
     )
     report_payload["artifact_refs"] = research_artifact_refs(paths, manager=manager)
     report_payload["artifact_paths"] = research_artifact_paths(paths)
     report_payload.setdefault("artifact_hashes", {})["derived_candidates"] = derived_candidates_hash
     report_payload["derived_candidates_hash"] = derived_candidates_hash
     report_payload["candidate_count"] = len(derived_candidates_payload["candidates"])
-    report_payload["candidate_summary_hash"] = sha256_prefixed(
-        report_content_hash_payload({"candidates": report_payload.get("candidates", [])})
+    report_payload["artifact_write_summary"] = dict(state.artifact_write_summary)
+    report_payload.setdefault("artifact_observability", {})["report_write"] = dict(state.artifact_write_summary)
+    state.timing("reference_first_payload", started, candidate_count=report_payload["candidate_count"])
+    return state
+
+
+def compute_report_hashes(state: ReportFinalizationState) -> None:
+    started = time.perf_counter()
+    state.report_payload["candidate_summary_hash"] = sha256_prefixed(
+        report_content_hash_payload({"candidates": state.report_payload.get("candidates", [])}),
+        label="report_candidate_summary",
     )
-    artifact_write_summary = {
-        "schema_version": 1,
-        "derived_candidates_path": str(paths.derived_path.resolve()),
-        "derived_candidates_ref": _relative_artifact_ref(paths.derived_path, manager.data_dir().resolve()),
-        "derived_candidates_hash": derived_candidates_hash,
-        "derived_candidates_bytes": _json_byte_count(derived_candidates_payload),
-        "report_path": str(paths.report_path.resolve()),
-        "report_ref": _relative_artifact_ref(paths.report_path, manager.data_dir().resolve()),
-        "report_bytes": 0,
-        "artifact_file_count": _predicted_file_count(store, paths.derived_path, paths.report_path),
-        "artifact_total_bytes": 0,
-        "write_wall_seconds": 0.0,
-    }
-    report_payload["artifact_write_summary"] = dict(artifact_write_summary)
-    report_payload.setdefault("artifact_observability", {})["report_write"] = dict(artifact_write_summary)
-    artifact_write_summary["write_wall_seconds"] = time.perf_counter() - started
-    report_payload["artifact_write_summary"]["write_wall_seconds"] = artifact_write_summary["write_wall_seconds"]
-    report_payload["artifact_observability"]["report_write"]["write_wall_seconds"] = artifact_write_summary["write_wall_seconds"]
-    artifact_write_summary["report_bytes"] = _stable_report_byte_count(report_payload)
-    artifact_write_summary["artifact_total_bytes"] = (
-        _current_total_bytes(store)
-        + artifact_write_summary["derived_candidates_bytes"]
-        + artifact_write_summary["report_bytes"]
+    state.timing("report_candidate_summary", started)
+    started = time.perf_counter()
+    state.artifact_write_summary["derived_candidates_hash"] = sha256_prefixed(
+        report_content_hash_payload(state.derived_candidates_payload),
+        label="derived_candidate_summary",
     )
-    report_payload["artifact_write_summary"] = dict(artifact_write_summary)
-    report_payload["artifact_observability"]["report_write"] = dict(artifact_write_summary)
-    report_payload["content_hash"] = sha256_prefixed(report_content_hash_payload(report_payload))
-    artifact_write_summary["report_bytes"] = _stable_report_byte_count(report_payload)
-    artifact_write_summary["artifact_total_bytes"] = (
-        _current_total_bytes(store)
-        + artifact_write_summary["derived_candidates_bytes"]
-        + artifact_write_summary["report_bytes"]
+    state.report_payload.setdefault("artifact_hashes", {})["derived_candidates"] = state.artifact_write_summary[
+        "derived_candidates_hash"
+    ]
+    state.report_payload["derived_candidates_hash"] = state.artifact_write_summary["derived_candidates_hash"]
+    state.timing("derived_candidate_summary", started)
+    started = time.perf_counter()
+    state.content_hash = sha256_prefixed(
+        report_content_hash_payload(state.report_payload),
+        label="report_content_hash",
     )
-    report_payload["artifact_write_summary"] = dict(artifact_write_summary)
-    report_payload["artifact_observability"]["report_write"] = dict(artifact_write_summary)
-    final_content_hash = sha256_prefixed(report_content_hash_payload(report_payload))
-    report_payload["content_hash"] = final_content_hash
-    derived_event = store.write_json_atomic(paths.derived_path, derived_candidates_payload)
-    final_report_event = store.write_json_atomic(paths.report_path, report_payload)
-    total_before_report = store.total_bytes - final_report_event.bytes
-    artifact_write_summary.update(
+    state.report_payload["content_hash"] = state.content_hash
+    state.timing("report_hashing", started)
+
+
+def compute_artifact_write_summary(state: ReportFinalizationState) -> None:
+    started = time.perf_counter()
+    state.artifact_write_summary["derived_candidates_bytes"] = _json_byte_count(state.derived_candidates_payload)
+    state.artifact_write_summary["report_bytes"] = _stable_report_byte_count(state.report_payload)
+    state.artifact_write_summary["artifact_total_bytes"] = (
+        _current_total_bytes(state.store)
+        + int(state.artifact_write_summary["derived_candidates_bytes"])
+        + int(state.artifact_write_summary["report_bytes"])
+    )
+    state.report_payload["artifact_write_summary"] = dict(state.artifact_write_summary)
+    state.report_payload.setdefault("artifact_observability", {})["report_write"] = dict(state.artifact_write_summary)
+    state.timing(
+        "report_byte_count",
+        started,
+        derived_candidates_bytes=state.artifact_write_summary["derived_candidates_bytes"],
+        report_bytes=state.artifact_write_summary["report_bytes"],
+    )
+
+
+def write_report_artifacts(state: ReportFinalizationState) -> None:
+    started = time.perf_counter()
+    derived_event = state.store.write_json_atomic(state.paths.derived_path, state.derived_candidates_payload)
+    state.artifact_write_summary["derived_candidates_bytes"] = derived_event.bytes
+    state.timing("write_derived", started, bytes=derived_event.bytes)
+    started = time.perf_counter()
+    final_report_event = state.store.write_json_atomic(state.paths.report_path, state.report_payload)
+    state.artifact_total_bytes_base = int(state.store.total_bytes) - int(final_report_event.bytes)
+    state.artifact_write_summary.update(
         {
-            "derived_candidates_bytes": derived_event.bytes,
-            "artifact_file_count": store.file_count,
-            "write_wall_seconds": time.perf_counter() - started,
+            "artifact_file_count": int(state.store.file_count),
+            "report_bytes": final_report_event.bytes,
+            "artifact_total_bytes": int(state.store.total_bytes),
         }
     )
-    final_content_hash, artifact_write_summary = persist_final_research_report_observability(
-        paths=paths,
-        report_payload=report_payload,
-        artifact_write_summary=artifact_write_summary,
-        artifact_total_bytes_base=total_before_report,
+    state.timing("write_report", started, bytes=final_report_event.bytes)
+
+
+def sync_final_report_observability(
+    state: ReportFinalizationState,
+    *,
+    stage_timings: list[dict[str, Any]] | None = None,
+) -> None:
+    started = time.perf_counter()
+    final_content_hash, final_summary = persist_final_research_report_observability(
+        paths=state.paths,
+        report_payload=state.report_payload,
+        artifact_write_summary=state.artifact_write_summary,
+        artifact_total_bytes_base=state.artifact_total_bytes_base,
+        stage_timings=stage_timings,
+        rewrite_stage_name="final_report_rewrite",
+        rewrite_timing_sink=state.substage_timings,
     )
-    return ResearchReportWriteResult(paths=paths, content_hash=final_content_hash, artifact_write_summary=artifact_write_summary)
+    state.content_hash = final_content_hash
+    state.artifact_write_summary = final_summary
+    state.timing("persist_final_observability", started)
+
+
+def _rewrite_final_report_payload(state: ReportFinalizationState) -> None:
+    state.artifact_write_summary["substage_timings"] = list(state.substage_timings or [])
+    state.artifact_write_summary["file_write_wall_seconds"] = sum(
+        float(item.get("wall_seconds") or 0.0)
+        for item in state.substage_timings or []
+        if item.get("stage") in {"write_derived", "write_report", "final_report_rewrite"}
+    )
+    state.artifact_write_summary["observed_report_finalization_seconds"] = state.artifact_write_summary.get(
+        "finalization_wall_seconds",
+        state.artifact_write_summary.get("write_wall_seconds", 0.0),
+    )
+    state.report_payload["artifact_write_summary"] = dict(state.artifact_write_summary)
+    state.report_payload.setdefault("artifact_observability", {})["report_write"] = dict(
+        state.artifact_write_summary
+    )
+    _sync_report_write_stage(state.report_payload, state.artifact_write_summary)
+    _sync_report_write_substages(state.report_payload, state.artifact_write_summary)
+    _sync_workload_estimate_comparison(state.report_payload, state.artifact_write_summary)
+    state.content_hash = sha256_prefixed(
+        report_content_hash_payload(state.report_payload),
+        label="final_report_content_hash_after_observability",
+    )
+    state.report_payload["content_hash"] = state.content_hash
+    state.artifact_write_summary["report_bytes"] = _stable_final_report_byte_count(
+        state.report_payload,
+        state.artifact_write_summary,
+        artifact_total_bytes_base=int(state.artifact_total_bytes_base),
+    )
+    state.artifact_write_summary["artifact_total_bytes"] = (
+        int(state.artifact_total_bytes_base) + int(state.artifact_write_summary["report_bytes"])
+    )
+    state.artifact_write_summary["observed_artifact_bytes"] = state.artifact_write_summary["artifact_total_bytes"]
+    state.report_payload["artifact_write_summary"] = dict(state.artifact_write_summary)
+    state.report_payload.setdefault("artifact_observability", {})["report_write"] = dict(
+        state.artifact_write_summary
+    )
+    _sync_report_write_stage(state.report_payload, state.artifact_write_summary)
+    _sync_report_write_substages(state.report_payload, state.artifact_write_summary)
+    _sync_workload_estimate_comparison(state.report_payload, state.artifact_write_summary)
+    state.content_hash = sha256_prefixed(
+        report_content_hash_payload(state.report_payload),
+        label="final_report_content_hash_after_byte_count",
+    )
+    state.report_payload["content_hash"] = state.content_hash
+    _converge_final_report_size(state)
+    rewrite_started = time.perf_counter()
+    write_json_atomic_untracked(state.paths.report_path, state.report_payload)
+    actual_report_bytes = state.paths.report_path.stat().st_size
+    if actual_report_bytes != state.artifact_write_summary["report_bytes"]:
+        state.artifact_write_summary["report_bytes"] = actual_report_bytes
+        state.artifact_write_summary["artifact_total_bytes"] = int(state.artifact_total_bytes_base) + actual_report_bytes
+        state.artifact_write_summary["observed_artifact_bytes"] = state.artifact_write_summary["artifact_total_bytes"]
+        state.report_payload["artifact_write_summary"] = dict(state.artifact_write_summary)
+        state.report_payload.setdefault("artifact_observability", {})["report_write"] = dict(
+            state.artifact_write_summary
+        )
+        _sync_report_write_stage(state.report_payload, state.artifact_write_summary)
+        _sync_report_write_substages(state.report_payload, state.artifact_write_summary)
+        _sync_workload_estimate_comparison(state.report_payload, state.artifact_write_summary)
+        _converge_final_report_size(state)
+        write_json_atomic_untracked(state.paths.report_path, state.report_payload)
+    if state.substage_timings is not None:
+        state.substage_timings.append(
+            {
+                "stage": "final_report_rewrite",
+                "wall_seconds": round(time.perf_counter() - rewrite_started, 6),
+                "bytes": state.paths.report_path.stat().st_size,
+                "reason": "post_observability_sync",
+            }
+        )
+    persisted = json.loads(state.paths.report_path.read_text(encoding="utf-8"))
+    if isinstance(persisted, dict):
+        state.report_payload = persisted
+        summary = persisted.get("artifact_write_summary")
+        if isinstance(summary, dict):
+            state.artifact_write_summary = dict(summary)
+        state.content_hash = str(persisted.get("content_hash") or state.content_hash)
+
+
+def _converge_final_report_size(state: ReportFinalizationState) -> None:
+    for _ in range(50):
+        expected_report_bytes = _json_byte_count(state.report_payload)
+        if expected_report_bytes == state.artifact_write_summary.get("report_bytes"):
+            return
+        state.artifact_write_summary["report_bytes"] = expected_report_bytes
+        state.artifact_write_summary["artifact_total_bytes"] = (
+            int(state.artifact_total_bytes_base) + expected_report_bytes
+        )
+        state.artifact_write_summary["observed_artifact_bytes"] = state.artifact_write_summary["artifact_total_bytes"]
+        state.report_payload["artifact_write_summary"] = dict(state.artifact_write_summary)
+        state.report_payload.setdefault("artifact_observability", {})["report_write"] = dict(
+            state.artifact_write_summary
+        )
+        _sync_report_write_stage(state.report_payload, state.artifact_write_summary)
+        _sync_report_write_substages(state.report_payload, state.artifact_write_summary)
+        _sync_workload_estimate_comparison(state.report_payload, state.artifact_write_summary)
+        state.report_payload["artifact_write_summary"] = dict(state.artifact_write_summary)
+        state.report_payload.setdefault("artifact_observability", {})["report_write"] = dict(
+            state.artifact_write_summary
+        )
+        state.content_hash = sha256_prefixed(
+            report_content_hash_payload(state.report_payload),
+            label="final_report_content_hash_size_convergence",
+        )
+        state.report_payload["content_hash"] = state.content_hash
+    raise RuntimeError(
+        "final_report_byte_count_did_not_converge:"
+        f" expected={_json_byte_count(state.report_payload)}"
+        f" reported={state.artifact_write_summary.get('report_bytes')}"
+    )
 
 
 def persist_final_research_report_observability(
@@ -194,6 +452,8 @@ def persist_final_research_report_observability(
     artifact_write_summary: dict[str, Any],
     artifact_total_bytes_base: int | None = None,
     stage_timings: list[dict[str, Any]] | None = None,
+    rewrite_stage_name: str = "final_report_rewrite",
+    rewrite_timing_sink: list[dict[str, Any]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     final_summary = dict(artifact_write_summary)
     if stage_timings is not None:
@@ -222,7 +482,16 @@ def persist_final_research_report_observability(
     report_payload["artifact_observability"]["report_write"] = dict(final_summary)
     final_content_hash = sha256_prefixed(report_content_hash_payload(report_payload))
     report_payload["content_hash"] = final_content_hash
+    rewrite_started = time.perf_counter()
     write_json_atomic_untracked(paths.report_path, report_payload)
+    if rewrite_timing_sink is not None:
+        rewrite_timing_sink.append(
+            {
+                "stage": rewrite_stage_name,
+                "wall_seconds": round(time.perf_counter() - rewrite_started, 6),
+                "bytes": paths.report_path.stat().st_size,
+            }
+        )
     actual_report_bytes = paths.report_path.stat().st_size
     if actual_report_bytes != final_summary["report_bytes"]:
         final_summary["report_bytes"] = actual_report_bytes
@@ -232,7 +501,17 @@ def persist_final_research_report_observability(
         _sync_report_write_stage(report_payload, final_summary)
         final_content_hash = sha256_prefixed(report_content_hash_payload(report_payload))
         report_payload["content_hash"] = final_content_hash
+        rewrite_started = time.perf_counter()
         write_json_atomic_untracked(paths.report_path, report_payload)
+        if rewrite_timing_sink is not None:
+            rewrite_timing_sink.append(
+                {
+                    "stage": rewrite_stage_name,
+                    "wall_seconds": round(time.perf_counter() - rewrite_started, 6),
+                    "bytes": paths.report_path.stat().st_size,
+                    "reason": "actual_report_bytes_mismatch",
+                }
+            )
     return final_content_hash, final_summary
 
 
@@ -249,7 +528,10 @@ def _reference_first_report_payload(
         "detail_policy": "summary_bounded" if report_detail == "summary" else "full",
         "candidates": [summarize_derived_candidate(candidate, report_detail) for candidate in candidates],
     }
-    derived_candidates_hash = sha256_prefixed(report_content_hash_payload(derived_candidates_payload))
+    derived_candidates_hash = sha256_prefixed(
+        report_content_hash_payload(derived_candidates_payload),
+        label="derived_candidates_payload_hash",
+    )
     if report_detail == "summary":
         report_payload["candidates"] = [summarize_report_candidate(candidate) for candidate in candidates]
         report_payload["derived_candidates_ref"] = _relative_artifact_ref(paths.derived_path, manager.data_dir().resolve())
@@ -266,7 +548,7 @@ def _report_detail(payload: dict[str, Any]) -> str:
 
 def summarize_report_candidate(candidate: Any) -> dict[str, Any]:
     if not isinstance(candidate, dict):
-        return {"candidate_repr_hash": sha256_prefixed(report_content_hash_payload(candidate))}
+        return {"candidate_repr_hash": sha256_prefixed({"repr": repr(candidate)}, label="candidate_repr_hash")}
     summary_keys = (
         "candidate_id",
         "acceptance_gate_result",
@@ -291,7 +573,10 @@ def summarize_report_candidate(candidate: Any) -> dict[str, Any]:
         "content_hash",
     )
     summary = {key: candidate[key] for key in summary_keys if key in candidate}
-    summary["candidate_payload_hash"] = sha256_prefixed(report_content_hash_payload(candidate))
+    summary["candidate_payload_hash"] = sha256_prefixed(
+        candidate_evidence_hash_inputs(candidate),
+        label="candidate_evidence_hash",
+    )
     return summary
 
 
@@ -299,7 +584,7 @@ def summarize_derived_candidate(candidate: Any, report_detail: str) -> Any:
     if report_detail != "summary":
         return candidate
     if not isinstance(candidate, dict):
-        return {"candidate_repr_hash": sha256_prefixed(report_content_hash_payload(candidate))}
+        return {"candidate_repr_hash": sha256_prefixed({"repr": repr(candidate)}, label="candidate_repr_hash")}
     summary = _derived_candidate_index_summary(candidate)
     summary["derived_detail_policy"] = "summary_bounded"
     return summary
@@ -347,14 +632,17 @@ def _derived_candidate_index_summary(candidate: dict[str, Any]) -> dict[str, Any
     summary["scenario_results"] = [
         _derived_scenario_index_summary(scenario) for scenario in candidate.get("scenario_results") or []
     ]
-    summary["candidate_payload_hash"] = sha256_prefixed(report_content_hash_payload(candidate))
+    summary["candidate_payload_hash"] = sha256_prefixed(
+        candidate_evidence_hash_inputs(candidate),
+        label="derived_candidate_evidence_hash",
+    )
     summary["candidate_result_detail_policy"] = "summary_bounded"
     return summary
 
 
 def _derived_scenario_index_summary(scenario: Any) -> dict[str, Any]:
     if not isinstance(scenario, dict):
-        return {"scenario_repr_hash": sha256_prefixed(report_content_hash_payload(scenario))}
+        return {"scenario_repr_hash": sha256_prefixed({"repr": repr(scenario)}, label="scenario_repr_hash")}
     summary_keys = (
         "scenario_id",
         "scenario_index",
@@ -403,7 +691,10 @@ def _derived_scenario_index_summary(scenario: Any) -> dict[str, Any]:
         if key in summary:
             summary[key] = summarize_resource_usage_for_candidate_artifact(summary[key])
     summary["detail_artifact_ref"] = scenario.get("detail_artifact_ref")
-    summary["scenario_payload_hash"] = sha256_prefixed(report_content_hash_payload(scenario))
+    summary["scenario_payload_hash"] = sha256_prefixed(
+        scenario_evidence_hash_inputs(scenario),
+        label="scenario_evidence_hash",
+    )
     _ensure_scenario_retained_detail_evidence(summary)
     return summary
 
@@ -412,7 +703,7 @@ def summarize_candidate_result(candidate: Any, report_detail: str) -> Any:
     if report_detail != "summary":
         return candidate
     if not isinstance(candidate, dict):
-        return {"candidate_repr_hash": sha256_prefixed(report_content_hash_payload(candidate))}
+        return {"candidate_repr_hash": sha256_prefixed({"repr": repr(candidate)}, label="candidate_repr_hash")}
     summary_keys = (
         "experiment_id",
         "manifest_hash",
@@ -466,9 +757,121 @@ def summarize_candidate_result(candidate: Any, report_detail: str) -> Any:
     summary["scenario_results"] = [
         _scenario_result_summary(scenario) for scenario in candidate.get("scenario_results") or []
     ]
-    summary["candidate_payload_hash"] = sha256_prefixed(report_content_hash_payload(candidate))
+    summary["candidate_payload_hash"] = sha256_prefixed(
+        candidate_evidence_hash_inputs(candidate),
+        label="candidate_result_evidence_hash",
+    )
     summary["candidate_result_detail_policy"] = "summary_bounded"
     return summary
+
+
+def candidate_evidence_hash_inputs(candidate: dict[str, Any]) -> dict[str, Any]:
+    scenario_hashes = [
+        scenario_evidence_hash_inputs(scenario)
+        for scenario in candidate.get("scenario_results") or []
+        if isinstance(scenario, dict)
+    ]
+    evidence = {
+        "candidate_id": candidate.get("candidate_id") or candidate.get("parameter_candidate_id"),
+        "parameter_values_hash": _parameter_values_hash(candidate),
+        "scenario_evidence_hashes": [
+            sha256_prefixed(scenario, label="scenario_evidence_tree_hash") for scenario in scenario_hashes
+        ],
+    }
+    for key in (
+        "behavior_hash",
+        "decision_behavior_hash",
+        "trade_ledger_hash",
+        "equity_curve_hash",
+        "composite_behavior_hash",
+        "common_decision_behavior_hash",
+        "strategy_behavior_hash",
+        "candidate_behavior_profile_hash",
+        "candidate_profile_hash",
+        "profile_hash",
+        "metrics_hash",
+        "content_hash",
+    ):
+        if candidate.get(key):
+            evidence[key] = candidate[key]
+    return evidence
+
+
+def scenario_evidence_hash_inputs(scenario: dict[str, Any]) -> dict[str, Any]:
+    evidence: dict[str, Any] = {
+        "scenario_id": scenario.get("scenario_id"),
+        "scenario_index": scenario.get("scenario_index"),
+        "scenario_role": scenario.get("scenario_role"),
+    }
+    for key in (
+        "behavior_hash",
+        "decision_behavior_hash",
+        "trade_ledger_hash",
+        "equity_curve_hash",
+        "composite_behavior_hash",
+        "common_decision_behavior_hash",
+        "strategy_behavior_hash",
+        "composite_behavior_hash_v2",
+        "train_behavior_hash",
+        "validation_behavior_hash",
+        "final_holdout_behavior_hash",
+        "metrics_hash",
+        "execution_contract_hash",
+        "execution_capability_contract_hash",
+        "model_params_hash",
+    ):
+        if scenario.get(key):
+            evidence[key] = scenario[key]
+    for key in (
+        "train_resource_usage",
+        "validation_resource_usage",
+        "final_holdout_resource_usage",
+    ):
+        usage = scenario.get(key)
+        if isinstance(usage, dict):
+            evidence[f"{key}_hashes"] = _resource_usage_evidence_hashes(usage)
+    return evidence
+
+
+def _parameter_values_hash(candidate: dict[str, Any]) -> str | None:
+    for key in ("effective_strategy_parameters_hash", "parameter_values_hash"):
+        if candidate.get(key):
+            return str(candidate[key])
+    if "parameter_values" in candidate:
+        return sha256_prefixed(candidate["parameter_values"], label="parameter_values_hash")
+    if "parameter_values_raw" in candidate:
+        return sha256_prefixed(candidate["parameter_values_raw"], label="parameter_values_hash")
+    return None
+
+
+def _resource_usage_evidence_hashes(resource_usage: dict[str, Any]) -> dict[str, Any]:
+    evidence: dict[str, Any] = {}
+    for key in (
+        "behavior_hash",
+        "decision_behavior_hash",
+        "trade_ledger_hash",
+        "equity_curve_hash",
+        "composite_behavior_hash",
+        "common_decision_behavior_hash",
+        "strategy_behavior_hash",
+        "stage_trace_hash",
+    ):
+        if resource_usage.get(key):
+            evidence[key] = resource_usage[key]
+    stage_trace = resource_usage.get("stage_trace")
+    if isinstance(stage_trace, (list, tuple)):
+        evidence["stage_trace_count"] = len(stage_trace)
+    return evidence
+
+
+def _bounded_collection_evidence(value: Any) -> dict[str, Any]:
+    if not isinstance(value, (list, tuple)):
+        return {"repr": repr(value)}
+    return {
+        "item_count": len(value),
+        "first_item_repr": repr(value[0]) if value else None,
+        "last_item_repr": repr(value[-1]) if value else None,
+    }
 
 
 def summarize_resource_usage_for_candidate_artifact(resource_usage: Any) -> Any:
@@ -491,7 +894,10 @@ def summarize_resource_usage_for_candidate_artifact(resource_usage: Any) -> Any:
             if isinstance(value, (list, tuple)):
                 summary["stage_trace_count"] = len(value)
             if "stage_trace_hash" not in resource_usage:
-                summary["stage_trace_hash"] = sha256_prefixed(value)
+                summary["stage_trace_hash"] = sha256_prefixed(
+                    _bounded_collection_evidence(value),
+                    label="stage_trace_bounded_evidence_hash",
+                )
             continue
         if isinstance(value, dict):
             summary[key] = summarize_resource_usage_for_candidate_artifact(value)
@@ -506,7 +912,7 @@ def summarize_resource_usage_for_candidate_artifact(resource_usage: Any) -> Any:
 
 def _scenario_result_summary(scenario: Any) -> dict[str, Any]:
     if not isinstance(scenario, dict):
-        return {"scenario_repr_hash": sha256_prefixed(report_content_hash_payload(scenario))}
+        return {"scenario_repr_hash": sha256_prefixed({"repr": repr(scenario)}, label="scenario_repr_hash")}
     summary_keys = (
         "scenario_id",
         "scenario_index",
@@ -573,7 +979,10 @@ def _scenario_result_summary(scenario: Any) -> dict[str, Any]:
     summary["validation_equity_curve"] = []
     summary["final_holdout_equity_curve"] = []
     summary["detail_artifact_ref"] = scenario.get("detail_artifact_ref")
-    summary["scenario_payload_hash"] = sha256_prefixed(report_content_hash_payload(scenario))
+    summary["scenario_payload_hash"] = sha256_prefixed(
+        scenario_evidence_hash_inputs(scenario),
+        label="candidate_result_scenario_evidence_hash",
+    )
     _ensure_scenario_retained_detail_evidence(summary)
     return summary
 
@@ -845,24 +1254,135 @@ def _stable_final_report_byte_count(
         report_payload["artifact_write_summary"] = dict(artifact_write_summary)
         report_payload.setdefault("artifact_observability", {})["report_write"] = dict(artifact_write_summary)
         _sync_report_write_stage(report_payload, artifact_write_summary)
-        report_payload["content_hash"] = sha256_prefixed(report_content_hash_payload(report_payload))
+        report_payload["content_hash"] = sha256_prefixed(
+            report_content_hash_payload(report_payload),
+            label="stable_final_report_content_hash",
+        )
         current = _json_byte_count(report_payload)
     return current
 
 
 def _sync_report_write_stage(report_payload: dict[str, Any], artifact_write_summary: dict[str, Any]) -> None:
-    execution_observability = report_payload.get("execution_observability")
+    execution_observability = report_payload.setdefault("execution_observability", {})
     if not isinstance(execution_observability, dict):
         return
-    stage_timings = execution_observability.get("stage_timings")
+    stage_timings = execution_observability.setdefault("stage_timings", [])
     if not isinstance(stage_timings, list):
         return
+    found = False
     for stage_timing in stage_timings:
         if isinstance(stage_timing, dict) and stage_timing.get("stage") == "report_write":
+            found = True
             stage_timing["artifact_total_bytes"] = artifact_write_summary["artifact_total_bytes"]
             stage_timing["artifact_file_count"] = artifact_write_summary["artifact_file_count"]
             stage_timing["derived_candidates_bytes"] = artifact_write_summary["derived_candidates_bytes"]
             stage_timing["report_bytes"] = artifact_write_summary["report_bytes"]
+            stage_timing["finalization_wall_seconds"] = artifact_write_summary.get("finalization_wall_seconds")
+            stage_timing["file_write_wall_seconds"] = artifact_write_summary.get("file_write_wall_seconds")
+            stage_timing["hash_call_count"] = artifact_write_summary.get("hash_call_count")
+            stage_timing["observed_hash_payload_bytes"] = artifact_write_summary.get("observed_hash_payload_bytes")
+    if not found:
+        stage_timings.append(
+            {
+                "stage": "report_write",
+                "wall_seconds": round(float(artifact_write_summary.get("write_wall_seconds") or 0.0), 6),
+                "artifact_total_bytes": artifact_write_summary["artifact_total_bytes"],
+                "artifact_file_count": artifact_write_summary["artifact_file_count"],
+                "derived_candidates_bytes": artifact_write_summary["derived_candidates_bytes"],
+                "report_bytes": artifact_write_summary["report_bytes"],
+                "finalization_wall_seconds": artifact_write_summary.get("finalization_wall_seconds"),
+                "file_write_wall_seconds": artifact_write_summary.get("file_write_wall_seconds"),
+                "hash_call_count": artifact_write_summary.get("hash_call_count"),
+                "observed_hash_payload_bytes": artifact_write_summary.get("observed_hash_payload_bytes"),
+            }
+        )
+
+
+def _sync_report_write_substages(
+    report_payload: dict[str, Any],
+    artifact_write_summary: dict[str, Any],
+) -> None:
+    substages = artifact_write_summary.get("substage_timings")
+    if not isinstance(substages, list):
+        return
+    execution_observability = report_payload.setdefault("execution_observability", {})
+    stage_timings = execution_observability.setdefault("stage_timings", [])
+    if not isinstance(stage_timings, list):
+        return
+    existing = {
+        item.get("stage")
+        for item in stage_timings
+        if isinstance(item, dict) and str(item.get("stage") or "").startswith("report_write.")
+    }
+    for substage in substages:
+        if not isinstance(substage, dict):
+            continue
+        name = str(substage.get("stage") or "").strip()
+        if not name:
+            continue
+        stage_name = f"report_write.{name}"
+        if stage_name in existing:
+            continue
+        stage_timings.append({"stage": stage_name, **{k: v for k, v in substage.items() if k != "stage"}})
+        existing.add(stage_name)
+
+
+def _sync_workload_estimate_comparison(
+    report_payload: dict[str, Any],
+    artifact_write_summary: dict[str, Any],
+) -> None:
+    estimate = report_payload.get("workload_estimate")
+    if not isinstance(estimate, dict):
+        execution_plan = report_payload.get("execution_plan")
+        estimate = execution_plan.get("workload_estimate") if isinstance(execution_plan, dict) else None
+    if not isinstance(estimate, dict):
+        return
+    estimated_hash = _optional_int(estimate.get("estimated_hash_payload_bytes"))
+    estimated_artifact = _optional_int(estimate.get("estimated_artifact_bytes"))
+    observed_hash = _optional_int(artifact_write_summary.get("observed_hash_payload_bytes"))
+    observed_artifact = _optional_int(artifact_write_summary.get("artifact_total_bytes"))
+    observed_seconds = artifact_write_summary.get("observed_report_finalization_seconds")
+    comparison: dict[str, Any] = {
+        "schema_version": 1,
+        "estimated_hash_payload_bytes": estimated_hash,
+        "observed_hash_payload_bytes": observed_hash,
+        "observed_hash_call_count": artifact_write_summary.get("observed_hash_call_count"),
+        "observed_largest_hash_payload_bytes": artifact_write_summary.get("observed_largest_hash_payload_bytes"),
+        "estimated_artifact_bytes": estimated_artifact,
+        "observed_artifact_bytes": observed_artifact,
+        "observed_report_finalization_seconds": observed_seconds,
+        "status": "UNKNOWN",
+        "reasons": [],
+    }
+    reasons: list[str] = []
+    if estimated_hash is not None and observed_hash is not None:
+        comparison["hash_payload_ratio"] = observed_hash / estimated_hash if estimated_hash > 0 else None
+        if estimated_hash <= 0:
+            reasons.append("estimated_hash_payload_bytes_zero")
+            comparison["status"] = "WARN"
+        elif observed_hash <= estimated_hash * 2:
+            comparison["status"] = "PASS"
+        elif observed_hash <= estimated_hash * 5:
+            comparison["status"] = "WARN"
+            reasons.append("observed_hash_payload_bytes_exceeds_2x_estimate")
+        else:
+            comparison["status"] = "FAIL"
+            reasons.append("observed_hash_payload_bytes_exceeds_5x_estimate")
+    else:
+        reasons.append("hash_payload_estimate_or_observation_missing")
+    if estimated_artifact is None or observed_artifact is None:
+        reasons.append("artifact_byte_estimate_or_observation_missing")
+    comparison["reasons"] = reasons
+    artifact_write_summary["observed_artifact_bytes"] = observed_artifact
+    report_payload["workload_estimate_comparison"] = comparison
+
+
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
 
 
 def _ensure_research_output_path_allowed(manager: PathManager, path: Path) -> None:

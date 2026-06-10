@@ -5,11 +5,18 @@ from pathlib import Path
 
 from bithumb_bot.research.report_writer import (
     ResearchReportPaths,
+    build_report_artifacts,
+    compute_artifact_write_summary,
+    compute_report_hashes,
     persist_final_research_report_observability,
+    sync_final_report_observability,
     summarize_candidate_result,
     summarize_derived_candidate,
     summarize_report_candidate,
+    write_report_artifacts,
+    write_research_report,
 )
+from tests.test_research_backtest_reproducibility import _research_manager, _summary_report_payload
 
 
 def _paths(tmp_path: Path) -> ResearchReportPaths:
@@ -90,6 +97,63 @@ def test_persist_final_research_report_observability_updates_persisted_payload(t
     assert persisted["content_hash"] == content_hash
     assert persisted["artifact_write_summary"] == summary
     assert persisted["artifact_observability"]["report_write"] == summary
+
+
+def test_report_write_observability_records_substage_timings(tmp_path: Path, monkeypatch) -> None:
+    manager = _research_manager(tmp_path, monkeypatch)
+
+    result = write_research_report(
+        manager=manager,
+        experiment_id="report_write_substages",
+        report_name="backtest",
+        payload=_summary_report_payload(experiment_id="report_write_substages"),
+    )
+
+    persisted = json.loads(result.paths.report_path.read_text(encoding="utf-8"))
+    report_write = persisted["artifact_observability"]["report_write"]
+    substages = {item["stage"]: item for item in report_write["substage_timings"]}
+    for stage in {
+        "reference_first_payload",
+        "report_candidate_summary",
+        "derived_candidate_summary",
+        "report_hashing",
+        "report_byte_count",
+        "write_derived",
+        "write_report",
+        "persist_final_observability",
+        "final_report_rewrite",
+    }:
+        assert stage in substages
+        assert substages[stage]["wall_seconds"] >= 0
+    assert report_write["file_write_wall_seconds"] >= 0
+    stage_names = {item["stage"] for item in persisted["execution_observability"]["stage_timings"]}
+    assert "report_write.write_derived" in stage_names
+    assert "report_write.write_report" in stage_names
+    assert "report_write.persist_final_observability" in stage_names
+
+
+def test_report_writer_exposes_build_hash_write_sync_steps() -> None:
+    assert callable(build_report_artifacts)
+    assert callable(compute_report_hashes)
+    assert callable(compute_artifact_write_summary)
+    assert callable(write_report_artifacts)
+    assert callable(sync_final_report_observability)
+
+
+def test_final_observability_sync_does_not_require_validation_protocol_rewrite(tmp_path: Path, monkeypatch) -> None:
+    manager = _research_manager(tmp_path, monkeypatch)
+
+    result = write_research_report(
+        manager=manager,
+        experiment_id="writer_final_sync",
+        report_name="backtest",
+        payload=_summary_report_payload(experiment_id="writer_final_sync"),
+    )
+
+    persisted = json.loads(result.paths.report_path.read_text(encoding="utf-8"))
+    assert persisted["artifact_write_summary"] == result.artifact_write_summary
+    assert persisted["content_hash"] == result.content_hash
+    assert persisted["artifact_write_summary"]["report_bytes"] == result.paths.report_path.stat().st_size
 
 
 def test_summary_report_uses_candidate_summary() -> None:

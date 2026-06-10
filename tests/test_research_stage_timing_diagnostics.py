@@ -51,6 +51,36 @@ def test_extract_stage_timings_reports_dominant_stage(tmp_path: Path) -> None:
     assert summary["dominant_stage"] == "candidate_evaluation"
 
 
+def test_extract_stage_timings_includes_report_write_substages(tmp_path: Path) -> None:
+    report = tmp_path / "backtest_report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "execution_observability": {
+                    "stage_timings": [
+                        {"stage": "report_write", "wall_seconds": 2.0},
+                    ]
+                },
+                "artifact_observability": {
+                    "report_write": {
+                        "substage_timings": [
+                            {"stage": "report_hashing", "wall_seconds": 5.0},
+                            {"stage": "write_report", "wall_seconds": 0.1},
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = extract_stage_timing_summary(report, require_stage_timings=True)
+
+    assert summary["stages"]["report_write.report_hashing"] == 5.0
+    assert summary["stages"]["report_write.write_report"] == 0.1
+    assert summary["dominant_stage"] == "report_write.report_hashing"
+
+
 def test_extract_stage_timings_rejects_missing_stage_timings_in_strict_mode(tmp_path: Path) -> None:
     report = tmp_path / "backtest_report.json"
     report.write_text(json.dumps({"execution_observability": {}}), encoding="utf-8")

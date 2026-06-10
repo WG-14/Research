@@ -17,17 +17,20 @@ def extract_stage_timing_summary(report_path: Path, *, require_stage_timings: bo
             raise ValueError("missing execution_observability.stage_timings")
         stage_timings = []
     stages: dict[str, float] = {}
-    for item in stage_timings:
-        if not isinstance(item, dict):
-            continue
-        stage = str(item.get("stage") or "").strip()
-        if not stage:
-            continue
-        seconds = item.get("wall_seconds", item.get("duration_seconds", 0.0))
-        try:
-            stages[stage] = stages.get(stage, 0.0) + float(seconds or 0.0)
-        except (TypeError, ValueError):
-            continue
+    _collect_stage_timings(stages, stage_timings)
+    artifact_observability = payload.get("artifact_observability")
+    report_write = (
+        artifact_observability.get("report_write")
+        if isinstance(artifact_observability, dict)
+        else None
+    )
+    report_write_substages = (
+        report_write.get("substage_timings")
+        if isinstance(report_write, dict)
+        else None
+    )
+    if isinstance(report_write_substages, list):
+        _collect_stage_timings(stages, report_write_substages, prefix="report_write.")
     dominant_stage = max(stages, key=stages.get) if stages else None
     return {
         "report": report_path.name,
@@ -35,6 +38,27 @@ def extract_stage_timing_summary(report_path: Path, *, require_stage_timings: bo
         "stages": stages,
         "dominant_stage": dominant_stage,
     }
+
+
+def _collect_stage_timings(
+    stages: dict[str, float],
+    stage_timings: list[Any],
+    *,
+    prefix: str = "",
+) -> None:
+    for item in stage_timings:
+        if not isinstance(item, dict):
+            continue
+        stage = str(item.get("stage") or "").strip()
+        if not stage:
+            continue
+        if prefix and not stage.startswith(prefix):
+            stage = f"{prefix}{stage}"
+        seconds = item.get("wall_seconds", item.get("duration_seconds", 0.0))
+        try:
+            stages[stage] = stages.get(stage, 0.0) + float(seconds or 0.0)
+        except (TypeError, ValueError):
+            continue
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
