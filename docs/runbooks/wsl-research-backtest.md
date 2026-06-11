@@ -66,14 +66,17 @@ Use CLI commands so the bootstrap and explicit env loading path is exercised. Ra
 Use explicit WSL repo-external runtime roots:
 
 ```bash
-BITHUMB_WSL_ROOT="$HOME/.local/state/bithumb-bot-wsl"
+export BITHUMB_WSL_ROOT="$HOME/.local/state/bithumb-bot-wsl"
+export BITHUMB_ENV_FILE="$BITHUMB_WSL_ROOT/env/paper.research.env"
+export DATA_ROOT="$BITHUMB_WSL_ROOT/data"
+
 mkdir -p "$BITHUMB_WSL_ROOT"/{env,run,data,logs,backup,archive}
 
-cat > "$BITHUMB_WSL_ROOT/env/paper.research.env" <<EOF
+cat > "$BITHUMB_ENV_FILE" <<EOF
 MODE=paper
 ENV_ROOT=$BITHUMB_WSL_ROOT/env
 RUN_ROOT=$BITHUMB_WSL_ROOT/run
-DATA_ROOT=$BITHUMB_WSL_ROOT/data
+DATA_ROOT=$DATA_ROOT
 LOG_ROOT=$BITHUMB_WSL_ROOT/logs
 BACKUP_ROOT=$BITHUMB_WSL_ROOT/backup
 ARCHIVE_ROOT=$BITHUMB_WSL_ROOT/archive
@@ -87,8 +90,7 @@ EOF
 Inspect the masked configuration through the CLI:
 
 ```bash
-BITHUMB_ENV_FILE="$BITHUMB_WSL_ROOT/env/paper.research.env" \
-uv run bithumb-bot config-dump --masked
+BITHUMB_ENV_FILE="$BITHUMB_ENV_FILE" uv run bithumb-bot config-dump --masked
 ```
 
 Do not put `DATA_ROOT`, `DB_PATH`, reports, derived artifacts, traces, or logs inside the Git repository.
@@ -133,11 +135,7 @@ Operator research should use repository-external manifests under a runtime repor
 MANIFEST="$DATA_ROOT/paper/reports/research/manifests/<manifest-name>.json"
 ```
 
-If you use `$DATA_ROOT` in shell snippets, set it to the same repo-external value used in the env file, for example:
-
-```bash
-DATA_ROOT="$BITHUMB_WSL_ROOT/data"
-```
+`$DATA_ROOT` should already be exported from the runtime setup section and must match the repo-external value written to `$BITHUMB_ENV_FILE`.
 
 ### Runtime Manifest Generation Procedure
 
@@ -155,7 +153,6 @@ $DATA_ROOT/paper/reports/research/manifests/
 Example creation flow:
 
 ```bash
-DATA_ROOT="$BITHUMB_WSL_ROOT/data"
 MANIFEST_DIR="$DATA_ROOT/paper/reports/research/manifests"
 mkdir -p "$MANIFEST_DIR"
 
@@ -277,14 +274,13 @@ Split guidance:
 Inspect config first:
 
 ```bash
-BITHUMB_ENV_FILE="$BITHUMB_WSL_ROOT/env/paper.research.env" \
-uv run bithumb-bot config-dump --masked
+BITHUMB_ENV_FILE="$BITHUMB_ENV_FILE" uv run bithumb-bot config-dump --masked
 ```
 
 Run readiness before expensive research:
 
 ```bash
-BITHUMB_ENV_FILE="$BITHUMB_WSL_ROOT/env/paper.research.env" \
+BITHUMB_ENV_FILE="$BITHUMB_ENV_FILE" \
 DB_PATH="$DATA_ROOT/paper/trades/paper.sqlite" \
 uv run bithumb-bot research-readiness --manifest "$MANIFEST"
 ```
@@ -306,7 +302,7 @@ JSON output to a repo-external runtime report path:
 set -o pipefail
 mkdir -p "$DATA_ROOT/paper/reports/research/readiness"
 
-BITHUMB_ENV_FILE="$BITHUMB_WSL_ROOT/env/paper.research.env" \
+BITHUMB_ENV_FILE="$BITHUMB_ENV_FILE" \
 DB_PATH="$DATA_ROOT/paper/trades/paper.sqlite" \
 uv run bithumb-bot research-readiness --manifest "$MANIFEST" --json \
   | tee "$DATA_ROOT/paper/reports/research/readiness/readiness.preview.json"
@@ -403,7 +399,7 @@ The manifest defines the research hypothesis, data, candidates, cost model, and 
 The WSL env example above uses `RESEARCH_NOTIFICATION_POLICY=disabled` for quiet local diagnostic runs. For notification-enabled WSL research, use a repository-external env file and document only placeholder values, never a real private topic:
 
 ```bash
-cat >> "$BITHUMB_WSL_ROOT/env/paper.research.env" <<'EOF'
+cat >> "$BITHUMB_ENV_FILE" <<'EOF'
 NOTIFIER_ENABLED=true
 NTFY_TOPIC=<topic>
 NTFY_SERVER=https://ntfy.sh
@@ -414,22 +410,20 @@ EOF
 Diagnose the loaded notification configuration:
 
 ```bash
-BITHUMB_ENV_FILE="$BITHUMB_WSL_ROOT/env/paper.research.env" \
-uv run bithumb-bot notification-diagnose --json
+BITHUMB_ENV_FILE="$BITHUMB_ENV_FILE" uv run bithumb-bot notification-diagnose --json
 ```
 
 Probe delivery before an expensive run:
 
 ```bash
-BITHUMB_ENV_FILE="$BITHUMB_WSL_ROOT/env/paper.research.env" \
-uv run bithumb-bot notification-diagnose --probe
+BITHUMB_ENV_FILE="$BITHUMB_ENV_FILE" uv run bithumb-bot notification-diagnose --probe
 ```
 
 Normal notification-enabled diagnostic backtest:
 
 ```bash
 set -o pipefail
-BITHUMB_ENV_FILE="$BITHUMB_WSL_ROOT/env/paper.research.env" \
+BITHUMB_ENV_FILE="$BITHUMB_ENV_FILE" \
 DB_PATH="$DATA_ROOT/paper/trades/paper.sqlite" \
 uv run bithumb-bot research-backtest --manifest "$MANIFEST"
 ```
@@ -438,7 +432,7 @@ Strict completion notification policy:
 
 ```bash
 set -o pipefail
-BITHUMB_ENV_FILE="$BITHUMB_WSL_ROOT/env/paper.research.env" \
+BITHUMB_ENV_FILE="$BITHUMB_ENV_FILE" \
 DB_PATH="$DATA_ROOT/paper/trades/paper.sqlite" \
 uv run bithumb-bot research-backtest \
   --manifest "$MANIFEST" \
@@ -462,20 +456,21 @@ The outbox record stores delivery metadata such as `message_hash`, `final_status
 Use `research-validate` for the normal validation lifecycle:
 
 ```bash
-BITHUMB_ENV_FILE="$BITHUMB_WSL_ROOT/env/paper.research.env" \
-uv run bithumb-bot research-validate --manifest "$MANIFEST"
+BITHUMB_ENV_FILE="$BITHUMB_ENV_FILE" uv run bithumb-bot research-validate --manifest "$MANIFEST"
 ```
 
 With execution calibration:
 
 ```bash
-BITHUMB_ENV_FILE="$BITHUMB_WSL_ROOT/env/paper.research.env" \
+BITHUMB_ENV_FILE="$BITHUMB_ENV_FILE" \
 uv run bithumb-bot research-validate \
   --manifest "$MANIFEST" \
   --execution-calibration "$DATA_ROOT/paper/reports/execution_quality/<calibration>.json"
 ```
 
 `research-validate` is the normal validation lifecycle command. It can run readiness, backtest, policy-required walk-forward, promotion, reproduce, and write `validation_run.json`.
+
+Standalone `research-backtest` does not consume or enforce a prior readiness artifact. Running `research-readiness` first is a runbook/operator rule for diagnostic runs. Use `research-validate` when the lifecycle must enforce readiness before backtest.
 
 Validation stages include:
 
@@ -502,13 +497,18 @@ RUN_TS="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKTEST_LOG="$DATA_ROOT/paper/reports/research/diagnostic/research-backtest.$RUN_TS.log"
 READINESS_ARCHIVE="$DATA_ROOT/paper/reports/research/diagnostic/readiness.before-backtest.$RUN_TS.json"
 
-BITHUMB_ENV_FILE="$BITHUMB_WSL_ROOT/env/paper.research.env" \
+cp "$DATA_ROOT/paper/reports/research/readiness/readiness.preview.json" \
+  "$READINESS_ARCHIVE"
+
+jq -e '
+  .status == "PASS"
+  and ((.next_actions // []) == ["none"] or (.next_actions // []) == [])
+' "$READINESS_ARCHIVE" >/dev/null
+
+BITHUMB_ENV_FILE="$BITHUMB_ENV_FILE" \
 DB_PATH="$DATA_ROOT/paper/trades/paper.sqlite" \
 uv run bithumb-bot research-backtest --manifest "$MANIFEST" \
   2>&1 | tee "$BACKTEST_LOG"
-
-cp "$DATA_ROOT/paper/reports/research/readiness/readiness.preview.json" \
-  "$READINESS_ARCHIVE"
 ```
 
 The `tee` output and copied readiness JSON preserve diagnostic evidence under repo-external runtime report directories.

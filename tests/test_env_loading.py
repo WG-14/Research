@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import runpy
 import importlib
-import sys
 from pathlib import Path
 
 import pytest
@@ -154,23 +153,24 @@ def test_backtest2_delegation_loads_explicit_env_file(tmp_path, monkeypatch):
             key, value = line.split("=", 1)
             os.environ[key] = value
 
-    import bithumb_bot.cli as cli_package
+    cli_main_module = importlib.import_module("bithumb_bot.cli.main")
     import backtest2
 
-    captured_argv = []
+    captured_argv = None
 
-    def fake_cli_main():
-        captured_argv.extend(sys.argv)
+    def fake_cli_main(argv=None):
+        nonlocal captured_argv
+        captured_argv = list(argv or [])
         return 0
 
     monkeypatch.setenv("BITHUMB_ENV_FILE", str(env_file))
     monkeypatch.delenv("BACKTEST2_BOOTSTRAP_VALUE", raising=False)
     monkeypatch.setattr(bootstrap, "_load_dotenv", fake_load_dotenv)
-    monkeypatch.setattr(cli_package, "main", fake_cli_main, raising=False)
+    monkeypatch.setattr(cli_main_module, "main", fake_cli_main)
 
     with pytest.raises(SystemExit) as exc:
         backtest2.main(["--manifest", "manifest.json"])
 
     assert exc.value.code == 0
     assert os.environ["BACKTEST2_BOOTSTRAP_VALUE"] == "ok"
-    assert captured_argv[1:] == ["research-backtest", "--manifest", "manifest.json"]
+    assert captured_argv == ["research-backtest", "--manifest", "manifest.json"]
