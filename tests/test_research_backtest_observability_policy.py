@@ -11,8 +11,8 @@ from bithumb_bot.research.decision_event import ResearchDecisionEvent
 from bithumb_bot.research.experiment_manifest import DateRange
 
 
-def _dataset_and_events(count: int = 6) -> tuple[DatasetSnapshot, tuple[ResearchDecisionEvent, ...]]:
-    dataset = DatasetSnapshot(
+def _small_dataset_snapshot(count: int = 6) -> DatasetSnapshot:
+    return DatasetSnapshot(
         snapshot_id="observability_policy",
         source="unit",
         market="KRW-BTC",
@@ -24,7 +24,10 @@ def _dataset_and_events(count: int = 6) -> tuple[DatasetSnapshot, tuple[Research
             for index in range(count + 1)
         ),
     )
-    events = tuple(
+
+
+def _events_for_dataset(dataset: DatasetSnapshot) -> tuple[ResearchDecisionEvent, ...]:
+    return tuple(
         ResearchDecisionEvent(
             candle_ts=dataset.candles[index].ts,
             decision_ts=dataset.candles[index].ts + 60_000,
@@ -38,9 +41,8 @@ def _dataset_and_events(count: int = 6) -> tuple[DatasetSnapshot, tuple[Research
             entry_signal="BUY" if index == 1 else "HOLD",
             order_intent={"side": "BUY"} if index == 1 else None,
         )
-        for index in range(1, count + 1)
+        for index in range(1, len(dataset.candles))
     )
-    return dataset, events
 
 
 def _run(
@@ -48,7 +50,8 @@ def _run(
     context: BacktestRunContext,
     count: int = 6,
 ):
-    dataset, events = _dataset_and_events(count)
+    dataset = _small_dataset_snapshot(count)
+    events = _events_for_dataset(dataset)
     return run_decision_event_backtest(
         dataset=dataset,
         strategy_name="buy_and_hold_baseline",
@@ -96,7 +99,8 @@ def test_summary_mode_does_not_canonicalize_every_tick(monkeypatch) -> None:
 
 def test_complete_external_audit_keeps_full_tick_canonical_evidence(tmp_path, monkeypatch) -> None:
     manager = _paper_manager(tmp_path, monkeypatch)
-    dataset, events = _dataset_and_events(5)
+    dataset = _small_dataset_snapshot(5)
+    events = _events_for_dataset(dataset)
     scope = AuditTraceScope(
         manager=manager,
         experiment_id="complete_external_observability",
@@ -157,7 +161,8 @@ def test_smoke_summary_backtest_payload_bytes_are_bounded() -> None:
 def test_full_audit_mode_has_explicitly_higher_canonical_budget(tmp_path, monkeypatch) -> None:
     summary = _run(context=BacktestRunContext(report_detail="summary", diagnostic_mode="exploratory"), count=4)
     manager = _paper_manager(tmp_path, monkeypatch)
-    dataset, events = _dataset_and_events(4)
+    dataset = _small_dataset_snapshot(4)
+    events = _events_for_dataset(dataset)
     scope = AuditTraceScope(
         manager=manager,
         experiment_id="full_audit_budget",
