@@ -139,6 +139,100 @@ If you use `$DATA_ROOT` in shell snippets, set it to the same repo-external valu
 DATA_ROOT="$BITHUMB_WSL_ROOT/data"
 ```
 
+### Runtime Manifest Generation Procedure
+
+Generated operator manifests must be created outside the Git repository. Files
+under `examples/research/*.json` are reviewed examples or templates only.
+Operators may copy an example template to a repo-external runtime manifest path,
+but must not edit the example in place for an operator run.
+
+Expected runtime manifest directory:
+
+```bash
+$DATA_ROOT/paper/reports/research/manifests/
+```
+
+Example creation flow:
+
+```bash
+DATA_ROOT="$BITHUMB_WSL_ROOT/data"
+MANIFEST_DIR="$DATA_ROOT/paper/reports/research/manifests"
+mkdir -p "$MANIFEST_DIR"
+
+RUN_TS="$(date -u +%Y%m%dT%H%M%SZ)"
+MANIFEST="$MANIFEST_DIR/sma_filter_krw_btc_1m_research_only_$RUN_TS.json"
+
+cp examples/research/sma_filter_manifest.example.json "$MANIFEST"
+
+uv run python -m json.tool "$MANIFEST" >/dev/null
+jq '{experiment_id, strategy_name, market, interval, deployment_tier, dataset, research_run}' "$MANIFEST"
+```
+
+This is an example flow, not a universal required filename. Manifest filenames
+should expose strategy, market, interval, tier, and version or run identity.
+Prefer a pattern like:
+
+```text
+<strategy>_<market>_<interval>_<tier>_<YYYYMMDDTHHMMSSZ>.json
+```
+
+For every material manifest change, create a new manifest file and use a new or
+versioned `experiment_id`. Do not mutate a manifest path after it has been used
+for readiness, backtest, validation, promotion, or reproduction evidence.
+Downstream reports bind the manifest by `manifest_hash`, so path reuse after
+evidence exists creates an unsafe audit and reproduction boundary.
+
+Newly generated WSL diagnostic manifests should normally use
+`deployment_tier=research_only` unless the user explicitly asks for
+production-bound or paper-candidate validation. For `paper_candidate`,
+`live_dry_run_candidate`, or `small_live_candidate`, do not fake hashes,
+calibration, immutable locators, top-of-book evidence, statistical validation,
+stress suite, or final-selection evidence. Production-bound users should start
+from `examples/research/sma_filter_manifest.production.example.json`, and
+production-bound gates must stay fail-closed.
+
+Minimum fields for a normal WSL research manifest:
+
+```text
+[ ] experiment_id
+[ ] hypothesis
+[ ] strategy_name
+[ ] deployment_tier
+[ ] market
+[ ] interval
+[ ] dataset.source
+[ ] dataset.snapshot_id
+[ ] dataset.train
+[ ] dataset.validation
+[ ] dataset.final_holdout when final holdout evidence is required
+[ ] parameter_space
+[ ] cost_model and/or execution_model
+[ ] portfolio_policy when avoiding legacy research defaults
+[ ] acceptance_gate
+[ ] walk_forward when acceptance_gate.walk_forward_required=true
+[ ] research_run.execution
+```
+
+Normal WSL research manifests should use this execution block unless a lower
+resource budget or explicit cap is required:
+
+```json
+"research_run": {
+  "execution": {
+    "mode": "parallel",
+    "max_workers": 8,
+    "process_start_method": "auto_safe",
+    "work_unit": "candidate_scenario"
+  }
+}
+```
+
+See `Parallel Research on WSL` below for effective-worker interpretation and
+caps. Do not put `DATA_ROOT`, `DB_PATH`, notification secrets, webhook URLs,
+runtime env values, logs, reports, traces, or generated output paths in the
+manifest. Those belong in the repo-external env file, CLI arguments, or managed
+runtime artifact roots.
+
 ### Runtime Manifest Location and Guards
 
 Create and inspect manifests under the runtime reports tree, not as generated files in the repository:
