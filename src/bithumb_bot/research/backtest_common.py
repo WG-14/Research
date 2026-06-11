@@ -461,6 +461,11 @@ def _research_decision_payload(
     exit_rule: str = "",
     exit_reason: str = "",
     exit_evaluations: list[dict[str, object]] | None = None,
+    execution_timing_policy_hash: str = "",
+    fee_model_hash: str = "",
+    slippage_model_hash: str = "",
+    candidate_profile_hash: str = "",
+    parameter_values_hash: str = "",
 ) -> dict[str, object]:
     from bithumb_bot.research.lot_native_simulation import lot_native_model_from_quantities
 
@@ -477,10 +482,33 @@ def _research_decision_payload(
     }
     fee_authority_hash = canonical_payload_hash({"source": "research_manifest", "fee_rate": float(fee_rate)})
     order_rules_hash = canonical_payload_hash(order_rules)
-    fee_model_hash = canonical_payload_hash({"fee_rate": float(fee_rate)})
-    slippage_model_hash = canonical_payload_hash({"slippage_bps": float(slippage_bps)})
-    execution_timing_policy_hash = canonical_payload_hash(timing_policy.as_dict())
+    fee_model_hash = str(fee_model_hash or "").strip() or canonical_payload_hash(
+        {"fee_rate": float(fee_rate)},
+        label="full_payload_fee_model_fallback",
+    )
+    slippage_model_hash = str(slippage_model_hash or "").strip() or canonical_payload_hash(
+        {"slippage_bps": float(slippage_bps)},
+        label="full_payload_slippage_model_fallback",
+    )
+    execution_timing_policy_hash = str(execution_timing_policy_hash or "").strip() or canonical_payload_hash(
+        timing_policy.as_dict(),
+        label="full_payload_execution_timing_policy_fallback",
+    )
     portfolio_policy_hash = portfolio_policy.policy_hash()
+    parameter_values_hash = str(parameter_values_hash or "").strip() or canonical_payload_hash(
+        parameter_values,
+        label="full_payload_parameter_values_fallback",
+    )
+    candidate_profile_hash = str(candidate_profile_hash or "").strip() or canonical_payload_hash(
+        {
+            "strategy_name": str(strategy_name),
+            "parameter_values": parameter_values,
+            "strategy_spec_hash": strategy_spec_hash,
+            "strategy_plugin_contract_hash": strategy_plugin_contract_hash,
+            "exit_policy_hash": exit_policy_hash,
+        },
+        label="full_payload_candidate_profile_fallback",
+    )
     decision_contract_hash = canonical_payload_hash(
         {
             "dataset_content_hash": dataset_content_hash,
@@ -528,7 +556,8 @@ def _research_decision_payload(
         "strategy_plugin_contract": strategy_plugin_contract,
         "strategy_plugin_contract_hash": strategy_plugin_contract_hash,
         "dataset_content_hash": dataset_content_hash,
-        "parameter_values_hash": canonical_payload_hash(parameter_values),
+        "candidate_profile_hash": candidate_profile_hash,
+        "parameter_values_hash": parameter_values_hash,
         "exit_policy": exit_policy,
         "exit_policy_hash": exit_policy_hash,
         "exit_policy_config_hash": str(exit_policy_config_hash or ""),

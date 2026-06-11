@@ -891,6 +891,7 @@ def research_decision_to_canonical_event(
     profile_content_hash: str = "",
     dataset_content_hash: str = "",
     execution_timing_policy_hash: str = "",
+    allow_fallback_hash: bool = True,
 ) -> CanonicalDecisionEvent:
     payload = dict(decision)
     payload.setdefault("decision_contract_version", CANONICAL_DECISION_CONTRACT_VERSION)
@@ -963,7 +964,7 @@ def research_decision_to_canonical_event(
     payload["artifact_grade"] = str(payload.get("artifact_grade") or "")
     payload["authority_plane"] = str(payload.get("authority_plane") or "")
     payload["promotion_rejection_reason"] = str(payload.get("promotion_rejection_reason") or "")
-    normalized = normalize_canonical_decision(payload)
+    normalized = normalize_canonical_decision(payload, allow_fallback_hash=allow_fallback_hash)
     if isinstance(payload.get("position_authority"), dict):
         normalized["position_authority"] = dict(payload["position_authority"])  # type: ignore[arg-type]
     return CanonicalDecisionEvent(normalized)
@@ -1486,6 +1487,7 @@ def export_research_decisions(
     profile_content_hash: str = "",
     dataset_content_hash: str = "",
     execution_timing_policy_hash: str = "",
+    allow_fallback_hash: bool = True,
 ) -> list[dict[str, Any]]:
     return [
         research_decision_to_canonical_event(
@@ -1493,6 +1495,7 @@ def export_research_decisions(
             profile_content_hash=profile_content_hash,
             dataset_content_hash=dataset_content_hash,
             execution_timing_policy_hash=execution_timing_policy_hash,
+            allow_fallback_hash=allow_fallback_hash,
         ).as_dict()
         for item in decisions
     ]

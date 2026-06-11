@@ -22,7 +22,6 @@ class DecisionPayloadBuilder:
         if detail == "summary":
             return self.build_summary(**kwargs)
         if detail == "full_canonical":
-            kwargs.pop("canonical_context", None)
             return self.build_full(**kwargs)
         raise ValueError("decision_payload_detail_level_required")
 
@@ -227,6 +226,7 @@ class DecisionPayloadBuilder:
         regime_snapshot: dict[str, object],
         qty: float,
         sellable_qty: float,
+        canonical_context: Any | None = None,
     ) -> dict[str, object]:
         action = risk_decision.final_signal
         raw_signal = str(strategy_envelope.provenance.get("raw_signal") or "HOLD").upper()
@@ -269,22 +269,50 @@ class DecisionPayloadBuilder:
                 and sellable_qty > 1e-12
                 and bool(risk_decision.exit_evaluations)
             )
+        strategy_spec_hash = _context_hash(canonical_context, "strategy_spec_hash")
+        if not strategy_spec_hash:
+            strategy_spec_hash = strategy_spec.spec_hash()
+        strategy_plugin_contract_hash = _context_hash(
+            canonical_context,
+            "strategy_plugin_contract_hash",
+        )
+        if not strategy_plugin_contract_hash:
+            strategy_plugin_contract_hash = strategy_plugin.contract_hash()
+        execution_timing_policy_hash = _context_hash(
+            canonical_context,
+            "execution_timing_policy_hash",
+        )
+        fee_model_hash = _context_hash(canonical_context, "fee_model_hash")
+        slippage_model_hash = _context_hash(canonical_context, "slippage_model_hash")
+        candidate_profile_hash = _context_hash(canonical_context, "candidate_profile_hash")
+        parameter_values_hash = _context_hash(canonical_context, "parameter_values_hash")
+        active_exit_policy_config_hash = _context_hash(
+            canonical_context,
+            "active_exit_policy_config_hash",
+        )
+        if not active_exit_policy_config_hash:
+            active_exit_policy_config_hash = str(exit_policy_config_hash or "")
         payload = support.research_decision_payload(
             dataset=dataset,
             dataset_content_hash=dataset_content_hash,
             parameter_values=parameter_values,
             strategy_name=strategy_plugin.name,
             strategy_spec=strategy_spec.as_dict(),
-            strategy_spec_hash=strategy_spec.spec_hash(),
+            strategy_spec_hash=strategy_spec_hash,
             strategy_plugin_contract=strategy_plugin.contract_payload(),
-            strategy_plugin_contract_hash=strategy_plugin.contract_hash(),
+            strategy_plugin_contract_hash=strategy_plugin_contract_hash,
             exit_policy=exit_policy,
             exit_policy_hash=exit_policy_hash,
-            exit_policy_config_hash=exit_policy_config_hash,
+            exit_policy_config_hash=active_exit_policy_config_hash,
             fee_rate=fee_rate,
             slippage_bps=slippage_bps,
             timing_policy=timing_policy,
             portfolio_policy=portfolio_policy,
+            execution_timing_policy_hash=execution_timing_policy_hash,
+            fee_model_hash=fee_model_hash,
+            slippage_model_hash=slippage_model_hash,
+            candidate_profile_hash=candidate_profile_hash,
+            parameter_values_hash=parameter_values_hash,
             candle_ts=event.candle_ts,
             decision_ts=decision_boundary_ts,
             raw_signal=raw_signal,
