@@ -212,6 +212,7 @@ Operator reporting reference:
 Research validation reference:
 
 - [`docs/research-validation.md`](/docs/research-validation.md)
+- [`docs/runbooks/wsl-research-backtest.md`](/docs/runbooks/wsl-research-backtest.md)
 - [`docs/strategy-plugin-authoring.md`](/docs/strategy-plugin-authoring.md)
 
 ## Smoke / Manual DB Validation

@@ -35,6 +35,11 @@ If the change touches path handling, runtime outputs, backups, logs, DB paths, o
 - `src/bithumb_bot/storage_io.py`
 - `src/bithumb_bot/run_lock.py`
 
+If the task touches WSL research/backtest execution, generated research artifacts,
+or local disk/workspace cleanup, also read:
+
+- `docs/runbooks/wsl-research-backtest.md`
+
 If the change touches live execution, restart recovery, order lifecycle, or operator flows, inspect the relevant docs and tests before changing code.
 
 ## Task Prompt Rules
