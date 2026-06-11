@@ -157,6 +157,61 @@ pytest pipeline for full-suite repair or final full validation when required.
 that may commit, push, and perform EC2 smoke verification. It is not the
 dedicated research/nightly pytest suite.
 
+## Codex pipeline notification runbook
+
+Existing operator/mobile-style notification commands remain valid:
+
+```bash
+export NTFY_TOPIC=<topic>
+cd ~/work/bithumb-bot
+./scripts/run_codex_pipeline.sh
+```
+
+```bash
+export NTFY_TOPIC=<topic>
+cd ~/work/bithumb-bot
+./scripts/run_codex_pytest_pipeline.sh
+```
+
+`NTFY_TOPIC` is required for success and failure notifications.
+
+`scripts/notify_ntfy.sh` resolves the ntfy server in this order:
+
+1. `NTFY_SERVER`
+2. `NTFY_URL`
+3. `https://ntfy.sh`
+
+Setting only `NTFY_TOPIC` sends notifications to:
+
+```text
+https://ntfy.sh/<topic>
+```
+
+For self-hosted ntfy:
+
+```bash
+export NTFY_TOPIC=<topic>
+export NTFY_SERVER=https://your-ntfy-server.example
+cd ~/work/bithumb-bot
+./scripts/run_codex_pipeline.sh
+```
+
+`NTFY_URL` is retained only as a deprecated compatibility alias. New examples
+and operator setup should prefer `NTFY_SERVER`.
+
+Notification delivery observability:
+
+- `scripts/run_codex_pipeline.sh` writes notification delivery status to stderr
+  as `[NOTIFY-RESULT] transport=ntfy status=failed|delivered ...`.
+- `scripts/run_codex_pytest_pipeline.sh` writes the same stderr result and also
+  appends structured records to
+  `${CODEX_PYTEST_WORK_DIR}/notification_result.jsonl`.
+
+Documentation safety note:
+
+- Do not paste real private ntfy topics into public docs or logs.
+- Use `<topic>` in documentation examples.
+
 Required gate coverage:
 
 - Text hygiene rejects BOM, Hangul, replacement characters, long question runs,

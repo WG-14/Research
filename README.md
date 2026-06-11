@@ -46,6 +46,9 @@ selector-less raw `uv run pytest -q` is long-running/full validation and is not
 the default local PR check. Use `./scripts/run_full_pytest_tests.sh` for the
 official full-suite entrypoint.
 
+For Codex operator pipeline and ntfy notification behavior, see
+[`docs/pre-merge-checklist.md#codex-pipeline-notification-runbook`](/docs/pre-merge-checklist.md#codex-pipeline-notification-runbook).
+
 ## Canonical CLI
 
 Use this command form as the canonical entrypoint:
