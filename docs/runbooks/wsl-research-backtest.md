@@ -162,6 +162,65 @@ Inspect:
 - `walk_forward`
 - `next_actions`
 
+## Research Completion Notifications
+
+Notification settings are runtime/operator configuration. Do not put `NTFY_TOPIC`, `NTFY_SERVER`, webhook URLs, or notification secrets in a research manifest.
+
+The manifest defines the research hypothesis, data, candidates, cost model, and validation policy. Notification delivery belongs in the explicit env file or a CLI policy override.
+
+The WSL env example above uses `RESEARCH_NOTIFICATION_POLICY=disabled` for quiet local diagnostic runs. For notification-enabled WSL research, use a repository-external env file and document only placeholder values, never a real private topic:
+
+```bash
+cat >> "$BITHUMB_WSL_ROOT/env/paper.research.env" <<'EOF'
+NOTIFIER_ENABLED=true
+NTFY_TOPIC=<topic>
+NTFY_SERVER=https://ntfy.sh
+RESEARCH_NOTIFICATION_POLICY=best_effort
+EOF
+```
+
+Diagnose the loaded notification configuration:
+
+```bash
+BITHUMB_ENV_FILE="$BITHUMB_WSL_ROOT/env/paper.research.env" \
+uv run bithumb-bot notification-diagnose --json
+```
+
+Probe delivery before an expensive run:
+
+```bash
+BITHUMB_ENV_FILE="$BITHUMB_WSL_ROOT/env/paper.research.env" \
+uv run bithumb-bot notification-diagnose --probe
+```
+
+Normal notification-enabled diagnostic backtest:
+
+```bash
+BITHUMB_ENV_FILE="$BITHUMB_WSL_ROOT/env/paper.research.env" \
+uv run bithumb-bot research-backtest --manifest "$MANIFEST"
+```
+
+Strict completion notification policy:
+
+```bash
+BITHUMB_ENV_FILE="$BITHUMB_WSL_ROOT/env/paper.research.env" \
+uv run bithumb-bot research-backtest \
+  --manifest "$MANIFEST" \
+  --notification-policy require_delivery
+```
+
+`best_effort` lets the research command complete even if notification delivery fails, while recording the delivery result. Use `require_delivery` when the command must fail if notification delivery is not configured or the completion notification is not delivered.
+
+The same `--notification-policy` option is available on `research-backtest`, `research-walk-forward`, and `research-validate`.
+
+Notification delivery results are written to:
+
+```text
+DATA_ROOT/<mode>/reports/notifications/notification_events.jsonl
+```
+
+The outbox record stores delivery metadata such as `message_hash`, `final_status`, `attempted_transports`, `delivered_transports`, `failure_classes`, `http_statuses`, and `source_command`; it does not store the raw message text.
+
 ## Official Validation Path
 
 Use `research-validate` for the normal validation lifecycle:
@@ -236,6 +295,7 @@ DATA_ROOT/<mode>/reports/research/<experiment_id>/validation_run.json
 DATA_ROOT/<mode>/reports/research/<experiment_id>/backtest_report.json
 DATA_ROOT/<mode>/reports/research/<experiment_id>/walk_forward_report.json
 DATA_ROOT/<mode>/reports/research/<experiment_id>/promotion_<candidate_id>.json
+DATA_ROOT/<mode>/reports/notifications/notification_events.jsonl
 ```
 
 Reports are operator-readable runtime artifacts. Derived research outputs are computed intermediates. Keep both under repo-external `DATA_ROOT`.
@@ -350,6 +410,8 @@ Do not clean up by deleting random files inside the Git repository. Generated ru
 | `walk_forward_required_but_not_executed_in_this_run` | Standalone diagnostic backtest did not run full lifecycle | Run `research-validate` |
 | `promotion_allowed=0` | Candidate is not promotable | Do not run profile generation or live readiness from this evidence |
 | `validation_run_not_passed` | Full validation did not pass | Inspect `.stages[]` in `validation_run.json` |
+| `notification_policy=require_delivery notifier_unconfigured` | Strict notification policy was requested, but notifier configuration is missing or disabled | Configure notification settings in a repository-external env file or use `best_effort`/`disabled` for diagnostic runs |
+| `require_delivery` run exits non-zero after command completion | The research command completed, but the completion notification was not delivered | Inspect `DATA_ROOT/<mode>/reports/notifications/notification_events.jsonl`; fix notifier delivery before treating the run as strict-policy complete |
 | repo artifact checker fails | Runtime/research artifacts leaked into repo | Move outputs to managed runtime roots and fix path usage |
 
 ## Do Not Do
@@ -361,6 +423,7 @@ Do not clean up by deleting random files inside the Git repository. Generated ru
 - Do not use `./data`, `./tmp`, `./backups`, or repo-root `*.log` for runtime artifacts.
 - Do not edit generated report hashes, registry rows, validation runs, or promotion artifacts by hand.
 - Do not tune runtime env values until a backtest looks good.
+- Do not put real ntfy topics, webhook URLs, or notification secrets in manifests, docs, logs, or examples; keep them in repository-external env files.
 - Do not use native Windows path behavior as runtime correctness evidence.
 
 ## Related Documents
