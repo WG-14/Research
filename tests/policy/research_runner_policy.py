@@ -78,6 +78,9 @@ EXPECTED_WORKLOAD_FIELDS = (
     "estimated_hash_payload_bytes",
     "estimated_artifact_bytes",
     "estimated_artifact_file_count",
+    "pre_parallel_work_unit_count",
+    "pre_parallel_dataset_hash_payload_bytes",
+    "pre_parallel_dataset_hash_call_count",
 )
 
 DEFAULT_REQUIRED_MARKER_BY_ENTRYPOINT = {
@@ -382,6 +385,10 @@ def research_workload_summary(
         "total_estimated_hash_payload_bytes": 0,
         "total_estimated_artifact_bytes": 0,
         "total_estimated_artifact_file_count": 0,
+        "total_estimated_plugin_runtime_us": 0,
+        "total_pre_parallel_work_unit_count": 0,
+        "total_pre_parallel_dataset_hash_payload_bytes": 0,
+        "total_pre_parallel_dataset_hash_call_count": 0,
     }
     workload_key_by_total = {
         "strategy_count": "strategy_count",
@@ -394,6 +401,9 @@ def research_workload_summary(
         "total_estimated_hash_payload_bytes": "estimated_hash_payload_bytes",
         "total_estimated_artifact_bytes": "estimated_artifact_bytes",
         "total_estimated_artifact_file_count": "estimated_artifact_file_count",
+        "total_pre_parallel_work_unit_count": "pre_parallel_work_unit_count",
+        "total_pre_parallel_dataset_hash_payload_bytes": "pre_parallel_dataset_hash_payload_bytes",
+        "total_pre_parallel_dataset_hash_call_count": "pre_parallel_dataset_hash_call_count",
     }
     for test in expensive_tests:
         for marker in test.markers & EXPENSIVE_RESEARCH_MARKERS:

@@ -49,6 +49,9 @@ def test_audit_budget_pipeline_inventory_entries_are_complete() -> None:
             "estimated_hash_payload_bytes",
             "estimated_artifact_bytes",
             "estimated_artifact_file_count",
+            "pre_parallel_work_unit_count",
+            "pre_parallel_dataset_hash_payload_bytes",
+            "pre_parallel_dataset_hash_call_count",
         ):
             assert key in workload
             assert isinstance(workload[key], (int, float))
@@ -75,6 +78,9 @@ def _inventory_entry(nodeid: str, markers: list[str] | None = None) -> dict[str,
             "estimated_strategy_runs": 1,
             "estimated_tick_events": 3,
             "estimated_audit_stream_rows": 0,
+            "pre_parallel_work_unit_count": 1,
+            "pre_parallel_dataset_hash_payload_bytes": 9984,
+            "pre_parallel_dataset_hash_call_count": 3,
         },
         "duration_budget_seconds": 30,
         "domain": "policy_test",
@@ -201,6 +207,9 @@ def test_inventory_skeleton_placeholders_are_rejected(tmp_path: Path) -> None:
         "estimated_hash_payload_bytes",
         "estimated_artifact_bytes",
         "estimated_artifact_file_count",
+        "pre_parallel_work_unit_count",
+        "pre_parallel_dataset_hash_payload_bytes",
+        "pre_parallel_dataset_hash_call_count",
     }
 
 
@@ -847,6 +856,9 @@ def test_memory_policy():
                     "estimated_strategy_runs": 2,
                     "estimated_tick_events": 24,
                     "estimated_audit_stream_rows": 0,
+                    "pre_parallel_work_unit_count": 2,
+                    "pre_parallel_dataset_hash_payload_bytes": 6528,
+                    "pre_parallel_dataset_hash_call_count": 3,
                 }
             },
             _inventory_entry(
@@ -861,6 +873,9 @@ def test_memory_policy():
                     "estimated_strategy_runs": 0,
                     "estimated_tick_events": 0,
                     "estimated_audit_stream_rows": 0,
+                    "pre_parallel_work_unit_count": 0,
+                    "pre_parallel_dataset_hash_payload_bytes": 0,
+                    "pre_parallel_dataset_hash_call_count": 0,
                 }
             },
         ],

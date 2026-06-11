@@ -69,9 +69,56 @@ def test_parallel_backtest_emits_parent_serial_progress_events_before_pool_start
 
     stages = [str(event.get("stage")) for event in events]
     assert stages.index("workload") < stages.index("build_work_tasks_start")
+    assert stages.index("workload") < stages.index("pre_parallel_run_dataset_fingerprint_start")
+    assert stages.index("pre_parallel_run_dataset_fingerprint_start") < stages.index(
+        "pre_parallel_run_dataset_fingerprint_complete"
+    )
+    assert stages.index("pre_parallel_run_dataset_fingerprint_complete") < stages.index(
+        "pre_parallel_hash_materialization_start"
+    )
     assert stages.index("build_work_tasks_start") < stages.index("build_work_tasks_complete")
     assert stages.index("candidate_start_journal_append_complete") < stages.index("parallel_worker_pool_start")
+    fingerprint_complete = events[stages.index("pre_parallel_run_dataset_fingerprint_complete")]
+    assert fingerprint_complete["candidate_count"] == 1
+    assert fingerprint_complete["scenario_count"] == 1
+    assert fingerprint_complete["split_count"] == 3
+    assert "elapsed_s" in fingerprint_complete
     build_complete = events[stages.index("build_work_tasks_complete")]
     assert build_complete["work_task_count"] == 1
     assert "elapsed_s" in build_complete
+    assert any(item["stage"] == "pre_parallel_run_dataset_fingerprint" for item in result.substage_timings)
     assert any(item["stage"] == "build_work_tasks" for item in result.substage_timings)
+
+
+def test_evaluate_candidates_does_not_compute_combined_dataset_fingerprint_before_workload_progress(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    manifest = parse_manifest(_manifest())
+    snapshots = {name: _snapshot(name) for name in ("train", "validation", "final_holdout")}
+    quality_reports = {name: _quality_report(name) for name in snapshots}
+    events: list[dict[str, object]] = []
+    fingerprint_started_after_workload: list[bool] = []
+    original = validation_protocol.combined_dataset_fingerprint
+
+    def spy_combined_dataset_fingerprint(snapshots_arg):
+        stages = [str(event.get("stage")) for event in events]
+        fingerprint_started_after_workload.append("workload" in stages)
+        return original(snapshots_arg)
+
+    monkeypatch.setattr(validation_protocol, "combined_dataset_fingerprint", spy_combined_dataset_fingerprint)
+
+    result = validation_protocol._evaluate_candidates(
+        manifest=manifest,
+        manager=_manager(tmp_path, monkeypatch),
+        snapshots=snapshots,
+        quality_reports=quality_reports,
+        include_walk_forward=False,
+        execution_calibration=None,
+        progress_callback=events.append,
+    )
+
+    assert fingerprint_started_after_workload == [True]
+    stages = [str(event.get("stage")) for event in events]
+    assert stages.index("workload") < stages.index("pre_parallel_run_dataset_fingerprint_start")
+    assert any(item["stage"] == "pre_parallel_run_dataset_fingerprint" for item in result.substage_timings)

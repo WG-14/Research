@@ -84,6 +84,11 @@ def main() -> int:
     parser.add_argument("--suite", default="research-nightly")
     parser.add_argument("--estimate-json", type=Path, help="Optional synthetic workload estimate JSON.")
     parser.add_argument(
+        "--inventory-json",
+        type=Path,
+        help="Optional research workload inventory JSON for the default summary path.",
+    )
+    parser.add_argument(
         "--policy-json",
         type=Path,
         default=repo_root / DEFAULT_POLICY_PATH,
@@ -102,7 +107,10 @@ def main() -> int:
     else:
         from tests.policy.research_runner_policy import research_workload_summary
 
-        summary = research_workload_summary(test_root=repo_root / "tests")
+        summary_kwargs: dict[str, Any] = {"test_root": repo_root / "tests"}
+        if args.inventory_json is not None:
+            summary_kwargs["inventory_path"] = args.inventory_json
+        summary = research_workload_summary(**summary_kwargs)
         estimate = {
             "estimated_tick_events": summary["total_estimated_tick_events"],
             "estimated_audit_stream_rows": summary["total_estimated_audit_stream_rows"],
@@ -110,16 +118,10 @@ def main() -> int:
             "estimated_hash_payload_bytes": summary["total_estimated_hash_payload_bytes"],
             "estimated_artifact_bytes": summary["total_estimated_artifact_bytes"],
             "estimated_artifact_file_count": summary["total_estimated_artifact_file_count"],
-            "estimated_plugin_runtime_us": summary.get("total_estimated_plugin_runtime_us", 0),
-            "pre_parallel_work_unit_count": summary.get("total_pre_parallel_work_unit_count", 0),
-            "pre_parallel_dataset_hash_payload_bytes": summary.get(
-                "total_pre_parallel_dataset_hash_payload_bytes",
-                0,
-            ),
-            "pre_parallel_dataset_hash_call_count": summary.get(
-                "total_pre_parallel_dataset_hash_call_count",
-                0,
-            ),
+            "estimated_plugin_runtime_us": summary["total_estimated_plugin_runtime_us"],
+            "pre_parallel_work_unit_count": summary["total_pre_parallel_work_unit_count"],
+            "pre_parallel_dataset_hash_payload_bytes": summary["total_pre_parallel_dataset_hash_payload_bytes"],
+            "pre_parallel_dataset_hash_call_count": summary["total_pre_parallel_dataset_hash_call_count"],
         }
 
     violations = check_estimate(estimate, budgets[args.suite])
@@ -133,13 +135,6 @@ def main() -> int:
 
 
 def _non_negative_int(payload: dict[str, Any], field: str, *, source: str) -> int:
-    if field in {
-        "estimated_plugin_runtime_us",
-        "pre_parallel_work_unit_count",
-        "pre_parallel_dataset_hash_payload_bytes",
-        "pre_parallel_dataset_hash_call_count",
-    } and field not in payload:
-        return 0
     value = payload.get(field)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise SystemExit(f"{source} field {field} must be a non-negative integer")

@@ -1313,7 +1313,6 @@ def _evaluate_candidates(
     expected_work_task_count = candidate_count * scenario_count
     aggregates: dict[str, dict[str, Any]] = {}
     manifest_hash = manifest.manifest_hash()
-    dataset_hash = combined_dataset_fingerprint(tuple(snapshots.values()))
     dataset_quality_hash = combined_dataset_quality_hash(tuple(quality_reports.values()))
     portfolio_policy = manifest.portfolio_policy.as_dict()
     portfolio_policy_hash = manifest.portfolio_policy_hash()
@@ -1348,6 +1347,34 @@ def _evaluate_candidates(
         top_of_book_requested=manifest.dataset.top_of_book is not None,
         top_of_book_required=bool(manifest.dataset.top_of_book.required) if manifest.dataset.top_of_book else False,
         calibration_required=manifest.execution_model.calibration_required,
+    )
+
+    run_dataset_fingerprint_started = time.perf_counter()
+    _emit_progress(
+        progress_callback,
+        stage="pre_parallel_run_dataset_fingerprint_start",
+        candidate_count=candidate_count,
+        scenario_count=scenario_count,
+        split_count=split_count,
+    )
+    dataset_hash = combined_dataset_fingerprint(tuple(snapshots.values()))
+    run_dataset_fingerprint_elapsed = time.perf_counter() - run_dataset_fingerprint_started
+    substage_timings.append(
+        _stage_timing(
+            "pre_parallel_run_dataset_fingerprint",
+            run_dataset_fingerprint_started,
+            candidate_count=candidate_count,
+            scenario_count=scenario_count,
+            split_count=split_count,
+        )
+    )
+    _emit_progress(
+        progress_callback,
+        stage="pre_parallel_run_dataset_fingerprint_complete",
+        candidate_count=candidate_count,
+        scenario_count=scenario_count,
+        split_count=split_count,
+        elapsed_s=round(run_dataset_fingerprint_elapsed, 3),
     )
 
     hash_materialization_started = time.perf_counter()

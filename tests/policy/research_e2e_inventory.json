@@ -16,7 +16,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 1,
         "estimated_tick_events": 4320,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 30,
       "domain": "research_quality",
@@ -41,7 +44,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 1,
         "estimated_tick_events": 4320,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 45,
       "domain": "research_orderbook",
@@ -66,7 +72,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 1,
         "estimated_tick_events": 4320,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 45,
       "domain": "research_orderbook",
@@ -90,7 +99,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 1,
         "estimated_tick_events": 64,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 0,
+        "pre_parallel_dataset_hash_payload_bytes": 8192
       },
       "duration_budget_seconds": 20,
       "domain": "research_orderbook",
@@ -114,7 +126,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 1,
         "estimated_tick_events": 4320,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 30,
       "domain": "research_orderbook",
@@ -139,7 +154,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 1,
         "estimated_tick_events": 4320,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 30,
       "domain": "research_orderbook",
@@ -164,7 +182,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 2,
         "estimated_tick_events": 8640,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 2,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 1112064
       },
       "duration_budget_seconds": 60,
       "domain": "research_orderbook",
@@ -189,7 +210,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 1,
         "estimated_tick_events": 4320,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 30,
       "domain": "research_orderbook",
@@ -214,7 +238,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 1,
         "estimated_tick_events": 4320,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 45,
       "domain": "research_orderbook",
@@ -239,7 +266,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 2,
         "estimated_tick_events": 8640,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 2,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 1112064
       },
       "duration_budget_seconds": 90,
       "domain": "research_parallel",
@@ -264,7 +294,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 2,
         "estimated_tick_events": 8640,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 2,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 1112064
       },
       "duration_budget_seconds": 90,
       "domain": "research_parallel",
@@ -289,7 +322,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 4,
         "estimated_tick_events": 17280,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 4,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 2217984
       },
       "duration_budget_seconds": 60,
       "domain": "research_scenarios",
@@ -314,7 +350,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 4,
         "estimated_tick_events": 17280,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 4,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 2217984
       },
       "duration_budget_seconds": 90,
       "domain": "research_promotion_contract",
@@ -338,7 +377,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 4,
         "estimated_tick_events": 17280,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 4,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 2217984
       },
       "duration_budget_seconds": 60,
       "domain": "research_resource_guard",
@@ -362,7 +404,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 1,
         "estimated_tick_events": 4320,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 30,
       "domain": "research_resource_guard",
@@ -385,7 +430,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 1,
         "estimated_tick_events": 4320,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 30,
       "domain": "research_resource_guard",
@@ -408,7 +456,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 0,
         "estimated_tick_events": 0,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 0,
+        "pre_parallel_dataset_hash_call_count": 0,
+        "pre_parallel_dataset_hash_payload_bytes": 0
       },
       "duration_budget_seconds": 15,
       "domain": "research_resource_guard",
@@ -432,7 +483,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 2,
         "estimated_tick_events": 8640,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 2,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 1112064
       },
       "duration_budget_seconds": 60,
       "domain": "research_metrics_contract",
@@ -456,7 +510,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 1,
         "estimated_tick_events": 4320,
-        "estimated_audit_stream_rows": 12960
+        "estimated_audit_stream_rows": 12960,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 90,
       "domain": "research_audit",
@@ -483,7 +540,10 @@
         "estimated_artifact_write_count": 8,
         "estimated_hash_payload_bytes": 557568,
         "estimated_artifact_bytes": 7229440,
-        "estimated_artifact_file_count": 8
+        "estimated_artifact_file_count": 8,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 90,
       "domain": "research_audit_budget",
@@ -510,7 +570,10 @@
         "estimated_artifact_write_count": 8,
         "estimated_hash_payload_bytes": 557568,
         "estimated_artifact_bytes": 7229440,
-        "estimated_artifact_file_count": 8
+        "estimated_artifact_file_count": 8,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 90,
       "domain": "research_audit_budget",
@@ -537,7 +600,10 @@
         "estimated_artifact_write_count": 8,
         "estimated_hash_payload_bytes": 557568,
         "estimated_artifact_bytes": 7229440,
-        "estimated_artifact_file_count": 8
+        "estimated_artifact_file_count": 8,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 90,
       "domain": "research_audit_budget",
@@ -562,7 +628,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 1,
         "estimated_tick_events": 4320,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 90,
       "domain": "research_smoke_memory",
@@ -587,7 +656,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 4,
         "estimated_tick_events": 17280,
-        "estimated_audit_stream_rows": 51840
+        "estimated_audit_stream_rows": 51840,
+        "pre_parallel_work_unit_count": 4,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 2217984
       },
       "duration_budget_seconds": 120,
       "domain": "research_walk_forward_audit",
@@ -612,7 +684,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 10,
         "estimated_tick_events": 20000,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 10,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 2566144
       },
       "duration_budget_seconds": 45,
       "domain": "research_walk_forward_contract",
@@ -636,7 +711,10 @@
         "strategy_canary_count": 1,
         "estimated_strategy_runs": 1,
         "estimated_tick_events": 4320,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 45,
       "domain": "research_strategy_canary",
@@ -661,7 +739,10 @@
         "strategy_canary_count": 0,
         "estimated_strategy_runs": 4,
         "estimated_tick_events": 17280,
-        "estimated_audit_stream_rows": 0
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 4,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 2217984
       },
       "duration_budget_seconds": 45,
       "domain": "research_walk_forward",
@@ -690,7 +771,10 @@
         "estimated_artifact_write_count": 2,
         "estimated_hash_payload_bytes": 12000,
         "estimated_artifact_bytes": 24000,
-        "estimated_artifact_file_count": 2
+        "estimated_artifact_file_count": 2,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 45,
       "domain": "research_artifact_observability",
@@ -719,7 +803,10 @@
         "estimated_artifact_write_count": 3,
         "estimated_hash_payload_bytes": 12000,
         "estimated_artifact_bytes": 24000,
-        "estimated_artifact_file_count": 3
+        "estimated_artifact_file_count": 3,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
       },
       "duration_budget_seconds": 45,
       "domain": "research_artifact_observability",

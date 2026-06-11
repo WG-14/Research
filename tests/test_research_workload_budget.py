@@ -34,7 +34,7 @@ from bithumb_bot.research.validation_protocol import _append_candidate_event
 from bithumb_bot.research import validation_protocol
 from tests.factories.research_reports import DeterministicResearchEvaluator
 from tests.test_research_execution_plan import _quality_report, _snapshot
-from tests.policy.research_runner_policy import research_workload_summary
+from tests.policy.research_runner_policy import load_inventory, research_workload_summary
 from tests.test_research_backtest_reproducibility import _manifest
 
 
@@ -149,7 +149,7 @@ def test_research_workload_budget_script_fails_pre_parallel_hash_call_excess(tmp
         "estimated_plugin_runtime_us": 0,
         "pre_parallel_work_unit_count": 0,
         "pre_parallel_dataset_hash_payload_bytes": 0,
-        "pre_parallel_dataset_hash_call_count": 13,
+        "pre_parallel_dataset_hash_call_count": 129,
     }
     estimate_path.write_text(json.dumps(estimate), encoding="utf-8")
 
@@ -170,6 +170,102 @@ def test_research_workload_budget_script_fails_pre_parallel_hash_call_excess(tmp
 
     assert result.returncode != 0
     assert "pre_parallel_dataset_hash_call_count" in result.stderr
+
+
+def test_research_workload_summary_includes_pre_parallel_totals() -> None:
+    summary = research_workload_summary()
+
+    assert "total_pre_parallel_work_unit_count" in summary
+    assert "total_pre_parallel_dataset_hash_payload_bytes" in summary
+    assert "total_pre_parallel_dataset_hash_call_count" in summary
+    assert int(summary["total_pre_parallel_work_unit_count"]) >= 0
+    assert int(summary["total_pre_parallel_dataset_hash_payload_bytes"]) >= 0
+    assert int(summary["total_pre_parallel_dataset_hash_call_count"]) >= 0
+
+
+def test_research_workload_budget_script_default_summary_fails_pre_parallel_hash_call_excess(
+    tmp_path: Path,
+) -> None:
+    policy_path = tmp_path / "policy.json"
+    policy = {
+        "schema_version": 1,
+        "suites": {
+            suite: {
+                "max_estimated_tick_events": 10**12,
+                "max_estimated_audit_stream_rows": 10**12,
+                "max_estimated_artifact_write_count": 10**12,
+                "max_estimated_hash_payload_bytes": 10**12,
+                "max_estimated_artifact_bytes": 10**12,
+                "max_estimated_artifact_file_count": 10**12,
+                "max_estimated_plugin_runtime_us": 10**12,
+                "max_pre_parallel_work_unit_count": 10**12,
+                "max_pre_parallel_dataset_hash_payload_bytes": 10**12,
+                "max_pre_parallel_dataset_hash_call_count": 0 if suite == "fast" else 10**12,
+            }
+            for suite in ("fast", "research-nightly", "full")
+        },
+    }
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/check_research_workload_budget.py",
+            "--suite",
+            "fast",
+            "--policy-json",
+            str(policy_path),
+        ],
+        cwd=Path.cwd(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "pre_parallel_dataset_hash_call_count" in result.stderr
+
+
+def test_research_workload_budget_script_requires_pre_parallel_fields_in_estimate_json(tmp_path: Path) -> None:
+    estimate_path = tmp_path / "estimate.json"
+    estimate = {
+        "estimated_tick_events": 0,
+        "estimated_audit_stream_rows": 0,
+        "estimated_artifact_write_count": 0,
+        "estimated_hash_payload_bytes": 0,
+        "estimated_artifact_bytes": 0,
+        "estimated_artifact_file_count": 0,
+        "estimated_plugin_runtime_us": 0,
+    }
+    estimate_path.write_text(json.dumps(estimate), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/check_research_workload_budget.py",
+            "--suite",
+            "fast",
+            "--estimate-json",
+            str(estimate_path),
+        ],
+        cwd=Path.cwd(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "pre_parallel_work_unit_count" in result.stderr
+
+
+def test_research_workload_inventory_requires_pre_parallel_fields(tmp_path: Path) -> None:
+    inventory = json.loads(Path("tests/policy/research_e2e_inventory.json").read_text(encoding="utf-8"))
+    del inventory["tests"][0]["expected_workload"]["pre_parallel_dataset_hash_call_count"]
+    inventory_path = tmp_path / "inventory.json"
+    inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="pre_parallel_dataset_hash_call_count"):
+        load_inventory(inventory_path)
 
 
 def test_candidate_start_append_is_timed_and_counted(tmp_path: Path, monkeypatch) -> None:
@@ -516,6 +612,9 @@ def test_research_workload_budget_script_passes_bounded_synthetic_estimate(tmp_p
                 "estimated_artifact_bytes": 1024,
                 "estimated_artifact_file_count": 2,
                 "estimated_plugin_runtime_us": 500,
+                "pre_parallel_work_unit_count": 1,
+                "pre_parallel_dataset_hash_payload_bytes": 1024,
+                "pre_parallel_dataset_hash_call_count": 1,
             }
         ),
         encoding="utf-8",
@@ -537,13 +636,16 @@ def test_research_workload_budget_script_fails_oversized_synthetic_estimate(tmp_
     estimate.write_text(
         json.dumps(
             {
-                "estimated_tick_events": 25_001,
-                "estimated_audit_stream_rows": 1,
+                "estimated_tick_events": 250_001,
+                "estimated_audit_stream_rows": 125_001,
                 "estimated_artifact_write_count": 251,
-                "estimated_hash_payload_bytes": 2_000_001,
-                "estimated_artifact_bytes": 64 * 1024 * 1024 + 1,
+                "estimated_hash_payload_bytes": 33_554_433,
+                "estimated_artifact_bytes": 100_663_297,
                 "estimated_artifact_file_count": 501,
                 "estimated_plugin_runtime_us": 5_000_001,
+                "pre_parallel_work_unit_count": 251,
+                "pre_parallel_dataset_hash_payload_bytes": 33_554_433,
+                "pre_parallel_dataset_hash_call_count": 129,
             }
         ),
         encoding="utf-8",
@@ -558,9 +660,9 @@ def test_research_workload_budget_script_fails_oversized_synthetic_estimate(tmp_
 
     assert proc.returncode != 0
     output = proc.stdout + proc.stderr
-    assert "suite=fast field=estimated_tick_events observed=25001 limit=25000" in output
-    assert "suite=fast field=estimated_audit_stream_rows observed=1 limit=0" in output
-    assert "suite=fast field=estimated_artifact_bytes observed=67108865 limit=67108864" in output
+    assert "suite=fast field=estimated_tick_events observed=250001 limit=250000" in output
+    assert "suite=fast field=estimated_audit_stream_rows observed=125001 limit=125000" in output
+    assert "suite=fast field=estimated_artifact_bytes observed=100663297 limit=100663296" in output
     assert "suite=fast field=estimated_plugin_runtime_us observed=5000001 limit=5000000" in output
 
 
@@ -590,6 +692,9 @@ def test_research_workload_budget_policy_requires_suite_fields(tmp_path: Path) -
                 "estimated_artifact_bytes": 1,
                 "estimated_artifact_file_count": 1,
                 "estimated_plugin_runtime_us": 1,
+                "pre_parallel_work_unit_count": 1,
+                "pre_parallel_dataset_hash_payload_bytes": 1,
+                "pre_parallel_dataset_hash_call_count": 1,
             }
         ),
         encoding="utf-8",
@@ -615,7 +720,7 @@ def test_research_workload_budget_policy_requires_suite_fields(tmp_path: Path) -
     assert "policy suite=fast field max_estimated_tick_events" in (proc.stdout + proc.stderr)
 
 
-def test_research_workload_budget_script_allows_legacy_estimate_without_plugin_runtime(tmp_path: Path) -> None:
+def test_research_workload_budget_script_requires_plugin_runtime_in_estimate_json(tmp_path: Path) -> None:
     estimate = tmp_path / "estimate.json"
     estimate.write_text(
         json.dumps(
@@ -638,7 +743,8 @@ def test_research_workload_budget_script_allows_legacy_estimate_without_plugin_r
         check=False,
     )
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode != 0
+    assert "estimated_plugin_runtime_us" in (proc.stdout + proc.stderr)
 
 
 def test_research_workload_budget_default_inventory_path_includes_artifact_bytes() -> None:

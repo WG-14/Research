@@ -225,6 +225,23 @@ def test_research_backtest_progress_prints_parent_serial_stages(capsys) -> None:
     assert "work_task_count=10" in out
 
 
+def test_research_backtest_progress_prints_run_dataset_fingerprint_stage(capsys) -> None:
+    _print_research_backtest_progress(
+        {
+            "stage": "pre_parallel_run_dataset_fingerprint_complete",
+            "candidate_count": 5,
+            "scenario_count": 2,
+            "split_count": 3,
+            "elapsed_s": 0.75,
+        }
+    )
+
+    out = capsys.readouterr().out
+    assert "stage=pre_parallel_run_dataset_fingerprint_complete" in out
+    assert "elapsed_s=0.75" in out
+    assert "split_count=3" in out
+
+
 def test_research_command_finished_helper_emits_success_notification(monkeypatch) -> None:
     calls = []
     sent_result = NotificationResult(
