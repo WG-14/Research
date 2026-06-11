@@ -160,6 +160,24 @@ jq '{market, interval, deployment_tier, dataset}' "$MANIFEST"
 
 The manifest should define the hypothesis, dataset split dates, snapshot id, parameter space, cost model, execution model, acceptance gate, and walk-forward configuration. Do not tune runtime env values until a backtest looks good.
 
+### New Manifest Split Selection
+
+When creating a new research manifest from the audited local WSL candle source, choose split ranges from clean segments that have no missing candles after readiness and data-quality checks.
+
+Do not select arbitrary ranges just because the full DB has high overall coverage. Overall DB coverage is not enough; every manifest split must pass split-level readiness.
+
+Use a `dataset.snapshot_id` that describes the clean-segment selection policy, for example:
+
+```text
+clean_segments_without_missing_candles_v1
+```
+
+Split guidance:
+
+- `train`: long enough for candidate exploration, `missing_count = 0`, and not overly concentrated in one market regime.
+- `validation`: separate from train, `missing_count = 0`, and usable as candidate-selection evidence.
+- `final_holdout`: time-separated from validation, `missing_count = 0`, and not repeatedly reused during candidate search.
+
 ## Preflight: Config and Readiness
 
 Inspect config first:
@@ -239,11 +257,48 @@ Inspect:
 - `walk_forward`
 - `next_actions`
 
+### Audited Candle Source Boundary
+
+For the audited local WSL research runtime, the reviewed long-range candle source for diagnostic research backtests is:
+
+```text
+$DATA_ROOT/paper/trades/paper.sqlite
+```
+
+Do not treat live DBs, live backups, retry logs, readiness reports, or backtest report artifacts as alternate candle source DBs. Those files are operational evidence or generated artifacts, not research backtest source datasets.
+
+This statement is scoped to the audited local WSL runtime. It must not turn `$HOME/bithumb-runtime` or any other example runtime root into a universal required storage location.
+
 ### Live SQLite Boundary
 
 `$DATA_ROOT/live/trades/live.sqlite` is runtime observation evidence. It may be sparse, partial, or live-runtime-specific. It is not the canonical long-range candle source for research backtests.
 
 Do not use `live.sqlite` as the research backtest source DB. Do not copy OHLCV values from `live.sqlite` over `paper.sqlite`. If live observations reveal a data issue, refresh or replace the research dataset through the reviewed paper/research data path, then rerun manifest-level readiness and data-quality checks.
+
+<details>
+<summary>Observed live vs paper SQLite comparison</summary>
+
+Non-normative observed comparison notes from one audited local WSL runtime:
+
+```text
+live DB path form:
+$DATA_ROOT/live/trades/live.sqlite
+
+market: KRW-BTC
+interval: 1m
+live_rows: 13,217
+live_first_utc: 2026-04-03 23:50:00
+live_last_utc: 2026-04-30 04:01:00
+
+same_ts_rows = 13,217
+ohlcv_diff_rows = 8
+live_only_ts = 0
+paper_only_ts_inside_live_range = 24,181
+```
+
+`live_only_ts = 0` does not make `live.sqlite` a better research source. The large `paper_only_ts_inside_live_range` count shows broader candle coverage in `paper.sqlite` for the compared interval. Differing OHLCV rows are another reason live observations must not be copied over paper candles.
+
+</details>
 
 ## Research Completion Notifications
 
@@ -414,11 +469,57 @@ Observed non-normative notes from one local WSL candle source:
 | --- | --- |
 | `market` | `KRW-BTC` |
 | `interval` | `1m` |
+| `rows` | `1,743,415` |
+| `distinct_ts` | `1,743,415` |
+| `duplicate_ts` | `0` |
 | `first_utc` | `2023-01-01 00:00:00` |
 | `last_utc` | `2026-05-01 23:59:00` |
-| `duplicate_ts` | `0` |
 
 The full DB was not treated as a completely dense 1-minute DB. Operators must rerun readiness and data-quality checks after refreshing or replacing datasets.
+
+<details>
+<summary>Observed research-only readiness PASS example</summary>
+
+This is non-normative, dataset-specific readiness evidence from one local WSL runtime:
+
+```text
+manifest:
+$DATA_ROOT/paper/reports/research/manifests/sma_filter_mh45_stop_loss_sweep_parallel_w4.json
+
+market = KRW-BTC
+interval = 1m
+deployment_tier = research_only
+dataset.source = sqlite_candles
+dataset.snapshot_id = clean_segments_without_missing_candles_v1
+
+train:
+2024-01-05 ~ 2024-02-10
+expected = 53,280
+present  = 53,280
+missing  = 0
+coverage = 100.0
+quality_status = PASS
+
+validation:
+2024-10-14 ~ 2024-11-27
+expected = 64,800
+present  = 64,800
+missing  = 0
+coverage = 100.0
+quality_status = PASS
+
+final_holdout:
+2026-01-01 ~ 2026-02-28
+expected = 84,960
+present  = 84,960
+missing  = 0
+coverage = 100.0
+quality_status = PASS
+```
+
+The example shows that a manifest can be usable even when the full DB has missing buckets, as long as the selected split ranges are clean. This is `research_only` evidence, not production readiness, paper approval, or live readiness.
+
+</details>
 
 <details>
 <summary>Observed missing candle notes</summary>
@@ -429,9 +530,17 @@ Non-normative observed gap notes:
 - `total_missing_buckets = 9,065`
 - `max_gap_buckets = 629`
 - representative large gaps:
-  - `629 minutes: 2025-03-23 15:31 ~ 2025-03-24 01:59 UTC`
-  - `420 minutes: 2026-03-29 16:00 ~ 2026-03-29 22:59 UTC`
-  - `389 minutes: 2025-10-04 16:01 ~ 2025-10-04 22:29 UTC`
+  - `629 minutes`
+    - `UTC: 2025-03-23 15:31 ~ 2025-03-24 01:59`
+    - `KST: 2025-03-24 00:31 ~ 2025-03-24 10:59`
+  - `420 minutes`
+    - `UTC: 2026-03-29 16:00 ~ 2026-03-29 22:59`
+    - `KST: 2026-03-30 01:00 ~ 2026-03-30 07:59`
+  - `389 minutes`
+    - `UTC: 2025-10-04 16:01 ~ 2025-10-04 22:29`
+    - `KST: 2025-10-05 01:01 ~ 2025-10-05 07:29`
+
+Treat these observed gaps as persistent dataset-quality evidence unless repaired by a reviewed backfill/retry process. Do not assume they are WSL copy errors. Do not weaken readiness gates because gaps remain after retries.
 
 </details>
 
@@ -542,7 +651,7 @@ Do not clean up by deleting random files inside the Git repository. Generated ru
 | `python backtest.py` exits 2 | Expected fail-closed smoke wrapper behavior | Use `research-validate --manifest <path>` |
 | empty or non-file `MANIFEST` | The command has no reviewed manifest input | Set `MANIFEST` to a non-empty JSON file under the repo-external runtime reports tree and run JSON/JQ inspection |
 | `research-readiness` fails | Dataset/env/calibration/walk-forward prerequisite is not ready | Inspect `next_actions`; fix data/env/manifest first |
-| split-level missing candles in readiness | The selected manifest split is not usable from the configured dataset source | Backfill, repair, or replace the research dataset; rerun readiness before backtest or validation |
+| split-level missing candles in readiness | The selected manifest split is not usable from the configured dataset source | Use clean segments; run targeted backfill/retry when appropriate; classify remaining gaps as persistent dataset evidence; do not use missing ranges for validation or final holdout; rerun readiness before backtest or validation |
 | `dataset_quality_gate_status=FAIL` | Dataset evidence failure | Fix dataset or manifest; do not tune strategy around it |
 | attempted use of `live.sqlite` as research backtest source | Live runtime observation evidence is being misused as research source data | Stop and use `$DATA_ROOT/paper/trades/paper.sqlite` or a reviewed immutable research dataset |
 | treating full-DB coverage as sufficient without manifest readiness | Whole-DB summaries do not prove selected split readiness | Run `research-readiness --manifest "$MANIFEST"` against the exact source DB and require split-level PASS |
@@ -552,6 +661,25 @@ Do not clean up by deleting random files inside the Git repository. Generated ru
 | `notification_policy=require_delivery notifier_unconfigured` | Strict notification policy was requested, but notifier configuration is missing or disabled | Configure notification settings in a repository-external env file or use `best_effort`/`disabled` for diagnostic runs |
 | `require_delivery` run exits non-zero after command completion | The research command completed, but the completion notification was not delivered | Inspect `DATA_ROOT/<mode>/reports/notifications/notification_events.jsonl`; fix notifier delivery before treating the run as strict-policy complete |
 | repo artifact checker fails | Runtime/research artifacts leaked into repo | Move outputs to managed runtime roots and fix path usage |
+
+## Minimum WSL Research Backtest Checklist
+
+```text
+[ ] Current shell is in the Git repository root.
+[ ] `MANIFEST` is set and points to a real JSON file.
+[ ] Manifest `market` is `KRW-BTC`.
+[ ] Manifest `interval` is `1m`.
+[ ] `DB_PATH` points to `$DATA_ROOT/paper/trades/paper.sqlite`.
+[ ] `research-readiness --json` was run for this exact manifest and DB.
+[ ] `status = PASS`.
+[ ] `next_actions = ["none"]`.
+[ ] Train split `missing_count = 0`.
+[ ] Validation split `missing_count = 0`.
+[ ] Final holdout split, when present, `missing_count = 0`.
+[ ] The result is understood as `research_only` when the manifest is `research_only`.
+[ ] Readiness JSON is preserved under repo-external runtime reports.
+[ ] Diagnostic backtest log path is repo-external.
+```
 
 ## Do Not Do
 
