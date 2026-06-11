@@ -912,7 +912,7 @@ cat > "$PROBE_MANIFEST" <<EOF
 {
   "experiment_id": "channel_breakout_parallel_probe_w8_$RUN_TS",
   "hypothesis": "8-worker WSL process and report-path probe; not strategy-quality evidence",
-  "strategy_name": "channel_breakout",
+  "strategy_name": "channel_breakout_with_regime_filter",
   "deployment_tier": "research_only",
   "market": "KRW-BTC",
   "interval": "1m",
@@ -923,15 +923,45 @@ cat > "$PROBE_MANIFEST" <<EOF
     "validation": {"start": "2024-10-14T00:00:00Z", "end": "2024-10-16T23:59:00Z"}
   },
   "parameter_space": {
+    "CHANNEL_BREAKOUT_LOOKBACK": [20],
+    "CHANNEL_BREAKOUT_RANGE_WINDOW": [10],
+    "CHANNEL_BREAKOUT_RANGE_RATIO_MIN": [1.2],
+    "CHANNEL_BREAKOUT_VOLUME_WINDOW": [10],
+    "CHANNEL_BREAKOUT_VOLUME_RATIO_MIN": [1.3],
+    "CHANNEL_BREAKOUT_REGIME_FILTER_ENABLED": [true],
     "ENTRY_MODE": ["immediate_breakout", "delayed_confirmation"],
     "CONFIRMATION_WINDOW_MIN": [1, 2],
     "PULLBACK_RATIO": [0.0, 0.001],
     "COOLDOWN_MIN": [0, 3],
-    "CHANNEL_WINDOW_MIN": [45],
-    "BREAKOUT_BUFFER_PCT": [0.001],
-    "STOP_LOSS_PCT": [0.01],
-    "TAKE_PROFIT_PCT": [0.02],
-    "MAX_HOLD_MIN": [240]
+    "MAX_TRADES_PER_DAY": [0],
+    "STRATEGY_EXIT_RULES": ["stop_loss,max_holding_time"],
+    "STRATEGY_EXIT_STOP_LOSS_RATIO": [0.006],
+    "STRATEGY_EXIT_MAX_HOLDING_MIN": [30]
+  },
+  "execution_model": {
+    "scenario_policy": "must_pass_base_and_survive_stress",
+    "scenarios": [
+      {
+        "scenario_role": "base",
+        "label": "research_realistic_bithumb_app_fee_0004_slippage_10bps",
+        "fee_rate": 0.0004,
+        "fee_source": "operator_declared_bithumb_app_fee",
+        "fee_authority_policy": "research_declared_runtime_reference",
+        "slippage_bps": 10,
+        "slippage_source": "research_assumption",
+        "promotable_as_base": false
+      },
+      {
+        "scenario_role": "stress",
+        "label": "research_stress_fee_0025_slippage_20bps",
+        "fee_rate": 0.0025,
+        "fee_source": "stress_assumption",
+        "fee_authority_policy": "not_promotable_as_runtime_base",
+        "slippage_bps": 20,
+        "slippage_source": "stress_assumption",
+        "promotable_as_base": false
+      }
+    ]
   },
   "cost_model": {"fee_bps": 5, "slippage_bps": 5},
   "acceptance_gate": {
@@ -960,39 +990,18 @@ COOLDOWN_MIN = [0, 3]
 ```
 
 All other listed parameters are single-valued. That yields
-`candidate_count=16`, `scenario_count=2`, and `work_units=32`.
+`candidate_count=16`, `scenario_count=2`, `work_units=32`, and
+`workers.max_workers=8`.
 
 Check the manifest math and worker request:
 
 ```bash
 jq '{
   experiment_id,
-  candidate_count: (
-    (.parameter_space.ENTRY_MODE | length)
-    * (.parameter_space.CONFIRMATION_WINDOW_MIN | length)
-    * (.parameter_space.PULLBACK_RATIO | length)
-    * (.parameter_space.COOLDOWN_MIN | length)
-    * (.parameter_space.CHANNEL_WINDOW_MIN | length)
-    * (.parameter_space.BREAKOUT_BUFFER_PCT | length)
-    * (.parameter_space.STOP_LOSS_PCT | length)
-    * (.parameter_space.TAKE_PROFIT_PCT | length)
-    * (.parameter_space.MAX_HOLD_MIN | length)
-  ),
-  scenario_count: ([.dataset.train, .dataset.validation] | length),
-  work_units: (
-    (
-      (.parameter_space.ENTRY_MODE | length)
-      * (.parameter_space.CONFIRMATION_WINDOW_MIN | length)
-      * (.parameter_space.PULLBACK_RATIO | length)
-      * (.parameter_space.COOLDOWN_MIN | length)
-      * (.parameter_space.CHANNEL_WINDOW_MIN | length)
-      * (.parameter_space.BREAKOUT_BUFFER_PCT | length)
-      * (.parameter_space.STOP_LOSS_PCT | length)
-      * (.parameter_space.TAKE_PROFIT_PCT | length)
-      * (.parameter_space.MAX_HOLD_MIN | length)
-    ) * ([.dataset.train, .dataset.validation] | length)
-  ),
-  workers: .research_run.execution.max_workers
+  candidate_count: ([.parameter_space[] | length] | reduce .[] as $n (1; . * $n)),
+  scenario_count: (.execution_model.scenarios | length),
+  work_units: (([.parameter_space[] | length] | reduce .[] as $n (1; . * $n)) * (.execution_model.scenarios | length)),
+  workers: .research_run.execution
 }' "$PROBE_MANIFEST"
 ```
 
