@@ -766,7 +766,8 @@ def run_stage_owned_decision_event_backtest(
             EquityPoint(ts=first_ts, equity=starting_cash, cash=ledger.cash, asset_qty=ledger.qty)
         )
     accumulator.update_equity(retained=retain_initial_equity, ts=first_ts, asset_qty=ledger.qty)
-    if tick_policy.should_record_audit_equity_mark(0):
+    has_audit_trace = getattr(run_context, "audit_trace", None) is not None
+    if has_audit_trace and tick_policy.should_record_audit_equity_mark(0):
         if _record_audit_equity_mark(
             audit_recorder,
             run_context,
@@ -838,7 +839,7 @@ def run_stage_owned_decision_event_backtest(
         ts=last_mark_ts,
         asset_qty=ledger.qty,
     )
-    if tick_policy.should_record_audit_equity_mark(len(prepared_ticks) + 1):
+    if has_audit_trace and tick_policy.should_record_audit_equity_mark(len(prepared_ticks) + 1):
         if _record_audit_equity_mark(
             audit_recorder,
             run_context,
@@ -1047,8 +1048,6 @@ def _record_audit_execution(
     input_hash: str,
     trade: dict[str, object],
 ) -> bool:
-    if getattr(run_context, "audit_trace", None) is None:
-        return False
     try:
         audit_recorder.record_execution(run_context, trade)
         return True
@@ -1075,8 +1074,6 @@ def _record_audit_decision(
     input_hash: str,
     decision_payload: dict[str, object],
 ) -> bool:
-    if getattr(run_context, "audit_trace", None) is None:
-        return False
     try:
         audit_recorder.record_decision(run_context, decision_payload)
         return True
@@ -1106,8 +1103,6 @@ def _record_audit_equity_mark(
     cash: float,
     asset_qty: float,
 ) -> bool:
-    if getattr(run_context, "audit_trace", None) is None:
-        return False
     try:
         audit_recorder.record_equity_mark(
             run_context,

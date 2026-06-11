@@ -3232,6 +3232,31 @@ def test_report_content_hash_ignores_host_dependent_memory_observability() -> No
     assert sha256_prefixed(report_content_hash_payload(changed)) == report["content_hash"]
 
 
+@pytest.mark.contract
+def test_report_content_hash_ignores_runtime_timing_observability() -> None:
+    candidate = _factory_candidate(
+        validation_resource_usage={
+            "stable_value_wall_seconds": 1.0,
+            "canonical_json_wall_seconds": 2.0,
+            "decision_payload_build_wall_seconds": 3.0,
+            "observability_wall_seconds": 4.0,
+        }
+    )
+    candidate["runtime_observability"] = {"candidate_profile_hash_total_wall_seconds": 5.0}
+    report = minimal_research_report(candidates=[candidate])
+    report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+
+    changed = json.loads(json.dumps(report))
+    usage = changed["candidates"][0]["validation_resource_usage"]
+    usage["stable_value_wall_seconds"] = 10.0
+    usage["canonical_json_wall_seconds"] = 20.0
+    usage["decision_payload_build_wall_seconds"] = 30.0
+    usage["observability_wall_seconds"] = 40.0
+    changed["candidates"][0]["runtime_observability"]["candidate_profile_hash_total_wall_seconds"] = 50.0
+
+    assert sha256_prefixed(report_content_hash_payload(changed)) == report["content_hash"]
+
+
 @pytest.mark.slow_research
 @pytest.mark.integration
 @pytest.mark.nightly

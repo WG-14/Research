@@ -636,10 +636,15 @@ def test_summary_derived_candidate_resource_usage_is_bounded() -> None:
                 "scenario_id": "scenario_001",
                 "train_resource_usage": {
                     "behavior_hash": "sha256:train-behavior",
+                    "canonical_hash_payload_bytes": 123_456,
+                    "canonical_payload_hash_call_count": 10,
                     "equity_curve_hash": "sha256:train-equity",
+                    "observability_policy": "summary_aggregate",
                     "nested": {"stage_trace": [{"stage": "nested"}]},
                     "stage_trace": [{"stage": "train"}],
                     "stage_trace_hash": "sha256:stage-trace",
+                    "stable_value_call_count": 20,
+                    "tick_observability_policy": {"name": "summary_aggregate"},
                 },
                 "validation_execution_metadata": [{"ts": 1, "fill": "large"}],
                 "validation_equity_curve": [{"ts": 1, "equity": 1.0}],
@@ -659,6 +664,11 @@ def test_summary_derived_candidate_resource_usage_is_bounded() -> None:
     usage = scenario["train_resource_usage"]
     assert "stage_trace" not in usage
     assert "stage_trace" not in usage["nested"]
+    assert "canonical_hash_payload_bytes" not in usage
+    assert "canonical_payload_hash_call_count" not in usage
+    assert "observability_policy" not in usage
+    assert "stable_value_call_count" not in usage
+    assert "tick_observability_policy" not in usage
     assert usage["stage_trace_hash"] == "sha256:stage-trace"
     assert usage["nested"]["stage_trace_count"] == 1
     assert scenario["validation_equity_curve"] == []

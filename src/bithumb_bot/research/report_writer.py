@@ -724,9 +724,6 @@ def _derived_scenario_index_summary(scenario: Any, *, include_compact: bool = Tr
         "failure_artifact_ref",
         "failure_artifact_path",
         "retained_detail_summary",
-        "train_resource_usage",
-        "validation_resource_usage",
-        "final_holdout_resource_usage",
         "train_audit_trace_index",
         "validation_audit_trace_index",
         "final_holdout_audit_trace_index",
@@ -744,8 +741,8 @@ def _derived_scenario_index_summary(scenario: Any, *, include_compact: bool = Tr
         "validation_resource_usage",
         "final_holdout_resource_usage",
     ):
-        if key in summary:
-            summary[key] = summarize_resource_usage_for_candidate_artifact(summary[key])
+        if key in scenario:
+            summary[key] = summarize_resource_usage_for_candidate_artifact(scenario[key])
     summary["detail_artifact_ref"] = scenario.get("detail_artifact_ref")
     summary["scenario_payload_hash"] = sha256_prefixed(
         scenario_evidence_hash_inputs(scenario),
@@ -977,11 +974,40 @@ def _bounded_collection_evidence(value: Any) -> dict[str, Any]:
     }
 
 
-def summarize_resource_usage_for_candidate_artifact(resource_usage: Any) -> Any:
+def summarize_resource_usage_for_candidate_artifact(
+    resource_usage: Any,
+    *,
+    drop_runtime_only: bool = True,
+) -> Any:
     if not isinstance(resource_usage, dict):
         return resource_usage
     summary: dict[str, Any] = {}
+    runtime_only_keys = {
+        "baseline_rss_mb",
+        "canonical_json_wall_seconds",
+        "canonical_evidence_policy",
+        "canonical_hash_payload_bytes",
+        "canonical_payload_hash_call_count",
+        "current_rss_mb",
+        "decision_payload_build_wall_seconds",
+        "estimated_full_tick_canonical_enabled",
+        "largest_canonical_hash_label",
+        "largest_canonical_hash_payload_bytes",
+        "memory_measurement",
+        "memory_sample_source",
+        "observability_policy",
+        "observability_wall_seconds",
+        "peak_rss_mb",
+        "peak_rss_platform",
+        "peak_rss_source_units",
+        "rss_delta_mb",
+        "stable_value_wall_seconds",
+        "stable_value_call_count",
+        "tick_observability_policy",
+    }
     for key, value in resource_usage.items():
+        if drop_runtime_only and key in runtime_only_keys:
+            continue
         if key in {
             "applied_resource_limits",
             "memory_sampling_policy",
@@ -1003,7 +1029,10 @@ def summarize_resource_usage_for_candidate_artifact(resource_usage: Any) -> Any:
                 )
             continue
         if isinstance(value, dict):
-            summary[key] = summarize_resource_usage_for_candidate_artifact(value)
+            summary[key] = summarize_resource_usage_for_candidate_artifact(
+                value,
+                drop_runtime_only=False,
+            )
             continue
         if isinstance(value, (list, tuple)):
             summary[f"{key}_count"] = len(value)

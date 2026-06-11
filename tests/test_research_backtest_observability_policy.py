@@ -45,6 +45,11 @@ def _events_for_dataset(dataset: DatasetSnapshot) -> tuple[ResearchDecisionEvent
     )
 
 
+def _dataset_and_events(count: int = 6) -> tuple[DatasetSnapshot, tuple[ResearchDecisionEvent, ...]]:
+    dataset = _small_dataset_snapshot(count)
+    return dataset, _events_for_dataset(dataset)
+
+
 def _run(
     *,
     context: BacktestRunContext,
