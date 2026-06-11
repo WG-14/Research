@@ -21,6 +21,9 @@ REQUIRED_LIMIT_FIELDS = (
     "max_pre_parallel_work_unit_count",
     "max_pre_parallel_dataset_hash_payload_bytes",
     "max_pre_parallel_dataset_hash_call_count",
+    "max_estimated_tick_canonical_hash_call_count",
+    "max_estimated_tick_canonical_hash_payload_bytes",
+    "max_estimated_decision_payload_bytes",
 )
 ESTIMATE_TO_LIMIT_FIELDS = (
     ("estimated_tick_events", "max_estimated_tick_events"),
@@ -33,6 +36,9 @@ ESTIMATE_TO_LIMIT_FIELDS = (
     ("pre_parallel_work_unit_count", "max_pre_parallel_work_unit_count"),
     ("pre_parallel_dataset_hash_payload_bytes", "max_pre_parallel_dataset_hash_payload_bytes"),
     ("pre_parallel_dataset_hash_call_count", "max_pre_parallel_dataset_hash_call_count"),
+    ("estimated_tick_canonical_hash_call_count", "max_estimated_tick_canonical_hash_call_count"),
+    ("estimated_tick_canonical_hash_payload_bytes", "max_estimated_tick_canonical_hash_payload_bytes"),
+    ("estimated_decision_payload_bytes", "max_estimated_decision_payload_bytes"),
 )
 
 
@@ -122,6 +128,15 @@ def main() -> int:
             "pre_parallel_work_unit_count": summary["total_pre_parallel_work_unit_count"],
             "pre_parallel_dataset_hash_payload_bytes": summary["total_pre_parallel_dataset_hash_payload_bytes"],
             "pre_parallel_dataset_hash_call_count": summary["total_pre_parallel_dataset_hash_call_count"],
+            "estimated_tick_canonical_hash_call_count": summary.get(
+                "total_estimated_tick_canonical_hash_call_count",
+                0,
+            ),
+            "estimated_tick_canonical_hash_payload_bytes": summary.get(
+                "total_estimated_tick_canonical_hash_payload_bytes",
+                0,
+            ),
+            "estimated_decision_payload_bytes": summary.get("total_estimated_decision_payload_bytes", 0),
         }
 
     violations = check_estimate(estimate, budgets[args.suite])

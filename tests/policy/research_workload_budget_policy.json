@@ -12,7 +12,10 @@
       "max_estimated_plugin_runtime_us": 5000000,
       "max_pre_parallel_work_unit_count": 250,
       "max_pre_parallel_dataset_hash_payload_bytes": 33554432,
-      "max_pre_parallel_dataset_hash_call_count": 128
+      "max_pre_parallel_dataset_hash_call_count": 128,
+      "max_estimated_tick_canonical_hash_call_count": 500000,
+      "max_estimated_tick_canonical_hash_payload_bytes": 67108864,
+      "max_estimated_decision_payload_bytes": 134217728
     },
     "research-nightly": {
       "max_estimated_tick_events": 2500000,
@@ -24,7 +27,10 @@
       "max_estimated_plugin_runtime_us": 300000000,
       "max_pre_parallel_work_unit_count": 20000,
       "max_pre_parallel_dataset_hash_payload_bytes": 268435456,
-      "max_pre_parallel_dataset_hash_call_count": 128
+      "max_pre_parallel_dataset_hash_call_count": 128,
+      "max_estimated_tick_canonical_hash_call_count": 5000000,
+      "max_estimated_tick_canonical_hash_payload_bytes": 536870912,
+      "max_estimated_decision_payload_bytes": 1073741824
     },
     "full": {
       "max_estimated_tick_events": 3000000,
@@ -36,7 +42,10 @@
       "max_estimated_plugin_runtime_us": 360000000,
       "max_pre_parallel_work_unit_count": 25000,
       "max_pre_parallel_dataset_hash_payload_bytes": 335544320,
-      "max_pre_parallel_dataset_hash_call_count": 128
+      "max_pre_parallel_dataset_hash_call_count": 128,
+      "max_estimated_tick_canonical_hash_call_count": 6000000,
+      "max_estimated_tick_canonical_hash_payload_bytes": 671088640,
+      "max_estimated_decision_payload_bytes": 1342177280
     }
   }
 }

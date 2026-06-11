@@ -12,6 +12,7 @@ from .experiment_manifest import ExecutionScenario, ExperimentManifest, required
 from .hashing import sha256_prefixed
 from .parameter_space import candidate_id, iter_parameter_candidates
 from .process_runtime import process_policy_observability
+from .backtest_types import resolve_tick_observability_policy
 
 
 @dataclass(frozen=True)
@@ -146,6 +147,18 @@ def build_research_execution_plan(
         scenario_count=len(execution_scenarios),
         split_count=split_count,
     )
+    canonical_estimate = estimate_canonical_observability_cost(
+        estimated_tick_events=plan["estimated_candle_evaluations"],
+        report_detail=manifest.research_run.report_detail,
+        diagnostic_mode=manifest.research_run.diagnostic_mode,
+        audit_trail=manifest.research_run.audit_trail,
+        policy_materialization_mode=(
+            "research_promotion"
+            if manifest.research_run.diagnostic_mode == "promotion_candidate"
+            and manifest.research_run.audit_trail.complete_external
+            else "research_exploratory"
+        ),
+    )
     pre_parallel_dataset_hash_payload_bytes = _estimated_pre_parallel_dataset_hash_payload_bytes(
         snapshots=snapshots,
         split_names=split_names,
@@ -187,6 +200,7 @@ def build_research_execution_plan(
         "estimated_audit_stream_rows": estimated_audit_stream_rows,
         "estimated_artifact_write_count": estimated_artifact_write_count,
         "estimated_hash_payload_bytes": estimated_hash_payload_bytes,
+        **canonical_estimate,
         "pre_parallel_work_unit_count": pre_parallel_work_unit_count,
         "pre_parallel_split_hash_count": pre_parallel_split_hash_count,
         "pre_parallel_dataset_hash_payload_bytes": pre_parallel_dataset_hash_payload_bytes,
@@ -403,6 +417,49 @@ def _estimated_hash_payload_bytes(
         + int(candidate_count) * int(scenario_count) * int(split_count) * 512
         + 4096
     )
+
+
+def estimate_canonical_observability_cost(
+    *,
+    estimated_tick_events: int,
+    report_detail: str,
+    diagnostic_mode: str = "promotion_candidate",
+    audit_trail: Any | None = None,
+    policy_materialization_mode: str = "research_exploratory",
+) -> dict[str, Any]:
+    policy = resolve_tick_observability_policy(
+        report_detail=report_detail,
+        diagnostic_mode=diagnostic_mode,
+        audit_trail=audit_trail,
+        policy_materialization_mode=policy_materialization_mode,
+    )
+    tick_events = int(estimated_tick_events)
+    if policy.full_tick_canonical_enabled:
+        calls_per_tick = 2
+        payload_bytes_per_tick = 8192
+        decision_payload_bytes = tick_events * 8192
+    elif policy.name == "diagnostic_sampled":
+        sampled = min(tick_events, int(policy.diagnostic_sample_limit))
+        calls_per_tick = 0
+        payload_bytes_per_tick = 768
+        decision_payload_bytes = tick_events * 768 + sampled * 4096
+    else:
+        calls_per_tick = 0
+        payload_bytes_per_tick = 512
+        decision_payload_bytes = tick_events * 512
+    estimated_calls = (
+        tick_events * calls_per_tick
+        if policy.full_tick_canonical_enabled
+        else max(0, min(tick_events, int(policy.diagnostic_sample_limit)) if policy.name == "diagnostic_sampled" else 0)
+    )
+    estimated_payload_bytes = int(estimated_calls * payload_bytes_per_tick)
+    return {
+        "estimated_tick_canonical_hash_call_count": int(estimated_calls),
+        "estimated_tick_canonical_hash_payload_bytes": estimated_payload_bytes,
+        "estimated_decision_payload_bytes": int(decision_payload_bytes),
+        "estimated_observability_mode": policy.name,
+        "estimated_full_tick_canonical_enabled": bool(policy.full_tick_canonical_enabled),
+    }
 
 
 def _estimated_pre_parallel_dataset_hash_payload_bytes(

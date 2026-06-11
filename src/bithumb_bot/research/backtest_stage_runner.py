@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
 from . import backtest_support as support
-from bithumb_bot.canonical_decision import canonical_payload_hash
+from bithumb_bot.canonical_decision import canonical_payload_hash, observe_canonical_decisions
 
 from .artifact_store import ArtifactBudgetExceeded
 from .audit_trace_recorder import AuditTraceRecorder
@@ -56,6 +57,23 @@ class TickPreparation:
     position_snapshot: Any
 
 
+@dataclass(frozen=True)
+class BacktestCanonicalContext:
+    dataset_content_hash: str
+    strategy_spec_hash: str
+    strategy_plugin_contract_hash: str
+    exit_policy_hash: str
+    active_exit_policy_config_hash: str
+    execution_timing_policy_hash: str
+    empty_fill_hash: str
+    flat_position_state_hash: str
+    empty_order_rules_hash: str
+    fee_model_hash: str
+    slippage_model_hash: str
+    candidate_profile_hash: str
+    parameter_values_hash: str
+
+
 @dataclass
 class BacktestEventProcessor:
     """Coordinates one replay tick through the stage-owned authority path."""
@@ -88,6 +106,7 @@ class BacktestEventProcessor:
     metrics_collector: Any | None
     experiment_recorder: Any | None
     dataset_content_hash: str
+    canonical_context: BacktestCanonicalContext
     warnings: list[str]
     decisions: list[dict[str, object]]
     regime_snapshots: list[dict[str, object]]
@@ -157,12 +176,14 @@ class BacktestEventProcessor:
                 "raw_signal": event.raw_signal,
                 "final_signal": event.final_signal,
                 "reason": event.reason,
-            }
+            },
+            label="replay_tick",
         )
         position_snapshot_hash = canonical_payload_hash(
             prepared.position_snapshot.as_dict()
             if hasattr(prepared.position_snapshot, "as_dict")
-            else vars(prepared.position_snapshot)
+            else vars(prepared.position_snapshot),
+            label="position_snapshot",
         )
         strategy_envelope = self.strategy_evaluator.evaluate(
             tick,
@@ -188,7 +209,8 @@ class BacktestEventProcessor:
                     if strategy_envelope.decision is not None
                     else ""
                 ),
-            }
+            },
+            label="strategy_decision",
         )
         self.trace_recorder.record_strategy(
             replay_tick_hash=replay_tick_hash,
@@ -306,17 +328,17 @@ class BacktestEventProcessor:
                 self.warnings.append(planning_error)
                 outcome = None
                 execution_evidence = blocked_execution_evidence(planning_error)
-                planning_hash = canonical_payload_hash(execution_evidence)
+                planning_hash = canonical_payload_hash(execution_evidence, label="execution_planning_blocked")
                 self.trace_recorder.record_execution_planning(
                     input_hash=risk.risk_gate_hash,
                     execution_plan_hash=planning_hash,
                     reason_code=planning_error,
                 )
                 execution_plan_hash = planning_hash
-                fill_hash = canonical_payload_hash({})
+                fill_hash = self.canonical_context.empty_fill_hash
             else:
                 self.warnings.extend(planning.warnings)
-                planning_hash = canonical_payload_hash(planning.evidence)
+                planning_hash = canonical_payload_hash(planning.evidence, label="execution_planning")
                 self.trace_recorder.record_execution_planning(
                     input_hash=risk.risk_gate_hash,
                     execution_plan_hash=planning_hash,
@@ -371,13 +393,14 @@ class BacktestEventProcessor:
                         self.run_context,
                         self.warnings,
                         self.trace_recorder,
-                        input_hash=canonical_payload_hash(self.ledger.trade_ledger[-1]),
+                        input_hash=canonical_payload_hash(self.ledger.trade_ledger[-1], label="audit_execution_trade"),
                         trade=self.ledger.trade_ledger[-1],
                     )
                     self.ledger.apply_pending_fills(prepared.decision_boundary_ts)
-                execution_plan_hash = canonical_payload_hash(execution_evidence)
+                execution_plan_hash = canonical_payload_hash(execution_evidence, label="execution_evidence")
                 fill_hash = canonical_payload_hash(
-                    outcome.fill.as_dict() if outcome.fill is not None and hasattr(outcome.fill, "as_dict") else {}
+                    outcome.fill.as_dict() if outcome.fill is not None and hasattr(outcome.fill, "as_dict") else {},
+                    label="execution_fill",
                 )
         else:
             outcome = None
@@ -414,7 +437,7 @@ class BacktestEventProcessor:
                         raise
                     self.warnings.append(planning_error)
                     execution_evidence = blocked_execution_evidence(planning_error)
-                    planning_hash = canonical_payload_hash(execution_evidence)
+                    planning_hash = canonical_payload_hash(execution_evidence, label="execution_planning_blocked")
                     self.trace_recorder.record_execution_planning(
                         input_hash=risk.risk_gate_hash,
                         execution_plan_hash=planning_hash,
@@ -423,7 +446,7 @@ class BacktestEventProcessor:
                 else:
                     self.warnings.extend(planning.warnings)
                     execution_evidence = dict(planning.evidence)
-                    planning_hash = canonical_payload_hash(execution_evidence)
+                    planning_hash = canonical_payload_hash(execution_evidence, label="execution_planning_hold")
                     self.trace_recorder.record_execution_planning(
                         input_hash=risk.risk_gate_hash,
                         execution_plan_hash=planning_hash,
@@ -433,8 +456,8 @@ class BacktestEventProcessor:
                     )
             else:
                 execution_evidence = blocked_execution_evidence(risk_decision.reason_code)
-            execution_plan_hash = canonical_payload_hash(execution_evidence)
-            fill_hash = canonical_payload_hash({})
+            execution_plan_hash = canonical_payload_hash(execution_evidence, label="execution_evidence")
+            fill_hash = self.canonical_context.empty_fill_hash
         self.trace_recorder.record_execution(
             input_hash=risk.risk_gate_hash if action not in {"BUY", "SELL"} else execution_plan_hash,
             execution_plan_hash=execution_plan_hash,
@@ -495,15 +518,29 @@ class BacktestEventProcessor:
         ledger: LedgerStageResult,
         event_number: int,
     ) -> ObservabilityStageResult:
+        started = time.perf_counter()
         event = prepared.tick.event
         strategy = ledger.execution.risk.strategy
         strategy_envelope = strategy.envelope
         risk_decision = ledger.execution.risk.decision
         policy_decision = strategy_envelope.decision
+        policy = self.run_context.tick_observability_policy()
+        retain_decision = self.accumulator.retain_decision()
+        full_payload_required = bool(
+            policy.should_build_full_payload(event_number)
+            and (
+                retain_decision
+                or policy.strict_required_hashes
+                or policy.audit_decision == "per_tick"
+            )
+        )
+        detail_level = "full_canonical" if full_payload_required else "summary"
+        build_started = time.perf_counter()
         decision_payload = _build_decision_observability_payload(
             payload_builder=self.payload_builder,
             trace_recorder=self.trace_recorder,
             warnings=self.warnings,
+            detail_level=detail_level,
             dataset=self.dataset,
             dataset_content_hash=self.dataset_content_hash,
             parameter_values=self.parameter_values,
@@ -527,37 +564,48 @@ class BacktestEventProcessor:
             sellable_qty=ledger.execution.decision_payload_sellable_qty,
             execution_evidence=ledger.execution.evidence,
             input_hash=ledger.execution.execution_plan_hash,
+            canonical_context=self.canonical_context,
         )
-        retain_decision = self.accumulator.retain_decision()
+        self.accumulator.record_decision_payload_build_time(time.perf_counter() - build_started)
+        decision_payload["canonical_evidence_policy"] = policy.name
+        decision_payload["decision_payload_detail_level"] = detail_level
         if retain_decision:
             self.decisions.append(decision_payload)
         self.accumulator.update_decision(decision_payload, retained=retain_decision)
-        _record_audit_decision(
-            self.audit_recorder,
-            self.run_context,
-            self.warnings,
-            self.trace_recorder,
-            input_hash=canonical_payload_hash(decision_payload),
-            decision_payload=decision_payload,
-        )
-        _record_audit_equity_mark(
-            self.audit_recorder,
-            self.run_context,
-            self.warnings,
-            self.trace_recorder,
-            input_hash=canonical_payload_hash(
-                {
-                    "stage": "tick_equity",
-                    "ts": ledger.mark_boundary_ts,
-                    "cash": ledger.mark_cash,
-                    "asset_qty": ledger.mark_qty,
-                }
-            ),
-            ts=ledger.mark_boundary_ts,
-            equity=ledger.mark_cash + ledger.mark_qty * float(prepared.tick.candle.close),
-            cash=ledger.mark_cash,
-            asset_qty=ledger.mark_qty,
-        )
+        has_audit_trace = getattr(self.run_context, "audit_trace", None) is not None
+        if has_audit_trace and policy.should_record_audit_decision(event_number):
+            recorded = _record_audit_decision(
+                self.audit_recorder,
+                self.run_context,
+                self.warnings,
+                self.trace_recorder,
+                input_hash=canonical_payload_hash(decision_payload, label="audit_decision_payload"),
+                decision_payload=decision_payload,
+            )
+            if recorded:
+                self.accumulator.record_audit_decision_event()
+        if has_audit_trace and policy.should_record_audit_equity_mark(event_number):
+            recorded = _record_audit_equity_mark(
+                self.audit_recorder,
+                self.run_context,
+                self.warnings,
+                self.trace_recorder,
+                input_hash=canonical_payload_hash(
+                    {
+                        "stage": "tick_equity",
+                        "ts": ledger.mark_boundary_ts,
+                        "cash": ledger.mark_cash,
+                        "asset_qty": ledger.mark_qty,
+                    },
+                    label="audit_tick_equity",
+                ),
+                ts=ledger.mark_boundary_ts,
+                equity=ledger.mark_cash + ledger.mark_qty * float(prepared.tick.candle.close),
+                cash=ledger.mark_cash,
+                asset_qty=ledger.mark_qty,
+            )
+            if recorded:
+                self.accumulator.record_audit_equity_event()
         _flush_stage_trace_observability(
             self.trace_recorder,
             self.warnings,
@@ -566,6 +614,7 @@ class BacktestEventProcessor:
             experiment_recorder=self.experiment_recorder,
             event_number=event_number,
         )
+        self.accumulator.record_observability_time(time.perf_counter() - started)
         return ObservabilityStageResult(
             ledger=ledger,
             decision_payload=decision_payload,
@@ -611,6 +660,7 @@ def run_stage_owned_decision_event_backtest(
     result_assembler = BacktestResultAssembler()
     candles = dataset.candles
     run_context = context or support.BacktestRunContext(report_detail="full")
+    tick_policy = run_context.tick_observability_policy()
     timing_policy = execution_timing_policy or ExecutionTimingPolicy()
     policy = portfolio_policy or legacy_research_portfolio_policy()
     effective_risk_policy = risk_policy or getattr(run_context, "risk_policy", None)
@@ -658,6 +708,39 @@ def run_stage_owned_decision_event_backtest(
         ).ticks
 
     dataset_content_hash = dataset.content_hash()
+    canonical_context = BacktestCanonicalContext(
+        dataset_content_hash=dataset_content_hash,
+        strategy_spec_hash=strategy_spec.spec_hash(),
+        strategy_plugin_contract_hash=strategy_plugin.contract_hash(),
+        exit_policy_hash=active_exit_policy_hash,
+        active_exit_policy_config_hash=active_exit_policy_config_hash,
+        execution_timing_policy_hash=canonical_payload_hash(
+            timing_policy.as_dict(),
+            label="invariant_execution_timing_policy",
+        ),
+        empty_fill_hash=canonical_payload_hash({}, label="invariant_empty_fill"),
+        flat_position_state_hash=canonical_payload_hash(
+            {"comparison_state": "flat_no_dust_no_position"},
+            label="invariant_flat_position_state",
+        ),
+        empty_order_rules_hash=canonical_payload_hash({}, label="invariant_empty_order_rules"),
+        fee_model_hash=canonical_payload_hash({"fee_rate": float(fee_rate)}, label="invariant_fee_model"),
+        slippage_model_hash=canonical_payload_hash(
+            {"slippage_bps": float(slippage_bps)},
+            label="invariant_slippage_model",
+        ),
+        candidate_profile_hash=canonical_payload_hash(
+            {
+                "strategy_name": str(strategy_plugin.name),
+                "parameter_values": parameter_values,
+                "strategy_spec_hash": strategy_spec.spec_hash(),
+                "strategy_plugin_contract_hash": strategy_plugin.contract_hash(),
+                "exit_policy_hash": active_exit_policy_hash,
+            },
+            label="invariant_candidate_profile",
+        ),
+        parameter_values_hash=canonical_payload_hash(parameter_values, label="invariant_parameter_values"),
+    )
     decisions: list[dict[str, object]] = []
     warnings: list[str] = []
     regime_snapshots: list[dict[str, object]] = []
@@ -671,17 +754,22 @@ def run_stage_owned_decision_event_backtest(
             EquityPoint(ts=first_ts, equity=starting_cash, cash=ledger.cash, asset_qty=ledger.qty)
         )
     accumulator.update_equity(retained=retain_initial_equity, ts=first_ts, asset_qty=ledger.qty)
-    _record_audit_equity_mark(
-        audit_recorder,
-        run_context,
-        warnings,
-        trace_recorder,
-        input_hash=canonical_payload_hash({"stage": "initial_equity", "ts": first_ts}),
-        ts=first_ts,
-        equity=starting_cash,
-        cash=ledger.cash,
-        asset_qty=ledger.qty,
-    )
+    if tick_policy.should_record_audit_equity_mark(0):
+        if _record_audit_equity_mark(
+            audit_recorder,
+            run_context,
+            warnings,
+            trace_recorder,
+            input_hash=canonical_payload_hash(
+                {"stage": "initial_equity", "ts": first_ts},
+                label="audit_initial_equity",
+            ),
+            ts=first_ts,
+            equity=starting_cash,
+            cash=ledger.cash,
+            asset_qty=ledger.qty,
+        ):
+            accumulator.record_audit_equity_event()
 
     event_processor = BacktestEventProcessor(
         dataset=dataset,
@@ -712,15 +800,18 @@ def run_stage_owned_decision_event_backtest(
         metrics_collector=metrics_collector,
         experiment_recorder=experiment_recorder,
         dataset_content_hash=dataset_content_hash,
+        canonical_context=canonical_context,
         warnings=warnings,
         decisions=decisions,
         regime_snapshots=regime_snapshots,
         regime_coverage_accumulator=regime_coverage_accumulator,
     )
-    for event_number, tick in enumerate(prepared_ticks, start=1):
-        event_processor.process_tick(tick=tick, event_number=event_number)
-        accumulator.maybe_emit_heartbeat(event_number)
-        accumulator.check_limits(candles_processed=event_number, trades=ledger.trade_ledger)
+    with observe_canonical_decisions() as canonical_observer:
+        for event_number, tick in enumerate(prepared_ticks, start=1):
+            event_processor.process_tick(tick=tick, event_number=event_number)
+            accumulator.maybe_emit_heartbeat(event_number)
+            accumulator.check_limits(candles_processed=event_number, trades=ledger.trade_ledger)
+        accumulator.record_canonical_observability(canonical_observer.as_dict())
 
     last = candles[-1]
     last_mark_ts = candle_close_ts(last, interval=dataset.interval)
@@ -735,24 +826,27 @@ def run_stage_owned_decision_event_backtest(
         ts=last_mark_ts,
         asset_qty=ledger.qty,
     )
-    _record_audit_equity_mark(
-        audit_recorder,
-        run_context,
-        warnings,
-        trace_recorder,
-        input_hash=canonical_payload_hash(
-            {
-                "stage": "final_equity",
-                "ts": last_mark_ts,
-                "cash": ledger.cash,
-                "asset_qty": ledger.qty,
-            }
-        ),
-        ts=last_mark_ts,
-        equity=finalization.final_equity,
-        cash=ledger.cash,
-        asset_qty=ledger.qty,
-    )
+    if tick_policy.should_record_audit_equity_mark(len(prepared_ticks) + 1):
+        if _record_audit_equity_mark(
+            audit_recorder,
+            run_context,
+            warnings,
+            trace_recorder,
+            input_hash=canonical_payload_hash(
+                {
+                    "stage": "final_equity",
+                    "ts": last_mark_ts,
+                    "cash": ledger.cash,
+                    "asset_qty": ledger.qty,
+                },
+                label="audit_final_equity",
+            ),
+            ts=last_mark_ts,
+            equity=finalization.final_equity,
+            cash=ledger.cash,
+            asset_qty=ledger.qty,
+        ):
+            accumulator.record_audit_equity_event()
 
     return result_assembler.assemble(
         dataset=dataset,
@@ -776,6 +870,7 @@ def _build_decision_observability_payload(
     payload_builder: DecisionPayloadBuilder,
     trace_recorder: StageTraceRecorder,
     warnings: list[str],
+    detail_level: str,
     dataset: Any,
     dataset_content_hash: str,
     parameter_values: dict[str, Any],
@@ -799,9 +894,11 @@ def _build_decision_observability_payload(
     sellable_qty: float,
     execution_evidence: dict[str, object],
     input_hash: str,
+    canonical_context: BacktestCanonicalContext | None = None,
 ) -> dict[str, object]:
     try:
         payload = payload_builder.build(
+            detail_level=detail_level,
             dataset=dataset,
             dataset_content_hash=dataset_content_hash,
             parameter_values=parameter_values,
@@ -823,6 +920,7 @@ def _build_decision_observability_payload(
             regime_snapshot=regime_snapshot,
             qty=qty,
             sellable_qty=sellable_qty,
+            canonical_context=canonical_context,
         )
         payload.update(dict(execution_evidence))
         if not bool(getattr(strategy_plugin, "is_promotion_grade", False)):
@@ -936,9 +1034,12 @@ def _record_audit_execution(
     *,
     input_hash: str,
     trade: dict[str, object],
-) -> None:
+) -> bool:
+    if getattr(run_context, "audit_trace", None) is None:
+        return False
     try:
         audit_recorder.record_execution(run_context, trade)
+        return True
     except ArtifactBudgetExceeded:
         raise
     except Exception as exc:
@@ -950,6 +1051,7 @@ def _record_audit_execution(
             input_hash=input_hash,
             exc=exc,
         )
+        return False
 
 
 def _record_audit_decision(
@@ -960,9 +1062,12 @@ def _record_audit_decision(
     *,
     input_hash: str,
     decision_payload: dict[str, object],
-) -> None:
+) -> bool:
+    if getattr(run_context, "audit_trace", None) is None:
+        return False
     try:
         audit_recorder.record_decision(run_context, decision_payload)
+        return True
     except ArtifactBudgetExceeded:
         raise
     except Exception as exc:
@@ -974,6 +1079,7 @@ def _record_audit_decision(
             input_hash=input_hash,
             exc=exc,
         )
+        return False
 
 
 def _record_audit_equity_mark(
@@ -987,7 +1093,9 @@ def _record_audit_equity_mark(
     equity: float,
     cash: float,
     asset_qty: float,
-) -> None:
+) -> bool:
+    if getattr(run_context, "audit_trace", None) is None:
+        return False
     try:
         audit_recorder.record_equity_mark(
             run_context,
@@ -996,6 +1104,7 @@ def _record_audit_equity_mark(
             cash=cash,
             asset_qty=asset_qty,
         )
+        return True
     except ArtifactBudgetExceeded:
         raise
     except Exception as exc:
@@ -1007,6 +1116,7 @@ def _record_audit_equity_mark(
             input_hash=input_hash,
             exc=exc,
         )
+        return False
 
 
 def _flush_stage_trace_observability(

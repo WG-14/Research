@@ -137,6 +137,96 @@ def test_execution_plan_reports_pre_parallel_workload_fields() -> None:
     assert estimate["pre_parallel_parent_serial_estimate_status"] == "precomputed_split_hashes"
 
 
+def test_workload_estimate_includes_canonical_observability_fields() -> None:
+    manifest = parse_manifest(_manifest())
+    snapshots = {name: _snapshot(name) for name in ("train", "validation", "final_holdout")}
+    quality_reports = {name: _quality_report(name) for name in snapshots}
+
+    plan = build_research_execution_plan(
+        manifest=manifest,
+        snapshots=snapshots,
+        quality_reports=quality_reports,
+        db_path="/tmp/unit.sqlite",
+        repository_version="test",
+        created_at="2026-06-11T00:00:00+00:00",
+    )
+    estimate = plan.payload["workload_estimate"]
+
+    assert "estimated_tick_canonical_hash_call_count" in estimate
+    assert "estimated_tick_canonical_hash_payload_bytes" in estimate
+    assert "estimated_decision_payload_bytes" in estimate
+    assert estimate["estimated_observability_mode"] in {
+        "summary_aggregate",
+        "diagnostic_sampled",
+        "full_tick_canonical",
+        "promotion_evidence",
+    }
+    assert "estimated_full_tick_canonical_enabled" in estimate
+
+
+def test_workload_budget_fails_canonical_hash_call_excess(tmp_path: Path) -> None:
+    estimate_path = tmp_path / "estimate.json"
+    estimate = {
+        "estimated_tick_events": 0,
+        "estimated_audit_stream_rows": 0,
+        "estimated_artifact_write_count": 0,
+        "estimated_hash_payload_bytes": 0,
+        "estimated_artifact_bytes": 0,
+        "estimated_artifact_file_count": 0,
+        "estimated_plugin_runtime_us": 0,
+        "pre_parallel_work_unit_count": 0,
+        "pre_parallel_dataset_hash_payload_bytes": 0,
+        "pre_parallel_dataset_hash_call_count": 0,
+        "estimated_tick_canonical_hash_call_count": 999,
+        "estimated_tick_canonical_hash_payload_bytes": 0,
+        "estimated_decision_payload_bytes": 0,
+    }
+    estimate_path.write_text(json.dumps(estimate), encoding="utf-8")
+    policy_path = tmp_path / "policy.json"
+    policy = {
+        "schema_version": 1,
+        "suites": {
+            suite: {
+                "max_estimated_tick_events": 10**12,
+                "max_estimated_audit_stream_rows": 10**12,
+                "max_estimated_artifact_write_count": 10**12,
+                "max_estimated_hash_payload_bytes": 10**12,
+                "max_estimated_artifact_bytes": 10**12,
+                "max_estimated_artifact_file_count": 10**12,
+                "max_estimated_plugin_runtime_us": 10**12,
+                "max_pre_parallel_work_unit_count": 10**12,
+                "max_pre_parallel_dataset_hash_payload_bytes": 10**12,
+                "max_pre_parallel_dataset_hash_call_count": 10**12,
+                "max_estimated_tick_canonical_hash_call_count": 0,
+                "max_estimated_tick_canonical_hash_payload_bytes": 10**12,
+                "max_estimated_decision_payload_bytes": 10**12,
+            }
+            for suite in ("fast", "research-nightly", "full")
+        },
+    }
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/check_research_workload_budget.py",
+            "--suite",
+            "fast",
+            "--policy-json",
+            str(policy_path),
+            "--estimate-json",
+            str(estimate_path),
+        ],
+        cwd=Path.cwd(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "estimated_tick_canonical_hash_call_count" in result.stderr
+
+
 def test_research_workload_budget_script_fails_pre_parallel_hash_call_excess(tmp_path: Path) -> None:
     estimate_path = tmp_path / "estimate.json"
     estimate = {
@@ -150,6 +240,9 @@ def test_research_workload_budget_script_fails_pre_parallel_hash_call_excess(tmp
         "pre_parallel_work_unit_count": 0,
         "pre_parallel_dataset_hash_payload_bytes": 0,
         "pre_parallel_dataset_hash_call_count": 129,
+        "estimated_tick_canonical_hash_call_count": 0,
+        "estimated_tick_canonical_hash_payload_bytes": 0,
+        "estimated_decision_payload_bytes": 0,
     }
     estimate_path.write_text(json.dumps(estimate), encoding="utf-8")
 
@@ -201,6 +294,9 @@ def test_research_workload_budget_script_default_summary_fails_pre_parallel_hash
                 "max_pre_parallel_work_unit_count": 10**12,
                 "max_pre_parallel_dataset_hash_payload_bytes": 10**12,
                 "max_pre_parallel_dataset_hash_call_count": 0 if suite == "fast" else 10**12,
+                "max_estimated_tick_canonical_hash_call_count": 10**12,
+                "max_estimated_tick_canonical_hash_payload_bytes": 10**12,
+                "max_estimated_decision_payload_bytes": 10**12,
             }
             for suite in ("fast", "research-nightly", "full")
         },
@@ -615,6 +711,9 @@ def test_research_workload_budget_script_passes_bounded_synthetic_estimate(tmp_p
                 "pre_parallel_work_unit_count": 1,
                 "pre_parallel_dataset_hash_payload_bytes": 1024,
                 "pre_parallel_dataset_hash_call_count": 1,
+                "estimated_tick_canonical_hash_call_count": 0,
+                "estimated_tick_canonical_hash_payload_bytes": 0,
+                "estimated_decision_payload_bytes": 0,
             }
         ),
         encoding="utf-8",
@@ -646,6 +745,9 @@ def test_research_workload_budget_script_fails_oversized_synthetic_estimate(tmp_
                 "pre_parallel_work_unit_count": 251,
                 "pre_parallel_dataset_hash_payload_bytes": 33_554_433,
                 "pre_parallel_dataset_hash_call_count": 129,
+                "estimated_tick_canonical_hash_call_count": 500_001,
+                "estimated_tick_canonical_hash_payload_bytes": 67_108_865,
+                "estimated_decision_payload_bytes": 134_217_729,
             }
         ),
         encoding="utf-8",
@@ -695,6 +797,9 @@ def test_research_workload_budget_policy_requires_suite_fields(tmp_path: Path) -
                 "pre_parallel_work_unit_count": 1,
                 "pre_parallel_dataset_hash_payload_bytes": 1,
                 "pre_parallel_dataset_hash_call_count": 1,
+                "estimated_tick_canonical_hash_call_count": 1,
+                "estimated_tick_canonical_hash_payload_bytes": 1,
+                "estimated_decision_payload_bytes": 1,
             }
         ),
         encoding="utf-8",

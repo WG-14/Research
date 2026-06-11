@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from bithumb_bot.canonical_decision import canonical_payload_hash
+
 from . import backtest_support as support
 
 
@@ -11,6 +13,197 @@ class DecisionPayloadBuilder:
     """Builds non-authoritative research decision observability payloads."""
 
     def build(
+        self,
+        *,
+        detail_level: str,
+        **kwargs: Any,
+    ) -> dict[str, object]:
+        detail = str(detail_level or "").strip().lower()
+        if detail == "summary":
+            return self.build_summary(**kwargs)
+        if detail == "full_canonical":
+            kwargs.pop("canonical_context", None)
+            return self.build_full(**kwargs)
+        raise ValueError("decision_payload_detail_level_required")
+
+    def build_summary(
+        self,
+        *,
+        dataset: Any,
+        dataset_content_hash: str,
+        parameter_values: dict[str, Any],
+        strategy_plugin: Any,
+        strategy_spec: Any,
+        exit_policy: dict[str, Any],
+        exit_policy_hash: str,
+        exit_policy_config_hash: str | None,
+        fee_rate: float,
+        slippage_bps: float,
+        timing_policy: Any,
+        portfolio_policy: Any,
+        event: Any,
+        decision_boundary_ts: int,
+        strategy_envelope: Any,
+        risk_decision: Any,
+        policy_position: Any,
+        policy_decision: Any | None,
+        regime_snapshot: dict[str, object],
+        qty: float,
+        sellable_qty: float,
+        canonical_context: Any | None = None,
+    ) -> dict[str, object]:
+        surface = _decision_surface(
+            event=event,
+            strategy_envelope=strategy_envelope,
+            risk_decision=risk_decision,
+            policy_decision=policy_decision,
+            sellable_qty=sellable_qty,
+        )
+        strategy_spec_hash = _context_hash(canonical_context, "strategy_spec_hash")
+        if not strategy_spec_hash:
+            strategy_spec_hash = strategy_spec.spec_hash()
+        strategy_plugin_contract_hash = _context_hash(
+            canonical_context,
+            "strategy_plugin_contract_hash",
+        )
+        if not strategy_plugin_contract_hash:
+            strategy_plugin_contract_hash = strategy_plugin.contract_hash()
+        execution_timing_policy_hash = _context_hash(
+            canonical_context,
+            "execution_timing_policy_hash",
+        )
+        if not execution_timing_policy_hash:
+            execution_timing_policy_hash = canonical_payload_hash(
+                timing_policy.as_dict(),
+                label="execution_timing_policy_summary_fallback",
+            )
+        active_exit_policy_config_hash = _context_hash(
+            canonical_context,
+            "active_exit_policy_config_hash",
+        )
+        if not active_exit_policy_config_hash:
+            active_exit_policy_config_hash = str(exit_policy_config_hash or "")
+        feature_snapshot_hash = str(event.feature_snapshot.get("feature_snapshot_hash") or "").strip()
+        if not feature_snapshot_hash:
+            feature_snapshot_hash = canonical_payload_hash(
+                {
+                    "candle_ts": int(event.candle_ts),
+                    "feature_keys": sorted(str(key) for key in event.feature_snapshot),
+                },
+                label="summary_feature_snapshot_reference",
+            )
+        strategy_behavior_hash = str(
+            getattr(strategy_envelope, "replay_fingerprint_hash", "")
+            or surface["raw_signal"]
+            or ""
+        )
+        if not strategy_behavior_hash.startswith("sha256:"):
+            strategy_behavior_hash = canonical_payload_hash(
+                {
+                    "strategy_name": str(strategy_plugin.name),
+                    "raw_signal": surface["raw_signal"],
+                    "final_signal": surface["final_signal"],
+                    "reason": str(risk_decision.reason_code),
+                },
+                label="summary_strategy_behavior_reference",
+            )
+        position_payload = (
+            policy_position.as_dict()
+            if hasattr(policy_position, "as_dict")
+            else vars(policy_position)
+            if hasattr(policy_position, "__dict__")
+            else {}
+        )
+        position_state_hash = canonical_payload_hash(
+            position_payload,
+            label="summary_position_state",
+        )
+        payload: dict[str, object] = {
+            "decision_event_schema_version": 1,
+            "decision_payload_detail_level": "summary",
+            "canonical_evidence_policy": "summary_aggregate",
+            "strategy_name": str(strategy_plugin.name),
+            "strategy_decision_contract_version": strategy_plugin.decision_contract_version,
+            "strategy_spec_hash": strategy_spec_hash,
+            "strategy_plugin_contract_hash": strategy_plugin_contract_hash,
+            "dataset_content_hash": str(dataset_content_hash),
+            "candidate_profile_hash": _context_hash(canonical_context, "candidate_profile_hash")
+            or canonical_payload_hash(
+                {
+                    "strategy_name": str(strategy_plugin.name),
+                    "parameter_values": parameter_values,
+                    "strategy_spec_hash": strategy_spec_hash,
+                    "strategy_plugin_contract_hash": strategy_plugin_contract_hash,
+                    "exit_policy_hash": exit_policy_hash,
+                },
+                label="summary_candidate_profile",
+            ),
+            "parameter_values_hash": _context_hash(canonical_context, "parameter_values_hash")
+            or canonical_payload_hash(
+                parameter_values,
+                label="summary_parameter_values",
+            ),
+            "exit_policy_hash": str(exit_policy_hash),
+            "exit_policy_config_hash": active_exit_policy_config_hash,
+            "market": dataset.market,
+            "interval": dataset.interval,
+            "signal_timestamp": str(event.candle_ts),
+            "candle_ts": int(event.candle_ts),
+            "through_ts_ms": int(event.candle_ts),
+            "candle_basis": "research_closed_candle",
+            "decision_ts": int(decision_boundary_ts),
+            "raw_signal": surface["raw_signal"],
+            "entry_signal": surface["entry_signal"],
+            "exit_signal": surface["exit_signal"],
+            "final_signal": surface["final_signal"],
+            "side": surface["final_signal"],
+            "entry_reason": str(risk_decision.reason_code),
+            "blocked": bool(risk_decision.block or (surface["raw_signal"] in {"BUY", "SELL"} and surface["final_signal"] == "HOLD")),
+            "block_reason": str(risk_decision.reason_code) if bool(risk_decision.block) else "",
+            "blocked_filters": tuple(surface["blocked_filters"]),
+            "feature_snapshot_hash": feature_snapshot_hash,
+            "strategy_behavior_hash": strategy_behavior_hash,
+            "strategy_specific_payload_hash": strategy_behavior_hash,
+            "position_state_hash": position_state_hash,
+            "execution_timing_policy_hash": execution_timing_policy_hash,
+            "exit_rule": str(risk_decision.exit_rule or ""),
+            "exit_reason": str(risk_decision.exit_reason or ""),
+            "current_market_regime_snapshot_hash": canonical_payload_hash(
+                regime_snapshot,
+                label="summary_regime_snapshot",
+            ),
+            "regime_decision": "summary_not_materialized",
+            "regime_block_reason": "",
+            "qty": float(qty),
+            "sellable_qty": float(sellable_qty),
+            "replay_fingerprint_hash": str(getattr(strategy_envelope, "replay_fingerprint_hash", "") or ""),
+            "strategy_diagnostics_namespace": strategy_plugin.diagnostics_namespace,
+            "execution_intent": str(surface["final_signal"]).lower() if surface["final_signal"] in {"BUY", "SELL"} else "none",
+            "order_intent": dict(event.order_intent) if event.order_intent is not None else None,
+            "exit_intent": dict(event.exit_intent) if event.exit_intent is not None else None,
+            "research_policy_recomputed_with_simulated_position": policy_decision is not None,
+            "research_policy_unsupported": bool(strategy_envelope.unsupported_reason),
+            "research_policy_unsupported_reason": strategy_envelope.unsupported_reason,
+            "research_policy_comparable": not bool(strategy_envelope.unsupported_reason),
+            "runtime_comparable": bool(strategy_envelope.provenance.get("runtime_comparable")),
+        }
+        if policy_decision is not None:
+            payload["pure_policy_hash"] = policy_decision.policy_hash
+            payload["policy_contract_hash"] = policy_decision.policy_contract_hash
+            payload["policy_input_hash"] = policy_decision.policy_input_hash
+            payload["policy_decision_hash"] = policy_decision.policy_decision_hash
+        promotion_grade = bool(getattr(strategy_plugin, "is_promotion_grade", False))
+        payload["promotion_grade"] = promotion_grade
+        payload["promotion_extension_missing_reason"] = (
+            ""
+            if promotion_grade
+            else str(getattr(getattr(strategy_plugin, "runtime_capabilities", None), "fail_closed_reason", ""))
+        )
+        payload["recommended_next_action"] = "none" if promotion_grade else "promote_strategy_contract"
+        _attach_common_exit_diagnostic_counts(payload)
+        return payload
+
+    def build_full(
         self,
         *,
         dataset: Any,
@@ -245,7 +438,62 @@ class DecisionPayloadBuilder:
             payload.get("exit_policy_config_hash") or ""
         ).strip():
             payload["exit_policy_config_hash"] = str(exit_policy_config_hash)
+        payload["decision_payload_detail_level"] = "full_canonical"
         return payload
+
+
+def _decision_surface(
+    *,
+    event: Any,
+    strategy_envelope: Any,
+    risk_decision: Any,
+    policy_decision: Any | None,
+    sellable_qty: float,
+) -> dict[str, object]:
+    action = risk_decision.final_signal
+    raw_signal = str(strategy_envelope.provenance.get("raw_signal") or "HOLD").upper()
+    raw_reason = str(strategy_envelope.provenance.get("raw_reason") or event.reason)
+    raw_filter_would_block = bool(strategy_envelope.provenance.get("raw_filter_would_block"))
+    entry_signal = str(strategy_envelope.provenance.get("entry_signal") or raw_signal).upper()
+    exit_signal = str(strategy_envelope.provenance.get("exit_signal") or raw_signal).upper()
+    blocked_filters = list(strategy_envelope.provenance.get("blocked_filters") or ())
+    if policy_decision is not None:
+        entry_blocked = bool(policy_decision.entry_blocked)
+        protective_exit_overrode_entry = bool(policy_decision.protective_exit_overrode_entry)
+        exit_filter_suppression_prevented = bool(policy_decision.exit_filter_suppression_prevented)
+    else:
+        entry_blocked = bool(raw_signal == "BUY" and action == "HOLD" and raw_filter_would_block)
+        protective_exit_overrode_entry = bool(
+            raw_signal == "BUY"
+            and action == "SELL"
+            and risk_decision.exit_rule in {"stop_loss", "max_holding_time"}
+        )
+        exit_filter_suppression_prevented = bool(
+            raw_signal == "SELL"
+            and raw_filter_would_block
+            and sellable_qty > 1e-12
+            and bool(risk_decision.exit_evaluations)
+        )
+    return {
+        "raw_signal": raw_signal,
+        "raw_reason": raw_reason,
+        "raw_filter_would_block": raw_filter_would_block,
+        "entry_signal": entry_signal,
+        "exit_signal": exit_signal,
+        "final_signal": action,
+        "blocked_filters": blocked_filters,
+        "entry_blocked": entry_blocked,
+        "protective_exit_overrode_entry": protective_exit_overrode_entry,
+        "exit_filter_suppression_prevented": exit_filter_suppression_prevented,
+    }
+
+
+def _context_hash(canonical_context: Any | None, field: str) -> str:
+    if canonical_context is not None:
+        value = getattr(canonical_context, field, "")
+        if str(value or "").strip():
+            return str(value)
+    return ""
 
 
 def _attach_common_exit_diagnostic_counts(payload: dict[str, object]) -> None:

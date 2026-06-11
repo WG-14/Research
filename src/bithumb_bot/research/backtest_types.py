@@ -109,6 +109,122 @@ class BacktestHeartbeatPolicy:
     bar_interval: int | None = None
 
 
+@dataclass(frozen=True)
+class BacktestTickObservabilityPolicy:
+    name: str
+    audit_mode: str = "summary_only"
+    full_tick_canonical_decision: bool = False
+    audit_decision: str = "aggregate"
+    audit_equity_mark: str = "aggregate"
+    strict_required_hashes: bool = False
+    diagnostic_sample_limit: int = 3
+    allow_fallback_hash: bool = True
+
+    @property
+    def full_tick_canonical_enabled(self) -> bool:
+        return self.full_tick_canonical_decision
+
+    def should_build_full_payload(self, event_number: int) -> bool:
+        if self.name in {"full_tick_canonical", "promotion_evidence"}:
+            return True
+        if self.name == "diagnostic_sampled":
+            return int(event_number) <= int(self.diagnostic_sample_limit)
+        return False
+
+    def should_hash_full_decision(self, event_number: int) -> bool:
+        return self.should_build_full_payload(event_number)
+
+    def should_record_audit_decision(self, event_number: int) -> bool:
+        if self.audit_decision == "per_tick":
+            return True
+        if self.audit_decision == "sampled":
+            return int(event_number) <= int(self.diagnostic_sample_limit)
+        return False
+
+    def should_record_audit_equity_mark(self, event_number: int | None = None) -> bool:
+        if self.audit_equity_mark == "per_tick":
+            return True
+        if self.audit_equity_mark == "sampled" and event_number is not None:
+            return int(event_number) <= int(self.diagnostic_sample_limit)
+        return False
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "audit_mode": self.audit_mode,
+            "full_tick_canonical_decision": bool(self.full_tick_canonical_decision),
+            "audit_decision": self.audit_decision,
+            "audit_equity_mark": self.audit_equity_mark,
+            "strict_required_hashes": bool(self.strict_required_hashes),
+            "diagnostic_sample_limit": int(self.diagnostic_sample_limit),
+            "allow_fallback_hash": bool(self.allow_fallback_hash),
+        }
+
+
+def resolve_tick_observability_policy(
+    *,
+    report_detail: str = "full",
+    diagnostic_mode: str = "promotion_candidate",
+    audit_trail: Any | None = None,
+    policy_materialization_mode: str = "research_exploratory",
+    explicit_policy: str | BacktestTickObservabilityPolicy | None = None,
+) -> BacktestTickObservabilityPolicy:
+    if isinstance(explicit_policy, BacktestTickObservabilityPolicy):
+        return explicit_policy
+    audit_mode = str(getattr(audit_trail, "mode", "") or "summary_only").strip().lower()
+    policy_name = str(explicit_policy or "").strip().lower()
+    if not policy_name:
+        if audit_mode == "complete_external":
+            policy_name = "full_tick_canonical"
+        elif str(policy_materialization_mode or "").strip().lower() == "research_promotion":
+            policy_name = "promotion_evidence"
+        elif str(diagnostic_mode or "").strip().lower() == "exploratory":
+            policy_name = "diagnostic_sampled"
+        elif str(report_detail or "").strip().lower() in {"index", "summary", "standard"}:
+            policy_name = "summary_aggregate"
+        else:
+            policy_name = "full_tick_canonical"
+    if policy_name == "promotion_evidence":
+        return BacktestTickObservabilityPolicy(
+            name="promotion_evidence",
+            audit_mode=audit_mode,
+            full_tick_canonical_decision=True,
+            audit_decision="per_tick",
+            audit_equity_mark="per_tick",
+            strict_required_hashes=True,
+            allow_fallback_hash=True,
+        )
+    if policy_name == "full_tick_canonical":
+        return BacktestTickObservabilityPolicy(
+            name="full_tick_canonical",
+            audit_mode=audit_mode,
+            full_tick_canonical_decision=True,
+            audit_decision="per_tick" if audit_mode == "complete_external" else "aggregate",
+            audit_equity_mark="per_tick" if audit_mode == "complete_external" else "aggregate",
+            strict_required_hashes=audit_mode == "complete_external",
+            allow_fallback_hash=True,
+        )
+    if policy_name == "diagnostic_sampled":
+        return BacktestTickObservabilityPolicy(
+            name="diagnostic_sampled",
+            audit_mode=audit_mode,
+            full_tick_canonical_decision=False,
+            audit_decision="sampled",
+            audit_equity_mark="sampled",
+            strict_required_hashes=False,
+            allow_fallback_hash=False,
+        )
+    return BacktestTickObservabilityPolicy(
+        name="summary_aggregate",
+        audit_mode=audit_mode,
+        full_tick_canonical_decision=False,
+        audit_decision="aggregate",
+        audit_equity_mark="aggregate",
+        strict_required_hashes=False,
+        allow_fallback_hash=False,
+    )
+
+
 @dataclass
 class BacktestRunContext:
     experiment_id: str = ""
@@ -117,6 +233,9 @@ class BacktestRunContext:
     scenario_index: int | None = None
     split_name: str = ""
     report_detail: str = "full"
+    diagnostic_mode: str = "promotion_candidate"
+    audit_trail_policy: Any | None = None
+    observability_policy: str | BacktestTickObservabilityPolicy | None = None
     resource_limits: BacktestResourceLimits = field(default_factory=BacktestResourceLimits)
     heartbeat: BacktestHeartbeatPolicy = field(default_factory=BacktestHeartbeatPolicy)
     progress_callback: ProgressCallback | None = None
@@ -127,6 +246,15 @@ class BacktestRunContext:
     policy_materialization_mode: str = "research_exploratory"
     memory_sampler: MemorySampler = sample_process_memory
     started_at: float = field(default_factory=time.perf_counter)
+
+    def tick_observability_policy(self) -> BacktestTickObservabilityPolicy:
+        return resolve_tick_observability_policy(
+            report_detail=self.report_detail,
+            diagnostic_mode=self.diagnostic_mode,
+            audit_trail=self.audit_trail_policy,
+            policy_materialization_mode=self.policy_materialization_mode,
+            explicit_policy=self.observability_policy,
+        )
 
 
 class BacktestResourceLimitExceeded(RuntimeError):

@@ -39,8 +39,12 @@ def _retained_detail_summary(
     *,
     retained_regime_snapshot_count: int,
 ) -> dict[str, object]:
+    policy = accumulator.context.tick_observability_policy()
     return {
         "report_detail": accumulator.report_detail,
+        "canonical_evidence_policy": policy.name,
+        "observability_policy": policy.name,
+        "tick_observability_policy": policy.as_dict(),
         "decision_count": accumulator.decision_count,
         "retained_decision_count": accumulator.retained_decision_count,
         "retained_equity_point_count": accumulator.retained_equity_point_count,

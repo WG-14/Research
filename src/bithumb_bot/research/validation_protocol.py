@@ -664,6 +664,8 @@ def _backtest_context(
         scenario_index=scenario_index,
         split_name=split_name,
         report_detail=manifest.research_run.report_detail,
+        diagnostic_mode=manifest.research_run.diagnostic_mode,
+        audit_trail_policy=manifest.research_run.audit_trail,
         resource_limits=BacktestResourceLimits(
             max_runtime_s_per_candidate_split=limits.max_runtime_s_per_candidate_split,
             max_decisions_retained=limits.max_decisions_retained,

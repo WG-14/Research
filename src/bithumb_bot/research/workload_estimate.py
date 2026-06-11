@@ -4,7 +4,11 @@ from typing import Any
 
 from .data_plane import split_names
 from .dataset_snapshot import _expected_bucket_count, _interval_ms, _split_range
-from .execution_plan import _plugin_complexity_metadata, _plugin_expected_us_per_candle
+from .execution_plan import (
+    _plugin_complexity_metadata,
+    _plugin_expected_us_per_candle,
+    estimate_canonical_observability_cost,
+)
 from .experiment_manifest import ExperimentManifest, load_manifest, required_execution_scenarios
 from .parameter_space import iter_parameter_candidates
 
@@ -26,6 +30,12 @@ def build_manifest_workload_estimate(manifest: ExperimentManifest) -> dict[str, 
         * _plugin_expected_us_per_candle(plugin_complexity)
     )
     pre_parallel_dataset_hash_payload_bytes = expected_candles * 128 + split_count * 2048
+    canonical_estimate = estimate_canonical_observability_cost(
+        estimated_tick_events=expected_candles * candidate_count * scenario_count,
+        report_detail=manifest.research_run.report_detail,
+        diagnostic_mode=manifest.research_run.diagnostic_mode,
+        audit_trail=manifest.research_run.audit_trail,
+    )
     return {
         "schema_version": 1,
         "manifest_hash": manifest.manifest_hash(),
@@ -45,6 +55,7 @@ def build_manifest_workload_estimate(manifest: ExperimentManifest) -> dict[str, 
         "pre_parallel_dataset_hash_payload_bytes": pre_parallel_dataset_hash_payload_bytes,
         "pre_parallel_parent_serial_estimate_status": "manifest_declared_ranges_no_snapshot_load",
         "estimated_plugin_runtime_us": estimated_plugin_runtime_us,
+        **canonical_estimate,
         "budget_status": "NOT_EVALUATED",
         "budget_reasons": [],
     }

@@ -43,3 +43,24 @@ def test_research_workload_estimate_reports_candidate_and_pre_parallel_counts(tm
     assert estimate["work_unit_count"] == 6
     assert estimate["pre_parallel_work_unit_count"] == 6
     assert estimate["pre_parallel_dataset_hash_call_count"] == 3
+
+
+def test_workload_estimate_cli_reports_canonical_observability_estimates(tmp_path, capsys) -> None:
+    payload = _manifest()
+    payload["research_run"] = {
+        "report_detail": "summary",
+        "diagnostic_mode": "exploratory",
+        "execution": {"mode": "serial"},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    rc = cmd_research_workload_estimate(manifest_path=str(manifest_path), as_json=True)
+    estimate = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert "estimated_tick_canonical_hash_call_count" in estimate
+    assert "estimated_tick_canonical_hash_payload_bytes" in estimate
+    assert "estimated_decision_payload_bytes" in estimate
+    assert estimate["estimated_observability_mode"] == "diagnostic_sampled"
+    assert estimate["estimated_full_tick_canonical_enabled"] is False

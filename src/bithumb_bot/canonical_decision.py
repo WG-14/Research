@@ -3,6 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict
 from dataclasses import dataclass
 from dataclasses import replace
@@ -276,14 +279,99 @@ class CanonicalDecisionValidation:
     reason_codes: tuple[str, ...]
 
 
+@dataclass
+class CanonicalDecisionObservability:
+    canonical_payload_hash_call_count: int = 0
+    canonical_hash_payload_bytes: int = 0
+    largest_canonical_hash_payload_bytes: int = 0
+    largest_canonical_hash_label: str = ""
+    stable_value_call_count: int = 0
+    stable_value_wall_seconds: float = 0.0
+    canonical_json_wall_seconds: float = 0.0
+
+    def record_stable_value(self, elapsed: float) -> None:
+        self.stable_value_call_count += 1
+        self.stable_value_wall_seconds += float(elapsed)
+
+    def record_canonical_hash(self, *, payload_bytes: int, label: str, json_wall_seconds: float) -> None:
+        self.canonical_payload_hash_call_count += 1
+        self.canonical_hash_payload_bytes += int(payload_bytes)
+        self.canonical_json_wall_seconds += float(json_wall_seconds)
+        if int(payload_bytes) > self.largest_canonical_hash_payload_bytes:
+            self.largest_canonical_hash_payload_bytes = int(payload_bytes)
+            self.largest_canonical_hash_label = str(label)
+
+    def merge(self, other: "CanonicalDecisionObservability") -> None:
+        self.canonical_payload_hash_call_count += int(other.canonical_payload_hash_call_count)
+        self.canonical_hash_payload_bytes += int(other.canonical_hash_payload_bytes)
+        self.stable_value_call_count += int(other.stable_value_call_count)
+        self.stable_value_wall_seconds += float(other.stable_value_wall_seconds)
+        self.canonical_json_wall_seconds += float(other.canonical_json_wall_seconds)
+        if int(other.largest_canonical_hash_payload_bytes) > self.largest_canonical_hash_payload_bytes:
+            self.largest_canonical_hash_payload_bytes = int(other.largest_canonical_hash_payload_bytes)
+            self.largest_canonical_hash_label = str(other.largest_canonical_hash_label)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "canonical_payload_hash_call_count": int(self.canonical_payload_hash_call_count),
+            "canonical_hash_payload_bytes": int(self.canonical_hash_payload_bytes),
+            "largest_canonical_hash_payload_bytes": int(self.largest_canonical_hash_payload_bytes),
+            "largest_canonical_hash_label": str(self.largest_canonical_hash_label),
+            "stable_value_call_count": int(self.stable_value_call_count),
+            "stable_value_wall_seconds": float(self.stable_value_wall_seconds),
+            "canonical_json_wall_seconds": float(self.canonical_json_wall_seconds),
+        }
+
+
+_CANONICAL_OBSERVER: ContextVar[CanonicalDecisionObservability | None] = ContextVar(
+    "canonical_decision_observer",
+    default=None,
+)
+_STABLE_VALUE_DEPTH: ContextVar[int] = ContextVar("canonical_decision_stable_value_depth", default=0)
+
+
+@contextmanager
+def observe_canonical_decisions() -> Any:
+    observer = CanonicalDecisionObservability()
+    token = _CANONICAL_OBSERVER.set(observer)
+    try:
+        yield observer
+    finally:
+        _CANONICAL_OBSERVER.reset(token)
+
+
+def canonical_decision_observer() -> CanonicalDecisionObservability | None:
+    return _CANONICAL_OBSERVER.get()
+
+
 PROMOTION_TYPED_EXECUTION_EVIDENCE_SOURCE = PROMOTION_EXECUTION_EVIDENCE_SOURCE
 
 
-def canonical_payload_hash(value: object) -> str:
-    return sha256_prefixed(_stable_value(value))
+def canonical_payload_hash(value: object, *, label: str = "canonical_payload") -> str:
+    stable = _stable_value(value)
+    json_started = time.perf_counter()
+    encoded = json.dumps(
+        stable,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    json_elapsed = time.perf_counter() - json_started
+    observer = _CANONICAL_OBSERVER.get()
+    if observer is not None:
+        observer.record_canonical_hash(
+            payload_bytes=len(encoded),
+            label=str(label or "canonical_payload"),
+            json_wall_seconds=json_elapsed,
+        )
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
-def normalize_canonical_decision(payload: dict[str, Any]) -> dict[str, Any]:
+def normalize_canonical_decision(
+    payload: dict[str, Any],
+    *,
+    allow_fallback_hash: bool = True,
+) -> dict[str, Any]:
     version = int(payload.get("decision_contract_version") or CANONICAL_DECISION_CONTRACT_VERSION)
     fields = (
         LEGACY_CANONICAL_DECISION_SCHEMA_FIELDS_V1
@@ -336,12 +424,30 @@ def normalize_canonical_decision(payload: dict[str, Any]) -> dict[str, Any]:
     if version >= CANONICAL_DECISION_CONTRACT_VERSION:
         feature_snapshot = _strategy_feature_snapshot(payload)
         strategy_payload = _strategy_behavior_payload(payload)
-        normalized["feature_snapshot_hash"] = str(
-            payload.get("feature_snapshot_hash") or canonical_payload_hash(feature_snapshot)
-        )
-        normalized["strategy_behavior_hash"] = str(
-            payload.get("strategy_behavior_hash") or canonical_payload_hash(strategy_payload)
-        )
+        explicit_feature_hash = str(payload.get("feature_snapshot_hash") or "").strip()
+        explicit_behavior_hash = str(payload.get("strategy_behavior_hash") or "").strip()
+        if explicit_feature_hash:
+            normalized["feature_snapshot_hash"] = explicit_feature_hash
+        elif allow_fallback_hash:
+            normalized["feature_snapshot_hash"] = canonical_payload_hash(
+                feature_snapshot,
+                label="canonical_decision_feature_snapshot_fallback",
+            )
+        else:
+            normalized["feature_snapshot_hash"] = "feature_snapshot_hash_missing"
+            normalized["feature_snapshot_hash_missing"] = True
+            normalized["canonical_hash_fallback_skipped"] = True
+        if explicit_behavior_hash:
+            normalized["strategy_behavior_hash"] = explicit_behavior_hash
+        elif allow_fallback_hash:
+            normalized["strategy_behavior_hash"] = canonical_payload_hash(
+                strategy_payload,
+                label="canonical_decision_strategy_behavior_fallback",
+            )
+        else:
+            normalized["strategy_behavior_hash"] = "strategy_behavior_hash_missing"
+            normalized["strategy_behavior_hash_missing"] = True
+            normalized["canonical_hash_fallback_skipped"] = True
         normalized["feature_snapshot"] = feature_snapshot
         normalized["strategy_specific_payload"] = _strategy_specific_payload(payload)
         normalized["strategy_diagnostics_namespace"] = str(
@@ -1521,8 +1627,18 @@ def order_rules_snapshot_payload(resolution_or_rules: object, *, pair: str = "")
 
 
 def _stable_value(value: object) -> object:
-    if isinstance(value, dict):
-        return {str(key): _stable_value(item) for key, item in sorted(value.items(), key=lambda item: str(item[0]))}
-    if isinstance(value, (list, tuple)):
-        return [_stable_value(item) for item in value]
-    return value
+    depth = _STABLE_VALUE_DEPTH.get()
+    token = _STABLE_VALUE_DEPTH.set(depth + 1)
+    started = time.perf_counter() if depth == 0 else None
+    try:
+        if isinstance(value, dict):
+            return {str(key): _stable_value(item) for key, item in sorted(value.items(), key=lambda item: str(item[0]))}
+        if isinstance(value, (list, tuple)):
+            return [_stable_value(item) for item in value]
+        return value
+    finally:
+        _STABLE_VALUE_DEPTH.reset(token)
+        if started is not None:
+            observer = _CANONICAL_OBSERVER.get()
+            if observer is not None:
+                observer.record_stable_value(time.perf_counter() - started)

@@ -39,6 +39,17 @@ class BacktestAccumulator:
     trade_ledger_hash_material: list[dict[str, object]] = field(default_factory=list)
     equity_curve_hash_material: list[dict[str, object]] = field(default_factory=list)
     strategy_diagnostic_counts: dict[str, int] = field(default_factory=dict)
+    canonical_payload_hash_call_count: int = 0
+    canonical_hash_payload_bytes: int = 0
+    largest_canonical_hash_payload_bytes: int = 0
+    largest_canonical_hash_label: str = ""
+    stable_value_call_count: int = 0
+    stable_value_wall_seconds: float = 0.0
+    canonical_json_wall_seconds: float = 0.0
+    decision_payload_build_wall_seconds: float = 0.0
+    observability_wall_seconds: float = 0.0
+    audit_decision_event_count: int = 0
+    audit_equity_event_count: int = 0
     baseline_memory_sample: MemorySample = field(init=False)
 
     def __post_init__(self) -> None:
@@ -129,6 +140,29 @@ class BacktestAccumulator:
         )
         if retained:
             self.retained_decision_count += 1
+
+    def record_canonical_observability(self, observed: dict[str, Any]) -> None:
+        self.canonical_payload_hash_call_count += int(observed.get("canonical_payload_hash_call_count") or 0)
+        self.canonical_hash_payload_bytes += int(observed.get("canonical_hash_payload_bytes") or 0)
+        self.stable_value_call_count += int(observed.get("stable_value_call_count") or 0)
+        self.stable_value_wall_seconds += float(observed.get("stable_value_wall_seconds") or 0.0)
+        self.canonical_json_wall_seconds += float(observed.get("canonical_json_wall_seconds") or 0.0)
+        largest = int(observed.get("largest_canonical_hash_payload_bytes") or 0)
+        if largest > self.largest_canonical_hash_payload_bytes:
+            self.largest_canonical_hash_payload_bytes = largest
+            self.largest_canonical_hash_label = str(observed.get("largest_canonical_hash_label") or "")
+
+    def record_decision_payload_build_time(self, elapsed: float) -> None:
+        self.decision_payload_build_wall_seconds += float(elapsed)
+
+    def record_observability_time(self, elapsed: float) -> None:
+        self.observability_wall_seconds += float(elapsed)
+
+    def record_audit_decision_event(self) -> None:
+        self.audit_decision_event_count += 1
+
+    def record_audit_equity_event(self) -> None:
+        self.audit_equity_event_count += 1
 
     def update_equity(self, *, retained: bool, ts: int, asset_qty: float) -> None:
         if self.period_start_ts is None:
@@ -261,6 +295,11 @@ class BacktestAccumulator:
         payload["applied_resource_limits"] = self.context.resource_limits.as_dict()
         payload["resource_policy"] = self.context.resource_limits.as_dict()
         payload["memory_sampling_policy"] = self.context.resource_limits.as_dict()["memory_sampling_policy"]
+        policy = self.context.tick_observability_policy()
+        payload["canonical_evidence_policy"] = policy.name
+        payload["observability_policy"] = policy.name
+        payload["tick_observability_policy"] = policy.as_dict()
+        payload["estimated_full_tick_canonical_enabled"] = bool(policy.full_tick_canonical_enabled)
         payload["decision_hash"] = canonical_payload_hash(self.decision_hash_material)
         payload.update(
             _behavior_hashes(
@@ -272,6 +311,22 @@ class BacktestAccumulator:
             )
         )
         payload["strategy_diagnostics"] = self.strategy_diagnostics(trades=[])
+        payload.update(
+            {
+                "canonical_payload_hash_call_count": int(self.canonical_payload_hash_call_count),
+                "canonical_hash_payload_bytes": int(self.canonical_hash_payload_bytes),
+                "largest_canonical_hash_payload_bytes": int(self.largest_canonical_hash_payload_bytes),
+                "largest_canonical_hash_label": str(self.largest_canonical_hash_label),
+                "stable_value_call_count": int(self.stable_value_call_count),
+                "stable_value_wall_seconds": float(self.stable_value_wall_seconds),
+                "canonical_json_wall_seconds": float(self.canonical_json_wall_seconds),
+                "decision_payload_build_wall_seconds": float(self.decision_payload_build_wall_seconds),
+                "observability_wall_seconds": float(self.observability_wall_seconds),
+                "retained_decision_count": int(self.retained_decision_count),
+                "audit_decision_event_count": int(self.audit_decision_event_count),
+                "audit_equity_event_count": int(self.audit_equity_event_count),
+            }
+        )
         return payload
 
     def metrics_summary_inputs(self, *, max_drawdown_pct: float) -> dict[str, Any]:
