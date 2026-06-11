@@ -400,7 +400,8 @@ and requests read from:
 scripts/codex_request.txt
 ```
 
-In Default Patch Mode, Codex must not run the full test suite.
+In Default Patch Mode, Codex must not run the full test suite or broad wrapper
+test runners.
 
 The following command is prohibited:
 
@@ -415,6 +416,18 @@ uv run pytest
 uv run pytest -q
 uv run pytest --quiet
 ```
+
+Codex must not run default-fast or broad wrapper test runners in Default Patch
+Mode, including:
+
+```bash
+./scripts/run_fast_pr_tests.sh
+./scripts/full_suite.sh
+./scripts/run_full_pytest_tests.sh
+```
+
+The fast PR runner is a human/CI PR gate, not Codex focused validation. Codex
+may run only focused tests directly related to the patch.
 
 This prohibition still applies even if `scripts/codex_request.txt` explicitly asks Codex to run `uv run pytest -q`.
 
@@ -479,10 +492,15 @@ uv run pytest --quiet
 Codex must not run:
 
 ```bash
+./scripts/run_fast_pr_tests.sh
 ./scripts/run_full_pytest_tests.sh
 ./scripts/check_repo_runtime_artifacts.sh
 ./scripts/full_suite.sh
 ```
+
+The WSL wrapper owns broad validation, including the default-fast PR runner,
+fast suite, full-suite wrapper, and runtime artifact validation. Codex owns
+focused repair validation only.
 
 Codex may run only focused pytest commands directly traceable to the failure packet, such as:
 

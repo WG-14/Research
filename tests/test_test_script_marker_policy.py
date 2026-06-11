@@ -190,6 +190,7 @@ def test_codex_repair_prompt_uses_8_worker_worksteal_wrapper_command() -> None:
 def test_codex_repair_prompt_preserves_wrapper_owned_validation_ban() -> None:
     text = Path("scripts/codex_pytest_repair_prompt.md").read_text(encoding="utf-8")
 
+    assert "Do not run `./scripts/run_fast_pr_tests.sh`." in text
     assert "Do not run `./scripts/run_full_pytest_tests.sh`." in text
     assert "Do not run `./scripts/check_repo_runtime_artifacts.sh`." in text
     assert "Do not run `./scripts/full_suite.sh`." in text
@@ -258,6 +259,58 @@ def test_worksteal_diagnostic_runner_exists() -> None:
     assert path.exists()
     assert path.stat().st_mode & 0o111
     assert 'PYTEST_XDIST_DIST="${PYTEST_XDIST_DIST:-worksteal}"' in path.read_text(encoding="utf-8")
+
+
+def test_broad_runner_scripts_have_codex_only_self_guard() -> None:
+    for path in [
+        Path("scripts/run_fast_pr_tests.sh"),
+        Path("scripts/full_suite.sh"),
+        Path("scripts/run_full_pytest_tests.sh"),
+    ]:
+        text = path.read_text(encoding="utf-8")
+
+        assert "BITHUMB_CODEX_BLOCK_BROAD_TEST_RUNNERS" in text
+        assert "[CODEX-BROAD-RUNNER-GUARD] Codex ${BITHUMB_CODEX_MODE:-session} must not run" in text
+        assert "Run only focused validation directly related to the patch or failure packet." in text
+        assert "exit 126" in text
+
+
+def test_codex_default_pipeline_passes_child_broad_runner_sentinel_and_blocks_fast_runner() -> None:
+    text = Path("scripts/run_codex_pipeline.sh").read_text(encoding="utf-8")
+
+    assert 'BITHUMB_CODEX_MODE="default_patch"' in text
+    assert "BITHUMB_CODEX_BLOCK_BROAD_TEST_RUNNERS=1" in text
+    assert "./scripts/run_fast_pr_tests.sh|scripts/run_fast_pr_tests.sh|*/scripts/run_fast_pr_tests.sh" in text
+    assert "Default Patch Mode blocks broad test runner" in text
+    assert "focused validation only" in text
+
+
+def test_codex_pytest_pipeline_passes_child_broad_runner_sentinel_and_blocks_fast_runner() -> None:
+    text = Path("scripts/run_codex_pytest_pipeline.sh").read_text(encoding="utf-8")
+
+    assert 'BITHUMB_CODEX_MODE="pytest_repair"' in text
+    assert "BITHUMB_CODEX_BLOCK_BROAD_TEST_RUNNERS=1" in text
+    assert "./scripts/run_fast_pr_tests.sh|scripts/run_fast_pr_tests.sh|*/scripts/run_fast_pr_tests.sh" in text
+    assert "Do not run ./scripts/run_fast_pr_tests.sh inside Codex." in text
+    assert "Broad test runner ${arg} is blocked inside Codex" in text
+
+
+def test_codex_repair_prompt_bans_default_fast_runner_and_fast_suite() -> None:
+    text = Path("scripts/codex_pytest_repair_prompt.md").read_text(encoding="utf-8")
+
+    assert "`./scripts/run_fast_pr_tests.sh`" in text
+    assert "any default-fast, fast PR runner, or fast suite command" in text
+    assert "Human operators and CI may run the default-fast PR runner outside Codex" in text
+
+
+def test_agents_documents_codex_broad_runner_ban() -> None:
+    text = Path("AGENTS.md").read_text(encoding="utf-8")
+
+    assert "./scripts/run_fast_pr_tests.sh" in text
+    assert "./scripts/full_suite.sh" in text
+    assert "./scripts/run_full_pytest_tests.sh" in text
+    assert "The fast PR runner is a human/CI PR gate, not Codex focused validation." in text
+    assert "The WSL wrapper owns broad validation" in text
 
 
 def test_worksteal_diagnostic_runner_fails_on_first_failed_iteration(tmp_path) -> None:

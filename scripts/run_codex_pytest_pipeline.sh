@@ -115,9 +115,32 @@ real_uv="${CODEX_PYTEST_REAL_UV:?}"
 guard_error() {
   echo "[CODEX-PYTEST-GUARD] Pytest Repair Mode blocks selector-less full pytest." >&2
   echo "[CODEX-PYTEST-GUARD] Full-suite validation belongs to the WSL wrapper." >&2
+  echo "[CODEX-PYTEST-GUARD] Do not run ./scripts/run_fast_pr_tests.sh inside Codex." >&2
   echo "[CODEX-PYTEST-GUARD] Do not run ./scripts/run_full_pytest_tests.sh inside Codex." >&2
   echo "[CODEX-PYTEST-GUARD] $1" >&2
   exit 125
+}
+
+is_broad_test_runner_arg() {
+  case "$1" in
+    ./scripts/run_fast_pr_tests.sh|scripts/run_fast_pr_tests.sh|*/scripts/run_fast_pr_tests.sh|\
+    ./scripts/full_suite.sh|scripts/full_suite.sh|*/scripts/full_suite.sh|\
+    ./scripts/run_full_pytest_tests.sh|scripts/run_full_pytest_tests.sh|*/scripts/run_full_pytest_tests.sh)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+reject_broad_test_runner_invocation() {
+  local arg
+
+  for arg in "$@"; do
+    if is_broad_test_runner_arg "${arg}"; then
+      guard_error "Broad test runner ${arg} is blocked inside Codex; use only focused validation from the failure packet."
+    fi
+  done
 }
 
 is_pytest_path_selector() {
@@ -163,6 +186,10 @@ validate_pytest_args() {
 
 if [[ "${1:-}" == "run" ]]; then
   shift
+  if [[ "${1:-}" == "--" ]]; then
+    shift
+  fi
+  reject_broad_test_runner_invocation "$@"
   if [[ "${1:-}" == "pytest" ]]; then
     shift
     validate_pytest_args "$@"
@@ -191,6 +218,7 @@ run_codex_pytest_repair_with_guard() {
   cleanup_codex_pytest_guard
   install_codex_pytest_guard
   run_stage "run Codex focused pytest repair" \
+    env BITHUMB_CODEX_MODE="pytest_repair" BITHUMB_CODEX_BLOCK_BROAD_TEST_RUNNERS=1 \
     "${CODEX_BIN}" exec --full-auto --cd "${PROJECT_ROOT}" - < "${codex_input_file}"
   cleanup_codex_pytest_guard
 }

@@ -115,6 +115,40 @@ set -euo pipefail
 
 pytest_args=()
 
+is_broad_test_runner_arg() {
+  case "$1" in
+    ./scripts/run_fast_pr_tests.sh|scripts/run_fast_pr_tests.sh|*/scripts/run_fast_pr_tests.sh|\
+    ./scripts/full_suite.sh|scripts/full_suite.sh|*/scripts/full_suite.sh|\
+    ./scripts/run_full_pytest_tests.sh|scripts/run_full_pytest_tests.sh|*/scripts/run_full_pytest_tests.sh)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+reject_broad_test_runner_invocation() {
+  if [[ "$#" -lt 2 || "$1" != "run" ]]; then
+    return 1
+  fi
+
+  shift
+  if [[ "$#" -gt 0 && "$1" == "--" ]]; then
+    shift
+  fi
+
+  local arg
+  for arg in "$@"; do
+    if is_broad_test_runner_arg "${arg}"; then
+      echo "[CODEX-PYTEST-GUARD] Default Patch Mode blocks broad test runner: ${arg}" >&2
+      echo "[CODEX-PYTEST-GUARD] Codex must use focused validation only; broad validation belongs to humans, CI, or the wrapper pipeline." >&2
+      exit 126
+    fi
+  done
+
+  return 1
+}
+
 is_guarded_pytest_invocation() {
   if [[ "$#" -lt 2 || "$1" != "run" ]]; then
     return 1
@@ -137,6 +171,8 @@ is_guarded_pytest_invocation() {
 
   return 1
 }
+
+reject_broad_test_runner_invocation "$@" || true
 
 if is_guarded_pytest_invocation "$@"; then
   original_args=("$@")
@@ -227,6 +263,8 @@ EOF
 
   PATH="${CODEX_PYTEST_GUARD_DIR}:${PATH}" \
     CODEX_PYTEST_GUARD_REAL_UV="${uv_bin}" \
+    BITHUMB_CODEX_MODE="default_patch" \
+    BITHUMB_CODEX_BLOCK_BROAD_TEST_RUNNERS=1 \
     "${CODEX_BIN}" exec --full-auto --cd "${PROJECT_ROOT}" - < "${REQUEST_FILE}"
 }
 

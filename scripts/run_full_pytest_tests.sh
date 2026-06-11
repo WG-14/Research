@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${BITHUMB_CODEX_BLOCK_BROAD_TEST_RUNNERS:-0}" == "1" ]]; then
+  echo "[CODEX-BROAD-RUNNER-GUARD] Codex ${BITHUMB_CODEX_MODE:-session} must not run ${BASH_SOURCE[0]}." >&2
+  echo "[CODEX-BROAD-RUNNER-GUARD] Run only focused validation directly related to the patch or failure packet." >&2
+  exit 126
+fi
+
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 source "$PROJECT_ROOT/scripts/lib/pytest_workspace.sh"

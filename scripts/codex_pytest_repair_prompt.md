@@ -65,10 +65,12 @@ is to report missing required evidence or repository instructions.
 Codex must not run, invoke, indirectly trigger, or shell-wrap:
 
 - `./scripts/run_codex_pytest_pipeline.sh`
+- `./scripts/run_fast_pr_tests.sh`
 - `./scripts/full_suite.sh`
 - `./scripts/run_full_pytest_tests.sh`
 - `./scripts/check_repo_runtime_artifacts.sh`
 - the wrapper-owned validation command
+- any default-fast, fast PR runner, or fast suite command
 - selector-less pytest through any equivalent form, including:
   - `uv run pytest -q`
   - `pytest -q`
@@ -96,6 +98,7 @@ The wrapper normally invokes validation through:
 
 Codex must not run `./scripts/full_suite.sh` directly.
 Do not run `./scripts/full_suite.sh`.
+Do not run `./scripts/run_fast_pr_tests.sh`.
 
 `./scripts/full_suite.sh` owns the wrapper-owned validation command:
 
@@ -108,6 +111,8 @@ Do not run `./scripts/run_full_pytest_tests.sh`.
 Do not run `./scripts/check_repo_runtime_artifacts.sh`.
 
 The WSL wrapper is the only authority allowed to run that command.
+Human operators and CI may run the default-fast PR runner outside Codex, but it
+is prohibited inside Codex repair sessions.
 
 If Codex believes a prohibited command is required, Codex must stop and report
 the reason as a validation handoff or blocker instead of running it.

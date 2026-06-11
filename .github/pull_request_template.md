@@ -1,6 +1,8 @@
 ## Validation
 
-- [ ] Default PR validation: `./scripts/run_fast_pr_tests.sh`
+- [ ] Human/CI default PR validation: `./scripts/run_fast_pr_tests.sh`
+- [ ] Codex focused validation, if Codex was used: list focused test commands run.
+- [ ] Codex sessions did not run `./scripts/run_fast_pr_tests.sh`, fast suite, full suite, `./scripts/run_full_pytest_tests.sh`, or selector-less pytest.
 - [ ] Selector-less full pytest was not used as default local PR validation.
 
 ## Strategy Workload Delta

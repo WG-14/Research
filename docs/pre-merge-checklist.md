@@ -21,6 +21,11 @@ The default PR fast-suite gate is:
 ./scripts/run_fast_pr_tests.sh
 ```
 
+This default PR fast-suite gate is for human operators and CI. It is not Codex
+Default Patch Mode validation and not Codex Pytest Repair Mode validation; Codex
+sessions may run only focused tests directly related to the patch or failure
+packet and must hand broad validation back to the operator or WSL wrapper.
+
 It runs the static research runner marker/inventory policy check and then runs
 pytest excluding `research_kernel`, `research_e2e`, `audit_e2e`,
 `walk_forward_e2e`, `parallel_e2e`, `nightly`, `slow_research`, and
