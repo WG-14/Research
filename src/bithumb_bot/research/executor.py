@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
@@ -120,6 +121,7 @@ def execute_research_work_units_parallel(
     initializer: Callable[..., None] | None = None,
     initargs: tuple[Any, ...] = (),
     runtime_observability_sink: list[dict[str, Any]] | None = None,
+    max_in_flight_tasks: int | None = None,
 ) -> list[ResearchWorkResult]:
     results: list[ResearchWorkResult] = []
     task_list = list(tasks)
@@ -134,6 +136,7 @@ def execute_research_work_units_parallel(
             initializer=initializer,
             initargs=initargs,
             runtime=runtime,
+            max_in_flight_tasks=max_in_flight_tasks,
         )
     except PermissionError:
         if runtime.requested_start_method not in {"auto_safe", "auto"} or runtime.effective_start_method != "forkserver":
@@ -150,6 +153,7 @@ def execute_research_work_units_parallel(
             initializer=initializer,
             initargs=initargs,
             runtime=runtime,
+            max_in_flight_tasks=max_in_flight_tasks,
         )
     if runtime_observability_sink is not None:
         runtime_observability_sink.append(runtime.observability_payload())
@@ -163,40 +167,69 @@ def _execute_with_runtime(
     initializer: Callable[..., None] | None,
     initargs: tuple[Any, ...],
     runtime: Any,
+    max_in_flight_tasks: int | None,
 ) -> list[ResearchWorkResult]:
     results: list[ResearchWorkResult] = []
+    max_in_flight = _resolve_max_in_flight_tasks(
+        max_in_flight_tasks=max_in_flight_tasks,
+        max_workers=int(runtime.max_workers_effective),
+    )
     with ProcessPoolExecutor(
         max_workers=runtime.max_workers_effective,
         mp_context=runtime.mp_context(),
         initializer=initializer,
         initargs=initargs,
     ) as pool:
-        future_to_task = {pool.submit(worker, task): task for task in task_list}
-        for completion_order, future in enumerate(as_completed(future_to_task)):
-            task = future_to_task[future]
-            try:
-                result = future.result()
-            except Exception as exc:
-                result = _future_exception_result(task=task, exc=exc)
-            observability = dict(result.observability or {})
-            observability["completion_order"] = completion_order
-            results.append(
-                ResearchWorkResult(
-                    work_unit=result.work_unit,
-                    work_unit_hash=result.work_unit_hash,
-                    candidate_index=result.candidate_index,
-                    candidate_id=result.candidate_id,
-                    scenario_index=result.scenario_index,
-                    scenario_id=result.scenario_id,
-                    status=result.status,
-                    base_result=result.base_result,
-                    failure_reason=result.failure_reason,
-                    failure_evidence=result.failure_evidence,
-                    observability=observability,
-                    content_hash=result.content_hash,
+        pending_tasks = deque(task_list)
+        future_to_task: dict[Any, Any] = {}
+
+        def submit_next() -> None:
+            if not pending_tasks:
+                return
+            task = pending_tasks.popleft()
+            future_to_task[pool.submit(worker, task)] = task
+
+        while pending_tasks and len(future_to_task) < max_in_flight:
+            submit_next()
+
+        completion_order = 0
+        while future_to_task:
+            done, _ = wait(tuple(future_to_task), return_when=FIRST_COMPLETED)
+            for future in done:
+                task = future_to_task.pop(future)
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    result = _future_exception_result(task=task, exc=exc)
+                observability = dict(result.observability or {})
+                observability["completion_order"] = completion_order
+                observability["max_in_flight_tasks"] = max_in_flight
+                results.append(
+                    ResearchWorkResult(
+                        work_unit=result.work_unit,
+                        work_unit_hash=result.work_unit_hash,
+                        candidate_index=result.candidate_index,
+                        candidate_id=result.candidate_id,
+                        scenario_index=result.scenario_index,
+                        scenario_id=result.scenario_id,
+                        status=result.status,
+                        base_result=result.base_result,
+                        failure_reason=result.failure_reason,
+                        failure_evidence=result.failure_evidence,
+                        observability=observability,
+                        content_hash=result.content_hash,
+                    )
                 )
-            )
+                completion_order += 1
+                while pending_tasks and len(future_to_task) < max_in_flight:
+                    submit_next()
     return results
+
+
+def _resolve_max_in_flight_tasks(*, max_in_flight_tasks: int | None, max_workers: int) -> int:
+    if max_in_flight_tasks is not None:
+        return max(1, int(max_in_flight_tasks))
+    return max(1, int(max_workers) * 2)
 
 
 def _future_exception_result(*, task: Any, exc: Exception) -> ResearchWorkResult:

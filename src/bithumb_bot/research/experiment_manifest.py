@@ -484,6 +484,7 @@ class ResearchResourceLimits:
     max_audit_stream_rows: int | None = 1_000_000
     max_audit_stream_bytes: int | None = 128 * 1024 * 1024
     max_artifact_file_count: int | None = 10_000
+    max_total_memory_mb: float | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -496,6 +497,7 @@ class ResearchResourceLimits:
             "max_audit_stream_rows": self.max_audit_stream_rows,
             "max_audit_stream_bytes": self.max_audit_stream_bytes,
             "max_artifact_file_count": self.max_artifact_file_count,
+            "max_total_memory_mb": self.max_total_memory_mb,
             "max_rss_mb_semantics": "candidate_local_rss_delta_mb",
             "memory_sampling_policy": {
                 "cadence": "per_resource_limit_check_event",
@@ -2766,6 +2768,7 @@ def _parse_research_resource_limits(value: Any) -> ResearchResourceLimits:
         "max_audit_stream_rows",
         "max_audit_stream_bytes",
         "max_artifact_file_count",
+        "max_total_memory_mb",
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
@@ -2800,6 +2803,10 @@ def _parse_research_resource_limits(value: Any) -> ResearchResourceLimits:
         max_artifact_file_count=_optional_positive_or_zero_int(
             value.get("max_artifact_file_count", 10_000),
             "research_run.resource_limits.max_artifact_file_count",
+        ),
+        max_total_memory_mb=_optional_positive_float(
+            value.get("max_total_memory_mb"),
+            "research_run.resource_limits.max_total_memory_mb",
         ),
     )
 

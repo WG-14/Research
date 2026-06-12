@@ -33,6 +33,57 @@ CHANNEL_BREAKOUT_COMPLEXITY_METADATA = {
     "precompute_path": "prepare_channel_breakout_context",
 }
 
+
+def estimate_channel_breakout_complexity(
+    *,
+    strategy_name: str,
+    parameter_space: dict[str, Any] | None = None,
+    report_detail: str = "summary",
+    diagnostic_mode: str = "exploratory",
+    audit_trail: Any | None = None,
+    expected_candle_count: int | None = None,
+) -> dict[str, Any]:
+    modes = _parameter_values_for_key(parameter_space or {}, "ENTRY_MODE")
+    unsupported_modes = sorted(str(mode) for mode in modes if str(mode) not in _SUPPORTED_ENTRY_MODES)
+    includes_delayed = "delayed_confirmation" in {str(mode) for mode in modes}
+    full_observability = str(report_detail or "").lower() == "full" or bool(
+        getattr(audit_trail, "complete_external", False)
+    )
+    expected_us = int(CHANNEL_BREAKOUT_COMPLEXITY_METADATA["expected_us_per_candle"])
+    decision_payload_bytes = 384
+    feature_snapshot_bytes = 512
+    reasons = ["linear_precomputed_ohlcv"]
+    if includes_delayed:
+        expected_us += 15
+        decision_payload_bytes += 256
+        feature_snapshot_bytes += 256
+        reasons.append("delayed_confirmation_pending_state")
+    if full_observability:
+        decision_payload_bytes *= 3
+        feature_snapshot_bytes *= 2
+        reasons.append("full_observability_payloads")
+    if unsupported_modes:
+        reasons.append("unsupported_entry_mode:" + ",".join(unsupported_modes))
+    return {
+        "schema_version": 1,
+        "strategy_name": strategy_name,
+        "expected_candle_count": expected_candle_count,
+        "expected_us_per_candle": expected_us,
+        "expected_feature_snapshot_bytes_per_event": feature_snapshot_bytes,
+        "expected_decision_payload_bytes_per_event": decision_payload_bytes,
+        "complexity_reasons": tuple(reasons),
+        "unsupported_parameter_values": {"ENTRY_MODE": tuple(unsupported_modes)} if unsupported_modes else {},
+    }
+
+
+def _parameter_values_for_key(parameter_space: dict[str, Any], key: str) -> tuple[Any, ...]:
+    if key not in parameter_space:
+        return (CHANNEL_BREAKOUT_SPEC.default_parameters.get(key),)
+    raw = parameter_space.get(key)
+    if isinstance(raw, (list, tuple, set, frozenset)):
+        return tuple(raw)
+    return (raw,)
+
 CHANNEL_BREAKOUT_SPEC = StrategySpec(
     strategy_name=CHANNEL_BREAKOUT_STRATEGY_NAME,
     strategy_version="channel_breakout_with_regime_filter.research_contract.v1",
@@ -667,4 +718,9 @@ object.__setattr__(
     CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN,
     "complexity_metadata",
     CHANNEL_BREAKOUT_COMPLEXITY_METADATA,
+)
+object.__setattr__(
+    CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN,
+    "estimate_complexity",
+    estimate_channel_breakout_complexity,
 )

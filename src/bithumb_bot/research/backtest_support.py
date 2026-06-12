@@ -14,6 +14,7 @@ from .backtest_types import (
     MemorySample,
 )
 from .execution_model import ExecutionFill
+from .streaming_evidence import StreamingEvidenceDigest
 
 
 @dataclass
@@ -32,10 +33,18 @@ class BacktestAccumulator:
     active_bar_count: int = 0
     last_heartbeat_s: float = field(default_factory=time.perf_counter)
     last_heartbeat_bar: int = 0
-    decision_hash_material: list[str] = field(default_factory=list)
-    behavior_hash_material: list[dict[str, object]] = field(default_factory=list)
-    common_behavior_hash_material: list[dict[str, object]] = field(default_factory=list)
-    strategy_behavior_hash_material: list[dict[str, object]] = field(default_factory=list)
+    decision_hash_material: StreamingEvidenceDigest = field(
+        default_factory=lambda: StreamingEvidenceDigest("decision_hash_material")
+    )
+    behavior_hash_material: StreamingEvidenceDigest = field(
+        default_factory=lambda: StreamingEvidenceDigest("behavior_hash_material")
+    )
+    common_behavior_hash_material: StreamingEvidenceDigest = field(
+        default_factory=lambda: StreamingEvidenceDigest("common_behavior_hash_material")
+    )
+    strategy_behavior_hash_material: StreamingEvidenceDigest = field(
+        default_factory=lambda: StreamingEvidenceDigest("strategy_behavior_hash_material")
+    )
     trade_ledger_hash_material: list[dict[str, object]] = field(default_factory=list)
     equity_curve_hash_material: list[dict[str, object]] = field(default_factory=list)
     strategy_diagnostic_counts: dict[str, int] = field(default_factory=dict)
@@ -90,8 +99,8 @@ class BacktestAccumulator:
             self.strategy_diagnostic_counts[key] = (
                 int(self.strategy_diagnostic_counts.get(key, 0)) + int(value)
             )
-        self.decision_hash_material.append(str(payload.get("replay_fingerprint_hash") or ""))
-        self.behavior_hash_material.append(
+        self.decision_hash_material.update(str(payload.get("replay_fingerprint_hash") or ""))
+        self.behavior_hash_material.update(
             {
                 "candle_ts": payload.get("candle_ts"),
                 "raw_signal": payload.get("raw_signal"),
@@ -106,7 +115,7 @@ class BacktestAccumulator:
                 "regime_block_reason": payload.get("regime_block_reason"),
             }
         )
-        self.common_behavior_hash_material.append(
+        self.common_behavior_hash_material.update(
             {
                 "candle_ts": payload.get("candle_ts"),
                 "raw_signal": payload.get("raw_signal"),
@@ -122,7 +131,7 @@ class BacktestAccumulator:
             or payload.get("strategy_name")
             or self.diagnostics_namespace
         )
-        self.strategy_behavior_hash_material.append(
+        self.strategy_behavior_hash_material.update(
             {
                 "namespace": strategy_namespace,
                 "payload": payload.get("strategy_behavior_payload")
@@ -300,7 +309,8 @@ class BacktestAccumulator:
         payload["observability_policy"] = policy.name
         payload["tick_observability_policy"] = policy.as_dict()
         payload["estimated_full_tick_canonical_enabled"] = bool(policy.full_tick_canonical_enabled)
-        payload["decision_hash"] = canonical_payload_hash(self.decision_hash_material)
+        payload["decision_hash"] = self.decision_hash_material.hash
+        payload["decision_hash_material_count"] = int(self.decision_hash_material.count)
         payload.update(
             _behavior_hashes(
                 decision_material=self.behavior_hash_material,
@@ -313,6 +323,11 @@ class BacktestAccumulator:
         payload["strategy_diagnostics"] = self.strategy_diagnostics(trades=[])
         payload.update(
             {
+                "behavior_hash_material_count": int(self.behavior_hash_material.count),
+                "behavior_hash_material_retention_policy": self.behavior_hash_material.finalize()[
+                    "retention_policy"
+                ],
+                "behavior_hash_material_sample_count": int(self.behavior_hash_material.finalize()["sample_count"]),
                 "canonical_payload_hash_call_count": int(self.canonical_payload_hash_call_count),
                 "canonical_hash_payload_bytes": int(self.canonical_hash_payload_bytes),
                 "largest_canonical_hash_payload_bytes": int(self.largest_canonical_hash_payload_bytes),
@@ -621,15 +636,26 @@ def _percentile(values: list[float], percentile: float) -> float | None:
 
 def _behavior_hashes(
     *,
-    decision_material: list[dict[str, object]],
-    common_decision_material: list[dict[str, object]] | None,
-    strategy_decision_material: list[dict[str, object]] | None,
+    decision_material: StreamingEvidenceDigest,
+    common_decision_material: StreamingEvidenceDigest | None,
+    strategy_decision_material: StreamingEvidenceDigest | None,
     trade_material: list[dict[str, object]],
     equity_material: list[dict[str, object]],
-) -> dict[str, str]:
-    decision_hash = canonical_payload_hash(decision_material)
-    common_decision_hash = canonical_payload_hash(common_decision_material or [])
-    strategy_decision_hash = canonical_payload_hash(strategy_decision_material or [])
+) -> dict[str, str | int | object]:
+    decision_final = decision_material.finalize()
+    common_final = (
+        common_decision_material.finalize()
+        if common_decision_material is not None
+        else StreamingEvidenceDigest("empty_common_behavior_hash_material").finalize()
+    )
+    strategy_final = (
+        strategy_decision_material.finalize()
+        if strategy_decision_material is not None
+        else StreamingEvidenceDigest("empty_strategy_behavior_hash_material").finalize()
+    )
+    decision_hash = str(decision_final["hash"])
+    common_decision_hash = str(common_final["hash"])
+    strategy_decision_hash = str(strategy_final["hash"])
     trade_hash = canonical_payload_hash(trade_material)
     equity_hash = canonical_payload_hash(equity_material)
     composite_hash = canonical_payload_hash(
@@ -656,6 +682,12 @@ def _behavior_hashes(
         "composite_behavior_hash": composite_hash,
         "composite_behavior_hash_v2": composite_hash_v2,
         "behavior_hash": composite_hash,
+        "behavior_hash_material_count": int(decision_final["count"]),
+        "common_behavior_hash_material_count": int(common_final["count"]),
+        "strategy_behavior_hash_material_count": int(strategy_final["count"]),
+        "behavior_hash_material_retention_policy": str(decision_final["retention_policy"]),
+        "behavior_hash_material_sample_hash": str(decision_final["sample_hash"]),
+        "behavior_hash_material_sample_count": int(decision_final["sample_count"]),
     }
 
 

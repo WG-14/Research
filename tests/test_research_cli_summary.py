@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from bithumb_bot.notifier import AlertSeverity, NotificationResult
 from bithumb_bot.paths import PathManager
 from bithumb_bot.research import cli as research_cli
@@ -1605,3 +1607,21 @@ def test_research_walk_forward_writes_artifact_budget_failure_payload(tmp_path, 
         capsys=capsys,
         command_label="RESEARCH-WALK-FORWARD",
     )
+@pytest.mark.contract
+def test_cli_prints_effective_worker_warning(capsys) -> None:
+    report = _report(candidates=[])
+    report["execution_observability"] = {
+        "requested_max_workers": 8,
+        "research_max_workers_effective": 1,
+        "effective_process_start_method": "forkserver",
+        "observed_worker_count": 1,
+        "worker_budget_warning_reasons": ["effective_workers_below_requested"],
+        "worker_observation_warning_reasons": [],
+    }
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+
+    output = capsys.readouterr().out
+    assert "requested_max_workers=8" in output
+    assert "research_max_workers_effective=1" in output
+    assert "worker_budget_warning_reasons=effective_workers_below_requested" in output

@@ -20,6 +20,7 @@ from .metrics_contract import (
 )
 from .backtest_types import BacktestRunContext
 from .backtest_support import BacktestAccumulator, PendingFill
+from .streaming_evidence import StreamingEvidenceDigest
 
 def _create_exit_rules(**kwargs: Any):
     # Keep this local to avoid config -> approved_profile -> research -> strategy -> config imports.
@@ -49,7 +50,8 @@ def _retained_detail_summary(
         "retained_decision_count": accumulator.retained_decision_count,
         "retained_equity_point_count": accumulator.retained_equity_point_count,
         "retained_regime_snapshot_count": int(retained_regime_snapshot_count),
-        "decision_hash": canonical_payload_hash(accumulator.decision_hash_material),
+        "decision_hash": accumulator.decision_hash_material.hash,
+        "decision_hash_material_count": int(accumulator.decision_hash_material.count),
         **_behavior_hashes(
             decision_material=accumulator.behavior_hash_material,
             common_decision_material=accumulator.common_behavior_hash_material,
@@ -97,15 +99,26 @@ def _trade_hash_payload(trade: dict[str, object]) -> dict[str, object]:
 
 def _behavior_hashes(
     *,
-    decision_material: list[dict[str, object]],
-    common_decision_material: list[dict[str, object]] | None = None,
-    strategy_decision_material: list[dict[str, object]] | None = None,
+    decision_material: StreamingEvidenceDigest,
+    common_decision_material: StreamingEvidenceDigest | None = None,
+    strategy_decision_material: StreamingEvidenceDigest | None = None,
     trade_material: list[dict[str, object]],
     equity_material: list[dict[str, object]],
-) -> dict[str, str]:
-    decision_hash = canonical_payload_hash(decision_material)
-    common_decision_hash = canonical_payload_hash(common_decision_material or [])
-    strategy_decision_hash = canonical_payload_hash(strategy_decision_material or [])
+) -> dict[str, object]:
+    decision_final = decision_material.finalize()
+    common_final = (
+        common_decision_material.finalize()
+        if common_decision_material is not None
+        else StreamingEvidenceDigest("empty_common_behavior_hash_material").finalize()
+    )
+    strategy_final = (
+        strategy_decision_material.finalize()
+        if strategy_decision_material is not None
+        else StreamingEvidenceDigest("empty_strategy_behavior_hash_material").finalize()
+    )
+    decision_hash = str(decision_final["hash"])
+    common_decision_hash = str(common_final["hash"])
+    strategy_decision_hash = str(strategy_final["hash"])
     trade_hash = canonical_payload_hash(trade_material)
     equity_hash = canonical_payload_hash(equity_material)
     composite_hash = canonical_payload_hash(
@@ -132,6 +145,12 @@ def _behavior_hashes(
         "composite_behavior_hash": composite_hash,
         "composite_behavior_hash_v2": composite_hash_v2,
         "behavior_hash": composite_hash,
+        "behavior_hash_material_count": int(decision_final["count"]),
+        "common_behavior_hash_material_count": int(common_final["count"]),
+        "strategy_behavior_hash_material_count": int(strategy_final["count"]),
+        "behavior_hash_material_retention_policy": str(decision_final["retention_policy"]),
+        "behavior_hash_material_sample_hash": str(decision_final["sample_hash"]),
+        "behavior_hash_material_sample_count": int(decision_final["sample_count"]),
     }
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
 from . import backtest_support as support
 from bithumb_bot.canonical_decision import canonical_payload_hash, observe_canonical_decisions
@@ -631,14 +631,14 @@ def run_stage_owned_decision_event_backtest(
     parameter_values: dict[str, Any],
     fee_rate: float,
     slippage_bps: float,
-    decision_events: tuple[Any, ...],
+    decision_events: Iterable[Any],
     parameter_stability_score: float | None = None,
     execution_model: Any | None = None,
     execution_timing_policy: Any | None = None,
     portfolio_policy: Any | None = None,
     risk_policy: Any | None = None,
     context: Any | None = None,
-    prepared_ticks: tuple[ReplayTick, ...] | None = None,
+    prepared_ticks: Iterable[ReplayTick] | None = None,
     prepared_ledger: PortfolioLedger | None = None,
     strategy_evaluator: Any | None = None,
     risk_gate: Any | None = None,
@@ -820,7 +820,9 @@ def run_stage_owned_decision_event_backtest(
         regime_coverage_accumulator=regime_coverage_accumulator,
     )
     with observe_canonical_decisions() as canonical_observer:
+        processed_tick_count = 0
         for event_number, tick in enumerate(prepared_ticks, start=1):
+            processed_tick_count = event_number
             event_processor.process_tick(tick=tick, event_number=event_number)
             accumulator.maybe_emit_heartbeat(event_number)
             accumulator.check_limits(candles_processed=event_number, trades=ledger.trade_ledger)
@@ -839,7 +841,7 @@ def run_stage_owned_decision_event_backtest(
         ts=last_mark_ts,
         asset_qty=ledger.qty,
     )
-    if has_audit_trace and tick_policy.should_record_audit_equity_mark(len(prepared_ticks) + 1):
+    if has_audit_trace and tick_policy.should_record_audit_equity_mark(processed_tick_count + 1):
         if _record_audit_equity_mark(
             audit_recorder,
             run_context,
@@ -874,7 +876,7 @@ def run_stage_owned_decision_event_backtest(
         regime_coverage_accumulator=regime_coverage_accumulator,
         decisions=decisions,
         warnings=warnings,
-        stage_trace_records=[trace.as_dict() for trace in trace_recorder.traces],
+        stage_trace_evidence=trace_recorder.compact_evidence(),
     )
 
 

@@ -85,7 +85,14 @@ def build_research_execution_plan(
             max(0, split_count - walk_forward_split_count) + walk_forward_split_count
         )
     dataset_candles = sum(len(snapshot.candles) for snapshot in snapshots.values())
-    plugin_complexity = _plugin_complexity_metadata(manifest.strategy_name)
+    plugin_complexity = _plugin_complexity_metadata(
+        manifest.strategy_name,
+        parameter_space=manifest.parameter_space,
+        report_detail=manifest.research_run.report_detail,
+        diagnostic_mode=manifest.research_run.diagnostic_mode,
+        audit_trail=manifest.research_run.audit_trail,
+        expected_candle_count=dataset_candles,
+    )
     plugin_expected_us_per_candle = _plugin_expected_us_per_candle(plugin_complexity)
     estimated_plugin_runtime_us = (
         int(dataset_candles)
@@ -183,6 +190,16 @@ def build_research_execution_plan(
     if max_artifact_bytes is not None and estimated_artifact_bytes > int(max_artifact_bytes):
         artifact_budget_status = "WARN"
         artifact_budget_reasons.append("estimated_artifact_bytes_exceed_max_artifact_bytes")
+    memory_estimate = _estimated_memory_budget(
+        snapshots=snapshots,
+        split_names=split_names,
+        candidate_count=len(candidates),
+        scenario_count=len(execution_scenarios),
+        max_workers=int(manifest.research_run.execution.max_workers),
+        execution_mode=manifest.research_run.execution.mode,
+        plugin_complexity=plugin_complexity,
+        resource_limits=manifest.research_run.resource_limits,
+    )
     plan["workload_estimate"] = {
         "schema_version": 1,
         "candidate_count": plan["candidate_count"],
@@ -215,6 +232,7 @@ def build_research_execution_plan(
         "max_artifact_bytes": max_artifact_bytes,
         "artifact_budget_status": artifact_budget_status,
         "artifact_budget_reasons": artifact_budget_reasons,
+        **memory_estimate,
         "estimated_snapshot_hash_count": len(snapshots),
         "uses_production_evaluator": None,
         "uses_real_parallel_executor": None,
@@ -506,7 +524,15 @@ def _estimated_artifact_bytes(
     return int(report_bytes + candidate_json_bytes + candidate_journal_bytes + hash_payload_bytes + audit_bytes + decision_jsonl_bytes)
 
 
-def _plugin_complexity_metadata(strategy_name: str) -> dict[str, Any]:
+def _plugin_complexity_metadata(
+    strategy_name: str,
+    *,
+    parameter_space: dict[str, Any] | None = None,
+    report_detail: str = "summary",
+    diagnostic_mode: str = "exploratory",
+    audit_trail: Any | None = None,
+    expected_candle_count: int | None = None,
+) -> dict[str, Any]:
     try:
         from .strategy_registry import resolve_research_strategy_plugin
 
@@ -519,7 +545,24 @@ def _plugin_complexity_metadata(strategy_name: str) -> dict[str, Any]:
             "expected_us_per_candle": None,
             "precompute_required": None,
         }
+    estimator = getattr(plugin, "estimate_complexity", None)
     raw = getattr(plugin, "complexity_metadata", None)
+    if callable(estimator):
+        base = dict(raw) if isinstance(raw, dict) else {}
+        estimated = estimator(
+            strategy_name=plugin.name,
+            parameter_space=parameter_space or {},
+            report_detail=report_detail,
+            diagnostic_mode=diagnostic_mode,
+            audit_trail=audit_trail,
+            expected_candle_count=expected_candle_count,
+        )
+        payload = {**base, **dict(estimated)}
+        payload.setdefault("schema_version", 1)
+        payload["strategy_name"] = plugin.name
+        payload.setdefault("complexity_class", base.get("complexity_class", "unknown"))
+        payload.setdefault("precompute_required", base.get("precompute_required"))
+        return payload
     if not isinstance(raw, dict):
         return {
             "schema_version": 1,
@@ -542,3 +585,64 @@ def _plugin_expected_us_per_candle(plugin_complexity: dict[str, Any]) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return 0
     return int(value)
+
+
+def _estimated_memory_budget(
+    *,
+    snapshots: dict[str, DatasetSnapshot],
+    split_names: list[str],
+    candidate_count: int,
+    scenario_count: int,
+    max_workers: int,
+    execution_mode: str,
+    plugin_complexity: dict[str, Any],
+    resource_limits: Any,
+) -> dict[str, Any]:
+    split_candle_counts = {name: len(snapshots[name].candles) for name in split_names}
+    max_split_candles = max(split_candle_counts.values(), default=0)
+    total_candles = sum(split_candle_counts.values())
+    snapshot_bytes = total_candles * 160
+    effective_workers = max(1, int(max_workers) if str(execution_mode) == "parallel" else 1)
+    event_bytes = max_split_candles * int(plugin_complexity.get("expected_decision_payload_bytes_per_event") or 384)
+    tick_bytes = 0
+    stage_trace_bytes = min(max_split_candles * 6, 128) * 512
+    behavior_evidence_bytes = 8 * 1024
+    parent_result_bytes = int(candidate_count) * int(scenario_count) * 4096
+    parallel_fanout_bytes = snapshot_bytes * effective_workers
+    estimated_total = (
+        parallel_fanout_bytes
+        + event_bytes
+        + tick_bytes
+        + stage_trace_bytes
+        + behavior_evidence_bytes
+        + parent_result_bytes
+    )
+    budget_mb = getattr(resource_limits, "max_total_memory_mb", None)
+    if budget_mb is None:
+        budget_mb = getattr(resource_limits, "max_rss_mb", None)
+    budget_bytes = int(float(budget_mb) * 1024 * 1024) if budget_mb is not None else None
+    safe_workers = effective_workers
+    status = "NOT_EVALUATED"
+    reasons: list[str] = []
+    if budget_bytes is not None:
+        non_worker_bytes = estimated_total - parallel_fanout_bytes
+        per_worker = max(1, snapshot_bytes)
+        safe_workers = max(1, int((budget_bytes - non_worker_bytes) // per_worker)) if budget_bytes > non_worker_bytes else 1
+        safe_workers = min(effective_workers, safe_workers)
+        status = "PASS" if estimated_total <= budget_bytes else "WARN"
+        if estimated_total > budget_bytes:
+            reasons.append("estimated_parent_and_worker_bytes_exceed_memory_budget")
+    return {
+        "estimated_snapshot_bytes_per_worker": snapshot_bytes,
+        "estimated_parallel_snapshot_fanout_bytes": parallel_fanout_bytes,
+        "estimated_event_materialization_bytes_per_split": event_bytes,
+        "estimated_replay_tick_materialization_bytes_per_split": tick_bytes,
+        "estimated_stage_trace_bytes": stage_trace_bytes,
+        "estimated_behavior_evidence_bytes": behavior_evidence_bytes,
+        "estimated_parent_result_bytes": parent_result_bytes,
+        "estimated_total_memory_bytes": estimated_total,
+        "max_in_flight_tasks": max(1, effective_workers * 2),
+        "safe_max_workers_by_memory_budget": safe_workers,
+        "memory_budget_status": status,
+        "memory_budget_reasons": reasons,
+    }

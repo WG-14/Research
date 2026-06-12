@@ -814,6 +814,20 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
         "  audit_fail_reasons="
         f"{_format_items(tuple(str(item) for item in report.get('audit_trail_fail_reasons') or []))}"
     )
+    execution_observability = report.get("execution_observability")
+    if isinstance(execution_observability, dict):
+        print(f"  requested_max_workers={execution_observability.get('requested_max_workers')}")
+        print(f"  research_max_workers_effective={execution_observability.get('research_max_workers_effective')}")
+        print(f"  effective_process_start_method={execution_observability.get('effective_process_start_method') or 'none'}")
+        print(f"  observed_worker_count={execution_observability.get('observed_worker_count')}")
+        print(
+            "  worker_budget_warning_reasons="
+            f"{_format_items(tuple(str(item) for item in execution_observability.get('worker_budget_warning_reasons') or []))}"
+        )
+        print(
+            "  worker_observation_warning_reasons="
+            f"{_format_items(tuple(str(item) for item in execution_observability.get('worker_observation_warning_reasons') or []))}"
+        )
     print(f"  family_trial_registry_path={report.get('family_trial_registry_path') or 'none'}")
     print(f"  family_trial_registry_prior_hash={report.get('family_trial_registry_prior_hash') or 'none'}")
     print(f"  family_trial_registry_row_hash={report.get('family_trial_registry_row_hash') or 'none'}")

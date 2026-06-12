@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Iterable
 
 from bithumb_bot.canonical_decision import canonical_payload_hash
 from bithumb_bot.market_regime import aggregate_regime_coverage, aggregate_regime_performance
@@ -54,7 +54,7 @@ class BacktestResultAssembler:
         *,
         dataset: Any,
         candles: tuple[Any, ...],
-        decision_events: tuple[Any, ...],
+        decision_events: Iterable[Any],
         ledger: Any,
         accumulator: support.BacktestAccumulator,
         run_context: Any,
@@ -64,7 +64,7 @@ class BacktestResultAssembler:
         regime_coverage_accumulator: support.RegimeCoverageAccumulator,
         decisions: list[dict[str, object]],
         warnings: list[str],
-        stage_trace_records: list[dict[str, object]],
+        stage_trace_evidence: dict[str, object],
     ) -> support.BacktestRun:
         last = candles[-1]
         final_equity = ledger.cash + ledger.qty * float(last.close)
@@ -132,10 +132,10 @@ class BacktestResultAssembler:
             for point in ledger.equity_curve
         ]
         strategy_diagnostics = accumulator.strategy_diagnostics(trades=ledger.trade_ledger)
-        resource_usage = accumulator.resource_usage(candles_processed=len(decision_events))
+        resource_usage = accumulator.resource_usage(candles_processed=accumulator.decision_count)
         resource_usage["strategy_diagnostics"] = strategy_diagnostics
-        resource_usage["stage_trace"] = stage_trace_records
-        resource_usage["stage_trace_hash"] = canonical_payload_hash(stage_trace_records)
+        resource_usage.update(dict(stage_trace_evidence))
+        resource_usage.setdefault("stage_trace_hash", canonical_payload_hash(stage_trace_evidence))
         return support.BacktestRun(
             metrics=metrics,
             metrics_v2=metrics_v2,

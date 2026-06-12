@@ -785,6 +785,34 @@ def _execution_observability_payload(
     worker_pid_set = _observed_worker_pid_set(work_unit_observability)
     parallel_executor_used = bool(execution_boundary.get("parallel_executor_used"))
     parallel_worker_timing = _last_stage_timing(stage_timings, "parallel_worker_execution")
+    requested_workers = int(
+        execution_boundary.get("research_max_workers_requested")
+        or manifest.research_run.execution.max_workers
+    )
+    effective_workers = int(
+        execution_boundary.get("research_max_workers_effective")
+        or (manifest.research_run.execution.max_workers if parallel_executor_used else 1)
+    )
+    observed_worker_count = len(worker_pid_set) if parallel_executor_used else 0
+    work_unit_wall_seconds = _work_unit_wall_seconds(work_unit_observability)
+    worker_warning_reasons: list[str] = []
+    observation_warning_reasons: list[str] = []
+    if effective_workers < requested_workers:
+        worker_warning_reasons.append("effective_workers_below_requested")
+    if parallel_executor_used and observed_worker_count < effective_workers:
+        observation_warning_reasons.append("observed_workers_below_effective")
+    parent_serial_stage_timings = [
+        dict(item)
+        for item in stage_timings
+        if str(item.get("stage") or "") in PARENT_SERIAL_TIMING_STAGES
+    ]
+    parent_serial_seconds = sum(float(item.get("wall_seconds") or 0.0) for item in parent_serial_stage_timings)
+    worker_seconds = float(parallel_worker_timing.get("wall_seconds") or 0.0) if parallel_worker_timing else 0.0
+    if parallel_executor_used and worker_seconds > 0.0 and parent_serial_seconds > worker_seconds:
+        observation_warning_reasons.append("parent_serial_stage_dominates_wall_time")
+    tail_skew_ratio = _tail_skew_ratio(work_unit_wall_seconds)
+    if tail_skew_ratio is not None and tail_skew_ratio >= 2.0:
+        observation_warning_reasons.append("parallel_tail_skew_detected")
     return {
         "stage_timings": stage_timings,
         "work_units": work_unit_observability,
@@ -794,22 +822,17 @@ def _execution_observability_payload(
         "work_unit_type": manifest.research_run.execution.work_unit,
         "approx_snapshot_candle_count": sum(len(snapshot.candles) for snapshot in snapshots.values()),
         "parallel_executor_used": parallel_executor_used,
-        "research_max_workers_requested": int(
-            execution_boundary.get("research_max_workers_requested")
-            or manifest.research_run.execution.max_workers
-        ),
-        "research_max_workers_effective": int(
-            execution_boundary.get("research_max_workers_effective")
-            or (manifest.research_run.execution.max_workers if parallel_executor_used else 1)
-        ),
+        "requested_max_workers": requested_workers,
+        "research_max_workers_requested": requested_workers,
+        "research_max_workers_effective": effective_workers,
         "effective_process_start_method": execution_boundary.get("effective_process_start_method"),
         "worker_pid_set": worker_pid_set,
-        "observed_worker_count": len(worker_pid_set) if parallel_executor_used else 0,
-        "parent_serial_stage_timings": [
-            dict(item)
-            for item in stage_timings
-            if str(item.get("stage") or "") in PARENT_SERIAL_TIMING_STAGES
-        ],
+        "observed_worker_count": observed_worker_count,
+        "worker_budget_warning_reasons": sorted(set(worker_warning_reasons)),
+        "worker_observation_warning_reasons": sorted(set(observation_warning_reasons)),
+        "parent_serial_stage_timings": parent_serial_stage_timings,
+        "work_unit_wall_seconds_distribution": _distribution(work_unit_wall_seconds),
+        "tail_skew_ratio": tail_skew_ratio,
         "parallel_worker_execution_wall_seconds": (
             parallel_worker_timing.get("wall_seconds") if parallel_worker_timing is not None else None
         ),
@@ -845,6 +868,43 @@ def _last_stage_timing(stage_timings: list[dict[str, Any]], stage: str) -> dict[
         if item_stage == stage or item_stage.endswith(f".{stage}"):
             return item
     return None
+
+
+def _work_unit_wall_seconds(work_unit_observability: list[dict[str, Any]]) -> list[float]:
+    values: list[float] = []
+    for item in work_unit_observability:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("wall_seconds")
+        if value is None and isinstance(item.get("resource_guard"), dict):
+            value = item["resource_guard"].get("elapsed_s")
+        if value is None:
+            continue
+        try:
+            values.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
+def _distribution(values: list[float]) -> dict[str, float | int | None]:
+    if not values:
+        return {"count": 0, "min": None, "max": None, "mean": None}
+    return {
+        "count": len(values),
+        "min": min(values),
+        "max": max(values),
+        "mean": sum(values) / len(values),
+    }
+
+
+def _tail_skew_ratio(values: list[float]) -> float | None:
+    if not values:
+        return None
+    fastest = min(value for value in values if value >= 0.0)
+    if fastest <= 0.0:
+        return None
+    return max(values) / fastest
 
 
 def run_research_backtest(
@@ -1567,6 +1627,7 @@ def _evaluate_candidates(
             initializer=_initialize_candidate_scenario_worker_context,
             initargs=(worker_context,),
             runtime_observability_sink=process_runtime_observability,
+            max_in_flight_tasks=max(1, int(manifest.research_run.execution.max_workers) * 2),
         )
         substage_timings.append(
             _stage_timing(

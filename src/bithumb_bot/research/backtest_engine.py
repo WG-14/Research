@@ -7,7 +7,7 @@ execution, or ledger authority.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 from .backtest_common import (
     _behavior_hashes,
@@ -173,7 +173,7 @@ def run_decision_event_backtest(
     parameter_values: dict[str, Any],
     fee_rate: float,
     slippage_bps: float,
-    decision_events: tuple[ResearchDecisionEvent, ...],
+    decision_events: Iterable[ResearchDecisionEvent],
     parameter_stability_score: float | None = None,
     execution_model: ExecutionModel | None = None,
     execution_timing_policy: ExecutionTimingPolicy | None = None,
@@ -205,7 +205,7 @@ def _run_decision_event_backtest_impl(
     parameter_values: dict[str, Any],
     fee_rate: float,
     slippage_bps: float,
-    decision_events: tuple[ResearchDecisionEvent, ...],
+    decision_events: Iterable[ResearchDecisionEvent],
     parameter_stability_score: float | None = None,
     execution_model: ExecutionModel | None = None,
     execution_timing_policy: ExecutionTimingPolicy | None = None,

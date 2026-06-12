@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Iterable, Protocol
 
 from . import backtest_support as support
 from .backtest_stages import (
@@ -48,14 +48,14 @@ class BacktestPipelineState:
     parameter_values: dict[str, Any]
     fee_rate: float
     slippage_bps: float
-    decision_events: tuple[ResearchDecisionEvent, ...]
+    decision_events: Iterable[ResearchDecisionEvent]
     parameter_stability_score: float | None = None
     execution_model: ExecutionModel | None = None
     execution_timing_policy: ExecutionTimingPolicy | None = None
     portfolio_policy: PortfolioPolicy | None = None
     risk_policy: RiskPolicy | None = None
     context: BacktestRunContext | None = None
-    ticks: tuple[ReplayTick, ...] = ()
+    ticks: Iterable[ReplayTick] = ()
     ledger: PortfolioLedger | None = None
     result: BacktestRun | None = None
 
@@ -111,24 +111,24 @@ class DefaultMarketReplayClock:
         plugin = resolve_research_strategy_plugin(state.strategy_name)
         candles = state.dataset.candles
         candle_index_by_ts = {int(candle.ts): index for index, candle in enumerate(candles)}
-        ticks: list[ReplayTick] = []
-        for event in state.decision_events:
-            if event.strategy_name != plugin.name:
-                raise ValueError(f"decision_event_strategy_mismatch:{event.strategy_name}")
-            index = candle_index_by_ts.get(int(event.candle_ts))
-            if index is None:
-                raise ValueError(f"decision_event_candle_missing:{event.candle_ts}")
-            candle = candles[index]
-            ticks.append(
-                ReplayTick(
+
+        def iter_ticks() -> Iterable[ReplayTick]:
+            for event in state.decision_events:
+                if event.strategy_name != plugin.name:
+                    raise ValueError(f"decision_event_strategy_mismatch:{event.strategy_name}")
+                index = candle_index_by_ts.get(int(event.candle_ts))
+                if index is None:
+                    raise ValueError(f"decision_event_candle_missing:{event.candle_ts}")
+                candle = candles[index]
+                yield ReplayTick(
                     candle=candle,
                     candle_index=index,
                     candle_ts=int(candle.ts),
                     decision_ts=int(event.decision_ts),
                     event=event,
                 )
-            )
-        return replace(state, ticks=tuple(ticks))
+
+        return replace(state, ticks=iter_ticks())
 
 
 @dataclass(frozen=True)
@@ -203,7 +203,7 @@ class DefaultBacktestPipeline:
         parameter_values: dict[str, Any],
         fee_rate: float,
         slippage_bps: float,
-        decision_events: tuple[ResearchDecisionEvent, ...],
+        decision_events: Iterable[ResearchDecisionEvent],
         parameter_stability_score: float | None = None,
         execution_model: ExecutionModel | None = None,
         execution_timing_policy: ExecutionTimingPolicy | None = None,
@@ -321,7 +321,7 @@ def run_decision_event_backtest(
     parameter_values: dict[str, Any],
     fee_rate: float,
     slippage_bps: float,
-    decision_events: tuple[ResearchDecisionEvent, ...],
+    decision_events: Iterable[ResearchDecisionEvent],
     parameter_stability_score: float | None = None,
     execution_model: ExecutionModel | None = None,
     execution_timing_policy: ExecutionTimingPolicy | None = None,
@@ -352,14 +352,14 @@ def _run_decision_event_backtest_impl(
     parameter_values: dict[str, Any],
     fee_rate: float,
     slippage_bps: float,
-    decision_events: tuple[ResearchDecisionEvent, ...],
+    decision_events: Iterable[ResearchDecisionEvent],
     parameter_stability_score: float | None = None,
     execution_model: ExecutionModel | None = None,
     execution_timing_policy: ExecutionTimingPolicy | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
     risk_policy: RiskPolicy | None = None,
     context: BacktestRunContext | None = None,
-    prepared_ticks: tuple[ReplayTick, ...] | None = None,
+    prepared_ticks: Iterable[ReplayTick] | None = None,
     prepared_ledger: PortfolioLedger | None = None,
 ) -> BacktestRun:
     """Compatibility shim; the default authority path is DefaultBacktestPipeline.run()."""
@@ -403,14 +403,14 @@ def _run_stage_composed_decision_event_backtest(
     parameter_values: dict[str, Any],
     fee_rate: float,
     slippage_bps: float,
-    decision_events: tuple[ResearchDecisionEvent, ...],
+    decision_events: Iterable[ResearchDecisionEvent],
     parameter_stability_score: float | None = None,
     execution_model: ExecutionModel | None = None,
     execution_timing_policy: ExecutionTimingPolicy | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
     risk_policy: RiskPolicy | None = None,
     context: BacktestRunContext | None = None,
-    prepared_ticks: tuple[ReplayTick, ...] | None = None,
+    prepared_ticks: Iterable[ReplayTick] | None = None,
     prepared_ledger: PortfolioLedger | None = None,
     strategy_evaluator: StrategyEvaluator | None = None,
     risk_gate: RiskGate | None = None,

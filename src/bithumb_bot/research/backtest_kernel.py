@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterable
 
 from .backtest_pipeline import DefaultBacktestPipeline
 from .backtest_support import BacktestRun, BacktestRunContext
@@ -25,7 +25,7 @@ class BacktestKernel:
         parameter_values: dict[str, Any],
         fee_rate: float,
         slippage_bps: float,
-        decision_events: tuple[ResearchDecisionEvent, ...],
+        decision_events: Iterable[ResearchDecisionEvent],
         parameter_stability_score: float | None = None,
         execution_model: ExecutionModel | None = None,
         execution_timing_policy: ExecutionTimingPolicy | None = None,
@@ -54,7 +54,7 @@ def run_decision_event_backtest(
     parameter_values: dict[str, Any],
     fee_rate: float,
     slippage_bps: float,
-    decision_events: tuple[ResearchDecisionEvent, ...],
+    decision_events: Iterable[ResearchDecisionEvent],
     parameter_stability_score: float | None = None,
     execution_model: ExecutionModel | None = None,
     execution_timing_policy: ExecutionTimingPolicy | None = None,

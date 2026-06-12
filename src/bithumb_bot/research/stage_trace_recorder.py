@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -12,7 +13,18 @@ from .backtest_stages import StageTrace
 class StageTraceRecorder:
     """Records deterministic stage input/output hashes for observability only."""
 
-    traces: list[StageTrace] = field(default_factory=list)
+    max_retained_traces: int = 128
+    mode: str = "bounded_memory"
+    traces: deque[StageTrace] = field(init=False)
+    trace_count: int = 0
+    trace_digest: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.traces = deque(maxlen=max(0, int(self.max_retained_traces)))
+        self.trace_digest = canonical_payload_hash(
+            {"schema_version": 1, "mode": self.mode, "count": 0},
+            label="stage_trace_stream_init",
+        )
 
     def record_strategy(
         self,
@@ -163,14 +175,39 @@ class StageTraceRecorder:
         return ledger_trace, equity_trace
 
     def record(self, trace: StageTrace) -> StageTrace:
+        payload = trace.as_dict()
+        self.trace_count += 1
+        self.trace_digest = canonical_payload_hash(
+            {
+                "schema_version": 1,
+                "ordinal": int(self.trace_count),
+                "previous_hash": self.trace_digest,
+                "trace_hash": canonical_payload_hash(payload, label="stage_trace_item"),
+            },
+            label="stage_trace_stream_update",
+        )
         self.traces.append(trace)
         return trace
 
     def latest_dicts(self, count: int) -> list[dict[str, object]]:
-        return [trace.as_dict() for trace in self.traces[-count:]]
+        if count <= 0:
+            return []
+        return [trace.as_dict() for trace in list(self.traces)[-count:]]
+
+    def compact_evidence(self) -> dict[str, object]:
+        sample = [trace.as_dict() for trace in self.traces]
+        return {
+            "stage_trace_mode": self.mode,
+            "stage_trace_count": int(self.trace_count),
+            "stage_trace_hash": self.trace_digest,
+            "stage_trace": sample,
+            "stage_trace_sample": sample,
+            "stage_trace_sample_count": len(sample),
+            "stage_trace_max_retained_traces": int(self.max_retained_traces),
+        }
 
     def flush_latest(self, *, count: int, metrics_collector: Any | None, experiment_recorder: Any | None, event_number: int) -> None:
-        latest = self.traces[-count:]
+        latest = list(self.traces)[-count:] if count > 0 else []
         if metrics_collector is not None:
             metrics_collector.record(
                 "stage_trace",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from itertools import tee
 from typing import Any
 
 from .backtest_types import BacktestRun, BacktestRunContext
@@ -52,7 +53,10 @@ def run_plugin_backtest(
         portfolio_policy=policy,
         context=context,
     )
-    if not decision_events:
+    decision_events, emptiness_probe = tee(iter(decision_events), 2)
+    try:
+        next(emptiness_probe)
+    except StopIteration:
         return _empty_plugin_backtest_result(
             plugin=plugin,
             dataset=dataset,
@@ -68,7 +72,7 @@ def run_plugin_backtest(
         parameter_values=effective_parameters,
         fee_rate=fee_rate,
         slippage_bps=slippage_bps,
-        decision_events=tuple(decision_events),
+        decision_events=decision_events,
         parameter_stability_score=parameter_stability_score,
         execution_model=execution_model,
         execution_timing_policy=timing_policy,
