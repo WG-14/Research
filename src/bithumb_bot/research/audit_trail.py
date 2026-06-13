@@ -432,6 +432,8 @@ def validate_audit_trail_binding(*, report: dict[str, Any], manager: PathManager
     manifest_ref = str(report.get("audit_trail_trace_manifest_ref") or "").strip()
     manifest_path_value = str(report.get("audit_trail_trace_manifest_path") or "").strip()
     manifest_path = manager.data_dir() / manifest_ref if manifest_ref else Path(manifest_path_value).expanduser()
+    if not manifest_hash:
+        return ["audit_trail_trace_manifest_missing"]
     if not manifest_ref and not manifest_path_value:
         return ["audit_trail_trace_manifest_missing"]
     try:

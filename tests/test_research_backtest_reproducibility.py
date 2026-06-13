@@ -386,6 +386,60 @@ def test_trace_manifest_hash_bound_to_report(tmp_path, monkeypatch) -> None:
     )
 
 
+def test_complete_external_audit_generates_trace_manifest_and_binds_report_hash(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    manager = _research_manager(tmp_path, monkeypatch)
+    experiment_id = "generated_trace_manifest_binding"
+
+    report = run_research_backtest(
+        manifest=parse_manifest(_complete_external_audit_report_manifest(experiment_id=experiment_id)),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    manifest_path = Path(report["audit_trail_trace_manifest_path"])
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert report["audit_trail_status"] == "PASS"
+    assert report["audit_trail_trace_manifest_ref"] == f"derived/research/{experiment_id}/trace_manifest.json"
+    assert report["audit_trail_trace_manifest_hash"] == manifest_payload["content_hash"]
+    assert report["artifact_refs"]["audit_trace_manifest"] == report["audit_trail_trace_manifest_ref"]
+    assert report["artifact_paths"]["audit_trace_manifest_path"] == report["audit_trail_trace_manifest_path"]
+    assert manifest_path.exists()
+    assert manifest_payload["trace_index_count"] == len(manifest_payload["trace_indexes"])
+    assert manifest_payload["trace_indexes"]
+    assert validate_audit_trail_binding(report=report, manager=manager) == []
+
+
+def test_trace_manifest_hash_bound_to_generated_backtest_report(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path)
+    manager = _research_manager(tmp_path, monkeypatch)
+
+    report = run_research_backtest(
+        manifest=parse_manifest(_complete_external_audit_report_manifest(experiment_id="generated_hash_binding")),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    assert validate_audit_trail_binding(report=report, manager=manager) == []
+    tampered = dict(report)
+    tampered["audit_trail_trace_manifest_hash"] = "sha256:" + "0" * 64
+    assert "audit_trail_trace_manifest_hash_mismatch" in validate_audit_trail_binding(
+        report=tampered,
+        manager=manager,
+    )
+    missing_hash = dict(report)
+    missing_hash.pop("audit_trail_trace_manifest_hash")
+    assert "audit_trail_trace_manifest_missing" in validate_audit_trail_binding(
+        report=missing_hash,
+        manager=manager,
+    )
+
+
 def test_derived_candidates_artifact_hash_is_bound_to_report(tmp_path, monkeypatch) -> None:
     manager = _research_manager(tmp_path, monkeypatch)
     report_payload = _summary_report_payload(experiment_id="summary_hash_ref")
@@ -867,6 +921,42 @@ def _manifest() -> dict[str, object]:
             "parameter_stability_required": False,
         },
     }
+
+
+def _complete_external_audit_report_manifest(*, experiment_id: str) -> dict[str, object]:
+    payload = _manifest()
+    payload["experiment_id"] = experiment_id
+    payload["research_run"] = {
+        "audit_trail": {"mode": "complete_external"},
+        "artifact_policy": {"full_decisions_external_jsonl": True},
+        "resource_limits": {
+            "max_audit_stream_rows": 1_000_000,
+            "max_audit_stream_bytes": 1_500_000_000,
+            "max_artifact_bytes": 1_500_000_000,
+            "max_artifact_file_count": 100,
+        },
+    }
+    payload["statistical_validation"] = {
+        "required_for_promotion": True,
+        "benchmark": "cash",
+        "primary_metric": "net_excess_return",
+        "selection_universe": "all_parameter_candidates_all_required_scenarios",
+        "multiple_testing_scope": "experiment",
+        "bootstrap": {
+            "method": "metric_centered_max_bootstrap",
+            "n_bootstrap": 1,
+            "block_length_policy": "not_applicable_summary_metric",
+            "seed_policy": "derived_from_selection_universe_hash",
+        },
+        "gates": {
+            "max_reality_check_p_value": 1.0,
+            "max_spa_p_value": None,
+            "min_deflated_sharpe_probability": None,
+            "max_holdout_reuse_count": 0,
+            "max_attempt_index_without_new_hypothesis": 1,
+        },
+    }
+    return payload
 
 
 def _complete_runtime_bound_parameter_space(
