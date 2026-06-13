@@ -99,20 +99,20 @@ def _trade_hash_payload(trade: dict[str, object]) -> dict[str, object]:
 
 def _behavior_hashes(
     *,
-    decision_material: StreamingEvidenceDigest,
+    decision_material: StreamingEvidenceDigest | list[object],
     common_decision_material: StreamingEvidenceDigest | None = None,
     strategy_decision_material: StreamingEvidenceDigest | None = None,
     trade_material: list[dict[str, object]],
     equity_material: list[dict[str, object]],
 ) -> dict[str, object]:
-    decision_final = decision_material.finalize()
+    decision_final = _finalize_behavior_material(decision_material, label="behavior_hash_material")
     common_final = (
-        common_decision_material.finalize()
+        _finalize_behavior_material(common_decision_material, label="common_behavior_hash_material")
         if common_decision_material is not None
         else StreamingEvidenceDigest("empty_common_behavior_hash_material").finalize()
     )
     strategy_final = (
-        strategy_decision_material.finalize()
+        _finalize_behavior_material(strategy_decision_material, label="strategy_behavior_hash_material")
         if strategy_decision_material is not None
         else StreamingEvidenceDigest("empty_strategy_behavior_hash_material").finalize()
     )
@@ -152,6 +152,19 @@ def _behavior_hashes(
         "behavior_hash_material_sample_hash": str(decision_final["sample_hash"]),
         "behavior_hash_material_sample_count": int(decision_final["sample_count"]),
     }
+
+
+def _finalize_behavior_material(
+    material: StreamingEvidenceDigest | list[object],
+    *,
+    label: str,
+) -> dict[str, object]:
+    if isinstance(material, StreamingEvidenceDigest):
+        return material.finalize()
+    digest = StreamingEvidenceDigest(label)
+    for item in material:
+        digest.update(item)
+    return digest.finalize()
 
 
 def _trace_decision(context: BacktestRunContext, payload: dict[str, object]) -> None:

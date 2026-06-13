@@ -4,7 +4,8 @@ import os
 import subprocess
 import time
 import json
-from dataclasses import dataclass, replace
+import inspect
+from dataclasses import dataclass, fields, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import median
@@ -87,7 +88,7 @@ from .experiment_registry import (
 )
 from .lineage import build_research_lineage, compute_lineage_hash
 from .metrics_gate_policy import metrics_gate_policy_from_acceptance_gate, metrics_gate_policy_hash
-from .metrics_contract import METRICS_SCHEMA_VERSION
+from .metrics_contract import METRICS_SCHEMA_VERSION, ClosedTradeRecord
 from .parameter_space import candidate_id, iter_parameter_candidates
 from .promotion_gate import build_candidate_behavior_profile, build_candidate_profile
 from .report_writer import (
@@ -224,6 +225,45 @@ def _candidate_scenario_worker_from_context(task: dict[str, Any]) -> ResearchWor
     if _CANDIDATE_SCENARIO_WORKER_CONTEXT is None:
         raise RuntimeError("candidate_scenario_worker_context_missing")
     return _candidate_scenario_worker({**_CANDIDATE_SCENARIO_WORKER_CONTEXT, **task})
+
+
+def _execute_parallel_candidate_work_units(
+    *,
+    tasks: list[dict[str, Any]],
+    max_workers: int,
+    process_start_method: str,
+    worker_context: dict[str, Any],
+    process_runtime_observability: list[dict[str, Any]],
+    result_callback: Callable[[ResearchWorkResult], None],
+) -> list[ResearchWorkResult]:
+    kwargs: dict[str, Any] = {
+        "tasks": tasks,
+        "worker": _candidate_scenario_worker_from_context,
+        "max_workers": max_workers,
+        "process_start_method": process_start_method,
+        "initializer": _initialize_candidate_scenario_worker_context,
+        "initargs": (worker_context,),
+        "runtime_observability_sink": process_runtime_observability,
+    }
+    optional_kwargs = {
+        "max_in_flight_tasks": max(1, int(max_workers) * 2),
+        "result_callback": result_callback,
+    }
+    try:
+        signature = inspect.signature(execute_research_work_units_parallel)
+    except (TypeError, ValueError):
+        kwargs.update(optional_kwargs)
+    else:
+        accepted = set(signature.parameters)
+        if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()):
+            kwargs.update(optional_kwargs)
+        else:
+            kwargs.update({key: value for key, value in optional_kwargs.items() if key in accepted})
+    results = execute_research_work_units_parallel(**kwargs)
+    if "result_callback" not in kwargs:
+        for result in results:
+            result_callback(result)
+    return results
 
 
 def _evaluate_candidate_scenario_task(
@@ -668,6 +708,81 @@ def _reserve_experiment_attempt(
 
 def _data_dir_relative_ref(manager: PathManager, path: Path) -> str:
     return path.resolve().relative_to(manager.data_dir().resolve()).as_posix()
+
+
+def _closed_trades_for_stress_suite(
+    *,
+    manager: PathManager,
+    base: dict[str, Any],
+    split_name: str,
+) -> tuple[ClosedTradeRecord, ...]:
+    key = f"{split_name}_closed_trades"
+    existing = base.get(key)
+    if existing:
+        return _closed_trade_records_from_payload(existing, source=key)
+
+    expected_count = int(base.get(f"{split_name}_closed_trade_count") or 0)
+    if expected_count <= 0:
+        return ()
+
+    detail = _load_candidate_detail_base_result(manager=manager, compact=base)
+    payload = detail.get(key) if isinstance(detail, dict) else None
+    records = _closed_trade_records_from_payload(payload or (), source=key)
+    if len(records) != expected_count:
+        raise ResearchValidationError(
+            f"{split_name}_closed_trades_detail_count_mismatch: "
+            f"expected={expected_count} actual={len(records)}"
+        )
+    return records
+
+
+def _load_candidate_detail_base_result(*, manager: PathManager, compact: dict[str, Any]) -> dict[str, Any]:
+    detail_ref = str(compact.get("detail_artifact_ref") or "").strip()
+    detail_path_value = str(compact.get("detail_artifact_path") or "").strip()
+    if detail_ref:
+        detail_path = manager.data_dir().resolve() / detail_ref
+    elif detail_path_value:
+        detail_path = Path(detail_path_value)
+    else:
+        raise ResearchValidationError("candidate_detail_artifact_missing_for_stress_suite")
+
+    resolved = detail_path.resolve()
+    data_dir = manager.data_dir().resolve()
+    if not PathManager._is_within(resolved, data_dir):
+        raise ResearchValidationError(f"candidate_detail_artifact_outside_data_dir: {resolved}")
+    if not resolved.is_file():
+        raise ResearchValidationError(f"candidate_detail_artifact_not_found: {resolved}")
+
+    artifact = json.loads(resolved.read_text(encoding="utf-8"))
+    if not isinstance(artifact, dict) or artifact.get("artifact_type") != "candidate_detail_result":
+        raise ResearchValidationError("candidate_detail_artifact_malformed")
+    detail_payload = artifact.get("base_result")
+    if not isinstance(detail_payload, dict):
+        raise ResearchValidationError("candidate_detail_base_result_missing")
+    expected_hash = str(compact.get("detail_artifact_hash") or "")
+    actual_hash = sha256_prefixed(detail_payload, label="candidate_detail_artifact_hash")
+    if expected_hash and actual_hash != expected_hash:
+        raise ResearchValidationError("candidate_detail_artifact_hash_mismatch")
+    embedded_hash = str(artifact.get("detail_artifact_hash") or "")
+    if embedded_hash and embedded_hash != actual_hash:
+        raise ResearchValidationError("candidate_detail_artifact_embedded_hash_mismatch")
+    return detail_payload
+
+
+def _closed_trade_records_from_payload(payload: Any, *, source: str) -> tuple[ClosedTradeRecord, ...]:
+    if not isinstance(payload, (list, tuple)):
+        raise ResearchValidationError(f"{source}_malformed")
+    allowed = {field.name for field in fields(ClosedTradeRecord)}
+    records: list[ClosedTradeRecord] = []
+    for item in payload:
+        if isinstance(item, ClosedTradeRecord):
+            records.append(item)
+            continue
+        if not isinstance(item, dict):
+            raise ResearchValidationError(f"{source}_item_malformed")
+        values = {key: item[key] for key in allowed if key in item}
+        records.append(ClosedTradeRecord(**values))
+    return tuple(records)
 
 
 def _append_candidate_event(
@@ -1745,15 +1860,12 @@ def _evaluate_candidates(
                 )
             )
 
-        execute_research_work_units_parallel(
+        _execute_parallel_candidate_work_units(
             tasks=work_tasks,
-            worker=_candidate_scenario_worker_from_context,
             max_workers=manifest.research_run.execution.max_workers,
             process_start_method=manifest.research_run.execution.process_start_method,
-            initializer=_initialize_candidate_scenario_worker_context,
-            initargs=(worker_context,),
-            runtime_observability_sink=process_runtime_observability,
-            max_in_flight_tasks=max(1, int(manifest.research_run.execution.max_workers) * 2),
+            worker_context=worker_context,
+            process_runtime_observability=process_runtime_observability,
             result_callback=collect_parallel_result,
         )
         substage_timings.append(
@@ -2088,7 +2200,11 @@ def _evaluate_candidates(
                     ),
                     original_metrics=validation_metrics,
                     metrics_v2=validation_metrics_v2,
-                    closed_trades=tuple(base.get("validation_closed_trades") or ()),
+                    closed_trades=_closed_trades_for_stress_suite(
+                        manager=manager,
+                        base=base,
+                        split_name="validation",
+                    ),
                     starting_cash=manifest.portfolio_policy.starting_cash_krw,
                     parameter_perturbation_candidates=perturbation_candidates,
                 )
@@ -2108,7 +2224,11 @@ def _evaluate_candidates(
                         ),
                         original_metrics=final_holdout_metrics,
                         metrics_v2=final_holdout_metrics_v2,
-                        closed_trades=tuple(base.get("final_holdout_closed_trades") or ()),
+                        closed_trades=_closed_trades_for_stress_suite(
+                            manager=manager,
+                            base=base,
+                            split_name="final_holdout",
+                        ),
                         starting_cash=manifest.portfolio_policy.starting_cash_krw,
                         parameter_perturbation_candidates=perturbation_candidates,
                     )
@@ -2321,6 +2441,9 @@ def _evaluate_candidates(
                 "train_audit_trace_index": base.get("train_audit_trace_index"),
                 "validation_audit_trace_index": base.get("validation_audit_trace_index"),
                 "final_holdout_audit_trace_index": base.get("final_holdout_audit_trace_index"),
+                "train_equity_curve": [],
+                "validation_equity_curve": [],
+                "final_holdout_equity_curve": [],
                 "train_execution_metadata": base.get("train_execution_metadata") or [],
                 "validation_execution_metadata": base.get("validation_execution_metadata") or [],
                 "final_holdout_execution_metadata": base.get("final_holdout_execution_metadata"),
@@ -2545,6 +2668,9 @@ def _evaluate_candidates(
                 "train_audit_trace_index": primary.get("train_audit_trace_index"),
                 "validation_audit_trace_index": primary.get("validation_audit_trace_index"),
                 "final_holdout_audit_trace_index": primary.get("final_holdout_audit_trace_index"),
+                "train_equity_curve": [],
+                "validation_equity_curve": [],
+                "final_holdout_equity_curve": [],
                 "validation_equity_curve_count": primary.get("validation_equity_curve_count"),
                 "final_holdout_equity_curve_count": primary.get("final_holdout_equity_curve_count"),
                 "validation_equity_curve_hash": primary.get("validation_equity_curve_hash"),

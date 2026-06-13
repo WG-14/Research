@@ -161,10 +161,18 @@ def analyze_trade_removal(
     fail_reasons: list[str] = []
     cases: list[dict[str, Any]] = []
     if not closed_trades:
+        if contract.get("min_return_retention_pct") is None and contract.get("max_mdd_multiplier") is None:
+            return {
+                "status": "PASS",
+                "cases": [],
+                "fail_reasons": [],
+                "limitations": ["stress_trade_removal_no_closed_trades"],
+            }
         return {
             "status": "FAIL",
             "cases": [],
-            "fail_reasons": ["stress_trade_removal_no_closed_trades"],
+            "fail_reasons": ["stress_trade_removal_no_closed_trades", "stress_trade_removal_return_retention_failed"],
+            "limitations": ["stress_trade_removal_no_closed_trades"],
         }
     top_values = [int(item) for item in contract.get("top_n_by_net_pnl") or []]
     original = _trade_summary(closed_trades, starting_cash=starting_cash)
@@ -230,10 +238,18 @@ def analyze_trade_order_monte_carlo(
 ) -> dict[str, Any]:
     fail_reasons: list[str] = []
     if not closed_trades:
+        survival_probability = 0.0
+        fail_reasons.append("stress_monte_carlo_no_closed_trades")
+        if contract.get("min_survival_probability") is not None and survival_probability < float(
+            contract.get("min_survival_probability")
+        ):
+            fail_reasons.append("stress_monte_carlo_survival_probability_failed")
         return {
-            "status": "FAIL",
+            "status": "PASS" if not fail_reasons else "FAIL",
             "iterations": int(contract.get("iterations") or 0),
-            "fail_reasons": ["stress_monte_carlo_no_closed_trades"],
+            "survival_probability": survival_probability,
+            "ruin_max_drawdown_pct": float(contract.get("ruin_max_drawdown_pct")),
+            "fail_reasons": sorted(set(fail_reasons)),
             "limitations": list(MONTE_CARLO_LIMITATIONS),
         }
     min_closed_trades = int(contract.get("min_closed_trades") or 10)

@@ -49,6 +49,7 @@ def test_workload_estimate_includes_parallel_snapshot_fanout_bytes() -> None:
 
 @pytest.mark.contract
 @pytest.mark.resource_guard
+@pytest.mark.research_e2e
 def test_memory_admission_fails_when_estimated_parent_and_worker_bytes_exceed_budget(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "research.sqlite"
     _create_db(db_path)
@@ -66,6 +67,7 @@ def test_memory_admission_fails_when_estimated_parent_and_worker_bytes_exceed_bu
 
 @pytest.mark.contract
 @pytest.mark.resource_guard
+@pytest.mark.research_e2e
 def test_memory_admission_caps_effective_workers_when_policy_is_cap_workers(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "research.sqlite"
     _create_db(db_path)

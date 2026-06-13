@@ -100,8 +100,10 @@ SMALL_IN_MEMORY_DATASET_HELPERS = {
 }
 
 PATH_SCOPED_SMALL_IN_MEMORY_DATASET_HELPERS = {
+    Path("tests/test_channel_breakout_research_plugin.py"): {"_dataset", "_breakout_confirmation_dataset"},
     Path("tests/test_orderbook_top_research.py"): {"_signal_dataset"},
     Path("tests/test_orderbook_top_contracts.py"): {"_signal_dataset"},
+    Path("tests/test_research_streaming_backtest.py"): {"_dataset"},
     Path("tests/test_research_strategy_canary.py"): {"_dataset"},
 }
 

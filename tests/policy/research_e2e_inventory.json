@@ -816,6 +816,397 @@
       "lower_level_contract_available": true,
       "replacement_contract_test": "tests/test_research_report_writer.py::test_candidate_evaluation_substage_timings_are_reported",
       "e2e_canary_group": "research_artifact_observability"
+    },
+    {
+      "nodeid": "tests/test_parallel_worker_context.py::test_parallel_worker_initializer_context_does_not_include_snapshots",
+      "markers": [
+        "parallel_e2e"
+      ],
+      "reason": "verifies parallel worker initializer context remains lightweight without in-process dataset snapshots",
+      "expected_workload": {
+        "strategy_count": 0,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 0,
+        "estimated_tick_events": 0,
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 0,
+        "pre_parallel_dataset_hash_payload_bytes": 0
+      },
+      "duration_budget_seconds": 15,
+      "domain": "research_parallel",
+      "last_measured_seconds": 5,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "process_boundary",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "research_parallel"
+    },
+    {
+      "nodeid": "tests/test_parallel_worker_context.py::test_parallel_worker_loads_only_required_split",
+      "markers": [
+        "parallel_e2e"
+      ],
+      "reason": "verifies parallel worker task loading remains split-scoped at the process-boundary helper",
+      "expected_workload": {
+        "strategy_count": 0,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 0,
+        "estimated_tick_events": 1,
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 0,
+        "pre_parallel_dataset_hash_payload_bytes": 0
+      },
+      "duration_budget_seconds": 20,
+      "domain": "research_parallel",
+      "last_measured_seconds": 5,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "process_boundary",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "research_parallel"
+    },
+    {
+      "nodeid": "tests/test_parallel_worker_context.py::test_serial_path_can_still_use_in_process_snapshots",
+      "markers": [
+        "parallel_e2e"
+      ],
+      "reason": "guards the serial execution context exception while keeping parallel process-boundary inventory explicit",
+      "expected_workload": {
+        "strategy_count": 0,
+        "manifest_count": 0,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 0,
+        "estimated_tick_events": 2,
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 0,
+        "pre_parallel_dataset_hash_call_count": 0,
+        "pre_parallel_dataset_hash_payload_bytes": 0
+      },
+      "duration_budget_seconds": 15,
+      "domain": "research_parallel",
+      "last_measured_seconds": 5,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "process_boundary",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "research_parallel"
+    },
+    {
+      "nodeid": "tests/test_research_bounded_observability.py::test_behavior_hash_is_stable_after_streaming_digest_refactor",
+      "markers": [
+        "memory_sensitive"
+      ],
+      "reason": "verifies stable streaming behavior digests over large in-memory research kernel runs",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 0,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 2,
+        "estimated_tick_events": 20000,
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 0,
+        "pre_parallel_dataset_hash_call_count": 0,
+        "pre_parallel_dataset_hash_payload_bytes": 0
+      },
+      "duration_budget_seconds": 45,
+      "domain": "research_observability",
+      "last_measured_seconds": 15,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "memory_sensitive_behavior",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "memory_sensitive"
+    },
+    {
+      "nodeid": "tests/test_research_bounded_observability.py::test_max_decisions_retained_zero_still_produces_behavior_hash_without_payload_list",
+      "markers": [
+        "memory_sensitive"
+      ],
+      "reason": "verifies zero decision retention still emits hash evidence without retaining large payload lists",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 0,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 10000,
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 0,
+        "pre_parallel_dataset_hash_call_count": 0,
+        "pre_parallel_dataset_hash_payload_bytes": 0
+      },
+      "duration_budget_seconds": 30,
+      "domain": "research_observability",
+      "last_measured_seconds": 10,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "memory_sensitive_behavior",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "memory_sensitive"
+    },
+    {
+      "nodeid": "tests/test_research_bounded_observability.py::test_summary_mode_does_not_retain_per_tick_behavior_material",
+      "markers": [
+        "memory_sensitive"
+      ],
+      "reason": "verifies summary-mode research observability remains bounded for a large in-memory kernel run",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 0,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 10000,
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 0,
+        "pre_parallel_dataset_hash_call_count": 0,
+        "pre_parallel_dataset_hash_payload_bytes": 0
+      },
+      "duration_budget_seconds": 30,
+      "domain": "research_observability",
+      "last_measured_seconds": 10,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "memory_sensitive_behavior",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "memory_sensitive"
+    },
+    {
+      "nodeid": "tests/test_research_large_run_resource_bounds.py::test_channel_breakout_summary_mode_large_run_keeps_bounded_observability",
+      "markers": [
+        "memory_sensitive"
+      ],
+      "reason": "verifies channel-breakout large-run summary observability stays bounded without per-tick retention",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 0,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 10000,
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 0,
+        "pre_parallel_dataset_hash_call_count": 0,
+        "pre_parallel_dataset_hash_payload_bytes": 0
+      },
+      "duration_budget_seconds": 45,
+      "domain": "research_observability",
+      "last_measured_seconds": 15,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "memory_sensitive_behavior",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "memory_sensitive"
+    },
+    {
+      "nodeid": "tests/test_research_large_run_resource_bounds.py::test_delayed_confirmation_large_run_does_not_retain_per_tick_feature_payloads",
+      "markers": [
+        "memory_sensitive"
+      ],
+      "reason": "verifies delayed-confirmation large-run feature payloads are not retained per tick",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 0,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 10000,
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 0,
+        "pre_parallel_dataset_hash_call_count": 0,
+        "pre_parallel_dataset_hash_payload_bytes": 0
+      },
+      "duration_budget_seconds": 45,
+      "domain": "research_observability",
+      "last_measured_seconds": 15,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "memory_sensitive_behavior",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "memory_sensitive"
+    },
+    {
+      "nodeid": "tests/test_research_large_run_resource_bounds.py::test_large_run_resource_usage_reports_evidence_counts_and_hashes",
+      "markers": [
+        "memory_sensitive"
+      ],
+      "reason": "verifies large-run resource usage reports bounded evidence counts and hashes",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 0,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 10000,
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 0,
+        "pre_parallel_dataset_hash_call_count": 0,
+        "pre_parallel_dataset_hash_payload_bytes": 0
+      },
+      "duration_budget_seconds": 45,
+      "domain": "research_observability",
+      "last_measured_seconds": 15,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "memory_sensitive_behavior",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "memory_sensitive"
+    },
+    {
+      "nodeid": "tests/test_research_large_run_resource_bounds.py::test_nightly_large_run_workers_8_uses_memory_admission_or_batches",
+      "markers": [
+        "memory_sensitive",
+        "nightly"
+      ],
+      "reason": "verifies worker-eight production research execution is capped by memory admission or batching",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 2,
+        "estimated_tick_events": 8640,
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 2,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 1112064
+      },
+      "duration_budget_seconds": 90,
+      "domain": "research_memory_admission",
+      "last_measured_seconds": 30,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "memory_sensitive_behavior",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "memory_sensitive"
+    },
+    {
+      "nodeid": "tests/test_research_memory_admission.py::test_memory_admission_caps_effective_workers_when_policy_is_cap_workers",
+      "markers": [
+        "research_e2e"
+      ],
+      "reason": "verifies production research memory admission caps effective workers under the cap-workers policy",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
+      },
+      "duration_budget_seconds": 60,
+      "domain": "research_memory_admission",
+      "last_measured_seconds": 20,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "memory_sensitive_behavior",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "memory_sensitive"
+    },
+    {
+      "nodeid": "tests/test_research_memory_admission.py::test_memory_admission_fails_when_estimated_parent_and_worker_bytes_exceed_budget",
+      "markers": [
+        "research_e2e"
+      ],
+      "reason": "verifies production research memory admission fails closed when parent and worker estimates exceed budget",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
+      },
+      "duration_budget_seconds": 60,
+      "domain": "research_memory_admission",
+      "last_measured_seconds": 20,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "memory_sensitive_behavior",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "memory_sensitive"
+    },
+    {
+      "nodeid": "tests/test_stage_trace_retention.py::test_backtest_resource_usage_does_not_embed_full_stage_trace_array",
+      "markers": [
+        "memory_sensitive"
+      ],
+      "reason": "verifies backtest resource usage reports stage-trace hash evidence without embedding full trace arrays",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 0,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 1000,
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 0,
+        "pre_parallel_dataset_hash_call_count": 0,
+        "pre_parallel_dataset_hash_payload_bytes": 0
+      },
+      "duration_budget_seconds": 20,
+      "domain": "research_observability",
+      "last_measured_seconds": 5,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "memory_sensitive_behavior",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "memory_sensitive"
+    },
+    {
+      "nodeid": "tests/test_stage_trace_retention.py::test_stage_trace_hash_changes_when_trace_order_changes",
+      "markers": [
+        "memory_sensitive"
+      ],
+      "reason": "verifies stage-trace digest preserves order-sensitive evidence without retaining unbounded traces",
+      "expected_workload": {
+        "strategy_count": 0,
+        "manifest_count": 0,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 0,
+        "estimated_tick_events": 10,
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 0,
+        "pre_parallel_dataset_hash_call_count": 0,
+        "pre_parallel_dataset_hash_payload_bytes": 0
+      },
+      "duration_budget_seconds": 15,
+      "domain": "research_observability",
+      "last_measured_seconds": 5,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "memory_sensitive_behavior",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "memory_sensitive"
+    },
+    {
+      "nodeid": "tests/test_stage_trace_retention.py::test_stage_trace_recorder_keeps_only_bounded_latest_traces",
+      "markers": [
+        "memory_sensitive"
+      ],
+      "reason": "verifies the stage-trace recorder keeps bounded latest traces while hashing all trace evidence",
+      "expected_workload": {
+        "strategy_count": 0,
+        "manifest_count": 0,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 0,
+        "estimated_tick_events": 1000,
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 0,
+        "pre_parallel_dataset_hash_call_count": 0,
+        "pre_parallel_dataset_hash_payload_bytes": 0
+      },
+      "duration_budget_seconds": 15,
+      "domain": "research_observability",
+      "last_measured_seconds": 5,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "memory_sensitive_behavior",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "memory_sensitive"
     }
   ]
 }

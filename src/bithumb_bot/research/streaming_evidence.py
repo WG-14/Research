@@ -26,7 +26,6 @@ class StreamingEvidenceDigest:
         )
 
     def update(self, payload: Any) -> None:
-        item_hash = canonical_payload_hash(payload, label=f"{self.label}_item")
         self.count += 1
         self._digest = canonical_payload_hash(
             {
@@ -34,7 +33,7 @@ class StreamingEvidenceDigest:
                 "label": self.label,
                 "ordinal": self.count,
                 "previous_hash": self._digest,
-                "item_hash": item_hash,
+                "item": payload,
             },
             label=f"{self.label}_stream_update",
         )

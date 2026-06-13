@@ -182,7 +182,7 @@ class StageTraceRecorder:
                 "schema_version": 1,
                 "ordinal": int(self.trace_count),
                 "previous_hash": self.trace_digest,
-                "trace_hash": canonical_payload_hash(payload, label="stage_trace_item"),
+                "trace": payload,
             },
             label="stage_trace_stream_update",
         )

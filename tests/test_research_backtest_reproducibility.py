@@ -2564,8 +2564,10 @@ def test_parallel_executor_uses_lightweight_tasks_with_worker_initializer(tmp_pa
     assert captured_tasks
     assert all("snapshots" not in task for task in captured_tasks)
     assert all("manifest" not in task for task in captured_tasks)
-    assert "snapshots" in captured_context
     assert "manifest" in captured_context
+    assert "snapshots" not in captured_context
+    assert captured_context["split_names"] == ("train", "validation", "final_holdout")
+    assert set(captured_context["dataset_hashes"]) == {"train", "validation", "final_holdout"}
 
 
 def _logical_candidate_summary(report: dict[str, object]) -> list[dict[str, object]]:

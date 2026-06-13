@@ -579,6 +579,9 @@ def summarize_report_candidate(candidate: Any) -> dict[str, Any]:
     )
     summary = {key: candidate[key] for key in summary_keys if key in candidate}
     _copy_compact_diagnostics(summary, candidate)
+    summary["train_equity_curve"] = []
+    summary["validation_equity_curve"] = []
+    summary["final_holdout_equity_curve"] = []
     summary["candidate_payload_hash"] = sha256_prefixed(
         candidate_evidence_hash_inputs(candidate),
         label="candidate_evidence_hash",
@@ -1005,6 +1008,22 @@ def summarize_resource_usage_for_candidate_artifact(
         "stable_value_wall_seconds",
         "stable_value_call_count",
         "tick_observability_policy",
+        "applied_resource_limits_hash",
+        "behavior_hash_material_retention_policy",
+        "behavior_hash_material_sample_hash",
+        "common_decision_behavior_hash",
+        "composite_behavior_hash",
+        "composite_behavior_hash_v2",
+        "decision_behavior_hash",
+        "decision_hash",
+        "memory_sampling_policy_hash",
+        "resource_policy_hash",
+        "scenario",
+        "candidate_id",
+        "stage_trace_mode",
+        "strategy_behavior_hash",
+        "strategy_diagnostics_hash",
+        "trade_ledger_hash",
     }
     for key, value in resource_usage.items():
         if drop_runtime_only and key in runtime_only_keys:
