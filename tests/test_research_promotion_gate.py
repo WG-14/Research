@@ -40,6 +40,7 @@ from bithumb_bot.research.strategy_spec import (
 from bithumb_bot.research.strategy_registry import resolve_research_strategy_plugin
 from bithumb_bot.research import validation_pipeline as pipeline
 from bithumb_bot.research.validation_pipeline import validation_run_binding_hash, validation_run_content_hash
+from bithumb_bot.research.run_summary import build_research_run_summary
 from bithumb_bot.approved_profile import build_approved_profile, verify_promotion_artifact
 from bithumb_bot.decision_equivalence import compute_decision_equivalence_hash
 from bithumb_bot.evidence_chain import (
@@ -781,6 +782,35 @@ def test_backtest_candidate_standalone_marker_alone_fails_closed_for_promotion()
     assert not allowed
     assert "standalone_backtest_not_full_validation" in reasons
     assert "backtest_standalone_backtest_not_full_validation" in reasons
+
+
+def test_standalone_backtest_never_marks_live_candidate() -> None:
+    report = {
+        "diagnostic_only": True,
+        "standalone_backtest_not_full_validation": True,
+        "next_required_stage": "research-validate",
+        "promotion_eligibility_gate_result": "PASS",
+        "best_candidate_id": "candidate_001",
+    }
+    summary = build_research_run_summary(report)
+
+    assert summary.promotion_allowed is False
+    assert report["next_required_stage"] == "research-validate"
+
+
+def test_diagnostic_only_report_blocks_profile_export() -> None:
+    candidate = _production_candidate(
+        diagnostic_only=True,
+        standalone_backtest_not_full_validation=True,
+    )
+    candidate["candidate_profile_hash"] = sha256_prefixed(build_candidate_profile(candidate))
+
+    allowed, reasons = validate_backtest_candidate_for_promotion(candidate)
+
+    assert allowed is False
+    assert "diagnostic_only_evidence_artifact" in reasons
+    assert "backtest_diagnostic_only_evidence_artifact" in reasons
+    assert "standalone_backtest_not_full_validation" in reasons
 
 
 @pytest.mark.parametrize("field", ("compatibility_fallback", "research_compatibility_execution_fallback"))

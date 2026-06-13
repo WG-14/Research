@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import copy
+import json
 
 import pytest
 
 from bithumb_bot.research.experiment_manifest import ManifestValidationError, parse_manifest
+from bithumb_bot.research.experiment_registry import EMPTY_EXPERIMENT_REGISTRY_HASH, compute_row_hash, validate_experiment_registry_binding
 from bithumb_bot.research.final_selection import apply_final_selection_contract, validate_final_selection_report
 from bithumb_bot.research.hashing import sha256_prefixed
+from bithumb_bot.research.run_summary import build_research_run_summary
 from bithumb_bot.research.statistical_selection import candidate_metric_universe_payload
 
 
@@ -318,6 +321,62 @@ def test_final_selection_exposure_policy_requires_holdout_reuse_when_holdout_ran
     payload["final_selection"] = final_selection
     with pytest.raises(ManifestValidationError, match="counts_as_holdout_reuse must be true"):
         parse_manifest(payload)
+
+
+def test_final_holdout_reuse_blocks_promotion_grade_selection(tmp_path) -> None:
+    registry_path = tmp_path / "experiment_registry.jsonl"
+    row = {
+        "event_type": "research_attempt_reserved",
+        "experiment_id": "exp_001",
+        "experiment_family_id": "family_001",
+        "hypothesis_id": "hypothesis_001",
+        "final_holdout_reuse_key_hash": "sha256:holdout",
+        "computed_attempt_index": 1,
+        "computed_holdout_reuse_count": 2,
+        "prior_registry_hash": EMPTY_EXPERIMENT_REGISTRY_HASH,
+    }
+    row["row_hash"] = compute_row_hash(row)
+    registry_path.write_text(json.dumps(row, sort_keys=True) + "\n", encoding="utf-8")
+    report = {
+        "deployment_tier": "paper_candidate",
+        "experiment_id": "exp_001",
+        "experiment_family_id": "family_001",
+        "hypothesis_id": "hypothesis_001",
+        "experiment_registry_path": str(registry_path),
+        "experiment_registry_row_hash": row["row_hash"],
+        "experiment_registry_prior_hash": EMPTY_EXPERIMENT_REGISTRY_HASH,
+        "computed_holdout_reuse_count": 2,
+        "computed_attempt_index": 1,
+        "final_holdout_reuse_key_hash": "sha256:holdout",
+        "statistical_validation_contract": {
+            "gates": {
+                "max_holdout_reuse_count": 0,
+                "max_attempt_index_without_new_hypothesis": 1,
+            }
+        },
+    }
+
+    reasons = validate_experiment_registry_binding(report=report, require_complete=False)
+
+    assert "holdout_reuse_budget_exceeded" in reasons
+    assert "experiment_registry_budget_exceeded" in reasons
+
+
+def test_selected_candidate_requires_validation_run_complete() -> None:
+    report = {
+        "validation_run_complete": False,
+        "diagnostic_only": True,
+        "standalone_backtest_not_full_validation": True,
+        "next_required_stage": "research-validate",
+        "selected_candidate_id": "candidate_001",
+        "best_candidate_id": "candidate_001",
+        "promotion_eligibility_gate_result": "PASS",
+    }
+    summary = build_research_run_summary(report)
+
+    assert summary.promotion_allowed is False
+    assert report["selected_candidate_id"] == "candidate_001"
+    assert report["next_required_stage"] == "research-validate"
 
 
 def test_final_selection_unsupported_metric_policy_rejects_unknown_value() -> None:

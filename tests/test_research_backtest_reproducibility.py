@@ -6,6 +6,7 @@ import sqlite3
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,6 +52,7 @@ from bithumb_bot.research.executor import (
     sort_work_results_deterministically,
 )
 from bithumb_bot.research.hashing import report_content_hash_payload, sha256_prefixed
+from bithumb_bot.research.experiment_registry import final_holdout_hashes_from_manifest
 from bithumb_bot.research.strategy_spec import strategy_spec_for_name
 from bithumb_bot.research.audit_trail import (
     AuditTraceScope,
@@ -66,6 +68,7 @@ from bithumb_bot.research.backtest_stage_runner import (
     _record_audit_execution,
 )
 from bithumb_bot.research.report_writer import write_research_report
+from bithumb_bot.research.run_summary import build_research_run_summary
 from bithumb_bot.research.return_panel import build_candidate_return_panel
 from bithumb_bot.research import cli as research_cli
 from bithumb_bot.research.cli import _print_report_summary
@@ -172,6 +175,139 @@ def test_summary_report_does_not_duplicate_full_candidate_payload(tmp_path, monk
     assert "decisions" not in persisted["candidates"][0]
     assert "equity_curve" not in persisted["candidates"][0]
     assert persisted["candidate_count"] == len(derived["candidates"])
+
+
+def test_final_holdout_reuse_key_hash_is_stable() -> None:
+    final_holdout = {"start": "2026-01-01", "end": "2026-02-28"}
+    manifest = SimpleNamespace(
+        market="KRW-BTC",
+        interval="1m",
+        dataset=SimpleNamespace(
+            source="sqlite_candles",
+            snapshot_id="snapshot_a",
+            split=SimpleNamespace(final_holdout=SimpleNamespace(as_dict=lambda: dict(final_holdout))),
+        ),
+    )
+
+    first = final_holdout_hashes_from_manifest(
+        manifest=manifest,
+        final_holdout_split_hash="sha256:split-a",
+        dataset_quality_hash="sha256:quality-a",
+    )
+    second = final_holdout_hashes_from_manifest(
+        manifest=manifest,
+        final_holdout_split_hash="sha256:split-b",
+        dataset_quality_hash="sha256:quality-b",
+    )
+    changed_market = final_holdout_hashes_from_manifest(
+        manifest=SimpleNamespace(
+            market="KRW-ETH",
+            interval="1m",
+            dataset=manifest.dataset,
+        ),
+        final_holdout_split_hash="sha256:split-a",
+        dataset_quality_hash="sha256:quality-a",
+    )
+
+    assert first["final_holdout_reuse_key_hash"] == second["final_holdout_reuse_key_hash"]
+    assert first["final_holdout_reuse_key_hash"] != changed_market["final_holdout_reuse_key_hash"]
+
+
+def test_research_only_holdout_reuse_is_warn_not_promotion_pass() -> None:
+    report = minimal_research_report(
+        report_kind="backtest",
+        experiment_id="holdout_reuse_warn",
+        candidates=[minimal_candidate_payload(candidate_id="candidate_001")],
+    )
+    report.update(
+        {
+            "deployment_tier": "research_only",
+            "diagnostic_only": True,
+            "registry_gate_result": "WARN",
+            "registry_gate_fail_reasons": ["experiment_registry_missing"],
+            "promotion_eligibility_gate_result": "FAIL",
+            "best_candidate_id": "candidate_001",
+        }
+    )
+    summary = build_research_run_summary(report)
+
+    assert summary.promotion_allowed is False
+    assert report["registry_gate_result"] == "WARN"
+
+
+def test_audit_trace_contains_entry_feature_and_exit_evaluations(tmp_path, monkeypatch) -> None:
+    manager = _research_manager(tmp_path, monkeypatch)
+    scope = AuditTraceScope(
+        manager=manager,
+        experiment_id="audit_feature_exit",
+        manifest_hash="sha256:manifest",
+        dataset_content_hash="sha256:dataset",
+        candidate_id="candidate_001",
+        scenario_id="scenario_001",
+        scenario_index=0,
+        split="validation",
+        parameter_values={"SMA_SHORT": 2, "SMA_LONG": 4},
+    )
+    scope.write_decision(
+        {
+            "decision_ts": 1,
+            "raw_signal": "BUY",
+            "feature_snapshot": {"breakout_distance": 0.01},
+            "exit_evaluations": [{"rule": "breakout_level_reclaim_failed", "rule_source": "strategy"}],
+            "fee_rate": 0.001,
+            "slippage_bps": 5.0,
+            "pnl": 10.0,
+            "mae": -2.0,
+            "mfe": 15.0,
+        }
+    )
+    scope.write_equity({"ts": 1, "equity": 1_000_000.0})
+    scope.write_execution({"ts": 1, "side": "BUY"})
+    index = scope.complete()
+    write_trace_manifest(
+        manager=manager,
+        experiment_id="audit_feature_exit",
+        manifest_hash="sha256:manifest",
+        dataset_content_hash="sha256:dataset",
+        trace_indexes=[index],
+        policy=AuditTrailPolicy(mode="complete_external"),
+    )
+
+    decision_path = manager.data_dir() / index["decisions_path_ref"]
+    row = json.loads(decision_path.read_text(encoding="utf-8").splitlines()[0])
+
+    payload = row["payload"]
+    assert payload["feature_snapshot"]["breakout_distance"] == 0.01
+    assert payload["exit_evaluations"][0]["rule_source"] == "strategy"
+    assert payload["fee_rate"] == 0.001
+    assert payload["slippage_bps"] == 5.0
+    assert payload["pnl"] == 10.0
+    assert payload["mae"] == -2.0
+    assert payload["mfe"] == 15.0
+
+
+def test_trace_manifest_hash_bound_to_report(tmp_path, monkeypatch) -> None:
+    manager = _research_manager(tmp_path, monkeypatch)
+    trace = _write_contract_audit_trace(manager=manager, experiment_id="trace_hash_bound")
+    report = {
+        "manifest_hash": "sha256:contract-manifest",
+        "deployment_tier": "paper_candidate",
+        "statistical_validation_required": True,
+        "audit_trail_policy": {
+            "mode": "complete_external",
+            "required_for_promotion": True,
+        },
+        "audit_trail_trace_manifest_ref": "derived/research/trace_hash_bound/trace_manifest.json",
+        "audit_trail_trace_manifest_path": str(manager.data_dir() / "derived/research/trace_hash_bound/trace_manifest.json"),
+        "audit_trail_trace_manifest_hash": trace["manifest"]["content_hash"],
+    }
+
+    assert validate_audit_trail_binding(report=report, manager=manager) == []
+    report["audit_trail_trace_manifest_hash"] = "sha256:" + "0" * 64
+    assert "audit_trail_trace_manifest_hash_mismatch" in validate_audit_trail_binding(
+        report=report,
+        manager=manager,
+    )
 
 
 def test_derived_candidates_artifact_hash_is_bound_to_report(tmp_path, monkeypatch) -> None:

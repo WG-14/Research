@@ -74,6 +74,26 @@ def test_report_write_stage_timing_payload_matches_artifact_summary(tmp_path: Pa
     assert report_write["report_bytes"] == summary["report_bytes"]
 
 
+def test_summary_report_references_candidate_detail_artifacts(tmp_path: Path, monkeypatch) -> None:
+    manager = _research_manager(tmp_path, monkeypatch)
+    result = write_research_report(
+        manager=manager,
+        experiment_id="summary_candidate_refs",
+        report_name="backtest",
+        payload=_summary_report_payload(experiment_id="summary_candidate_refs"),
+    )
+    persisted = json.loads(result.paths.report_path.read_text(encoding="utf-8"))
+
+    assert persisted["artifact_refs"]["candidate_results_dir"] == (
+        "derived/research/summary_candidate_refs/candidate_results"
+    )
+    assert persisted["artifact_refs"]["audit_trace_manifest"] == (
+        "derived/research/summary_candidate_refs/trace_manifest.json"
+    )
+    assert persisted["artifact_paths"]["candidate_results_dir"] == str(result.paths.candidate_results_dir.resolve())
+    assert persisted["artifact_paths"]["audit_trace_manifest_path"] == str(result.paths.trace_manifest_path.resolve())
+
+
 def test_persist_final_research_report_observability_updates_persisted_payload(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     payload = {

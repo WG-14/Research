@@ -454,7 +454,7 @@ def _exit_rule_source(
     if in_common:
         return "common_risk"
     if in_strategy:
-        return "plugin"
+        return "strategy"
     return "unknown"
 
 

@@ -20,6 +20,8 @@ from bithumb_bot.research.strategy_spec import (
     StrategySpecError,
     materialize_strategy_parameters,
 )
+from bithumb_bot.strategy.base import PositionContext
+from bithumb_bot.strategy.exit_rules import ExitRuleDecision
 from bithumb_bot.strategy_authoring import research_plugin_from_event_builder
 
 
@@ -95,8 +97,15 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "CHANNEL_BREAKOUT_VOLUME_WINDOW",
         "CHANNEL_BREAKOUT_VOLUME_RATIO_MIN",
         "CHANNEL_BREAKOUT_REGIME_FILTER_ENABLED",
+        "MIN_BREAKOUT_DISTANCE_RATIO",
+        "ENTRY_EDGE_BUFFER_RATIO",
         "ENTRY_MODE",
         "CONFIRMATION_WINDOW_MIN",
+        "CONFIRMATION_MIN_BREAKOUT_DISTANCE_RATIO",
+        "CONFIRMATION_CLOSE_LOCATION_MIN",
+        "CONFIRMATION_VOLUME_RATIO_MIN",
+        "MAX_UPPER_WICK_RATIO",
+        "MIN_BODY_RATIO",
         "PULLBACK_RATIO",
         "COOLDOWN_MIN",
         "MAX_TRADES_PER_DAY",
@@ -108,6 +117,9 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "BREAK_EVEN_STOP_ENABLED",
         "OPPOSITE_SIGNAL_EXIT_ENABLED",
         "REGIME_CHANGE_EXIT_ENABLED",
+        "FEE_RATE_USED_FOR_ENTRY_GATE",
+        "SLIPPAGE_BPS_USED_FOR_ENTRY_GATE",
+        "REQUIRED_BREAKOUT_DISTANCE_RATIO",
     ),
     required_parameter_names=(
         "CHANNEL_BREAKOUT_LOOKBACK",
@@ -121,8 +133,15 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "CHANNEL_BREAKOUT_VOLUME_WINDOW",
         "CHANNEL_BREAKOUT_VOLUME_RATIO_MIN",
         "CHANNEL_BREAKOUT_REGIME_FILTER_ENABLED",
+        "MIN_BREAKOUT_DISTANCE_RATIO",
+        "ENTRY_EDGE_BUFFER_RATIO",
         "ENTRY_MODE",
         "CONFIRMATION_WINDOW_MIN",
+        "CONFIRMATION_MIN_BREAKOUT_DISTANCE_RATIO",
+        "CONFIRMATION_CLOSE_LOCATION_MIN",
+        "CONFIRMATION_VOLUME_RATIO_MIN",
+        "MAX_UPPER_WICK_RATIO",
+        "MIN_BODY_RATIO",
         "PULLBACK_RATIO",
         "COOLDOWN_MIN",
         "MAX_TRADES_PER_DAY",
@@ -130,19 +149,31 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "STRATEGY_EXIT_STOP_LOSS_RATIO",
         "STRATEGY_EXIT_MAX_HOLDING_MIN",
         "TAKE_PROFIT_RATIO",
+    ),
+    metadata_only_parameter_names=(
+        "FEE_RATE_USED_FOR_ENTRY_GATE",
+        "SLIPPAGE_BPS_USED_FOR_ENTRY_GATE",
+        "REQUIRED_BREAKOUT_DISTANCE_RATIO",
+    ),
+    research_only_parameter_names=(
         "TRAILING_STOP_RATIO",
         "BREAK_EVEN_STOP_ENABLED",
         "OPPOSITE_SIGNAL_EXIT_ENABLED",
         "REGIME_CHANGE_EXIT_ENABLED",
     ),
-    metadata_only_parameter_names=(),
-    research_only_parameter_names=(),
     default_parameters={
         "CHANNEL_BREAKOUT_RANGE_RATIO_MIN": 1.2,
         "CHANNEL_BREAKOUT_VOLUME_RATIO_MIN": 1.1,
         "CHANNEL_BREAKOUT_REGIME_FILTER_ENABLED": True,
+        "MIN_BREAKOUT_DISTANCE_RATIO": 0.0,
+        "ENTRY_EDGE_BUFFER_RATIO": 0.0,
         "ENTRY_MODE": "immediate_breakout",
         "CONFIRMATION_WINDOW_MIN": 0,
+        "CONFIRMATION_MIN_BREAKOUT_DISTANCE_RATIO": 0.0,
+        "CONFIRMATION_CLOSE_LOCATION_MIN": 0.0,
+        "CONFIRMATION_VOLUME_RATIO_MIN": 0.0,
+        "MAX_UPPER_WICK_RATIO": 1.0,
+        "MIN_BODY_RATIO": 0.0,
         "PULLBACK_RATIO": 0.0,
         "COOLDOWN_MIN": 0,
         "MAX_TRADES_PER_DAY": 0,
@@ -162,6 +193,8 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         StrategyParameterSchema("CHANNEL_BREAKOUT_VOLUME_WINDOW", "int", required=True, min_value=2, unit="candles"),
         StrategyParameterSchema("CHANNEL_BREAKOUT_VOLUME_RATIO_MIN", "float", min_value=0.0, unit="volume_ratio"),
         StrategyParameterSchema("CHANNEL_BREAKOUT_REGIME_FILTER_ENABLED", "bool", unit="enabled_flag"),
+        StrategyParameterSchema("MIN_BREAKOUT_DISTANCE_RATIO", "float", min_value=0.0, unit="price_ratio"),
+        StrategyParameterSchema("ENTRY_EDGE_BUFFER_RATIO", "float", min_value=0.0, unit="edge_ratio"),
         StrategyParameterSchema(
             "ENTRY_MODE",
             "str",
@@ -174,6 +207,16 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
             unit="entry_hypothesis",
         ),
         StrategyParameterSchema("CONFIRMATION_WINDOW_MIN", "int", min_value=0, unit="minutes"),
+        StrategyParameterSchema(
+            "CONFIRMATION_MIN_BREAKOUT_DISTANCE_RATIO",
+            "float",
+            min_value=0.0,
+            unit="price_ratio",
+        ),
+        StrategyParameterSchema("CONFIRMATION_CLOSE_LOCATION_MIN", "float", min_value=0.0, unit="ratio"),
+        StrategyParameterSchema("CONFIRMATION_VOLUME_RATIO_MIN", "float", min_value=0.0, unit="volume_ratio"),
+        StrategyParameterSchema("MAX_UPPER_WICK_RATIO", "float", min_value=0.0, unit="ratio"),
+        StrategyParameterSchema("MIN_BODY_RATIO", "float", min_value=0.0, unit="ratio"),
         StrategyParameterSchema("PULLBACK_RATIO", "float", min_value=0.0, unit="price_ratio"),
         StrategyParameterSchema("COOLDOWN_MIN", "int", min_value=0, unit="minutes"),
         StrategyParameterSchema("MAX_TRADES_PER_DAY", "int", min_value=0, unit="count"),
@@ -181,10 +224,35 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         StrategyParameterSchema("STRATEGY_EXIT_STOP_LOSS_RATIO", "float", min_value=0.0, unit="unrealized_pnl_ratio"),
         StrategyParameterSchema("STRATEGY_EXIT_MAX_HOLDING_MIN", "int", min_value=0, unit="minutes"),
         StrategyParameterSchema("TAKE_PROFIT_RATIO", "float", min_value=0.0, unit="unrealized_pnl_ratio"),
-        StrategyParameterSchema("TRAILING_STOP_RATIO", "float", min_value=0.0, unit="unrealized_pnl_ratio"),
-        StrategyParameterSchema("BREAK_EVEN_STOP_ENABLED", "bool", unit="enabled_flag"),
-        StrategyParameterSchema("OPPOSITE_SIGNAL_EXIT_ENABLED", "bool", unit="enabled_flag"),
-        StrategyParameterSchema("REGIME_CHANGE_EXIT_ENABLED", "bool", unit="enabled_flag"),
+        StrategyParameterSchema(
+            "TRAILING_STOP_RATIO",
+            "float",
+            min_value=0.0,
+            unit="unrealized_pnl_ratio",
+            runtime_bound=False,
+            behavior_affecting=False,
+        ),
+        StrategyParameterSchema(
+            "BREAK_EVEN_STOP_ENABLED",
+            "bool",
+            unit="enabled_flag",
+            runtime_bound=False,
+            behavior_affecting=False,
+        ),
+        StrategyParameterSchema(
+            "OPPOSITE_SIGNAL_EXIT_ENABLED",
+            "bool",
+            unit="enabled_flag",
+            runtime_bound=False,
+            behavior_affecting=False,
+        ),
+        StrategyParameterSchema(
+            "REGIME_CHANGE_EXIT_ENABLED",
+            "bool",
+            unit="enabled_flag",
+            runtime_bound=False,
+            behavior_affecting=False,
+        ),
     ),
     decision_contract_version="research_channel_breakout_decision_contract.v1",
     required_data=("candles",),
@@ -192,6 +260,12 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
     exit_policy_schema={
         "schema_version": 1,
         "rules": ("stop_loss", "take_profit", "max_holding_time"),
+        "strategy_owned_rules": ("breakout_level_reclaim_failed",),
+        "breakout_level_reclaim_failed": {
+            "unit": "price_ratio",
+            "default_tolerance_ratio": 0.0,
+            "evaluation_price_basis": "closed_candle_mark",
+        },
         "stop_loss": {
             "unit": "unrealized_pnl_ratio",
             "disabled_value": 0,
@@ -228,6 +302,13 @@ def materialize_channel_breakout_parameters(
     values = materialize_strategy_parameters(
         plugin.name,
         parameter_values,
+        fee_rate=fee_rate,
+        slippage_bps=slippage_bps,
+    )
+    values["FEE_RATE_USED_FOR_ENTRY_GATE"] = max(0.0, float(fee_rate))
+    values["SLIPPAGE_BPS_USED_FOR_ENTRY_GATE"] = max(0.0, float(slippage_bps))
+    values["REQUIRED_BREAKOUT_DISTANCE_RATIO"] = _required_breakout_distance(
+        parameter_values=values,
         fee_rate=fee_rate,
         slippage_bps=slippage_bps,
     )
@@ -270,6 +351,10 @@ def decide_channel_breakout_snapshot(
     lookback = int(parameter_values["CHANNEL_BREAKOUT_LOOKBACK"])
     range_window = int(parameter_values["CHANNEL_BREAKOUT_RANGE_WINDOW"])
     volume_window = int(parameter_values["CHANNEL_BREAKOUT_VOLUME_WINDOW"])
+    required_breakout_distance = _required_breakout_distance_from_materialized(parameter_values)
+    entry_edge_buffer_ratio = float(parameter_values.get("ENTRY_EDGE_BUFFER_RATIO", 0.0))
+    fee_rate_used_for_entry_gate = float(parameter_values.get("FEE_RATE_USED_FOR_ENTRY_GATE", 0.0))
+    slippage_bps_used_for_entry_gate = float(parameter_values.get("SLIPPAGE_BPS_USED_FOR_ENTRY_GATE", 0.0))
     min_required_prior = max(lookback, range_window, volume_window)
     close = float(candle.close)
     volume = float(candle.volume)
@@ -291,6 +376,10 @@ def decide_channel_breakout_snapshot(
             "close": close,
             "rolling_high": 0.0,
             "breakout_distance": 0.0,
+            "required_breakout_distance": float(required_breakout_distance),
+            "entry_edge_buffer_ratio": float(entry_edge_buffer_ratio),
+            "fee_rate_used_for_entry_gate": float(fee_rate_used_for_entry_gate),
+            "slippage_bps_used_for_entry_gate": float(slippage_bps_used_for_entry_gate),
             "current_range": float(candle.high) - float(candle.low),
             "avg_range": 0.0,
             "range_ratio": 0.0,
@@ -342,6 +431,8 @@ def decide_channel_breakout_snapshot(
     blocked_filters: list[str] = []
     if close <= rolling_high:
         blocked_filters.append("close_not_above_rolling_high")
+    if breakout_distance < required_breakout_distance:
+        blocked_filters.append("breakout_distance_below_min")
     if range_ratio < float(parameter_values["CHANNEL_BREAKOUT_RANGE_RATIO_MIN"]):
         blocked_filters.append("range_ratio_below_min")
     if volume_ratio < float(parameter_values["CHANNEL_BREAKOUT_VOLUME_RATIO_MIN"]):
@@ -367,6 +458,10 @@ def decide_channel_breakout_snapshot(
         "close": close,
         "rolling_high": float(rolling_high),
         "breakout_distance": float(breakout_distance),
+        "required_breakout_distance": float(required_breakout_distance),
+        "entry_edge_buffer_ratio": float(entry_edge_buffer_ratio),
+        "fee_rate_used_for_entry_gate": float(fee_rate_used_for_entry_gate),
+        "slippage_bps_used_for_entry_gate": float(slippage_bps_used_for_entry_gate),
         "current_range": float(current_range),
         "avg_range": float(avg_range),
         "range_ratio": float(range_ratio),
@@ -407,12 +502,18 @@ def decide_channel_breakout_snapshot(
             "regime_filter_enabled": regime_filter_enabled,
             "entry_mode": entry_mode,
             "confirmation_status": confirmation_status,
+            "breakout_distance": float(breakout_distance),
+            "required_breakout_distance": float(required_breakout_distance),
+            "entry_edge_buffer_ratio": float(entry_edge_buffer_ratio),
+            "fee_rate_used_for_entry_gate": float(fee_rate_used_for_entry_gate),
+            "slippage_bps_used_for_entry_gate": float(slippage_bps_used_for_entry_gate),
         },
     }
     if signal == "BUY":
         decision["order_intent"] = {
             "side": "BUY",
             "sizing": "portfolio_policy_fractional_cash",
+            "entry_breakout_level": float(rolling_high),
         }
     return decision
 
@@ -431,12 +532,23 @@ def build_channel_breakout_research_events(
     portfolio_policy: PortfolioPolicy,
     context: Any | None = None,
 ) -> Iterator[ResearchDecisionEvent]:
-    del fee_rate, slippage_bps, portfolio_policy, context
+    del portfolio_policy, context
+    parameter_values = {
+        **dict(parameter_values),
+        "FEE_RATE_USED_FOR_ENTRY_GATE": max(0.0, float(fee_rate)),
+        "SLIPPAGE_BPS_USED_FOR_ENTRY_GATE": max(0.0, float(slippage_bps)),
+    }
+    parameter_values["REQUIRED_BREAKOUT_DISTANCE_RATIO"] = _required_breakout_distance(
+        parameter_values=parameter_values,
+        fee_rate=fee_rate,
+        slippage_bps=slippage_bps,
+    )
     prepared = prepare_channel_breakout_context(dataset)
     candles = prepared.candles
     entry_mode = _validate_supported_entry_mode(parameter_values.get("ENTRY_MODE"))
     pending = BreakoutPendingState()
     last_buy_index: int | None = None
+    active_entry_breakout_level: float = 0.0
     trade_count_by_day: dict[str, int] = {}
     for candle_index, candle in enumerate(candles):
         decision = decide_channel_breakout_snapshot(
@@ -468,6 +580,15 @@ def build_channel_breakout_research_events(
         )
         signal = str(decision.get("signal") or "HOLD").upper()
         feature_snapshot = dict(decision.get("feature_snapshot") or {})
+        if signal == "BUY":
+            active_entry_breakout_level = float(
+                (decision.get("order_intent") or {}).get("entry_breakout_level")
+                or feature_snapshot.get("breakout_level")
+                or feature_snapshot.get("rolling_high")
+                or 0.0
+            )
+        if active_entry_breakout_level > 0.0:
+            feature_snapshot["entry_breakout_level"] = float(active_entry_breakout_level)
         blocked_filters = tuple(str(item) for item in feature_snapshot.get("blocked_filters") or ())
         decision_ts = candle_close_ts(candle, interval=dataset.interval) + int(
             execution_timing_policy.decision_guard_ms
@@ -507,6 +628,84 @@ def _safe_ratio(numerator: float, denominator: float) -> float:
     if denominator <= 0.0:
         return 0.0
     return float(numerator) / float(denominator)
+
+
+@dataclass(frozen=True)
+class BreakoutLevelReclaimExitRule:
+    tolerance_ratio: float = 0.0
+    name: str = "breakout_level_reclaim_failed"
+
+    def evaluate(
+        self,
+        *,
+        position: PositionContext,
+        candle_ts: int,
+        market_price: float,
+        signal_context: dict[str, object],
+    ) -> ExitRuleDecision:
+        raw_level = signal_context.get("entry_breakout_level")
+        try:
+            entry_breakout_level = float(raw_level)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            entry_breakout_level = 0.0
+        tolerance = max(0.0, float(self.tolerance_ratio))
+        threshold = entry_breakout_level * (1.0 - tolerance)
+        should_exit = bool(position.in_position and entry_breakout_level > 0.0 and float(market_price) < threshold)
+        return ExitRuleDecision(
+            should_exit=should_exit,
+            reason=(
+                "exit by breakout level reclaim failure"
+                if should_exit
+                else "breakout level reclaim not failed"
+            ),
+            context={
+                "rule": self.name,
+                "entry_breakout_level": entry_breakout_level,
+                "tolerance_ratio": tolerance,
+                "threshold_price": threshold,
+                "market_price": float(market_price),
+                "candle_ts": int(candle_ts),
+            },
+        )
+
+
+def channel_breakout_exit_rule_factory(
+    _active_exit_policy: dict[str, Any],
+    _parameter_values: dict[str, Any],
+    _fee_rate: float,
+) -> list[BreakoutLevelReclaimExitRule]:
+    return [BreakoutLevelReclaimExitRule()]
+
+
+def channel_breakout_exit_signal_context(event: ResearchDecisionEvent) -> dict[str, object]:
+    feature_snapshot = dict(getattr(event, "feature_snapshot", None) or {})
+    order_intent = dict(getattr(event, "order_intent", None) or {})
+    level = order_intent.get("entry_breakout_level") or feature_snapshot.get("entry_breakout_level")
+    if not level:
+        level = feature_snapshot.get("breakout_level") or feature_snapshot.get("rolling_high")
+    return {"entry_breakout_level": float(level or 0.0)}
+
+
+def _required_breakout_distance(
+    *,
+    parameter_values: dict[str, Any],
+    fee_rate: float,
+    slippage_bps: float,
+) -> float:
+    min_breakout = max(0.0, float(parameter_values.get("MIN_BREAKOUT_DISTANCE_RATIO", 0.0)))
+    buffer = max(0.0, float(parameter_values.get("ENTRY_EDGE_BUFFER_RATIO", 0.0)))
+    entry_cost_estimate = max(0.0, float(fee_rate)) + max(0.0, float(slippage_bps)) / 10_000.0
+    return max(min_breakout, entry_cost_estimate + buffer)
+
+
+def _required_breakout_distance_from_materialized(parameter_values: dict[str, Any]) -> float:
+    if "REQUIRED_BREAKOUT_DISTANCE_RATIO" in parameter_values:
+        return max(0.0, float(parameter_values["REQUIRED_BREAKOUT_DISTANCE_RATIO"]))
+    return _required_breakout_distance(
+        parameter_values=parameter_values,
+        fee_rate=float(parameter_values.get("FEE_RATE_USED_FOR_ENTRY_GATE", 0.0)),
+        slippage_bps=float(parameter_values.get("SLIPPAGE_BPS_USED_FOR_ENTRY_GATE", 0.0)),
+    )
 
 
 def _normalize_exit_rules(raw: object) -> tuple[str, ...]:
@@ -571,6 +770,11 @@ def _evaluate_pending_confirmation(
     close = float(candle.close)
     low = float(candle.low)
     pullback_ratio = float(parameter_values["PULLBACK_RATIO"])
+    quality = compute_confirmation_quality_features(
+        candle=candle,
+        breakout_level=float(pending.breakout_level),
+        avg_volume=float((decision.get("feature_snapshot") or {}).get("avg_volume") or 0.0),
+    )
     if close <= pending.breakout_level:
         return _delayed_confirmation_decision(
             base_decision=decision,
@@ -579,6 +783,7 @@ def _evaluate_pending_confirmation(
             reason="breakout_confirmation_failed_close_below_level",
             confirmation_status="failed_close_below_level",
             clear_pending=True,
+            quality_features=quality,
         )
     if low < pending.breakout_level * (1.0 - pullback_ratio):
         return _delayed_confirmation_decision(
@@ -588,6 +793,7 @@ def _evaluate_pending_confirmation(
             reason="breakout_confirmation_failed_deep_retest",
             confirmation_status="failed_deep_retest",
             clear_pending=True,
+            quality_features=quality,
         )
     blocked_filters = tuple(str(item) for item in (decision.get("feature_snapshot") or {}).get("blocked_filters") or ())
     if "downtrend_regime" in blocked_filters or "chop_regime" in blocked_filters:
@@ -598,6 +804,18 @@ def _evaluate_pending_confirmation(
             reason="breakout_confirmation_failed_regime",
             confirmation_status="failed_regime",
             clear_pending=True,
+            quality_features=quality,
+        )
+    quality_failure = _confirmation_quality_failure(parameter_values=parameter_values, quality=quality)
+    if quality_failure is not None:
+        return _delayed_confirmation_decision(
+            base_decision=decision,
+            pending=pending,
+            signal="HOLD",
+            reason=quality_failure,
+            confirmation_status=quality_failure.removeprefix("breakout_confirmation_"),
+            clear_pending=True,
+            quality_features=quality,
         )
     return _delayed_confirmation_decision(
         base_decision=decision,
@@ -606,6 +824,7 @@ def _evaluate_pending_confirmation(
         reason="delayed_breakout_confirmed",
         confirmation_status="confirmed",
         clear_pending=True,
+        quality_features=quality,
     )
 
 
@@ -617,6 +836,7 @@ def _delayed_confirmation_decision(
     reason: str,
     confirmation_status: str,
     clear_pending: bool,
+    quality_features: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     decision = dict(base_decision)
     feature_snapshot = dict(decision.get("feature_snapshot") or {})
@@ -636,9 +856,15 @@ def _delayed_confirmation_decision(
             "confirmation_status": confirmation_status,
         }
     )
+    if quality_features:
+        feature_snapshot.update(quality_features)
     diagnostics = dict(decision.get("strategy_diagnostics") or {})
     diagnostics["entry_mode"] = "delayed_confirmation"
     diagnostics["confirmation_status"] = confirmation_status
+    if quality_features:
+        diagnostics.update(quality_features)
+    if reason.startswith("breakout_confirmation_failed_"):
+        diagnostics["confirmation_failure_reason"] = reason
     decision["signal"] = signal
     decision["reason"] = reason
     decision["feature_snapshot"] = feature_snapshot
@@ -647,6 +873,7 @@ def _delayed_confirmation_decision(
         decision["order_intent"] = {
             "side": "BUY",
             "sizing": "portfolio_policy_fractional_cash",
+            "entry_breakout_level": float(pending.breakout_level),
         }
     else:
         decision.pop("order_intent", None)
@@ -657,6 +884,47 @@ def _delayed_confirmation_decision(
         pending.breakout_close = 0.0
         pending.expires_at_index = -1
     return decision
+
+
+def compute_confirmation_quality_features(
+    *,
+    candle: Candle,
+    breakout_level: float,
+    avg_volume: float,
+) -> dict[str, float]:
+    close = float(candle.close)
+    high = float(candle.high)
+    low = float(candle.low)
+    open_ = float(candle.open)
+    candle_range = max(0.0, high - low)
+    return {
+        "confirmation_breakout_distance": _safe_ratio(close - float(breakout_level), float(breakout_level)),
+        "close_location": _safe_ratio(close - low, candle_range),
+        "upper_wick_ratio": _safe_ratio(high - max(open_, close), candle_range),
+        "body_ratio": _safe_ratio(abs(close - open_), candle_range),
+        "confirmation_volume_ratio": _safe_ratio(float(candle.volume), float(avg_volume)),
+    }
+
+
+def _confirmation_quality_failure(
+    *,
+    parameter_values: dict[str, Any],
+    quality: dict[str, float],
+) -> str | None:
+    if quality["confirmation_breakout_distance"] < float(
+        parameter_values["CONFIRMATION_MIN_BREAKOUT_DISTANCE_RATIO"]
+    ):
+        return "breakout_confirmation_failed_distance"
+    if quality["close_location"] < float(parameter_values["CONFIRMATION_CLOSE_LOCATION_MIN"]):
+        return "breakout_confirmation_failed_close_location"
+    max_upper_wick = float(parameter_values["MAX_UPPER_WICK_RATIO"])
+    if max_upper_wick >= 0.0 and quality["upper_wick_ratio"] > max_upper_wick:
+        return "breakout_confirmation_failed_upper_wick"
+    if quality["body_ratio"] < float(parameter_values["MIN_BODY_RATIO"]):
+        return "breakout_confirmation_failed_body"
+    if quality["confirmation_volume_ratio"] < float(parameter_values["CONFIRMATION_VOLUME_RATIO_MIN"]):
+        return "breakout_confirmation_failed_volume"
+    return None
 
 
 def _apply_buy_limits(
@@ -720,4 +988,14 @@ object.__setattr__(
     CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN,
     "estimate_complexity",
     estimate_channel_breakout_complexity,
+)
+object.__setattr__(
+    CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN,
+    "exit_rule_factory",
+    channel_breakout_exit_rule_factory,
+)
+object.__setattr__(
+    CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN,
+    "exit_signal_context_builder",
+    channel_breakout_exit_signal_context,
 )

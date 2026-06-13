@@ -13,13 +13,19 @@ from bithumb_bot.research.backtest_engine import BacktestRunContext
 from bithumb_bot.research.backtest_kernel import BacktestKernel, run_decision_event_backtest
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
 from bithumb_bot.research.decision_event import ResearchDecisionEvent
-from bithumb_bot.research.experiment_manifest import DateRange
+from bithumb_bot.research.experiment_manifest import DateRange, ExecutionTimingPolicy, legacy_research_portfolio_policy
 from bithumb_bot.research.strategy_registry import (
     ResearchStrategyPlugin,
     StrategyRuntimeCapabilities,
 )
 from bithumb_bot.research.strategy_spec import StrategySpec
 from bithumb_bot.strategy.exit_rules import create_exit_rules, create_sma_exit_rules
+from bithumb_bot.strategy_plugins.channel_breakout_research import (
+    CHANNEL_BREAKOUT_SPEC,
+    build_channel_breakout_research_events,
+    materialize_channel_breakout_parameters,
+    CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN,
+)
 from bithumb_bot.strategy_policy_contract import (
     EntryExecutionIntent,
     ExitExecutionIntent,
@@ -792,6 +798,63 @@ def test_plugin_exit_factory_cannot_remove_common_stop_loss(monkeypatch) -> None
     assert result.decisions[-1]["exit_rule"] == "stop_loss"
     assert result.decisions[-1]["exit_evaluations"][0]["rule"] == "stop_loss"
     assert result.decisions[-1]["exit_evaluations"][0]["rule_source"] == "common_risk"
+
+
+def test_strategy_owned_exit_rule_can_override_common_exit_path() -> None:
+    dataset = DatasetSnapshot(
+        snapshot_id="channel_exit_override",
+        source="unit",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="validation",
+        date_range=DateRange("2026-01-01", "2026-01-02"),
+        candles=(
+            Candle(0, 100.0, 101.0, 99.0, 100.0, 100.0),
+            Candle(60_000, 101.0, 102.0, 100.0, 101.0, 100.0),
+            Candle(120_000, 102.0, 103.0, 101.0, 102.0, 100.0),
+            Candle(180_000, 103.0, 104.0, 102.0, 103.0, 100.0),
+            Candle(240_000, 104.0, 110.0, 103.0, 109.0, 200.0),
+            Candle(300_000, 109.0, 109.5, 103.0, 103.5, 200.0),
+        ),
+    )
+    params = materialize_channel_breakout_parameters(
+        plugin=CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN,
+        parameter_values={
+            "CHANNEL_BREAKOUT_LOOKBACK": 3,
+            "CHANNEL_BREAKOUT_RANGE_WINDOW": 3,
+            "CHANNEL_BREAKOUT_VOLUME_WINDOW": 3,
+            "CHANNEL_BREAKOUT_REGIME_FILTER_ENABLED": False,
+            "CHANNEL_BREAKOUT_RANGE_RATIO_MIN": 0.0,
+            "CHANNEL_BREAKOUT_VOLUME_RATIO_MIN": 0.0,
+            "STRATEGY_EXIT_STOP_LOSS_RATIO": 0.50,
+        },
+        fee_rate=0.0,
+        slippage_bps=0.0,
+    )
+    events = tuple(
+        build_channel_breakout_research_events(
+            dataset=dataset,
+            parameter_values=params,
+            fee_rate=0.0,
+            slippage_bps=0.0,
+            execution_timing_policy=ExecutionTimingPolicy(decision_guard_ms=0),
+            portfolio_policy=legacy_research_portfolio_policy(),
+        )
+    )
+
+    result = run_decision_event_backtest(
+        dataset=dataset,
+        strategy_name=CHANNEL_BREAKOUT_SPEC.strategy_name,
+        parameter_values=params,
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        decision_events=events,
+        context=BacktestRunContext(report_detail="full"),
+    )
+
+    assert result.decisions[-1]["final_signal"] == "SELL"
+    assert result.decisions[-1]["exit_rule"] == "breakout_level_reclaim_failed"
+    assert result.decisions[-1]["exit_evaluations"][0]["rule_source"] == "strategy"
 
 
 def test_common_and_sma_exit_factories_keep_strategy_owned_opposite_cross_boundary() -> None:
