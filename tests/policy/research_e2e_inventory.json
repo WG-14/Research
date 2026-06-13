@@ -525,6 +525,62 @@
       "e2e_canary_group": "research_audit"
     },
     {
+      "nodeid": "tests/test_research_backtest_reproducibility.py::test_complete_external_audit_generates_trace_manifest_and_binds_report_hash",
+      "markers": [
+        "audit_e2e"
+      ],
+      "reason": "verifies complete external audit trace manifest generation and report hash binding through a real production backtest",
+      "expected_workload": {
+        "strategy_runs": "single production backtest with complete external audit trace manifest",
+        "tick_scope": "small fixture dataset",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 12960,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
+      },
+      "duration_budget_seconds": 90,
+      "domain": "research_audit",
+      "last_measured_seconds": 30,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "audit_trace_persistence",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "research_audit"
+    },
+    {
+      "nodeid": "tests/test_research_backtest_reproducibility.py::test_trace_manifest_hash_bound_to_generated_backtest_report",
+      "markers": [
+        "audit_e2e"
+      ],
+      "reason": "verifies generated production backtest reports remain fail-closed when audit trace manifest hash binding is missing or tampered",
+      "expected_workload": {
+        "strategy_runs": "single production backtest with complete external audit trace manifest",
+        "tick_scope": "small fixture dataset",
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 12960,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
+      },
+      "duration_budget_seconds": 90,
+      "domain": "research_audit",
+      "last_measured_seconds": 30,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "audit_trace_persistence",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "research_audit"
+    },
+    {
       "nodeid": "tests/test_research_backtest_reproducibility.py::test_research_backtest_audit_budget_overage_fails_fast_in_pipeline",
       "markers": [
         "audit_e2e"

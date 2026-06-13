@@ -239,7 +239,7 @@ def test_merge_exit_rules_preserves_common_stop_loss_when_plugin_returns_empty_l
     assert decision.context["threshold_ratio"] == 0.05
 
 
-def test_merge_exit_rules_preserves_common_max_holding_when_plugin_returns_custom_rule() -> None:
+def test_merge_exit_rules_preserves_common_max_holding_after_plugin_owned_custom_rule() -> None:
     class CustomExitRule:
         name = "custom_strategy_exit"
 
@@ -256,8 +256,8 @@ def test_merge_exit_rules_preserves_common_max_holding_when_plugin_returns_custo
 
     merged = merge_exit_rules(common_exit_rules=common, strategy_exit_rules=[custom])
 
-    assert [rule.name for rule in merged] == ["max_holding_time", "custom_strategy_exit"]
-    decision = merged[0].evaluate(
+    assert [rule.name for rule in merged] == ["custom_strategy_exit", "max_holding_time"]
+    decision = merged[1].evaluate(
         position=PositionContext(
             in_position=True,
             entry_price=100.0,

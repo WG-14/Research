@@ -279,10 +279,6 @@ def merge_exit_rules(
         return list(common_exit_rules)
 
     common_by_name = {rule.name: rule for rule in common_exit_rules}
-    strategy_names = {rule.name for rule in strategy_exit_rules}
-
-    if not any(name in common_by_name for name in strategy_names):
-        return [*strategy_exit_rules, *common_exit_rules]
 
     merged: list[ExitRule] = []
     seen: set[str] = set()

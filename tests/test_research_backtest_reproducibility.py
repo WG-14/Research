@@ -386,6 +386,7 @@ def test_trace_manifest_hash_bound_to_report(tmp_path, monkeypatch) -> None:
     )
 
 
+@pytest.mark.audit_e2e
 def test_complete_external_audit_generates_trace_manifest_and_binds_report_hash(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
@@ -413,6 +414,7 @@ def test_complete_external_audit_generates_trace_manifest_and_binds_report_hash(
     assert validate_audit_trail_binding(report=report, manager=manager) == []
 
 
+@pytest.mark.audit_e2e
 def test_trace_manifest_hash_bound_to_generated_backtest_report(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
