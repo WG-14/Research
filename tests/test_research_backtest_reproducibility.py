@@ -56,7 +56,7 @@ from bithumb_bot.research.experiment_registry import (
     FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION,
     final_holdout_hashes_from_manifest,
 )
-from bithumb_bot.research.strategy_spec import strategy_spec_for_name
+from bithumb_bot.research.strategy_spec import strategy_spec_for_name, validate_parameter_space_against_strategy_spec
 from bithumb_bot.research.audit_trail import (
     AuditTraceScope,
     AuditTrailPolicy,
@@ -84,7 +84,8 @@ from bithumb_bot.research.experiment_registry import (
     load_experiment_registry_rows,
     reserve_research_attempt_checked,
 )
-from bithumb_bot.research.parameter_space import candidate_id
+from bithumb_bot.research.parameter_space import candidate_id, iter_parameter_candidates
+from bithumb_bot.research.time_filter_comparison import build_time_filter_comparison_summary
 from bithumb_bot.research.promotion_gate import (
     PromotionGateError,
     _verify_report_content_hash,
@@ -165,6 +166,87 @@ def _summary_report_payload(*, experiment_id: str = "summary_ref") -> dict[str, 
     )
     report.setdefault("research_run", {})["report_detail"] = "summary"
     return report
+
+
+def test_three_candidate_kst_time_filter_manifest_shape_is_representable() -> None:
+    aligned_parameter_space = {
+        "ENTRY_TIME_FILTER_KST_ENABLED": (False, True, True),
+        "ENTRY_TIME_FILTER_KST_START_HOUR": (0, 9, 9),
+        "ENTRY_TIME_FILTER_KST_END_HOUR": (24, 10, 11),
+    }
+    one_candidate_manifest_spaces = (
+        {
+            "CHANNEL_BREAKOUT_LOOKBACK": (3,),
+            "CHANNEL_BREAKOUT_RANGE_WINDOW": (3,),
+            "CHANNEL_BREAKOUT_VOLUME_WINDOW": (3,),
+            "ENTRY_TIME_FILTER_KST_ENABLED": (False,),
+            "ENTRY_TIME_FILTER_KST_START_HOUR": (0,),
+            "ENTRY_TIME_FILTER_KST_END_HOUR": (24,),
+        },
+        {
+            "CHANNEL_BREAKOUT_LOOKBACK": (3,),
+            "CHANNEL_BREAKOUT_RANGE_WINDOW": (3,),
+            "CHANNEL_BREAKOUT_VOLUME_WINDOW": (3,),
+            "ENTRY_TIME_FILTER_KST_ENABLED": (True,),
+            "ENTRY_TIME_FILTER_KST_START_HOUR": (9,),
+            "ENTRY_TIME_FILTER_KST_END_HOUR": (10,),
+        },
+        {
+            "CHANNEL_BREAKOUT_LOOKBACK": (3,),
+            "CHANNEL_BREAKOUT_RANGE_WINDOW": (3,),
+            "CHANNEL_BREAKOUT_VOLUME_WINDOW": (3,),
+            "ENTRY_TIME_FILTER_KST_ENABLED": (True,),
+            "ENTRY_TIME_FILTER_KST_START_HOUR": (9,),
+            "ENTRY_TIME_FILTER_KST_END_HOUR": (11,),
+        },
+    )
+
+    assert len(iter_parameter_candidates(aligned_parameter_space)) == 27
+    for parameter_space in one_candidate_manifest_spaces:
+        validate_parameter_space_against_strategy_spec(
+            strategy_name="channel_breakout_with_regime_filter",
+            parameter_space=parameter_space,
+            deployment_tier="research_only",
+        )
+        assert len(iter_parameter_candidates(parameter_space)) == 1
+
+
+def test_time_filter_comparison_summary_includes_reclaim_and_max_holding_metrics() -> None:
+    summary = build_time_filter_comparison_summary(
+        [
+            {
+                "candidate_id": "candidate_09_only",
+                "parameter_values": {
+                    "ENTRY_TIME_FILTER_KST_ENABLED": True,
+                    "ENTRY_TIME_FILTER_KST_START_HOUR": 9,
+                    "ENTRY_TIME_FILTER_KST_END_HOUR": 10,
+                },
+                "final_holdout_metrics": {"return_pct": 1.5, "profit_factor": 1.2},
+                "final_holdout_closed_trades": [
+                    {"exit_rule": "breakout_level_reclaim_failed", "net_pnl": -100.0},
+                    {"exit_rule": "breakout_level_reclaim_failed", "net_pnl": -50.0},
+                    {"exit_rule": "max_holding_time", "net_pnl": 75.0},
+                ],
+                "final_holdout_decisions": [
+                    {"feature_snapshot": {"entry_hour_kst": 9}},
+                    {"strategy_diagnostics": {"entry_hour_kst": 10}},
+                    {"feature_snapshot": {"entry_hour_kst": 9}},
+                ],
+            }
+        ]
+    )
+
+    row = summary[0]
+    assert row["candidate_id"] == "candidate_09_only"
+    assert row["window_label"] == "09:00-09:59 KST"
+    assert row["final_holdout_return_pct"] == pytest.approx(1.5)
+    assert row["profit_factor"] == pytest.approx(1.2)
+    assert row["closed_trade_count"] == 3
+    assert row["breakout_level_reclaim_failed_count"] == 2
+    assert row["breakout_level_reclaim_failed_total_pnl"] == pytest.approx(-150.0)
+    assert row["max_holding_time_count"] == 1
+    assert row["max_holding_time_total_pnl"] == pytest.approx(75.0)
+    assert row["entry_hour_kst_distribution"] == {"09": 2, "10": 1}
 
 
 def test_summary_report_does_not_duplicate_full_candidate_payload(tmp_path, monkeypatch) -> None:

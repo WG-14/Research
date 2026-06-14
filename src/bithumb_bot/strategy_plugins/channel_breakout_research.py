@@ -107,6 +107,9 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "MAX_UPPER_WICK_RATIO",
         "MIN_BODY_RATIO",
         "PULLBACK_RATIO",
+        "ENTRY_TIME_FILTER_KST_ENABLED",
+        "ENTRY_TIME_FILTER_KST_START_HOUR",
+        "ENTRY_TIME_FILTER_KST_END_HOUR",
         "COOLDOWN_MIN",
         "MAX_TRADES_PER_DAY",
         "STRATEGY_EXIT_RULES",
@@ -143,6 +146,9 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "MAX_UPPER_WICK_RATIO",
         "MIN_BODY_RATIO",
         "PULLBACK_RATIO",
+        "ENTRY_TIME_FILTER_KST_ENABLED",
+        "ENTRY_TIME_FILTER_KST_START_HOUR",
+        "ENTRY_TIME_FILTER_KST_END_HOUR",
         "COOLDOWN_MIN",
         "MAX_TRADES_PER_DAY",
         "STRATEGY_EXIT_RULES",
@@ -175,6 +181,9 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "MAX_UPPER_WICK_RATIO": 1.0,
         "MIN_BODY_RATIO": 0.0,
         "PULLBACK_RATIO": 0.0,
+        "ENTRY_TIME_FILTER_KST_ENABLED": False,
+        "ENTRY_TIME_FILTER_KST_START_HOUR": 0,
+        "ENTRY_TIME_FILTER_KST_END_HOUR": 24,
         "COOLDOWN_MIN": 0,
         "MAX_TRADES_PER_DAY": 0,
         "STRATEGY_EXIT_RULES": "stop_loss,max_holding_time",
@@ -218,6 +227,9 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         StrategyParameterSchema("MAX_UPPER_WICK_RATIO", "float", min_value=0.0, unit="ratio"),
         StrategyParameterSchema("MIN_BODY_RATIO", "float", min_value=0.0, unit="ratio"),
         StrategyParameterSchema("PULLBACK_RATIO", "float", min_value=0.0, unit="price_ratio"),
+        StrategyParameterSchema("ENTRY_TIME_FILTER_KST_ENABLED", "bool", unit="enabled_flag"),
+        StrategyParameterSchema("ENTRY_TIME_FILTER_KST_START_HOUR", "int", min_value=0, max_value=23, unit="kst_hour"),
+        StrategyParameterSchema("ENTRY_TIME_FILTER_KST_END_HOUR", "int", min_value=1, max_value=24, unit="kst_hour"),
         StrategyParameterSchema("COOLDOWN_MIN", "int", min_value=0, unit="minutes"),
         StrategyParameterSchema("MAX_TRADES_PER_DAY", "int", min_value=0, unit="count"),
         StrategyParameterSchema("STRATEGY_EXIT_RULES", "str", unit="comma_separated_exit_rule_names"),
@@ -319,6 +331,7 @@ def materialize_channel_breakout_parameters(
     ):
         if int(values[name]) < 2:
             raise StrategySpecError(f"{name} must be >= 2")
+    _validate_entry_time_filter_kst_window(values)
     rules = _normalize_exit_rules(values.get("STRATEGY_EXIT_RULES") or "")
     unsupported = sorted(set(rules) - {"stop_loss", "take_profit", "max_holding_time"})
     if unsupported:
@@ -570,10 +583,14 @@ def build_channel_breakout_research_events(
                 parameter_values=parameter_values,
                 pending=pending,
             )
+        decision_ts = candle_close_ts(candle, interval=dataset.interval) + int(
+            execution_timing_policy.decision_guard_ms
+        )
         decision = _apply_buy_limits(
             decision=decision,
             candle=candle,
             candle_index=candle_index,
+            decision_ts_ms=int(decision_ts),
             parameter_values=parameter_values,
             last_buy_index=last_buy_index,
             trade_count_by_day=trade_count_by_day,
@@ -590,9 +607,6 @@ def build_channel_breakout_research_events(
         if active_entry_breakout_level > 0.0:
             feature_snapshot["entry_breakout_level"] = float(active_entry_breakout_level)
         blocked_filters = tuple(str(item) for item in feature_snapshot.get("blocked_filters") or ())
-        decision_ts = candle_close_ts(candle, interval=dataset.interval) + int(
-            execution_timing_policy.decision_guard_ms
-        )
         yield ResearchDecisionEvent(
             candle_ts=int(candle.ts),
             decision_ts=int(decision_ts),
@@ -722,6 +736,17 @@ def _validate_supported_entry_mode(raw: object) -> str:
             f"{entry_mode}; supported entry modes: {','.join(sorted(_SUPPORTED_ENTRY_MODES))}"
         )
     return entry_mode
+
+
+def _validate_entry_time_filter_kst_window(parameter_values: dict[str, Any]) -> None:
+    start_hour = int(parameter_values.get("ENTRY_TIME_FILTER_KST_START_HOUR", 0))
+    end_hour = int(parameter_values.get("ENTRY_TIME_FILTER_KST_END_HOUR", 24))
+    if end_hour <= start_hour:
+        raise StrategySpecError("ENTRY_TIME_FILTER_KST_END_HOUR must be greater than start hour")
+
+
+def _kst_hour_from_decision_ts_ms(decision_ts_ms: int) -> int:
+    return int(gmtime((int(decision_ts_ms) / 1000.0) + (9 * 3600)).tm_hour)
 
 
 def _apply_delayed_confirmation_state(
@@ -932,12 +957,20 @@ def _apply_buy_limits(
     decision: dict[str, Any],
     candle: Candle,
     candle_index: int,
+    decision_ts_ms: int,
     parameter_values: dict[str, Any],
     last_buy_index: int | None,
     trade_count_by_day: dict[str, int],
 ) -> dict[str, Any]:
+    decision = _with_entry_time_filter_kst_diagnostics(
+        decision=decision,
+        parameter_values=parameter_values,
+        decision_ts_ms=decision_ts_ms,
+    )
     if str(decision.get("signal") or "HOLD").upper() != "BUY":
         return decision
+    if _entry_time_filter_kst_blocks(parameter_values=parameter_values, decision_ts_ms=decision_ts_ms):
+        return _blocked_buy_limit_decision(decision=decision, reason="entry_time_filter_kst_blocked")
     cooldown_min = int(parameter_values["COOLDOWN_MIN"])
     if last_buy_index is not None and cooldown_min > 0 and int(candle_index) - int(last_buy_index) < cooldown_min:
         return _blocked_buy_limit_decision(decision=decision, reason="cooldown_active")
@@ -946,6 +979,41 @@ def _apply_buy_limits(
     if max_trades_per_day > 0 and trade_count_by_day.get(day_key, 0) >= max_trades_per_day:
         return _blocked_buy_limit_decision(decision=decision, reason="max_trades_per_day_reached")
     return decision
+
+
+def _with_entry_time_filter_kst_diagnostics(
+    *,
+    decision: dict[str, Any],
+    parameter_values: dict[str, Any],
+    decision_ts_ms: int,
+) -> dict[str, Any]:
+    enabled = bool(parameter_values.get("ENTRY_TIME_FILTER_KST_ENABLED", False))
+    start_hour = int(parameter_values.get("ENTRY_TIME_FILTER_KST_START_HOUR", 0))
+    end_hour = int(parameter_values.get("ENTRY_TIME_FILTER_KST_END_HOUR", 24))
+    entry_hour_kst = _kst_hour_from_decision_ts_ms(decision_ts_ms)
+    updated = dict(decision)
+    feature_snapshot = dict(updated.get("feature_snapshot") or {})
+    diagnostics = dict(updated.get("strategy_diagnostics") or {})
+    evidence = {
+        "entry_time_filter_kst_enabled": enabled,
+        "entry_time_filter_kst_start_hour": start_hour,
+        "entry_time_filter_kst_end_hour": end_hour,
+        "entry_hour_kst": entry_hour_kst,
+    }
+    feature_snapshot.update(evidence)
+    diagnostics.update(evidence)
+    updated["feature_snapshot"] = feature_snapshot
+    updated["strategy_diagnostics"] = diagnostics
+    return updated
+
+
+def _entry_time_filter_kst_blocks(*, parameter_values: dict[str, Any], decision_ts_ms: int) -> bool:
+    if not bool(parameter_values.get("ENTRY_TIME_FILTER_KST_ENABLED", False)):
+        return False
+    start_hour = int(parameter_values.get("ENTRY_TIME_FILTER_KST_START_HOUR", 0))
+    end_hour = int(parameter_values.get("ENTRY_TIME_FILTER_KST_END_HOUR", 24))
+    entry_hour_kst = _kst_hour_from_decision_ts_ms(decision_ts_ms)
+    return not (start_hour <= entry_hour_kst < end_hour)
 
 
 def _blocked_buy_limit_decision(*, decision: dict[str, Any], reason: str) -> dict[str, Any]:

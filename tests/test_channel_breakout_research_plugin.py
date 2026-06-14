@@ -11,6 +11,7 @@ from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
 from bithumb_bot.research.execution_timing import candle_close_ts
 from bithumb_bot.research.experiment_manifest import DateRange, ExecutionTimingPolicy, legacy_research_portfolio_policy
 from bithumb_bot.research.strategy_registry import resolve_research_strategy_plugin, strategy_runtime_capability_issues
+from bithumb_bot.research.parameter_space import iter_parameter_candidates
 from bithumb_bot.research.strategy_spec import StrategySpecError, validate_parameter_space_against_strategy_spec
 from bithumb_bot.research.strategy_spec import exit_policy_from_parameters, exit_policy_hash
 from bithumb_bot.strategy.base import PositionContext
@@ -21,6 +22,7 @@ from bithumb_bot.strategy_plugins.channel_breakout_research import (
     CHANNEL_BREAKOUT_SPEC,
     CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN,
     _candle_utc_day_key,
+    _kst_hour_from_decision_ts_ms,
     build_channel_breakout_research_events,
     decide_channel_breakout_snapshot,
     materialize_channel_breakout_parameters,
@@ -76,6 +78,37 @@ def _events(dataset: DatasetSnapshot, params: dict[str, object]):
             slippage_bps=0.0,
             execution_timing_policy=ExecutionTimingPolicy(decision_guard_ms=0),
             portfolio_policy=legacy_research_portfolio_policy(),
+        )
+    )
+
+
+def _events_with_guard(dataset: DatasetSnapshot, params: dict[str, object], *, decision_guard_ms: int):
+    return tuple(
+        build_channel_breakout_research_events(
+            dataset=dataset,
+            parameter_values=params,
+            fee_rate=0.001,
+            slippage_bps=0.0,
+            execution_timing_policy=ExecutionTimingPolicy(decision_guard_ms=decision_guard_ms),
+            portfolio_policy=legacy_research_portfolio_policy(),
+        )
+    )
+
+
+def _utc_ms_for_kst_time(*, hour: int, minute: int = 0, second: int = 0) -> int:
+    return int(((24 * 3600) + (hour * 3600) + (minute * 60) + second - (9 * 3600)) * 1000)
+
+
+def _breakout_dataset_for_decision_ts(decision_ts_ms: int, *, decision_guard_ms: int = 0) -> DatasetSnapshot:
+    final_candle_start = int(decision_ts_ms) - int(decision_guard_ms) - 60_000
+    starts = tuple(final_candle_start - offset * 60_000 for offset in range(4, -1, -1))
+    return _dataset(
+        (
+            Candle(starts[0], 100.0, 101.0, 99.0, 100.0, 100.0),
+            Candle(starts[1], 101.0, 102.0, 100.0, 101.0, 100.0),
+            Candle(starts[2], 102.0, 103.0, 101.0, 102.0, 100.0),
+            Candle(starts[3], 103.0, 104.0, 102.0, 103.0, 100.0),
+            Candle(starts[4], 104.0, 110.0, 103.0, 109.0, 160.0),
         )
     )
 
@@ -253,6 +286,52 @@ def test_channel_breakout_existing_defaults_preserve_immediate_breakout_behavior
     assert params["ENTRY_MODE"] == "immediate_breakout"
     assert decision["signal"] == "BUY"
     assert decision["strategy_diagnostics"]["entry_mode"] == "immediate_breakout"
+
+
+def test_kst_entry_time_filter_parameters_are_in_strategy_spec() -> None:
+    names = {
+        "ENTRY_TIME_FILTER_KST_ENABLED",
+        "ENTRY_TIME_FILTER_KST_START_HOUR",
+        "ENTRY_TIME_FILTER_KST_END_HOUR",
+    }
+    schema_names = {schema.name for schema in CHANNEL_BREAKOUT_SPEC.parameter_schema}
+
+    assert names <= set(CHANNEL_BREAKOUT_SPEC.accepted_parameter_names)
+    assert names <= set(CHANNEL_BREAKOUT_SPEC.behavior_affecting_parameter_names)
+    assert names <= set(CHANNEL_BREAKOUT_SPEC.default_parameters)
+    assert names <= schema_names
+    assert CHANNEL_BREAKOUT_SPEC.default_parameters["ENTRY_TIME_FILTER_KST_ENABLED"] is False
+    assert CHANNEL_BREAKOUT_SPEC.default_parameters["ENTRY_TIME_FILTER_KST_START_HOUR"] == 0
+    assert CHANNEL_BREAKOUT_SPEC.default_parameters["ENTRY_TIME_FILTER_KST_END_HOUR"] == 24
+
+
+def test_kst_entry_time_filter_defaults_preserve_existing_behavior() -> None:
+    dataset = _breakout_dataset_for_decision_ts(_utc_ms_for_kst_time(hour=10, minute=15))
+    params = _materialized(
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    event = _events(dataset, params)[-1]
+
+    assert params["ENTRY_TIME_FILTER_KST_ENABLED"] is False
+    assert event.final_signal == "BUY"
+    assert event.order_intent is not None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"ENTRY_TIME_FILTER_KST_START_HOUR": -1},
+        {"ENTRY_TIME_FILTER_KST_START_HOUR": 24},
+        {"ENTRY_TIME_FILTER_KST_END_HOUR": 0},
+        {"ENTRY_TIME_FILTER_KST_END_HOUR": 25},
+        {"ENTRY_TIME_FILTER_KST_START_HOUR": 10, "ENTRY_TIME_FILTER_KST_END_HOUR": 10},
+    ],
+)
+def test_kst_entry_time_filter_rejects_invalid_hours(overrides: dict[str, object]) -> None:
+    with pytest.raises(StrategySpecError):
+        _materialized(**overrides)
 
 
 def test_new_entry_mode_is_behavior_affecting_parameter() -> None:
@@ -1226,6 +1305,225 @@ def test_cooldown_state_resets_between_backtest_event_builder_calls() -> None:
 
     assert first[4].final_signal == "BUY"
     assert second[4].final_signal == "BUY"
+
+
+def test_kst_entry_time_filter_allows_09_kst_buy() -> None:
+    dataset = _breakout_dataset_for_decision_ts(_utc_ms_for_kst_time(hour=9, minute=30))
+    params = _materialized(
+        ENTRY_TIME_FILTER_KST_ENABLED=True,
+        ENTRY_TIME_FILTER_KST_START_HOUR=9,
+        ENTRY_TIME_FILTER_KST_END_HOUR=10,
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    event = _events(dataset, params)[-1]
+
+    assert event.final_signal == "BUY"
+    assert event.order_intent is not None
+    assert event.feature_snapshot["entry_hour_kst"] == 9
+
+
+def test_kst_entry_time_filter_blocks_10_kst_buy_for_09_only_window() -> None:
+    dataset = _breakout_dataset_for_decision_ts(_utc_ms_for_kst_time(hour=10, minute=1))
+    params = _materialized(
+        ENTRY_TIME_FILTER_KST_ENABLED=True,
+        ENTRY_TIME_FILTER_KST_START_HOUR=9,
+        ENTRY_TIME_FILTER_KST_END_HOUR=10,
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    event = _events(dataset, params)[-1]
+
+    assert event.final_signal == "HOLD"
+    assert event.order_intent is None
+    assert "entry_time_filter_kst_blocked" in event.blocked_filters
+
+
+def test_kst_entry_time_filter_does_not_remove_exit_intent() -> None:
+    dataset = _breakout_dataset_for_decision_ts(_utc_ms_for_kst_time(hour=10, minute=1))
+    params = _materialized(
+        ENTRY_TIME_FILTER_KST_ENABLED=True,
+        ENTRY_TIME_FILTER_KST_START_HOUR=9,
+        ENTRY_TIME_FILTER_KST_END_HOUR=10,
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    event = _events(dataset, params)[-1]
+
+    assert event.final_signal == "HOLD"
+    assert event.exit_intent == {
+        "mode": "evaluate_exit_policy",
+        "base_signal": "HOLD",
+        "base_reason": "common_exit_policy_only",
+    }
+
+
+def test_kst_entry_time_filter_disabled_preserves_buy() -> None:
+    dataset = _breakout_dataset_for_decision_ts(_utc_ms_for_kst_time(hour=10, minute=1))
+    params = _materialized(
+        ENTRY_TIME_FILTER_KST_ENABLED=False,
+        ENTRY_TIME_FILTER_KST_START_HOUR=9,
+        ENTRY_TIME_FILTER_KST_END_HOUR=10,
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    event = _events(dataset, params)[-1]
+
+    assert event.final_signal == "BUY"
+    assert event.order_intent is not None
+    assert "entry_time_filter_kst_blocked" not in event.blocked_filters
+
+
+def test_kst_entry_time_filter_uses_decision_ts_not_candle_ts() -> None:
+    decision_ts = _utc_ms_for_kst_time(hour=9, minute=0)
+    dataset = _breakout_dataset_for_decision_ts(decision_ts, decision_guard_ms=1_000)
+    params = _materialized(
+        ENTRY_TIME_FILTER_KST_ENABLED=True,
+        ENTRY_TIME_FILTER_KST_START_HOUR=9,
+        ENTRY_TIME_FILTER_KST_END_HOUR=10,
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    event = _events_with_guard(dataset, params, decision_guard_ms=1_000)[-1]
+
+    assert _kst_hour_from_decision_ts_ms(candle_close_ts(dataset.candles[-1], interval=dataset.interval)) == 8
+    assert event.decision_ts == decision_ts
+    assert event.feature_snapshot["entry_hour_kst"] == 9
+    assert event.final_signal == "BUY"
+
+
+def test_kst_entry_time_filter_uses_start_inclusive_end_exclusive_window() -> None:
+    params = _materialized(
+        ENTRY_TIME_FILTER_KST_ENABLED=True,
+        ENTRY_TIME_FILTER_KST_START_HOUR=9,
+        ENTRY_TIME_FILTER_KST_END_HOUR=10,
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    at_start = _events(_breakout_dataset_for_decision_ts(_utc_ms_for_kst_time(hour=9, minute=0)), params)[-1]
+    before_end = _events(_breakout_dataset_for_decision_ts(_utc_ms_for_kst_time(hour=9, minute=59)), params)[-1]
+    at_end = _events(_breakout_dataset_for_decision_ts(_utc_ms_for_kst_time(hour=10, minute=0)), params)[-1]
+
+    assert at_start.final_signal == "BUY"
+    assert before_end.final_signal == "BUY"
+    assert at_end.final_signal == "HOLD"
+    assert "entry_time_filter_kst_blocked" in at_end.blocked_filters
+
+
+def test_kst_entry_time_filter_blocked_reason_is_reported() -> None:
+    dataset = _breakout_dataset_for_decision_ts(_utc_ms_for_kst_time(hour=10, minute=1))
+    params = _materialized(
+        ENTRY_TIME_FILTER_KST_ENABLED=True,
+        ENTRY_TIME_FILTER_KST_START_HOUR=9,
+        ENTRY_TIME_FILTER_KST_END_HOUR=10,
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    event = _events(dataset, params)[-1]
+
+    assert "entry_time_filter_kst_blocked" in event.blocked_filters
+    assert "entry_time_filter_kst_blocked" in event.strategy_diagnostics["blocked_filters"]
+    assert "entry_time_filter_kst_blocked" in event.feature_snapshot["blocked_filters"]
+
+
+def test_kst_entry_time_filter_records_entry_hour_kst() -> None:
+    dataset = _breakout_dataset_for_decision_ts(_utc_ms_for_kst_time(hour=10, minute=1))
+    params = _materialized(
+        ENTRY_TIME_FILTER_KST_ENABLED=True,
+        ENTRY_TIME_FILTER_KST_START_HOUR=9,
+        ENTRY_TIME_FILTER_KST_END_HOUR=10,
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    event = _events(dataset, params)[-1]
+
+    assert event.feature_snapshot["entry_hour_kst"] == 10
+    assert event.strategy_diagnostics["entry_hour_kst"] == 10
+
+
+def test_kst_entry_time_filter_diagnostics_include_filter_window() -> None:
+    dataset = _breakout_dataset_for_decision_ts(_utc_ms_for_kst_time(hour=9, minute=30))
+    params = _materialized(
+        ENTRY_TIME_FILTER_KST_ENABLED=True,
+        ENTRY_TIME_FILTER_KST_START_HOUR=9,
+        ENTRY_TIME_FILTER_KST_END_HOUR=11,
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    event = _events(dataset, params)[-1]
+
+    assert event.strategy_diagnostics["entry_time_filter_kst_enabled"] is True
+    assert event.strategy_diagnostics["entry_time_filter_kst_start_hour"] == 9
+    assert event.strategy_diagnostics["entry_time_filter_kst_end_hour"] == 11
+    assert event.feature_snapshot["entry_time_filter_kst_start_hour"] == 9
+    assert event.feature_snapshot["entry_time_filter_kst_end_hour"] == 11
+
+
+def test_kst_time_filter_parameter_space_validates() -> None:
+    validate_parameter_space_against_strategy_spec(
+        strategy_name=CHANNEL_BREAKOUT_SPEC.strategy_name,
+        parameter_space={
+            "CHANNEL_BREAKOUT_LOOKBACK": (3,),
+            "CHANNEL_BREAKOUT_RANGE_WINDOW": (3,),
+            "CHANNEL_BREAKOUT_VOLUME_WINDOW": (3,),
+            "ENTRY_TIME_FILTER_KST_ENABLED": (False, True),
+            "ENTRY_TIME_FILTER_KST_START_HOUR": (0, 9),
+            "ENTRY_TIME_FILTER_KST_END_HOUR": (24, 10, 11),
+        },
+        deployment_tier="research_only",
+    )
+
+
+def test_three_candidate_kst_time_filter_requires_separate_manifests_because_parameter_space_is_cartesian() -> None:
+    aligned_parameter_space = {
+        "ENTRY_TIME_FILTER_KST_ENABLED": (False, True, True),
+        "ENTRY_TIME_FILTER_KST_START_HOUR": (0, 9, 9),
+        "ENTRY_TIME_FILTER_KST_END_HOUR": (24, 10, 11),
+    }
+    one_candidate_spaces = (
+        {
+            "CHANNEL_BREAKOUT_LOOKBACK": (3,),
+            "CHANNEL_BREAKOUT_RANGE_WINDOW": (3,),
+            "CHANNEL_BREAKOUT_VOLUME_WINDOW": (3,),
+            "ENTRY_TIME_FILTER_KST_ENABLED": (False,),
+            "ENTRY_TIME_FILTER_KST_START_HOUR": (0,),
+            "ENTRY_TIME_FILTER_KST_END_HOUR": (24,),
+        },
+        {
+            "CHANNEL_BREAKOUT_LOOKBACK": (3,),
+            "CHANNEL_BREAKOUT_RANGE_WINDOW": (3,),
+            "CHANNEL_BREAKOUT_VOLUME_WINDOW": (3,),
+            "ENTRY_TIME_FILTER_KST_ENABLED": (True,),
+            "ENTRY_TIME_FILTER_KST_START_HOUR": (9,),
+            "ENTRY_TIME_FILTER_KST_END_HOUR": (10,),
+        },
+        {
+            "CHANNEL_BREAKOUT_LOOKBACK": (3,),
+            "CHANNEL_BREAKOUT_RANGE_WINDOW": (3,),
+            "CHANNEL_BREAKOUT_VOLUME_WINDOW": (3,),
+            "ENTRY_TIME_FILTER_KST_ENABLED": (True,),
+            "ENTRY_TIME_FILTER_KST_START_HOUR": (9,),
+            "ENTRY_TIME_FILTER_KST_END_HOUR": (11,),
+        },
+    )
+
+    assert len(iter_parameter_candidates(aligned_parameter_space)) == 27
+    for parameter_space in one_candidate_spaces:
+        validate_parameter_space_against_strategy_spec(
+            strategy_name=CHANNEL_BREAKOUT_SPEC.strategy_name,
+            parameter_space=parameter_space,
+            deployment_tier="research_only",
+        )
+        assert len(iter_parameter_candidates(parameter_space)) == 1
 
 
 def test_candle_utc_day_key_uses_candle_timestamp_only() -> None:
