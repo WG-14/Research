@@ -16,6 +16,9 @@ from .return_panel import validate_return_panel_binding
 
 STATISTICAL_SELECTION_EVIDENCE_SCHEMA_VERSION = 1
 PRIMARY_METRIC_SOURCE = "validation_metrics"
+PRIMARY_METRIC_SOURCE_SEMANTICS = "primary_base_scenario_alias"
+PRIMARY_METRIC_SCENARIO_ROLE = "base"
+AGGREGATE_GATE_SOURCE = "required_scenario_policy"
 SCREENING_SUMMARY_BOOTSTRAP = "SCREENING_SUMMARY_BOOTSTRAP"
 PROMOTION_GRADE_WRC = "PROMOTION_GRADE_WRC"
 PROMOTION_GRADE_WRC_SPA_DSR = "PROMOTION_GRADE_WRC_SPA_DSR"
@@ -99,9 +102,26 @@ def candidate_metric_universe_payload(
                 "required_scenario_ids": sorted(str(item) for item in candidate_required_scenarios),
                 "primary_metric": primary_metric,
                 "primary_metric_source": primary_metric_source,
+                "primary_metric_source_semantics": candidate.get(
+                    "primary_metric_source_semantics",
+                    PRIMARY_METRIC_SOURCE_SEMANTICS,
+                ),
+                "primary_metric_scenario_role": candidate.get(
+                    "primary_metric_scenario_role",
+                    candidate.get("primary_scenario_role"),
+                ),
+                "primary_metric_scenario_id": candidate.get(
+                    "primary_metric_scenario_id",
+                    candidate.get("primary_scenario_id"),
+                ),
+                "aggregate_gate_source": candidate.get("aggregate_gate_source", AGGREGATE_GATE_SOURCE),
                 "validation_metric_value": value,
                 "validation_metric_missing": value is None,
                 "acceptance_gate_result": candidate.get("acceptance_gate_result"),
+                "aggregate_acceptance_gate_result": candidate.get(
+                    "aggregate_acceptance_gate_result",
+                    candidate.get("acceptance_gate_result"),
+                ),
             }
         )
     return {
@@ -296,6 +316,9 @@ def build_statistical_selection_evidence(
             "missing_metric_count": missing_metric_count,
             "primary_metric": contract.primary_metric,
             "primary_metric_source": primary_metric_source,
+            "primary_metric_source_semantics": PRIMARY_METRIC_SOURCE_SEMANTICS,
+            "primary_metric_scenario_role": PRIMARY_METRIC_SCENARIO_ROLE,
+            "aggregate_gate_source": AGGREGATE_GATE_SOURCE,
             "benchmark": contract.benchmark,
         },
         "candidate_count": len(candidates),
@@ -313,6 +336,17 @@ def build_statistical_selection_evidence(
         "benchmark": contract.benchmark,
         "primary_metric": contract.primary_metric,
         "primary_metric_source": primary_metric_source,
+        "primary_metric_source_semantics": PRIMARY_METRIC_SOURCE_SEMANTICS,
+        "primary_metric_scenario_role": PRIMARY_METRIC_SCENARIO_ROLE,
+        "primary_metric_scenario_id": None,
+        "aggregate_gate_source": AGGREGATE_GATE_SOURCE,
+        "selection_metric_policy": {
+            "primary_metric_source": primary_metric_source,
+            "primary_metric_source_semantics": PRIMARY_METRIC_SOURCE_SEMANTICS,
+            "primary_metric_scenario_role": PRIMARY_METRIC_SCENARIO_ROLE,
+            "aggregate_gate_source": AGGREGATE_GATE_SOURCE,
+            "candidate_eligibility_gate": "aggregate_acceptance_gate_result",
+        },
         "bootstrap_method": contract.bootstrap.method,
         "statistical_method": statistical_method,
         "evidence_grade": evidence_grade,

@@ -4,6 +4,7 @@ import pytest
 
 from bithumb_bot.research.deployment_policy import validate_production_calibration_policy
 from bithumb_bot.research.experiment_manifest import ManifestValidationError, parse_manifest
+from bithumb_bot.research.validation_protocol import _cost_authority_resolution
 
 
 def _runtime_bound_parameter_space() -> dict[str, list[object]]:
@@ -259,6 +260,26 @@ def test_explicit_base_and_stress_cost_assumptions_pass_policy() -> None:
     assert base.cost_assumption is not None
     assert base.cost_assumption.promotable_as_base is True
     assert stress.scenario_role == "stress"
+
+
+def test_explicit_scenarios_are_reported_as_cost_authority_over_cost_model() -> None:
+    payload = _manifest(deployment_tier="research_only")
+    payload["cost_model"] = {"fee_rate": 0.0099, "slippage_bps": [99]}
+    payload["execution_model"] = {
+        "scenario_policy": "must_pass_base_and_survive_stress",
+        "scenarios": [_base_scenario(), _stress_scenario()],
+    }
+
+    manifest = parse_manifest(payload)
+    authority = _cost_authority_resolution(manifest)
+    base = next(scenario for scenario in manifest.execution_model.scenarios if scenario.scenario_role == "base")
+
+    assert base.fee_rate == 0.0004
+    assert authority["cost_authority_source"] == "execution_model.scenarios"
+    assert authority["legacy_cost_model_present"] is True
+    assert authority["legacy_cost_model_authority"] != "runtime_base"
+    assert authority["legacy_cost_model_authority"] == "fallback_only_not_runtime_authority"
+    assert authority["runtime_base_cost_assumption"]["fee_rate"] == 0.0004
 
 
 def test_legacy_cost_model_research_only_is_marked_legacy_non_promotable() -> None:

@@ -21,6 +21,25 @@ def test_direct_production_research_entrypoints_have_expensive_markers() -> None
     assert discover_policy_violations() == []
 
 
+def test_standalone_backtest_remains_diagnostic_only() -> None:
+    report = minimal_research_report(report_kind="backtest")
+    report.update(
+        {
+            "validation_run_complete": False,
+            "diagnostic_only": True,
+            "standalone_backtest_not_full_validation": True,
+            "next_required_stage": "research-validate",
+            "promotion_eligibility_gate_result": "FAIL",
+            "promotion_blocking_reasons": ["standalone_backtest_not_full_validation"],
+        }
+    )
+
+    assert report["diagnostic_only"] is True
+    assert report["standalone_backtest_not_full_validation"] is True
+    assert report["validation_run_complete"] is False
+    assert report["promotion_eligibility_gate_result"] == "FAIL"
+
+
 def test_audit_budget_pipeline_inventory_entries_are_complete() -> None:
     inventory = load_inventory()
     nodeids = [

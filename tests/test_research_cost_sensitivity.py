@@ -15,11 +15,9 @@ def _scenario(role: str, *, return_pct: float, profit_factor: float = 1.5) -> di
         ),
         "cost_model": {"fee_rate": 0.001 if role != "zero_cost" else 0.0, "slippage_bps": 5.0 if role != "zero_cost" else 0.0},
         "validation_metrics_v2": {
-            "total_return_pct": return_pct,
-            "profit_factor": profit_factor,
-            "trade_count": 4,
-            "fee_total": 100.0,
-            "slippage_total": 50.0,
+            "return_risk": {"total_return_pct": return_pct},
+            "trade_quality": {"profit_factor": profit_factor, "closed_trade_count": 4},
+            "cost_execution": {"fee_total": 100.0, "slippage_total": 50.0},
         },
         "cost_assumption": {"role": "diagnostic_zero_cost" if role == "zero_cost" else role},
     }
@@ -67,6 +65,42 @@ def test_cost_sensitivity_zero_cost_is_not_copied_from_base_metrics() -> None:
 
     assert summary["base_cost"]["validation_return_pct"] == 3.0
     assert summary["zero_cost"]["validation_return_pct"] != summary["base_cost"]["validation_return_pct"]
+
+
+def test_cost_sensitivity_reads_nested_metrics_v2_return_and_costs() -> None:
+    scenario = _scenario("base_cost", return_pct=1.23)
+    scenario["validation_metrics"] = {"return_pct": 9.99, "fee_total": 999, "slippage_total": 999}
+    scenario["validation_metrics_v2"]["cost_execution"]["fee_total"] = 400
+    scenario["validation_metrics_v2"]["cost_execution"]["slippage_total"] = 0
+
+    summary = _cost_sensitivity_summary([scenario])
+
+    assert summary["base_cost"]["validation_return_pct"] == 1.23
+    assert summary["base_cost"]["fee_total"] == 400
+    assert summary["base_cost"]["slippage_total"] == 0
+
+
+def test_cost_sensitivity_falls_back_to_legacy_flat_metrics() -> None:
+    scenario = {
+        "scenario_id": "base",
+        "scenario_role": "base",
+        "cost_model": {"fee_rate": 0.0004, "slippage_bps": 10.0},
+        "validation_metrics": {
+            "return_pct": 2.5,
+            "profit_factor": 1.4,
+            "trade_count": 7,
+            "fee_total": 12.0,
+            "slippage_total": 3.0,
+        },
+    }
+
+    summary = _cost_sensitivity_summary([scenario])
+
+    assert summary["base_cost"]["validation_return_pct"] == 2.5
+    assert summary["base_cost"]["validation_profit_factor"] == 1.4
+    assert summary["base_cost"]["validation_trade_count"] == 7
+    assert summary["base_cost"]["fee_total"] == 12.0
+    assert summary["base_cost"]["slippage_total"] == 3.0
 
 
 def test_research_run_materializes_real_zero_cost_scenario_for_cost_sensitivity() -> None:

@@ -2574,10 +2574,22 @@ def _evaluate_candidates(
         primary = candidate_payload.pop("_primary_scenario_result", None) or (
             candidate_payload["scenario_results"][0] if candidate_payload.get("scenario_results") else {}
         )
+        _declare_candidate_scenario_semantics(
+            candidate=candidate_payload,
+            primary=primary if isinstance(primary, dict) else {},
+            policy=manifest.execution_model.scenario_policy,
+        )
+        cost_authority = _cost_authority_resolution(manifest)
         candidate_payload.update(
             {
-                "cost_model": primary.get("cost_model"),
+                "cost_model": candidate_payload.get("primary_cost_model"),
                 "base_cost_assumption": _primary_base_cost_assumption(candidate_payload),
+                "cost_authority_source": cost_authority["cost_authority_source"],
+                "cost_authority_resolution": cost_authority["cost_authority_resolution"],
+                "runtime_base_cost_assumption": cost_authority["runtime_base_cost_assumption"],
+                "legacy_cost_model_present": cost_authority["legacy_cost_model_present"],
+                "legacy_cost_model_authority": cost_authority["legacy_cost_model_authority"],
+                "scenario_cost_assumption_contract_hash": cost_authority["scenario_cost_assumption_contract_hash"],
                 "cost_assumption_contract": manifest.execution_model.as_dict(),
                 "portfolio_policy": portfolio_policy,
                 "portfolio_policy_hash": portfolio_policy_hash,
@@ -2591,8 +2603,8 @@ def _evaluate_candidates(
                 "execution_model": primary.get("execution_model"),
                 "execution_calibration_gate": _combined_calibration_gate(candidate_payload.get("scenario_results") or []),
                 "train_metrics": primary.get("train_metrics"),
-                "validation_metrics": primary.get("validation_metrics"),
-                "final_holdout_metrics": primary.get("final_holdout_metrics"),
+                "validation_metrics": candidate_payload.get("primary_validation_metrics"),
+                "final_holdout_metrics": candidate_payload.get("primary_final_holdout_metrics"),
                 "metrics_schema_version": primary.get("metrics_schema_version"),
                 "metrics_gate_policy": primary.get("metrics_gate_policy") or candidate_payload.get("metrics_gate_policy"),
                 "metrics_gate_policy_hash": primary.get("metrics_gate_policy_hash") or candidate_payload.get("metrics_gate_policy_hash"),
@@ -2736,6 +2748,7 @@ def _evaluate_candidates(
             candidate_payload["execution_calibration_artifact_hashes"] = list(policy_result.artifact_hashes)
         if policy_result.status == "FAIL":
             candidate_payload["acceptance_gate_result"] = "FAIL"
+            candidate_payload["aggregate_acceptance_gate_result"] = "FAIL"
             candidate_payload["gate_fail_reasons"] = sorted(
                 set(candidate_payload.get("gate_fail_reasons") or ()) | set(policy_result.reasons)
             )
@@ -3864,6 +3877,55 @@ def _apply_scenario_policy(*, manifest: ExperimentManifest, candidate: dict[str,
     candidate["_primary_scenario_result"] = primary
     candidate["acceptance_gate_result"] = "PASS" if not reasons else "FAIL"
     candidate["gate_fail_reasons"] = reasons
+    _declare_candidate_scenario_semantics(
+        candidate=candidate,
+        primary=primary if isinstance(primary, dict) else {},
+        policy=policy,
+    )
+
+
+def _declare_candidate_scenario_semantics(
+    *,
+    candidate: dict[str, Any],
+    primary: dict[str, Any],
+    policy: str,
+) -> None:
+    scenario_results = [item for item in candidate.get("scenario_results") or [] if isinstance(item, dict)]
+    base = next((item for item in scenario_results if item.get("scenario_role") == "base"), None)
+    stress_results = [item for item in scenario_results if item.get("scenario_role") == "stress"]
+    aggregate_result = candidate.get("acceptance_gate_result")
+    candidate.update(
+        {
+            "primary_scenario_id": primary.get("scenario_id"),
+            "primary_scenario_role": primary.get("scenario_role"),
+            "primary_metric_source": "primary_base_scenario_alias"
+            if primary.get("scenario_role") == "base"
+            else "primary_scenario_alias",
+            "primary_cost_model": primary.get("cost_model"),
+            "primary_validation_metrics": primary.get("validation_metrics"),
+            "primary_final_holdout_metrics": primary.get("final_holdout_metrics"),
+            "aggregate_gate_policy": policy,
+            "aggregate_acceptance_gate_result": aggregate_result,
+            "base_scenario_id": base.get("scenario_id") if isinstance(base, dict) else None,
+            "base_validation_metrics": base.get("validation_metrics") if isinstance(base, dict) else None,
+            "base_final_holdout_metrics": base.get("final_holdout_metrics") if isinstance(base, dict) else None,
+            "stress_scenario_ids": [item.get("scenario_id") for item in stress_results],
+            "stress_gate_results": [
+                {
+                    "scenario_id": item.get("scenario_id"),
+                    "scenario_acceptance_gate_result": item.get("scenario_acceptance_gate_result"),
+                    "scenario_fail_reasons": item.get("scenario_fail_reasons") or [],
+                }
+                for item in stress_results
+            ],
+            "aggregate_gate_source": "required_scenario_policy",
+            "primary_metric_source_semantics": "primary_base_scenario_alias"
+            if primary.get("scenario_role") == "base"
+            else "primary_scenario_alias",
+            "primary_metric_scenario_role": primary.get("scenario_role"),
+            "primary_metric_scenario_id": primary.get("scenario_id"),
+        }
+    )
 
 
 def _scenario_is_diagnostic_only(scenario: dict[str, Any]) -> bool:
@@ -3871,6 +3933,44 @@ def _scenario_is_diagnostic_only(scenario: dict[str, Any]) -> bool:
         return True
     assumption = scenario.get("cost_assumption")
     return isinstance(assumption, dict) and assumption.get("role") == "diagnostic_zero_cost"
+
+
+def _cost_authority_resolution(manifest: ExperimentManifest) -> dict[str, Any]:
+    execution_model = manifest.execution_model.as_dict()
+    scenarios = execution_model.get("scenarios") if isinstance(execution_model.get("scenarios"), list) else []
+    explicit_scenarios = manifest.execution_model.source != "legacy_cost_model"
+    base_assumptions = [
+        scenario.get("cost_assumption")
+        for scenario in scenarios
+        if isinstance(scenario, dict)
+        and scenario.get("scenario_role") == "base"
+        and isinstance(scenario.get("cost_assumption"), dict)
+        and scenario["cost_assumption"].get("promotable_as_base") is True
+    ]
+    runtime_base = dict(base_assumptions[0]) if base_assumptions else None
+    source = "execution_model.scenarios" if explicit_scenarios else "legacy_cost_model"
+    legacy_authority = (
+        "fallback_only_not_runtime_authority"
+        if explicit_scenarios
+        else "runtime_base_when_no_execution_model_scenarios"
+    )
+    return {
+        "cost_authority_source": source,
+        "cost_authority_resolution": {
+            "source": source,
+            "runtime_authority": source,
+            "legacy_cost_model_authority": legacy_authority,
+            "runtime_base_cost_assumption_source": (
+                "execution_model.scenarios.base.promotable_as_base"
+                if runtime_base is not None
+                else None
+            ),
+        },
+        "runtime_base_cost_assumption": runtime_base,
+        "legacy_cost_model_present": manifest.raw.get("cost_model") is not None,
+        "legacy_cost_model_authority": legacy_authority,
+        "scenario_cost_assumption_contract_hash": sha256_prefixed(manifest.execution_model.as_dict()),
+    }
 
 
 def _attach_candidate_diagnostic_blocks(
@@ -3894,6 +3994,7 @@ def _attach_candidate_diagnostic_blocks(
     if bool(capabilities.get("research_only")):
         candidate["promotion_interpretation"] = "research_only_not_live_eligible"
         candidate["acceptance_gate_result"] = "FAIL"
+        candidate["aggregate_acceptance_gate_result"] = "FAIL"
         candidate["gate_fail_reasons"] = sorted(
             set(candidate.get("gate_fail_reasons") or []) | {"research_only_not_live_eligible"}
         )
@@ -3917,6 +4018,7 @@ def _attach_candidate_diagnostic_blocks(
             "promotion_gate_non_authoritative": True,
         }
         candidate["acceptance_gate_result"] = "FAIL"
+        candidate["aggregate_acceptance_gate_result"] = "FAIL"
         candidate["acceptance_gate_status"] = "diagnostic_only"
         candidate["gate_fail_reasons"] = sorted(
             set(candidate.get("gate_fail_reasons") or []) | {"exploratory_mode_not_promotable"}
@@ -3986,15 +4088,21 @@ def _cost_sensitivity_role(scenario: dict[str, Any]) -> str:
 def _scenario_cost_metrics(scenario: dict[str, Any]) -> dict[str, Any]:
     metrics = scenario.get("validation_metrics_v2") if isinstance(scenario.get("validation_metrics_v2"), dict) else {}
     legacy = scenario.get("validation_metrics") if isinstance(scenario.get("validation_metrics"), dict) else {}
+    return_risk = metrics.get("return_risk") if isinstance(metrics.get("return_risk"), dict) else {}
+    trade_quality = metrics.get("trade_quality") if isinstance(metrics.get("trade_quality"), dict) else {}
+    cost_execution = metrics.get("cost_execution") if isinstance(metrics.get("cost_execution"), dict) else {}
     cost_model = scenario.get("cost_model") if isinstance(scenario.get("cost_model"), dict) else {}
     cost_assumption = scenario.get("cost_assumption") if isinstance(scenario.get("cost_assumption"), dict) else {}
     diagnostic_zero_cost = cost_assumption.get("role") == "diagnostic_zero_cost"
     return {
-        "validation_return_pct": metrics.get("total_return_pct", legacy.get("total_return_pct")),
-        "validation_profit_factor": metrics.get("profit_factor", legacy.get("profit_factor")),
-        "validation_trade_count": metrics.get("trade_count", legacy.get("trade_count")),
-        "fee_total": metrics.get("fee_total", legacy.get("fee_total")),
-        "slippage_total": metrics.get("slippage_total", legacy.get("slippage_total")),
+        "validation_return_pct": return_risk.get(
+            "total_return_pct",
+            legacy.get("return_pct", legacy.get("total_return_pct")),
+        ),
+        "validation_profit_factor": trade_quality.get("profit_factor", legacy.get("profit_factor")),
+        "validation_trade_count": trade_quality.get("closed_trade_count", legacy.get("trade_count")),
+        "fee_total": cost_execution.get("fee_total", legacy.get("fee_total")),
+        "slippage_total": cost_execution.get("slippage_total", legacy.get("slippage_total")),
         "scenario_role": scenario.get("scenario_role"),
         "fee_rate": cost_model.get("fee_rate"),
         "slippage_bps": cost_model.get("slippage_bps"),
@@ -4030,8 +4138,9 @@ def _cost_breakeven_trade_edge(base_cost: dict[str, Any]) -> float | None:
 def _raw_edge_summary(candidate: dict[str, Any]) -> dict[str, Any]:
     diagnostics = candidate.get("validation_strategy_diagnostics")
     metrics = candidate.get("validation_metrics_v2")
+    return_risk = metrics.get("return_risk") if isinstance(metrics, dict) and isinstance(metrics.get("return_risk"), dict) else {}
     return {
-        "validation_return_pct": metrics.get("total_return_pct") if isinstance(metrics, dict) else None,
+        "validation_return_pct": return_risk.get("total_return_pct"),
         "raw_signal_count": diagnostics.get("raw_signal_count") if isinstance(diagnostics, dict) else None,
         "final_signal_count": diagnostics.get("final_signal_count") if isinstance(diagnostics, dict) else None,
     }
@@ -5135,6 +5244,14 @@ def _report_payload(
         if depth_walk_used
         else "stored_l2_depth_complete_snapshots_exist_not_execution_model_used"
     )
+    cost_authority = _cost_authority_resolution(manifest)
+    selection_metric_policy = {
+        "primary_metric_source": "validation_metrics",
+        "primary_metric_source_semantics": "primary_base_scenario_alias",
+        "primary_metric_scenario_role": "base",
+        "aggregate_gate_source": "required_scenario_policy",
+        "candidate_eligibility_gate": "aggregate_acceptance_gate_result",
+    }
     payload = {
         "report_kind": report_kind,
         "experiment_id": manifest.experiment_id,
@@ -5237,6 +5354,12 @@ def _report_payload(
         "execution_model_source": manifest.execution_model.source,
         "cost_assumption_contract": manifest.execution_model.as_dict(),
         "base_cost_assumption": _report_base_cost_assumption(candidates),
+        "cost_authority_source": cost_authority["cost_authority_source"],
+        "cost_authority_resolution": cost_authority["cost_authority_resolution"],
+        "runtime_base_cost_assumption": cost_authority["runtime_base_cost_assumption"],
+        "legacy_cost_model_present": cost_authority["legacy_cost_model_present"],
+        "legacy_cost_model_authority": cost_authority["legacy_cost_model_authority"],
+        "scenario_cost_assumption_contract_hash": cost_authority["scenario_cost_assumption_contract_hash"],
         "portfolio_policy": portfolio_policy,
         "portfolio_policy_hash": portfolio_policy_hash,
         "simulation_policy_hash": simulation_policy_hash,
@@ -5307,6 +5430,19 @@ def _report_payload(
         "benchmark": statistical_evidence.get("benchmark") if statistical_evidence else None,
         "primary_metric": statistical_evidence.get("primary_metric") if statistical_evidence else None,
         "primary_metric_source": statistical_evidence.get("primary_metric_source") if statistical_evidence else None,
+        "primary_metric_source_semantics": (
+            statistical_evidence.get("primary_metric_source_semantics") if statistical_evidence else None
+        ),
+        "primary_metric_scenario_role": (
+            statistical_evidence.get("primary_metric_scenario_role") if statistical_evidence else None
+        ),
+        "primary_metric_scenario_id": (
+            statistical_evidence.get("primary_metric_scenario_id") if statistical_evidence else None
+        ),
+        "aggregate_gate_source": (
+            statistical_evidence.get("aggregate_gate_source") if statistical_evidence else selection_metric_policy["aggregate_gate_source"]
+        ),
+        "selection_metric_policy": selection_metric_policy,
         "selection_universe_hash": universe_hash,
         "candidate_metric_values_hash": (
             statistical_evidence.get("candidate_metric_values_hash") if statistical_evidence else None

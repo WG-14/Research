@@ -170,6 +170,8 @@ def _score_candidate(
     report_context: dict[str, Any],
 ) -> dict[str, Any]:
     reasons = _candidate_universe_reasons(contract=contract, candidate=candidate)
+    metric_source_reasons = _metric_source_semantics_reasons(candidate)
+    reasons.extend(metric_source_reasons)
     reasons.extend(_fallback_metrics_reasons(candidate))
     reasons.extend(_must_pass_reasons(contract=contract, candidate=candidate, report_context=report_context))
     components: list[dict[str, Any]] = []
@@ -196,6 +198,10 @@ def _score_candidate(
             "required": required,
             "null_policy": null_policy,
             "source": source,
+            "primary_metric_source_semantics": candidate.get("primary_metric_source_semantics"),
+            "primary_metric_scenario_role": candidate.get("primary_metric_scenario_role"),
+            "primary_metric_scenario_id": candidate.get("primary_metric_scenario_id"),
+            "aggregate_gate_source": candidate.get("aggregate_gate_source"),
         }
         components.append(component)
         sort_value = _sort_value(value=value, order=order, required=required)
@@ -207,6 +213,14 @@ def _score_candidate(
         "eligibility_reasons": sorted(set(reasons)),
         "rank_tuple": rank_tuple,
         "rank_components": components,
+        "selection_metric_policy": {
+            "primary_metric_source": candidate.get("primary_metric_source"),
+            "primary_metric_source_semantics": candidate.get("primary_metric_source_semantics"),
+            "primary_metric_scenario_role": candidate.get("primary_metric_scenario_role"),
+            "primary_metric_scenario_id": candidate.get("primary_metric_scenario_id"),
+            "aggregate_gate_source": candidate.get("aggregate_gate_source"),
+            "candidate_eligibility_gate": "aggregate_acceptance_gate_result",
+        },
         "_sort_key": sort_key,
     }
 
@@ -215,9 +229,21 @@ def _candidate_universe_reasons(*, contract: dict[str, Any], candidate: dict[str
     universe = contract.get("candidate_universe")
     if universe != "acceptance_gate_passed_required_scenarios":
         return ["final_selection_candidate_universe_unsupported"]
-    if candidate.get("acceptance_gate_result") != "PASS":
+    aggregate_gate = candidate.get("aggregate_acceptance_gate_result", candidate.get("acceptance_gate_result"))
+    if aggregate_gate != "PASS":
         return ["final_selection_acceptance_gate_not_passed"]
     return []
+
+
+def _metric_source_semantics_reasons(candidate: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if candidate.get("primary_metric_source_semantics") != "primary_base_scenario_alias":
+        reasons.append("final_selection_primary_metric_source_semantics_missing")
+    if candidate.get("primary_metric_scenario_role") != "base":
+        reasons.append("final_selection_primary_metric_scenario_role_missing")
+    if candidate.get("aggregate_gate_source") != "required_scenario_policy":
+        reasons.append("final_selection_aggregate_gate_source_missing")
+    return reasons
 
 
 def _fallback_metrics_reasons(candidate: dict[str, Any]) -> list[str]:

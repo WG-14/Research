@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from bithumb_bot.research.experiment_manifest import ManifestValidationError, parse_manifest
+from bithumb_bot.research.validation_protocol import _cost_authority_resolution
 from bithumb_bot.research.strategy_spec import strategy_spec_for_name
 
 
@@ -75,6 +76,47 @@ def test_research_rejects_unknown_strategy_params() -> None:
 
     with pytest.raises(ManifestValidationError, match="unknown strategy parameter"):
         parse_manifest(payload)
+
+
+def test_research_only_dual_cost_authority_is_labeled_not_ambiguous() -> None:
+    payload = _manifest()
+    payload["deployment_tier"] = "research_only"
+    payload["cost_model"] = {"fee_rate": 0.0099, "slippage_bps": [99]}
+    payload["execution_model"] = {
+        "scenario_policy": "must_pass_base_and_survive_stress",
+        "scenarios": [
+            {
+                "type": "fixed_bps",
+                "scenario_role": "base",
+                "label": "base",
+                "fee_rate": 0.0004,
+                "fee_source": "operator_declared_bithumb_app_fee",
+                "fee_authority_policy": "runtime_fee_authority_must_match_or_fail",
+                "slippage_bps": 10,
+                "slippage_source": "execution_calibration",
+                "promotable_as_base": True,
+            },
+            {
+                "type": "fixed_bps",
+                "scenario_role": "stress",
+                "label": "stress",
+                "fee_rate": 0.0025,
+                "fee_source": "stress_assumption",
+                "fee_authority_policy": "not_promotable_as_runtime_base",
+                "slippage_bps": 20,
+                "slippage_source": "stress_assumption",
+                "promotable_as_base": False,
+            },
+        ],
+    }
+
+    manifest = parse_manifest(payload)
+    authority = _cost_authority_resolution(manifest)
+
+    assert authority["cost_authority_source"] == "execution_model.scenarios"
+    assert authority["legacy_cost_model_present"] is True
+    assert authority["legacy_cost_model_authority"] == "fallback_only_not_runtime_authority"
+    assert authority["runtime_base_cost_assumption"]["fee_rate"] == 0.0004
 
 
 def test_noop_baseline_manifest_uses_its_own_parameter_contract() -> None:

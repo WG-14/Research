@@ -81,6 +81,33 @@ def test_must_pass_policy_fails_when_base_passes_but_stress_fails() -> None:
     assert "scenario_policy_required_scenario_failed:scenario_002_fixed_bps_stress:profit_factor_failed" in candidate["gate_fail_reasons"]
 
 
+def test_candidate_top_level_metrics_are_primary_base_aliases() -> None:
+    candidate = _candidate("candidate_a", base="PASS", stress="FAIL")
+
+    _apply_scenario_policy(manifest=_manifest(), candidate=candidate)
+
+    base = candidate["scenario_results"][0]
+    assert candidate["primary_scenario_role"] == "base"
+    assert candidate["primary_validation_metrics"] == base["validation_metrics"]
+    assert candidate["validation_metrics"] == candidate["primary_validation_metrics"] if "validation_metrics" in candidate else True
+    assert candidate["aggregate_acceptance_gate_result"] == "FAIL"
+    assert candidate["acceptance_gate_result"] == candidate["aggregate_acceptance_gate_result"]
+    assert candidate["aggregate_gate_policy"] == "must_pass_base_and_survive_stress"
+
+
+def test_candidate_aggregate_gate_is_separate_from_primary_metrics() -> None:
+    candidate = _candidate("candidate_a", base="PASS", stress="FAIL")
+    candidate["scenario_results"][1]["validation_metrics"] = {"return_pct": -10.0, "trade_count": 2}
+
+    _apply_scenario_policy(manifest=_manifest(), candidate=candidate)
+
+    assert candidate["primary_scenario_role"] == "base"
+    assert candidate["aggregate_acceptance_gate_result"] == "FAIL"
+    assert candidate["primary_validation_metrics"] == {"return_pct": 3.0, "max_drawdown_pct": 1.0}
+    assert candidate["primary_validation_metrics"] != candidate["scenario_results"][1]["validation_metrics"]
+    assert candidate["aggregate_gate_policy"]
+
+
 def test_must_pass_policy_fails_when_base_fails_but_stress_passes() -> None:
     candidate = _candidate("candidate_a", base="FAIL", stress="PASS")
 

@@ -757,6 +757,19 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
         f"{_format_items(tuple(str(item) for item in report.get('promotion_blocking_reasons') or []))}"
     )
     print(f"  candidate_gate_counts={_format_counts(summary.candidate_gate_counts)}")
+    print(f"  candidate_aggregate_gate_counts={_format_counts(summary.candidate_gate_counts)}")
+    print(f"  base_gate_counts={_format_counts(summary.base_gate_counts)}")
+    print(f"  stress_gate_counts={_format_counts(summary.stress_gate_counts)}")
+    print(f"  base_fee_rate={_format_optional(summary.base_fee_rate)}")
+    print(
+        "  stress_fee_rates="
+        f"{','.join(_format_optional(value) for value in summary.stress_fee_rates) if summary.stress_fee_rates else 'none'}"
+    )
+    print(f"  primary_scenario_role={summary.primary_scenario_role or report.get('primary_metric_scenario_role') or 'none'}")
+    print(
+        "  primary_metric_source="
+        f"{summary.primary_metric_source or report.get('primary_metric_source_semantics') or report.get('primary_metric_source') or 'none'}"
+    )
     print(f"  top_fail_reasons={_format_counts(summary.top_fail_reasons)}")
     print(f"  strategy_diagnostics_summary={_format_strategy_diagnostics_summary(summary)}")
     print(f"  top_exit_reasons={_format_counts(summary.top_exit_reasons)}")

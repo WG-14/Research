@@ -70,7 +70,7 @@ from bithumb_bot.research.backtest_stage_runner import (
     _record_audit_equity_mark,
     _record_audit_execution,
 )
-from bithumb_bot.research.report_writer import write_research_report
+from bithumb_bot.research.report_writer import scenario_evidence_hash_inputs, write_research_report
 from bithumb_bot.research.run_summary import build_research_run_summary
 from bithumb_bot.research.return_panel import build_candidate_return_panel
 from bithumb_bot.research import cli as research_cli
@@ -178,6 +178,37 @@ def test_summary_report_does_not_duplicate_full_candidate_payload(tmp_path, monk
     assert "decisions" not in persisted["candidates"][0]
     assert "equity_curve" not in persisted["candidates"][0]
     assert persisted["candidate_count"] == len(derived["candidates"])
+
+
+def test_base_and_stress_result_hashes_are_independent() -> None:
+    base = {
+        "scenario_id": "base",
+        "scenario_role": "base",
+        "cost_model": {"fee_rate": 0.0004, "slippage_bps": 10.0},
+        "cost_assumption": {"fee_rate": 0.0004, "role": "base", "promotable_as_base": True},
+        "trade_ledger_hash": "sha256:base-ledger",
+        "equity_curve_hash": "sha256:base-equity",
+        "detail_artifact_hash": "sha256:base-detail",
+    }
+    stress = {
+        "scenario_id": "stress",
+        "scenario_role": "stress",
+        "cost_model": {"fee_rate": 0.0025, "slippage_bps": 20.0},
+        "cost_assumption": {"fee_rate": 0.0025, "role": "stress", "promotable_as_base": False},
+        "trade_ledger_hash": "sha256:stress-ledger",
+        "equity_curve_hash": "sha256:stress-equity",
+        "detail_artifact_hash": "sha256:stress-detail",
+    }
+    base_hash = sha256_prefixed(scenario_evidence_hash_inputs(base))
+    stress_hash = sha256_prefixed(scenario_evidence_hash_inputs(stress))
+
+    changed_base = {**base, "cost_model": {"fee_rate": 0.0005, "slippage_bps": 10.0}}
+    changed_stress = {**stress, "cost_model": {"fee_rate": 0.0030, "slippage_bps": 20.0}}
+
+    assert sha256_prefixed(scenario_evidence_hash_inputs(changed_base)) != base_hash
+    assert sha256_prefixed(scenario_evidence_hash_inputs(stress)) == stress_hash
+    assert sha256_prefixed(scenario_evidence_hash_inputs(base)) == base_hash
+    assert sha256_prefixed(scenario_evidence_hash_inputs(changed_stress)) != stress_hash
 
 
 def test_final_holdout_reuse_key_hash_is_stable() -> None:

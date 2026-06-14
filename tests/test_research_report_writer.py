@@ -255,6 +255,71 @@ def test_candidate_result_summary_is_reference_first_bounded() -> None:
     assert scenario["equity_curve_hash"] == "sha256:equity"
 
 
+def _cost_scenario(role: str, fee_rate: float, fee_source: str) -> dict[str, object]:
+    return {
+        "scenario_id": f"scenario_{role}",
+        "scenario_index": 0 if role == "base" else 1,
+        "scenario_role": role,
+        "scenario_acceptance_gate_result": "PASS" if role == "base" else "FAIL",
+        "cost_model": {"fee_rate": fee_rate, "slippage_bps": 10.0 if role == "base" else 20.0},
+        "cost_assumption": {
+            "label": f"{role}_fee",
+            "role": role,
+            "fee_rate": fee_rate,
+            "fee_source": fee_source,
+            "fee_authority_policy": "runtime_fee_authority_must_match_or_fail"
+            if role == "base"
+            else "not_promotable_as_runtime_base",
+            "slippage_bps": 10.0 if role == "base" else 20.0,
+            "slippage_source": fee_source,
+            "promotable_as_base": role == "base",
+            "source": "execution_model",
+        },
+        "validation_metrics": {"return_pct": 1.0 if role == "base" else -1.0, "trade_count": 3},
+        "final_holdout_metrics": {"return_pct": 0.5},
+        "execution_model_hash": f"sha256:{role}",
+        "model_params_hash": f"sha256:{role}",
+    }
+
+
+def test_summary_scenario_results_preserve_cost_authority() -> None:
+    candidate = {
+        "parameter_candidate_id": "candidate_001",
+        "scenario_results": [
+            _cost_scenario("base", 0.0004, "operator_declared_bithumb_app_fee"),
+            _cost_scenario("stress", 0.0025, "stress_assumption"),
+        ],
+    }
+
+    summary = summarize_candidate_result(candidate, "summary")
+
+    base, stress = summary["scenario_results"]
+    assert base["cost_model"]["fee_rate"] == 0.0004
+    assert stress["cost_model"]["fee_rate"] == 0.0025
+    assert base["cost_assumption"]["fee_source"] == "operator_declared_bithumb_app_fee"
+    assert stress["cost_assumption"]["fee_source"] == "stress_assumption"
+    assert stress["cost_assumption"]["promotable_as_base"] is False
+    assert base["cost_assumption"]["fee_authority_policy"] == "runtime_fee_authority_must_match_or_fail"
+
+
+def test_derived_candidate_summary_preserves_base_and_stress_fee_rates() -> None:
+    candidate = {
+        "parameter_candidate_id": "candidate_001",
+        "scenario_results": [
+            _cost_scenario("stress", 0.0025, "stress_assumption"),
+            _cost_scenario("base", 0.0004, "operator_declared_bithumb_app_fee"),
+        ],
+    }
+
+    summary = summarize_derived_candidate(candidate, "summary")
+    by_role = {scenario["scenario_role"]: scenario for scenario in summary["scenario_results"]}
+
+    assert by_role["base"]["cost_model"]["fee_rate"] == 0.0004
+    assert by_role["stress"]["cost_model"]["fee_rate"] == 0.0025
+    assert by_role["base"]["cost_assumption"]["fee_source"] == "operator_declared_bithumb_app_fee"
+    assert by_role["stress"]["cost_assumption"]["promotable_as_base"] is False
+
+
 def test_summarize_candidate_result_keeps_compact_diagnostics_fields() -> None:
     candidate = {
         "parameter_candidate_id": "candidate_001",

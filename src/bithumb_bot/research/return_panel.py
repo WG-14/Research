@@ -436,15 +436,32 @@ def _series_keys(series: list[Any]) -> list[tuple[int, int]] | None:
 def _candidate_trade_return_series(candidate: dict[str, Any], *, split: str) -> list[dict[str, Any]]:
     key = f"{split}_closed_trades"
     trades = candidate.get(key)
+    source = {
+        "return_panel_scenario_role": candidate.get("primary_scenario_role", "candidate"),
+        "return_panel_scenario_id": candidate.get("primary_scenario_id"),
+        "return_panel_series_source": f"candidate.{key}",
+    }
     if not isinstance(trades, list):
         scenario_results = candidate.get("scenario_results")
         if isinstance(scenario_results, list):
-            for scenario in scenario_results:
-                if not isinstance(scenario, dict):
-                    continue
-                trades = scenario.get(key)
-                if isinstance(trades, list):
-                    break
+            base_scenarios = [
+                scenario
+                for scenario in scenario_results
+                if isinstance(scenario, dict)
+                and scenario.get("scenario_role") == "base"
+                and isinstance(scenario.get(key), list)
+            ]
+            if len(base_scenarios) != 1:
+                return []
+            scenario = base_scenarios[0]
+            trades = scenario.get(key)
+            source = {
+                "return_panel_scenario_role": "base",
+                "return_panel_scenario_id": scenario.get("scenario_id"),
+                "return_panel_series_source": f"scenario_results.base.{key}",
+            }
+            if not isinstance(trades, list):
+                return []
     if not isinstance(trades, list):
         return []
     rows: list[dict[str, Any]] = []
@@ -457,7 +474,7 @@ def _candidate_trade_return_series(candidate: dict[str, Any], *, split: str) -> 
         value = _as_float(trade.get("return_pct"))
         if ts is None or value is None:
             continue
-        rows.append({"ts": ts, "sequence": index, "return_pct": value})
+        rows.append({"ts": ts, "sequence": index, "return_pct": value, **source})
     return sorted(rows, key=lambda row: (int(row["ts"]), int(row["sequence"])))
 
 

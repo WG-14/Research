@@ -80,6 +80,12 @@ def _candidate(
     return {
         "parameter_candidate_id": candidate_id,
         "acceptance_gate_result": "PASS",
+        "aggregate_acceptance_gate_result": "PASS",
+        "primary_metric_source": "primary_base_scenario_alias",
+        "primary_metric_source_semantics": "primary_base_scenario_alias",
+        "primary_metric_scenario_role": "base",
+        "primary_metric_scenario_id": "scenario_base",
+        "aggregate_gate_source": "required_scenario_policy",
         "metrics_schema_version": 2,
         "final_holdout_present": True,
         "statistical_gate_result": "PASS",
@@ -147,6 +153,36 @@ def test_final_selection_rejects_fallback_metrics_even_when_gate_is_pass() -> No
     assert "final_selection_candidate_failed_before_complete_metrics" in reasons
     assert "final_selection_metrics_unavailable" in reasons
     assert "final_selection_metrics_failure_fallback" in reasons
+
+
+def test_final_selection_rejects_candidate_without_metric_source_semantics() -> None:
+    candidate = _candidate("candidate_001")
+    for key in (
+        "primary_metric_source_semantics",
+        "primary_metric_scenario_role",
+        "aggregate_gate_source",
+    ):
+        candidate.pop(key)
+
+    result = apply_final_selection_contract(
+        contract=_final_selection(
+            ranking=[
+                {
+                    "metric": "validation.metrics_v2.trade_quality.expectancy_per_trade_krw",
+                    "order": "desc",
+                    "required": True,
+                }
+            ]
+        ),
+        candidates=[candidate],
+        report_context=_context(),
+        production_bound=True,
+    )
+
+    assert result["gate_result"] == "FAIL"
+    reasons = result["candidate_final_scores"][0]["eligibility_reasons"]
+    assert "final_selection_primary_metric_source_semantics_missing" in reasons
+    assert "final_selection_primary_metric_scenario_role_missing" in reasons
 
 
 def _risk_policy() -> dict[str, object]:

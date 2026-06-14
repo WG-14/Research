@@ -442,6 +442,75 @@ def test_standalone_backtest_summary_discloses_not_full_validation(capsys) -> No
     assert "promotion_allowed=0" in output
 
 
+def test_cli_summary_prints_base_and_stress_fee_rates(capsys) -> None:
+    report = _report(
+        candidates=[
+            {
+                **_candidate("candidate_001", gate="FAIL"),
+                "primary_scenario_role": "base",
+                "primary_metric_source": "primary_base_scenario_alias",
+                "scenario_results": [
+                    {
+                        "scenario_role": "base",
+                        "scenario_acceptance_gate_result": "PASS",
+                        "cost_model": {"fee_rate": 0.0004},
+                    },
+                    {
+                        "scenario_role": "stress",
+                        "scenario_acceptance_gate_result": "FAIL",
+                        "cost_model": {"fee_rate": 0.0025},
+                    },
+                ],
+            }
+        ]
+    )
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+    output = capsys.readouterr().out
+
+    assert "base_fee_rate=0.0004" in output
+    assert "stress_fee_rates=0.0025" in output
+
+
+def test_cli_summary_prints_primary_metric_source(capsys) -> None:
+    report = _report(
+        candidates=[
+            {
+                **_candidate("candidate_001"),
+                "primary_scenario_role": "base",
+                "primary_metric_source": "primary_base_scenario_alias",
+            }
+        ]
+    )
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+    output = capsys.readouterr().out
+
+    assert "primary_scenario_role=base" in output
+    assert "primary_metric_source=primary_base_scenario_alias" in output
+
+
+def test_cli_summary_distinguishes_candidate_gate_from_scenario_gates(capsys) -> None:
+    report = _report(
+        candidates=[
+            {
+                **_candidate("candidate_001", gate="FAIL"),
+                "scenario_results": [
+                    {"scenario_role": "base", "scenario_acceptance_gate_result": "PASS"},
+                    {"scenario_role": "stress", "scenario_acceptance_gate_result": "FAIL"},
+                ],
+            }
+        ]
+    )
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+    output = capsys.readouterr().out
+
+    assert "candidate_aggregate_gate_counts=PASS:0,FAIL:1" in output
+    assert "base_gate_counts=PASS:1,FAIL:0" in output
+    assert "stress_gate_counts=PASS:0,FAIL:1" in output
+
+
 def test_candidate_gate_counts_are_computed_with_unknown_labels() -> None:
     summary = build_research_run_summary(
         _report(

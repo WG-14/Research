@@ -573,6 +573,28 @@ def summarize_report_candidate(candidate: Any) -> dict[str, Any]:
         "metrics_hash",
         "content_hash",
         "cost_sensitivity",
+        "cost_model",
+        "primary_scenario_id",
+        "primary_scenario_role",
+        "primary_metric_source",
+        "primary_cost_model",
+        "primary_validation_metrics",
+        "primary_final_holdout_metrics",
+        "aggregate_gate_policy",
+        "aggregate_acceptance_gate_result",
+        "base_scenario_id",
+        "base_validation_metrics",
+        "base_final_holdout_metrics",
+        "stress_scenario_ids",
+        "stress_gate_results",
+        "cost_authority_source",
+        "legacy_cost_model_present",
+        "legacy_cost_model_authority",
+        "scenario_cost_assumption_contract_hash",
+        "primary_metric_source_semantics",
+        "primary_metric_scenario_role",
+        "primary_metric_scenario_id",
+        "aggregate_gate_source",
         "strategy_runtime_capabilities",
         "promotion_interpretation",
         "exploratory_result",
@@ -636,6 +658,19 @@ def _derived_candidate_index_summary(candidate: dict[str, Any], *, include_compa
         "metrics_v2_source",
         "retained_detail_summary",
         "cost_sensitivity",
+        "primary_scenario_id",
+        "primary_scenario_role",
+        "primary_metric_source",
+        "aggregate_gate_policy",
+        "aggregate_acceptance_gate_result",
+        "base_scenario_id",
+        "cost_authority_source",
+        "legacy_cost_model_present",
+        "legacy_cost_model_authority",
+        "primary_metric_source_semantics",
+        "primary_metric_scenario_role",
+        "primary_metric_scenario_id",
+        "aggregate_gate_source",
         "position_sizing_sensitivity",
         "strategy_runtime_capabilities",
         "promotion_interpretation",
@@ -707,6 +742,10 @@ def _derived_scenario_index_summary(scenario: Any, *, include_compact: bool = Tr
         "scenario_role",
         "scenario_acceptance_gate_result",
         "scenario_fail_reasons",
+        "cost_model",
+        "cost_assumption",
+        "validation_metrics",
+        "final_holdout_metrics",
         "behavior_hash",
         "decision_behavior_hash",
         "trade_ledger_hash",
@@ -741,6 +780,7 @@ def _derived_scenario_index_summary(scenario: Any, *, include_compact: bool = Tr
         "final_holdout_audit_trace_index",
     )
     summary = {key: scenario[key] for key in summary_keys if key in scenario}
+    _compact_scenario_metric_bodies(summary)
     if include_compact:
         _copy_compact_diagnostics(summary, scenario)
         _drop_repeated_scenario_diagnostics(summary)
@@ -832,12 +872,35 @@ def summarize_candidate_result(candidate: Any, report_detail: str) -> Any:
         "execution_calibration_warning_reasons",
         "retained_detail_summary",
         "cost_sensitivity",
+        "cost_model",
+        "primary_scenario_id",
+        "primary_scenario_role",
+        "primary_metric_source",
+        "primary_cost_model",
+        "primary_validation_metrics",
+        "primary_final_holdout_metrics",
+        "aggregate_gate_policy",
+        "aggregate_acceptance_gate_result",
+        "base_scenario_id",
+        "base_validation_metrics",
+        "base_final_holdout_metrics",
+        "stress_scenario_ids",
+        "stress_gate_results",
+        "cost_authority_source",
+        "legacy_cost_model_present",
+        "legacy_cost_model_authority",
+        "scenario_cost_assumption_contract_hash",
+        "primary_metric_source_semantics",
+        "primary_metric_scenario_role",
+        "primary_metric_scenario_id",
+        "aggregate_gate_source",
         "position_sizing_sensitivity",
         "strategy_runtime_capabilities",
         "promotion_interpretation",
         "exploratory_result",
     )
     summary = {key: candidate[key] for key in summary_keys if key in candidate}
+    _compact_candidate_metric_alias_bodies(summary)
     _copy_compact_diagnostics(summary, candidate)
     _compact_candidate_artifact_summary(summary)
     summary["scenario_results"] = [
@@ -855,6 +918,20 @@ def summarize_candidate_result(candidate: Any, report_detail: str) -> Any:
 def _normalize_report_detail(report_detail: str) -> str:
     detail = str(report_detail or "full").strip().lower()
     return detail if detail in {"index", "summary", "standard", "full"} else "full"
+
+
+def _compact_candidate_metric_alias_bodies(summary: dict[str, Any]) -> None:
+    for key, allowed in (
+        ("validation_metrics", ("return_pct", "total_return_pct", "trade_count")),
+        ("final_holdout_metrics", ("return_pct", "total_return_pct")),
+        ("primary_validation_metrics", ("return_pct", "total_return_pct", "trade_count")),
+        ("primary_final_holdout_metrics", ("return_pct", "total_return_pct")),
+        ("base_validation_metrics", ("return_pct", "total_return_pct", "trade_count")),
+        ("base_final_holdout_metrics", ("return_pct", "total_return_pct")),
+    ):
+        value = summary.get(key)
+        if isinstance(value, dict):
+            summary[key] = {field: value[field] for field in allowed if field in value}
 
 
 def _candidate_result_index_summary(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -927,6 +1004,8 @@ def scenario_evidence_hash_inputs(scenario: dict[str, Any]) -> dict[str, Any]:
         "scenario_role": scenario.get("scenario_role"),
     }
     for key in (
+        "cost_model",
+        "cost_assumption",
         "behavior_hash",
         "decision_behavior_hash",
         "trade_ledger_hash",
@@ -1117,6 +1196,8 @@ def _scenario_result_summary(
         "scenario_role",
         "scenario_acceptance_gate_result",
         "scenario_fail_reasons",
+        "cost_model",
+        "cost_assumption",
         "validation_metrics",
         "validation_metrics_v2",
         "final_holdout_metrics",
@@ -1171,6 +1252,7 @@ def _scenario_result_summary(
         "final_holdout_audit_trace_index",
     )
     summary = {key: scenario[key] for key in summary_keys if key in scenario}
+    _compact_scenario_metric_bodies(summary)
     _copy_compact_diagnostics(summary, scenario)
     if include_closed_trade_summary:
         summary["validation_closed_trade_summary"] = _closed_trade_summary(
@@ -1195,6 +1277,16 @@ def _scenario_result_summary(
     )
     _ensure_scenario_retained_detail_evidence(summary)
     return summary
+
+
+def _compact_scenario_metric_bodies(summary: dict[str, Any]) -> None:
+    for key, allowed in (
+        ("validation_metrics", ("return_pct", "total_return_pct", "trade_count")),
+        ("final_holdout_metrics", ("return_pct", "total_return_pct")),
+    ):
+        value = summary.get(key)
+        if isinstance(value, dict):
+            summary[key] = {field: value[field] for field in allowed if field in value}
 
 
 def _copy_compact_diagnostics(target: dict[str, Any], source: dict[str, Any]) -> None:

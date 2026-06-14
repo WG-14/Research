@@ -10,6 +10,12 @@ from .deployment_policy import is_production_bound_target
 @dataclass(frozen=True)
 class ResearchRunSummary:
     candidate_gate_counts: dict[str, int]
+    base_gate_counts: dict[str, int]
+    stress_gate_counts: dict[str, int]
+    base_fee_rate: float | None
+    stress_fee_rates: tuple[float, ...]
+    primary_scenario_role: str | None
+    primary_metric_source: str | None
     top_fail_reasons: dict[str, int]
     top_window_fail_reasons: dict[str, int]
     walk_forward_window_count: int | None
@@ -32,12 +38,38 @@ class ResearchRunSummary:
 def build_research_run_summary(report: dict[str, object]) -> ResearchRunSummary:
     candidates = _candidate_rows(report)
     gate_counts: Counter[str] = Counter()
+    base_gate_counts: Counter[str] = Counter()
+    stress_gate_counts: Counter[str] = Counter()
+    base_fee_rate: float | None = None
+    stress_fee_rates: set[float] = set()
+    primary_scenario_role: str | None = None
+    primary_metric_source: str | None = None
     fail_reasons: Counter[str] = Counter()
     window_fail_reasons: Counter[str] = Counter()
     first_walk_forward_metrics: dict[str, Any] | None = None
 
     for candidate in candidates:
         gate_counts[_safe_label(candidate.get("acceptance_gate_result"), default="UNKNOWN")] += 1
+        primary_scenario_role = primary_scenario_role or _safe_optional_label(candidate.get("primary_scenario_role"))
+        primary_metric_source = primary_metric_source or _safe_optional_label(candidate.get("primary_metric_source"))
+        scenario_results = candidate.get("scenario_results")
+        if not isinstance(scenario_results, list):
+            scenario_results = []
+        for scenario in scenario_results:
+            if not isinstance(scenario, dict):
+                continue
+            role = scenario.get("scenario_role")
+            gate = _safe_label(scenario.get("scenario_acceptance_gate_result"), default="UNKNOWN")
+            cost_model = scenario.get("cost_model") if isinstance(scenario.get("cost_model"), dict) else {}
+            fee_rate = _safe_float(cost_model.get("fee_rate"))
+            if role == "base":
+                base_gate_counts[gate] += 1
+                if fee_rate is not None and base_fee_rate is None:
+                    base_fee_rate = fee_rate
+            elif role == "stress":
+                stress_gate_counts[gate] += 1
+                if fee_rate is not None:
+                    stress_fee_rates.add(fee_rate)
         for reason in _string_items(candidate.get("gate_fail_reasons")):
             fail_reasons[reason] += 1
 
@@ -90,6 +122,12 @@ def build_research_run_summary(report: dict[str, object]) -> ResearchRunSummary:
 
     return ResearchRunSummary(
         candidate_gate_counts=_ordered_gate_counts(gate_counts) if candidates else {},
+        base_gate_counts=_ordered_gate_counts(base_gate_counts) if base_gate_counts else {},
+        stress_gate_counts=_ordered_gate_counts(stress_gate_counts) if stress_gate_counts else {},
+        base_fee_rate=base_fee_rate,
+        stress_fee_rates=tuple(sorted(stress_fee_rates)),
+        primary_scenario_role=primary_scenario_role,
+        primary_metric_source=primary_metric_source,
         top_fail_reasons=_ordered_counts(fail_reasons),
         top_window_fail_reasons=_ordered_counts(window_fail_reasons),
         walk_forward_window_count=_safe_int(first_walk_forward_metrics.get("window_count"))
@@ -150,6 +188,13 @@ def _safe_label(value: object, *, default: str) -> str:
         return default
     label = str(value)
     return label if label else default
+
+
+def _safe_optional_label(value: object) -> str | None:
+    if value is None:
+        return None
+    label = str(value)
+    return label if label else None
 
 
 def _safe_int(value: object) -> int | None:
