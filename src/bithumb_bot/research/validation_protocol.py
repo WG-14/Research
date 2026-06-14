@@ -1194,6 +1194,18 @@ def run_research_backtest(
             status=report.quality_gate_status,
             reasons=",".join(report.quality_gate_reasons) if report.quality_gate_reasons else "none",
         )
+    _validate_run_purpose_dataset_scope(manifest=manifest, snapshots=snapshots)
+    experiment_registry_reservation = _reserve_experiment_attempt(
+        manifest=manifest,
+        manager=manager,
+        snapshots=snapshots,
+        quality_reports=quality_reports,
+        manifest_path=manifest_path,
+        command_name="research-backtest",
+        command_args=command_args,
+        repository_version=_repository_version(),
+        created_at=generated_at,
+    )
     if manifest.dataset.split.final_holdout is not None:
         stage_started = time.perf_counter()
         snapshots["final_holdout"] = load_dataset_split(
@@ -1233,18 +1245,6 @@ def run_research_backtest(
             status=report.quality_gate_status,
             reasons=",".join(report.quality_gate_reasons) if report.quality_gate_reasons else "none",
         )
-    _validate_run_purpose_dataset_scope(manifest=manifest, snapshots=snapshots)
-    experiment_registry_reservation = _reserve_experiment_attempt(
-        manifest=manifest,
-        manager=manager,
-        snapshots=snapshots,
-        quality_reports=quality_reports,
-        manifest_path=manifest_path,
-        command_name="research-backtest",
-        command_args=command_args,
-        repository_version=_repository_version(),
-        created_at=generated_at,
-    )
     _require_enough_candles(snapshots.values())
 
     execution_plan = build_research_execution_plan(

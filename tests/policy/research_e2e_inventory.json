@@ -728,6 +728,66 @@
       "e2e_canary_group": "research_portfolio_policy"
     },
     {
+      "nodeid": "tests/test_research_backtest_reproducibility.py::test_report_includes_research_run_purpose_and_runtime_limit_resource_budget",
+      "markers": [
+        "research_e2e"
+      ],
+      "reason": "verifies run-purpose and runtime-limit budget evidence is persisted through the real production research backtest report boundary",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 72,
+        "estimated_audit_stream_rows": 0,
+        "estimated_artifact_write_count": 4,
+        "estimated_hash_payload_bytes": 13824,
+        "estimated_artifact_bytes": 30208,
+        "estimated_artifact_file_count": 4,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 9216
+      },
+      "duration_budget_seconds": 30,
+      "domain": "research_resource_budget",
+      "last_measured_seconds": 10,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "artifact_persistence_boundary",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "research_resource_budget"
+    },
+    {
+      "nodeid": "tests/test_research_backtest_reproducibility.py::test_simulation_integrity_smoke_rejects_full_historical_split_and_resource_budget_probe_allows_large_split",
+      "markers": [
+        "research_e2e"
+      ],
+      "reason": "verifies simulation-integrity smoke split limits fail closed and resource-budget probes can explicitly exercise larger production backtest splits",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 2,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 2,
+        "estimated_tick_events": 6006,
+        "estimated_audit_stream_rows": 0,
+        "estimated_artifact_write_count": 4,
+        "estimated_hash_payload_bytes": 1153920,
+        "estimated_artifact_bytes": 60416,
+        "estimated_artifact_file_count": 4,
+        "pre_parallel_work_unit_count": 2,
+        "pre_parallel_dataset_hash_call_count": 6,
+        "pre_parallel_dataset_hash_payload_bytes": 1153920
+      },
+      "duration_budget_seconds": 45,
+      "domain": "research_resource_budget",
+      "last_measured_seconds": 15,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "fail_closed_safety",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "research_fail_closed"
+    },
+    {
       "nodeid": "tests/test_research_backtest_reproducibility.py::test_resource_limited_candidate_detail_records_executed_portfolio_policy",
       "markers": [
         "research_e2e"

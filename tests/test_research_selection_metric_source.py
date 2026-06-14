@@ -20,6 +20,10 @@ def _candidate() -> dict[str, object]:
         "primary_metric_scenario_id": "scenario_base",
         "aggregate_gate_source": "required_scenario_policy",
         "validation_metrics": {"net_excess_return": 1.2, "return_pct": 1.2},
+        "metrics_v2_source": "computed",
+        "candidate_failed_before_complete_metrics": False,
+        "evaluation_status": "completed",
+        "metrics_status": "complete",
         "validation_metrics_v2": {
             "trade_quality": {"expectancy_per_trade_krw": 100.0},
             "return_risk": {"max_drawdown_pct": 5.0},

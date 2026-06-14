@@ -1271,6 +1271,7 @@ def test_legacy_manifest_defaults_to_strategy_performance_diagnostic_and_resourc
     assert "resource_budget_override_reason_missing" in validation_protocol._resource_budget_warnings(manifest)
 
 
+@pytest.mark.research_e2e
 def test_simulation_integrity_smoke_rejects_full_historical_split_and_resource_budget_probe_allows_large_split(
     tmp_path,
     monkeypatch,
