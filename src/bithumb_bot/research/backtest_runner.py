@@ -132,14 +132,9 @@ def _empty_plugin_backtest_result(
 
 
 def _portfolio_policy_evidence(policy: PortfolioPolicy) -> dict[str, Any]:
-    return {
-        "executed_portfolio_policy": policy.as_dict(),
-        "executed_portfolio_policy_hash": policy.policy_hash(),
-        "ledger_starting_cash_krw": float(policy.starting_cash_krw),
-        "ledger_initial_position_qty": float(policy.initial_position_qty),
-        "position_sizing_policy": policy.position_sizing.as_dict(),
-        "legacy_research_portfolio_policy_used": policy.source == "legacy_research_default",
-    }
+    from . import backtest_support as support
+
+    return support.portfolio_policy_evidence(policy)
 
 
 def _with_portfolio_policy_evidence(run: BacktestRun, *, policy: PortfolioPolicy) -> BacktestRun:

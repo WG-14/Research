@@ -70,7 +70,11 @@ from bithumb_bot.research.backtest_stage_runner import (
     _record_audit_equity_mark,
     _record_audit_execution,
 )
-from bithumb_bot.research.report_writer import scenario_evidence_hash_inputs, write_research_report
+from bithumb_bot.research.report_writer import (
+    _derived_scenario_index_summary,
+    scenario_evidence_hash_inputs,
+    write_research_report,
+)
 from bithumb_bot.research.run_summary import build_research_run_summary
 from bithumb_bot.research.return_panel import build_candidate_return_panel
 from bithumb_bot.research import cli as research_cli
@@ -90,7 +94,11 @@ from bithumb_bot.research.promotion_gate import (
     promote_candidate,
 )
 from bithumb_bot.research.validation_protocol import (
+    MISSING_EXECUTED_PORTFOLIO_POLICY_EVIDENCE_REASON,
+    PORTFOLIO_POLICY_EXECUTION_MISMATCH_REASON,
     ResearchValidationError,
+    _classified_fail_reasons,
+    _portfolio_policy_execution_gate_reasons,
     _promotion_blocking_reasons,
     run_research_backtest,
     run_research_walk_forward,
@@ -1102,7 +1110,7 @@ def _risk_policy() -> dict[str, object]:
 
 
 @pytest.mark.research_e2e
-def test_candidate_detail_notional_uses_manifest_starting_cash(tmp_path, monkeypatch) -> None:
+def test_tiny_portfolio_policy_smoke_records_100k_entry_notional_in_candidate_detail(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("BITHUMB_TEST_TIER", raising=False)
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path, minutes_per_day=24)
@@ -1129,6 +1137,65 @@ def test_candidate_detail_notional_uses_manifest_starting_cash(tmp_path, monkeyp
     fee_basis = float(trade["fee_total"]) / 0.0008
     assert abs(entry_notional - 99_000.0) < 1_000.0
     assert fee_basis < 150_000.0
+
+
+@pytest.mark.research_e2e
+def test_resource_limited_candidate_detail_records_executed_portfolio_policy(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("BITHUMB_TEST_TIER", raising=False)
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path, minutes_per_day=24)
+    manager = _research_manager(tmp_path, monkeypatch)
+    payload = _policy_artifact_manifest(
+        experiment_id="resource_limited_policy_evidence",
+        portfolio_policy=_portfolio_policy(starting_cash=100_000.0, buy_fraction=0.99),
+    )
+    payload["research_run"]["resource_limits"]["max_trades"] = 0
+
+    report = run_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    base = _candidate_detail_base_results(manager, "resource_limited_policy_evidence")[0]
+    assert base["candidate_failed"] is True
+    assert base["failure_reason"] == "candidate_resource_limit_exceeded"
+    assert base["ledger_starting_cash_krw"] == 100_000.0
+    assert base["executed_portfolio_policy_hash"] == report["portfolio_policy_hash"]
+    assert base["work_unit_portfolio_policy_hash"] == report["portfolio_policy_hash"]
+    assert base["position_sizing_policy"]["buy_fraction"] == 0.99
+    assert base["resource_guard"]["ledger_starting_cash_krw"] == 100_000.0
+
+
+@pytest.mark.research_e2e
+def test_resource_limited_candidate_separates_resource_failure_from_policy_mismatch(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("BITHUMB_TEST_TIER", raising=False)
+    db_path = tmp_path / "candles.sqlite"
+    _create_db(db_path, minutes_per_day=24)
+    manager = _research_manager(tmp_path, monkeypatch)
+    payload = _policy_artifact_manifest(
+        experiment_id="resource_limited_no_policy_mismatch",
+        portfolio_policy=_portfolio_policy(starting_cash=100_000.0, buy_fraction=0.99),
+    )
+    payload["research_run"]["resource_limits"]["max_trades"] = 0
+
+    report = run_research_backtest(
+        manifest=parse_manifest(payload),
+        db_path=db_path,
+        manager=manager,
+        generated_at="2026-05-03T00:00:00+00:00",
+    )
+
+    candidate = report["candidates"][0]
+    reasons = candidate["gate_fail_reasons"]
+    assert "candidate_resource_limit_exceeded" in reasons
+    assert "max_trades_exceeded" in reasons
+    assert PORTFOLIO_POLICY_EXECUTION_MISMATCH_REASON not in reasons
+    assert "max_trades_exceeded" in candidate["resource_integrity_fail_reasons"]
+    assert "max_trades_exceeded" in candidate["scenario_results"][0]["resource_integrity_fail_reasons"]
+    assert PORTFOLIO_POLICY_EXECUTION_MISMATCH_REASON not in candidate["strategy_performance_fail_reasons"]
+    assert candidate["scenario_results"][0]["executed_portfolio_policy_hash"] == report["portfolio_policy_hash"]
 
 
 def test_portfolio_policy_hash_chain_manifest_work_unit_detail_matches(tmp_path, monkeypatch) -> None:
@@ -1182,7 +1249,7 @@ def test_legacy_missing_manifest_policy_keeps_legacy_990k_detail_evidence(tmp_pa
 
 
 @pytest.mark.research_e2e
-def test_summary_candidate_result_retains_portfolio_policy_evidence(tmp_path, monkeypatch) -> None:
+def test_summary_candidate_result_retains_completed_executed_policy_evidence(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("BITHUMB_TEST_TIER", raising=False)
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path, minutes_per_day=24)
@@ -1209,6 +1276,30 @@ def test_summary_candidate_result_retains_portfolio_policy_evidence(tmp_path, mo
     assert candidate["portfolio_policy_hash"].startswith("sha256:")
     assert candidate["executed_portfolio_policy_hash"] == candidate["portfolio_policy_hash"]
     assert candidate["scenario_results"][0]["executed_portfolio_policy_hash"] == candidate["portfolio_policy_hash"]
+
+
+def test_derived_scenario_summary_retains_executed_portfolio_policy_hashes() -> None:
+    scenario = _derived_scenario_index_summary(
+        {
+            "scenario_id": "scenario_1",
+            "scenario_index": 0,
+            "scenario_type": "base",
+            "scenario_role": "base",
+            "scenario_acceptance_gate_result": "PASS",
+            "scenario_fail_reasons": [],
+            "portfolio_policy_hash": "sha256:policy",
+            "work_unit_portfolio_policy_hash": "sha256:policy",
+            "executed_portfolio_policy_hash": "sha256:policy",
+            "ledger_starting_cash_krw": 100_000.0,
+            "train_executed_portfolio_policy_hash": "sha256:policy",
+            "validation_executed_portfolio_policy_hash": "sha256:policy",
+            "final_holdout_executed_portfolio_policy_hash": "sha256:policy",
+        }
+    )
+
+    assert scenario["executed_portfolio_policy_hash"] == "sha256:policy"
+    assert scenario["train_executed_portfolio_policy_hash"] == "sha256:policy"
+    assert scenario["validation_executed_portfolio_policy_hash"] == "sha256:policy"
 
 
 class _MismatchedPortfolioPolicyEvaluator(DeterministicResearchEvaluator):
@@ -1264,6 +1355,62 @@ def test_candidate_fails_when_executed_portfolio_policy_differs_from_manifest(tm
     assert candidate["acceptance_gate_result"] == "FAIL"
     assert "portfolio_policy_execution_mismatch" in candidate["gate_fail_reasons"]
     assert "portfolio_policy_execution_mismatch" in candidate["scenario_results"][0]["scenario_fail_reasons"]
+
+
+def test_missing_executed_portfolio_policy_evidence_reason_not_policy_mismatch() -> None:
+    reasons = _portfolio_policy_execution_gate_reasons(
+        {
+            "work_unit_portfolio_policy_hash": "sha256:manifest",
+            "executed_portfolio_policy_hash": None,
+        }
+    )
+
+    assert reasons == [MISSING_EXECUTED_PORTFOLIO_POLICY_EVIDENCE_REASON]
+    assert PORTFOLIO_POLICY_EXECUTION_MISMATCH_REASON not in reasons
+
+
+def test_policy_mismatch_reason_when_executed_portfolio_policy_hash_differs() -> None:
+    reasons = _portfolio_policy_execution_gate_reasons(
+        {
+            "work_unit_portfolio_policy_hash": "sha256:manifest",
+            "executed_portfolio_policy_hash": "sha256:legacy",
+        }
+    )
+
+    assert reasons == [PORTFOLIO_POLICY_EXECUTION_MISMATCH_REASON]
+
+
+def test_fail_reasons_classified_by_simulation_integrity_resource_integrity_performance_deployment() -> None:
+    classified = _classified_fail_reasons(
+        [
+            MISSING_EXECUTED_PORTFOLIO_POLICY_EVIDENCE_REASON,
+            "max_runtime_exceeded",
+            "profit_factor_failed",
+            "research_only_not_live_eligible",
+        ]
+    )
+
+    assert classified["simulation_integrity_fail_reasons"] == [
+        MISSING_EXECUTED_PORTFOLIO_POLICY_EVIDENCE_REASON
+    ]
+    assert classified["resource_integrity_fail_reasons"] == ["max_runtime_exceeded"]
+    assert classified["strategy_performance_fail_reasons"] == ["profit_factor_failed"]
+    assert classified["deployment_eligibility_reasons"] == ["research_only_not_live_eligible"]
+
+
+def test_policy_evidence_reason_is_simulation_integrity_not_strategy_performance() -> None:
+    classified = _classified_fail_reasons(
+        [
+            PORTFOLIO_POLICY_EXECUTION_MISMATCH_REASON,
+            "candidate_resource_limit_exceeded",
+            "profit_factor_failed",
+        ]
+    )
+
+    assert PORTFOLIO_POLICY_EXECUTION_MISMATCH_REASON in classified["simulation_integrity_fail_reasons"]
+    assert PORTFOLIO_POLICY_EXECUTION_MISMATCH_REASON not in classified["strategy_performance_fail_reasons"]
+    assert "candidate_resource_limit_exceeded" in classified["resource_integrity_fail_reasons"]
+    assert "profit_factor_failed" in classified["strategy_performance_fail_reasons"]
 
 
 def _max_holding_dataset() -> DatasetSnapshot:

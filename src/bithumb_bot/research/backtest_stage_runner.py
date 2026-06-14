@@ -682,6 +682,7 @@ def run_stage_owned_decision_event_backtest(
         total_candles=len(candles),
         diagnostics_namespace=strategy_plugin.diagnostics_namespace,
     )
+    accumulator.record_initialized_portfolio_policy(policy)
     if not candles:
         return _with_portfolio_policy_evidence(
             result_assembler.empty_run(
@@ -887,14 +888,7 @@ def run_stage_owned_decision_event_backtest(
 
 
 def _portfolio_policy_evidence(policy: Any) -> dict[str, Any]:
-    return {
-        "executed_portfolio_policy": policy.as_dict(),
-        "executed_portfolio_policy_hash": policy.policy_hash(),
-        "ledger_starting_cash_krw": float(policy.starting_cash_krw),
-        "ledger_initial_position_qty": float(policy.initial_position_qty),
-        "position_sizing_policy": policy.position_sizing.as_dict(),
-        "legacy_research_portfolio_policy_used": policy.source == "legacy_research_default",
-    }
+    return support.portfolio_policy_evidence(policy)
 
 
 def _with_portfolio_policy_evidence(run: Any, *, policy: Any) -> Any:

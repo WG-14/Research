@@ -59,6 +59,7 @@ class BacktestAccumulator:
     observability_wall_seconds: float = 0.0
     audit_decision_event_count: int = 0
     audit_equity_event_count: int = 0
+    initialized_portfolio_policy_evidence: dict[str, Any] = field(default_factory=dict)
     baseline_memory_sample: MemorySample = field(init=False)
 
     def __post_init__(self) -> None:
@@ -87,6 +88,9 @@ class BacktestAccumulator:
         if limit is None:
             return True
         return self.retained_equity_point_count < int(limit)
+
+    def record_initialized_portfolio_policy(self, policy: Any) -> None:
+        self.initialized_portfolio_policy_evidence = portfolio_policy_evidence(policy)
 
     def update_decision(self, payload: dict[str, object], retained: bool) -> None:
         self.decision_count += 1
@@ -281,6 +285,7 @@ class BacktestAccumulator:
         if not reasons:
             return
         evidence = self.heartbeat_payload(candles_processed=candles_processed, memory=memory)
+        evidence.update(self.initialized_portfolio_policy_evidence)
         evidence.update(
             {
                 "status": "TRIPPED",
@@ -311,6 +316,7 @@ class BacktestAccumulator:
         payload["estimated_full_tick_canonical_enabled"] = bool(policy.full_tick_canonical_enabled)
         payload["decision_hash"] = self.decision_hash_material.hash
         payload["decision_hash_material_count"] = int(self.decision_hash_material.count)
+        payload.update(self.initialized_portfolio_policy_evidence)
         payload.update(
             _behavior_hashes(
                 decision_material=self.behavior_hash_material,
@@ -380,6 +386,17 @@ class BacktestAccumulator:
         strategy_specific = dict(payload)
         payload["strategy_specific_diagnostics"] = {self.diagnostics_namespace: strategy_specific}
         return payload
+
+
+def portfolio_policy_evidence(policy: Any) -> dict[str, Any]:
+    return {
+        "executed_portfolio_policy": policy.as_dict(),
+        "executed_portfolio_policy_hash": policy.policy_hash(),
+        "ledger_starting_cash_krw": float(policy.starting_cash_krw),
+        "ledger_initial_position_qty": float(policy.initial_position_qty),
+        "position_sizing_policy": policy.position_sizing.as_dict(),
+        "legacy_research_portfolio_policy_used": policy.source == "legacy_research_default",
+    }
 
 
 @dataclass

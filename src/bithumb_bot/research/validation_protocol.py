@@ -131,6 +131,7 @@ TOP_OF_BOOK_OPERATOR_NEXT_ACTION = (
     "and verify top_of_book_coverage_pct"
 )
 PORTFOLIO_POLICY_EXECUTION_MISMATCH_REASON = "portfolio_policy_execution_mismatch"
+MISSING_EXECUTED_PORTFOLIO_POLICY_EVIDENCE_REASON = "missing_executed_portfolio_policy_evidence"
 ProgressCallback = Callable[[dict[str, Any]], None]
 _CANDIDATE_SCENARIO_WORKER_CONTEXT: dict[str, Any] | None = None
 FAST_TEST_TIER_ENV = "BITHUMB_TEST_TIER"
@@ -338,6 +339,7 @@ def _evaluate_candidate_scenario_task(
 
         base = _failed_candidate_base_result(
             manifest=manifest,
+            work_unit=work_unit,
             candidate_index=index,
             candidate_id=param_candidate_id,
             params=params,
@@ -385,6 +387,7 @@ def _evaluate_candidate_scenario_task(
         )
         base = _failed_candidate_base_result(
             manifest=manifest,
+            work_unit=work_unit,
             candidate_index=index,
             candidate_id=param_candidate_id,
             params=params,
@@ -2481,6 +2484,7 @@ def _evaluate_candidates(
                 "validation_execution_metadata": base.get("validation_execution_metadata") or [],
                 "final_holdout_execution_metadata": base.get("final_holdout_execution_metadata"),
             }
+            scenario_result.update(_classified_fail_reasons(fail_reasons))
             candidate_payload = aggregates.setdefault(
                 base["candidate_id"],
                 {
@@ -2766,6 +2770,8 @@ def _evaluate_candidates(
         behavior_parameter_names=set(strategy_spec.behavior_affecting_parameter_names),
         production_bound=manifest.deployment_tier != "research_only",
     )
+    for candidate_payload in rows:
+        _apply_fail_reason_classification(candidate_payload)
     profile_hash_wall_seconds = 0.0
     profile_build_wall_seconds = 0.0
     behavior_profile_build_wall_seconds = 0.0
@@ -2945,6 +2951,7 @@ def _normalize_failed_work_result_without_base(
     }
     base = _failed_candidate_base_result(
         manifest=manifest,
+        work_unit=result.work_unit,
         candidate_index=int(result.candidate_index),
         candidate_id=str(result.candidate_id),
         params=dict(result.work_unit.parameter_values),
@@ -3512,9 +3519,20 @@ def _run_portfolio_policy_evidence(run: BacktestRun | None) -> dict[str, Any]:
     }
 
 
+def _resource_guard_portfolio_policy_evidence(resource_guard: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "executed_portfolio_policy": resource_guard.get("executed_portfolio_policy"),
+        "executed_portfolio_policy_hash": resource_guard.get("executed_portfolio_policy_hash"),
+        "ledger_starting_cash_krw": resource_guard.get("ledger_starting_cash_krw"),
+        "ledger_initial_position_qty": resource_guard.get("ledger_initial_position_qty"),
+        "position_sizing_policy": resource_guard.get("position_sizing_policy"),
+    }
+
+
 def _failed_candidate_base_result(
     *,
     manifest: ExperimentManifest,
+    work_unit: ResearchWorkUnit | None = None,
     candidate_index: int,
     candidate_id: str,
     params: dict[str, Any],
@@ -3537,10 +3555,25 @@ def _failed_candidate_base_result(
     metrics_v2 = _failed_metrics_v2_payload(evaluation_status=evaluation_status)
     split = str(resource_guard.get("split") or "unknown") if isinstance(resource_guard, dict) else "unknown"
     audit_index = resource_guard.get("audit_trace_index") if isinstance(resource_guard.get("audit_trace_index"), dict) else None
+    work_unit_policy_hash = work_unit.portfolio_policy_hash if work_unit is not None else None
+    policy_evidence = (
+        _resource_guard_portfolio_policy_evidence(resource_guard)
+        if isinstance(resource_guard, dict)
+        else {}
+    )
+    split_policy_evidence: dict[str, Any] = {}
+    if policy_evidence.get("executed_portfolio_policy_hash") and split in {"train", "validation", "final_holdout"}:
+        split_policy_evidence = {
+            f"{split}_executed_portfolio_policy": policy_evidence.get("executed_portfolio_policy"),
+            f"{split}_executed_portfolio_policy_hash": policy_evidence.get("executed_portfolio_policy_hash"),
+        }
     return {
         "index": candidate_index,
         "candidate_id": candidate_id,
         "parameter_values": params,
+        "work_unit_portfolio_policy_hash": work_unit_policy_hash,
+        **policy_evidence,
+        **split_policy_evidence,
         "train_metrics": metrics,
         "validation_metrics": metrics,
         "final_holdout_metrics": None,
@@ -3666,15 +3699,69 @@ def _portfolio_policy_execution_gate_reasons(base: dict[str, Any]) -> list[str]:
     executed_hash = str(base.get("executed_portfolio_policy_hash") or "").strip()
     if not declared_hash:
         return []
-    if not executed_hash or executed_hash != declared_hash:
+    if not executed_hash:
+        return [MISSING_EXECUTED_PORTFOLIO_POLICY_EVIDENCE_REASON]
+    if executed_hash != declared_hash:
         return [PORTFOLIO_POLICY_EXECUTION_MISMATCH_REASON]
+    expected_splits = {"train", "validation"}
+    if base.get("final_holdout_metrics") is not None or base.get("final_holdout_metrics_v2") is not None:
+        expected_splits.add("final_holdout")
     for split in ("train", "validation", "final_holdout"):
         split_hash = base.get(f"{split}_executed_portfolio_policy_hash")
-        if split_hash is None:
+        if split_hash is None or str(split_hash).strip() == "":
+            if split in expected_splits:
+                return [MISSING_EXECUTED_PORTFOLIO_POLICY_EVIDENCE_REASON]
             continue
         if str(split_hash).strip() != declared_hash:
             return [PORTFOLIO_POLICY_EXECUTION_MISMATCH_REASON]
     return []
+
+
+SIMULATION_INTEGRITY_REASON_CODES = {
+    MISSING_EXECUTED_PORTFOLIO_POLICY_EVIDENCE_REASON,
+    PORTFOLIO_POLICY_EXECUTION_MISMATCH_REASON,
+}
+RESOURCE_INTEGRITY_REASON_CODES = {
+    "candidate_resource_limit_exceeded",
+    "max_runtime_exceeded",
+    "max_trades_exceeded",
+    "max_rss_exceeded",
+}
+DEPLOYMENT_ELIGIBILITY_REASON_CODES = {
+    "research_only_not_live_eligible",
+    "probe_grade_pass_not_promotable",
+    "exploratory_mode_not_promotable",
+}
+
+
+def _reason_matches_any(reason: str, codes: set[str]) -> bool:
+    return reason in codes or any(reason.startswith(f"{code}:") for code in codes)
+
+
+def _classified_fail_reasons(reasons: list[Any] | tuple[Any, ...] | set[Any]) -> dict[str, Any]:
+    normalized = sorted({str(reason) for reason in reasons if str(reason)})
+    simulation = [reason for reason in normalized if _reason_matches_any(reason, SIMULATION_INTEGRITY_REASON_CODES)]
+    resource = [reason for reason in normalized if _reason_matches_any(reason, RESOURCE_INTEGRITY_REASON_CODES)]
+    deployment = [reason for reason in normalized if _reason_matches_any(reason, DEPLOYMENT_ELIGIBILITY_REASON_CODES)]
+    classified = set(simulation) | set(resource) | set(deployment)
+    performance = [reason for reason in normalized if reason not in classified]
+    return {
+        "simulation_integrity_status": "FAIL" if simulation else "PASS",
+        "simulation_integrity_fail_reasons": simulation,
+        "resource_integrity_status": "FAIL" if resource else "PASS",
+        "resource_integrity_fail_reasons": resource,
+        "strategy_performance_gate_status": "FAIL" if performance else "PASS",
+        "strategy_performance_fail_reasons": performance,
+        "deployment_eligibility_status": "FAIL" if deployment else "PASS",
+        "deployment_eligibility_reasons": deployment,
+    }
+
+
+def _apply_fail_reason_classification(payload: dict[str, Any], *, reason_key: str = "gate_fail_reasons") -> None:
+    reasons = payload.get(reason_key)
+    if not isinstance(reasons, (list, tuple, set)):
+        reasons = []
+    payload.update(_classified_fail_reasons(reasons))
 
 
 def _parameter_perturbation_candidates(
