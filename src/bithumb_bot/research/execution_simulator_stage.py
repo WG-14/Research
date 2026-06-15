@@ -263,6 +263,7 @@ class DefaultExecutionSimulator:
                 slippage=buy_slippage,
                 cash_delta=-actual_spend,
                 entry_regime_snapshot=regime_snapshot,
+                entry_feature_snapshot=dict(event.feature_snapshot or {}),
             )
             trade = support.pending_trade_from_fill(fill, cash=ledger.cash, asset_qty=ledger.qty)
             trade["entry_decision_hash"] = decision_hash
@@ -305,6 +306,7 @@ class DefaultExecutionSimulator:
                 exit_rule=str(request.exit_rule or ""),
                 exit_reason=str(request.exit_reason or ""),
                 path=ledger.open_trade_path,
+                entry_feature_snapshot=ledger.entry_feature_snapshot,
                 entry_decision_hash=ledger.entry_decision_hash,
                 exit_decision_hash=decision_hash,
             )

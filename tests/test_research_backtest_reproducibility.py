@@ -15,6 +15,12 @@ from bithumb_bot.canonical_decision import export_research_decisions, export_run
 from bithumb_bot.decision_equivalence import compare_decision_equivalence
 from bithumb_bot.research import backtest_engine, backtest_kernel, strategy_registry
 from bithumb_bot.research import backtest_result_assembler
+from bithumb_bot.strategy_plugins.channel_breakout_research import (
+    CHANNEL_BREAKOUT_SPEC,
+    build_channel_breakout_research_events,
+    materialize_channel_breakout_parameters,
+    CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN,
+)
 from bithumb_bot.strategy_plugins import sma_with_filter_events
 from tests.factories.research_reports import (
     DeterministicResearchEvaluator,
@@ -2130,6 +2136,70 @@ def test_closed_trade_diagnostics_include_mae_mfe_and_exit_rule() -> None:
         assert key in closed
     assert closed["exit_rule"] == "max_holding_time"
     assert closed["exit_reason"] == "exit by max holding time"
+
+
+def test_channel_breakout_closed_trade_contains_entry_feature_snapshot() -> None:
+    dataset = DatasetSnapshot(
+        snapshot_id="channel_breakout_closed_trade_features",
+        source="unit",
+        market="KRW-BTC",
+        interval="1m",
+        split_name="validation",
+        date_range=DateRange("2026-01-01", "2026-01-02"),
+        candles=(
+            Candle(0, 100.0, 101.0, 99.0, 100.0, 100.0),
+            Candle(60_000, 101.0, 102.0, 100.0, 101.0, 100.0),
+            Candle(120_000, 102.0, 103.0, 101.0, 102.0, 100.0),
+            Candle(180_000, 103.0, 104.0, 102.0, 103.0, 100.0),
+            Candle(240_000, 104.0, 110.0, 103.0, 109.0, 200.0),
+            Candle(300_000, 109.0, 109.5, 103.0, 103.5, 200.0),
+        ),
+    )
+    params = materialize_channel_breakout_parameters(
+        plugin=CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN,
+        parameter_values={
+            "CHANNEL_BREAKOUT_LOOKBACK": 3,
+            "CHANNEL_BREAKOUT_RANGE_WINDOW": 3,
+            "CHANNEL_BREAKOUT_VOLUME_WINDOW": 3,
+            "CHANNEL_BREAKOUT_REGIME_FILTER_ENABLED": False,
+            "CHANNEL_BREAKOUT_RANGE_RATIO_MIN": 0.0,
+            "CHANNEL_BREAKOUT_VOLUME_RATIO_MIN": 0.0,
+            "STRATEGY_EXIT_STOP_LOSS_RATIO": 0.50,
+        },
+        fee_rate=0.0,
+        slippage_bps=0.0,
+    )
+    events = tuple(
+        build_channel_breakout_research_events(
+            dataset=dataset,
+            parameter_values=params,
+            fee_rate=0.0,
+            slippage_bps=0.0,
+            execution_timing_policy=ExecutionTimingPolicy(decision_guard_ms=0),
+            portfolio_policy=legacy_research_portfolio_policy(),
+        )
+    )
+
+    result = backtest_kernel.run_decision_event_backtest(
+        dataset=dataset,
+        strategy_name=CHANNEL_BREAKOUT_SPEC.strategy_name,
+        parameter_values=params,
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        decision_events=events,
+    )
+
+    closed = result.closed_trades[0].as_dict()
+    assert closed["entry_decision_hash"]
+    assert "entry_feature_snapshot" in closed
+    entry_features = closed["entry_feature_snapshot"]
+    assert isinstance(entry_features, dict)
+    assert entry_features["entry_breakout_level"] == pytest.approx(104.0)
+    assert entry_features["entry_breakout_distance"] > 0.0
+    assert entry_features["entry_required_breakout_distance"] == pytest.approx(0.0)
+    assert entry_features["entry_range_ratio"] > 0.0
+    assert entry_features["entry_volume_ratio"] > 0.0
+    assert closed["entry_feature_schema_version"] == 1
 
 
 def _production_bound_statistical_manifest() -> dict[str, object]:

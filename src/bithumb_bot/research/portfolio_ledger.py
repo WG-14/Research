@@ -48,6 +48,7 @@ class PortfolioLedger:
     qty: float = 0.0
     entry_cost_basis: float = 0.0
     entry_regime_snapshot: dict[str, object] | None = None
+    entry_feature_snapshot: dict[str, object] | None = None
     entry_ts: int | None = None
     entry_price: float | None = None
     entry_decision_hash: str | None = None
@@ -78,6 +79,7 @@ class PortfolioLedger:
             self.qty,
             self.entry_cost_basis,
             self.entry_regime_snapshot,
+            self.entry_feature_snapshot,
             self.entry_ts,
             self.entry_price,
             self.entry_decision_hash,
@@ -94,6 +96,7 @@ class PortfolioLedger:
             qty=self.qty,
             entry_cost_basis=self.entry_cost_basis,
             entry_regime_snapshot=self.entry_regime_snapshot,
+            entry_feature_snapshot=self.entry_feature_snapshot,
             entry_ts=self.entry_ts,
             entry_price=self.entry_price,
             entry_decision_hash=self.entry_decision_hash,

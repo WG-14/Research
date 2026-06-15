@@ -89,6 +89,8 @@ def _trade_hash_payload(trade: dict[str, object]) -> dict[str, object]:
         "closed_trade_pnl": trade.get("closed_trade_pnl"),
         "exit_rule": trade.get("exit_rule"),
         "exit_reason": trade.get("exit_reason"),
+        "entry_feature_schema_version": trade.get("entry_feature_schema_version"),
+        "entry_feature_snapshot": trade.get("entry_feature_snapshot"),
         "entry_decision_hash": trade.get("entry_decision_hash"),
         "exit_decision_hash": trade.get("exit_decision_hash"),
         "model_name": execution.get("model_name"),
@@ -256,6 +258,7 @@ def _apply_pending_fills(
     qty: float,
     entry_cost_basis: float,
     entry_regime_snapshot: dict[str, object] | None,
+    entry_feature_snapshot: dict[str, object] | None,
     entry_ts: int | None,
     entry_price: float | None,
     entry_decision_hash: str | None,
@@ -269,6 +272,7 @@ def _apply_pending_fills(
     float,
     float,
     float,
+    dict[str, object] | None,
     dict[str, object] | None,
     int | None,
     float | None,
@@ -299,6 +303,7 @@ def _apply_pending_fills(
             qty += pending.qty
             entry_cost_basis = abs(pending.cash_delta)
             entry_regime_snapshot = pending.entry_regime_snapshot
+            entry_feature_snapshot = dict(pending.entry_feature_snapshot or {})
             entry_ts = int(pending.fill.signal_ts)
             entry_price = float(pending.fill.avg_fill_price or pending.fill.reference_price)
             entry_decision_hash = str(trade.get("entry_decision_hash") or "") or entry_decision_hash
@@ -343,6 +348,7 @@ def _apply_pending_fills(
             )
             if qty <= 0.0:
                 entry_regime_snapshot = None
+                entry_feature_snapshot = None
                 entry_ts = None
                 entry_price = None
                 entry_decision_hash = None
@@ -354,6 +360,7 @@ def _apply_pending_fills(
         qty,
         entry_cost_basis,
         entry_regime_snapshot,
+        entry_feature_snapshot,
         entry_ts,
         entry_price,
         entry_decision_hash,
@@ -1210,6 +1217,16 @@ def _metrics_v2_ledgers_from_trades(
                             if isinstance(trade.get("unrealized_pnl_path_summary"), dict)
                             else None
                         ),
+                        entry_feature_schema_version=(
+                            int(trade.get("entry_feature_schema_version"))
+                            if trade.get("entry_feature_schema_version") is not None
+                            else None
+                        ),
+                        entry_feature_snapshot=(
+                            dict(trade.get("entry_feature_snapshot"))
+                            if isinstance(trade.get("entry_feature_snapshot"), dict)
+                            else None
+                        ),
                         entry_decision_hash=(
                             str(trade.get("entry_decision_hash"))
                             if trade.get("entry_decision_hash") is not None
@@ -1284,6 +1301,7 @@ def _closed_trade_diagnostics(
     exit_rule: str,
     exit_reason: str,
     path: list[dict[str, float | int]],
+    entry_feature_snapshot: dict[str, object] | None,
     entry_decision_hash: str | None,
     exit_decision_hash: str,
 ) -> dict[str, object]:
@@ -1319,9 +1337,38 @@ def _closed_trade_diagnostics(
             "mae_point": mae_point,
             "mfe_point": mfe_point,
         },
+        "entry_feature_schema_version": 1,
+        "entry_feature_snapshot": _closed_trade_entry_feature_snapshot(entry_feature_snapshot),
         "entry_decision_hash": str(entry_decision_hash or ""),
         "exit_decision_hash": str(exit_decision_hash or ""),
     }
+
+
+def _closed_trade_entry_feature_snapshot(raw: dict[str, object] | None) -> dict[str, object]:
+    snapshot = dict(raw or {})
+    feature: dict[str, object] = {"schema_version": 1}
+    mapping = {
+        "breakout_level": "entry_breakout_level",
+        "entry_breakout_level": "entry_breakout_level",
+        "breakout_distance": "entry_breakout_distance",
+        "required_breakout_distance": "entry_required_breakout_distance",
+        "range_ratio": "entry_range_ratio",
+        "volume_ratio": "entry_volume_ratio",
+        "price_regime": "entry_price_regime",
+        "composite_regime": "entry_composite_regime",
+        "entry_time_filter_kst_enabled": "entry_time_filter_kst_enabled",
+        "entry_time_filter_kst_start_hour": "entry_time_filter_kst_start_hour",
+        "entry_time_filter_kst_end_hour": "entry_time_filter_kst_end_hour",
+        "confirmation_status": "entry_confirmation_status",
+        "close_location": "entry_close_location",
+        "upper_wick_ratio": "entry_upper_wick_ratio",
+        "body_ratio": "entry_body_ratio",
+        "confirmation_volume_ratio": "entry_confirmation_volume_ratio",
+    }
+    for source, target in mapping.items():
+        if source in snapshot and snapshot[source] is not None:
+            feature[target] = snapshot[source]
+    return feature
 
 
 def _execution_reference_warnings(fill: Any) -> list[str]:

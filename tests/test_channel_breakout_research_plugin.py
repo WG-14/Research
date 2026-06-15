@@ -21,10 +21,12 @@ from bithumb_bot.strategy_plugins.channel_breakout_research import (
     CHANNEL_BREAKOUT_COMPLEXITY_METADATA,
     CHANNEL_BREAKOUT_SPEC,
     CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN,
+    SUPPORTED_ENTRY_MODE_VALUES,
     _candle_utc_day_key,
     _kst_hour_from_decision_ts_ms,
     build_channel_breakout_research_events,
     decide_channel_breakout_snapshot,
+    estimate_channel_breakout_complexity,
     materialize_channel_breakout_parameters,
     prepare_channel_breakout_context,
 )
@@ -132,6 +134,26 @@ def _breakout_confirmation_dataset(
             *candles,
             Candle(360_000, 108.0, 109.5, 104.0, 108.5, 160.0),
         )
+    return _dataset(candles)
+
+
+def _retest_hold_dataset(
+    *,
+    retest_low: float = 103.95,
+    hold_close: float = 104.4,
+    rebound_close: float = 105.2,
+    include_rebound: bool = True,
+) -> DatasetSnapshot:
+    candles = (
+        Candle(0, 100.0, 101.0, 99.0, 100.0, 100.0),
+        Candle(60_000, 101.0, 102.0, 100.0, 101.0, 100.0),
+        Candle(120_000, 102.0, 103.0, 101.0, 102.0, 100.0),
+        Candle(180_000, 103.0, 104.0, 102.0, 103.0, 100.0),
+        Candle(240_000, 104.0, 110.0, 103.0, 109.0, 180.0),
+        Candle(300_000, 109.0, 109.5, retest_low, hold_close, 180.0),
+    )
+    if include_rebound:
+        candles = (*candles, Candle(360_000, hold_close, 106.0, 104.1, rebound_close, 180.0))
     return _dataset(candles)
 
 
@@ -338,6 +360,13 @@ def test_new_entry_mode_is_behavior_affecting_parameter() -> None:
     assert "ENTRY_MODE" in CHANNEL_BREAKOUT_SPEC.behavior_affecting_parameter_names
 
 
+def test_channel_breakout_entry_mode_schema_matches_supported_modes() -> None:
+    schema = next(item for item in CHANNEL_BREAKOUT_SPEC.parameter_schema if item.name == "ENTRY_MODE")
+
+    assert schema.enum == SUPPORTED_ENTRY_MODE_VALUES
+    assert set(schema.enum) == set(SUPPORTED_ENTRY_MODE_VALUES)
+
+
 @pytest.mark.parametrize(
     "entry_mode",
     [
@@ -363,6 +392,19 @@ def test_delayed_confirmation_entry_mode_is_supported() -> None:
 def test_unknown_entry_mode_fails_fast() -> None:
     with pytest.raises(StrategySpecError):
         _materialized(ENTRY_MODE="unknown_value")
+
+
+def test_channel_breakout_complexity_reports_unsupported_entry_mode_consistently() -> None:
+    with pytest.raises(StrategySpecError, match="ENTRY_MODE unsupported"):
+        _materialized(ENTRY_MODE="unknown_value")
+
+    estimate = estimate_channel_breakout_complexity(
+        strategy_name=CHANNEL_BREAKOUT_SPEC.strategy_name,
+        parameter_space={"ENTRY_MODE": ("unknown_value",)},
+    )
+
+    assert estimate["unsupported_parameter_values"] == {"ENTRY_MODE": ("unknown_value",)}
+    assert "unsupported_entry_mode:unknown_value" in estimate["complexity_reasons"]
 
 
 def test_channel_breakout_emits_diagnostic_count_defaults() -> None:
@@ -471,7 +513,7 @@ def test_breakout_distance_below_min_is_reported_in_blocked_filters() -> None:
 
     assert event.final_signal == "HOLD"
     assert "breakout_distance_below_min" in event.blocked_filters
-    assert event.feature_snapshot["required_breakout_distance"] == pytest.approx(0.001)
+    assert event.feature_snapshot["required_breakout_distance"] == pytest.approx(0.002)
 
 
 def test_fee_and_slippage_affect_required_breakout_distance() -> None:
@@ -509,6 +551,55 @@ def test_fee_and_slippage_affect_required_breakout_distance() -> None:
     ]
     assert high_cost_event.feature_snapshot["fee_rate_used_for_entry_gate"] == pytest.approx(0.002)
     assert high_cost_event.feature_snapshot["slippage_bps_used_for_entry_gate"] == pytest.approx(10.0)
+
+
+def test_required_breakout_distance_uses_round_trip_fee_by_default() -> None:
+    values = materialize_channel_breakout_parameters(
+        plugin=CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN,
+        parameter_values=_params(
+            CHANNEL_BREAKOUT_RANGE_RATIO_MIN=0.0,
+            CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=0.0,
+            MIN_BREAKOUT_DISTANCE_RATIO=0.0,
+            ENTRY_EDGE_BUFFER_RATIO=0.0,
+        ),
+        fee_rate=0.0004,
+        slippage_bps=0.0,
+    )
+
+    assert values["REQUIRED_BREAKOUT_DISTANCE_RATIO"] >= 0.0008
+    assert values["REQUIRED_BREAKOUT_DISTANCE_RATIO"] == pytest.approx(0.0008)
+    assert values["ENTRY_COST_BASIS"] == "round_trip"
+
+
+def test_required_breakout_distance_diagnostics_records_cost_basis() -> None:
+    dataset = _weak_breakout_dataset(close=104.2)
+    values = materialize_channel_breakout_parameters(
+        plugin=CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN,
+        parameter_values=_params(
+            CHANNEL_BREAKOUT_RANGE_RATIO_MIN=0.0,
+            CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=0.0,
+            MIN_BREAKOUT_DISTANCE_RATIO=0.0,
+            ENTRY_EDGE_BUFFER_RATIO=0.0,
+        ),
+        fee_rate=0.0004,
+        slippage_bps=2.0,
+    )
+    event = tuple(
+        build_channel_breakout_research_events(
+            dataset=dataset,
+            parameter_values=values,
+            fee_rate=0.0004,
+            slippage_bps=2.0,
+            execution_timing_policy=ExecutionTimingPolicy(decision_guard_ms=0),
+            portfolio_policy=legacy_research_portfolio_policy(),
+        )
+    )[-1]
+
+    assert event.feature_snapshot["required_breakout_distance"] == pytest.approx(0.0012)
+    assert event.feature_snapshot["entry_cost_basis"] == "round_trip"
+    assert event.strategy_diagnostics["entry_cost_basis"] == "round_trip"
+    assert event.strategy_diagnostics["fee_rate_used_for_entry_gate"] == pytest.approx(0.0004)
+    assert event.strategy_diagnostics["slippage_bps_used_for_entry_gate"] == pytest.approx(2.0)
 
 
 def test_min_breakout_distance_is_behavior_affecting_parameter() -> None:
@@ -852,6 +943,122 @@ def test_delayed_confirmation_quality_filter_reason_is_emitted() -> None:
     assert event.strategy_diagnostics["confirmation_failure_reason"] == "breakout_confirmation_failed_volume"
 
 
+def test_retest_hold_mode_does_not_buy_on_initial_breakout() -> None:
+    params = _materialized(
+        ENTRY_MODE="retest_hold_after_breakout",
+        RETEST_WINDOW_MIN=2,
+        RETEST_MAX_DEPTH_RATIO=0.02,
+        RETEST_HOLD_CANDLES=1,
+        RETEST_REBOUND_RATIO=0.0,
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    event = _events(_retest_hold_dataset(), params)[4]
+
+    assert event.final_signal == "HOLD"
+    assert event.reason == "breakout_waiting_for_retest"
+    assert event.order_intent is None
+    assert event.feature_snapshot["retest_state"] == "waiting_for_retest"
+
+
+def test_retest_hold_mode_buys_after_retest_hold_and_rebound() -> None:
+    params = _materialized(
+        ENTRY_MODE="retest_hold_after_breakout",
+        RETEST_WINDOW_MIN=2,
+        RETEST_MAX_DEPTH_RATIO=0.02,
+        RETEST_HOLD_CANDLES=2,
+        RETEST_REBOUND_RATIO=0.005,
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    events = _events(_retest_hold_dataset(), params)
+
+    assert events[4].final_signal == "HOLD"
+    assert events[5].final_signal == "HOLD"
+    assert events[5].feature_snapshot["retest_state"] == "retest_observed"
+    assert events[6].final_signal == "BUY"
+    assert events[6].reason == "retest_hold_after_breakout_confirmed"
+    assert events[6].feature_snapshot["retest_state"] == "rebound_confirmed"
+
+
+def test_retest_hold_mode_expires_without_retest() -> None:
+    params = _materialized(
+        ENTRY_MODE="retest_hold_after_breakout",
+        RETEST_WINDOW_MIN=1,
+        RETEST_MAX_DEPTH_RATIO=0.02,
+        RETEST_HOLD_CANDLES=1,
+        RETEST_REBOUND_RATIO=0.0,
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+    dataset = _dataset(
+        (
+            *_retest_hold_dataset(retest_low=104.5, hold_close=105.0, include_rebound=False).candles,
+            Candle(360_000, 105.0, 106.0, 104.5, 105.0, 180.0),
+        )
+    )
+
+    events = _events(dataset, params)
+
+    assert events[6].final_signal == "HOLD"
+    assert events[6].reason == "retest_hold_after_breakout_expired"
+    assert events[6].feature_snapshot["retest_failure_reason"] == "expired"
+    assert all(event.final_signal != "BUY" for event in events)
+
+
+def test_retest_hold_mode_fails_on_deep_retest() -> None:
+    params = _materialized(
+        ENTRY_MODE="retest_hold_after_breakout",
+        RETEST_WINDOW_MIN=2,
+        RETEST_MAX_DEPTH_RATIO=0.01,
+        RETEST_HOLD_CANDLES=1,
+        RETEST_REBOUND_RATIO=0.0,
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    event = _events(_retest_hold_dataset(retest_low=100.0), params)[5]
+
+    assert event.final_signal == "HOLD"
+    assert event.reason == "retest_hold_after_breakout_failed_deep_retest"
+    assert event.feature_snapshot["retest_failure_reason"] == "failed_deep_retest"
+    assert event.strategy_diagnostics["retest_failure_reason"] == "failed_deep_retest"
+
+
+def test_retest_hold_mode_records_hold_failure_reason_in_diagnostics() -> None:
+    params = _materialized(
+        ENTRY_MODE="retest_hold_after_breakout",
+        RETEST_WINDOW_MIN=2,
+        RETEST_MAX_DEPTH_RATIO=0.02,
+        RETEST_HOLD_CANDLES=1,
+        RETEST_REBOUND_RATIO=0.0,
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    event = _events(_retest_hold_dataset(retest_low=103.8, hold_close=103.9), params)[5]
+
+    assert event.final_signal == "HOLD"
+    assert event.reason == "retest_hold_after_breakout_failed_hold_above_level"
+    assert event.feature_snapshot["retest_failure_reason"] == "failed_hold_above_level"
+    assert event.strategy_diagnostics["retest_failure_reason"] == "failed_hold_above_level"
+
+
+def test_retest_hold_mode_preserves_immediate_breakout_behavior() -> None:
+    params = _materialized(
+        ENTRY_MODE="immediate_breakout",
+        CHANNEL_BREAKOUT_RANGE_RATIO_MIN=1.0,
+        CHANNEL_BREAKOUT_VOLUME_RATIO_MIN=1.0,
+    )
+
+    event = _events(_retest_hold_dataset(), params)[4]
+
+    assert event.final_signal == "BUY"
+    assert event.reason == "channel_breakout_confirmed"
+
+
 @pytest.mark.parametrize(
     "bad_key",
     [
@@ -961,6 +1168,111 @@ def test_breakout_reclaim_exit_triggers_when_close_below_breakout_level() -> Non
 
     assert decision.should_exit is True
     assert decision.context["entry_breakout_level"] == 104.0
+
+
+def test_reclaim_exit_factory_passes_parameter_values() -> None:
+    rule = CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN.exit_rule_factory(
+        {},
+        {
+            "BREAKOUT_RECLAIM_TOLERANCE_RATIO": 0.001,
+            "BREAKOUT_RECLAIM_CONFIRMATION_CANDLES": 2,
+            "BREAKOUT_RECLAIM_GRACE_MIN": 5,
+        },
+        0.0,
+    )[0]
+
+    assert rule.tolerance_ratio == pytest.approx(0.001)
+    assert rule.confirmation_candles == 2
+    assert rule.grace_min == 5
+
+
+def test_reclaim_exit_uses_tolerance_ratio() -> None:
+    rule = CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN.exit_rule_factory(
+        {},
+        {"BREAKOUT_RECLAIM_TOLERANCE_RATIO": 0.001},
+        0.0,
+    )[0]
+    position = PositionContext(
+        in_position=True,
+        entry_ts=0,
+        entry_price=105.0,
+        qty_open=1.0,
+        holding_time_sec=60.0,
+        unrealized_pnl=-1.0,
+        unrealized_pnl_ratio=-0.01,
+    )
+
+    decision = rule.evaluate(
+        position=position,
+        candle_ts=60_000,
+        market_price=103.95,
+        signal_context={"entry_breakout_level": 104.0},
+    )
+
+    assert decision.should_exit is False
+    assert decision.context["threshold_price"] == pytest.approx(103.896)
+
+
+def test_reclaim_exit_respects_grace_minutes() -> None:
+    rule = CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN.exit_rule_factory(
+        {},
+        {"BREAKOUT_RECLAIM_GRACE_MIN": 5},
+        0.0,
+    )[0]
+    position = PositionContext(
+        in_position=True,
+        entry_ts=0,
+        entry_price=105.0,
+        qty_open=1.0,
+        holding_time_sec=60.0,
+        unrealized_pnl=-1.0,
+        unrealized_pnl_ratio=-0.01,
+    )
+
+    decision = rule.evaluate(
+        position=position,
+        candle_ts=60_000,
+        market_price=103.0,
+        signal_context={"entry_breakout_level": 104.0},
+    )
+
+    assert decision.should_exit is False
+    assert decision.context["in_grace_period"] is True
+
+
+def test_reclaim_exit_requires_confirmation_candles() -> None:
+    rule = CHANNEL_BREAKOUT_WITH_REGIME_FILTER_PLUGIN.exit_rule_factory(
+        {},
+        {"BREAKOUT_RECLAIM_CONFIRMATION_CANDLES": 2},
+        0.0,
+    )[0]
+    position = PositionContext(
+        in_position=True,
+        entry_ts=0,
+        entry_price=105.0,
+        qty_open=1.0,
+        holding_time_sec=60.0,
+        unrealized_pnl=-1.0,
+        unrealized_pnl_ratio=-0.01,
+    )
+
+    first = rule.evaluate(
+        position=position,
+        candle_ts=60_000,
+        market_price=103.0,
+        signal_context={"entry_breakout_level": 104.0},
+    )
+    second = rule.evaluate(
+        position=position,
+        candle_ts=120_000,
+        market_price=103.0,
+        signal_context={"entry_breakout_level": 104.0},
+    )
+
+    assert first.should_exit is False
+    assert first.context["breach_count"] == 1
+    assert second.should_exit is True
+    assert second.context["breach_count"] == 2
 
 
 def test_strategy_exit_rule_source_is_reported_as_strategy() -> None:

@@ -26,7 +26,13 @@ from bithumb_bot.strategy_authoring import research_plugin_from_event_builder
 
 
 CHANNEL_BREAKOUT_STRATEGY_NAME = "channel_breakout_with_regime_filter"
-_SUPPORTED_ENTRY_MODES = frozenset({"immediate_breakout", "delayed_confirmation"})
+SUPPORTED_ENTRY_MODE_VALUES = (
+    "immediate_breakout",
+    "delayed_confirmation",
+    "retest_hold_after_breakout",
+)
+_SUPPORTED_ENTRY_MODES = frozenset(SUPPORTED_ENTRY_MODE_VALUES)
+ENTRY_COST_BASIS = "round_trip"
 
 CHANNEL_BREAKOUT_COMPLEXITY_METADATA = {
     "schema_version": 1,
@@ -48,7 +54,9 @@ def estimate_channel_breakout_complexity(
 ) -> dict[str, Any]:
     modes = _parameter_values_for_key(parameter_space or {}, "ENTRY_MODE")
     unsupported_modes = sorted(str(mode) for mode in modes if str(mode) not in _SUPPORTED_ENTRY_MODES)
-    includes_delayed = "delayed_confirmation" in {str(mode) for mode in modes}
+    mode_set = {str(mode) for mode in modes}
+    includes_delayed = "delayed_confirmation" in mode_set
+    includes_retest_hold = "retest_hold_after_breakout" in mode_set
     full_observability = str(report_detail or "").lower() == "full" or bool(
         getattr(audit_trail, "complete_external", False)
     )
@@ -61,6 +69,11 @@ def estimate_channel_breakout_complexity(
         decision_payload_bytes += 256
         feature_snapshot_bytes += 256
         reasons.append("delayed_confirmation_pending_state")
+    if includes_retest_hold:
+        expected_us += 20
+        decision_payload_bytes += 320
+        feature_snapshot_bytes += 320
+        reasons.append("retest_hold_after_breakout_pending_state")
     if full_observability:
         decision_payload_bytes *= 3
         feature_snapshot_bytes *= 2
@@ -107,6 +120,10 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "MAX_UPPER_WICK_RATIO",
         "MIN_BODY_RATIO",
         "PULLBACK_RATIO",
+        "RETEST_WINDOW_MIN",
+        "RETEST_MAX_DEPTH_RATIO",
+        "RETEST_HOLD_CANDLES",
+        "RETEST_REBOUND_RATIO",
         "ENTRY_TIME_FILTER_KST_ENABLED",
         "ENTRY_TIME_FILTER_KST_START_HOUR",
         "ENTRY_TIME_FILTER_KST_END_HOUR",
@@ -120,8 +137,12 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "BREAK_EVEN_STOP_ENABLED",
         "OPPOSITE_SIGNAL_EXIT_ENABLED",
         "REGIME_CHANGE_EXIT_ENABLED",
+        "BREAKOUT_RECLAIM_TOLERANCE_RATIO",
+        "BREAKOUT_RECLAIM_CONFIRMATION_CANDLES",
+        "BREAKOUT_RECLAIM_GRACE_MIN",
         "FEE_RATE_USED_FOR_ENTRY_GATE",
         "SLIPPAGE_BPS_USED_FOR_ENTRY_GATE",
+        "ENTRY_COST_BASIS",
         "REQUIRED_BREAKOUT_DISTANCE_RATIO",
     ),
     required_parameter_names=(
@@ -146,6 +167,10 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "MAX_UPPER_WICK_RATIO",
         "MIN_BODY_RATIO",
         "PULLBACK_RATIO",
+        "RETEST_WINDOW_MIN",
+        "RETEST_MAX_DEPTH_RATIO",
+        "RETEST_HOLD_CANDLES",
+        "RETEST_REBOUND_RATIO",
         "ENTRY_TIME_FILTER_KST_ENABLED",
         "ENTRY_TIME_FILTER_KST_START_HOUR",
         "ENTRY_TIME_FILTER_KST_END_HOUR",
@@ -155,10 +180,14 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "STRATEGY_EXIT_STOP_LOSS_RATIO",
         "STRATEGY_EXIT_MAX_HOLDING_MIN",
         "TAKE_PROFIT_RATIO",
+        "BREAKOUT_RECLAIM_TOLERANCE_RATIO",
+        "BREAKOUT_RECLAIM_CONFIRMATION_CANDLES",
+        "BREAKOUT_RECLAIM_GRACE_MIN",
     ),
     metadata_only_parameter_names=(
         "FEE_RATE_USED_FOR_ENTRY_GATE",
         "SLIPPAGE_BPS_USED_FOR_ENTRY_GATE",
+        "ENTRY_COST_BASIS",
         "REQUIRED_BREAKOUT_DISTANCE_RATIO",
     ),
     research_only_parameter_names=(
@@ -181,6 +210,10 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "MAX_UPPER_WICK_RATIO": 1.0,
         "MIN_BODY_RATIO": 0.0,
         "PULLBACK_RATIO": 0.0,
+        "RETEST_WINDOW_MIN": 0,
+        "RETEST_MAX_DEPTH_RATIO": 0.0,
+        "RETEST_HOLD_CANDLES": 1,
+        "RETEST_REBOUND_RATIO": 0.0,
         "ENTRY_TIME_FILTER_KST_ENABLED": False,
         "ENTRY_TIME_FILTER_KST_START_HOUR": 0,
         "ENTRY_TIME_FILTER_KST_END_HOUR": 24,
@@ -194,6 +227,9 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "BREAK_EVEN_STOP_ENABLED": False,
         "OPPOSITE_SIGNAL_EXIT_ENABLED": False,
         "REGIME_CHANGE_EXIT_ENABLED": False,
+        "BREAKOUT_RECLAIM_TOLERANCE_RATIO": 0.0,
+        "BREAKOUT_RECLAIM_CONFIRMATION_CANDLES": 1,
+        "BREAKOUT_RECLAIM_GRACE_MIN": 0,
     },
     parameter_schema=(
         StrategyParameterSchema("CHANNEL_BREAKOUT_LOOKBACK", "int", required=True, min_value=2, unit="candles"),
@@ -207,12 +243,7 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         StrategyParameterSchema(
             "ENTRY_MODE",
             "str",
-            enum=(
-                "immediate_breakout",
-                "pullback_after_breakout",
-                "delayed_confirmation",
-                "contrarian_after_exhaustion",
-            ),
+            enum=SUPPORTED_ENTRY_MODE_VALUES,
             unit="entry_hypothesis",
         ),
         StrategyParameterSchema("CONFIRMATION_WINDOW_MIN", "int", min_value=0, unit="minutes"),
@@ -227,6 +258,10 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         StrategyParameterSchema("MAX_UPPER_WICK_RATIO", "float", min_value=0.0, unit="ratio"),
         StrategyParameterSchema("MIN_BODY_RATIO", "float", min_value=0.0, unit="ratio"),
         StrategyParameterSchema("PULLBACK_RATIO", "float", min_value=0.0, unit="price_ratio"),
+        StrategyParameterSchema("RETEST_WINDOW_MIN", "int", min_value=0, unit="minutes"),
+        StrategyParameterSchema("RETEST_MAX_DEPTH_RATIO", "float", min_value=0.0, unit="price_ratio"),
+        StrategyParameterSchema("RETEST_HOLD_CANDLES", "int", min_value=1, unit="candles"),
+        StrategyParameterSchema("RETEST_REBOUND_RATIO", "float", min_value=0.0, unit="price_ratio"),
         StrategyParameterSchema("ENTRY_TIME_FILTER_KST_ENABLED", "bool", unit="enabled_flag"),
         StrategyParameterSchema("ENTRY_TIME_FILTER_KST_START_HOUR", "int", min_value=0, max_value=23, unit="kst_hour"),
         StrategyParameterSchema("ENTRY_TIME_FILTER_KST_END_HOUR", "int", min_value=1, max_value=24, unit="kst_hour"),
@@ -265,6 +300,9 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
             runtime_bound=False,
             behavior_affecting=False,
         ),
+        StrategyParameterSchema("BREAKOUT_RECLAIM_TOLERANCE_RATIO", "float", min_value=0.0, unit="price_ratio"),
+        StrategyParameterSchema("BREAKOUT_RECLAIM_CONFIRMATION_CANDLES", "int", min_value=1, unit="candles"),
+        StrategyParameterSchema("BREAKOUT_RECLAIM_GRACE_MIN", "int", min_value=0, unit="minutes"),
     ),
     decision_contract_version="research_channel_breakout_decision_contract.v1",
     required_data=("candles",),
@@ -276,6 +314,8 @@ CHANNEL_BREAKOUT_SPEC = StrategySpec(
         "breakout_level_reclaim_failed": {
             "unit": "price_ratio",
             "default_tolerance_ratio": 0.0,
+            "default_confirmation_candles": 1,
+            "default_grace_min": 0,
             "evaluation_price_basis": "closed_candle_mark",
         },
         "stop_loss": {
@@ -300,6 +340,9 @@ class BreakoutPendingState:
     breakout_level: float = 0.0
     breakout_close: float = 0.0
     expires_at_index: int = -1
+    state: str = "idle"
+    hold_count: int = 0
+    retest_low: float = 0.0
 
 
 def materialize_channel_breakout_parameters(
@@ -311,6 +354,9 @@ def materialize_channel_breakout_parameters(
     context: BacktestRunContext | None = None,
 ) -> dict[str, Any]:
     del context
+    _validate_supported_entry_mode(
+        parameter_values.get("ENTRY_MODE", CHANNEL_BREAKOUT_SPEC.default_parameters.get("ENTRY_MODE"))
+    )
     values = materialize_strategy_parameters(
         plugin.name,
         parameter_values,
@@ -319,6 +365,7 @@ def materialize_channel_breakout_parameters(
     )
     values["FEE_RATE_USED_FOR_ENTRY_GATE"] = max(0.0, float(fee_rate))
     values["SLIPPAGE_BPS_USED_FOR_ENTRY_GATE"] = max(0.0, float(slippage_bps))
+    values["ENTRY_COST_BASIS"] = ENTRY_COST_BASIS
     values["REQUIRED_BREAKOUT_DISTANCE_RATIO"] = _required_breakout_distance(
         parameter_values=values,
         fee_rate=fee_rate,
@@ -393,6 +440,7 @@ def decide_channel_breakout_snapshot(
             "entry_edge_buffer_ratio": float(entry_edge_buffer_ratio),
             "fee_rate_used_for_entry_gate": float(fee_rate_used_for_entry_gate),
             "slippage_bps_used_for_entry_gate": float(slippage_bps_used_for_entry_gate),
+            "entry_cost_basis": ENTRY_COST_BASIS,
             "current_range": float(candle.high) - float(candle.low),
             "avg_range": 0.0,
             "range_ratio": 0.0,
@@ -416,6 +464,10 @@ def decide_channel_breakout_snapshot(
                 "blocked_filters": (),
                 "regime_filter_enabled": bool(parameter_values["CHANNEL_BREAKOUT_REGIME_FILTER_ENABLED"]),
                 "entry_mode": str(parameter_values.get("ENTRY_MODE") or "immediate_breakout"),
+                "required_breakout_distance": float(required_breakout_distance),
+                "entry_cost_basis": ENTRY_COST_BASIS,
+                "fee_rate_used_for_entry_gate": float(fee_rate_used_for_entry_gate),
+                "slippage_bps_used_for_entry_gate": float(slippage_bps_used_for_entry_gate),
             },
         }
 
@@ -475,6 +527,7 @@ def decide_channel_breakout_snapshot(
         "entry_edge_buffer_ratio": float(entry_edge_buffer_ratio),
         "fee_rate_used_for_entry_gate": float(fee_rate_used_for_entry_gate),
         "slippage_bps_used_for_entry_gate": float(slippage_bps_used_for_entry_gate),
+        "entry_cost_basis": ENTRY_COST_BASIS,
         "current_range": float(current_range),
         "avg_range": float(avg_range),
         "range_ratio": float(range_ratio),
@@ -488,10 +541,10 @@ def decide_channel_breakout_snapshot(
         "composite_regime": regime.composite_regime,
         "blocked_filters": blocked,
     }
-    if entry_mode == "delayed_confirmation":
+    if entry_mode in {"delayed_confirmation", "retest_hold_after_breakout"}:
         feature_snapshot.update(
             {
-                "entry_mode": "delayed_confirmation",
+                "entry_mode": entry_mode,
                 "breakout_candidate": not blocked,
                 "breakout_pending": not blocked,
                 "breakout_level": float(rolling_high) if not blocked else 0.0,
@@ -503,6 +556,17 @@ def decide_channel_breakout_snapshot(
                     else -1
                 ),
                 "confirmation_status": confirmation_status,
+            }
+        )
+    if entry_mode == "retest_hold_after_breakout":
+        feature_snapshot.update(
+            {
+                "retest_state": "breakout_candidate" if not blocked else "idle",
+                "retest_window_min": int(parameter_values["RETEST_WINDOW_MIN"]),
+                "retest_max_depth_ratio": float(parameter_values["RETEST_MAX_DEPTH_RATIO"]),
+                "retest_hold_candles": int(parameter_values["RETEST_HOLD_CANDLES"]),
+                "retest_rebound_ratio": float(parameter_values["RETEST_REBOUND_RATIO"]),
+                "retest_failure_reason": "",
             }
         )
     decision = {
@@ -517,6 +581,7 @@ def decide_channel_breakout_snapshot(
             "confirmation_status": confirmation_status,
             "breakout_distance": float(breakout_distance),
             "required_breakout_distance": float(required_breakout_distance),
+            "entry_cost_basis": ENTRY_COST_BASIS,
             "entry_edge_buffer_ratio": float(entry_edge_buffer_ratio),
             "fee_rate_used_for_entry_gate": float(fee_rate_used_for_entry_gate),
             "slippage_bps_used_for_entry_gate": float(slippage_bps_used_for_entry_gate),
@@ -550,6 +615,7 @@ def build_channel_breakout_research_events(
         **dict(parameter_values),
         "FEE_RATE_USED_FOR_ENTRY_GATE": max(0.0, float(fee_rate)),
         "SLIPPAGE_BPS_USED_FOR_ENTRY_GATE": max(0.0, float(slippage_bps)),
+        "ENTRY_COST_BASIS": ENTRY_COST_BASIS,
     }
     parameter_values["REQUIRED_BREAKOUT_DISTANCE_RATIO"] = _required_breakout_distance(
         parameter_values=parameter_values,
@@ -577,6 +643,14 @@ def build_channel_breakout_research_events(
         )
         if entry_mode == "delayed_confirmation":
             decision = _apply_delayed_confirmation_state(
+                decision=decision,
+                candle=candle,
+                candle_index=candle_index,
+                parameter_values=parameter_values,
+                pending=pending,
+            )
+        elif entry_mode == "retest_hold_after_breakout":
+            decision = _apply_retest_hold_state(
                 decision=decision,
                 candle=candle,
                 candle_index=candle_index,
@@ -647,7 +721,10 @@ def _safe_ratio(numerator: float, denominator: float) -> float:
 @dataclass(frozen=True)
 class BreakoutLevelReclaimExitRule:
     tolerance_ratio: float = 0.0
+    confirmation_candles: int = 1
+    grace_min: int = 0
     name: str = "breakout_level_reclaim_failed"
+    _breach_count: int = 0
 
     def evaluate(
         self,
@@ -663,8 +740,15 @@ class BreakoutLevelReclaimExitRule:
         except (TypeError, ValueError):
             entry_breakout_level = 0.0
         tolerance = max(0.0, float(self.tolerance_ratio))
+        confirmation_candles = max(1, int(self.confirmation_candles))
+        grace_ms = max(0, int(self.grace_min)) * 60_000
+        entry_ts = int(position.entry_ts) if position.entry_ts is not None else None
+        in_grace = bool(entry_ts is not None and int(candle_ts) - entry_ts < grace_ms)
         threshold = entry_breakout_level * (1.0 - tolerance)
-        should_exit = bool(position.in_position and entry_breakout_level > 0.0 and float(market_price) < threshold)
+        breached = bool(position.in_position and entry_breakout_level > 0.0 and float(market_price) < threshold)
+        next_breach_count = 0 if in_grace or not breached else int(self._breach_count) + 1
+        object.__setattr__(self, "_breach_count", next_breach_count)
+        should_exit = bool(not in_grace and breached and next_breach_count >= confirmation_candles)
         return ExitRuleDecision(
             should_exit=should_exit,
             reason=(
@@ -676,6 +760,10 @@ class BreakoutLevelReclaimExitRule:
                 "rule": self.name,
                 "entry_breakout_level": entry_breakout_level,
                 "tolerance_ratio": tolerance,
+                "confirmation_candles": confirmation_candles,
+                "breach_count": next_breach_count,
+                "grace_min": max(0, int(self.grace_min)),
+                "in_grace_period": in_grace,
                 "threshold_price": threshold,
                 "market_price": float(market_price),
                 "candle_ts": int(candle_ts),
@@ -688,7 +776,13 @@ def channel_breakout_exit_rule_factory(
     _parameter_values: dict[str, Any],
     _fee_rate: float,
 ) -> list[BreakoutLevelReclaimExitRule]:
-    return [BreakoutLevelReclaimExitRule()]
+    return [
+        BreakoutLevelReclaimExitRule(
+            tolerance_ratio=max(0.0, float(_parameter_values.get("BREAKOUT_RECLAIM_TOLERANCE_RATIO", 0.0))),
+            confirmation_candles=max(1, int(_parameter_values.get("BREAKOUT_RECLAIM_CONFIRMATION_CANDLES", 1))),
+            grace_min=max(0, int(_parameter_values.get("BREAKOUT_RECLAIM_GRACE_MIN", 0))),
+        )
+    ]
 
 
 def channel_breakout_exit_signal_context(event: ResearchDecisionEvent) -> dict[str, object]:
@@ -708,7 +802,9 @@ def _required_breakout_distance(
 ) -> float:
     min_breakout = max(0.0, float(parameter_values.get("MIN_BREAKOUT_DISTANCE_RATIO", 0.0)))
     buffer = max(0.0, float(parameter_values.get("ENTRY_EDGE_BUFFER_RATIO", 0.0)))
-    entry_cost_estimate = max(0.0, float(fee_rate)) + max(0.0, float(slippage_bps)) / 10_000.0
+    entry_cost_estimate = (2.0 * max(0.0, float(fee_rate))) + (
+        2.0 * max(0.0, float(slippage_bps)) / 10_000.0
+    )
     return max(min_breakout, entry_cost_estimate + buffer)
 
 
@@ -853,6 +949,190 @@ def _evaluate_pending_confirmation(
     )
 
 
+def _apply_retest_hold_state(
+    *,
+    decision: dict[str, Any],
+    candle: Candle,
+    candle_index: int,
+    parameter_values: dict[str, Any],
+    pending: BreakoutPendingState,
+) -> dict[str, Any]:
+    if pending.active and int(candle_index) > pending.breakout_index:
+        return _evaluate_retest_hold(
+            decision=decision,
+            candle=candle,
+            candle_index=candle_index,
+            parameter_values=parameter_values,
+            pending=pending,
+        )
+    feature_snapshot = dict(decision.get("feature_snapshot") or {})
+    if bool(feature_snapshot.get("breakout_candidate")):
+        pending.active = True
+        pending.breakout_index = int(candle_index)
+        pending.breakout_level = float(feature_snapshot["breakout_level"])
+        pending.breakout_close = float(feature_snapshot["close"])
+        pending.expires_at_index = int(candle_index) + int(parameter_values["RETEST_WINDOW_MIN"])
+        pending.state = "waiting_for_retest"
+        pending.hold_count = 0
+        pending.retest_low = 0.0
+        return _retest_hold_decision(
+            base_decision=decision,
+            pending=pending,
+            signal="HOLD",
+            reason="breakout_waiting_for_retest",
+            retest_state="waiting_for_retest",
+            clear_pending=False,
+        )
+    return decision
+
+
+def _evaluate_retest_hold(
+    *,
+    decision: dict[str, Any],
+    candle: Candle,
+    candle_index: int,
+    parameter_values: dict[str, Any],
+    pending: BreakoutPendingState,
+) -> dict[str, Any]:
+    if int(candle_index) > int(pending.expires_at_index):
+        return _retest_hold_decision(
+            base_decision=decision,
+            pending=pending,
+            signal="HOLD",
+            reason="retest_hold_after_breakout_expired",
+            retest_state="expired",
+            clear_pending=True,
+            failure_reason="expired",
+        )
+    low = float(candle.low)
+    close = float(candle.close)
+    level = float(pending.breakout_level)
+    max_depth_ratio = float(parameter_values["RETEST_MAX_DEPTH_RATIO"])
+    if low < level * (1.0 - max_depth_ratio):
+        return _retest_hold_decision(
+            base_decision=decision,
+            pending=pending,
+            signal="HOLD",
+            reason="retest_hold_after_breakout_failed_deep_retest",
+            retest_state="failed_deep_retest",
+            clear_pending=True,
+            failure_reason="failed_deep_retest",
+        )
+    if close < level:
+        return _retest_hold_decision(
+            base_decision=decision,
+            pending=pending,
+            signal="HOLD",
+            reason="retest_hold_after_breakout_failed_hold_above_level",
+            retest_state="failed_hold_above_level",
+            clear_pending=True,
+            failure_reason="failed_hold_above_level",
+        )
+    retest_observed = low <= level and close >= level
+    if retest_observed or pending.state in {"retest_observed", "hold_above_level_confirmed"}:
+        pending.state = "retest_observed"
+        pending.retest_low = low if pending.retest_low <= 0.0 else min(float(pending.retest_low), low)
+        pending.hold_count += 1
+        required_holds = max(1, int(parameter_values["RETEST_HOLD_CANDLES"]))
+        if pending.hold_count < required_holds:
+            return _retest_hold_decision(
+                base_decision=decision,
+                pending=pending,
+                signal="HOLD",
+                reason="retest_hold_after_breakout_holding_above_level",
+                retest_state="retest_observed",
+                clear_pending=False,
+            )
+        pending.state = "hold_above_level_confirmed"
+        rebound_ratio = _safe_ratio(close - level, level)
+        if rebound_ratio < float(parameter_values["RETEST_REBOUND_RATIO"]):
+            return _retest_hold_decision(
+                base_decision=decision,
+                pending=pending,
+                signal="HOLD",
+                reason="retest_hold_after_breakout_waiting_for_rebound",
+                retest_state="hold_above_level_confirmed",
+                clear_pending=False,
+            )
+        return _retest_hold_decision(
+            base_decision=decision,
+            pending=pending,
+            signal="BUY",
+            reason="retest_hold_after_breakout_confirmed",
+            retest_state="rebound_confirmed",
+            clear_pending=True,
+        )
+    return _retest_hold_decision(
+        base_decision=decision,
+        pending=pending,
+        signal="HOLD",
+        reason="breakout_waiting_for_retest",
+        retest_state="waiting_for_retest",
+        clear_pending=False,
+    )
+
+
+def _retest_hold_decision(
+    *,
+    base_decision: dict[str, Any],
+    pending: BreakoutPendingState,
+    signal: str,
+    reason: str,
+    retest_state: str,
+    clear_pending: bool,
+    failure_reason: str = "",
+) -> dict[str, Any]:
+    decision = dict(base_decision)
+    feature_snapshot = dict(decision.get("feature_snapshot") or {})
+    feature_snapshot.update(
+        {
+            "entry_mode": "retest_hold_after_breakout",
+            "breakout_candidate": False,
+            "breakout_pending": pending.active and not clear_pending,
+            "breakout_level": float(pending.breakout_level),
+            "breakout_index": int(pending.breakout_index),
+            "pending_expires_at_index": int(pending.expires_at_index),
+            "retest_state": retest_state,
+            "retest_hold_count": int(pending.hold_count),
+            "retest_low": float(pending.retest_low),
+            "retest_failure_reason": str(failure_reason),
+            "confirmation_status": retest_state,
+        }
+    )
+    diagnostics = dict(decision.get("strategy_diagnostics") or {})
+    diagnostics.update(
+        {
+            "entry_mode": "retest_hold_after_breakout",
+            "retest_state": retest_state,
+            "confirmation_status": retest_state,
+        }
+    )
+    if failure_reason:
+        diagnostics["retest_failure_reason"] = str(failure_reason)
+    decision["signal"] = signal
+    decision["reason"] = reason
+    decision["feature_snapshot"] = feature_snapshot
+    decision["strategy_diagnostics"] = diagnostics
+    if signal == "BUY":
+        decision["order_intent"] = {
+            "side": "BUY",
+            "sizing": "portfolio_policy_fractional_cash",
+            "entry_breakout_level": float(pending.breakout_level),
+        }
+    else:
+        decision.pop("order_intent", None)
+    if clear_pending:
+        pending.active = False
+        pending.breakout_index = -1
+        pending.breakout_level = 0.0
+        pending.breakout_close = 0.0
+        pending.expires_at_index = -1
+        pending.state = "idle"
+        pending.hold_count = 0
+        pending.retest_low = 0.0
+    return decision
+
+
 def _delayed_confirmation_decision(
     *,
     base_decision: dict[str, Any],
@@ -908,6 +1188,9 @@ def _delayed_confirmation_decision(
         pending.breakout_level = 0.0
         pending.breakout_close = 0.0
         pending.expires_at_index = -1
+        pending.state = "idle"
+        pending.hold_count = 0
+        pending.retest_low = 0.0
     return decision
 
 

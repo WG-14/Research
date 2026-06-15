@@ -454,6 +454,7 @@ class PendingFill:
     cash_delta: float
     entry_regime_snapshot: dict[str, object] | None = None
     exit_regime_snapshot: dict[str, object] | None = None
+    entry_feature_snapshot: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

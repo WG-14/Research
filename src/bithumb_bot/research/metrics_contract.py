@@ -62,6 +62,8 @@ class ClosedTradeRecord:
     bars_to_mae: int | None = None
     bars_to_mfe: int | None = None
     unrealized_pnl_path_summary: dict[str, Any] | None = None
+    entry_feature_schema_version: int | None = None
+    entry_feature_snapshot: dict[str, Any] | None = None
     entry_decision_hash: str | None = None
     exit_decision_hash: str | None = None
     fee_total: float = 0.0
@@ -85,6 +87,12 @@ class ClosedTradeRecord:
             "bars_to_mae": int(self.bars_to_mae) if self.bars_to_mae is not None else None,
             "bars_to_mfe": int(self.bars_to_mfe) if self.bars_to_mfe is not None else None,
             "unrealized_pnl_path_summary": self.unrealized_pnl_path_summary,
+            "entry_feature_schema_version": (
+                int(self.entry_feature_schema_version)
+                if self.entry_feature_schema_version is not None
+                else None
+            ),
+            "entry_feature_snapshot": self.entry_feature_snapshot,
             "entry_decision_hash": self.entry_decision_hash,
             "exit_decision_hash": self.exit_decision_hash,
             "entry_notional": float(self.entry_notional) if self.entry_notional is not None else None,
