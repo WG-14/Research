@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+import httpx
 
 from bithumb_bot.cli.main import main
 from bithumb_bot.config import settings
@@ -15,9 +16,13 @@ from bithumb_bot.public_api_minute_candles import MinuteCandle
 from bithumb_bot.research.data_plane import (
     build_persistent_missing_candle_classification_artifact,
     build_dataset_quality_report_sql,
+    build_missing_candle_source_probe_artifact,
+    build_clean_candle_segments_artifact,
     retry_missing_candles_from_artifact,
+    write_clean_candle_segments_artifact,
     write_persistent_missing_candle_classification_artifact,
     write_missing_candle_ranges_artifact,
+    write_missing_candle_source_probe_artifact,
 )
 from bithumb_bot.research.execution_calibration import build_calibration_artifact
 from bithumb_bot.research.experiment_manifest import load_manifest
@@ -364,7 +369,11 @@ def test_backfill_cli_dry_run_prints_operator_context_without_quality_pass(
     assert "env_loaded=" in out
     assert "coverage_status=INCOMPLETE" in out
     assert "dataset_quality status=NOT_EVALUATED_BY_BACKFILL" in out
-    assert "next_action=run research-readiness --manifest <manifest> before research-backtest" in out
+    assert "api_fetch_status=COMPLETE" in out
+    assert "cursor_status=OK" in out
+    assert "db_write_status=DRY_RUN" in out
+    assert "operator_result_code=DRY_RUN_NOT_RESEARCH_READY" in out
+    assert "probe-missing-candles" in out
     assert "quality_gate_status=PASS" not in out
     assert not Path(settings.DB_PATH).exists()
 
@@ -395,7 +404,11 @@ def test_backfill_cli_non_dry_run_empty_response_exits_nonzero(
     assert rc == 1
     assert "status=COMPLETE reason=no_older_candles" in out
     assert "coverage_status=INCOMPLETE" in out
-    assert "reason=coverage_incomplete_after_backfill" in out
+    assert "api_fetch_status=COMPLETE" in out
+    assert "cursor_status=OK" in out
+    assert "db_write_status=COMPLETE" in out
+    assert "operator_result_code=NOT_RESEARCH_READY" in out
+    assert "operator_result_reason=coverage_incomplete_after_fetch_complete" in out
     assert "dataset_quality status=NOT_EVALUATED_BY_BACKFILL" in out
     assert "quality_gate_status=PASS" not in out
 
@@ -429,8 +442,188 @@ def test_backfill_cli_non_dry_run_range_covered_but_missing_buckets_exits_nonzer
     assert rc == 1
     assert "status=COMPLETE reason=range_covered" in out
     assert "coverage_status=INCOMPLETE" in out
-    assert "reason=coverage_incomplete_after_backfill" in out
+    assert "api_fetch_status=COMPLETE" in out
+    assert "cursor_status=OK" in out
+    assert "db_write_status=COMPLETE" in out
+    assert "operator_result_code=NOT_RESEARCH_READY" in out
+    assert "operator_result_reason=coverage_incomplete_after_fetch_complete" in out
+    assert "recovered_missing_bucket_count=1" in out
     assert "dataset_quality status=NOT_EVALUATED_BY_BACKFILL" in out
+
+
+def test_backfill_cli_range_covered_missing_buckets_reports_fetch_complete_not_research_ready(
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+    _settings_guard,
+) -> None:
+    monkeypatch.setattr("bithumb_bot.historical_backfill.httpx.Client", lambda *args, **kwargs: _DummyClient())
+    monkeypatch.setattr(
+        "bithumb_bot.historical_backfill.fetch_minute_candles",
+        lambda *args, **kwargs: [_candle("2023-01-01T00:00:00")],
+    )
+
+    rc = main(
+        [
+            "backfill-candles",
+            "--market",
+            "KRW-BTC",
+            "--interval",
+            "1m",
+            "--start",
+            "2023-01-01",
+            "--end",
+            "2023-01-01",
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 1
+    for field in (
+        "api_fetch_status=COMPLETE",
+        "cursor_status=OK",
+        "db_write_status=COMPLETE",
+        "coverage_status=INCOMPLETE",
+        "operator_result_code=NOT_RESEARCH_READY",
+    ):
+        assert field in out
+    assert "result=FAIL reason=coverage_incomplete_after_backfill" not in out
+
+
+def test_backfill_cli_cursor_contract_violation_reports_cursor_status(
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+    _settings_guard,
+) -> None:
+    calls = 0
+
+    def fake_fetch(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        base = datetime(2023, 1, 2, 0, 0, tzinfo=UTC) - timedelta(minutes=(calls - 1) * 541)
+        return [_candle(base.replace(tzinfo=None).isoformat(timespec="seconds"))]
+
+    monkeypatch.setattr("bithumb_bot.historical_backfill.httpx.Client", lambda *args, **kwargs: _DummyClient())
+    monkeypatch.setattr("bithumb_bot.historical_backfill.fetch_minute_candles", fake_fetch)
+
+    rc = main(
+        [
+            "backfill-candles",
+            "--market",
+            "KRW-BTC",
+            "--interval",
+            "1m",
+            "--start",
+            "2023-01-01",
+            "--end",
+            "2023-01-02",
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 1
+    assert "cursor_status=CONTRACT_VIOLATION" in out
+    assert "operator_result_code=BACKFILL_INCOMPLETE" in out
+    assert "api_cursor_timezone_contract_violation" in out
+
+
+def test_backfill_cli_api_transient_reports_api_fetch_error(
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+    _settings_guard,
+) -> None:
+    from bithumb_bot.public_api import PublicApiTransientError
+
+    monkeypatch.setattr("bithumb_bot.historical_backfill.httpx.Client", lambda *args, **kwargs: _DummyClient())
+    monkeypatch.setattr(
+        "bithumb_bot.historical_backfill.fetch_minute_candles",
+        lambda *args, **kwargs: (_ for _ in ()).throw(PublicApiTransientError("status=503")),
+    )
+
+    rc = main(
+        [
+            "backfill-candles",
+            "--market",
+            "KRW-BTC",
+            "--interval",
+            "1m",
+            "--start",
+            "2023-01-01",
+            "--end",
+            "2023-01-01",
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 1
+    assert "api_fetch_status=ERROR" in out
+    assert "operator_result_code=API_FETCH_ERROR" in out
+
+
+def test_backfill_upserted_existing_rows_does_not_count_as_recovered_bucket(
+    monkeypatch,
+    _settings_guard,
+) -> None:
+    _insert_day_candles(settings.DB_PATH, 1_672_531_200_000)
+    monkeypatch.setattr("bithumb_bot.historical_backfill.httpx.Client", lambda *args, **kwargs: _DummyClient())
+    monkeypatch.setattr(
+        "bithumb_bot.historical_backfill.fetch_minute_candles",
+        lambda *args, **kwargs: [_candle("2023-01-01T00:00:00")],
+    )
+
+    result = backfill_candles(market="KRW-BTC", interval="1m", start="2023-01-01", end="2023-01-01")
+
+    assert result.progress.upserted_count == 1
+    assert result.progress.new_bucket_count == 0
+    assert result.progress.replaced_bucket_count == 1
+    assert result.progress.recovered_missing_bucket_count == 0
+
+
+def test_backfill_new_missing_bucket_increments_recovered_missing_bucket_count(
+    monkeypatch,
+    _settings_guard,
+) -> None:
+    missing_ts = 1_672_531_200_000 + 42 * 60_000
+    _insert_day_candles_except(settings.DB_PATH, 1_672_531_200_000, {missing_ts})
+    monkeypatch.setattr("bithumb_bot.historical_backfill.httpx.Client", lambda *args, **kwargs: _DummyClient())
+    monkeypatch.setattr(
+        "bithumb_bot.historical_backfill.fetch_minute_candles",
+        lambda *args, **kwargs: [_candle("2023-01-01T00:42:00")],
+    )
+
+    result = backfill_candles(market="KRW-BTC", interval="1m", start="2023-01-01", end="2023-01-01")
+
+    assert result.progress.upserted_count == 1
+    assert result.progress.new_bucket_count == 1
+    assert result.progress.recovered_missing_bucket_count == 1
+    assert result.progress.remaining_missing_bucket_count == 0
+
+
+def test_backfill_request_interval_ms_sleeps_between_pages(monkeypatch, _settings_guard) -> None:
+    pages = [
+        [_candle("2023-01-02T00:01:00"), _candle("2023-01-02T00:00:00")],
+        [_candle("2023-01-01T23:59:00")],
+        [],
+    ]
+    sleeps: list[float] = []
+
+    def fake_fetch(*args, **kwargs):
+        return pages.pop(0)
+
+    monkeypatch.setattr("bithumb_bot.historical_backfill.httpx.Client", lambda *args, **kwargs: _DummyClient())
+    monkeypatch.setattr("bithumb_bot.historical_backfill.fetch_minute_candles", fake_fetch)
+
+    result = backfill_candles(
+        market="KRW-BTC",
+        interval="1m",
+        start="2023-01-01",
+        end="2023-01-02",
+        request_interval_ms=250,
+        sleep_fn=lambda seconds: sleeps.append(seconds),
+    )
+
+    assert result.progress.request_count == 3
+    assert sleeps == [0.25, 0.25]
+    assert len(sleeps) == result.progress.request_count - 1
 
 
 def test_backfill_cli_dry_run_incomplete_coverage_can_exit_zero_but_prints_not_ready(
@@ -464,10 +657,78 @@ def test_backfill_cli_dry_run_incomplete_coverage_can_exit_zero_but_prints_not_r
     assert "dry_run=1" in out
     assert "coverage_status=INCOMPLETE" in out
     assert "dataset_quality status=NOT_EVALUATED_BY_BACKFILL" in out
-    assert "result=DRY_RUN_NOT_READY" in out
-    assert "reason=coverage_incomplete_after_backfill" in out
+    assert "result=DRY_RUN_NOT_RESEARCH_READY" in out
+    assert "operator_result_reason=coverage_incomplete_after_fetch_complete" in out
     assert "quality_gate_status=PASS" not in out
     assert not Path(settings.DB_PATH).exists()
+
+
+def test_backfill_incomplete_coverage_prints_missing_retry_probe_classify_next_actions(
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+    _settings_guard,
+) -> None:
+    monkeypatch.setattr("bithumb_bot.historical_backfill.httpx.Client", lambda *args, **kwargs: _DummyClient())
+    monkeypatch.setattr(
+        "bithumb_bot.historical_backfill.fetch_minute_candles",
+        lambda *args, **kwargs: [_candle("2023-01-01T00:00:00")],
+    )
+
+    rc = main(
+        [
+            "backfill-candles",
+            "--market",
+            "KRW-BTC",
+            "--interval",
+            "1m",
+            "--start",
+            "2023-01-01",
+            "--end",
+            "2023-01-01",
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 1
+    assert "research-missing-candles" in out
+    assert "retry-missing-candles" in out
+    assert "probe-missing-candles" in out
+    assert "classify-persistent-missing-candles" in out
+
+
+def test_backfill_cli_accepts_request_interval_ms(
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+    _settings_guard,
+) -> None:
+    monkeypatch.setattr("bithumb_bot.historical_backfill.httpx.Client", lambda *args, **kwargs: _DummyClient())
+    monkeypatch.setattr(
+        "bithumb_bot.historical_backfill.fetch_minute_candles",
+        lambda *args, **kwargs: [_candle("2023-01-01T00:00:00")],
+    )
+
+    main(
+        [
+            "backfill-candles",
+            "--market",
+            "KRW-BTC",
+            "--interval",
+            "1m",
+            "--start",
+            "2023-01-01",
+            "--end",
+            "2023-01-01",
+            "--request-interval-ms",
+            "200",
+            "--max-retries",
+            "5",
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert "request_interval_ms=200" in out
+    assert "max_retries=5" in out
+    assert "rate_limit_policy=bithumb_public_api_operator_configured" in out
 
 
 def test_backfill_cli_rejects_repo_local_db_path(
@@ -839,6 +1100,61 @@ def _write_valid_persistent_missing_classification(tmp_path: Path) -> tuple[Path
     return manifest_path, out_classification
 
 
+def _write_source_probe_artifact(
+    path: Path,
+    *,
+    manifest_path: Path,
+    missing_path: Path,
+    target_ts: int,
+    target_present: bool,
+    http_status: int = 200,
+) -> dict:
+    manifest = load_manifest(manifest_path)
+    missing = json.loads(missing_path.read_text(encoding="utf-8"))
+    payload = {
+        "schema_version": 1,
+        "artifact_type": "missing_candle_source_probe",
+        "manifest_path": str(manifest_path.resolve()),
+        "manifest_hash": manifest.manifest_hash(),
+        "missing_ranges_path": str(missing_path.resolve()),
+        "missing_ranges_hash": missing["content_hash"],
+        "db_path": str(Path(settings.DB_PATH).resolve()),
+        "market": manifest.market,
+        "interval": manifest.interval,
+        "minute_unit": 1,
+        "generated_at": "2026-05-12T00:00:00+00:00",
+        "probe_policy": {"coverage_scope": "unit_test_single_target"},
+        "probe_records": [
+            {
+                "target_label": "range_start",
+                "target_ts": target_ts,
+                "target_utc": datetime.fromtimestamp(target_ts / 1000, tz=UTC).isoformat(),
+                "target_kst": datetime.fromtimestamp(target_ts / 1000, tz=UTC).astimezone(UTC).isoformat(),
+                "probe_to_kst": "2023-01-01T09:01:00",
+                "market": manifest.market,
+                "minute_unit": 1,
+                "count": 3,
+                "http_status": http_status,
+                "api_error_name": None,
+                "api_error_message": None,
+                "response_hash": "sha256:probe",
+                "target_present": target_present,
+                "returned_newest_kst": None,
+                "returned_oldest_kst": None,
+                "returned_kst_sample": [],
+            }
+        ],
+        "summary": {
+            "target_present_true": 1 if target_present else 0,
+            "target_present_false": 0 if target_present else 1,
+            "api_error_count": 0 if http_status < 400 else 1,
+        },
+    }
+    payload["content_hash"] = sha256_prefixed(payload)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return payload
+
+
 def test_research_readiness_json_reports_operator_fields_and_top_of_book_policy(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -1181,6 +1497,92 @@ def test_retry_missing_marks_recovered_when_backfill_restores_range(
 
     assert payload["attempts"][0]["classification"] == "retried_recovered"
     assert payload["attempts"][0]["after"]["missing_buckets"] == 0
+    assert payload["attempts"][0]["recovered_buckets"] == 1
+
+
+def test_retry_missing_candles_reports_recovered_bucket_delta_not_rowcount(
+    tmp_path: Path,
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    missing_ts = 1_672_531_200_000 + 5 * 60_000
+    _insert_day_candles_except(settings.DB_PATH, 1_672_531_200_000, {missing_ts})
+    out_missing = tmp_path / "missing.json"
+    write_missing_candle_ranges_artifact(manifest_path=manifest_path, out_path=out_missing)
+    out_retry = tmp_path / "retry.json"
+
+    def fake_backfill(**kwargs):
+        _insert_day_candles(settings.DB_PATH, 1_672_531_200_000)
+        return type(
+            "Result",
+            (),
+            {
+                "progress": type(
+                    "Progress",
+                    (),
+                    {
+                        "status": "COMPLETE",
+                        "reason": "range_covered",
+                        "upserted_count": 1440,
+                        "recovered_missing_bucket_count": 1,
+                    },
+                )(),
+                "api_fetch_status": "COMPLETE",
+                "cursor_status": "OK",
+                "db_write_status": "COMPLETE",
+                "coverage_status": "COMPLETE",
+                "coverage": {},
+            },
+        )()
+
+    payload = retry_missing_candles_from_artifact(
+        manifest_path=manifest_path,
+        missing_ranges_path=out_missing,
+        min_buckets=1,
+        max_attempts=1,
+        split="train",
+        limit=1,
+        out_path=out_retry,
+        backfill_func=fake_backfill,
+    )
+
+    assert payload["attempts"][0]["recovered_buckets"] == 1
+    assert payload["attempts"][0]["backfill_attempts"][0]["upserted_count"] == 1440
+
+
+def test_retry_missing_candles_passes_throttle_to_backfill(
+    tmp_path: Path,
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    out_missing = tmp_path / "missing.json"
+    write_missing_candle_ranges_artifact(manifest_path=manifest_path, out_path=out_missing)
+    out_retry = tmp_path / "retry.json"
+    seen: list[tuple[int, int]] = []
+
+    def fake_backfill(**kwargs):
+        seen.append((kwargs["request_interval_ms"], kwargs["max_retries"]))
+        return type(
+            "Result",
+            (),
+            {"progress": type("Progress", (), {"status": "COMPLETE", "reason": "range_covered"})(), "coverage": {}},
+        )()
+
+    retry_missing_candles_from_artifact(
+        manifest_path=manifest_path,
+        missing_ranges_path=out_missing,
+        min_buckets=1000,
+        max_attempts=1,
+        limit=1,
+        request_interval_ms=250,
+        max_retries=7,
+        out_path=out_retry,
+        backfill_func=fake_backfill,
+    )
+
+    assert seen == [(250, 7)]
 
 
 def test_retry_missing_records_backfill_exception_evidence_for_classification(
@@ -1263,12 +1665,21 @@ def test_persistent_missing_classification_artifact_binds_manifest_db_retry_and_
             {"progress": type("Progress", (), {"status": "COMPLETE", "reason": "range_covered"})(), "coverage": {}},
         )(),
     )
+    out_probe = tmp_path / "probe.json"
+    _write_source_probe_artifact(
+        out_probe,
+        manifest_path=manifest_path,
+        missing_path=out_missing,
+        target_ts=missing_ts,
+        target_present=False,
+    )
     out_classification = tmp_path / "classification.json"
 
     payload = write_persistent_missing_candle_classification_artifact(
         manifest_path=manifest_path,
         missing_ranges_path=out_missing,
         retry_attempts_path=out_retry,
+        source_probe_path=out_probe,
         out_path=out_classification,
         generated_at="2026-05-12T00:00:00+00:00",
     )
@@ -1279,6 +1690,7 @@ def test_persistent_missing_classification_artifact_binds_manifest_db_retry_and_
     assert payload["manifest_hash"] == load_manifest(manifest_path).manifest_hash()
     assert payload["missing_ranges_hash"].startswith("sha256:")
     assert payload["retry_attempts_hash"] == retry_payload["content_hash"]
+    assert payload["source_probe_hash"].startswith("sha256:")
     assert payload["db_path"] == str(Path(settings.DB_PATH).resolve())
     assert payload["market"] == "KRW-BTC"
     assert payload["interval"] == "1m"
@@ -1290,6 +1702,91 @@ def test_persistent_missing_classification_artifact_binds_manifest_db_retry_and_
     assert payload["limitations"]["synthetic_ohlcv_authorized"] is False
     assert payload["limitations"]["production_gate_relaxed"] is False
     assert payload["content_hash"].startswith("sha256:")
+
+
+def test_classify_persistent_missing_requires_probe_for_exchange_gap_candidate(
+    tmp_path: Path,
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    missing_ts = 1_672_531_200_000 + 42 * 60_000
+    _insert_day_candles_except(settings.DB_PATH, 1_672_531_200_000, {missing_ts})
+    _insert_day_candles(settings.DB_PATH, 1_672_617_600_000)
+    out_missing = tmp_path / "missing.json"
+    write_missing_candle_ranges_artifact(manifest_path=manifest_path, out_path=out_missing)
+    out_retry = tmp_path / "retry.json"
+    retry_missing_candles_from_artifact(
+        manifest_path=manifest_path,
+        missing_ranges_path=out_missing,
+        min_buckets=1,
+        max_attempts=1,
+        split="train",
+        limit=1,
+        out_path=out_retry,
+        backfill_func=lambda **kwargs: type(
+            "Result",
+            (),
+            {"progress": type("Progress", (), {"status": "COMPLETE", "reason": "range_covered"})(), "coverage": {}},
+        )(),
+    )
+
+    payload = build_persistent_missing_candle_classification_artifact(
+        manifest_path=manifest_path,
+        missing_ranges_path=out_missing,
+        retry_attempts_path=out_retry,
+        generated_at="2026-05-12T00:00:00+00:00",
+    )
+
+    assert payload["summary"]["exchange_gap_candidate"] == 0
+    assert payload["ranges"][0]["classification"] == "unclassified_missing"
+
+
+def test_classify_persistent_missing_target_present_is_not_exchange_gap_candidate(
+    tmp_path: Path,
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    missing_ts = 1_672_531_200_000 + 42 * 60_000
+    _insert_day_candles_except(settings.DB_PATH, 1_672_531_200_000, {missing_ts})
+    _insert_day_candles(settings.DB_PATH, 1_672_617_600_000)
+    out_missing = tmp_path / "missing.json"
+    write_missing_candle_ranges_artifact(manifest_path=manifest_path, out_path=out_missing)
+    out_retry = tmp_path / "retry.json"
+    retry_missing_candles_from_artifact(
+        manifest_path=manifest_path,
+        missing_ranges_path=out_missing,
+        min_buckets=1,
+        max_attempts=1,
+        split="train",
+        limit=1,
+        out_path=out_retry,
+        backfill_func=lambda **kwargs: type(
+            "Result",
+            (),
+            {"progress": type("Progress", (), {"status": "COMPLETE", "reason": "range_covered"})(), "coverage": {}},
+        )(),
+    )
+    out_probe = tmp_path / "probe.json"
+    _write_source_probe_artifact(
+        out_probe,
+        manifest_path=manifest_path,
+        missing_path=out_missing,
+        target_ts=missing_ts,
+        target_present=True,
+    )
+
+    payload = build_persistent_missing_candle_classification_artifact(
+        manifest_path=manifest_path,
+        missing_ranges_path=out_missing,
+        retry_attempts_path=out_retry,
+        source_probe_path=out_probe,
+        generated_at="2026-05-12T00:00:00+00:00",
+    )
+
+    assert payload["summary"]["exchange_gap_candidate"] == 0
+    assert payload["ranges"][0]["classification"] == "unclassified_missing"
 
 
 def test_persistent_missing_classification_excludes_recovered_ranges(
@@ -1675,6 +2172,67 @@ def test_missing_range_kst_early_morning_maps_to_previous_utc_retry_day(
     assert first["retry_utc_days"] == ["2026-04-26"]
 
 
+def test_probe_missing_candles_writes_target_present_false_artifact(
+    tmp_path: Path,
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    out_missing = tmp_path / "missing.json"
+    write_missing_candle_ranges_artifact(manifest_path=manifest_path, out_path=out_missing)
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[_candle("2022-12-31T23:59:00").__dict__])
+
+    payload = build_missing_candle_source_probe_artifact(
+        manifest_path=manifest_path,
+        missing_ranges_path=out_missing,
+        limit=1,
+        client_factory=lambda: httpx.Client(
+            transport=httpx.MockTransport(handler),
+            base_url="https://api.bithumb.com",
+        ),
+        generated_at="2026-05-12T00:00:00+00:00",
+    )
+
+    assert payload["artifact_type"] == "missing_candle_source_probe"
+    assert payload["schema_version"] == 1
+    assert payload["summary"]["target_present_false"] >= 1
+    first = payload["probe_records"][0]
+    assert first["target_utc"]
+    assert first["target_kst"]
+    assert first["probe_to_kst"]
+    assert first["response_hash"].startswith("sha256:")
+
+
+def test_probe_missing_candles_records_api_error_payload(
+    tmp_path: Path,
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    out_missing = tmp_path / "missing.json"
+    write_missing_candle_ranges_artifact(manifest_path=manifest_path, out_path=out_missing)
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"error": {"name": "service_unavailable", "message": "retry later"}})
+
+    payload = build_missing_candle_source_probe_artifact(
+        manifest_path=manifest_path,
+        missing_ranges_path=out_missing,
+        limit=1,
+        client_factory=lambda: httpx.Client(
+            transport=httpx.MockTransport(handler),
+            base_url="https://api.bithumb.com",
+        ),
+        generated_at="2026-05-12T00:00:00+00:00",
+    )
+
+    assert payload["summary"]["api_error_count"] == len(payload["probe_records"])
+    assert payload["probe_records"][0]["http_status"] == 503
+    assert payload["probe_records"][0]["api_error_name"] == "service_unavailable"
+
+
 def test_research_readiness_fail_closed_reports_separate_production_gate_reasons(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -1811,8 +2369,166 @@ def test_research_readiness_includes_missing_classification_without_relaxing_gat
     assert section["provided"] is True
     assert section["status"] == "DIAGNOSTIC_ONLY"
     assert section["production_gate_effect"] == "none"
+    assert section["source_gap_policy"] == "diagnostic_only"
+    assert section["synthetic_candle_authority"] == "not_allowed"
     assert section["summary"]["unclassified_missing"] == 1
     assert "PASS" not in section["status"]
+
+
+def test_readiness_source_gap_classification_is_diagnostic_only(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    _settings_guard,
+) -> None:
+    manifest_path, out_classification = _write_valid_persistent_missing_classification(tmp_path)
+
+    rc = main(
+        [
+            "research-readiness",
+            "--manifest",
+            str(manifest_path),
+            "--missing-classification",
+            str(out_classification),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 1
+    section = payload["persistent_missing_classification"]
+    assert section["status"] == "DIAGNOSTIC_ONLY"
+    assert section["production_gate_effect"] == "none"
+    assert section["source_gap_policy"] == "diagnostic_only"
+    assert section["synthetic_candle_authority"] == "not_allowed"
+
+
+def test_readiness_production_bound_missing_candles_remains_fail_closed(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    _settings_guard,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path)
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw["deployment_tier"] = "paper_candidate"
+    raw["portfolio_policy"] = _portfolio_policy()
+    raw["execution_timing"] = _safe_production_execution_timing()
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+    out_missing = tmp_path / "missing.json"
+    write_missing_candle_ranges_artifact(manifest_path=manifest_path, out_path=out_missing)
+    out_retry = tmp_path / "retry.json"
+    retry_missing_candles_from_artifact(
+        manifest_path=manifest_path,
+        missing_ranges_path=out_missing,
+        min_buckets=1000,
+        max_attempts=1,
+        limit=1,
+        out_path=out_retry,
+        backfill_func=lambda **kwargs: type(
+            "Result",
+            (),
+            {"progress": type("Progress", (), {"status": "COMPLETE", "reason": "range_covered"})(), "coverage": {}},
+        )(),
+    )
+    out_classification = tmp_path / "classification.json"
+    write_persistent_missing_candle_classification_artifact(
+        manifest_path=manifest_path,
+        missing_ranges_path=out_missing,
+        retry_attempts_path=out_retry,
+        out_path=out_classification,
+        generated_at="2026-05-12T00:00:00+00:00",
+    )
+
+    rc = main(
+        [
+            "research-readiness",
+            "--manifest",
+            str(manifest_path),
+            "--missing-classification",
+            str(out_classification),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 1
+    assert payload["status"] == "FAIL"
+    assert payload["readiness_mode"]["production_bound"] is True
+    assert payload["splits"]["train"]["missing_count"] > 0
+
+
+def test_readiness_rejects_mismatched_missing_classification_manifest_hash(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    _settings_guard,
+) -> None:
+    manifest_path, out_classification = _write_valid_persistent_missing_classification(tmp_path)
+    _rewrite_artifact(out_classification, lambda payload: payload.update({"manifest_hash": "sha256:bad"}))
+
+    rc = main(
+        [
+            "research-readiness",
+            "--manifest",
+            str(manifest_path),
+            "--missing-classification",
+            str(out_classification),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 1
+    assert payload["persistent_missing_classification"]["status"] == "FAIL"
+    assert any("manifest_hash" in item for item in payload["persistent_missing_classification"]["reasons"])
+
+
+def test_readiness_rejects_mismatched_missing_classification_db_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    _settings_guard,
+) -> None:
+    manifest_path, out_classification = _write_valid_persistent_missing_classification(tmp_path)
+    _rewrite_artifact(out_classification, lambda payload: payload.update({"db_path": "/tmp/wrong.sqlite"}))
+
+    rc = main(
+        [
+            "research-readiness",
+            "--manifest",
+            str(manifest_path),
+            "--missing-classification",
+            str(out_classification),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 1
+    assert payload["persistent_missing_classification"]["status"] == "FAIL"
+    assert any("db_path" in item for item in payload["persistent_missing_classification"]["reasons"])
+
+
+def test_research_readiness_accepts_matching_missing_classification_artifact(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    _settings_guard,
+) -> None:
+    manifest_path, out_classification = _write_valid_persistent_missing_classification(tmp_path)
+
+    rc = main(
+        [
+            "research-readiness",
+            "--manifest",
+            str(manifest_path),
+            "--missing-classification",
+            str(out_classification),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 1
+    assert payload["persistent_missing_classification"]["status"] == "DIAGNOSTIC_ONLY"
+    assert payload["persistent_missing_classification"]["artifact_hash"].startswith("sha256:")
 
 
 @pytest.mark.parametrize(
@@ -1952,6 +2668,59 @@ def test_classify_persistent_missing_cli_output_and_path_policy(
     assert "next_action=" in out
     assert "production ready" not in out.lower()
     assert "quality gate pass" not in out.lower()
+
+
+def test_find_clean_candle_segments_excludes_ranges_with_missing_buckets(
+    _settings_guard,
+) -> None:
+    missing_ts = 1_672_531_200_000 + 720 * 60_000
+    _insert_day_candles_except(settings.DB_PATH, 1_672_531_200_000, {missing_ts})
+
+    payload = build_clean_candle_segments_artifact(
+        market="KRW-BTC",
+        interval="1m",
+        min_days=1,
+        generated_at="2026-05-12T00:00:00+00:00",
+    )
+
+    assert payload["artifact_type"] == "clean_candle_segments"
+    assert payload["segments"] == []
+
+
+def test_find_clean_candle_segments_writes_content_hash(
+    tmp_path: Path,
+    _settings_guard,
+) -> None:
+    _insert_day_candles(settings.DB_PATH, 1_672_531_200_000)
+    out = tmp_path / "clean_segments.json"
+
+    payload = write_clean_candle_segments_artifact(
+        market="KRW-BTC",
+        interval="1m",
+        min_days=1,
+        out_path=out,
+    )
+
+    assert out.exists()
+    assert payload["content_hash"] == sha256_prefixed({key: value for key, value in payload.items() if key != "content_hash"})
+    assert payload["db_path"] == str(Path(settings.DB_PATH).resolve())
+    assert payload["segments"][0]["missing_buckets"] == 0
+
+
+def test_find_clean_candle_segments_respects_min_days(
+    _settings_guard,
+) -> None:
+    _insert_day_candles(settings.DB_PATH, 1_672_531_200_000)
+
+    payload = build_clean_candle_segments_artifact(
+        market="KRW-BTC",
+        interval="1m",
+        min_days=2,
+        generated_at="2026-05-12T00:00:00+00:00",
+    )
+
+    assert payload["min_segment_minutes"] == 2880
+    assert payload["segments"] == []
 
 
 def test_console_entrypoint_propagates_cli_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:

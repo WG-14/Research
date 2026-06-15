@@ -101,6 +101,24 @@ def test_fetch_minute_candles_sends_unit_in_path_and_query_params() -> None:
     assert len(candles) == 1
 
 
+def test_public_api_retry_still_handles_429_independently_from_throttle(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, json={"error": {"name": "too_many_requests", "message": "slow down"}})
+        return httpx.Response(200, json=[_sample_candle()])
+
+    monkeypatch.setattr("bithumb_bot.public_api._sleep_backoff", lambda **kwargs: None)
+    with httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.bithumb.com") as client:
+        candles = fetch_minute_candles(client, market="KRW-BTC", minute_unit=1, count=5, max_retries=1)
+
+    assert calls == 2
+    assert len(candles) == 1
+
+
 @pytest.mark.parametrize(
     ("interval", "expected_unit"),
     [

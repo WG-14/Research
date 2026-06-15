@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import sqlite3
+import time
 from typing import Callable, Iterable
 from zoneinfo import ZoneInfo
 
@@ -31,6 +32,11 @@ class BackfillProgress:
     request_count: int
     fetched_count: int
     written_count: int
+    upserted_count: int
+    new_bucket_count: int
+    replaced_bucket_count: int
+    recovered_missing_bucket_count: int
+    remaining_missing_bucket_count: int
     duplicate_page_count: int
     cursor_stall_count: int
     cursor_fallback_count: int
@@ -40,6 +46,10 @@ class BackfillProgress:
     page_boundary_gap_minutes: int | None = None
     status: str = "RUNNING"
     reason: str | None = None
+    api_fetch_status: str = "INCOMPLETE"
+    cursor_status: str = "OK"
+    db_write_status: str = "COMPLETE"
+    coverage_status: str = "INCOMPLETE"
 
 
 @dataclass(frozen=True)
@@ -53,6 +63,17 @@ class BackfillResult:
     dataset_quality_status: str
     next_action: str
     page_gap_summary: dict[str, object]
+    api_fetch_status: str
+    cursor_status: str
+    db_write_status: str
+    coverage_status: str
+    source_gap_status: str
+    research_readiness_status: str
+    operator_result_code: str
+    operator_result_reason: str
+    request_interval_ms: int
+    max_retries: int
+    rate_limit_policy: str
 
 
 def backfill_candles(
@@ -63,6 +84,9 @@ def backfill_candles(
     end: str,
     batch_size: int = MAX_API_BATCH_SIZE,
     dry_run: bool = False,
+    request_interval_ms: int = 0,
+    max_retries: int = 3,
+    sleep_fn: Callable[[float], None] = time.sleep,
     progress_callback: Callable[[BackfillProgress], None] | None = None,
 ) -> BackfillResult:
     minute_unit = interval_to_minute_unit(interval)
@@ -82,6 +106,9 @@ def backfill_candles(
     request_count = 0
     fetched_count = 0
     written_count = 0
+    upserted_count = 0
+    new_bucket_count = 0
+    replaced_bucket_count = 0
     duplicate_page_count = 0
     cursor_stall_count = 0
     cursor_fallback_count = 0
@@ -94,9 +121,22 @@ def backfill_candles(
     page_boundary_gap_counts: dict[int, int] = {}
     first_page_boundary_gap_examples: dict[int, dict[str, int]] = {}
     page_boundary_observations = 0
+    pre_missing_buckets = _missing_bucket_set(
+        db_path=settings.DB_PATH,
+        market=canonical_market,
+        interval=interval,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        interval_ms=interval_ms,
+    )
+    recovered_bucket_ts: set[int] = set()
+    remaining_missing_bucket_count = len(pre_missing_buckets)
+    recovered_missing_bucket_count = 0
 
     with httpx.Client(base_url=BASE_URL, timeout=15.0) as client:
         while True:
+            if request_count > 0 and request_interval_ms > 0:
+                sleep_fn(max(0.0, int(request_interval_ms) / 1000.0))
             try:
                 candles = fetch_minute_candles(
                     client,
@@ -104,7 +144,7 @@ def backfill_candles(
                     minute_unit=minute_unit,
                     count=capped_batch_size,
                     to=cursor,
-                    max_retries=3,
+                    max_retries=max(0, int(max_retries)),
                 )
             except PublicApiError:
                 raise
@@ -118,6 +158,11 @@ def backfill_candles(
                     request_count=request_count,
                     fetched_count=fetched_count,
                     written_count=written_count,
+                    upserted_count=upserted_count,
+                    new_bucket_count=new_bucket_count,
+                    replaced_bucket_count=replaced_bucket_count,
+                    recovered_missing_bucket_count=recovered_missing_bucket_count,
+                    remaining_missing_bucket_count=remaining_missing_bucket_count,
                     duplicate_page_count=duplicate_page_count,
                     cursor_stall_count=cursor_stall_count,
                     cursor_fallback_count=cursor_fallback_count,
@@ -127,6 +172,9 @@ def backfill_candles(
                     page_boundary_gap_minutes=None,
                     status="COMPLETE",
                     reason="no_older_candles",
+                    api_fetch_status="COMPLETE",
+                    cursor_status="OK",
+                    db_write_status="DRY_RUN" if dry_run else "COMPLETE",
                 )
                 if progress_callback is not None:
                     progress_callback(progress)
@@ -163,6 +211,11 @@ def backfill_candles(
                         request_count=request_count,
                         fetched_count=fetched_count,
                         written_count=written_count,
+                        upserted_count=upserted_count,
+                        new_bucket_count=new_bucket_count,
+                        replaced_bucket_count=replaced_bucket_count,
+                        recovered_missing_bucket_count=recovered_missing_bucket_count,
+                        remaining_missing_bucket_count=remaining_missing_bucket_count,
                         duplicate_page_count=duplicate_page_count,
                         cursor_stall_count=cursor_stall_count,
                         cursor_fallback_count=cursor_fallback_count,
@@ -172,6 +225,9 @@ def backfill_candles(
                         page_boundary_gap_minutes=page_boundary_gap_minutes,
                         status=stop_status,
                         reason=stop_reason,
+                        api_fetch_status="COMPLETE",
+                        cursor_status="CONTRACT_VIOLATION",
+                        db_write_status="DRY_RUN" if dry_run else "COMPLETE",
                     )
                     if progress_callback is not None:
                         progress_callback(progress)
@@ -201,6 +257,11 @@ def backfill_candles(
                         request_count=request_count,
                         fetched_count=fetched_count,
                         written_count=written_count,
+                        upserted_count=upserted_count,
+                        new_bucket_count=new_bucket_count,
+                        replaced_bucket_count=replaced_bucket_count,
+                        recovered_missing_bucket_count=recovered_missing_bucket_count,
+                        remaining_missing_bucket_count=remaining_missing_bucket_count,
                         duplicate_page_count=duplicate_page_count,
                         cursor_stall_count=cursor_stall_count,
                         cursor_fallback_count=cursor_fallback_count,
@@ -210,6 +271,9 @@ def backfill_candles(
                         page_boundary_gap_minutes=page_boundary_gap_minutes,
                         status="RUNNING",
                         reason="cursor_boundary_fallback",
+                        api_fetch_status="INCOMPLETE",
+                        cursor_status="OK",
+                        db_write_status="DRY_RUN" if dry_run else "COMPLETE",
                     )
                     if progress_callback is not None:
                         progress_callback(progress)
@@ -222,6 +286,11 @@ def backfill_candles(
                     request_count=request_count,
                     fetched_count=fetched_count,
                     written_count=written_count,
+                    upserted_count=upserted_count,
+                    new_bucket_count=new_bucket_count,
+                    replaced_bucket_count=replaced_bucket_count,
+                    recovered_missing_bucket_count=recovered_missing_bucket_count,
+                    remaining_missing_bucket_count=remaining_missing_bucket_count,
                     duplicate_page_count=duplicate_page_count,
                     cursor_stall_count=cursor_stall_count,
                     cursor_fallback_count=cursor_fallback_count,
@@ -231,6 +300,9 @@ def backfill_candles(
                     page_boundary_gap_minutes=page_boundary_gap_minutes,
                     status=stop_status,
                     reason=stop_reason,
+                    api_fetch_status="COMPLETE",
+                    cursor_status="FALLBACK_NO_PROGRESS",
+                    db_write_status="DRY_RUN" if dry_run else "COMPLETE",
                 )
                 if progress_callback is not None:
                     progress_callback(progress)
@@ -248,17 +320,33 @@ def backfill_candles(
                 if start_ts <= _candle_key_ts_ms(candle) <= end_ts
             ]
             if in_range and not dry_run:
-                written_count += _write_candles(
+                write_stats = _write_candles(
                     in_range,
                     interval=interval,
                     canonical_market=canonical_market,
                 )
+                written_count += write_stats["upserted_count"]
+                upserted_count += write_stats["upserted_count"]
+                new_bucket_count += write_stats["new_bucket_count"]
+                replaced_bucket_count += write_stats["replaced_bucket_count"]
+                recovered_bucket_ts.update(
+                    _candle_key_ts_ms(candle)
+                    for candle in in_range
+                    if _candle_key_ts_ms(candle) in pre_missing_buckets
+                )
+                recovered_missing_bucket_count = len(recovered_bucket_ts)
+                remaining_missing_bucket_count = max(0, len(pre_missing_buckets) - recovered_missing_bucket_count)
 
             next_cursor = _api_cursor_from_oldest_candle_kst(oldest_candle)
             progress = BackfillProgress(
                 request_count=request_count,
                 fetched_count=fetched_count,
                 written_count=written_count,
+                upserted_count=upserted_count,
+                new_bucket_count=new_bucket_count,
+                replaced_bucket_count=replaced_bucket_count,
+                recovered_missing_bucket_count=recovered_missing_bucket_count,
+                remaining_missing_bucket_count=remaining_missing_bucket_count,
                 duplicate_page_count=duplicate_page_count,
                 cursor_stall_count=cursor_stall_count,
                 cursor_fallback_count=cursor_fallback_count,
@@ -268,6 +356,9 @@ def backfill_candles(
                 page_boundary_gap_minutes=page_boundary_gap_minutes,
                 status="RUNNING",
                 reason=None,
+                api_fetch_status="INCOMPLETE",
+                cursor_status="OK",
+                db_write_status="DRY_RUN" if dry_run else "COMPLETE",
             )
             if progress_callback is not None:
                 progress_callback(progress)
@@ -284,11 +375,30 @@ def backfill_candles(
         interval=interval,
         date_range=date_range,
     )
+    remaining_missing_bucket_count = int(coverage.get("missing_buckets") or 0)
+    recovered_missing_bucket_count = max(0, len(pre_missing_buckets) - remaining_missing_bucket_count)
+    coverage_status = str(coverage.get("coverage_status") or "INCOMPLETE")
+    api_fetch_status = "COMPLETE" if stop_status == "COMPLETE" else "INCOMPLETE"
+    cursor_status = _cursor_status(stop_reason)
+    db_write_status = "DRY_RUN" if dry_run else "COMPLETE"
+    source_gap_status = "NOT_EVALUATED" if coverage_status == "COMPLETE" else "UNKNOWN"
+    research_readiness_status = "READY" if coverage_status == "COMPLETE" and not dry_run else "NOT_READY"
+    operator_result_code, operator_result_reason = _operator_result(
+        stop_status=stop_status,
+        stop_reason=stop_reason,
+        coverage_status=coverage_status,
+        dry_run=dry_run,
+    )
     return BackfillResult(
         progress=BackfillProgress(
             request_count=request_count,
             fetched_count=fetched_count,
             written_count=written_count,
+            upserted_count=upserted_count,
+            new_bucket_count=new_bucket_count,
+            replaced_bucket_count=replaced_bucket_count,
+            recovered_missing_bucket_count=recovered_missing_bucket_count,
+            remaining_missing_bucket_count=remaining_missing_bucket_count,
             duplicate_page_count=duplicate_page_count,
             cursor_stall_count=cursor_stall_count,
             cursor_fallback_count=cursor_fallback_count,
@@ -297,6 +407,10 @@ def backfill_candles(
             next_cursor=None,
             status=stop_status,
             reason=stop_reason,
+            api_fetch_status=api_fetch_status,
+            cursor_status=cursor_status,
+            db_write_status=db_write_status,
+            coverage_status=coverage_status,
         ),
         coverage=coverage,
         db_path=str(settings.DB_PATH),
@@ -304,11 +418,22 @@ def backfill_candles(
         dry_run=dry_run,
         env_summary=get_last_explicit_env_load_summary().as_dict(),
         dataset_quality_status="NOT_EVALUATED_BY_BACKFILL",
-        next_action="run research-readiness --manifest <manifest> before research-backtest",
+        next_action=_backfill_next_action(coverage_status),
         page_gap_summary=_page_gap_summary(
             page_boundary_gap_counts,
             first_page_boundary_gap_examples,
         ),
+        api_fetch_status=api_fetch_status,
+        cursor_status=cursor_status,
+        db_write_status=db_write_status,
+        coverage_status=coverage_status,
+        source_gap_status=source_gap_status,
+        research_readiness_status=research_readiness_status,
+        operator_result_code=operator_result_code,
+        operator_result_reason=operator_result_reason,
+        request_interval_ms=max(0, int(request_interval_ms)),
+        max_retries=max(0, int(max_retries)),
+        rate_limit_policy="bithumb_public_api_operator_configured",
     )
 
 
@@ -371,11 +496,25 @@ def _write_candles(
     *,
     interval: str,
     canonical_market: str,
-) -> int:
+) -> dict[str, int]:
+    candle_list = list(candles)
+    bucket_ts = sorted({_candle_key_ts_ms(candle) for candle in candle_list})
     conn = ensure_db()
     try:
+        existing_ts: set[int] = set()
+        if bucket_ts:
+            placeholders = ",".join("?" for _ in bucket_ts)
+            rows = conn.execute(
+                f"""
+                SELECT ts
+                FROM candles
+                WHERE pair=? AND interval=? AND ts IN ({placeholders})
+                """,
+                (canonical_market, interval, *bucket_ts),
+            ).fetchall()
+            existing_ts = {int(row[0]) for row in rows}
         written = 0
-        for candle in candles:
+        for candle in candle_list:
             _validate_candle_market(candle, expected_market=canonical_market)
             cur = conn.execute(
                 """
@@ -395,9 +534,80 @@ def _write_candles(
             )
             written += cur.rowcount
         conn.commit()
-        return written
+        new_count = sum(1 for ts in bucket_ts if ts not in existing_ts)
+        replaced_count = sum(1 for ts in bucket_ts if ts in existing_ts)
+        return {
+            "upserted_count": written,
+            "new_bucket_count": new_count,
+            "replaced_bucket_count": replaced_count,
+        }
     finally:
         conn.close()
+
+
+def _missing_bucket_set(
+    *,
+    db_path: str | Path,
+    market: str,
+    interval: str,
+    start_ts: int,
+    end_ts: int,
+    interval_ms: int,
+) -> set[int]:
+    expected = set(range(start_ts, end_ts + 1, interval_ms))
+    resolved_db = Path(db_path).expanduser()
+    if str(resolved_db) == ":memory:" or not resolved_db.exists():
+        return expected
+    conn = sqlite3.connect(f"file:{resolved_db.resolve()}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT ts
+            FROM candles
+            WHERE pair=? AND interval=? AND ts >= ? AND ts <= ?
+            """,
+            (market, interval, start_ts, end_ts),
+        ).fetchall()
+    finally:
+        conn.close()
+    present = {int(row[0]) for row in rows}
+    return expected - present
+
+
+def _cursor_status(reason: str | None) -> str:
+    if reason == "api_cursor_timezone_contract_violation":
+        return "CONTRACT_VIOLATION"
+    if reason == "cursor_fallback_no_progress":
+        return "FALLBACK_NO_PROGRESS"
+    return "OK"
+
+
+def _operator_result(
+    *,
+    stop_status: str,
+    stop_reason: str | None,
+    coverage_status: str,
+    dry_run: bool,
+) -> tuple[str, str]:
+    if stop_status != "COMPLETE":
+        return "BACKFILL_INCOMPLETE", stop_reason or "progress_incomplete"
+    if coverage_status != "COMPLETE":
+        if dry_run:
+            return "DRY_RUN_NOT_RESEARCH_READY", "coverage_incomplete_after_fetch_complete"
+        return "NOT_RESEARCH_READY", "coverage_incomplete_after_fetch_complete"
+    if dry_run:
+        return "DRY_RUN_COMPLETE", "coverage_complete_dry_run"
+    return "COMPLETE", "coverage_complete"
+
+
+def _backfill_next_action(coverage_status: str) -> str:
+    if coverage_status != "COMPLETE":
+        return (
+            "run research-missing-candles, retry-missing-candles, "
+            "probe-missing-candles, classify-persistent-missing-candles, "
+            "then research-readiness --manifest <manifest>"
+        )
+    return "run research-readiness --manifest <manifest> before research-backtest"
 
 
 def _validate_candle_markets(candles: Iterable[MinuteCandle], *, expected_market: str) -> None:

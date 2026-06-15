@@ -9,11 +9,16 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import httpx
+
 from bithumb_bot.bootstrap import get_last_explicit_env_load_summary
 from bithumb_bot.config import PROJECT_ROOT, settings
+from bithumb_bot.marketdata import BASE_URL
 from bithumb_bot.historical_backfill import backfill_candles
 from bithumb_bot.orderbook_depth_store import summarize_orderbook_depth_evidence
 from bithumb_bot.paths import PathManager
+from bithumb_bot.public_api import decode_json_response, extract_api_error
+from bithumb_bot.public_api_minute_candles import interval_to_minute_unit, parse_minute_candles
 from bithumb_bot.storage_io import write_json_atomic
 
 from .dataset_snapshot import (
@@ -308,6 +313,8 @@ def retry_missing_candles_from_artifact(
     max_attempts: int = 1,
     split: str | None = None,
     limit: int | None = None,
+    request_interval_ms: int = 0,
+    max_retries: int = 3,
     backfill_func: Callable[..., Any] = backfill_candles,
 ) -> dict[str, Any]:
     if max_attempts < 1:
@@ -337,6 +344,8 @@ def retry_missing_candles_from_artifact(
                         start=str(day),
                         end=str(day),
                         dry_run=False,
+                        request_interval_ms=request_interval_ms,
+                        max_retries=max_retries,
                     )
                 except Exception as exc:
                     backfill_results.append(
@@ -353,6 +362,14 @@ def retry_missing_candles_from_artifact(
                         "retry_utc_day": str(day),
                         "progress_status": getattr(getattr(result, "progress", None), "status", None),
                         "progress_reason": getattr(getattr(result, "progress", None), "reason", None),
+                        "api_fetch_status": getattr(result, "api_fetch_status", None),
+                        "cursor_status": getattr(result, "cursor_status", None),
+                        "db_write_status": getattr(result, "db_write_status", None),
+                        "coverage_status": getattr(result, "coverage_status", None),
+                        "upserted_count": getattr(getattr(result, "progress", None), "upserted_count", None),
+                        "recovered_missing_bucket_count": getattr(
+                            getattr(result, "progress", None), "recovered_missing_bucket_count", None
+                        ),
                         "coverage": getattr(result, "coverage", None),
                     }
                 )
@@ -400,6 +417,8 @@ def retry_missing_candles_from_artifact(
             "max_attempts": int(max_attempts),
             "split": split,
             "limit": limit,
+            "request_interval_ms": int(request_interval_ms),
+            "max_retries": int(max_retries),
         },
         "attempt_count": len(attempts),
         "attempts": attempts,
@@ -413,11 +432,196 @@ def retry_missing_candles_from_artifact(
     return payload
 
 
+def build_missing_candle_source_probe_artifact(
+    *,
+    manifest_path: str | Path,
+    missing_ranges_path: str | Path,
+    generated_at: str | None = None,
+    split: str | None = None,
+    limit: int | None = None,
+    count: int = 3,
+    client_factory: Callable[[], Any] | None = None,
+) -> dict[str, Any]:
+    resolved_manifest_path = Path(manifest_path).expanduser().resolve()
+    resolved_missing_path = Path(missing_ranges_path).expanduser().resolve()
+    manifest = load_manifest(resolved_manifest_path)
+    resolved_db_path = Path(settings.DB_PATH).expanduser().resolve()
+    missing_artifact = json.loads(resolved_missing_path.read_text(encoding="utf-8"))
+    _validate_missing_artifact(artifact=missing_artifact, manifest=manifest, db_path=resolved_db_path)
+    minute_unit = interval_to_minute_unit(manifest.interval)
+    interval_ms = minute_unit * 60_000
+    selected = _select_missing_ranges(artifact=missing_artifact, min_buckets=1, split=split, limit=limit)
+    probe_records: list[dict[str, Any]] = []
+    factory = client_factory or (lambda: httpx.Client(base_url=BASE_URL, timeout=15.0))
+    with factory() as client:
+        for item in selected:
+            for label, target_ts in _probe_targets_for_range(item, interval_ms=interval_ms):
+                probe_records.append(
+                    _probe_minute_candle_source(
+                        client=client,
+                        market=manifest.market,
+                        minute_unit=minute_unit,
+                        count=max(1, int(count)),
+                        target_ts=target_ts,
+                        target_label=label,
+                    )
+                )
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "artifact_type": "missing_candle_source_probe",
+        "manifest_path": str(resolved_manifest_path),
+        "manifest_hash": manifest.manifest_hash(),
+        "missing_ranges_path": str(resolved_missing_path),
+        "missing_ranges_hash": missing_artifact["content_hash"],
+        "db_path": str(resolved_db_path),
+        "market": manifest.market,
+        "interval": manifest.interval,
+        "minute_unit": minute_unit,
+        "generated_at": generated_at or datetime.now(UTC).isoformat(),
+        "probe_policy": {
+            "target_labels": [
+                "before_range_last_bucket",
+                "range_start",
+                "range_middle",
+                "range_end",
+                "after_range_first_bucket",
+            ],
+            "selected_range_count": len(selected),
+            "probe_count_per_target": max(1, int(count)),
+            "coverage_scope": "selected_missing_ranges_targeted_probe_not_exhaustive_unless_all_ranges_selected",
+        },
+        "probe_records": probe_records,
+        "summary": {
+            "target_present_true": sum(1 for item in probe_records if item["target_present"] is True),
+            "target_present_false": sum(1 for item in probe_records if item["target_present"] is False),
+            "api_error_count": sum(1 for item in probe_records if item["http_status"] is None or int(item["http_status"]) >= 400),
+        },
+    }
+    payload["content_hash"] = sha256_prefixed(payload)
+    return payload
+
+
+def write_missing_candle_source_probe_artifact(
+    *,
+    manifest_path: str | Path,
+    missing_ranges_path: str | Path,
+    out_path: str | Path,
+    split: str | None = None,
+    limit: int | None = None,
+    count: int = 3,
+) -> dict[str, Any]:
+    payload = build_missing_candle_source_probe_artifact(
+        manifest_path=manifest_path,
+        missing_ranges_path=missing_ranges_path,
+        split=split,
+        limit=limit,
+        count=count,
+    )
+    write_json_atomic(_validate_report_artifact_out_path(out_path), payload)
+    return payload
+
+
+def build_clean_candle_segments_artifact(
+    *,
+    db_path: str | Path | None = None,
+    market: str,
+    interval: str,
+    min_days: int,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    resolved_db_path = Path(db_path or settings.DB_PATH).expanduser().resolve()
+    minute_unit = interval_to_minute_unit(interval)
+    interval_ms = minute_unit * 60_000
+    min_segment_minutes = max(1, int(min_days)) * 24 * 60
+    rows: list[tuple[int]] = []
+    if resolved_db_path.exists():
+        conn = sqlite3.connect(f"file:{resolved_db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT ts
+                FROM candles
+                WHERE pair=? AND interval=?
+                ORDER BY ts ASC
+                """,
+                (market, interval),
+            ).fetchall()
+        finally:
+            conn.close()
+    segments: list[dict[str, Any]] = []
+    run_start: int | None = None
+    run_prev: int | None = None
+    run_count = 0
+
+    def close_run() -> None:
+        nonlocal run_start, run_prev, run_count
+        if run_start is not None and run_prev is not None and run_count >= min_segment_minutes:
+            segments.append(
+                {
+                    "start_utc": _format_utc(run_start),
+                    "end_utc": _format_utc(run_prev),
+                    "bucket_count": run_count,
+                    "coverage_pct": 100.0,
+                    "missing_buckets": 0,
+                    "source": "sqlite_distinct_ts_contiguous_scan",
+                }
+            )
+        run_start = None
+        run_prev = None
+        run_count = 0
+
+    for row in rows:
+        ts = int(row[0])
+        if run_start is None:
+            run_start = ts
+            run_prev = ts
+            run_count = 1
+            continue
+        if run_prev is not None and ts - run_prev == interval_ms:
+            run_prev = ts
+            run_count += 1
+            continue
+        close_run()
+        run_start = ts
+        run_prev = ts
+        run_count = 1
+    close_run()
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "artifact_type": "clean_candle_segments",
+        "db_path": str(resolved_db_path),
+        "market": market,
+        "interval": interval,
+        "min_segment_minutes": min_segment_minutes,
+        "generated_at": generated_at or datetime.now(UTC).isoformat(),
+        "segments": segments,
+    }
+    payload["content_hash"] = sha256_prefixed(payload)
+    return payload
+
+
+def write_clean_candle_segments_artifact(
+    *,
+    market: str,
+    interval: str,
+    min_days: int,
+    out_path: str | Path,
+) -> dict[str, Any]:
+    payload = build_clean_candle_segments_artifact(
+        market=market,
+        interval=interval,
+        min_days=min_days,
+    )
+    write_json_atomic(_validate_report_artifact_out_path(out_path), payload)
+    return payload
+
+
 def build_persistent_missing_candle_classification_artifact(
     *,
     manifest_path: str | Path,
     missing_ranges_path: str | Path,
     retry_attempts_path: str | Path,
+    source_probe_path: str | Path | None = None,
     generated_at: str | None = None,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -428,6 +632,7 @@ def build_persistent_missing_candle_classification_artifact(
     resolved_db_path = Path(db_path or settings.DB_PATH).expanduser().resolve()
     missing_artifact = json.loads(resolved_missing_path.read_text(encoding="utf-8"))
     retry_artifact = json.loads(resolved_retry_path.read_text(encoding="utf-8"))
+    source_probe_artifact: dict[str, Any] | None = None
 
     _validate_missing_artifact(artifact=missing_artifact, manifest=manifest, db_path=resolved_db_path)
     _validate_retry_attempts_artifact(
@@ -437,11 +642,22 @@ def build_persistent_missing_candle_classification_artifact(
         missing_ranges_path=resolved_missing_path,
         missing_ranges_hash=str(missing_artifact.get("content_hash") or ""),
     )
+    if source_probe_path is not None:
+        resolved_probe_path = Path(source_probe_path).expanduser().resolve()
+        source_probe_artifact = json.loads(resolved_probe_path.read_text(encoding="utf-8"))
+        _validate_source_probe_artifact(
+            artifact=source_probe_artifact,
+            manifest=manifest,
+            db_path=resolved_db_path,
+            missing_ranges_path=resolved_missing_path,
+            missing_ranges_hash=str(missing_artifact.get("content_hash") or ""),
+        )
 
     ranges = [
         _classify_persistent_missing_attempt(
             attempt=attempt,
             retry_artifact_hash=str(retry_artifact["content_hash"]),
+            source_probe_artifact=source_probe_artifact,
             db_path=resolved_db_path,
             market=manifest.market,
             interval=manifest.interval,
@@ -466,6 +682,8 @@ def build_persistent_missing_candle_classification_artifact(
         "missing_ranges_hash": missing_artifact["content_hash"],
         "retry_attempts_path": str(resolved_retry_path),
         "retry_attempts_hash": retry_artifact["content_hash"],
+        "source_probe_path": str(Path(source_probe_path).expanduser().resolve()) if source_probe_path is not None else None,
+        "source_probe_hash": source_probe_artifact.get("content_hash") if source_probe_artifact else None,
         "db_path": str(resolved_db_path),
         "db_schema_fingerprint": _safe_db_schema_fingerprint(resolved_db_path),
         "market": manifest.market,
@@ -473,11 +691,14 @@ def build_persistent_missing_candle_classification_artifact(
         "generated_at": generated_at or datetime.now(UTC).isoformat(),
         "classifier_version": "persistent_missing_classifier_v1",
         "policy_effect": "diagnostic_only_no_gate_relaxation",
+        "source_gap_policy": "diagnostic_only",
+        "synthetic_candle_authority": "not_allowed",
         "ranges": ranges,
         "summary": summary,
         "limitations": {
             "classification_is_candidate_evidence_only": True,
             "synthetic_ohlcv_authorized": False,
+            "synthetic_candle_authority": "not_allowed",
             "production_gate_relaxed": False,
             "top_of_book_satisfied": False,
             "execution_calibration_satisfied": False,
@@ -493,12 +714,14 @@ def write_persistent_missing_candle_classification_artifact(
     missing_ranges_path: str | Path,
     retry_attempts_path: str | Path,
     out_path: str | Path,
+    source_probe_path: str | Path | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     payload = build_persistent_missing_candle_classification_artifact(
         manifest_path=manifest_path,
         missing_ranges_path=missing_ranges_path,
         retry_attempts_path=retry_attempts_path,
+        source_probe_path=source_probe_path,
         generated_at=generated_at,
     )
     write_json_atomic(_validate_report_artifact_out_path(out_path), payload)
@@ -1041,6 +1264,115 @@ def _validate_retry_attempts_artifact(
             raise ValueError("retry attempts artifact has unsupported classification")
 
 
+def _validate_source_probe_artifact(
+    *,
+    artifact: dict[str, Any],
+    manifest: ExperimentManifest,
+    db_path: Path,
+    missing_ranges_path: Path,
+    missing_ranges_hash: str,
+) -> None:
+    if artifact.get("artifact_type") != "missing_candle_source_probe":
+        raise ValueError("source probe artifact_type must be missing_candle_source_probe")
+    if artifact.get("schema_version") != 1:
+        raise ValueError("unsupported source probe schema_version")
+    embedded_hash = artifact.get("content_hash")
+    if not isinstance(embedded_hash, str) or not embedded_hash.startswith("sha256:"):
+        raise ValueError("source probe content_hash is required")
+    recomputed_payload = {key: value for key, value in artifact.items() if key != "content_hash"}
+    if sha256_prefixed(recomputed_payload) != embedded_hash:
+        raise ValueError("source probe content_hash does not match artifact body")
+    if artifact.get("manifest_hash") != manifest.manifest_hash():
+        raise ValueError("source probe manifest_hash does not match manifest")
+    if artifact.get("market") != manifest.market or artifact.get("interval") != manifest.interval:
+        raise ValueError("source probe market/interval does not match manifest")
+    artifact_db = Path(str(artifact.get("db_path") or "")).expanduser().resolve()
+    if artifact_db != db_path:
+        raise ValueError("source probe db_path does not match configured DB_PATH")
+    artifact_missing_path = Path(str(artifact.get("missing_ranges_path") or "")).expanduser().resolve()
+    if artifact_missing_path != missing_ranges_path:
+        raise ValueError("source probe missing_ranges_path does not match input")
+    if artifact.get("missing_ranges_hash") != missing_ranges_hash:
+        raise ValueError("source probe missing_ranges_hash does not match missing ranges artifact")
+
+
+def _probe_targets_for_range(item: dict[str, Any], *, interval_ms: int) -> list[tuple[str, int]]:
+    start_ts = int(item["start_ts"])
+    end_ts = int(item["end_ts"])
+    middle = start_ts + ((end_ts - start_ts) // (2 * interval_ms)) * interval_ms
+    return [
+        ("before_range_last_bucket", start_ts - interval_ms),
+        ("range_start", start_ts),
+        ("range_middle", middle),
+        ("range_end", end_ts),
+        ("after_range_first_bucket", end_ts + interval_ms),
+    ]
+
+
+def _probe_minute_candle_source(
+    *,
+    client: httpx.Client,
+    market: str,
+    minute_unit: int,
+    count: int,
+    target_ts: int,
+    target_label: str,
+) -> dict[str, Any]:
+    endpoint = f"/v1/candles/minutes/{minute_unit}"
+    probe_to_kst = _format_kst(target_ts + minute_unit * 60_000).replace("+09:00", "")
+    params = {"market": market, "count": count, "to": probe_to_kst}
+    http_status: int | None = None
+    api_error_name: str | None = None
+    api_error_message: str | None = None
+    response_payload: Any = None
+    returned_sample: list[str] = []
+    returned_ts: list[int] = []
+    target_present = False
+    try:
+        response = client.get(endpoint, params=params)
+        http_status = int(response.status_code)
+        response_payload = decode_json_response(response=response, endpoint=endpoint, params=params)
+        api_error = extract_api_error(response_payload)
+        if api_error is not None:
+            api_error_name, api_error_message = api_error
+        if 200 <= http_status < 300:
+            candles = parse_minute_candles(response_payload)
+            for candle in candles:
+                ts = _minute_candle_utc_ts(candle.candle_date_time_utc)
+                returned_ts.append(ts)
+                returned_sample.append(candle.candle_date_time_kst)
+            target_present = target_ts in returned_ts
+    except Exception as exc:
+        api_error_name = exc.__class__.__name__
+        api_error_message = str(exc)
+        response_payload = {"error": api_error_message}
+    return {
+        "target_label": target_label,
+        "target_ts": target_ts,
+        "target_utc": _format_utc(target_ts),
+        "target_kst": _format_kst(target_ts),
+        "probe_to_kst": probe_to_kst,
+        "market": market,
+        "minute_unit": minute_unit,
+        "count": count,
+        "http_status": http_status,
+        "api_error_name": api_error_name,
+        "api_error_message": api_error_message,
+        "response_hash": sha256_prefixed(response_payload),
+        "target_present": target_present,
+        "returned_newest_kst": max(returned_sample) if returned_sample else None,
+        "returned_oldest_kst": min(returned_sample) if returned_sample else None,
+        "returned_kst_sample": returned_sample[:10],
+    }
+
+
+def _minute_candle_utc_ts(value: str) -> int:
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return int(dt.astimezone(UTC).timestamp() * 1000)
+
+
 def _backfill_exception_attempt_payload(
     *,
     attempt_index: int,
@@ -1102,6 +1434,7 @@ def _classify_persistent_missing_attempt(
     *,
     attempt: dict[str, Any],
     retry_artifact_hash: str,
+    source_probe_artifact: dict[str, Any] | None,
     db_path: Path,
     market: str,
     interval: str,
@@ -1116,13 +1449,19 @@ def _classify_persistent_missing_attempt(
         end_ts=int(attempt["end_ts"]),
     )
     normal_response = _has_normal_backfill_response(attempt)
+    probe_evidence = _source_probe_evidence_for_attempt(attempt=attempt, source_probe_artifact=source_probe_artifact)
+    probe_target_absent = bool(probe_evidence and probe_evidence.get("target_present") is False)
+    probe_target_present = bool(probe_evidence and probe_evidence.get("target_present") is True)
+    probe_api_unavailable = bool(probe_evidence and _has_api_unavailable_evidence(probe_evidence))
 
-    if api_unavailable:
+    if api_unavailable or probe_api_unavailable:
         classification = "api_unavailable_candidate"
     elif no_trade_supported:
         classification = "no_trade_missing_candidate"
-    elif normal_response and surrounding_present:
+    elif normal_response and surrounding_present and probe_target_absent:
         classification = "exchange_gap_candidate"
+    elif probe_target_present:
+        classification = "unclassified_missing"
     else:
         classification = "unclassified_missing"
 
@@ -1130,6 +1469,7 @@ def _classify_persistent_missing_attempt(
         attempt=attempt,
         retry_artifact_hash=retry_artifact_hash,
         surrounding_present=surrounding_present,
+        source_probe_evidence=probe_evidence,
     )
     return {
         "split": attempt["split"],
@@ -1160,6 +1500,7 @@ def _classification_evidence(
     attempt: dict[str, Any],
     retry_artifact_hash: str,
     surrounding_present: bool,
+    source_probe_evidence: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     before = attempt.get("before") if isinstance(attempt.get("before"), dict) else {}
     after = attempt.get("after") if isinstance(attempt.get("after"), dict) else {}
@@ -1185,6 +1526,8 @@ def _classification_evidence(
             "surrounding_buckets_present": surrounding_present,
         },
     ]
+    if source_probe_evidence is not None:
+        evidence.append({"type": "source_probe", **source_probe_evidence})
     optional_evidence = attempt.get("probe_evidence")
     if isinstance(optional_evidence, dict):
         evidence.append({"type": "optional_probe_evidence", **optional_evidence})
@@ -1203,6 +1546,51 @@ def _classification_evidence(
             }
         )
     return evidence
+
+
+def _source_probe_evidence_for_attempt(
+    *,
+    attempt: dict[str, Any],
+    source_probe_artifact: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if source_probe_artifact is None:
+        return None
+    start_ts = int(attempt["start_ts"])
+    end_ts = int(attempt["end_ts"])
+    records = [
+        item
+        for item in source_probe_artifact.get("probe_records") or []
+        if isinstance(item, dict)
+        and str(item.get("target_label")) in {"range_start", "range_middle", "range_end"}
+        and start_ts <= int(item.get("target_ts") or -1) <= end_ts
+    ]
+    if not records:
+        return None
+    present_records = [item for item in records if item.get("target_present") is True]
+    absent_records = [item for item in records if item.get("target_present") is False]
+    api_error_records = [item for item in records if item.get("http_status") is None or int(item.get("http_status") or 0) >= 400]
+    if present_records:
+        target_present: bool | None = True
+        selected = present_records[0]
+    elif api_error_records:
+        target_present = None
+        selected = api_error_records[0]
+    elif absent_records:
+        target_present = False
+        selected = absent_records[0]
+    else:
+        target_present = None
+        selected = records[0]
+    return {
+        "artifact_hash": source_probe_artifact.get("content_hash"),
+        "target_present": target_present,
+        "target_label": selected.get("target_label"),
+        "target_ts": selected.get("target_ts"),
+        "http_status": selected.get("http_status"),
+        "api_error_name": selected.get("api_error_name"),
+        "api_error_message": selected.get("api_error_message"),
+        "response_hash": selected.get("response_hash"),
+    }
 
 
 def _classification_hypotheses(

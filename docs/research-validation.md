@@ -48,6 +48,14 @@ compatibility adapter for existing manifests, but it is not the research data
 layer's internal API and must not be assumed by strategy, validation, promotion,
 or reproduction code.
 
+Classified persistent missing-candle evidence is diagnostic only. Artifacts from
+`probe-missing-candles` and `classify-persistent-missing-candles` may help an
+operator distinguish retry, API availability, source-gap candidate, and DB-write
+mismatch hypotheses, but they do not relax production-bound readiness gates.
+Production-bound manifests remain fail-closed while required candle buckets are
+missing. Synthetic or external OHLCV repair is not authorized by this diagnostic
+path: `synthetic_candle_authority=not_allowed`.
+
 Canonical flow:
 
 ```text

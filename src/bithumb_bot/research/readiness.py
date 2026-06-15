@@ -499,6 +499,8 @@ def _persistent_missing_classification_payload(
             "artifact_hash": None,
             "status": "NOT_PROVIDED",
             "production_gate_effect": "none",
+            "source_gap_policy": "fail_closed",
+            "synthetic_candle_authority": "not_allowed",
             "summary": {},
             "reasons": [],
             "next_action": "none",
@@ -518,6 +520,8 @@ def _persistent_missing_classification_payload(
             "artifact_hash": None,
             "status": "FAIL",
             "production_gate_effect": "none",
+            "source_gap_policy": "fail_closed",
+            "synthetic_candle_authority": "not_allowed",
             "summary": {},
             "reasons": [str(exc)],
             "next_action": "regenerate classify-persistent-missing-candles from matching manifest, DB, missing ranges, and retry attempts",
@@ -529,6 +533,8 @@ def _persistent_missing_classification_payload(
         "artifact_hash": artifact.get("content_hash"),
         "status": "DIAGNOSTIC_ONLY",
         "production_gate_effect": "none",
+        "source_gap_policy": "diagnostic_only",
+        "synthetic_candle_authority": "not_allowed",
         "summary": {
             "exchange_gap_candidate": int(summary.get("exchange_gap_candidate") or 0),
             "api_unavailable_candidate": int(summary.get("api_unavailable_candidate") or 0),
@@ -587,6 +593,8 @@ def _validate_persistent_missing_classification_artifact(
     limitations = artifact.get("limitations") if isinstance(artifact.get("limitations"), dict) else {}
     if limitations.get("synthetic_ohlcv_authorized") is not False:
         raise ValueError("missing classification must not authorize synthetic OHLCV")
+    if limitations.get("synthetic_candle_authority") not in {None, "not_allowed"}:
+        raise ValueError("missing classification synthetic_candle_authority must be not_allowed")
     if limitations.get("production_gate_relaxed") is not False:
         raise ValueError("missing classification must not relax production gates")
     if limitations.get("top_of_book_satisfied") is not False:
@@ -705,6 +713,7 @@ def _print_readiness(report: dict[str, Any]) -> None:
         "  persistent_missing_classification="
         f"provided={1 if pmc['provided'] else 0} status={pmc['status']} "
         f"artifact_hash={pmc['artifact_hash']} production_gate_effect={pmc['production_gate_effect']} "
+        f"source_gap_policy={pmc['source_gap_policy']} synthetic_candle_authority={pmc['synthetic_candle_authority']} "
         f"reasons={','.join(pmc['reasons']) if pmc['reasons'] else 'none'}"
     )
     if pmc["provided"]:
