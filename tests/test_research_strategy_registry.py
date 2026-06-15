@@ -82,6 +82,14 @@ def test_research_strategy_registry_resolves_sma_with_filter() -> None:
     ]
 
 
+def test_sma_with_filter_plugin_remains_live_eligible() -> None:
+    from bithumb_bot.strategy_plugins.sma_with_filter_plugin import SMA_WITH_FILTER_PLUGIN
+
+    assert SMA_WITH_FILTER_PLUGIN.runtime_capabilities is not None
+    assert SMA_WITH_FILTER_PLUGIN.runtime_capabilities.live_dry_run_allowed is True
+    assert SMA_WITH_FILTER_PLUGIN.runtime_capabilities.live_real_order_allowed is True
+
+
 def test_live_dry_run_capability_requires_approved_profile_for_profile_bound_strategy() -> None:
     issues = strategy_registry.strategy_runtime_capability_issues(
         "sma_with_filter",

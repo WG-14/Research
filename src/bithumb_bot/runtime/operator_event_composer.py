@@ -218,6 +218,37 @@ class OperatorEventComposer:
             reason="sync completed but latest candle row was not found",
         )
 
+    def daily_participation_status_event(
+        self,
+        *,
+        count_basis: str,
+        days_with_intent: int,
+        days_with_filled_execution: int,
+        zero_filled_days: int,
+        max_consecutive_zero_filled_days: int,
+        target_status: str,
+    ) -> dict[str, Any]:
+        return _event(
+            "daily_participation_status",
+            alert_kind="strategy_observability",
+            symbol=self.symbol,
+            daily_participation_target=target_status,
+            count_basis=count_basis,
+            days_with_intent=int(days_with_intent),
+            days_with_filled_execution=int(days_with_filled_execution),
+            zero_filled_days=int(zero_filled_days),
+            max_consecutive_zero_filled_days=int(max_consecutive_zero_filled_days),
+            not_a_fill_guarantee=True,
+            operator_compact_summary=(
+                "daily_participation_target="
+                f"{target_status} count_basis={count_basis} "
+                f"days_with_intent={int(days_with_intent)} "
+                f"days_with_filled_execution={int(days_with_filled_execution)} "
+                f"zero_filled_days={int(zero_filled_days)} "
+                "not_a_fill_guarantee=true"
+            ),
+        )
+
     def sync_failed_event(self, *, fail_count: int, max_fails: int, error: str) -> dict[str, Any]:
         return _event(
             "sync_failed",
@@ -289,6 +320,9 @@ class RuntimeOperatorEventComposer:
     def event(self, name: str, **fields: Any) -> dict[str, Any]:
         method = getattr(self.composer, f"{name}_event")
         return method(**fields)
+
+    def daily_participation_status_event(self, **fields: Any) -> dict[str, Any]:
+        return self.composer.daily_participation_status_event(**fields)
 
     def execution_failure_from_transition(self, transition: Mapping[str, Any]) -> dict[str, Any]:
         reason_code = str(transition.get("reason_code") or "EXECUTION_FAILED")

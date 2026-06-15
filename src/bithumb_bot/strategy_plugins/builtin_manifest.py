@@ -26,6 +26,10 @@ BUILTIN_STRATEGY_PLUGIN_EXPORTS: tuple[BuiltinStrategyPluginExport, ...] = (
         "SMA_WITH_FILTER_PLUGIN",
     ),
     BuiltinStrategyPluginExport(
+        "bithumb_bot.strategy_plugins.daily_participation_sma",
+        "DAILY_PARTICIPATION_SMA_PLUGIN",
+    ),
+    BuiltinStrategyPluginExport(
         "bithumb_bot.strategy_plugins.baseline_plugins",
         "NOOP_BASELINE_PLUGIN",
     ),

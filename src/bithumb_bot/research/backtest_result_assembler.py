@@ -103,6 +103,7 @@ class BacktestResultAssembler:
             position_intervals=position_intervals,
             closed_trades=closed_trade_records,
             execution_records=execution_records,
+            decision_records=tuple(decisions),
             **(
                 {}
                 if accumulator.retain_full_detail()

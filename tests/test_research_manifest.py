@@ -78,6 +78,51 @@ def test_research_rejects_unknown_strategy_params() -> None:
         parse_manifest(payload)
 
 
+def test_sma_with_filter_rejects_daily_participation_parameters() -> None:
+    payload = _manifest()
+    payload["parameter_space"] = {
+        **payload["parameter_space"],  # type: ignore[arg-type]
+        "DAILY_PARTICIPATION_ENABLED": [True],
+        "DAILY_MIN_TRADE_ENABLED": [True],
+    }
+
+    with pytest.raises(ManifestValidationError, match="unknown strategy parameter"):
+        parse_manifest(payload)
+
+
+def test_acceptance_gate_parses_daily_participation_fields() -> None:
+    payload = _manifest()
+    gate = payload["acceptance_gate"]  # type: ignore[index]
+    assert isinstance(gate, dict)
+    gate.update(
+        {
+            "min_trade_days_pct": 95.0,
+            "max_zero_filled_days": 1,
+            "max_consecutive_zero_filled_days": 1,
+            "min_filled_execution_per_kst_day": 1,
+            "participation_count_basis": "filled",
+        }
+    )
+
+    manifest = parse_manifest(payload)
+
+    assert manifest.acceptance_gate.min_trade_days_pct == 95.0
+    assert manifest.acceptance_gate.max_zero_filled_days == 1
+    assert manifest.acceptance_gate.max_consecutive_zero_filled_days == 1
+    assert manifest.acceptance_gate.min_filled_execution_per_kst_day == 1
+    assert manifest.acceptance_gate.participation_count_basis == "filled"
+
+
+def test_acceptance_gate_rejects_invalid_daily_participation_ranges() -> None:
+    payload = _manifest()
+    gate = payload["acceptance_gate"]  # type: ignore[index]
+    assert isinstance(gate, dict)
+    gate["min_trade_days_pct"] = 150
+
+    with pytest.raises(ManifestValidationError, match="min_trade_days_pct"):
+        parse_manifest(payload)
+
+
 def test_research_only_dual_cost_authority_is_labeled_not_ambiguous() -> None:
     payload = _manifest()
     payload["deployment_tier"] = "research_only"

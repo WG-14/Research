@@ -3,6 +3,12 @@
 This repository separates research-stage candidate variables from runtime env values.
 Research manifests define hypotheses, data splits, parameter spaces, cost models, and acceptance gates.
 
+Daily participation objectives are basis-specific validation targets, not fill
+guarantees. Reports must show intent, submit-expected/submitted, filled, and
+closed-trade basis results separately. A BUY intent can still be blocked or
+remain unfilled by runtime safety, sizing, preflight, execution, or broker
+conditions, so operator-facing wording must not claim daily trade guarantees.
+
 Root `backtest.py` and any simple close-price SMA script are smoke backtests only. Root `backtest.py` is fail-closed by default and requires `--diagnostic-smoke-only` before it delegates to `tools/diagnostic_smoke_backtest.py`, which is intentionally outside the `bithumb_bot` package runtime namespace. Smoke output must not be used as evidence for strategy promotion, approved profiles, live readiness, or capital allocation. For production-bound targets, the normal custody path is `uv run bithumb-bot research-validate --manifest <path>`. It runs the policy-required lifecycle stages, creates the promotion artifact, reproduces it, and writes the hash-bound `validation_run.json` operator record. `research-backtest` and `research-walk-forward` remain diagnostic/development commands unless a specific runbook says otherwise; process success from a diagnostic command must not be interpreted as promotion-grade validation success. A standalone `research-backtest` may correctly report `validation_run_complete=false`, `diagnostic_only=true`, `standalone_backtest_not_full_validation=true`, and `walk_forward_required_but_not_executed_in_this_run` when walk-forward is required. That marker is a diagnostic truth about the standalone command, not a reason for `research-validate` to stop before running the policy-required walk-forward stage.
 Runtime env/profile values should be treated as verified outputs of that process, not mutable knobs to tune until a backtest looks good.
 

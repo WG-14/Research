@@ -18,6 +18,11 @@ METRICS_GATE_POLICY_FIELDS = (
     "max_single_trade_dependency_score",
     "reject_open_position_at_end",
     "metrics_contract_required",
+    "min_trade_days_pct",
+    "max_zero_filled_days",
+    "max_consecutive_zero_filled_days",
+    "min_filled_execution_per_kst_day",
+    "participation_count_basis",
 )
 
 
@@ -34,6 +39,11 @@ def metrics_gate_policy_from_acceptance_gate(gate: Any) -> dict[str, object]:
         "max_single_trade_dependency_score": getattr(gate, "max_single_trade_dependency_score", None),
         "reject_open_position_at_end": bool(getattr(gate, "reject_open_position_at_end", False)),
         "metrics_contract_required": bool(getattr(gate, "metrics_contract_required", False)),
+        "min_trade_days_pct": getattr(gate, "min_trade_days_pct", None),
+        "max_zero_filled_days": getattr(gate, "max_zero_filled_days", None),
+        "max_consecutive_zero_filled_days": getattr(gate, "max_consecutive_zero_filled_days", None),
+        "min_filled_execution_per_kst_day": getattr(gate, "min_filled_execution_per_kst_day", None),
+        "participation_count_basis": getattr(gate, "participation_count_basis", None),
     }
 
 

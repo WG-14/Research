@@ -4558,6 +4558,10 @@ def _metrics_v2_gate_reasons(*, gate, metrics_v2: dict[str, Any] | None, prefix:
             gate.max_fee_drag_ratio,
             gate.max_slippage_drag_ratio,
             gate.max_single_trade_dependency_score,
+            gate.min_trade_days_pct,
+            gate.max_zero_filled_days,
+            gate.max_consecutive_zero_filled_days,
+            gate.min_filled_execution_per_kst_day,
         )
     ) or gate.reject_open_position_at_end or gate.metrics_contract_required
     if not has_v2_gate:
@@ -4633,6 +4637,57 @@ def _metrics_v2_gate_reasons(*, gate, metrics_v2: dict[str, Any] | None, prefix:
     )
     if gate.reject_open_position_at_end and bool(return_risk.get("open_position_at_end")):
         reasons.append(f"{prefix}open_position_at_end_failed")
+    participation = metrics_v2.get("participation") if isinstance(metrics_v2.get("participation"), dict) else {}
+    if any(
+        value is not None
+        for value in (
+            gate.min_trade_days_pct,
+            gate.max_zero_filled_days,
+            gate.max_consecutive_zero_filled_days,
+            gate.min_filled_execution_per_kst_day,
+        )
+    ):
+        if not participation:
+            reasons.append(f"{prefix}daily_participation_metrics_missing")
+        else:
+            configured_basis = getattr(gate, "participation_count_basis", None)
+            if configured_basis is not None and participation.get("count_basis") != configured_basis:
+                reasons.append(f"{prefix}daily_participation_count_basis_mismatch")
+            calendar_day_count = int(participation.get("calendar_day_count") or 0)
+            days_with_filled = int(participation.get("days_with_filled_execution") or 0)
+            trade_days_pct = (
+                days_with_filled / float(calendar_day_count) * 100.0
+                if calendar_day_count > 0
+                else None
+            )
+            _append_min_reason(
+                reasons,
+                value=trade_days_pct,
+                threshold=gate.min_trade_days_pct,
+                missing_code=f"{prefix}daily_participation_trade_days_pct_missing",
+                failed_code=f"{prefix}daily_participation_min_trade_days_pct_failed",
+            )
+            _append_max_reason(
+                reasons,
+                value=participation.get("zero_filled_days"),
+                threshold=gate.max_zero_filled_days,
+                missing_code=f"{prefix}daily_participation_zero_filled_days_missing",
+                failed_code=f"{prefix}daily_participation_max_zero_filled_days_failed",
+            )
+            _append_max_reason(
+                reasons,
+                value=participation.get("max_consecutive_zero_filled_days"),
+                threshold=gate.max_consecutive_zero_filled_days,
+                missing_code=f"{prefix}daily_participation_consecutive_zero_filled_days_missing",
+                failed_code=f"{prefix}daily_participation_max_consecutive_zero_filled_days_failed",
+            )
+            _append_min_reason(
+                reasons,
+                value=participation.get("min_daily_filled_execution_count"),
+                threshold=gate.min_filled_execution_per_kst_day,
+                missing_code=f"{prefix}daily_participation_min_daily_filled_count_missing",
+                failed_code=f"{prefix}daily_participation_min_filled_execution_per_kst_day_failed",
+            )
     return reasons
 
 

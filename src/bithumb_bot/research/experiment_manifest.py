@@ -414,6 +414,11 @@ class AcceptanceGate:
     max_single_trade_dependency_score: float | None = None
     reject_open_position_at_end: bool = False
     metrics_contract_required: bool = False
+    min_trade_days_pct: float | None = None
+    max_zero_filled_days: int | None = None
+    max_consecutive_zero_filled_days: int | None = None
+    min_filled_execution_per_kst_day: int | None = None
+    participation_count_basis: str | None = None
     regime_acceptance_gate: RegimeAcceptanceGate = field(default_factory=RegimeAcceptanceGate)
 
     def as_dict(self) -> dict[str, object]:
@@ -436,6 +441,11 @@ class AcceptanceGate:
             "max_fee_drag_ratio": self.max_fee_drag_ratio,
             "max_slippage_drag_ratio": self.max_slippage_drag_ratio,
             "max_single_trade_dependency_score": self.max_single_trade_dependency_score,
+            "min_trade_days_pct": self.min_trade_days_pct,
+            "max_zero_filled_days": self.max_zero_filled_days,
+            "max_consecutive_zero_filled_days": self.max_consecutive_zero_filled_days,
+            "min_filled_execution_per_kst_day": self.min_filled_execution_per_kst_day,
+            "participation_count_basis": self.participation_count_basis,
         }
         payload.update(optional_fields)
         payload["reject_open_position_at_end"] = self.reject_open_position_at_end
@@ -2006,6 +2016,11 @@ def _parse_acceptance_gate(payload: dict[str, Any]) -> AcceptanceGate:
         "max_single_trade_dependency_score",
         "reject_open_position_at_end",
         "metrics_contract_required",
+        "min_trade_days_pct",
+        "max_zero_filled_days",
+        "max_consecutive_zero_filled_days",
+        "min_filled_execution_per_kst_day",
+        "participation_count_basis",
     }
     unknown = sorted(set(payload) - allowed_fields)
     if unknown:
@@ -2053,6 +2068,20 @@ def _parse_acceptance_gate(payload: dict[str, Any]) -> AcceptanceGate:
         ),
         reject_open_position_at_end=bool(payload.get("reject_open_position_at_end", False)),
         metrics_contract_required=bool(payload.get("metrics_contract_required", False)),
+        min_trade_days_pct=_optional_pct(payload.get("min_trade_days_pct"), "acceptance_gate.min_trade_days_pct"),
+        max_zero_filled_days=_optional_non_negative_int(
+            payload.get("max_zero_filled_days"),
+            "acceptance_gate.max_zero_filled_days",
+        ),
+        max_consecutive_zero_filled_days=_optional_non_negative_int(
+            payload.get("max_consecutive_zero_filled_days"),
+            "acceptance_gate.max_consecutive_zero_filled_days",
+        ),
+        min_filled_execution_per_kst_day=_optional_non_negative_int(
+            payload.get("min_filled_execution_per_kst_day"),
+            "acceptance_gate.min_filled_execution_per_kst_day",
+        ),
+        participation_count_basis=_optional_participation_count_basis(payload.get("participation_count_basis")),
         regime_acceptance_gate=_parse_regime_acceptance_gate(payload.get("regime_acceptance_gate")),
     )
 
@@ -3019,3 +3048,20 @@ def _optional_positive_or_zero_int(value: Any, field: str) -> int | None:
     if value is None:
         return None
     return _positive_or_zero_int(value, field)
+
+
+def _optional_non_negative_int(value: Any, field: str) -> int | None:
+    return _optional_positive_or_zero_int(value, field)
+
+
+def _optional_participation_count_basis(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    allowed = {"intent", "submit_expected", "submitted", "filled", "closed_trade"}
+    if normalized not in allowed:
+        raise ManifestValidationError(
+            "acceptance_gate.participation_count_basis must be one of "
+            + ",".join(sorted(allowed))
+        )
+    return normalized

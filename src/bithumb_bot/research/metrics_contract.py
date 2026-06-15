@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from math import isfinite
 from statistics import mean, median, pstdev
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 METRICS_SCHEMA_VERSION = 2
@@ -112,6 +114,8 @@ class ExecutionRecord:
     fee: float = 0.0
     slippage: float = 0.0
     quote_age_ms: int | None = None
+    ts: int | None = None
+    entry_signal_source: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -122,6 +126,8 @@ class ExecutionRecord:
             "fee": float(self.fee),
             "slippage": float(self.slippage),
             "quote_age_ms": int(self.quote_age_ms) if self.quote_age_ms is not None else None,
+            "ts": int(self.ts) if self.ts is not None else None,
+            "entry_signal_source": self.entry_signal_source,
         }
 
 
@@ -202,16 +208,40 @@ class CostExecutionMetrics:
 
 
 @dataclass(frozen=True)
+class ParticipationMetrics:
+    timezone: str
+    count_basis: str
+    calendar_day_count: int
+    days_with_intent: int
+    days_with_submit_expected: int
+    days_with_submitted: int
+    days_with_filled_execution: int
+    days_with_closed_trade: int
+    zero_intent_days: int
+    zero_filled_days: int
+    max_consecutive_zero_filled_days: int
+    min_daily_filled_execution_count: int
+    fallback_entry_count: int
+    fallback_filled_count: int
+    daily_counts_hash: str
+    not_a_fill_guarantee: bool = True
+
+    def as_dict(self) -> dict[str, object]:
+        return self.__dict__.copy()
+
+
+@dataclass(frozen=True)
 class MetricContractV2:
     metrics_schema_version: int
     return_risk: ReturnRiskMetrics
     trade_quality: TradeQualityMetrics
     time_exposure: TimeExposureMetrics
     cost_execution: CostExecutionMetrics
+    participation: ParticipationMetrics | None = None
     limitation_reasons: tuple[str, ...] = field(default_factory=tuple)
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        payload = {
             "metrics_schema_version": self.metrics_schema_version,
             "return_risk": self.return_risk.as_dict(),
             "trade_quality": self.trade_quality.as_dict(),
@@ -219,6 +249,9 @@ class MetricContractV2:
             "cost_execution": self.cost_execution.as_dict(),
             "limitation_reasons": list(self.limitation_reasons),
         }
+        if self.participation is not None:
+            payload["participation"] = self.participation.as_dict()
+        return payload
 
 
 def build_metrics_v2(
@@ -238,6 +271,9 @@ def build_metrics_v2(
     summary_max_drawdown_pct: float | None = None,
     summary_active_bar_count: int | None = None,
     summary_exposure_ms: int | None = None,
+    decision_records: tuple[dict[str, Any], ...] = (),
+    participation_count_basis: str = "filled",
+    participation_timezone: str = "Asia/Seoul",
 ) -> MetricContractV2:
     limitations: list[str] = []
     points = tuple(sorted(equity_curve, key=lambda item: item.ts))
@@ -329,6 +365,15 @@ def build_metrics_v2(
     quote_ages = [int(record.quote_age_ms) for record in execution_records if record.quote_age_ms is not None]
     quote_coverage_pct = (len(quote_ages) / len(execution_records) * 100.0) if execution_records else None
     statuses = [record.status for record in execution_records]
+    participation = build_participation_metrics(
+        period_start_ts=period_start,
+        period_end_ts=period_end,
+        decision_records=decision_records,
+        execution_records=execution_records,
+        closed_trades=closed_trades,
+        timezone_name=participation_timezone,
+        count_basis=participation_count_basis,
+    )
     return MetricContractV2(
         metrics_schema_version=METRICS_SCHEMA_VERSION,
         return_risk=ReturnRiskMetrics(
@@ -382,8 +427,128 @@ def build_metrics_v2(
             median_quote_age_ms=median(quote_ages) if quote_ages else None,
             p95_quote_age_ms=_percentile(quote_ages, 95) if quote_ages else None,
         ),
+        participation=participation,
         limitation_reasons=tuple(sorted(set(limitations))),
     )
+
+
+def build_participation_metrics(
+    *,
+    period_start_ts: int | None,
+    period_end_ts: int | None,
+    decision_records: tuple[dict[str, Any], ...] = (),
+    execution_records: tuple[ExecutionRecord, ...] = (),
+    closed_trades: tuple[ClosedTradeRecord, ...] = (),
+    timezone_name: str = "Asia/Seoul",
+    count_basis: str = "filled",
+) -> ParticipationMetrics:
+    from .hashing import sha256_prefixed
+
+    days = _calendar_days(period_start_ts=period_start_ts, period_end_ts=period_end_ts, timezone_name=timezone_name)
+    intent_counts = {day: 0 for day in days}
+    submit_expected_counts = {day: 0 for day in days}
+    submitted_counts = {day: 0 for day in days}
+    filled_counts = {day: 0 for day in days}
+    closed_counts = {day: 0 for day in days}
+    fallback_entry_count = 0
+    fallback_filled_count = 0
+    for decision in decision_records:
+        if str(decision.get("final_signal") or decision.get("signal") or "").upper() != "BUY":
+            continue
+        ts = _coerce_ts(decision.get("decision_ts") or decision.get("ts") or decision.get("candle_ts"))
+        if ts is None:
+            continue
+        day = _day(ts, timezone_name)
+        intent_counts[day] = intent_counts.get(day, 0) + 1
+        submit_expected_counts[day] = submit_expected_counts.get(day, 0) + 1
+        trace = decision.get("trace") if isinstance(decision.get("trace"), dict) else decision
+        if isinstance(trace, dict) and trace.get("entry_signal_source") == "daily_participation_fallback":
+            fallback_entry_count += 1
+    for record in execution_records:
+        if str(record.side).upper() != "BUY":
+            continue
+        if record.ts is None:
+            continue
+        day = _day(record.ts, timezone_name)
+        if str(record.status) in {"submitted", "filled", "partial"}:
+            submitted_counts[day] = submitted_counts.get(day, 0) + 1
+        if str(record.status) in {"filled", "partial"} and float(record.filled_qty) > 0.0:
+            filled_counts[day] = filled_counts.get(day, 0) + 1
+            if record.entry_signal_source == "daily_participation_fallback":
+                fallback_filled_count += 1
+    for trade in closed_trades:
+        if trade.exit_ts is None:
+            continue
+        day = _day(trade.exit_ts, timezone_name)
+        closed_counts[day] = closed_counts.get(day, 0) + 1
+    zero_filled_days = sum(1 for day in days if filled_counts.get(day, 0) == 0)
+    daily_payload = {
+        "timezone": timezone_name,
+        "count_basis": count_basis,
+        "days": days,
+        "intent": intent_counts,
+        "submit_expected": submit_expected_counts,
+        "submitted": submitted_counts,
+        "filled": filled_counts,
+        "closed_trade": closed_counts,
+    }
+    return ParticipationMetrics(
+        timezone=timezone_name,
+        count_basis=count_basis,
+        calendar_day_count=len(days),
+        days_with_intent=sum(1 for day in days if intent_counts.get(day, 0) > 0),
+        days_with_submit_expected=sum(1 for day in days if submit_expected_counts.get(day, 0) > 0),
+        days_with_submitted=sum(1 for day in days if submitted_counts.get(day, 0) > 0),
+        days_with_filled_execution=sum(1 for day in days if filled_counts.get(day, 0) > 0),
+        days_with_closed_trade=sum(1 for day in days if closed_counts.get(day, 0) > 0),
+        zero_intent_days=sum(1 for day in days if intent_counts.get(day, 0) == 0),
+        zero_filled_days=zero_filled_days,
+        max_consecutive_zero_filled_days=_max_consecutive_zero_days(days, filled_counts),
+        min_daily_filled_execution_count=min((filled_counts.get(day, 0) for day in days), default=0),
+        fallback_entry_count=fallback_entry_count,
+        fallback_filled_count=fallback_filled_count,
+        daily_counts_hash=sha256_prefixed(daily_payload),
+    )
+
+
+def _coerce_ts(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _day(ts_ms: int, timezone_name: str) -> str:
+    tz = ZoneInfo("Asia/Seoul" if timezone_name == "KST" else timezone_name)
+    return datetime.fromtimestamp(int(ts_ms) / 1000.0, tz=timezone.utc).astimezone(tz).date().isoformat()
+
+
+def _calendar_days(*, period_start_ts: int | None, period_end_ts: int | None, timezone_name: str) -> tuple[str, ...]:
+    if period_start_ts is None or period_end_ts is None:
+        return ()
+    start = _day(period_start_ts, timezone_name)
+    end = _day(period_end_ts, timezone_name)
+    start_dt = datetime.fromisoformat(start)
+    end_dt = datetime.fromisoformat(end)
+    if end_dt < start_dt:
+        return ()
+    count = (end_dt.date() - start_dt.date()).days
+    return tuple(
+        datetime.fromordinal(start_dt.date().toordinal() + offset).date().isoformat()
+        for offset in range(count + 1)
+    )
+
+
+def _max_consecutive_zero_days(days: tuple[str, ...], counts: dict[str, int]) -> int:
+    longest = 0
+    current = 0
+    for day in days:
+        if counts.get(day, 0) == 0:
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return longest
 
 
 def _cagr_pct(*, total_return_pct: float, elapsed_ms: int | None) -> float | None:

@@ -560,6 +560,10 @@ def summarize_report_candidate(candidate: Any) -> dict[str, Any]:
         "metrics_v2_source",
         "validation_metrics_v2",
         "final_holdout_metrics_v2",
+        "participation_summary",
+        "participation_metric_hash",
+        "daily_participation_target",
+        "not_a_fill_guarantee",
         "candidate_failed_before_complete_metrics",
         "gate_fail_reasons",
         "simulation_integrity_status",
@@ -608,6 +612,7 @@ def summarize_report_candidate(candidate: Any) -> dict[str, Any]:
         "exploratory_result",
     )
     summary = {key: candidate[key] for key in summary_keys if key in candidate}
+    _attach_participation_summary(summary, candidate)
     _copy_compact_diagnostics(summary, candidate)
     summary["train_equity_curve"] = []
     summary["validation_equity_curve"] = []
@@ -617,6 +622,47 @@ def summarize_report_candidate(candidate: Any) -> dict[str, Any]:
         label="candidate_evidence_hash",
     )
     return summary
+
+
+def _attach_participation_summary(summary: dict[str, Any], candidate: dict[str, Any]) -> None:
+    metrics = candidate.get("validation_metrics_v2")
+    if not isinstance(metrics, dict):
+        metrics = candidate.get("final_holdout_metrics_v2") if isinstance(candidate.get("final_holdout_metrics_v2"), dict) else {}
+    participation = metrics.get("participation") if isinstance(metrics, dict) and isinstance(metrics.get("participation"), dict) else None
+    if participation is None and isinstance(candidate.get("participation_summary"), dict):
+        participation = candidate["participation_summary"]
+    if not isinstance(participation, dict):
+        return
+    compact_keys = (
+        "timezone",
+        "count_basis",
+        "calendar_day_count",
+        "days_with_intent",
+        "days_with_submit_expected",
+        "days_with_submitted",
+        "days_with_filled_execution",
+        "days_with_closed_trade",
+        "zero_intent_days",
+        "zero_filled_days",
+        "max_consecutive_zero_filled_days",
+        "min_daily_filled_execution_count",
+        "fallback_entry_count",
+        "fallback_filled_count",
+        "daily_counts_hash",
+        "not_a_fill_guarantee",
+    )
+    compact = {key: participation.get(key) for key in compact_keys if key in participation}
+    compact["not_a_fill_guarantee"] = True
+    summary["participation_summary"] = compact
+    summary["participation_metric_hash"] = sha256_prefixed(
+        report_content_hash_payload(compact),
+        label="participation_metric_summary",
+    )
+    summary["daily_participation_target"] = {
+        "basis_specific_results": True,
+        "not_a_fill_guarantee": True,
+        "count_basis": compact.get("count_basis"),
+    }
 
 
 def summarize_derived_candidate(candidate: Any, report_detail: str) -> Any:
