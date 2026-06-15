@@ -97,7 +97,9 @@ EXPECTED_COMMANDS = {
     "profile-promote",
     "research-missing-candles",
     "retry-missing-candles",
+    "probe-missing-candles",
     "classify-persistent-missing-candles",
+    "find-clean-candle-segments",
     "strategy-sweep",
 }
 
