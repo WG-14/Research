@@ -33,6 +33,11 @@ The paired A/B summary must include:
 ```text
 variant_role
 period
+market
+interval
+execution_scenario or scenario_id
+cost_model_hash
+portfolio_policy_hash
 readiness_status
 final_holdout_missing_count
 final_holdout_interval_mismatch_count
@@ -49,6 +54,12 @@ first_entry_notional_approximately_99000
 Reject the summary if any candidate row lacks a matching control row for the same
 clean subwindow, if `policy_mismatch_sum` is missing, or if first-entry notional
 verification is missing.
+
+The acceptance classifier validates the paired summary before performance
+classification. Missing required fields, readiness failures, missing candles,
+interval mismatches, quality failures when present, coverage below `100.0` when
+present, missing matching control rows, and paired context mismatches are
+fail-closed blockers. Missing numeric fields must not be interpreted as zero.
 
 ## Root-Cause Report
 
@@ -99,3 +110,23 @@ fail:
 Do not mark success from average return alone, profit factor alone, or a 1-2 trade
 candidate. If `policy_mismatch_sum > 0`, stop the performance comparison and
 classify the candidate as `fail`.
+
+Required acceptance fields are:
+
+```text
+candidate:
+  avg_return_pct
+  positive_periods
+  period_count
+  sum_reclaim_pnl
+  sum_max_hold_pnl
+  sum_trades
+  policy_mismatch_sum
+  first_entry_notional
+
+control:
+  avg_return_pct
+  sum_reclaim_pnl
+  sum_max_hold_pnl
+  sum_trades
+```
