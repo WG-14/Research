@@ -11,6 +11,15 @@ from bithumb_bot.storage_io import write_json_atomic as write_json_atomic_untrac
 from .artifact_store import ArtifactBudget, ArtifactStore, ResearchArtifactContext
 from .hashing import observe_hashing, report_content_hash_payload, sha256_prefixed
 
+PARENT_SERIAL_REPORT_STAGES = {
+    "pre_parallel_run_dataset_fingerprint",
+    "pre_parallel_hash_materialization",
+    "build_work_tasks",
+    "append_candidate_start_events",
+    "parallel_worker_pool_start",
+    "report_write",
+}
+
 
 @dataclass(frozen=True)
 class ResearchReportPaths:
@@ -193,6 +202,7 @@ def write_research_report(
         )
         _sync_report_write_stage(state.report_payload, state.artifact_write_summary)
         _sync_report_write_substages(state.report_payload, state.artifact_write_summary)
+        _sync_parent_serial_stage_summary(state.report_payload)
         _sync_workload_estimate_comparison(state.report_payload, state.artifact_write_summary)
         _rewrite_final_report_payload(state)
     return ResearchReportWriteResult(
@@ -350,6 +360,7 @@ def _rewrite_final_report_payload(state: ReportFinalizationState) -> None:
     )
     _sync_report_write_stage(state.report_payload, state.artifact_write_summary)
     _sync_report_write_substages(state.report_payload, state.artifact_write_summary)
+    _sync_parent_serial_stage_summary(state.report_payload)
     _sync_workload_estimate_comparison(state.report_payload, state.artifact_write_summary)
     state.content_hash = sha256_prefixed(
         report_content_hash_payload(state.report_payload),
@@ -371,6 +382,7 @@ def _rewrite_final_report_payload(state: ReportFinalizationState) -> None:
     )
     _sync_report_write_stage(state.report_payload, state.artifact_write_summary)
     _sync_report_write_substages(state.report_payload, state.artifact_write_summary)
+    _sync_parent_serial_stage_summary(state.report_payload)
     _sync_workload_estimate_comparison(state.report_payload, state.artifact_write_summary)
     state.content_hash = sha256_prefixed(
         report_content_hash_payload(state.report_payload),
@@ -391,6 +403,7 @@ def _rewrite_final_report_payload(state: ReportFinalizationState) -> None:
         )
         _sync_report_write_stage(state.report_payload, state.artifact_write_summary)
         _sync_report_write_substages(state.report_payload, state.artifact_write_summary)
+        _sync_parent_serial_stage_summary(state.report_payload)
         _sync_workload_estimate_comparison(state.report_payload, state.artifact_write_summary)
         _converge_final_report_size(state)
         write_json_atomic_untracked(state.paths.report_path, state.report_payload)
@@ -428,6 +441,7 @@ def _converge_final_report_size(state: ReportFinalizationState) -> None:
         )
         _sync_report_write_stage(state.report_payload, state.artifact_write_summary)
         _sync_report_write_substages(state.report_payload, state.artifact_write_summary)
+        _sync_parent_serial_stage_summary(state.report_payload)
         _sync_workload_estimate_comparison(state.report_payload, state.artifact_write_summary)
         state.report_payload["artifact_write_summary"] = dict(state.artifact_write_summary)
         state.report_payload.setdefault("artifact_observability", {})["report_write"] = dict(
@@ -470,6 +484,7 @@ def persist_final_research_report_observability(
     report_payload["artifact_write_summary"] = dict(final_summary)
     report_payload["artifact_observability"]["report_write"] = dict(final_summary)
     _sync_report_write_stage(report_payload, final_summary)
+    _sync_parent_serial_stage_summary(report_payload)
     final_content_hash = sha256_prefixed(report_content_hash_payload(report_payload))
     report_payload["content_hash"] = final_content_hash
     final_summary["report_bytes"] = _stable_final_report_byte_count(
@@ -499,6 +514,7 @@ def persist_final_research_report_observability(
         report_payload["artifact_write_summary"] = dict(final_summary)
         report_payload["artifact_observability"]["report_write"] = dict(final_summary)
         _sync_report_write_stage(report_payload, final_summary)
+        _sync_parent_serial_stage_summary(report_payload)
         final_content_hash = sha256_prefixed(report_content_hash_payload(report_payload))
         report_payload["content_hash"] = final_content_hash
         rewrite_started = time.perf_counter()
@@ -1827,6 +1843,7 @@ def _stable_final_report_byte_count(
 ) -> int:
     last = -1
     _sync_report_write_stage(report_payload, artifact_write_summary)
+    _sync_parent_serial_stage_summary(report_payload)
     current = _json_byte_count(report_payload)
     while current != last:
         last = current
@@ -1835,6 +1852,7 @@ def _stable_final_report_byte_count(
         report_payload["artifact_write_summary"] = dict(artifact_write_summary)
         report_payload.setdefault("artifact_observability", {})["report_write"] = dict(artifact_write_summary)
         _sync_report_write_stage(report_payload, artifact_write_summary)
+        _sync_parent_serial_stage_summary(report_payload)
         report_payload["content_hash"] = sha256_prefixed(
             report_content_hash_payload(report_payload),
             label="stable_final_report_content_hash",
@@ -1877,6 +1895,50 @@ def _sync_report_write_stage(report_payload: dict[str, Any], artifact_write_summ
                 "observed_hash_payload_bytes": artifact_write_summary.get("observed_hash_payload_bytes"),
             }
         )
+
+
+def _sync_parent_serial_stage_summary(report_payload: dict[str, Any]) -> None:
+    execution_observability = report_payload.setdefault("execution_observability", {})
+    if not isinstance(execution_observability, dict):
+        return
+    stage_timings = execution_observability.get("stage_timings")
+    if not isinstance(stage_timings, list):
+        return
+    parent_timings = [
+        dict(item)
+        for item in stage_timings
+        if isinstance(item, dict) and str(item.get("stage") or "") in PARENT_SERIAL_REPORT_STAGES
+    ]
+    parent_seconds = sum(float(item.get("wall_seconds") or 0.0) for item in parent_timings)
+    execution_observability["parent_serial_stage_timings"] = parent_timings
+    execution_observability["parent_serial_wall_seconds"] = round(parent_seconds, 6)
+    worker_seconds = execution_observability.get("parallel_worker_execution_wall_seconds")
+    if worker_seconds is None:
+        for item in stage_timings:
+            if isinstance(item, dict) and item.get("stage") == "parallel_worker_execution":
+                worker_seconds = item.get("wall_seconds")
+                break
+    worker = float(worker_seconds or 0.0)
+    execution_observability["parent_serial_to_worker_wall_ratio"] = (
+        round(parent_seconds / worker, 6) if worker > 0.0 else None
+    )
+    reasons = [
+        str(reason)
+        for reason in execution_observability.get("parent_serial_bottleneck_reasons", [])
+        if isinstance(reason, str) and not reason.startswith("parent_serial_stage_dominates_wall_time:")
+    ]
+    if worker > 0.0 and parent_seconds > worker and parent_timings:
+        dominant = max(parent_timings, key=lambda item: float(item.get("wall_seconds") or 0.0))
+        reasons.append(f"parent_serial_stage_dominates_wall_time:{dominant.get('stage')}")
+    execution_observability["parent_serial_bottleneck_reasons"] = reasons
+    warnings = [
+        str(reason)
+        for reason in execution_observability.get("worker_observation_warning_reasons", [])
+        if isinstance(reason, str)
+    ]
+    if worker > 0.0 and parent_seconds > worker and "parent_serial_stage_dominates_wall_time" not in warnings:
+        warnings.append("parent_serial_stage_dominates_wall_time")
+    execution_observability["worker_observation_warning_reasons"] = sorted(set(warnings))
 
 
 def _sync_report_write_substages(

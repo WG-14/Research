@@ -26,6 +26,18 @@ def _parallel_manifest(max_workers: int = 16):
     return parse_manifest(payload)
 
 
+def _auto_manifest():
+    payload = _manifest()
+    payload.pop("research_run", None)
+    return parse_manifest(payload)
+
+
+def _explicit_serial_manifest():
+    payload = _manifest()
+    payload["research_run"] = {"execution": {"mode": "serial", "max_workers": 1}}
+    return parse_manifest(payload)
+
+
 def test_resource_planner_detects_mocked_wsl_cpu_and_memory(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("BITHUMB_RESEARCH_MAX_WORKERS", raising=False)
     cgroup, proc = _mock_linux_limits(tmp_path)
@@ -42,6 +54,46 @@ def test_resource_planner_detects_mocked_wsl_cpu_and_memory(tmp_path: Path, monk
     assert contract.cpu_limit == 8
     assert contract.memory_limit_mb == 12 * 1024
     assert plan.effective_max_workers == 8
+
+
+def test_resource_planner_auto_selects_parallel_when_mode_unset_and_resources_available(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cgroup, proc = _mock_linux_limits(tmp_path)
+    monkeypatch.delenv("BITHUMB_RESEARCH_MAX_WORKERS", raising=False)
+    contract = detect_resource_contract(cgroup_root=cgroup, proc_root=proc)
+
+    plan = plan_research_resources(
+        manifest=_auto_manifest(),
+        candidate_count=16,
+        scenario_count=1,
+        split_count=2,
+        resource_contract=contract,
+    )
+
+    assert plan.requested_execution_mode == "auto"
+    assert plan.effective_execution_mode == "parallel"
+    assert plan.as_dict()["effective_execution_mode"] == "parallel"
+    assert "execution_mode_selection:auto_parallel_detected_resources_and_workload" in plan.selection_reasons
+
+
+def test_resource_planner_keeps_explicit_serial_mode(tmp_path: Path, monkeypatch) -> None:
+    cgroup, proc = _mock_linux_limits(tmp_path)
+    monkeypatch.delenv("BITHUMB_RESEARCH_MAX_WORKERS", raising=False)
+    contract = detect_resource_contract(cgroup_root=cgroup, proc_root=proc)
+
+    plan = plan_research_resources(
+        manifest=_explicit_serial_manifest(),
+        candidate_count=16,
+        scenario_count=1,
+        split_count=2,
+        resource_contract=contract,
+    )
+
+    assert plan.requested_execution_mode == "serial"
+    assert plan.effective_execution_mode == "serial"
+    assert plan.effective_max_workers == 1
+    assert "execution_mode_selection:manifest_explicit_serial" in plan.selection_reasons
 
 
 def test_resource_planner_respects_env_worker_cap(tmp_path: Path, monkeypatch) -> None:

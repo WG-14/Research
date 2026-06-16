@@ -200,6 +200,8 @@ def build_research_execution_plan(
         candidate_count=len(candidates),
         scenario_count=len(execution_scenarios),
         split_count=split_count,
+        split_names=split_names,
+        include_walk_forward=include_walk_forward,
     )
     resource_plan_payload = resource_plan.as_dict()
     work_unit_selection = resource_plan.work_unit_selection.as_dict()
@@ -242,7 +244,10 @@ def build_research_execution_plan(
         ),
         "plugin_complexity": plugin_complexity,
         "estimated_plugin_runtime_us": estimated_plugin_runtime_us,
-        "execution_mode": resource_plan.execution_mode,
+        "execution_mode": resource_plan.effective_execution_mode,
+        "requested_execution_mode": resource_plan.requested_execution_mode,
+        "effective_execution_mode": resource_plan.effective_execution_mode,
+        "execution_mode_selection_reason": resource_plan.execution_mode_selection_reason,
         "max_workers": resource_plan.effective_max_workers,
         "requested_max_workers": resource_plan.requested_max_workers,
         "process_start_method": manifest.research_run.execution.process_start_method,
@@ -316,7 +321,7 @@ def build_research_execution_plan(
         candidate_count=len(candidates),
         scenario_count=len(execution_scenarios),
         max_workers=int(resource_plan.effective_max_workers),
-        execution_mode=manifest.research_run.execution.mode,
+        execution_mode=resource_plan.effective_execution_mode,
         plugin_complexity=plugin_complexity,
         resource_limits=manifest.research_run.resource_limits,
     )

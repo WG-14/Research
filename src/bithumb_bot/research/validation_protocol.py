@@ -146,6 +146,7 @@ PARENT_SERIAL_TIMING_STAGES = {
     "build_work_tasks",
     "append_candidate_start_events",
     "parallel_worker_pool_start",
+    "report_write",
 }
 
 
@@ -429,6 +430,26 @@ def _load_worker_task_snapshots(*, task: dict[str, Any], manifest: ExperimentMan
     if db_path is None:
         raise ResearchValidationError("parallel_worker_db_path_missing")
     split_names = tuple(str(name) for name in task.get("split_names") or ("train", "validation"))
+    data_plane_policy = task.get("data_plane_policy") if isinstance(task.get("data_plane_policy"), dict) else {}
+    requested_policy = str(data_plane_policy.get("worker_snapshot_load_policy") or "db_reload")
+    if requested_policy == "db_reload":
+        applied_policy = "db_reload"
+    elif requested_policy == "worker_local_lazy_cache":
+        applied_policy = "db_reload"
+        disabled = list(data_plane_policy.get("disabled_reasons") or [])
+        if "worker_local_lazy_cache_not_implemented" not in disabled:
+            disabled.append("worker_local_lazy_cache_not_implemented")
+        data_plane_policy["disabled_reasons"] = disabled
+    elif requested_policy == "memory_mapped_readonly":
+        applied_policy = "db_reload"
+        disabled = list(data_plane_policy.get("disabled_reasons") or [])
+        if "memory_mapped_readonly_not_implemented" not in disabled:
+            disabled.append("memory_mapped_readonly_not_implemented")
+        data_plane_policy["disabled_reasons"] = disabled
+    else:
+        raise ResearchValidationError(f"worker_snapshot_load_policy_unsupported:{requested_policy}")
+    data_plane_policy["applied_snapshot_load_policy"] = applied_policy
+    task["data_plane_policy"] = data_plane_policy
     if any(name.startswith("window_") for name in split_names):
         if manifest.walk_forward is None:
             raise ResearchValidationError("parallel_worker_walk_forward_manifest_missing")
@@ -492,6 +513,11 @@ def _apply_execution_plan_resource_policy(
     plan = execution_plan.payload
     resource_plan = plan.get("resource_plan") if isinstance(plan.get("resource_plan"), dict) else {}
     effective_workers = int(resource_plan.get("effective_max_workers") or plan.get("max_workers") or manifest.research_run.execution.max_workers)
+    effective_mode = str(
+        resource_plan.get("effective_execution_mode")
+        or plan.get("effective_execution_mode")
+        or manifest.research_run.execution.mode
+    )
     work_unit_selection = plan.get("work_unit_selection") if isinstance(plan.get("work_unit_selection"), dict) else {}
     effective_work_unit = str(
         work_unit_selection.get("effective_work_unit_type")
@@ -500,12 +526,14 @@ def _apply_execution_plan_resource_policy(
     )
     changed = (
         effective_workers != int(manifest.research_run.execution.max_workers)
+        or effective_mode != str(manifest.research_run.execution.mode)
         or effective_work_unit != str(manifest.research_run.execution.work_unit)
     )
     if not changed:
         return manifest
     adjusted_execution = replace(
         manifest.research_run.execution,
+        mode=effective_mode,
         max_workers=effective_workers,
         work_unit=effective_work_unit,
     )
@@ -2021,6 +2049,26 @@ def _evaluate_candidates(
         progress_callback=progress_callback,
     )
     substage_timings.append(timing)
+    if execution_plan is not None:
+        selection = execution_plan.payload.get("work_unit_selection")
+        if isinstance(selection, dict):
+            effective_work_unit = str(selection.get("effective_work_unit_type") or manifest.research_run.execution.work_unit)
+            expected_plan_tasks = int(
+                selection.get("candidate_scenario_split_task_count")
+                if effective_work_unit == "candidate_scenario_split"
+                else selection.get("candidate_scenario_task_count")
+                or parallel_work_task_count(
+                    candidate_count=candidate_count,
+                    scenario_count=scenario_count,
+                    split_count=len(split_work_unit_names),
+                    work_unit=effective_work_unit,
+                )
+            )
+            if effective_work_unit == "candidate_scenario_split" and expected_plan_tasks != len(work_tasks):
+                raise ResearchValidationError(
+                    "candidate_scenario_split_task_count_mismatch:"
+                    f"plan={expected_plan_tasks}:actual={len(work_tasks)}"
+                )
 
     evaluator = candidate_evaluator or ProductionCandidateScenarioEvaluator()
     parallel_executor_used = manifest.research_run.execution.mode == "parallel" and candidate_evaluator is None

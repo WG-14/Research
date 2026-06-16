@@ -21,6 +21,7 @@ def build_manifest_workload_estimate(manifest: ExperimentManifest) -> dict[str, 
     candidates = iter_parameter_candidates(manifest.parameter_space)
     scenarios = required_execution_scenarios(manifest.execution_model.scenarios)
     split_ranges = _dataset_split_ranges(manifest)
+    split_name_values = [item["split_name"] for item in split_ranges]
     split_count = len(split_ranges)
     candidate_count = len(candidates)
     scenario_count = len(scenarios)
@@ -30,6 +31,8 @@ def build_manifest_workload_estimate(manifest: ExperimentManifest) -> dict[str, 
         candidate_count=candidate_count,
         scenario_count=scenario_count,
         split_count=split_count,
+        split_names=split_name_values,
+        include_walk_forward=manifest.walk_forward is not None,
     )
     resource_plan_payload = resource_plan.as_dict()
     work_unit_selection = resource_plan.work_unit_selection.as_dict()
@@ -89,10 +92,9 @@ def build_manifest_workload_estimate(manifest: ExperimentManifest) -> dict[str, 
     data_plane_policy = build_data_plane_policy(
         manifest_hash=manifest.manifest_hash(),
         dataset_hashes={
-            item["split_name"]: f"manifest_range:{item['start_ts']}:{item['end_ts']}"
-            for item in split_ranges
+            item["split_name"]: f"manifest_range:{item['start_ts']}:{item['end_ts']}" for item in split_ranges
         },
-        split_names=[item["split_name"] for item in split_ranges],
+        split_names=split_name_values,
         memory_budget_mb=resource_plan.memory_budget_mb,
         estimated_total_memory_bytes=estimated_total_memory_bytes,
         effective_max_workers=resource_plan.effective_max_workers,
@@ -117,6 +119,9 @@ def build_manifest_workload_estimate(manifest: ExperimentManifest) -> dict[str, 
         "data_plane_policy": data_plane_policy,
         "dataset_split_ranges": split_ranges,
         "research_execution_mode": manifest.research_run.execution.mode,
+        "requested_execution_mode": resource_plan.requested_execution_mode,
+        "effective_execution_mode": resource_plan.effective_execution_mode,
+        "execution_mode_selection_reason": resource_plan.execution_mode_selection_reason,
         "max_workers_requested": manifest.research_run.execution.max_workers,
         "max_workers_effective": resource_plan.effective_max_workers,
         "process_start_method": manifest.research_run.execution.process_start_method,

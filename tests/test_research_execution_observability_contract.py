@@ -93,3 +93,27 @@ def test_report_writer_does_not_drop_execution_observability_contract(tmp_path: 
     observed = persisted["execution_observability"]
     assert REQUIRED_FIELDS.issubset(observed)
     assert observed["parallel_efficiency"]["expected_worker_utilization_pct"] == 50.0
+
+
+def test_persisted_report_parent_serial_includes_report_write(tmp_path: Path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    report = {
+        "experiment_id": "observability_report_write",
+        "research_run": {"report_detail": "summary"},
+        "candidates": [],
+        "execution_observability": _payload(True),
+    }
+    result = write_research_report(
+        manager=manager,
+        experiment_id="observability_report_write",
+        report_name="backtest",
+        payload=report,
+    )
+    persisted = json.loads(result.paths.report_path.read_text(encoding="utf-8"))
+
+    observed = persisted["execution_observability"]
+    stages = {item["stage"] for item in observed["parent_serial_stage_timings"]}
+    assert "report_write" in stages
+    assert observed["parent_serial_wall_seconds"] >= round(
+        persisted["artifact_observability"]["report_write"]["write_wall_seconds"], 6
+    )

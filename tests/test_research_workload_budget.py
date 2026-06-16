@@ -191,6 +191,36 @@ def test_workload_estimate_includes_parallel_task_capacity() -> None:
     assert estimate["resource_plan"]["selection_reasons"]
 
 
+def test_report_write_is_timed_as_parent_serial_stage(tmp_path: Path, monkeypatch) -> None:
+    manager = _paper_manager(tmp_path, monkeypatch)
+    payload = {
+        "experiment_id": "workload_report_write",
+        "research_run": {"report_detail": "summary"},
+        "candidates": [],
+        "execution_observability": {
+            "stage_timings": [{"stage": "parallel_worker_execution", "wall_seconds": 0.001}],
+            "parallel_worker_execution_wall_seconds": 0.001,
+            "parent_serial_stage_timings": [],
+            "parent_serial_wall_seconds": 0.0,
+            "parent_serial_bottleneck_reasons": [],
+            "worker_observation_warning_reasons": [],
+        },
+    }
+
+    result = write_research_report(
+        manager=manager,
+        experiment_id="workload_report_write",
+        report_name="backtest",
+        payload=payload,
+    )
+    report = json.loads(result.paths.report_path.read_text(encoding="utf-8"))
+    observed = report["execution_observability"]
+    report_write_seconds = report["artifact_observability"]["report_write"]["write_wall_seconds"]
+
+    assert "report_write" in {item["stage"] for item in observed["parent_serial_stage_timings"]}
+    assert observed["parent_serial_wall_seconds"] >= round(report_write_seconds, 6)
+
+
 def test_workload_budget_fails_canonical_hash_call_excess(tmp_path: Path) -> None:
     estimate_path = tmp_path / "estimate.json"
     estimate = {

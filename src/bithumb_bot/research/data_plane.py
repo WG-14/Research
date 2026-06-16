@@ -61,6 +61,7 @@ DATA_PLANE_POLICY_SCHEMA_VERSION = 1
 class DataPlanePolicy:
     snapshot_storage_mode: str
     worker_snapshot_load_policy: str
+    applied_snapshot_load_policy: str
     dataset_cache_budget_mb: int
     memory_map_enabled: bool
     cache_key_material: dict[str, object]
@@ -72,6 +73,7 @@ class DataPlanePolicy:
             "schema_version": DATA_PLANE_POLICY_SCHEMA_VERSION,
             "snapshot_storage_mode": self.snapshot_storage_mode,
             "worker_snapshot_load_policy": self.worker_snapshot_load_policy,
+            "applied_snapshot_load_policy": self.applied_snapshot_load_policy,
             "dataset_cache_budget_mb": self.dataset_cache_budget_mb,
             "memory_map_enabled": self.memory_map_enabled,
             "cache_key_material": dict(self.cache_key_material),
@@ -106,8 +108,7 @@ def build_data_plane_policy(
     else:
         headroom = budget - estimated_mb
         if headroom > 0:
-            cache_budget_mb = max(1, headroom // 2)
-            load_policy = "worker_local_lazy_cache"
+            disabled_reasons.append("worker_local_lazy_cache_not_implemented")
         else:
             disabled_reasons.append("memory_headroom_unavailable")
     split_tuple = tuple(str(item) for item in split_names)
@@ -115,6 +116,7 @@ def build_data_plane_policy(
     return DataPlanePolicy(
         snapshot_storage_mode=snapshot_mode,
         worker_snapshot_load_policy=load_policy,
+        applied_snapshot_load_policy=load_policy,
         dataset_cache_budget_mb=cache_budget_mb,
         memory_map_enabled=False,
         cache_key_material={

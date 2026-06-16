@@ -92,6 +92,28 @@ def test_memory_admission_caps_effective_workers_when_policy_is_cap_workers(tmp_
 
 @pytest.mark.contract
 @pytest.mark.resource_guard
+@pytest.mark.research_e2e
+def test_memory_admission_cap_updates_data_plane_effective_workers(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "research.sqlite"
+    _create_db(db_path)
+    manager = _research_manager(tmp_path, monkeypatch)
+    manifest = _manifest_with_workers(8, max_total_memory_mb=1.0, memory_admission_policy="cap_workers")
+
+    report = run_research_backtest(
+        manifest=manifest,
+        db_path=db_path,
+        manager=manager,
+        candidate_evaluator=DeterministicResearchEvaluator(),
+    )
+
+    observability = report["execution_observability"]
+    assert observability["memory_admission"]["effective_max_workers"] == observability["data_plane_policy"][
+        "effective_max_workers"
+    ]
+
+
+@pytest.mark.contract
+@pytest.mark.resource_guard
 def test_delayed_confirmation_parameter_space_increases_estimated_payload_bytes() -> None:
     immediate = build_manifest_workload_estimate(
         _manifest_with_workers(2, entry_modes=["immediate_breakout"])

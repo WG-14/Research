@@ -40,6 +40,9 @@ class WorkUnitSelection:
     candidate_scenario_split_task_count: int
     selection_reason: str
     rejected_alternatives: list[dict[str, Any]]
+    split_names: tuple[str, ...] = ()
+    include_walk_forward: bool = False
+    final_holdout_present: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -50,12 +53,18 @@ class WorkUnitSelection:
             "candidate_scenario_split_task_count": self.candidate_scenario_split_task_count,
             "selection_reason": self.selection_reason,
             "rejected_alternatives": list(self.rejected_alternatives),
+            "split_names": list(self.split_names),
+            "include_walk_forward": self.include_walk_forward,
+            "final_holdout_present": self.final_holdout_present,
         }
 
 
 @dataclass(frozen=True)
 class ResearchResourcePlan:
     execution_mode: str
+    requested_execution_mode: str
+    effective_execution_mode: str
+    execution_mode_selection_reason: str
     requested_max_workers: int
     effective_max_workers: int
     max_in_flight_tasks: int
@@ -70,6 +79,9 @@ class ResearchResourcePlan:
         return {
             "schema_version": RESOURCE_PLAN_SCHEMA_VERSION,
             "execution_mode": self.execution_mode,
+            "requested_execution_mode": self.requested_execution_mode,
+            "effective_execution_mode": self.effective_execution_mode,
+            "execution_mode_selection_reason": self.execution_mode_selection_reason,
             "detected_cpu_limit": self.resource_contract.cpu_limit,
             "detected_memory_limit_mb": self.resource_contract.memory_limit_mb,
             "detected_swap_limit_mb": self.resource_contract.swap_limit_mb,
@@ -158,12 +170,25 @@ def plan_research_resources(
     candidate_count: int,
     scenario_count: int,
     split_count: int,
+    split_names: list[str] | tuple[str, ...] | None = None,
+    include_walk_forward: bool = False,
     resource_contract: ResourceContract | None = None,
 ) -> ResearchResourcePlan:
     contract = resource_contract or detect_resource_contract()
     execution = manifest.research_run.execution
-    requested_workers = max(1, int(execution.max_workers))
-    execution_mode = str(execution.mode or "serial")
+    mode_explicit = _manifest_execution_mode_explicit(manifest)
+    requested_execution_mode = str(execution.mode or "serial").strip().lower()
+    effective_execution_mode, mode_reason, mode_fallbacks = _select_execution_mode(
+        requested_execution_mode=requested_execution_mode,
+        execution_mode_explicit=mode_explicit,
+        candidate_count=candidate_count,
+        scenario_count=scenario_count,
+        split_count=split_count,
+        resource_contract=contract,
+    )
+    auto_worker_cap = contract.cpu_limit or os.cpu_count() or 1
+    max_workers_explicit = _manifest_execution_field_explicit(manifest, "max_workers")
+    requested_workers = max(1, int(execution.max_workers if max_workers_explicit else auto_worker_cap))
     caps: list[tuple[str, int]] = [("manifest_requested_max_workers", requested_workers)]
     if contract.cpu_limit is not None:
         caps.append(("detected_cpu_limit", max(1, int(contract.cpu_limit))))
@@ -171,10 +196,11 @@ def plan_research_resources(
         caps.append(("env_worker_cap", max(1, int(contract.env_worker_cap))))
     if contract.total_process_budget is not None:
         caps.append(("total_process_budget", max(1, int(contract.total_process_budget))))
-    if execution_mode != "parallel":
+    if effective_execution_mode != "parallel":
         caps.append(("serial_execution_mode", 1))
     effective_workers = min(value for _, value in caps)
     selection_reasons = [f"{name}:{value}" for name, value in caps]
+    selection_reasons.append(f"execution_mode_selection:{mode_reason}")
     if effective_workers < requested_workers:
         selection_reasons.append("effective_workers_capped_below_manifest_request")
 
@@ -187,10 +213,15 @@ def plan_research_resources(
         candidate_count=candidate_count,
         scenario_count=scenario_count,
         split_count=split_count,
+        split_names=split_names,
+        include_walk_forward=include_walk_forward,
         effective_max_workers=effective_workers,
     )
     return ResearchResourcePlan(
-        execution_mode=execution_mode,
+        execution_mode=effective_execution_mode,
+        requested_execution_mode=requested_execution_mode if mode_explicit else "auto",
+        effective_execution_mode=effective_execution_mode,
+        execution_mode_selection_reason=mode_reason,
         requested_max_workers=requested_workers,
         effective_max_workers=effective_workers,
         max_in_flight_tasks=max(1, effective_workers * 2),
@@ -199,7 +230,7 @@ def plan_research_resources(
         resource_contract=contract,
         work_unit_selection=work_unit_selection,
         selection_reasons=tuple(selection_reasons),
-        fallback_reasons=contract.fallback_reasons,
+        fallback_reasons=tuple(sorted(set(contract.fallback_reasons + tuple(mode_fallbacks)))),
     )
 
 
@@ -209,13 +240,35 @@ def select_work_unit_granularity(
     candidate_count: int,
     scenario_count: int,
     split_count: int,
+    split_names: list[str] | tuple[str, ...] | None = None,
+    include_walk_forward: bool = False,
     effective_max_workers: int,
 ) -> WorkUnitSelection:
     requested = str(requested_work_unit_type or "candidate_scenario").strip().lower()
+    split_tuple = tuple(str(name) for name in (split_names or ()))
+    final_holdout_present = "final_holdout" in split_tuple
     candidate_scenario_tasks = max(0, int(candidate_count)) * max(0, int(scenario_count))
     split_tasks = candidate_scenario_tasks * max(1, int(split_count))
     rejected: list[dict[str, Any]] = []
+    split_supported, split_reject_reasons = _candidate_scenario_split_capability(
+        split_names=split_tuple,
+        include_walk_forward=include_walk_forward,
+    )
     if requested == "candidate_scenario_split":
+        if not split_supported:
+            for reason in split_reject_reasons:
+                rejected.append({"work_unit_type": "candidate_scenario_split", "reason": reason})
+            return WorkUnitSelection(
+                requested_work_unit_type=requested,
+                effective_work_unit_type="candidate_scenario",
+                candidate_scenario_task_count=candidate_scenario_tasks,
+                candidate_scenario_split_task_count=split_tasks,
+                selection_reason="candidate_scenario_split_not_supported",
+                rejected_alternatives=rejected,
+                split_names=split_tuple,
+                include_walk_forward=include_walk_forward,
+                final_holdout_present=final_holdout_present,
+            )
         rejected.append({"work_unit_type": "candidate_scenario", "reason": "manifest_requested_split_work_unit"})
         return WorkUnitSelection(
             requested_work_unit_type=requested,
@@ -224,6 +277,23 @@ def select_work_unit_granularity(
             candidate_scenario_split_task_count=split_tasks,
             selection_reason="manifest_requested_candidate_scenario_split",
             rejected_alternatives=rejected,
+            split_names=split_tuple,
+            include_walk_forward=include_walk_forward,
+            final_holdout_present=final_holdout_present,
+        )
+    if not split_supported:
+        for reason in split_reject_reasons:
+            rejected.append({"work_unit_type": "candidate_scenario_split", "reason": reason})
+        return WorkUnitSelection(
+            requested_work_unit_type=requested,
+            effective_work_unit_type="candidate_scenario",
+            candidate_scenario_task_count=candidate_scenario_tasks,
+            candidate_scenario_split_task_count=split_tasks,
+            selection_reason="candidate_scenario_selected",
+            rejected_alternatives=rejected,
+            split_names=split_tuple,
+            include_walk_forward=include_walk_forward,
+            final_holdout_present=final_holdout_present,
         )
     if candidate_scenario_tasks < int(effective_max_workers) <= split_tasks and int(split_count) > 1:
         rejected.append(
@@ -239,6 +309,9 @@ def select_work_unit_granularity(
             candidate_scenario_split_task_count=split_tasks,
             selection_reason="split_tasks_fill_effective_workers",
             rejected_alternatives=rejected,
+            split_names=split_tuple,
+            include_walk_forward=include_walk_forward,
+            final_holdout_present=final_holdout_present,
         )
     reason = "candidate_scenario_tasks_match_or_exceed_effective_workers"
     if split_tasks <= candidate_scenario_tasks:
@@ -253,7 +326,75 @@ def select_work_unit_granularity(
         candidate_scenario_split_task_count=split_tasks,
         selection_reason="candidate_scenario_selected",
         rejected_alternatives=rejected,
+        split_names=split_tuple,
+        include_walk_forward=include_walk_forward,
+        final_holdout_present=final_holdout_present,
     )
+
+
+def _manifest_execution_mode_explicit(manifest: Any) -> bool:
+    return _manifest_execution_field_explicit(manifest, "mode")
+
+
+def _manifest_execution_field_explicit(manifest: Any, field_name: str) -> bool:
+    raw = getattr(manifest, "raw", None)
+    if not isinstance(raw, dict):
+        return False
+    research_run = raw.get("research_run")
+    if not isinstance(research_run, dict):
+        return False
+    execution = research_run.get("execution")
+    return isinstance(execution, dict) and field_name in execution
+
+
+def _select_execution_mode(
+    *,
+    requested_execution_mode: str,
+    execution_mode_explicit: bool,
+    candidate_count: int,
+    scenario_count: int,
+    split_count: int,
+    resource_contract: ResourceContract,
+) -> tuple[str, str, tuple[str, ...]]:
+    requested = str(requested_execution_mode or "serial").strip().lower()
+    if execution_mode_explicit:
+        return requested, f"manifest_explicit_{requested}", ()
+    task_count = max(0, int(candidate_count)) * max(0, int(scenario_count)) * max(1, int(split_count))
+    cpu_limit = resource_contract.cpu_limit
+    capped_cpu_limit = cpu_limit
+    for cap in (resource_contract.env_worker_cap, resource_contract.total_process_budget):
+        if cap is not None:
+            capped_cpu_limit = min(int(capped_cpu_limit), int(cap)) if capped_cpu_limit is not None else int(cap)
+    if capped_cpu_limit is not None and int(capped_cpu_limit) >= 2 and task_count >= 2:
+        return "parallel", "auto_parallel_detected_resources_and_workload", ()
+    fallback_reasons: list[str] = []
+    if capped_cpu_limit is None:
+        fallback_reasons.append("auto_execution_mode_cpu_limit_unavailable")
+    elif int(capped_cpu_limit) < 2:
+        fallback_reasons.append("auto_execution_mode_insufficient_cpu")
+    if task_count < 2:
+        fallback_reasons.append("auto_execution_mode_insufficient_task_count")
+    return "serial", "auto_serial_fallback", tuple(fallback_reasons)
+
+
+def _candidate_scenario_split_capability(
+    *,
+    split_names: tuple[str, ...],
+    include_walk_forward: bool,
+) -> tuple[bool, tuple[str, ...]]:
+    reasons: list[str] = []
+    if include_walk_forward or any(name.startswith("window_") for name in split_names):
+        reasons.append("candidate_scenario_split_walk_forward_not_supported")
+    if "final_holdout" in split_names:
+        reasons.append("candidate_scenario_split_final_holdout_not_supported")
+    if split_names and split_names != ("train", "validation"):
+        missing = [name for name in ("train", "validation") if name not in split_names]
+        if missing:
+            reasons.append("candidate_scenario_split_missing_required_splits")
+        extra = [name for name in split_names if name not in {"train", "validation", "final_holdout"}]
+        if extra and not any(name.startswith("window_") for name in extra):
+            reasons.append("candidate_scenario_split_unknown_split_not_supported")
+    return not reasons, tuple(reasons)
 
 
 def _read_cgroup_cpu_limit(cgroup_root: Path) -> int | None:

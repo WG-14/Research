@@ -131,6 +131,20 @@ def test_execution_plan_reports_low_worker_utilization_for_single_candidate() ->
     assert plan["work_unit_selection"]["selection_reason"]
 
 
+def test_execution_plan_reports_effective_execution_mode_selection_reason() -> None:
+    payload = _manifest()
+    payload.pop("research_run", None)
+    payload["parameter_space"]["SMA_SHORT"] = [2, 3, 4, 5]
+
+    plan = _plan_for_payload(payload, split_names=("train", "validation"))
+
+    assert plan["requested_execution_mode"] == "auto"
+    assert plan["effective_execution_mode"] in {"serial", "parallel"}
+    assert plan["execution_mode_selection_reason"]
+    assert plan["resource_plan"]["effective_execution_mode"] == plan["effective_execution_mode"]
+    assert plan["workload_estimate"]["resource_plan"]["effective_execution_mode"] == plan["effective_execution_mode"]
+
+
 def test_execution_plan_reports_full_worker_utilization_for_eight_candidates() -> None:
     payload = _manifest()
     payload["parameter_space"]["SMA_SHORT"] = [2, 3, 4, 5, 6, 7, 8, 9]

@@ -114,6 +114,61 @@ def test_work_unit_selector_prefers_split_when_candidate_scenario_tasks_below_wo
     assert plan.work_unit_selection.selection_reason == "split_tasks_fill_effective_workers"
 
 
+def test_work_unit_selector_rejects_split_when_final_holdout_present() -> None:
+    manifest = parse_manifest({
+        **_manifest(),
+        "research_run": {"execution": {"mode": "parallel", "max_workers": 3}},
+    })
+    plan = plan_research_resources(
+        manifest=manifest,
+        candidate_count=1,
+        scenario_count=1,
+        split_count=3,
+        split_names=("train", "validation", "final_holdout"),
+        resource_contract=ResourceContract(
+            cpu_limit=3,
+            memory_limit_mb=4096,
+            swap_limit_mb=None,
+            detected_source="test",
+            env_worker_cap=None,
+            total_process_budget=None,
+        ),
+    )
+
+    assert plan.work_unit_selection.effective_work_unit_type == "candidate_scenario"
+    assert {
+        item["reason"] for item in plan.work_unit_selection.rejected_alternatives
+    } == {"candidate_scenario_split_final_holdout_not_supported"}
+
+
+def test_work_unit_selector_rejects_split_when_walk_forward_present() -> None:
+    manifest = parse_manifest({
+        **_manifest(),
+        "research_run": {"execution": {"mode": "parallel", "max_workers": 3}},
+    })
+    plan = plan_research_resources(
+        manifest=manifest,
+        candidate_count=1,
+        scenario_count=1,
+        split_count=4,
+        split_names=("train", "validation", "window_001_train", "window_001_test"),
+        include_walk_forward=True,
+        resource_contract=ResourceContract(
+            cpu_limit=3,
+            memory_limit_mb=4096,
+            swap_limit_mb=None,
+            detected_source="test",
+            env_worker_cap=None,
+            total_process_budget=None,
+        ),
+    )
+
+    assert plan.work_unit_selection.effective_work_unit_type == "candidate_scenario"
+    reasons = {item["reason"] for item in plan.work_unit_selection.rejected_alternatives}
+    assert "candidate_scenario_split_walk_forward_not_supported" in reasons
+    assert plan.work_unit_selection.selection_reason != "split_tasks_fill_effective_workers"
+
+
 def test_work_unit_selector_keeps_candidate_scenario_when_tasks_match_workers() -> None:
     manifest_payload = _manifest()
     manifest_payload["parameter_space"]["SMA_SHORT"] = [2, 3, 4]

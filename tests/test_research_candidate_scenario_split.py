@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from bithumb_bot.research import validation_protocol
+from bithumb_bot.research.execution_plan import ResearchExecutionPlan
 from bithumb_bot.research.executor import ResearchWorkResult
 from bithumb_bot.research.experiment_manifest import parse_manifest
 from tests.factories.research_reports import minimal_candidate_base_result
@@ -203,5 +204,35 @@ def test_candidate_scenario_split_is_fail_closed_for_unsupported_walk_forward(tm
             quality_reports=quality_reports,
             include_walk_forward=True,
             execution_calibration=None,
+            candidate_evaluator=_SplitEvaluator(),
+        )
+
+
+def test_execution_plan_split_selection_matches_actual_work_task_count(tmp_path, monkeypatch) -> None:
+    manifest = _split_manifest()
+    snapshots = {name: _snapshot(name) for name in ("train", "validation")}
+    quality_reports = {name: _quality_report(name) for name in snapshots}
+    bad_plan = ResearchExecutionPlan(
+        {
+            "work_unit_selection": {
+                "schema_version": 1,
+                "effective_work_unit_type": "candidate_scenario_split",
+                "candidate_scenario_task_count": 1,
+                "candidate_scenario_split_task_count": 3,
+            },
+            "resource_plan": {"schema_version": 1},
+            "data_plane_policy": {"schema_version": 1},
+        }
+    )
+
+    with pytest.raises(validation_protocol.ResearchValidationError, match="candidate_scenario_split_task_count_mismatch"):
+        validation_protocol._evaluate_candidates(
+            manifest=manifest,
+            manager=_manager(tmp_path, monkeypatch),
+            snapshots=snapshots,
+            quality_reports=quality_reports,
+            include_walk_forward=False,
+            execution_calibration=None,
+            execution_plan=bad_plan,
             candidate_evaluator=_SplitEvaluator(),
         )
