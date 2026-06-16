@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import glob
+import inspect
 import os
 import subprocess
 import sys
@@ -60,14 +61,14 @@ def run_research_batch(
 
     def submit_one(path_manifest: tuple[Path, Any]) -> dict[str, Any]:
         path, manifest = path_manifest
-        return _run_one_manifest(
+        return _call_run_one_manifest(
             path=path,
             manifest=manifest,
             command=command,
             manager=manager,
             project_root=project_root,
             log_dir=batch_root,
-            child_env=batch_resource_budget["child_env"],
+            child_env=dict(batch_resource_budget["child_env"]),
         )
 
     remaining = iter(manifests)
@@ -109,6 +110,33 @@ def run_research_batch(
     }
     write_json_atomic(summary_path, payload)
     return ResearchBatchResult(summary_path=summary_path, payload=payload)
+
+
+def _call_run_one_manifest(
+    *,
+    path: Path,
+    manifest: Any,
+    command: str,
+    manager: PathManager,
+    project_root: Path,
+    log_dir: Path,
+    child_env: dict[str, str],
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "path": path,
+        "manifest": manifest,
+        "command": command,
+        "manager": manager,
+        "project_root": project_root,
+        "log_dir": log_dir,
+    }
+    signature = inspect.signature(_run_one_manifest)
+    if "child_env" in signature.parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    ):
+        kwargs["child_env"] = child_env
+    return _run_one_manifest(**kwargs)
 
 
 def _run_one_manifest(

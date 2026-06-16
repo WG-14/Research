@@ -2,7 +2,7 @@
 
 This file is generated from `src/bithumb_bot/config_spec.py`.
 Schema version: `config_spec_v1`
-Spec hash: `sha256:89c12bc449c4a126b4e891ef1e4f2df843e9968d20012f89c086bf493559821e`
+Spec hash: `sha256:9542bf13674bb5ffb1fe54ec728309e02a52386297c3b1fd0e9cbb42102a28d8`
 
 | Name | Type | Scope | Default | Live required | Secret | Deprecated/Ignored | Safety | Validation | Description |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -17,6 +17,7 @@ Spec hash: `sha256:89c12bc449c4a126b4e891ef1e4f2df843e9968d20012f89c086bf4935598
 | `BITHUMB_API_KEY` | string | live |  | yes | yes | no | P0 |  | BITHUMB_API_KEY runtime configuration. |
 | `BITHUMB_API_SECRET` | string | live |  | yes | yes | no | P0 | jwt_hs256_secret, min_live_bytes=32 | BITHUMB_API_SECRET runtime configuration. |
 | `BITHUMB_AUTH_DIAGNOSTICS` | string | common |  | no | no | no | P1 |  | BITHUMB_AUTH_DIAGNOSTICS runtime configuration. |
+| `BITHUMB_BATCH_CHILD_WORKER_BUDGET` | number | internal |  | no | no | no | internal |  | BITHUMB_BATCH_CHILD_WORKER_BUDGET runtime configuration. |
 | `BITHUMB_CANCEL_RETRY_ATTEMPTS` | string | common |  | no | no | no | P1 |  | BITHUMB_CANCEL_RETRY_ATTEMPTS runtime configuration. |
 | `BITHUMB_CANCEL_RETRY_BACKOFF_SEC` | number | common |  | no | no | no | P1 |  | BITHUMB_CANCEL_RETRY_BACKOFF_SEC runtime configuration. |
 | `BITHUMB_DEPLOY_COMMIT_SHA` | string | internal |  | no | no | no | internal |  | BITHUMB_DEPLOY_COMMIT_SHA runtime configuration. |

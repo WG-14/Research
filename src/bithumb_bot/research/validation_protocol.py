@@ -571,32 +571,40 @@ def _apply_execution_plan_resource_policy(
 ) -> ExperimentManifest:
     plan = execution_plan.payload
     resource_plan = plan.get("resource_plan") if isinstance(plan.get("resource_plan"), dict) else {}
-    effective_workers = int(resource_plan.get("effective_max_workers") or plan.get("max_workers") or manifest.research_run.execution.max_workers)
-    effective_mode = str(
-        resource_plan.get("effective_execution_mode")
-        or plan.get("effective_execution_mode")
-        or manifest.research_run.execution.mode
+    if str(resource_plan.get("requested_execution_mode") or plan.get("requested_execution_mode") or "") == "auto":
+        return manifest
+    effective_workers = int(
+        resource_plan.get("effective_max_workers")
+        or plan.get("max_workers")
+        or manifest.research_run.execution.max_workers
     )
-    work_unit_selection = plan.get("work_unit_selection") if isinstance(plan.get("work_unit_selection"), dict) else {}
-    effective_work_unit = str(
-        work_unit_selection.get("effective_work_unit_type")
-        or resource_plan.get("work_unit_type")
-        or manifest.research_run.execution.work_unit
-    )
-    changed = (
-        effective_workers != int(manifest.research_run.execution.max_workers)
-        or effective_mode != str(manifest.research_run.execution.mode)
-        or effective_work_unit != str(manifest.research_run.execution.work_unit)
-    )
+    changed = effective_workers != int(manifest.research_run.execution.max_workers)
     if not changed:
         return manifest
     adjusted_execution = replace(
         manifest.research_run.execution,
-        mode=effective_mode,
         max_workers=effective_workers,
-        work_unit=effective_work_unit,
     )
     return replace(manifest, research_run=replace(manifest.research_run, execution=adjusted_execution))
+
+
+def _canonicalize_runner_default_execution(manifest: ExperimentManifest) -> ExperimentManifest:
+    raw = manifest.raw if isinstance(manifest.raw, dict) else {}
+    research_run = raw.get("research_run")
+    if isinstance(research_run, dict) and isinstance(research_run.get("execution"), dict):
+        return manifest
+    raw_copy = dict(raw)
+    research_run_copy = dict(research_run) if isinstance(research_run, dict) else {}
+    research_run_copy["execution"] = {
+        "mode": manifest.research_run.execution.mode,
+        "max_workers": manifest.research_run.execution.max_workers,
+        "process_start_method": manifest.research_run.execution.process_start_method,
+        "work_unit": manifest.research_run.execution.work_unit,
+        "deterministic_merge_order": manifest.research_run.execution.deterministic_merge_order,
+        "resume": manifest.research_run.execution.resume,
+    }
+    raw_copy["research_run"] = research_run_copy
+    return replace(manifest, raw=raw_copy)
 
 
 def _stage_timing(stage: str, started_at: float, **details: Any) -> dict[str, Any]:
@@ -1627,6 +1635,7 @@ def run_research_backtest(
             reasons=",".join(report.quality_gate_reasons) if report.quality_gate_reasons else "none",
         )
     _require_enough_candles(snapshots.values())
+    manifest = _canonicalize_runner_default_execution(manifest)
 
     execution_plan = build_research_execution_plan(
         manifest=manifest,
@@ -1872,6 +1881,7 @@ def run_research_walk_forward(
             reasons=",".join(report.quality_gate_reasons) if report.quality_gate_reasons else "none",
         )
     _require_enough_candles(snapshots.values())
+    manifest = _canonicalize_runner_default_execution(manifest)
     execution_plan = build_research_execution_plan(
         manifest=manifest,
         snapshots=snapshots,

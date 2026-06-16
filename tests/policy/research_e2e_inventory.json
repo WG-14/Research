@@ -1401,6 +1401,32 @@
       "e2e_canary_group": "memory_sensitive"
     },
     {
+      "nodeid": "tests/test_research_memory_admission.py::test_memory_admission_cap_updates_data_plane_effective_workers",
+      "markers": [
+        "research_e2e"
+      ],
+      "reason": "verifies production research memory admission propagates capped worker authority into data-plane policy",
+      "expected_workload": {
+        "strategy_count": 1,
+        "manifest_count": 1,
+        "strategy_canary_count": 0,
+        "estimated_strategy_runs": 1,
+        "estimated_tick_events": 4320,
+        "estimated_audit_stream_rows": 0,
+        "pre_parallel_work_unit_count": 1,
+        "pre_parallel_dataset_hash_call_count": 3,
+        "pre_parallel_dataset_hash_payload_bytes": 559104
+      },
+      "duration_budget_seconds": 60,
+      "domain": "research_memory_admission",
+      "last_measured_seconds": 20,
+      "tier": "research_nightly",
+      "must_be_e2e_reason": "memory_sensitive_behavior",
+      "lower_level_contract_available": false,
+      "replacement_contract_test": "",
+      "e2e_canary_group": "memory_sensitive"
+    },
+    {
       "nodeid": "tests/test_research_memory_admission.py::test_memory_admission_fails_when_estimated_parent_and_worker_bytes_exceed_budget",
       "markers": [
         "research_e2e"

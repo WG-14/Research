@@ -63,6 +63,7 @@ DECLARED_ENV_NAMES: tuple[str, ...] = (
     "BITHUMB_PYTEST_STARTED",
     "BITHUMB_PYTEST_SUITE",
     "BITHUMB_PYTEST_SUMMARY_ON_SUCCESS",
+    "BITHUMB_BATCH_CHILD_WORKER_BUDGET",
     "BITHUMB_RESEARCH_ALLOW_UNSAFE_FORK",
     "BITHUMB_RESEARCH_MAX_WORKERS",
     "BITHUMB_RESEARCH_MP_START_METHOD",
@@ -284,6 +285,7 @@ LIVE_REQUIRED_KEYS = {
 INTERNAL_KEYS = {
     "BITHUMB_DEPLOY_COMMIT_SHA",
     "BITHUMB_DEPLOY_DIRTY",
+    "BITHUMB_BATCH_CHILD_WORKER_BUDGET",
     "BITHUMB_RESEARCH_ALLOW_UNSAFE_FORK",
     "BITHUMB_RESEARCH_MAX_WORKERS",
     "BITHUMB_RESEARCH_MP_START_METHOD",
@@ -370,7 +372,13 @@ def _infer_type(name: str) -> str:
         "BITHUMB_RESEARCH_ALLOW_UNSAFE_FORK",
     }:
         return "bool"
-    if name in {"BITHUMB_RESEARCH_MAX_WORKERS", "BITHUMB_TOTAL_PROCESS_BUDGET", "PYTEST_XDIST_WORKER_COUNT", "PYTEST_XDIST_WORKERS"}:
+    if name in {
+        "BITHUMB_BATCH_CHILD_WORKER_BUDGET",
+        "BITHUMB_RESEARCH_MAX_WORKERS",
+        "BITHUMB_TOTAL_PROCESS_BUDGET",
+        "PYTEST_XDIST_WORKER_COUNT",
+        "PYTEST_XDIST_WORKERS",
+    }:
         return "number"
     if name.endswith("_ENABLED") or name in {
         "KILL_SWITCH",
@@ -412,7 +420,10 @@ def _safety_tier_for(name: str) -> SafetyTier:
 
 
 def _category_for(name: str) -> str:
-    if name.startswith("BITHUMB_RESEARCH_") or name == "BITHUMB_TOTAL_PROCESS_BUDGET":
+    if name.startswith("BITHUMB_RESEARCH_") or name in {
+        "BITHUMB_BATCH_CHILD_WORKER_BUDGET",
+        "BITHUMB_TOTAL_PROCESS_BUDGET",
+    }:
         return "research"
     if name.startswith("BITHUMB_PYTEST_") or name.startswith("PYTEST_XDIST_"):
         return "test_runtime"
