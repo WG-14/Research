@@ -19,6 +19,7 @@ def _work_unit() -> ResearchWorkUnit:
         scenario_index=0,
         scenario_id="scenario_000",
         split_name="candidate_scenario",
+        work_unit_mode="candidate_scenario",
         parameter_values={"CHANNEL_BREAKOUT_LOOKBACK": 3},
         dataset_content_hash="sha256:dataset",
         portfolio_policy_hash="sha256:portfolio",

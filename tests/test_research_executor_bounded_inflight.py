@@ -16,6 +16,7 @@ def _work_unit(index: int) -> ResearchWorkUnit:
         scenario_index=index % 3,
         scenario_id=f"scenario_{index % 3}",
         split_name="validation",
+        work_unit_mode="candidate_scenario",
         parameter_values={"i": index},
         dataset_content_hash="sha256:dataset",
         portfolio_policy_hash="sha256:portfolio",

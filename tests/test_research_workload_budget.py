@@ -635,6 +635,9 @@ def test_research_raw_writer_policy_classifies_remaining_direct_storage_calls() 
             "append_jsonl",
             "write_json_atomic",
         },
+        "batch_runner.py": {
+            "write_json_atomic",
+        },
         "cli.py": {
             "write_json_atomic",
         },
@@ -665,6 +668,9 @@ def test_research_raw_writer_policy_classifies_remaining_direct_storage_calls() 
         "promotion_gate.py": {
             "write_json_atomic",
         },
+        "profiling.py": {
+            "write_json_atomic",
+        },
         "report_writer.py": {
             "write_json_atomic",
         },
@@ -685,6 +691,7 @@ def test_research_raw_writer_policy_classifies_remaining_direct_storage_calls() 
     classifications = {
         "artifact_store.py": "accounted research artifact adapter to storage_io",
         "audit_trail.py": "accounted audit trace writes through ArtifactStore or ResearchArtifactContext",
+        "batch_runner.py": "diagnostic research batch summary through PathManager-managed research reports root",
         "cli.py": "untracked minimal artifact-budget failure report through managed research reports root",
         "data_plane.py": "operator-specified diagnostic report outputs validated outside repository",
         "execution_calibration.py": "accounted non-research execution-quality report artifact",
@@ -695,6 +702,7 @@ def test_research_raw_writer_policy_classifies_remaining_direct_storage_calls() 
         "forward_diagnostics_policy_denial.py": "diagnostic-only policy-denial report artifact through PathManager data roots",
         "forward_diagnostics_report.py": "diagnostic-only report and derived warning artifacts through PathManager data roots",
         "promotion_gate.py": "operator promotion report artifact with existing path policy",
+        "profiling.py": "diagnostic-only research profile artifact through PathManager-managed derived research root",
         "report_writer.py": "accounted research report writes through ResearchArtifactContext",
         "return_panel.py": "accounted research return panel through ResearchArtifactContext",
         "statistical_selection.py": "accounted statistical evidence through ResearchArtifactContext",
