@@ -564,6 +564,36 @@ def _apply_memory_admission_policy(
     raise ResearchValidationError(f"memory_admission_policy_unsupported:{policy}")
 
 
+def _execution_plan_with_memory_admitted_data_plane_policy(
+    *,
+    execution_plan: ResearchExecutionPlan,
+    memory_admission: dict[str, Any],
+) -> ResearchExecutionPlan:
+    effective_workers = memory_admission.get("effective_max_workers")
+    if effective_workers is None:
+        return execution_plan
+    data_plane_policy = execution_plan.payload.get("data_plane_policy")
+    if not isinstance(data_plane_policy, dict):
+        return execution_plan
+
+    effective_workers = max(1, int(effective_workers))
+    if int(data_plane_policy.get("effective_max_workers") or 0) == effective_workers:
+        return execution_plan
+
+    payload = dict(execution_plan.payload)
+    adjusted_policy = dict(data_plane_policy)
+    adjusted_policy["effective_max_workers"] = effective_workers
+    payload["data_plane_policy"] = adjusted_policy
+
+    workload_estimate = payload.get("workload_estimate")
+    if isinstance(workload_estimate, dict):
+        adjusted_workload = dict(workload_estimate)
+        adjusted_workload["data_plane_policy"] = adjusted_policy
+        payload["workload_estimate"] = adjusted_workload
+
+    return ResearchExecutionPlan(payload=payload)
+
+
 def _apply_execution_plan_resource_policy(
     *,
     manifest: ExperimentManifest,
@@ -1663,6 +1693,10 @@ def run_research_backtest(
         manifest=manifest,
         execution_plan=execution_plan,
     )
+    execution_plan = _execution_plan_with_memory_admitted_data_plane_policy(
+        execution_plan=execution_plan,
+        memory_admission=memory_admission,
+    )
     if (
         memory_admission.get("action") not in {"cap_workers", "batch_candidates"}
         and int(memory_admission.get("effective_max_workers") or manifest.research_run.execution.max_workers)
@@ -1909,6 +1943,10 @@ def run_research_walk_forward(
     manifest, memory_admission = _apply_memory_admission_policy(
         manifest=manifest,
         execution_plan=execution_plan,
+    )
+    execution_plan = _execution_plan_with_memory_admitted_data_plane_policy(
+        execution_plan=execution_plan,
+        memory_admission=memory_admission,
     )
     if (
         memory_admission.get("action") not in {"cap_workers", "batch_candidates"}

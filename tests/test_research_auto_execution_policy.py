@@ -6,12 +6,11 @@ from pathlib import Path
 from bithumb_bot.research.experiment_manifest import parse_manifest
 from bithumb_bot.research.resource_planner import ResourceContract
 from bithumb_bot.research.validation_protocol import (
-    CandidateEvaluationResult,
     _canonicalize_runner_default_execution,
     run_research_backtest,
 )
 from bithumb_bot.research.workload_estimate import build_manifest_workload_estimate
-from tests.factories.research_reports import minimal_candidate_payload
+from tests.factories.research_reports import DeterministicResearchEvaluator, assert_fast_research_workload
 from tests.test_research_backtest_reproducibility import _create_db, _manifest, _research_manager
 
 
@@ -63,63 +62,29 @@ def _parallel_manifest_payload() -> dict[str, object]:
     return payload
 
 
-def _run_backtest(payload: dict[str, object], tmp_path: Path, monkeypatch) -> dict[str, object]:
+def _run_contract_research_backtest(payload: dict[str, object], tmp_path: Path, monkeypatch) -> dict[str, object]:
     monkeypatch.setattr(
         "bithumb_bot.research.resource_planner.detect_resource_contract",
         lambda: _resource_contract(),
     )
-    monkeypatch.setattr("bithumb_bot.research.validation_protocol._evaluate_candidates", _evaluate_candidates_fast)
     tmp_path.mkdir(parents=True, exist_ok=True)
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
-    return run_research_backtest(
+    report = run_research_backtest(
         manifest=parse_manifest(payload),
         db_path=db_path,
         manager=_research_manager(tmp_path, monkeypatch),
         generated_at="2026-06-17T00:00:00+00:00",
+        candidate_evaluator=DeterministicResearchEvaluator(),
     )
-
-
-def _evaluate_candidates_fast(**kwargs) -> CandidateEvaluationResult:
-    manifest = kwargs["manifest"]
-    execution_plan = kwargs["execution_plan"]
-    parallel_executor_used = manifest.research_run.execution.mode == "parallel"
-    available_tasks = int(execution_plan.payload["available_parallel_work_tasks"])
-    max_workers = int(manifest.research_run.execution.max_workers)
-    candidate = minimal_candidate_payload(
-        experiment_id=manifest.experiment_id,
-        manifest_hash=manifest.manifest_hash(),
-        dataset_snapshot_id=manifest.dataset.snapshot_id,
-        strategy_name=manifest.strategy_name,
+    assert_fast_research_workload(
+        report,
+        max_strategy_runs=16,
+        max_tick_events=25_000,
+        max_matrix_size=16,
+        max_artifact_write_count=70,
     )
-    execution_boundary = {
-        "requested_execution_mode": manifest.research_run.execution.mode,
-        "requested_max_workers": max_workers,
-        "requested_process_start_method": manifest.research_run.execution.process_start_method,
-        "requested_work_unit_type": manifest.research_run.execution.work_unit,
-        "candidate_evaluator_kind": "production",
-        "actual_execution_mode": "parallel_process_pool" if parallel_executor_used else "serial",
-        "actual_worker_context_mode": "fast_test_double",
-        "parallel_executor_used": parallel_executor_used,
-        "production_evaluator_used": True,
-        "contract_evaluator_used": False,
-        "requested_parallel_task_count": available_tasks if parallel_executor_used else 0,
-        "actual_parallel_task_count": available_tasks if parallel_executor_used else 0,
-        "available_parallel_work_tasks": available_tasks,
-        "research_max_workers_requested": max_workers,
-        "research_max_workers_effective": max_workers,
-        "effective_process_start_method": "fast_test_double",
-        "resource_plan": dict(execution_plan.payload.get("resource_plan") or {}),
-        "work_unit_selection": dict(execution_plan.payload.get("work_unit_selection") or {}),
-        "data_plane_policy": dict(execution_plan.payload.get("data_plane_policy") or {}),
-    }
-    return CandidateEvaluationResult(
-        candidates=[candidate],
-        execution_boundary=execution_boundary,
-        substage_timings=[],
-        candidate_artifact_observability={},
-        candidate_profile_hash_observability={},
-    )
+    return report
 
 
 def test_backtest_auto_execution_uses_resource_plan_when_execution_block_omitted(tmp_path, monkeypatch) -> None:
@@ -128,11 +93,12 @@ def test_backtest_auto_execution_uses_resource_plan_when_execution_block_omitted
 
     assert "execution" not in manifest.raw["research_run"]
 
-    report = _run_backtest(payload, tmp_path, monkeypatch)
+    report = _run_contract_research_backtest(payload, tmp_path, monkeypatch)
     observability = report["execution_observability"]
 
-    assert observability["parallel_executor_used"] is True
-    assert observability["research_max_workers_effective"] == 8
+    assert observability["parallel_executor_used"] is False
+    assert observability["contract_evaluator_used"] is True
+    assert observability["research_max_workers_effective"] == 1
     assert observability["resource_plan"]["requested_execution_mode"] == "auto"
     assert observability["resource_plan"]["effective_execution_mode"] == "parallel"
     assert observability["resource_plan"]["effective_max_workers"] == 8
@@ -156,7 +122,7 @@ def test_backtest_auto_execution_matches_workload_estimate_when_execution_block_
     manifest = parse_manifest(payload)
     estimate = build_manifest_workload_estimate(manifest)
 
-    report = _run_backtest(payload, tmp_path, monkeypatch)
+    report = _run_contract_research_backtest(payload, tmp_path, monkeypatch)
     observed = report["execution_observability"]
 
     assert estimate["resource_plan"]["effective_execution_mode"] == observed["resource_plan"]["effective_execution_mode"]
@@ -177,7 +143,7 @@ def test_memory_admission_cap_records_cap_reason_for_auto_backtest(tmp_path, mon
     research_run["resource_limits"] = resource_limits
     payload["research_run"] = research_run
 
-    report = _run_backtest(payload, tmp_path, monkeypatch)
+    report = _run_contract_research_backtest(payload, tmp_path, monkeypatch)
     observability = report["execution_observability"]
     memory_admission = observability["memory_admission"]
 
@@ -188,7 +154,7 @@ def test_memory_admission_cap_records_cap_reason_for_auto_backtest(tmp_path, mon
 
 
 def test_explicit_serial_execution_is_not_auto_parallelized(tmp_path, monkeypatch) -> None:
-    report = _run_backtest(_serial_manifest_payload(), tmp_path, monkeypatch)
+    report = _run_contract_research_backtest(_serial_manifest_payload(), tmp_path, monkeypatch)
     observability = report["execution_observability"]
 
     assert observability["parallel_executor_used"] is False
@@ -197,18 +163,19 @@ def test_explicit_serial_execution_is_not_auto_parallelized(tmp_path, monkeypatc
     assert observability["resource_plan"]["effective_execution_mode"] == "serial"
 
 
-def test_explicit_parallel_execution_still_uses_parallel_executor(tmp_path, monkeypatch) -> None:
-    report = _run_backtest(_parallel_manifest_payload(), tmp_path, monkeypatch)
+def test_explicit_parallel_execution_still_requests_parallel_plan(tmp_path, monkeypatch) -> None:
+    report = _run_contract_research_backtest(_parallel_manifest_payload(), tmp_path, monkeypatch)
     observability = report["execution_observability"]
 
-    assert observability["parallel_executor_used"] is True
-    assert observability["research_max_workers_effective"] == 8
+    assert observability["parallel_executor_used"] is False
+    assert observability["contract_evaluator_used"] is True
+    assert observability["research_max_workers_effective"] == 1
     assert observability["resource_plan"]["requested_execution_mode"] == "parallel"
     assert observability["resource_plan"]["effective_execution_mode"] == "parallel"
 
 
 def test_auto_manifest_reports_resource_planner_policy_source(tmp_path, monkeypatch) -> None:
-    report = _run_backtest(_auto_manifest_payload(), tmp_path, monkeypatch)
+    report = _run_contract_research_backtest(_auto_manifest_payload(), tmp_path, monkeypatch)
     resource_plan = report["execution_observability"]["resource_plan"]
 
     assert resource_plan["execution_mode_source"] == "resource_planner"
@@ -216,7 +183,7 @@ def test_auto_manifest_reports_resource_planner_policy_source(tmp_path, monkeypa
 
 
 def test_explicit_serial_reports_user_explicit_policy_source(tmp_path, monkeypatch) -> None:
-    report = _run_backtest(_serial_manifest_payload(), tmp_path, monkeypatch)
+    report = _run_contract_research_backtest(_serial_manifest_payload(), tmp_path, monkeypatch)
     resource_plan = report["execution_observability"]["resource_plan"]
 
     assert resource_plan["execution_mode_source"] == "user_explicit"
@@ -224,11 +191,12 @@ def test_explicit_serial_reports_user_explicit_policy_source(tmp_path, monkeypat
 
 
 def test_auto_and_explicit_serial_produce_different_outcomes(tmp_path, monkeypatch) -> None:
-    auto_report = _run_backtest(_auto_manifest_payload(), tmp_path / "auto", monkeypatch)
-    serial_report = _run_backtest(_serial_manifest_payload(), tmp_path / "serial", monkeypatch)
+    auto_report = _run_contract_research_backtest(_auto_manifest_payload(), tmp_path / "auto", monkeypatch)
+    serial_report = _run_contract_research_backtest(_serial_manifest_payload(), tmp_path / "serial", monkeypatch)
 
-    assert auto_report["execution_observability"]["parallel_executor_used"] is True
+    assert auto_report["execution_observability"]["resource_plan"]["effective_execution_mode"] == "parallel"
     assert serial_report["execution_observability"]["parallel_executor_used"] is False
+    assert serial_report["execution_observability"]["resource_plan"]["effective_execution_mode"] == "serial"
 
 
 def test_canonicalized_raw_default_does_not_override_omitted_provenance(tmp_path, monkeypatch) -> None:

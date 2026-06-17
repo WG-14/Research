@@ -267,6 +267,7 @@ def test_research_command_finished_helper_emits_success_notification(monkeypatch
         "research-backtest",
         10.0,
         0,
+        notification_policy="best_effort",
         manifest="manifest.json",
     )
 
@@ -299,7 +300,12 @@ def test_research_command_finished_exposes_notification_result(monkeypatch) -> N
     )
     monkeypatch.setattr(research_cli, "_record_notification_result", lambda *args, **kwargs: None)
 
-    result = research_cli._notify_research_command_finished("research-backtest", 10.0, 0)
+    result = research_cli._notify_research_command_finished(
+        "research-backtest",
+        10.0,
+        0,
+        notification_policy="best_effort",
+    )
 
     assert result is expected
 
@@ -335,11 +341,17 @@ def test_research_backtest_notifies_on_success_and_failure(monkeypatch) -> None:
         },
     )
 
-    assert research_cli.cmd_research_backtest(manifest_path="manifest.json") == 0
+    assert research_cli.cmd_research_backtest(
+        manifest_path="manifest.json",
+        notification_policy="best_effort",
+    ) == 0
 
     monkeypatch.setattr(research_cli, "load_manifest", lambda path: (_ for _ in ()).throw(ValueError("bad manifest")))
 
-    assert research_cli.cmd_research_backtest(manifest_path="bad.json") == 1
+    assert research_cli.cmd_research_backtest(
+        manifest_path="bad.json",
+        notification_policy="best_effort",
+    ) == 1
     assert calls[0][1] == AlertSeverity.INFO
     assert "command=research-backtest status=success exit_code=0" in calls[0][0]
     assert calls[1][1] == AlertSeverity.WARN
