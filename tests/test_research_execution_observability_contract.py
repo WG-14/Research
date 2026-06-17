@@ -44,7 +44,14 @@ def _payload(parallel: bool) -> dict[str, object]:
             "parallel_executor_used": parallel,
             "research_max_workers_requested": 2,
             "research_max_workers_effective": 2 if parallel else 1,
-            "resource_plan": {"schema_version": 1, "effective_max_workers": 2 if parallel else 1},
+            "resource_plan": {
+                "schema_version": 1,
+                "effective_max_workers": 2 if parallel else 1,
+                "execution_policy_source": "resource_planner" if parallel else "user_explicit",
+                "execution_mode_source": "resource_planner" if parallel else "user_explicit",
+                "max_workers_source": "resource_planner" if parallel else "user_explicit",
+                "work_unit_source": "parser_default",
+            },
         },
         snapshots={"train": _snapshot("train")},
     )
@@ -93,6 +100,29 @@ def test_report_writer_does_not_drop_execution_observability_contract(tmp_path: 
     observed = persisted["execution_observability"]
     assert REQUIRED_FIELDS.issubset(observed)
     assert observed["parallel_efficiency"]["expected_worker_utilization_pct"] == 50.0
+
+
+def test_execution_policy_source_fields_are_persisted(tmp_path: Path, monkeypatch) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    report = {
+        "experiment_id": "observability_policy_sources",
+        "research_run": {"report_detail": "summary"},
+        "candidates": [],
+        "execution_observability": _payload(True),
+    }
+    result = write_research_report(
+        manager=manager,
+        experiment_id="observability_policy_sources",
+        report_name="backtest",
+        payload=report,
+    )
+    persisted = json.loads(result.paths.report_path.read_text(encoding="utf-8"))
+
+    resource_plan = persisted["execution_observability"]["resource_plan"]
+    assert resource_plan["execution_policy_source"] == "resource_planner"
+    assert resource_plan["execution_mode_source"] == "resource_planner"
+    assert resource_plan["max_workers_source"] == "resource_planner"
+    assert resource_plan["work_unit_source"] == "parser_default"
 
 
 def test_persisted_report_parent_serial_includes_report_write(tmp_path: Path, monkeypatch) -> None:

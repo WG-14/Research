@@ -565,6 +565,24 @@ class ResearchExecutionPolicy:
 
 
 @dataclass(frozen=True)
+class ResearchExecutionInputProvenance:
+    mode_declared: bool = False
+    max_workers_declared: bool = False
+    work_unit_declared: bool = False
+    process_start_method_declared: bool = False
+
+
+@dataclass(frozen=True)
+class ResearchRunInputProvenance:
+    execution: ResearchExecutionInputProvenance = field(default_factory=ResearchExecutionInputProvenance)
+
+
+@dataclass(frozen=True)
+class ManifestInputProvenance:
+    research_run: ResearchRunInputProvenance = field(default_factory=ResearchRunInputProvenance)
+
+
+@dataclass(frozen=True)
 class ResearchRunPolicy:
     report_detail: str = "summary"
     diagnostic_mode: str = "promotion_candidate"
@@ -807,6 +825,7 @@ class ExperimentManifest:
     walk_forward: WalkForwardConfig | None
     research_run: ResearchRunPolicy
     raw: dict[str, Any]
+    manifest_input_provenance: ManifestInputProvenance = field(default_factory=ManifestInputProvenance)
 
     def canonical_payload(self) -> dict[str, Any]:
         return {
@@ -936,6 +955,7 @@ def parse_manifest(payload: dict[str, Any]) -> ExperimentManifest:
     final_selection = _parse_final_selection(payload.get("final_selection"), deployment_tier=deployment_tier)
     walk_forward = _parse_walk_forward(payload.get("walk_forward"))
     research_run = _parse_research_run(payload.get("research_run"))
+    manifest_input_provenance = _manifest_input_provenance(payload)
     if acceptance_gate.walk_forward_required and walk_forward is None:
         raise ManifestValidationError("walk_forward is required when acceptance_gate.walk_forward_required=true")
     _validate_execution_reality_manifest_policy(
@@ -979,6 +999,7 @@ def parse_manifest(payload: dict[str, Any]) -> ExperimentManifest:
         walk_forward=walk_forward,
         research_run=research_run,
         raw=dict(payload),
+        manifest_input_provenance=manifest_input_provenance,
     )
 
 
@@ -2928,6 +2949,22 @@ def _parse_research_execution(value: Any) -> ResearchExecutionPolicy:
         work_unit=work_unit,
         deterministic_merge_order=deterministic_merge_order,
         resume=resume,
+    )
+
+
+def _manifest_input_provenance(payload: dict[str, Any]) -> ManifestInputProvenance:
+    research_run = payload.get("research_run")
+    execution = research_run.get("execution") if isinstance(research_run, dict) else None
+    execution_payload = execution if isinstance(execution, dict) else {}
+    return ManifestInputProvenance(
+        research_run=ResearchRunInputProvenance(
+            execution=ResearchExecutionInputProvenance(
+                mode_declared="mode" in execution_payload,
+                max_workers_declared="max_workers" in execution_payload,
+                work_unit_declared="work_unit" in execution_payload,
+                process_start_method_declared="process_start_method" in execution_payload,
+            )
+        )
     )
 
 

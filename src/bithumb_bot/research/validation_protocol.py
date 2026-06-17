@@ -571,8 +571,31 @@ def _apply_execution_plan_resource_policy(
 ) -> ExperimentManifest:
     plan = execution_plan.payload
     resource_plan = plan.get("resource_plan") if isinstance(plan.get("resource_plan"), dict) else {}
+    effective_mode = str(
+        resource_plan.get("effective_execution_mode")
+        or plan.get("effective_execution_mode")
+        or manifest.research_run.execution.mode
+    )
     if str(resource_plan.get("requested_execution_mode") or plan.get("requested_execution_mode") or "") == "auto":
-        return manifest
+        effective_workers = int(
+            resource_plan.get("effective_max_workers")
+            or plan.get("max_workers")
+            or manifest.research_run.execution.max_workers
+        )
+        effective_work_unit = str(
+            resource_plan.get("work_unit_type")
+            or plan.get("work_unit_type")
+            or manifest.research_run.execution.work_unit
+        )
+        adjusted_execution = replace(
+            manifest.research_run.execution,
+            mode=effective_mode,
+            max_workers=effective_workers,
+            work_unit=effective_work_unit,
+        )
+        if adjusted_execution == manifest.research_run.execution:
+            return manifest
+        return replace(manifest, research_run=replace(manifest.research_run, execution=adjusted_execution))
     effective_workers = int(
         resource_plan.get("effective_max_workers")
         or plan.get("max_workers")
@@ -593,18 +616,7 @@ def _canonicalize_runner_default_execution(manifest: ExperimentManifest) -> Expe
     research_run = raw.get("research_run")
     if isinstance(research_run, dict) and isinstance(research_run.get("execution"), dict):
         return manifest
-    raw_copy = dict(raw)
-    research_run_copy = dict(research_run) if isinstance(research_run, dict) else {}
-    research_run_copy["execution"] = {
-        "mode": manifest.research_run.execution.mode,
-        "max_workers": manifest.research_run.execution.max_workers,
-        "process_start_method": manifest.research_run.execution.process_start_method,
-        "work_unit": manifest.research_run.execution.work_unit,
-        "deterministic_merge_order": manifest.research_run.execution.deterministic_merge_order,
-        "resume": manifest.research_run.execution.resume,
-    }
-    raw_copy["research_run"] = research_run_copy
-    return replace(manifest, raw=raw_copy)
+    return manifest
 
 
 def _stage_timing(stage: str, started_at: float, **details: Any) -> dict[str, Any]:
@@ -1651,8 +1663,10 @@ def run_research_backtest(
         manifest=manifest,
         execution_plan=execution_plan,
     )
-    if int(memory_admission.get("effective_max_workers") or manifest.research_run.execution.max_workers) != int(
-        execution_plan.payload["max_workers"]
+    if (
+        memory_admission.get("action") not in {"cap_workers", "batch_candidates"}
+        and int(memory_admission.get("effective_max_workers") or manifest.research_run.execution.max_workers)
+        != int(execution_plan.payload["max_workers"])
     ):
         execution_plan = build_research_execution_plan(
             manifest=manifest,
@@ -1896,8 +1910,10 @@ def run_research_walk_forward(
         manifest=manifest,
         execution_plan=execution_plan,
     )
-    if int(memory_admission.get("effective_max_workers") or manifest.research_run.execution.max_workers) != int(
-        execution_plan.payload["max_workers"]
+    if (
+        memory_admission.get("action") not in {"cap_workers", "batch_candidates"}
+        and int(memory_admission.get("effective_max_workers") or manifest.research_run.execution.max_workers)
+        != int(execution_plan.payload["max_workers"])
     ):
         execution_plan = build_research_execution_plan(
             manifest=manifest,

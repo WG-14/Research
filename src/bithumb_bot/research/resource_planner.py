@@ -74,6 +74,10 @@ class ResearchResourcePlan:
     work_unit_selection: WorkUnitSelection
     selection_reasons: tuple[str, ...]
     fallback_reasons: tuple[str, ...]
+    execution_policy_source: str
+    execution_mode_source: str
+    max_workers_source: str
+    work_unit_source: str
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -95,6 +99,10 @@ class ResearchResourcePlan:
             "memory_budget_mb": self.memory_budget_mb,
             "selection_reasons": list(self.selection_reasons),
             "fallback_reasons": list(self.fallback_reasons),
+            "execution_policy_source": self.execution_policy_source,
+            "execution_mode_source": self.execution_mode_source,
+            "max_workers_source": self.max_workers_source,
+            "work_unit_source": self.work_unit_source,
         }
 
 
@@ -177,6 +185,7 @@ def plan_research_resources(
     contract = resource_contract or detect_resource_contract()
     execution = manifest.research_run.execution
     mode_explicit = _manifest_execution_mode_explicit(manifest)
+    work_unit_explicit = _manifest_execution_field_explicit(manifest, "work_unit")
     requested_execution_mode = str(execution.mode or "serial").strip().lower()
     effective_execution_mode, mode_reason, mode_fallbacks = _select_execution_mode(
         requested_execution_mode=requested_execution_mode,
@@ -184,6 +193,11 @@ def plan_research_resources(
         candidate_count=candidate_count,
         scenario_count=scenario_count,
         split_count=split_count,
+        auto_parallel_block_reasons=_auto_parallel_block_reasons(
+            manifest=manifest,
+            split_names=split_names,
+            include_walk_forward=include_walk_forward,
+        ),
         resource_contract=contract,
     )
     auto_worker_cap = contract.cpu_limit or os.cpu_count() or 1
@@ -203,6 +217,11 @@ def plan_research_resources(
     selection_reasons.append(f"execution_mode_selection:{mode_reason}")
     if effective_workers < requested_workers:
         selection_reasons.append("effective_workers_capped_below_manifest_request")
+    max_workers_source = "user_explicit" if max_workers_explicit else "resource_planner"
+    cap_names = [name for name, value in caps if value == effective_workers]
+    if effective_workers < requested_workers:
+        if "env_worker_cap" in cap_names or "total_process_budget" in cap_names:
+            max_workers_source = "env_cap"
 
     memory_budget = getattr(manifest.research_run.resource_limits, "max_total_memory_mb", None)
     if memory_budget is None:
@@ -217,6 +236,10 @@ def plan_research_resources(
         include_walk_forward=include_walk_forward,
         effective_max_workers=effective_workers,
     )
+    work_unit_source = "user_explicit" if work_unit_explicit else "parser_default"
+    if work_unit_selection.effective_work_unit_type != work_unit_selection.requested_work_unit_type:
+        work_unit_source = "resource_planner"
+    execution_mode_source = "user_explicit" if mode_explicit else "resource_planner"
     return ResearchResourcePlan(
         execution_mode=effective_execution_mode,
         requested_execution_mode=requested_execution_mode if mode_explicit else "auto",
@@ -231,6 +254,10 @@ def plan_research_resources(
         work_unit_selection=work_unit_selection,
         selection_reasons=tuple(selection_reasons),
         fallback_reasons=tuple(sorted(set(contract.fallback_reasons + tuple(mode_fallbacks)))),
+        execution_policy_source=execution_mode_source,
+        execution_mode_source=execution_mode_source,
+        max_workers_source=max_workers_source,
+        work_unit_source=work_unit_source,
     )
 
 
@@ -337,6 +364,17 @@ def _manifest_execution_mode_explicit(manifest: Any) -> bool:
 
 
 def _manifest_execution_field_explicit(manifest: Any, field_name: str) -> bool:
+    provenance = getattr(manifest, "manifest_input_provenance", None)
+    research_run_provenance = getattr(provenance, "research_run", None)
+    execution_provenance = getattr(research_run_provenance, "execution", None)
+    provenance_field = {
+        "mode": "mode_declared",
+        "max_workers": "max_workers_declared",
+        "work_unit": "work_unit_declared",
+        "process_start_method": "process_start_method_declared",
+    }.get(field_name)
+    if execution_provenance is not None and provenance_field is not None:
+        return bool(getattr(execution_provenance, provenance_field, False))
     raw = getattr(manifest, "raw", None)
     if not isinstance(raw, dict):
         return False
@@ -355,10 +393,13 @@ def _select_execution_mode(
     scenario_count: int,
     split_count: int,
     resource_contract: ResourceContract,
+    auto_parallel_block_reasons: tuple[str, ...] = (),
 ) -> tuple[str, str, tuple[str, ...]]:
     requested = str(requested_execution_mode or "serial").strip().lower()
     if execution_mode_explicit:
         return requested, f"manifest_explicit_{requested}", ()
+    if auto_parallel_block_reasons:
+        return "serial", "auto_serial_fallback", auto_parallel_block_reasons
     task_count = max(0, int(candidate_count)) * max(0, int(scenario_count)) * max(1, int(split_count))
     cpu_limit = resource_contract.cpu_limit
     capped_cpu_limit = cpu_limit
@@ -375,6 +416,27 @@ def _select_execution_mode(
     if task_count < 2:
         fallback_reasons.append("auto_execution_mode_insufficient_task_count")
     return "serial", "auto_serial_fallback", tuple(fallback_reasons)
+
+
+def _auto_parallel_block_reasons(
+    *,
+    manifest: Any,
+    split_names: list[str] | tuple[str, ...] | None,
+    include_walk_forward: bool,
+) -> tuple[str, ...]:
+    reasons: list[str] = []
+    split_tuple = tuple(str(name) for name in (split_names or ()))
+    if include_walk_forward or any(name.startswith("window_") for name in split_tuple):
+        reasons.append("auto_parallel_walk_forward_not_in_scope")
+    if "final_holdout" in split_tuple:
+        reasons.append("auto_parallel_final_holdout_not_in_scope")
+    audit_trail = getattr(getattr(manifest, "research_run", None), "audit_trail", None)
+    if bool(getattr(audit_trail, "complete_external", False)):
+        reasons.append("auto_parallel_complete_external_audit_not_supported")
+    artifact_policy = getattr(getattr(manifest, "research_run", None), "artifact_policy", None)
+    if bool(getattr(artifact_policy, "full_decisions_external_jsonl", False)):
+        reasons.append("auto_parallel_full_decisions_external_not_supported")
+    return tuple(reasons)
 
 
 def _candidate_scenario_split_capability(

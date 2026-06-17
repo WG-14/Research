@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 
 from bithumb_bot.research.experiment_manifest import parse_manifest
 from bithumb_bot.research.resource_planner import detect_resource_contract, plan_research_resources
@@ -94,6 +95,7 @@ def test_resource_planner_keeps_explicit_serial_mode(tmp_path: Path, monkeypatch
     assert plan.effective_execution_mode == "serial"
     assert plan.effective_max_workers == 1
     assert "execution_mode_selection:manifest_explicit_serial" in plan.selection_reasons
+    assert plan.as_dict()["execution_mode_source"] == "user_explicit"
 
 
 def test_resource_planner_respects_env_worker_cap(tmp_path: Path, monkeypatch) -> None:
@@ -145,3 +147,29 @@ def test_resource_plan_is_hash_stable_for_same_inputs(tmp_path: Path, monkeypatc
     assert sha256_prefixed(plan_research_resources(**kwargs).as_dict()) == sha256_prefixed(
         plan_research_resources(**kwargs).as_dict()
     )
+
+
+def test_resource_planner_uses_provenance_before_raw_execution_defaults(tmp_path: Path, monkeypatch) -> None:
+    cgroup, proc = _mock_linux_limits(tmp_path)
+    monkeypatch.delenv("BITHUMB_RESEARCH_MAX_WORKERS", raising=False)
+    contract = detect_resource_contract(cgroup_root=cgroup, proc_root=proc)
+    manifest = _auto_manifest()
+    raw = dict(manifest.raw)
+    raw["research_run"] = {
+        **dict(raw.get("research_run") or {}),
+        "execution": {"mode": "serial", "max_workers": 1},
+    }
+    manifest_with_runner_default_raw = replace(manifest, raw=raw)
+
+    plan = plan_research_resources(
+        manifest=manifest_with_runner_default_raw,
+        candidate_count=16,
+        scenario_count=1,
+        split_count=2,
+        resource_contract=contract,
+    )
+
+    assert plan.requested_execution_mode == "auto"
+    assert plan.effective_execution_mode == "parallel"
+    assert plan.effective_max_workers == 8
+    assert plan.as_dict()["execution_mode_source"] == "resource_planner"

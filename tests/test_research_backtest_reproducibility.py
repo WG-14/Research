@@ -3217,7 +3217,14 @@ def test_explicit_default_execution_policy_preserves_serial_metrics(tmp_path, mo
     assert default_manifest.manifest_hash() == explicit_manifest.manifest_hash()
     assert default_report["candidates"][0]["validation_metrics"] == explicit_report["candidates"][0]["validation_metrics"]
     assert default_report["candidates"][0]["behavior_hash"] == explicit_report["candidates"][0]["behavior_hash"]
-    assert default_report["content_hash"] == explicit_report["content_hash"]
+    assert (
+        default_report["execution_observability"]["resource_plan"]["execution_mode_source"]
+        == "resource_planner"
+    )
+    assert (
+        explicit_report["execution_observability"]["resource_plan"]["execution_mode_source"]
+        == "user_explicit"
+    )
 
 
 def test_parallel_manifest_contract_candidate_scenario_matches_serial_logical_results() -> None:
