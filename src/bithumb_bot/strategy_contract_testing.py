@@ -261,7 +261,7 @@ def _seed_runtime_rows(path: Path, *, pair: str, interval: str) -> int:
     try:
         ensure_schema(conn)
         base_ts = 1_700_000_000_000
-        for index in range(3):
+        for index in range(4):
             close = 100.0 + index
             conn.execute(
                 """
@@ -271,7 +271,7 @@ def _seed_runtime_rows(path: Path, *, pair: str, interval: str) -> int:
                 (base_ts + index * 60_000, pair, interval, close, close, close, close, 1.0),
             )
         conn.commit()
-        return base_ts + 2 * 60_000
+        return base_ts + 3 * 60_000
     finally:
         conn.close()
 

@@ -222,7 +222,11 @@ class ParticipationMetrics:
     max_consecutive_zero_filled_days: int
     min_daily_filled_execution_count: int
     fallback_entry_count: int
+    fallback_submit_expected_count: int
+    fallback_submitted_count: int
     fallback_filled_count: int
+    fallback_closed_trade_count: int
+    base_sma_buy_count: int
     daily_counts_hash: str
     not_a_fill_guarantee: bool = True
 
@@ -451,7 +455,11 @@ def build_participation_metrics(
     filled_counts = {day: 0 for day in days}
     closed_counts = {day: 0 for day in days}
     fallback_entry_count = 0
+    fallback_submit_expected_count = 0
+    fallback_submitted_count = 0
     fallback_filled_count = 0
+    fallback_closed_trade_count = 0
+    base_sma_buy_count = 0
     for decision in decision_records:
         if str(decision.get("final_signal") or decision.get("signal") or "").upper() != "BUY":
             continue
@@ -464,6 +472,9 @@ def build_participation_metrics(
         trace = decision.get("trace") if isinstance(decision.get("trace"), dict) else decision
         if isinstance(trace, dict) and trace.get("entry_signal_source") == "daily_participation_fallback":
             fallback_entry_count += 1
+            fallback_submit_expected_count += 1
+        elif isinstance(trace, dict) and trace.get("entry_signal_source") in {"sma_cross", "base_sma"}:
+            base_sma_buy_count += 1
     for record in execution_records:
         if str(record.side).upper() != "BUY":
             continue
@@ -472,6 +483,8 @@ def build_participation_metrics(
         day = _day(record.ts, timezone_name)
         if str(record.status) in {"submitted", "filled", "partial"}:
             submitted_counts[day] = submitted_counts.get(day, 0) + 1
+            if record.entry_signal_source == "daily_participation_fallback":
+                fallback_submitted_count += 1
         if str(record.status) in {"filled", "partial"} and float(record.filled_qty) > 0.0:
             filled_counts[day] = filled_counts.get(day, 0) + 1
             if record.entry_signal_source == "daily_participation_fallback":
@@ -481,6 +494,8 @@ def build_participation_metrics(
             continue
         day = _day(trade.exit_ts, timezone_name)
         closed_counts[day] = closed_counts.get(day, 0) + 1
+        if getattr(trade, "entry_signal_source", None) == "daily_participation_fallback":
+            fallback_closed_trade_count += 1
     zero_filled_days = sum(1 for day in days if filled_counts.get(day, 0) == 0)
     daily_payload = {
         "timezone": timezone_name,
@@ -506,7 +521,11 @@ def build_participation_metrics(
         max_consecutive_zero_filled_days=_max_consecutive_zero_days(days, filled_counts),
         min_daily_filled_execution_count=min((filled_counts.get(day, 0) for day in days), default=0),
         fallback_entry_count=fallback_entry_count,
+        fallback_submit_expected_count=fallback_submit_expected_count,
+        fallback_submitted_count=fallback_submitted_count,
         fallback_filled_count=fallback_filled_count,
+        fallback_closed_trade_count=fallback_closed_trade_count,
+        base_sma_buy_count=base_sma_buy_count,
         daily_counts_hash=sha256_prefixed(daily_payload),
     )
 

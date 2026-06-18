@@ -5,6 +5,23 @@ from dataclasses import replace
 from bithumb_bot.config import LiveModeValidationError, settings, validate_live_strategy_selection
 from bithumb_bot.research.strategy_registry import resolve_research_strategy_plugin, strategy_runtime_capability_issues
 from bithumb_bot.strategy_plugin_inventory import build_strategy_target_verdict
+from bithumb_bot.strategy_contract_testing import assert_live_eligible_contract
+from bithumb_bot.strategy_plugins.daily_participation_sma import DAILY_PARTICIPATION_SMA_SPEC
+from tests.test_daily_participation_sma_backtest_integration import _params
+
+
+def _runtime_params() -> dict[str, object]:
+    values = dict(DAILY_PARTICIPATION_SMA_SPEC.default_parameters)
+    values.update(_params())
+    values.update(
+        {
+            "SMA_SHORT": 1,
+            "SMA_LONG": 2,
+            "SMA_FILTER_VOL_WINDOW": 1,
+            "SMA_FILTER_OVEREXT_LOOKBACK": 1,
+        }
+    )
+    return values
 
 
 def test_daily_participation_sma_is_level_3_promotion_grade() -> None:
@@ -61,3 +78,30 @@ def test_live_strategy_selection_blocks_without_approved_profile() -> None:
         assert "approved_profile_required_for_strategy:daily_participation_sma" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected approved profile fail-closed gate")
+
+
+def test_daily_participation_sma_satisfies_level_3_contract_helper(tmp_path) -> None:
+    plugin = resolve_research_strategy_plugin("daily_participation_sma")
+
+    assert_live_eligible_contract(
+        plugin,
+        tmp_path=tmp_path,
+        params=_runtime_params(),
+        pair="KRW-BTC",
+        interval="1m",
+    )
+
+
+def test_daily_live_real_order_blocks_without_approved_profile() -> None:
+    verdict = build_strategy_target_verdict("daily_participation_sma", "live_real_order")
+
+    assert verdict["allowed"] is False
+    assert "approved_profile_required_for_strategy:daily_participation_sma" in verdict["blocking_reasons"]
+
+
+def test_daily_runtime_decision_adapter_uses_feature_snapshot_only() -> None:
+    plugin = resolve_research_strategy_plugin("daily_participation_sma")
+    adapter = plugin.runtime_decision_adapter_factory()
+
+    assert hasattr(adapter, "decide_feature_snapshot")
+    assert not hasattr(adapter, "decide")

@@ -198,9 +198,11 @@ class DecisionPayloadBuilder:
                 "count_basis",
                 "kst_day",
                 "daily_count_snapshot_hash",
+                "daily_count_snapshot_event_set_hash",
                 "participation_policy_hash",
                 "participation_input_hash",
                 "participation_decision_hash",
+                "fallback_mode",
                 "not_a_fill_guarantee",
             ):
                 if key in trace:
@@ -457,9 +459,11 @@ class DecisionPayloadBuilder:
                 "count_basis",
                 "kst_day",
                 "daily_count_snapshot_hash",
+                "daily_count_snapshot_event_set_hash",
                 "participation_policy_hash",
                 "participation_input_hash",
                 "participation_decision_hash",
+                "fallback_mode",
                 "not_a_fill_guarantee",
             ):
                 if str(trace.get(key) or "").strip():

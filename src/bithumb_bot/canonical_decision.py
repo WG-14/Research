@@ -126,6 +126,13 @@ COMMON_CANONICAL_DECISION_FIELDS_V2 = (
     "typed_no_submit_proof",
     "feature_snapshot_hash",
     "strategy_behavior_hash",
+    "daily_count_snapshot_hash",
+    "daily_count_snapshot_event_set_hash",
+    "participation_policy_hash",
+    "participation_input_hash",
+    "participation_decision_hash",
+    "entry_signal_source",
+    "fallback_mode",
 )
 CANONICAL_DECISION_SCHEMA_FIELDS = COMMON_CANONICAL_DECISION_FIELDS_V2
 LEGACY_CANONICAL_DECISION_SCHEMA_FIELDS_V1 = (
@@ -802,6 +809,9 @@ def runtime_decision_to_canonical_event(
         "participation_policy_hash",
         "participation_input_hash",
         "participation_decision_hash",
+        "entry_signal_source",
+        "fallback_mode",
+        "daily_count_snapshot_event_set_hash",
     ):
         value = context.get(key)
         if str(value or "").strip():
@@ -899,6 +909,9 @@ def runtime_decision_to_canonical_event(
         "participation_policy_hash",
         "participation_input_hash",
         "participation_decision_hash",
+        "entry_signal_source",
+        "fallback_mode",
+        "daily_count_snapshot_event_set_hash",
     ):
         if key in payload:
             normalized[key] = payload[key]

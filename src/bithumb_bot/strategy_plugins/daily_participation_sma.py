@@ -38,10 +38,9 @@ from bithumb_bot.strategy_authoring import (
     build_live_eligible_strategy_plugin,
     research_plugin_from_event_builder,
 )
-from bithumb_bot.strategy_plugins.sma_with_filter_contract import (
-    SMA_DECISION_EVIDENCE_CONTRACT,
-    sma_runtime_data_requirements,
-)
+from bithumb_bot.strategy_plugins.daily_participation_contract import DAILY_PARTICIPATION_DECISION_EVIDENCE_CONTRACT
+from bithumb_bot.strategy_plugins.daily_participation_diagnostics import daily_participation_diagnostics_count_builder
+from bithumb_bot.strategy_plugins.sma_with_filter_contract import sma_runtime_data_requirements
 from bithumb_bot.strategy_plugins.sma_with_filter_assembly import MaterializationMode
 from bithumb_bot.strategy_plugins.sma_with_filter_assembly import SmaWithFilterPolicyAssembly
 from bithumb_bot.strategy_plugins.sma_with_filter_projector import SmaWithFilterSnapshotProjector
@@ -58,6 +57,7 @@ DAILY_PARTICIPATION_PARAMETERS: tuple[str, ...] = (
     "DAILY_PARTICIPATION_WINDOW_END_HOUR_KST",
     "DAILY_PARTICIPATION_BUY_FRACTION",
     "DAILY_PARTICIPATION_MAX_ORDER_KRW",
+    "DAILY_PARTICIPATION_FALLBACK_MODE",
 )
 
 
@@ -79,6 +79,7 @@ DAILY_PARTICIPATION_SMA_SPEC = StrategySpec(
         "DAILY_PARTICIPATION_WINDOW_END_HOUR_KST": 24,
         "DAILY_PARTICIPATION_BUY_FRACTION": 0.05,
         "DAILY_PARTICIPATION_MAX_ORDER_KRW": 10000.0,
+        "DAILY_PARTICIPATION_FALLBACK_MODE": "unconditional_participation",
     },
     parameter_schema=SMA_WITH_FILTER_SPEC.parameter_schema
     + (
@@ -94,6 +95,12 @@ DAILY_PARTICIPATION_SMA_SPEC = StrategySpec(
         StrategyParameterSchema("DAILY_PARTICIPATION_WINDOW_END_HOUR_KST", "int", min_value=1, max_value=24, unit="hour"),
         StrategyParameterSchema("DAILY_PARTICIPATION_BUY_FRACTION", "float", min_value=0.0, max_value=1.0, unit="cash_fraction"),
         StrategyParameterSchema("DAILY_PARTICIPATION_MAX_ORDER_KRW", "float", min_value=0.0, unit="krw"),
+        StrategyParameterSchema(
+            "DAILY_PARTICIPATION_FALLBACK_MODE",
+            "str",
+            enum=("unconditional_participation", "requires_base_safety_filter", "disabled"),
+            unit="fallback_contract",
+        ),
     ),
     decision_contract_version="daily_participation_sma_decision_contract.v1",
     required_data=SMA_WITH_FILTER_SPEC.required_data,
@@ -111,6 +118,7 @@ def daily_participation_config_from_parameters(values: dict[str, Any]) -> DailyP
         window_end_hour=int(values["DAILY_PARTICIPATION_WINDOW_END_HOUR_KST"]),
         buy_fraction=float(values["DAILY_PARTICIPATION_BUY_FRACTION"]),
         max_order_krw=float(values["DAILY_PARTICIPATION_MAX_ORDER_KRW"]),
+        fallback_mode=str(values.get("DAILY_PARTICIPATION_FALLBACK_MODE", "unconditional_participation")),  # type: ignore[arg-type]
     )
 
 
@@ -155,6 +163,10 @@ def runtime_parameters_from_env(env: dict[str, str]) -> dict[str, Any]:
             ),
             "DAILY_PARTICIPATION_BUY_FRACTION": float(_value("DAILY_PARTICIPATION_BUY_FRACTION", "0.05")),
             "DAILY_PARTICIPATION_MAX_ORDER_KRW": float(_value("DAILY_PARTICIPATION_MAX_ORDER_KRW", "10000")),
+            "DAILY_PARTICIPATION_FALLBACK_MODE": _value(
+                "DAILY_PARTICIPATION_FALLBACK_MODE",
+                "unconditional_participation",
+            ),
         }
     )
     return values
@@ -177,6 +189,9 @@ def runtime_parameters_from_settings(cfg: object) -> dict[str, Any]:
             ),
             "DAILY_PARTICIPATION_BUY_FRACTION": float(getattr(cfg, "DAILY_PARTICIPATION_BUY_FRACTION", 0.05)),
             "DAILY_PARTICIPATION_MAX_ORDER_KRW": float(getattr(cfg, "DAILY_PARTICIPATION_MAX_ORDER_KRW", 10000.0)),
+            "DAILY_PARTICIPATION_FALLBACK_MODE": str(
+                getattr(cfg, "DAILY_PARTICIPATION_FALLBACK_MODE", "unconditional_participation")
+            ),
         }
     )
     return values
@@ -220,6 +235,7 @@ def evaluate_daily_participation_sma_decision(
     exit_policy_config: ExitPolicyConfig,
     participation_config: DailyParticipationPolicyConfig,
     participation_state: DailyParticipationStateSnapshot,
+    count_snapshot: Any,
     signal_context_extra: dict[str, object] | None = None,
     rule_sources: dict[str, str] | None = None,
 ):
@@ -239,7 +255,20 @@ def evaluate_daily_participation_sma_decision(
     entry_signal_source = "sma_cross" if base.final_signal == "BUY" else "hold"
     entry_sizing_source = "base_sma" if base.final_signal == "BUY" else "none"
     execution_intent = base.execution_intent
-    if base.final_signal != "BUY" and participation.allowed:
+    base_blocked_filters = list(base.trace.get("blocked_filters") or ())
+    base_safety_passed = not bool(base_blocked_filters) and str(base.final_reason or "").strip() not in {
+        "entry_filter_blocked",
+        "blocked",
+    }
+    fallback_eligible = bool(participation.allowed)
+    fallback_block_reason = ""
+    if participation_config.fallback_mode == "disabled":
+        fallback_eligible = False
+        fallback_block_reason = "daily_participation_fallback_disabled"
+    elif participation_config.fallback_mode == "requires_base_safety_filter" and not base_safety_passed:
+        fallback_eligible = False
+        fallback_block_reason = "daily_participation_base_safety_filter_blocked"
+    if base.final_signal != "BUY" and fallback_eligible:
         final_signal = "BUY"
         final_reason = participation.reason_code
         entry_signal_source = "daily_participation_fallback"
@@ -252,28 +281,38 @@ def evaluate_daily_participation_sma_decision(
             budget_fraction_of_cash=float(participation_config.buy_fraction),
             max_budget_krw=float(participation_config.max_order_krw),
         )
+    elif base.final_signal != "BUY" and participation.allowed and fallback_block_reason:
+        final_signal = "HOLD"
+        final_reason = fallback_block_reason
     execution_payload = execution_intent.as_dict() if execution_intent is not None else None
     trace = dict(base.trace)
     trace.update(
         {
             "strategy_family": "daily_participation_sma",
             "base_strategy": "sma_with_filter",
-            "strategy_instance_id": str(count_snapshot.strategy_instance_id or ""),
+            "strategy_instance_id": str(getattr(count_snapshot, "strategy_instance_id", "") or ""),
+            "pair": str(getattr(count_snapshot, "pair", "") or market.pair or ""),
             "entry_signal_source": entry_signal_source,
             "entry_sizing_source": entry_sizing_source,
             "base_entry_signal": base_entry_signal,
+            "base_final_reason": base.final_reason,
+            "base_blocked_filters": base_blocked_filters,
             "participation_entry_signal": "BUY" if participation.allowed else "HOLD",
             "daily_participation_decision": participation.as_dict(),
+            "fallback_mode": participation_config.fallback_mode,
+            "fallback_block_reason": fallback_block_reason,
             "timezone": participation_config.timezone,
             "count_basis": participation.count_basis,
             "kst_day": participation.kst_day,
             "daily_count_snapshot_hash": participation.daily_count_snapshot_hash,
+            "daily_count_snapshot_event_set_hash": str(getattr(count_snapshot, "event_set_hash", "") or ""),
             "participation_policy_hash": participation.participation_policy_hash,
             "participation_input_hash": participation.participation_input_hash,
             "participation_decision_hash": participation.participation_decision_hash,
             "fail_closed_reason": participation.fail_closed_reason,
             "not_a_fill_guarantee": True,
             "execution_intent": execution_payload,
+            "daily_count_snapshot": count_snapshot.as_dict() if hasattr(count_snapshot, "as_dict") else {},
         }
     )
     policy_input_hash = _stable_hash(
@@ -281,6 +320,7 @@ def evaluate_daily_participation_sma_decision(
             "base_policy_input_hash": base.policy_input_hash,
             "entry_signal_source": entry_signal_source,
             "entry_sizing_source": entry_sizing_source,
+            "fallback_mode": participation_config.fallback_mode,
             "daily_count_snapshot_hash": participation.daily_count_snapshot_hash,
             "participation_policy_hash": participation.participation_policy_hash,
             "participation_input_hash": participation.participation_input_hash,
@@ -299,6 +339,7 @@ def evaluate_daily_participation_sma_decision(
             "final_reason": final_reason,
             "entry_signal_source": entry_signal_source,
             "entry_sizing_source": entry_sizing_source,
+            "fallback_mode": participation_config.fallback_mode,
             "execution_intent": execution_payload,
             "participation_decision_hash": participation.participation_decision_hash,
         }
@@ -392,6 +433,7 @@ def research_policy_decision_builder(
         exit_policy_config=projected.bundle.exit_policy_config,
         participation_config=participation_config,
         participation_state=participation_state,
+        count_snapshot=count_snapshot,
         rule_sources=projected.rule_sources,
     )
     decision.trace["strategy_evaluation_provenance"] = {
@@ -502,6 +544,7 @@ def _daily_runtime_result_from_base(
     participation_config: DailyParticipationPolicyConfig,
     count_snapshot: Any,
     decision_ts: int,
+    provenance_extra: dict[str, object] | None = None,
 ) -> Any:
     base_decision = base_result.decision
     position = base_decision.position_snapshot
@@ -521,7 +564,20 @@ def _daily_runtime_result_from_base(
     entry_signal_source = "sma_cross" if str(base_decision.final_signal).upper() == "BUY" else "hold"
     entry_sizing_source = "base_sma" if str(base_decision.final_signal).upper() == "BUY" else "none"
     execution_intent = base_decision.execution_intent
-    if str(base_decision.final_signal).upper() != "BUY" and participation.allowed:
+    base_blocked_filters = list(base_decision.trace.get("blocked_filters") or ())
+    base_safety_passed = not bool(base_blocked_filters) and str(base_decision.final_reason or "").strip() not in {
+        "entry_filter_blocked",
+        "blocked",
+    }
+    fallback_eligible = bool(participation.allowed)
+    fallback_block_reason = ""
+    if participation_config.fallback_mode == "disabled":
+        fallback_eligible = False
+        fallback_block_reason = "daily_participation_fallback_disabled"
+    elif participation_config.fallback_mode == "requires_base_safety_filter" and not base_safety_passed:
+        fallback_eligible = False
+        fallback_block_reason = "daily_participation_base_safety_filter_blocked"
+    if str(base_decision.final_signal).upper() != "BUY" and fallback_eligible:
         final_signal = "BUY"
         final_reason = participation.reason_code
         entry_signal_source = "daily_participation_fallback"
@@ -534,21 +590,31 @@ def _daily_runtime_result_from_base(
             budget_fraction_of_cash=float(participation_config.buy_fraction),
             max_budget_krw=float(participation_config.max_order_krw),
         )
+    elif str(base_decision.final_signal).upper() != "BUY" and participation.allowed and fallback_block_reason:
+        final_signal = "HOLD"
+        final_reason = fallback_block_reason
     execution_payload = execution_intent.as_dict() if execution_intent is not None else None
     trace = dict(base_decision.trace)
     trace.update(
         {
             "strategy_family": "daily_participation_sma",
             "base_strategy": "sma_with_filter",
+            "strategy_instance_id": str(count_snapshot.strategy_instance_id or ""),
+            "pair": str(count_snapshot.pair or base_result.base_context.get("pair") or ""),
             "entry_signal_source": entry_signal_source,
             "entry_sizing_source": entry_sizing_source,
             "base_entry_signal": base_entry_signal,
+            "base_final_reason": base_decision.final_reason,
+            "base_blocked_filters": base_blocked_filters,
             "participation_entry_signal": "BUY" if participation.allowed else "HOLD",
             "daily_participation_decision": participation.as_dict(),
+            "fallback_mode": participation_config.fallback_mode,
+            "fallback_block_reason": fallback_block_reason,
             "timezone": participation_config.timezone,
             "count_basis": participation.count_basis,
             "kst_day": participation.kst_day,
             "daily_count_snapshot_hash": participation.daily_count_snapshot_hash,
+            "daily_count_snapshot_event_set_hash": str(count_snapshot.event_set_hash or ""),
             "participation_policy_hash": participation.participation_policy_hash,
             "participation_input_hash": participation.participation_input_hash,
             "participation_decision_hash": participation.participation_decision_hash,
@@ -558,12 +624,40 @@ def _daily_runtime_result_from_base(
             "daily_count_snapshot": count_snapshot.as_dict(),
         }
     )
+    provenance = dict(trace.get("strategy_evaluation_provenance") or {})
+    provenance.update(
+        {
+            "decision_boundary": "StrategyDecisionService.evaluate",
+            "snapshot_builder": "DailyParticipationSmaRuntimeFeatureSnapshotAdapter",
+            "base_snapshot_builder": "SmaWithFilterRuntimeFeatureSnapshotAdapter",
+            "strategy_instance_id": str(count_snapshot.strategy_instance_id or ""),
+            "pair": str(count_snapshot.pair or base_result.base_context.get("pair") or ""),
+            "daily_count_snapshot_hash": participation.daily_count_snapshot_hash,
+            "daily_count_snapshot_event_set_hash": str(count_snapshot.event_set_hash or ""),
+            "participation_policy_hash": participation.participation_policy_hash,
+            "participation_input_hash": participation.participation_input_hash,
+            "participation_decision_hash": participation.participation_decision_hash,
+            "entry_signal_source": entry_signal_source,
+            "fallback_mode": participation_config.fallback_mode,
+            "decision_input_bundle_hash": str(trace.get("decision_input_bundle_hash") or _stable_hash({"daily_runtime_decision_input": count_snapshot.as_dict()})),
+            "decision_input_contract_hash": str(trace.get("decision_input_contract_hash") or _stable_hash({"contract": "daily_participation_runtime_feature_snapshot_v1"})),
+            "decision_input_bundle_payload_hash": str(trace.get("decision_input_bundle_payload_hash") or _stable_hash({"daily_runtime_decision_payload": count_snapshot.as_dict()})),
+            "market_feature_hash": str(trace.get("market_feature_hash") or base_result.base_context.get("feature_snapshot_hash") or ""),
+            "final_exit_decision_input_hash": str(trace.get("final_exit_decision_input_hash") or ""),
+            "snapshot_projector_version": str(trace.get("snapshot_projector_version") or "daily_participation_sma_runtime_feature_snapshot_v1"),
+            "snapshot_projector_hash": str(trace.get("snapshot_projector_hash") or _stable_hash({"snapshot_projector": "daily_participation_sma_runtime_feature_snapshot_v1"})),
+        }
+    )
+    if provenance_extra:
+        provenance.update({key: value for key, value in provenance_extra.items() if str(value or "").strip()})
+    trace["strategy_evaluation_provenance"] = provenance
     policy_input_hash = _stable_hash(
         {
             "base_policy_input_hash": base_decision.policy_input_hash,
             "strategy_instance_id": str(count_snapshot.strategy_instance_id or ""),
             "entry_signal_source": entry_signal_source,
             "entry_sizing_source": entry_sizing_source,
+            "fallback_mode": participation_config.fallback_mode,
             "daily_count_snapshot_hash": participation.daily_count_snapshot_hash,
             "participation_policy_hash": participation.participation_policy_hash,
             "participation_input_hash": participation.participation_input_hash,
@@ -581,6 +675,7 @@ def _daily_runtime_result_from_base(
             "final_reason": final_reason,
             "entry_signal_source": entry_signal_source,
             "entry_sizing_source": entry_sizing_source,
+            "fallback_mode": participation_config.fallback_mode,
             "execution_intent": execution_payload,
             "participation_decision_hash": participation.participation_decision_hash,
         }
@@ -604,9 +699,11 @@ def _daily_runtime_result_from_base(
             "count_basis": participation.count_basis,
             "kst_day": participation.kst_day,
             "daily_count_snapshot_hash": participation.daily_count_snapshot_hash,
+            "daily_count_snapshot_event_set_hash": str(count_snapshot.event_set_hash or ""),
             "participation_policy_hash": participation.participation_policy_hash,
             "participation_input_hash": participation.participation_input_hash,
             "participation_decision_hash": participation.participation_decision_hash,
+            "fallback_mode": participation_config.fallback_mode,
             "policy_input_hash": policy_input_hash,
             "policy_decision_hash": policy_decision_hash,
         }
@@ -627,9 +724,11 @@ def _daily_runtime_result_from_base(
             "count_basis": participation.count_basis,
             "kst_day": participation.kst_day,
             "daily_count_snapshot_hash": participation.daily_count_snapshot_hash,
+            "daily_count_snapshot_event_set_hash": str(count_snapshot.event_set_hash or ""),
             "participation_policy_hash": participation.participation_policy_hash,
             "participation_input_hash": participation.participation_input_hash,
             "participation_decision_hash": participation.participation_decision_hash,
+            "fallback_mode": participation_config.fallback_mode,
             "daily_count_snapshot": count_snapshot.as_dict(),
         }
     )
@@ -787,6 +886,7 @@ _RESEARCH_PLUGIN = research_plugin_from_event_builder(
     optional_data=DAILY_PARTICIPATION_SMA_SPEC.optional_data,
     build_research_events=build_daily_participation_sma_research_events,
     diagnostics_namespace="daily_participation_sma",
+    diagnostics_count_builder=daily_participation_diagnostics_count_builder,
     research_parameter_materializer=materialize_daily_participation_sma_parameters,
 )
 
@@ -822,6 +922,7 @@ _PROMOTION_EXTENSION = PromotionGradeStrategyExtension(
             "DAILY_PARTICIPATION_WINDOW_END_HOUR_KST",
             "DAILY_PARTICIPATION_BUY_FRACTION",
             "DAILY_PARTICIPATION_MAX_ORDER_KRW",
+            "DAILY_PARTICIPATION_FALLBACK_MODE",
         ),
     ),
     research_policy_decision_builder=research_policy_decision_builder,
@@ -833,7 +934,7 @@ _PROMOTION_EXTENSION = PromotionGradeStrategyExtension(
     live_real_order_allowed=True,
     approved_profile_required=True,
     fail_closed_reason="daily_participation_sma_capability_missing",
-    decision_evidence_contract=SMA_DECISION_EVIDENCE_CONTRACT,
+    decision_evidence_contract=DAILY_PARTICIPATION_DECISION_EVIDENCE_CONTRACT,
     runtime_data_requirement_builder=sma_runtime_data_requirements,
 )
 

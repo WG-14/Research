@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from bithumb_bot.core.sma_policy import ExecutionConstraintSnapshot, MarketWindow, PositionSnapshot, SmaPolicyConfig
-from bithumb_bot.strategy.daily_participation_policy import DailyParticipationPolicyConfig, DailyParticipationStateSnapshot
+from bithumb_bot.strategy.daily_participation_policy import (
+    DailyParticipationCountSnapshot,
+    DailyParticipationPolicyConfig,
+    DailyParticipationStateSnapshot,
+)
 from bithumb_bot.strategy.exit_rules import ExitPolicyConfig
 from bithumb_bot.strategy_plugins.daily_participation_sma import evaluate_daily_participation_sma_decision
 
@@ -69,6 +73,23 @@ def _state() -> DailyParticipationStateSnapshot:
     )
 
 
+def _count_snapshot() -> DailyParticipationCountSnapshot:
+    return DailyParticipationCountSnapshot(
+        count_basis="filled",
+        timezone="Asia/Seoul",
+        kst_day="2024-01-01",
+        count_for_kst_day=0,
+        timestamp_field="fill_ts",
+        source="unit",
+        rows=(),
+        pair="KRW-BTC",
+        strategy_instance_id="daily:test",
+        event_set_hash="sha256:" + "3" * 64,
+        source_contract_hash="sha256:" + "4" * 64,
+        query_contract_hash="sha256:" + "5" * 64,
+    )
+
+
 def _exit_policy() -> ExitPolicyConfig:
     return ExitPolicyConfig(
         rule_names=(),
@@ -89,6 +110,7 @@ def _decision(market: MarketWindow):
         exit_policy_config=_exit_policy(),
         participation_config=_participation(),
         participation_state=_state(),
+        count_snapshot=_count_snapshot(),
     )
 
 
@@ -128,6 +150,7 @@ def test_daily_fallback_sizing_is_in_policy_hash_material() -> None:
             max_order_krw=10000.0,
         ),
         participation_state=_state(),
+        count_snapshot=_count_snapshot(),
     )
 
     assert first.policy_input_hash != altered.policy_input_hash

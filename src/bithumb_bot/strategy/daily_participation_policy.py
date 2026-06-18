@@ -22,6 +22,11 @@ DailyParticipationCountBasis = Literal[
     "filled",
     "closed_trade",
 ]
+DailyParticipationFallbackMode = Literal[
+    "unconditional_participation",
+    "requires_base_safety_filter",
+    "disabled",
+]
 
 VALID_COUNT_BASIS: tuple[str, ...] = (
     "intent",
@@ -29,6 +34,11 @@ VALID_COUNT_BASIS: tuple[str, ...] = (
     "submitted",
     "filled",
     "closed_trade",
+)
+VALID_FALLBACK_MODES: tuple[str, ...] = (
+    "unconditional_participation",
+    "requires_base_safety_filter",
+    "disabled",
 )
 
 TIMESTAMP_FIELD_BY_BASIS: dict[str, str] = {
@@ -49,6 +59,7 @@ class DailyParticipationPolicyConfig:
     window_end_hour: int
     buy_fraction: float
     max_order_krw: float
+    fallback_mode: DailyParticipationFallbackMode = "unconditional_participation"
 
     def __post_init__(self) -> None:
         if self.timezone not in {"Asia/Seoul", "KST"}:
@@ -65,6 +76,8 @@ class DailyParticipationPolicyConfig:
             raise ValueError("daily_participation_buy_fraction_invalid")
         if float(self.max_order_krw) <= 0.0:
             raise ValueError("daily_participation_max_order_krw_invalid")
+        if str(self.fallback_mode) not in VALID_FALLBACK_MODES:
+            raise ValueError("daily_participation_fallback_mode_invalid")
 
     def policy_payload(self) -> dict[str, object]:
         return {
@@ -77,6 +90,14 @@ class DailyParticipationPolicyConfig:
             "window_end_hour": int(self.window_end_hour),
             "buy_fraction": float(self.buy_fraction),
             "max_order_krw": float(self.max_order_krw),
+            "fallback_mode": self.fallback_mode,
+            "fallback_contract": (
+                "SMA entry filters may be bypassed by daily participation fallback"
+                if self.fallback_mode == "unconditional_participation"
+                else "daily fallback requires base safety filter pass"
+                if self.fallback_mode == "requires_base_safety_filter"
+                else "daily fallback disabled"
+            ),
         }
 
     def policy_hash(self) -> str:
@@ -93,6 +114,7 @@ class DailyParticipationStateSnapshot:
     daily_count_snapshot_hash: str = "sha256:missing"
     basis_timestamp: int | None = None
     fail_closed_reason: str = ""
+    pending_claim_count: int = 0
 
     def snapshot_payload(self, *, config: DailyParticipationPolicyConfig) -> dict[str, object]:
         return {
@@ -109,6 +131,7 @@ class DailyParticipationStateSnapshot:
             "market_open": bool(self.market_open),
             "daily_count_snapshot_hash": self.daily_count_snapshot_hash,
             "fail_closed_reason": self.fail_closed_reason,
+            "pending_claim_count": int(self.pending_claim_count),
         }
 
     def snapshot_hash(self, *, config: DailyParticipationPolicyConfig) -> str:
@@ -128,6 +151,7 @@ class DailyParticipationPolicyResult:
     participation_input_hash: str
     participation_decision_hash: str
     fail_closed_reason: str = ""
+    fallback_mode: str = "unconditional_participation"
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -155,6 +179,10 @@ def evaluate_daily_participation_policy(
         reason_code = "daily_participation_disabled"
     elif state.fail_closed_reason:
         reason_code = state.fail_closed_reason
+    elif config.fallback_mode == "disabled":
+        reason_code = "daily_participation_fallback_disabled"
+    elif state.pending_claim_count > 0:
+        reason_code = "daily_participation_pending_claim_exists"
     elif state.count_for_kst_day > 0:
         reason_code = "daily_participation_already_counted"
     elif state.position_open:
@@ -180,6 +208,7 @@ def evaluate_daily_participation_policy(
         "entry_signal_source": "daily_participation_fallback" if allowed else "hold",
         "participation_input_hash": input_hash,
         "daily_count_snapshot_hash": state.daily_count_snapshot_hash,
+        "fallback_mode": config.fallback_mode,
     }
     return DailyParticipationPolicyResult(
         allowed=allowed,
@@ -193,6 +222,7 @@ def evaluate_daily_participation_policy(
         participation_input_hash=input_hash,
         participation_decision_hash=_stable_hash(decision_payload),
         fail_closed_reason=state.fail_closed_reason,
+        fallback_mode=config.fallback_mode,
     )
 
 
@@ -212,6 +242,7 @@ class DailyParticipationCountSnapshot:
     source_contract_hash: str = ""
     query_contract_hash: str = ""
     source_contract_version: str = SOURCE_CONTRACT_VERSION
+    pending_claim_count: int = 0
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -236,6 +267,7 @@ class DailyParticipationCountSnapshot:
             "query_contract_hash": self.query_contract_hash,
             "rows": [dict(row) for row in self.rows],
             "fail_closed_reason": self.fail_closed_reason,
+            "pending_claim_count": int(self.pending_claim_count),
         }
 
     @property
@@ -257,6 +289,7 @@ class DailyParticipationCountSnapshot:
                 "event_set_hash": self.event_set_hash,
                 "source_contract_hash": self.source_contract_hash,
                 "query_contract_hash": self.query_contract_hash,
+                "pending_claim_count": int(self.pending_claim_count),
             }
         )
 
@@ -269,6 +302,7 @@ class DailyParticipationCountSnapshot:
             market_open=bool(market_open),
             daily_count_snapshot_hash=self.snapshot_hash,
             fail_closed_reason=self.fail_closed_reason,
+            pending_claim_count=int(self.pending_claim_count),
         )
 
 

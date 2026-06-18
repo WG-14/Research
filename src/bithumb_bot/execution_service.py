@@ -436,6 +436,9 @@ class ExecutionSubmitPlan:
         if extra:
             payload.update(extra)
         payload.setdefault("submit_plan_hash", self.content_hash())
+        daily_error = _daily_participation_submit_payload_error(payload)
+        if daily_error is not None:
+            raise ValueError(daily_error)
         if _pre_submit_risk_required_for_live_real(payload) and str(
             payload.get("pre_submit_risk_decision_hash") or ""
         ).strip():
@@ -499,6 +502,48 @@ def _pre_submit_risk_required_for_live_real(payload: Mapping[str, object]) -> bo
         and bool(payload.get("submit_expected"))
         and str(payload.get("source") or "").strip() in {"target_delta", "residual_inventory"}
     )
+
+
+DAILY_PARTICIPATION_BUY_SUBMIT_REQUIRED_FIELDS = (
+    "daily_count_snapshot_hash",
+    "participation_policy_hash",
+    "participation_decision_hash",
+    "fallback_mode",
+    "entry_signal_source",
+)
+
+
+def _daily_participation_submit_payload_error(payload: Mapping[str, object]) -> str | None:
+    if str(payload.get("strategy_name") or "").strip().lower() != "daily_participation_sma":
+        return None
+    if str(payload.get("side") or "").strip().upper() != "BUY":
+        return None
+    if not bool(payload.get("submit_expected")):
+        return None
+    missing = [
+        field
+        for field in DAILY_PARTICIPATION_BUY_SUBMIT_REQUIRED_FIELDS
+        if not str(payload.get(field) or "").strip()
+    ]
+    fee_ok = bool(
+        str(payload.get("fee_authority_hash") or "").strip()
+        or str(payload.get("fee_authority_payload_hash") or "").strip()
+        or str(payload.get("fee_authority") or "").strip()
+    )
+    if not fee_ok:
+        missing.append("fee_authority")
+    price_ok = bool(
+        str(payload.get("price_protection_hash") or "").strip()
+        or str(payload.get("price_protection_evidence_hash") or "").strip()
+        or str(payload.get("price_protection") or "").strip()
+        or str(payload.get("order_rules_hash") or "").strip()
+        or str(payload.get("order_rules_payload_hash") or "").strip()
+    )
+    if not price_ok:
+        missing.append("price_protection")
+    if missing:
+        return "daily_participation_submit_evidence_missing:" + ",".join(sorted(set(missing)))
+    return None
 
 
 def _attach_live_real_pre_submit_risk_proof(
@@ -1076,6 +1121,37 @@ def _with_submit_plan_extra(
     merged = dict(plan.extra_payload)
     merged.update(extra)
     return replace(plan, extra_payload=merged)
+
+
+def _daily_participation_submit_plan_extra(payload: Mapping[str, object]) -> dict[str, object]:
+    if str(payload.get("strategy_name") or payload.get("strategy") or "").strip().lower() != "daily_participation_sma":
+        return {}
+    extra: dict[str, object] = {
+        "strategy_name": "daily_participation_sma",
+    }
+    for key in (
+        "strategy_instance_id",
+        "pair",
+        "daily_count_snapshot_hash",
+        "daily_count_snapshot_event_set_hash",
+        "participation_policy_hash",
+        "participation_input_hash",
+        "participation_decision_hash",
+        "fallback_mode",
+        "entry_signal_source",
+        "fee_authority_hash",
+        "fee_authority_payload_hash",
+        "order_rules_hash",
+        "order_rules_payload_hash",
+        "price_protection_hash",
+        "price_protection_evidence_hash",
+    ):
+        value = payload.get(key)
+        if str(value or "").strip():
+            extra[key] = value
+    if "price_protection_hash" not in extra and str(payload.get("order_rules_hash") or "").strip():
+        extra["price_protection_hash"] = payload["order_rules_hash"]
+    return extra
 
 
 def _live_real_order_typed_submit_plan_error(
@@ -2234,6 +2310,9 @@ def _build_execution_decision_summary_from_authority_payload(
                     buy_submit_plan,
                     {"pre_trade_economics": pre_trade_economics},
                 )
+            daily_extra = _daily_participation_submit_plan_extra(payload)
+            if daily_extra:
+                buy_submit_plan = _with_submit_plan_extra(buy_submit_plan, daily_extra)
     elif raw == "SELL" or final == "SELL":
         if strategy_candidate is not None and final == "SELL":
             action = "EXIT_STRATEGY_POSITION"

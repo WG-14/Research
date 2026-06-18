@@ -18,6 +18,11 @@ from bithumb_bot.strategy.daily_participation_policy import (
     TIMESTAMP_FIELD_BY_BASIS,
     kst_day,
 )
+from bithumb_bot.runtime.daily_participation_claims import (
+    DailyParticipationClaimKey,
+    pending_daily_participation_claim_count,
+    reconstruct_daily_participation_claims_from_orders,
+)
 
 
 def build_runtime_daily_count_snapshot_from_sqlite(
@@ -34,6 +39,7 @@ def build_runtime_daily_count_snapshot_from_sqlite(
     source = "sqlite_runtime_data_provider"
     source_version = SOURCE_CONTRACT_VERSION
     try:
+        reconstruct_daily_participation_claims_from_orders(conn, now_ms=int(decision_ts))
         events = _runtime_events(
             conn=conn,
             config=config,
@@ -58,6 +64,16 @@ def build_runtime_daily_count_snapshot_from_sqlite(
             source_contract_version=source_version,
         )
     rows = tuple(_event_row(event) for event in events)
+    policy_hash = config.policy_hash()
+    pending_claim_count = pending_daily_participation_claim_count(
+        conn,
+        key=DailyParticipationClaimKey(
+            strategy_instance_id=strategy_instance_id,
+            pair=pair,
+            kst_day=day,
+            participation_policy_hash=policy_hash,
+        ),
+    )
     return DailyParticipationCountSnapshot(
         count_basis=config.count_basis,
         timezone=config.timezone,
@@ -82,6 +98,7 @@ def build_runtime_daily_count_snapshot_from_sqlite(
             }
         ),
         source_contract_version=source_version,
+        pending_claim_count=pending_claim_count,
     )
 
 

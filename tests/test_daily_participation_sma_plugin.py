@@ -73,6 +73,7 @@ def test_daily_participation_sma_is_promotion_grade_live_eligible() -> None:
     assert plugin.runtime_capabilities.runtime_replay_supported is True
     assert plugin.runtime_decision_adapter_factory is not None
     assert plugin.policy_assembly_factory is not None
+    assert plugin.contract_payload()["diagnostics_contract"]["strategy_diagnostic_counts_supported"] is True
 
 
 def test_base_sma_spec_is_not_mutated() -> None:
@@ -86,6 +87,35 @@ def test_daily_participation_sma_accepts_daily_parameters() -> None:
 
 def test_daily_participation_sma_has_research_policy_decision_builder() -> None:
     assert DAILY_PARTICIPATION_SMA_PLUGIN.research_policy_decision_builder is not None
+
+
+def test_daily_participation_research_policy_decision_builder_does_not_raise() -> None:
+    from bithumb_bot.research.experiment_manifest import ExecutionTimingPolicy
+    from bithumb_bot.core.sma_policy import PositionSnapshot
+    from tests.test_daily_participation_sma_backtest_integration import _dataset, _params
+
+    dataset = _dataset()
+    events = DAILY_PARTICIPATION_SMA_PLUGIN.research_event_builder(
+        dataset=dataset,
+        parameter_values=_params(),
+        fee_rate=0.001,
+        slippage_bps=0.0,
+        execution_timing_policy=ExecutionTimingPolicy(),
+    )
+    candle_index = next(index for index, candle in enumerate(dataset.candles) if candle.ts == events[0].candle_ts)
+    decision = DAILY_PARTICIPATION_SMA_PLUGIN.research_policy_decision_builder(
+        event=events[0],
+        dataset=dataset,
+        candle_index=candle_index,
+        position=PositionSnapshot(in_position=False, entry_allowed=True, exit_allowed=True),
+        parameter_values=_params(),
+        fee_rate=0.001,
+        slippage_bps=0.0,
+        active_exit_policy={},
+    )
+
+    assert decision.trace["daily_count_snapshot_hash"]
+    assert decision.trace["strategy_instance_id"]
 
 
 def test_daily_participation_sma_runtime_capability_matches_declared_scope() -> None:

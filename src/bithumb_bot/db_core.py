@@ -30,6 +30,7 @@ from .target_position import (
     TargetPositionState,
     build_actual_pair_target_provenance,
 )
+from .runtime.daily_participation_claims import ensure_daily_participation_claims_schema
 
 
 # The lot-state contract is intentionally tiny and safety-critical:
@@ -102,6 +103,11 @@ REQUIRED_RUNTIME_TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "qty_req",
         "qty_filled",
         "local_intent_state",
+        "daily_participation_policy_hash",
+        "daily_count_snapshot_hash",
+        "participation_decision_hash",
+        "daily_participation_kst_day",
+        "daily_participation_fallback_mode",
     ),
     "fills": (
         "id",
@@ -2364,6 +2370,11 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             final_submitted_qty REAL,
             decision_reason_code TEXT,
             local_intent_state TEXT,
+            daily_participation_policy_hash TEXT,
+            daily_count_snapshot_hash TEXT,
+            participation_decision_hash TEXT,
+            daily_participation_kst_day TEXT,
+            daily_participation_fallback_mode TEXT,
             created_ts INTEGER NOT NULL,
             updated_ts INTEGER NOT NULL,
             last_error TEXT
@@ -2390,6 +2401,11 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "orders", "final_submitted_qty", "final_submitted_qty REAL")
     _ensure_column(conn, "orders", "decision_reason_code", "decision_reason_code TEXT")
     _ensure_column(conn, "orders", "local_intent_state", "local_intent_state TEXT")
+    _ensure_column(conn, "orders", "daily_participation_policy_hash", "daily_participation_policy_hash TEXT")
+    _ensure_column(conn, "orders", "daily_count_snapshot_hash", "daily_count_snapshot_hash TEXT")
+    _ensure_column(conn, "orders", "participation_decision_hash", "participation_decision_hash TEXT")
+    _ensure_column(conn, "orders", "daily_participation_kst_day", "daily_participation_kst_day TEXT")
+    _ensure_column(conn, "orders", "daily_participation_fallback_mode", "daily_participation_fallback_mode TEXT")
 
     conn.execute(
         """
@@ -2754,6 +2770,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "order_intent_dedup", "intended_lot_count", "intended_lot_count INTEGER")
     _ensure_column(conn, "order_intent_dedup", "executable_lot_count", "executable_lot_count INTEGER")
     _ensure_column(conn, "order_intent_dedup", "last_error", "last_error TEXT")
+
+    ensure_daily_participation_claims_schema(conn)
 
     conn.execute(
         """

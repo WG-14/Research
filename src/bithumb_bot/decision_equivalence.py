@@ -1235,6 +1235,20 @@ def _reason_for_field(field: str) -> str:
         return "policy_input_hash_mismatch"
     if field == "policy_decision_hash":
         return "policy_decision_hash_mismatch"
+    if field == "daily_count_snapshot_hash":
+        return "daily_count_snapshot_hash_mismatch"
+    if field == "daily_count_snapshot_event_set_hash":
+        return "daily_count_snapshot_event_set_hash_mismatch"
+    if field == "participation_policy_hash":
+        return "participation_policy_hash_mismatch"
+    if field == "participation_input_hash":
+        return "participation_input_hash_mismatch"
+    if field == "participation_decision_hash":
+        return "participation_decision_hash_mismatch"
+    if field == "fallback_mode":
+        return "fallback_mode_mismatch"
+    if field == "entry_signal_source":
+        return "entry_signal_source_mismatch"
     if field in {
         "decision_input_bundle_hash",
         "decision_input_contract_hash",

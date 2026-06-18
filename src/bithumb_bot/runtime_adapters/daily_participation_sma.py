@@ -68,11 +68,19 @@ class DailyParticipationSmaRuntimeDecisionAdapter:
                 slippage_bps=0.0,
             )
         )
+        feature_hash = str(payload.get("feature_snapshot_hash") or "")
+        provenance_extra = {
+            **boundary_telemetry,
+            "market_feature_hash": str(payload.get("market_snapshot_hash") or feature_hash),
+            "feature_snapshot_hash": feature_hash,
+            "runtime_data_requirements_hash": str(payload.get("runtime_data_requirements_hash") or ""),
+        }
         return _daily_runtime_result_from_base(
             base_result=base_result,
             participation_config=participation_config,
             count_snapshot=count_snapshot,
             decision_ts=int(getattr(request, "through_ts_ms", None) or getattr(base_result, "candle_ts", 0) or 0),
+            provenance_extra=provenance_extra,
         )
 
     def typed_authority_required(self) -> bool:
