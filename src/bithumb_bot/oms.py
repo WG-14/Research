@@ -797,7 +797,7 @@ def create_order(
                     kst_day=str(daily_participation_kst_day or ""),
                     participation_policy_hash=str(daily_participation_policy_hash or ""),
                 ),
-                status="intent" if status == "PENDING_SUBMIT" else "submitted",
+                status="claim_pending" if status == "PENDING_SUBMIT" else "submitted",
                 ts_ms=ts,
                 client_order_id=client_order_id,
                 daily_count_snapshot_hash=daily_count_snapshot_hash,

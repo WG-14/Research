@@ -30,6 +30,7 @@ def _conn_with_scope() -> sqlite3.Connection:
         CREATE TABLE orders (
             client_order_id TEXT NOT NULL,
             side TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'FILLED',
             pair TEXT NOT NULL,
             strategy_name TEXT NOT NULL,
             strategy_instance_id TEXT NOT NULL
@@ -59,8 +60,8 @@ def _insert_fill(
 ) -> None:
     conn.execute(
         """
-        INSERT INTO orders(client_order_id, side, pair, strategy_name, strategy_instance_id)
-        VALUES (?, ?, ?, 'daily_participation_sma', ?)
+        INSERT INTO orders(client_order_id, side, status, pair, strategy_name, strategy_instance_id)
+        VALUES (?, ?, 'FILLED', ?, 'daily_participation_sma', ?)
         """,
         (client_order_id, side, pair, strategy_instance_id),
     )

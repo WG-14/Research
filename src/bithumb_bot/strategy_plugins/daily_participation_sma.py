@@ -137,6 +137,7 @@ def materialize_daily_participation_sma_parameters(
         fee_rate=fee_rate,
         slippage_bps=slippage_bps,
     )
+    values.setdefault("DAILY_PARTICIPATION_FALLBACK_MODE", "unconditional_participation")
     daily_participation_config_from_parameters(values)
     return values
 

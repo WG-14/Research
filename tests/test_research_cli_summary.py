@@ -808,6 +808,32 @@ def test_print_report_summary_renders_operator_diagnostics(capsys) -> None:
     assert "next_action=do_not_promote_review_walk_forward_windows" in output
 
 
+def test_daily_participation_summary_prints_fallback_counts(capsys) -> None:
+    report = _report(
+        candidates=[
+            {
+                **_candidate("candidate_daily", gate="PASS"),
+                "validation_metrics_v2": {
+                    "participation": {
+                        "fallback_entry_count": 2,
+                        "fallback_submit_expected_count": 2,
+                        "fallback_submitted_count": 1,
+                        "fallback_filled_count": 1,
+                        "fallback_closed_trade_count": 1,
+                        "base_sma_buy_count": 3,
+                    }
+                },
+            }
+        ],
+        gate_result="PASS",
+    )
+
+    _print_report_summary("RESEARCH-BACKTEST", report)
+
+    output = capsys.readouterr().out
+    assert "daily_participation_fallback_counts=intent:2,submit_expected:2,submitted:1,filled:1,closed:1,base_sma_buy:3" in output
+
+
 def test_print_report_summary_renders_statistical_selection_diagnostics(capsys) -> None:
     report = _report(
         candidates=[_candidate("candidate_001", gate="PASS")],

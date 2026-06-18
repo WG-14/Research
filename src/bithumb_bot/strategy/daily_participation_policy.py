@@ -40,6 +40,13 @@ VALID_FALLBACK_MODES: tuple[str, ...] = (
     "requires_base_safety_filter",
     "disabled",
 )
+DOCUMENT_FALLBACK_MODE_ALIASES: dict[str, str] = {
+    "unconditional_time_participation": "unconditional_participation",
+    "safety_filtered_participation": "requires_base_safety_filter",
+}
+FALLBACK_MODE_DOCUMENT_NAMES: dict[str, str] = {
+    value: key for key, value in DOCUMENT_FALLBACK_MODE_ALIASES.items()
+}
 
 TIMESTAMP_FIELD_BY_BASIS: dict[str, str] = {
     "intent": "decision_ts",
@@ -60,6 +67,8 @@ class DailyParticipationPolicyConfig:
     buy_fraction: float
     max_order_krw: float
     fallback_mode: DailyParticipationFallbackMode = "unconditional_participation"
+    retry_terminal_failed_claims: bool = False
+    partial_fill_counts_as_fulfilled: bool = False
 
     def __post_init__(self) -> None:
         if self.timezone not in {"Asia/Seoul", "KST"}:
@@ -91,6 +100,20 @@ class DailyParticipationPolicyConfig:
             "buy_fraction": float(self.buy_fraction),
             "max_order_krw": float(self.max_order_krw),
             "fallback_mode": self.fallback_mode,
+            "fallback_mode_document_name": FALLBACK_MODE_DOCUMENT_NAMES.get(self.fallback_mode, self.fallback_mode),
+            "fallback_mode_alias_contract": {
+                "document_to_code": dict(DOCUMENT_FALLBACK_MODE_ALIASES),
+                "code_to_document": dict(FALLBACK_MODE_DOCUMENT_NAMES),
+                "hash_bound_field": "fallback_mode",
+            },
+            "terminal_failed_retry_policy": {
+                "retry_terminal_failed_claims": bool(self.retry_terminal_failed_claims),
+                "default": "block_retry_without_explicit_policy",
+            },
+            "partial_fill_fulfillment_policy": {
+                "partial_fill_counts_as_fulfilled": bool(self.partial_fill_counts_as_fulfilled),
+                "default": "partial_fill_blocks_duplicate_but_does_not_fulfill_daily_count",
+            },
             "fallback_contract": (
                 "SMA entry filters may be bypassed by daily participation fallback"
                 if self.fallback_mode == "unconditional_participation"

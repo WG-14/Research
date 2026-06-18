@@ -81,6 +81,34 @@ def test_daily_research_policy_trace_contains_daily_scope_hashes() -> None:
         assert str(trace.get(key) or "").strip(), key
 
 
+def test_research_export_contains_daily_participation_hashes() -> None:
+    decision = _canonical()
+
+    for key in (
+        "daily_count_snapshot_hash",
+        "participation_policy_hash",
+        "participation_decision_hash",
+        "entry_signal_source",
+        "fallback_mode",
+    ):
+        assert key in COMMON_CANONICAL_DECISION_FIELDS_V2
+        assert str(decision[key]).startswith("sha256:") or str(decision[key]).strip()
+
+
+def test_runtime_replay_export_contains_daily_participation_hashes() -> None:
+    decision = _canonical(db_data_fingerprint="sha256:runtime-db")
+
+    for key in (
+        "daily_count_snapshot_hash",
+        "participation_policy_hash",
+        "participation_decision_hash",
+        "entry_signal_source",
+        "fallback_mode",
+    ):
+        assert key in COMMON_CANONICAL_DECISION_FIELDS_V2
+        assert str(decision[key]).startswith("sha256:") or str(decision[key]).strip()
+
+
 def test_daily_equivalence_fails_on_daily_count_snapshot_hash_mismatch() -> None:
     result = compare_decision_equivalence(
         research_decisions=[_canonical()],
@@ -93,6 +121,34 @@ def test_daily_equivalence_fails_on_daily_count_snapshot_hash_mismatch() -> None
 
     assert result.ok is False
     assert "daily_count_snapshot_hash_mismatch" in result.report["reason_codes"]
+
+
+def test_equivalence_fails_when_fallback_mode_differs() -> None:
+    result = compare_decision_equivalence(
+        research_decisions=[_canonical()],
+        runtime_decisions=[_canonical(fallback_mode="requires_base_safety_filter")],
+        profile_hash="sha256:profile",
+        market="KRW-BTC",
+        interval="1m",
+        data_fingerprint="sha256:data",
+    )
+
+    assert result.ok is False
+    assert "fallback_mode_mismatch" in result.report["reason_codes"]
+
+
+def test_equivalence_reports_entry_signal_source() -> None:
+    result = compare_decision_equivalence(
+        research_decisions=[_canonical()],
+        runtime_decisions=[_canonical(entry_signal_source="sma_cross")],
+        profile_hash="sha256:profile",
+        market="KRW-BTC",
+        interval="1m",
+        data_fingerprint="sha256:data",
+    )
+
+    assert result.ok is False
+    assert "entry_signal_source_mismatch" in result.report["reason_codes"]
 
 
 def test_promotion_artifact_requires_daily_participation_evidence_fields() -> None:
@@ -110,3 +166,14 @@ def test_promotion_artifact_requires_daily_participation_evidence_fields() -> No
         "daily_count_snapshot_event_set_hash",
     ):
         assert field in fields
+
+
+def test_promotion_artifact_requires_retained_daily_decision_evidence() -> None:
+    fields = DAILY_PARTICIPATION_SMA_PLUGIN.contract_payload()["decision_evidence_contract"][
+        "required_promotion_provenance_fields"
+    ]
+
+    assert "entry_signal_source" in fields
+    assert "daily_count_snapshot_hash" in fields
+    assert "participation_decision_hash" in fields
+    assert "fallback_mode" in fields

@@ -756,6 +756,23 @@ def _validation_next_action(payload: dict[str, object]) -> str:
     return "inspect_validation_run_failure_reasons"
 
 
+def _first_participation_summary(report: dict[str, object]) -> dict[str, object]:
+    candidates = report.get("candidates")
+    if isinstance(candidates, list):
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            participation = candidate.get("participation_summary")
+            if isinstance(participation, dict):
+                return participation
+            for metrics_key in ("validation_metrics_v2", "final_holdout_metrics_v2"):
+                metrics = candidate.get(metrics_key)
+                if isinstance(metrics, dict) and isinstance(metrics.get("participation"), dict):
+                    return metrics["participation"]
+    participation = report.get("participation_summary")
+    return participation if isinstance(participation, dict) else {}
+
+
 def _print_report_summary(label: str, report: dict[str, object]) -> None:
     artifact_paths = report.get("artifact_paths") if isinstance(report.get("artifact_paths"), dict) else {}
     summary = build_research_run_summary(report)
@@ -799,6 +816,17 @@ def _print_report_summary(label: str, report: dict[str, object]) -> None:
     )
     print(f"  top_fail_reasons={_format_counts(summary.top_fail_reasons)}")
     print(f"  strategy_diagnostics_summary={_format_strategy_diagnostics_summary(summary)}")
+    participation_summary = _first_participation_summary(report)
+    if participation_summary:
+        print(
+            "  daily_participation_fallback_counts="
+            f"intent:{int(participation_summary.get('fallback_entry_count') or 0)},"
+            f"submit_expected:{int(participation_summary.get('fallback_submit_expected_count') or 0)},"
+            f"submitted:{int(participation_summary.get('fallback_submitted_count') or 0)},"
+            f"filled:{int(participation_summary.get('fallback_filled_count') or 0)},"
+            f"closed:{int(participation_summary.get('fallback_closed_trade_count') or 0)},"
+            f"base_sma_buy:{int(participation_summary.get('base_sma_buy_count') or 0)}"
+        )
     print(f"  top_exit_reasons={_format_counts(summary.top_exit_reasons)}")
     print(
         "  validation_raw_sell_filter_blocked_while_in_position_count="

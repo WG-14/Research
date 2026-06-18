@@ -541,6 +541,14 @@ def _daily_participation_submit_payload_error(payload: Mapping[str, object]) -> 
     )
     if not price_ok:
         missing.append("price_protection")
+    if bool(payload.get("live_real_order") or payload.get("live_real_order_allowed")):
+        max_slippage = payload.get("price_protection_max_slippage_bps")
+        try:
+            max_slippage_value = float(max_slippage)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            max_slippage_value = 0.0
+        if max_slippage_value <= 0.0:
+            missing.append("price_protection_positive_max_slippage")
     if missing:
         return "daily_participation_submit_evidence_missing:" + ",".join(sorted(set(missing)))
     return None

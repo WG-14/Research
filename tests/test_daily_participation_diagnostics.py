@@ -20,6 +20,48 @@ def test_diagnostics_distinguish_fallback_intent_and_fill() -> None:
     assert counts["base_sma_buy_count"] == 0
 
 
+def test_fallback_buy_intent_count_incremented() -> None:
+    diagnostic = daily_participation_diagnostics_count_builder(
+        {"final_signal": "BUY", "entry_signal_source": "daily_participation_fallback"}
+    )
+
+    assert diagnostic["strategy_diagnostic_counts"]["fallback_intent_count"] == 1
+
+
+def test_fallback_filled_count_incremented_only_for_fallback_fill() -> None:
+    fallback = daily_participation_diagnostics_count_builder(
+        {"entry_signal_source": "daily_participation_fallback", "lifecycle_stage": "filled"}
+    )
+    base = daily_participation_diagnostics_count_builder(
+        {"entry_signal_source": "sma_cross", "lifecycle_stage": "filled"}
+    )
+
+    assert fallback["strategy_diagnostic_counts"]["fallback_filled_count"] == 1
+    assert base["strategy_diagnostic_counts"]["fallback_filled_count"] == 0
+
+
+def test_base_sma_buy_count_separate_from_fallback_count() -> None:
+    diagnostic = daily_participation_diagnostics_count_builder(
+        {"final_signal": "BUY", "entry_signal_source": "sma_cross"}
+    )
+
+    counts = diagnostic["strategy_diagnostic_counts"]
+    assert counts["base_sma_buy_count"] == 1
+    assert counts["fallback_intent_count"] == 0
+
+
+def test_fallback_block_reason_distribution_reported() -> None:
+    diagnostic = daily_participation_diagnostics_count_builder(
+        {
+            "final_signal": "HOLD",
+            "entry_signal_source": "hold",
+            "fallback_block_reason": "outside_daily_participation_window",
+        }
+    )
+
+    assert diagnostic["fallback_block_reason_distribution"]["outside_daily_participation_window"] == 1
+
+
 def test_report_payload_exposes_daily_participation_diagnostics() -> None:
     plugin = resolve_research_strategy_plugin("daily_participation_sma")
     payload = plugin.contract_payload()

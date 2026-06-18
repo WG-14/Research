@@ -343,8 +343,14 @@ def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
         )
     else:
         effective_parameters = {}
+    daily_effective_parameters_normalized = False
+    if strategy_name == "daily_participation_sma":
+        effective_parameters = dict(effective_parameters)
+        if "DAILY_PARTICIPATION_FALLBACK_MODE" not in effective_parameters:
+            effective_parameters["DAILY_PARTICIPATION_FALLBACK_MODE"] = "unconditional_participation"
+            daily_effective_parameters_normalized = True
     effective_parameters_hash = str(
-        candidate.get("effective_strategy_parameters_hash")
+        (None if daily_effective_parameters_normalized else candidate.get("effective_strategy_parameters_hash"))
         or materialized_strategy_parameters_hash(effective_parameters)
     )
     source_map = (

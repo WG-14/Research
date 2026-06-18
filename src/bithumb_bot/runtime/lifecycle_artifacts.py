@@ -19,6 +19,29 @@ def _operator_event_hash(event: Mapping[str, Any] | None) -> str | None:
     return _stable_hash(event)
 
 
+def build_max_holding_exit_delay_evidence(
+    *,
+    entry_fill_ts_ms: int,
+    max_holding_sec: float,
+    actual_sell_fill_ts_ms: int | None,
+) -> dict[str, Any]:
+    target_exit_ts_ms = int(entry_fill_ts_ms) + int(float(max_holding_sec) * 1000)
+    delay_ms = None
+    if actual_sell_fill_ts_ms is not None:
+        delay_ms = int(actual_sell_fill_ts_ms) - target_exit_ts_ms
+    payload: dict[str, Any] = {
+        "artifact_type": "max_holding_exit_delay_evidence",
+        "schema_version": 1,
+        "entry_fill_ts_ms": int(entry_fill_ts_ms),
+        "max_holding_sec": float(max_holding_sec),
+        "target_exit_ts_ms": target_exit_ts_ms,
+        "actual_sell_fill_ts_ms": int(actual_sell_fill_ts_ms) if actual_sell_fill_ts_ms is not None else None,
+        "max_holding_exit_delay_ms": delay_ms,
+    }
+    payload["max_holding_exit_delay_evidence_hash"] = _stable_hash(payload)
+    return payload
+
+
 @dataclass(frozen=True)
 class StateTransitionResult:
     status: str
