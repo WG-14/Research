@@ -156,20 +156,35 @@ def _runtime_events(
         fill_columns = _table_columns(conn, "fills")
         order_columns = _table_columns(conn, "orders")
         required_fills = {"client_order_id", "fill_id", "fill_ts", "qty"}
-        required_orders = {"client_order_id", "side", "status", "pair", "strategy_name", "strategy_instance_id"}
+        required_orders = {"client_order_id", "side", "pair", "strategy_name", "strategy_instance_id"}
         if not required_fills.issubset(fill_columns):
             raise sqlite3.OperationalError("fills_daily_count_columns_missing")
         if not required_orders.issubset(order_columns):
             raise sqlite3.OperationalError("orders_daily_count_scope_columns_missing")
+        status_expr = "o.status" if "status" in order_columns else "''"
+        partial_status_clause = (
+            "AND (? OR UPPER(COALESCE(o.status, '')) <> 'PARTIAL')"
+            if "status" in order_columns
+            else ""
+        )
+        params: list[object] = [
+            start_ms,
+            end_ms,
+            scope_pair,
+            scope_strategy,
+            scope_instance,
+        ]
+        if "status" in order_columns:
+            params.append(1 if bool(config.partial_fill_counts_as_fulfilled) else 0)
         rows = conn.execute(
-            """
+            f"""
             SELECT
                 f.client_order_id,
                 COALESCE(f.fill_id, '') AS fill_id,
                 f.fill_ts AS ts,
                 f.qty AS qty,
                 o.side AS side,
-                o.status AS order_status,
+                {status_expr} AS order_status,
                 o.pair AS pair,
                 o.strategy_name AS strategy_name,
                 o.strategy_instance_id AS strategy_instance_id
@@ -184,16 +199,9 @@ def _runtime_events(
               AND o.strategy_instance_id=?
               AND f.client_order_id IS NOT NULL
               AND TRIM(f.client_order_id) <> ''
-              AND (? OR UPPER(COALESCE(o.status, '')) <> 'PARTIAL')
+              {partial_status_clause}
             """,
-            (
-                start_ms,
-                end_ms,
-                scope_pair,
-                scope_strategy,
-                scope_instance,
-                1 if bool(config.partial_fill_counts_as_fulfilled) else 0,
-            ),
+            tuple(params),
         ).fetchall()
         return tuple(
             ParticipationEvent(

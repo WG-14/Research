@@ -94,7 +94,7 @@ def _count_orders_today(
     day_start_ms = int(ts_ms) - (int(ts_ms) % 86_400_000)
     params: list[object] = [day_start_ms, int(ts_ms)]
     if "pair" in columns:
-        pair_clause = "AND COALESCE(pair, '') = COALESCE(?, COALESCE(pair, ''))"
+        pair_clause = "AND (COALESCE(pair, '') = '' OR pair = ?)"
         params.append(str(pair))
     else:
         pair_clause = ""
@@ -486,6 +486,7 @@ class StrategyRiskStateProvider:
                     "columns": ["created_ts", "entry_decision_id", "exit_decision_id"],
                     "filters": {
                         "entry_or_exit_decision_id_in_strategy_decision_ids": True,
+                        "pair_matches_when_present": True,
                         "day_start_lte_created_ts_lte_as_of": True,
                     },
                     "value_available": daily_order_count is not None,

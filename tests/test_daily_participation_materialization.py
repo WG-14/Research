@@ -89,5 +89,5 @@ def test_daily_participation_runtime_replay_requires_count_snapshot_provider() -
 
     assert plugin.runtime_capabilities.runtime_replay_supported is True
     assert plugin.runtime_feature_snapshot_builder is not None
-    assert plugin.runtime_capabilities.live_real_order_allowed is False
-    assert plugin.runtime_capabilities.fail_closed_reason == "daily_participation_sma_live_runtime_not_enabled"
+    assert plugin.runtime_capabilities.live_real_order_allowed is True
+    assert plugin.runtime_capabilities.approved_profile_required is True

@@ -863,7 +863,7 @@ def record_submit_started(
         sync_daily_participation_claim_from_order_status(
             conn,
             client_order_id=client_order_id,
-            status=status,
+            status="PENDING_SUBMIT",
             ts_ms=ts,
         )
         if own_conn:
