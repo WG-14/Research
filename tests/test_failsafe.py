@@ -14,7 +14,7 @@ from bithumb_bot.compat import engine_legacy as engine_legacy_module
 from bithumb_bot.broker.base import BrokerBalance, BrokerOrder, BrokerRejectError
 from bithumb_bot.broker.balance_source import _default_flat_start_safety_check
 from bithumb_bot.config import settings
-from bithumb_bot.db_core import ensure_db
+from bithumb_bot.db_core import ensure_db, init_portfolio
 from bithumb_bot.decision_equivalence import sha256_prefixed
 from bithumb_bot.risk_contract import RiskPolicy, RiskSnapshot, build_risk_decision
 from bithumb_bot.runtime_compat import get_health_status
@@ -44,6 +44,7 @@ from bithumb_bot.runtime_readiness import evaluate_clean_account_gate
 from bithumb_bot.quantity_contract import ExchangeQuantityContract
 from bithumb_bot.strategy_policy_contract import EntryExecutionIntent, PositionSnapshot, StrategyDecisionV2
 from bithumb_bot.target_position import TargetPositionState
+from bithumb_bot.flatten import flatten_btc_position
 
 _RUN_LOOP_RUNNER: Runner | None = None
 
@@ -233,6 +234,60 @@ class _CloseoutBroker:
         return BrokerBalance(cash_available=0.0, cash_locked=0.0, asset_available=0.00049913, asset_locked=0.0)
 
 
+class _FlattenCloseoutBroker:
+    def __init__(self, *, asset_available: float = 0.00049913) -> None:
+        self.balance = BrokerBalance(
+            cash_available=0.0,
+            cash_locked=0.0,
+            asset_available=float(asset_available),
+            asset_locked=0.0,
+        )
+        self.calls: list[dict[str, object]] = []
+
+    def get_balance(self) -> BrokerBalance:
+        return self.balance
+
+    def get_recent_orders_for_recovery(
+        self,
+        *,
+        limit: int = 100,
+        market: str | None = None,
+        page_size: int | None = None,
+    ) -> list[object]:
+        return []
+
+    def place_order(
+        self,
+        *,
+        client_order_id: str,
+        side: str,
+        qty: float,
+        price: float | None = None,
+        submit_plan=None,
+    ):
+        assert submit_plan is not None
+        self.calls.append(
+            {
+                "client_order_id": client_order_id,
+                "side": side,
+                "qty": float(qty),
+                "price": price,
+                "submit_plan_submitted_qty": float(submit_plan.submitted_qty),
+            }
+        )
+        return BrokerOrder(
+            client_order_id=client_order_id,
+            exchange_order_id="ex-flatten-closeout",
+            side=side,
+            status="NEW",
+            price=price,
+            qty_req=float(qty),
+            qty_filled=0.0,
+            created_ts=1,
+            updated_ts=1,
+        )
+
+
 def _closeout_rules(*, qty_step: float = 0.0001) -> order_rules.DerivedOrderConstraints:
     return order_rules.DerivedOrderConstraints(
         market_id="KRW-BTC",
@@ -248,6 +303,87 @@ def _closeout_rules(*, qty_step: float = 0.0001) -> order_rules.DerivedOrderCons
         qty_step=qty_step,
         min_notional_krw=5000.0,
         max_qty_decimals=8,
+    )
+
+
+def _rule_resolution_for_closeout(*, qty_step_source: str = "local_fallback"):
+    return SimpleNamespace(
+        rules=_closeout_rules(),
+        source={
+            "min_qty": qty_step_source,
+            "qty_step": qty_step_source,
+            "min_notional_krw": qty_step_source,
+            "max_qty_decimals": qty_step_source,
+        },
+        source_mode="exchange" if qty_step_source == "chance_doc" else "local_fallback",
+        snapshot_persisted=False,
+    )
+
+
+def _configure_flatten_closeout_settings() -> None:
+    object.__setattr__(settings, "MODE", "live")
+    object.__setattr__(settings, "LIVE_DRY_RUN", False)
+    object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
+    object.__setattr__(settings, "KILL_SWITCH", False)
+    object.__setattr__(settings, "LIVE_MIN_ORDER_QTY", 0.0001)
+    object.__setattr__(settings, "LIVE_ORDER_QTY_STEP", 0.0001)
+    object.__setattr__(settings, "MIN_ORDER_NOTIONAL_KRW", 5000.0)
+    object.__setattr__(settings, "LIVE_ORDER_MAX_QTY_DECIMALS", 8)
+
+
+def _seed_executable_flatten_position(*, qty: float = 0.00049913) -> None:
+    conn = ensure_db()
+    try:
+        init_portfolio(conn)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO portfolio(
+                id, cash_krw, asset_qty, cash_available, cash_locked, asset_available, asset_locked
+            ) VALUES (1, 1000000.0, ?, 1000000.0, 0.0, ?, 0.0)
+            """,
+            (float(qty), float(qty)),
+        )
+        conn.execute(
+            """
+            INSERT INTO open_position_lots(
+                pair,
+                entry_trade_id,
+                entry_client_order_id,
+                entry_ts,
+                entry_price,
+                qty_open,
+                executable_lot_count,
+                dust_tracking_lot_count,
+                position_semantic_basis,
+                position_state
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                settings.PAIR,
+                1,
+                "entry_open",
+                1_700_000_000_000,
+                100_000_000.0,
+                float(qty),
+                1,
+                0,
+                "lot-native",
+                "open_exposure",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _patch_flatten_closeout_dependencies(monkeypatch: pytest.MonkeyPatch, *, qty_step_source: str = "local_fallback") -> None:
+    monkeypatch.setattr(
+        "bithumb_bot.flatten.fetch_orderbook_top",
+        lambda _pair: BestQuote(market="KRW-BTC", bid_price=94_480_000.0, ask_price=94_490_000.0),
+    )
+    monkeypatch.setattr(
+        "bithumb_bot.flatten.order_rules.get_effective_order_rules",
+        lambda _market: _rule_resolution_for_closeout(qty_step_source=qty_step_source),
     )
 
 
@@ -336,6 +472,147 @@ def test_local_fallback_qty_step_does_not_silently_floor_clean_closeout() -> Non
 
     assert not (contract.closeout_allowed and contract.planned_sell_qty == pytest.approx(0.0004))
     assert contract.planned_sell_qty == pytest.approx(contract.raw_total_asset_qty)
+
+
+def test_flatten_position_operator_executable_path_uses_clean_closeout_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_flatten_closeout_settings()
+    _seed_executable_flatten_position(qty=0.00049913)
+    _patch_flatten_closeout_dependencies(monkeypatch, qty_step_source="local_fallback")
+    broker = _FlattenCloseoutBroker(asset_available=0.00049913)
+
+    import bithumb_bot.flatten as flatten_module
+
+    original_builder = flatten_module.build_operator_clean_closeout_contract
+    calls: list[dict[str, object]] = []
+
+    def _counting_builder(**kwargs):
+        calls.append(kwargs)
+        return original_builder(**kwargs)
+
+    monkeypatch.setattr(flatten_module, "build_operator_clean_closeout_contract", _counting_builder)
+
+    result = flatten_btc_position(broker=broker, dry_run=True, trigger="operator")
+
+    assert calls
+    assert calls[0]["raw_total_asset_qty"] == pytest.approx(0.00049913)
+    assert calls[0]["broker_asset_available"] == pytest.approx(0.00049913)
+    assert result["command_intent"] == "operator_clean_account_closeout"
+    assert result["planned_sell_qty"] == pytest.approx(0.00049913)
+    assert result["clean_account_after_sell"] is True
+    assert broker.calls == []
+
+
+def test_flatten_position_json_dry_run_contains_clean_account_fields_for_executable_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_flatten_closeout_settings()
+    _seed_executable_flatten_position(qty=0.00049913)
+    _patch_flatten_closeout_dependencies(monkeypatch, qty_step_source="local_fallback")
+
+    result = flatten_btc_position(
+        broker=_FlattenCloseoutBroker(asset_available=0.00049913),
+        dry_run=True,
+        trigger="operator",
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["command_intent"] == "operator_clean_account_closeout"
+    assert result["raw_total_asset_qty"] == pytest.approx(0.00049913)
+    assert result["planned_sell_qty"] == pytest.approx(0.00049913)
+    assert result["estimated_residual_qty"] == pytest.approx(0.0)
+    assert result["clean_account_after_sell"] is True
+    assert result["closeout_allowed"] is True
+    assert result["quantity_authority"]["qty_step_source"] == "local_fallback"
+    assert result["quantity_authority"]["qty_step_authority_level"] == "local_fallback"
+    assert result["quantity_authority"]["quantity_contract_complete"] is True
+    assert (
+        result["quantity_authority"]["quantity_contract_recommended_action"]
+        == "review_local_quantity_fallback_before_real_submit"
+    )
+    assert result["submit_payload_preview"]["payload_volume"] == "0.00049913"
+    assert result["payload_volume"] == "0.00049913"
+
+
+def test_flatten_position_json_dry_run_contains_quantity_authority_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_flatten_closeout_settings()
+    _seed_executable_flatten_position(qty=0.00049913)
+    _patch_flatten_closeout_dependencies(monkeypatch, qty_step_source="local_fallback")
+
+    result = flatten_btc_position(
+        broker=_FlattenCloseoutBroker(asset_available=0.00049913),
+        dry_run=True,
+        trigger="operator",
+    )
+
+    authority = result["quantity_authority"]
+    assert authority["qty_step_source"] == "local_fallback"
+    assert authority["qty_step_authority_level"] == "local_fallback"
+    assert authority["quantity_rule_source_mode"] == "local_fallback"
+    assert authority["quantity_contract_complete"] is True
+    assert authority["quantity_contract_recommended_action"] == "review_local_quantity_fallback_before_real_submit"
+    assert result["clean_account_after_sell"] is True
+    assert result["submit_payload_preview"]["payload_volume"] == "0.00049913"
+
+
+def test_real_flatten_submit_qty_matches_clean_closeout_contract_for_executable_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_flatten_closeout_settings()
+    _seed_executable_flatten_position(qty=0.00049913)
+    _patch_flatten_closeout_dependencies(monkeypatch, qty_step_source="local_fallback")
+    broker = _FlattenCloseoutBroker(asset_available=0.00049913)
+
+    result = flatten_btc_position(broker=broker, dry_run=False, trigger="operator")
+
+    assert result["status"] == "submitted"
+    assert result["planned_sell_qty"] == pytest.approx(0.00049913)
+    assert result["clean_account_after_sell"] is True
+    assert result["submit_payload_preview"]["payload_volume"] == "0.00049913"
+    assert len(broker.calls) == 1
+    assert broker.calls[0]["qty"] == pytest.approx(0.00049913)
+    assert broker.calls[0]["submit_plan_submitted_qty"] == pytest.approx(0.00049913)
+
+
+def test_real_flatten_refuses_executable_path_when_clean_account_after_sell_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_flatten_closeout_settings()
+    _seed_executable_flatten_position(qty=0.00049913)
+    _patch_flatten_closeout_dependencies(monkeypatch, qty_step_source="chance_doc")
+    broker = _FlattenCloseoutBroker(asset_available=0.00049913)
+
+    result = flatten_btc_position(broker=broker, dry_run=False, trigger="operator")
+
+    assert result["status"] == "blocked"
+    assert result["closeout_allowed"] is False
+    assert result["clean_account_after_sell"] is False
+    assert result["reason"] == "full_closeout_would_leave_residual"
+    assert result["recommended_action"] == "manual_exchange_closeout_or_rule_update"
+    assert broker.calls == []
+
+
+def test_flatten_position_json_blocked_contains_recommended_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_flatten_closeout_settings()
+    _seed_executable_flatten_position(qty=0.00049913)
+    _patch_flatten_closeout_dependencies(monkeypatch, qty_step_source="chance_doc")
+
+    result = flatten_btc_position(
+        broker=_FlattenCloseoutBroker(asset_available=0.00049913),
+        dry_run=True,
+        trigger="operator",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["closeout_allowed"] is False
+    assert result["reason"] == "full_closeout_would_leave_residual"
+    assert result["recommended_action"] == "manual_exchange_closeout_or_rule_update"
+    assert result["quantity_authority"]["qty_step_authority_level"] == "exchange_hard"
 
 
 def test_real_flatten_refuses_when_clean_closeout_contract_blocked() -> None:

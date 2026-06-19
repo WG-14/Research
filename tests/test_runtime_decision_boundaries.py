@@ -57,15 +57,43 @@ from bithumb_bot.strategy.sma import create_sma_with_filter_strategy
 
 
 def test_operator_clean_closeout_unavailable_to_strategy_decision() -> None:
-    source = Path("src/bithumb_bot/flatten.py").read_text(encoding="utf-8")
+    strategy_sources = [
+        Path("src/bithumb_bot/runtime_decision_service.py"),
+        Path("src/bithumb_bot/run_loop_execution_planner.py"),
+        Path("src/bithumb_bot/execution_service.py"),
+    ]
+    forbidden_strings = {
+        "operator_clean_account_closeout",
+        "broker_confirmed_residual_closeout",
+    }
+    for path in strategy_sources:
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", getattr(node.func, "attr", "")) == "build_operator_clean_closeout_contract"
+        ]
+        assert calls == [], path
+        for forbidden in forbidden_strings:
+            assert forbidden not in source, path
 
-    operator_gate = source.index('if trigger == "operator" and _is_residual_closeout_state(')
-    closeout_builder = source.index("build_operator_clean_closeout_contract(")
-    strategy_authority = source.index("sellable_executable_lot_count")
 
-    assert operator_gate < closeout_builder
-    assert strategy_authority < closeout_builder
-    assert 'trigger == "operator"' in source[operator_gate:closeout_builder]
+def test_strategy_exit_does_not_call_operator_clean_closeout_builder() -> None:
+    strategy_sources = [
+        Path("src/bithumb_bot/runtime_decision_service.py"),
+        Path("src/bithumb_bot/run_loop_execution_planner.py"),
+        Path("src/bithumb_bot/execution_service.py"),
+        Path("src/bithumb_bot/strategy_policy_contract.py"),
+    ]
+
+    for path in strategy_sources:
+        source = path.read_text(encoding="utf-8")
+        assert "build_operator_clean_closeout_contract" not in source, path
+        assert "plan_operator_clean_account_closeout_from_flatten_context" not in source, path
+        assert "operator_clean_account_closeout" not in source, path
+        assert "broker_confirmed_residual_closeout" not in source, path
 
 
 class CountingConnection(sqlite3.Connection):

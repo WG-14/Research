@@ -8,6 +8,10 @@ from bithumb_bot.broker.base import BrokerRejectError
 from bithumb_bot import config as config_module
 from bithumb_bot.config import settings
 from bithumb_bot.execution_order_rules import ExecutionOrderRules, resolve_execution_order_rules
+from bithumb_bot.operator_commands import (
+    build_quantity_rule_source_diagnostics,
+    format_quantity_rule_source_diagnostics,
+)
 from bithumb_bot.quantity_contract import ExchangeQuantityContract
 from bithumb_bot.db_core import (
     ensure_db,
@@ -1470,6 +1474,37 @@ def test_quantity_contract_marks_qty_step_local_fallback() -> None:
     assert contract.exchange_qty_step is None
     assert contract.exchange_qty_step_source == "missing"
     assert contract.qty_step_authority_level == "local_fallback"
+    assert contract.as_dict()["qty_step_source"] == "local_fallback"
+    assert contract.as_dict()["qty_step_authority_level"] == "local_fallback"
+
+
+def test_broker_diagnose_exposes_quantity_rule_sources() -> None:
+    resolution = SimpleNamespace(
+        rules=order_rules.DerivedOrderConstraints(
+            market_id="KRW-BTC",
+            min_qty=0.0001,
+            qty_step=0.0001,
+            min_notional_krw=5000.0,
+            max_qty_decimals=8,
+        ),
+        source={
+            "min_qty": "local_fallback",
+            "qty_step": "local_fallback",
+            "min_notional_krw": "local_fallback",
+            "max_qty_decimals": "local_fallback",
+        },
+        source_mode="local_fallback",
+        snapshot_persisted=False,
+    )
+
+    summary = build_quantity_rule_source_diagnostics(resolution, market="KRW-BTC")
+    rendered = format_quantity_rule_source_diagnostics(summary)
+
+    assert summary["qty_step_source"] == "local_fallback"
+    assert summary["qty_step_authority_level"] == "local_fallback"
+    assert "qty_step_source=local_fallback" in rendered
+    assert "qty_step_authority_level=local_fallback" in rendered
+    assert "quantity_contract_recommended_action=review_local_quantity_fallback_before_real_submit" in rendered
 
 
 def test_quantity_contract_separates_exchange_min_total_from_local_qty_step() -> None:

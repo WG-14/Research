@@ -31,6 +31,7 @@ from .order_sizing import SellExecutionAuthority, build_sell_execution_sizing
 from .reason_codes import EMERGENCY_FLATTEN_FAILED, EMERGENCY_FLATTEN_STARTED, EMERGENCY_FLATTEN_SUCCEEDED
 from .execution_models import OrderIntent
 from .broker.order_submit import plan_place_order
+from .broker.order_payloads import build_order_payload_from_plan
 from .broker import order_rules
 from .operator_closeout import (
     build_operator_clean_closeout_contract,
@@ -281,6 +282,107 @@ def _resolve_operator_quantity_contract_and_rules(*, market: str):
             ),
             rules,
         )
+
+
+def _clean_closeout_summary_from_contract(
+    contract,
+    *,
+    allowed_reason: str = BROKER_CONFIRMED_RESIDUAL_CLOSEOUT,
+) -> dict[str, object]:
+    contract_payload = contract.as_dict()
+    quantity_authority = dict(contract_payload.get("quantity_authority") or {})
+    submit_payload_preview = dict(contract_payload.get("submit_payload_preview") or {})
+    reason = (
+        allowed_reason
+        if bool(contract.closeout_allowed)
+        else str(contract.block_reason or FULL_CLOSEOUT_WOULD_LEAVE_RESIDUAL)
+    )
+    summary = {
+        **contract_payload,
+        "closeout_reason_code": reason,
+        "reason": reason,
+        "quantity_rule_source_mode": quantity_authority.get("quantity_rule_source_mode"),
+        "min_qty_source": quantity_authority.get("min_qty_source"),
+        "qty_step_source": quantity_authority.get("qty_step_source"),
+        "max_qty_decimals_source": quantity_authority.get("max_qty_decimals_source"),
+        "qty_step_authority_level": quantity_authority.get("qty_step_authority_level"),
+        "quantity_contract_complete": quantity_authority.get("quantity_contract_complete"),
+        "quantity_contract_recommended_action": quantity_authority.get(
+            "quantity_contract_recommended_action"
+        ),
+        **submit_payload_preview,
+    }
+    summary.pop("status", None)
+    return summary
+
+
+def plan_operator_clean_account_closeout_from_flatten_context(
+    *,
+    broker,
+    raw_total_asset_qty: float,
+    market_price: float,
+    dry_run: bool,
+    client_order_id: str,
+):
+    quantity_contract, resolved_rules = _resolve_operator_quantity_contract_and_rules(
+        market=settings.PAIR,
+    )
+    balance = broker.get_balance()
+    broker_asset_available = max(0.0, float(balance.asset_available))
+    closeout_contract = build_operator_clean_closeout_contract(
+        broker=broker,
+        market=settings.PAIR,
+        raw_total_asset_qty=float(raw_total_asset_qty),
+        broker_asset_available=broker_asset_available,
+        market_price=float(market_price),
+        quantity_contract=quantity_contract,
+        dry_run=dry_run,
+        plan_place_order_fn=plan_place_order,
+        rules=resolved_rules,
+        client_order_id=client_order_id,
+    )
+    return closeout_contract, resolved_rules
+
+
+def _build_validated_clean_closeout_submit_plan(
+    *,
+    broker,
+    contract,
+    rules,
+    client_order_id: str,
+    market_price: float,
+):
+    latest_balance = broker.get_balance()
+    submit_plan = plan_place_order(
+        broker,
+        intent=OrderIntent(
+            client_order_id=client_order_id,
+            market=settings.PAIR,
+            side="SELL",
+            normalized_side="ask",
+            qty=float(contract.planned_sell_qty),
+            price=None,
+            created_ts=int(time.time() * 1000),
+            market_price_hint=float(market_price),
+            trace_id=client_order_id,
+        ),
+        rules=rules,
+        skip_qty_revalidation=True,
+    )
+    validate_clean_closeout_contract_for_submit(
+        contract,
+        submitted_qty=float(submit_plan.submitted_qty),
+        broker_asset_available=float(latest_balance.asset_available),
+    )
+    if abs(float(submit_plan.submitted_qty) - float(contract.planned_sell_qty)) > _QTY_EPS:
+        raise ValueError("operator clean closeout submit plan qty does not match contract")
+    payload_plan = build_order_payload_from_plan(plan=submit_plan)
+    payload_volume = payload_plan.payload.get("volume")
+    if payload_volume is None or abs(float(payload_volume) - float(contract.planned_sell_qty)) > _QTY_EPS:
+        raise ValueError("operator clean closeout payload volume does not match contract")
+    if not bool(contract.clean_account_after_sell) or float(contract.estimated_residual_qty) > _QTY_EPS:
+        raise ValueError("operator clean closeout contract is not clean-account proof")
+    return submit_plan
 
 
 def _validate_flatten_pretrade(*, broker, qty: float) -> None:
@@ -695,47 +797,15 @@ def flatten_btc_position(*, broker, dry_run: bool = False, trigger: str = "opera
                         f"broker_asset_available={broker_asset_available:.12f} "
                         f"raw_total_asset_qty={float(canonical_exposure.raw_total_asset_qty):.12f}"
                     )
-                quantity_contract, resolved_rules = _resolve_operator_quantity_contract_and_rules(
-                    market=settings.PAIR,
-                )
                 client_order_id = f"flatten_{int(time.time() * 1000)}"
-                closeout_contract = build_operator_clean_closeout_contract(
+                closeout_contract, resolved_rules = plan_operator_clean_account_closeout_from_flatten_context(
                     broker=broker,
-                    market=settings.PAIR,
                     raw_total_asset_qty=broker_asset_available,
-                    broker_asset_available=broker_asset_available,
                     market_price=market_price,
-                    quantity_contract=quantity_contract,
                     dry_run=dry_run,
-                    plan_place_order_fn=plan_place_order,
-                    rules=resolved_rules,
                     client_order_id=client_order_id,
                 )
-                contract_payload = closeout_contract.as_dict()
-                clean_closeout_metrics = {
-                    **contract_payload,
-                    "closeout_reason_code": (
-                        BROKER_CONFIRMED_RESIDUAL_CLOSEOUT
-                        if closeout_contract.closeout_allowed
-                        else str(closeout_contract.block_reason or FULL_CLOSEOUT_WOULD_LEAVE_RESIDUAL)
-                    ),
-                    "reason": (
-                        BROKER_CONFIRMED_RESIDUAL_CLOSEOUT
-                        if closeout_contract.closeout_allowed
-                        else str(closeout_contract.block_reason or FULL_CLOSEOUT_WOULD_LEAVE_RESIDUAL)
-                    ),
-                    "quantity_rule_source_mode": contract_payload["quantity_authority"].get("quantity_rule_source_mode"),
-                    "min_qty_source": contract_payload["quantity_authority"].get("min_qty_source"),
-                    "qty_step_source": contract_payload["quantity_authority"].get("qty_step_source"),
-                    "max_qty_decimals_source": contract_payload["quantity_authority"].get("max_qty_decimals_source"),
-                    "qty_step_authority_level": contract_payload["quantity_authority"].get("qty_step_authority_level"),
-                    "quantity_contract_complete": contract_payload["quantity_authority"].get("quantity_contract_complete"),
-                    "quantity_contract_recommended_action": contract_payload["quantity_authority"].get(
-                        "quantity_contract_recommended_action"
-                    ),
-                    **dict(contract_payload.get("submit_payload_preview") or {}),
-                }
-                clean_closeout_metrics.pop("status", None)
+                clean_closeout_metrics = _clean_closeout_summary_from_contract(closeout_contract)
                 normalized_qty = float(closeout_contract.planned_sell_qty)
                 if not closeout_contract.closeout_allowed:
                     summary = {
@@ -771,12 +841,6 @@ def flatten_btc_position(*, broker, dry_run: bool = False, trigger: str = "opera
                     if bool(settings.KILL_SWITCH):
                         raise ValueError("KILL_SWITCH=false is required for residual closeout submit")
                     _validate_flatten_pretrade(broker=broker, qty=normalized_qty)
-                    latest_balance = broker.get_balance()
-                    validate_clean_closeout_contract_for_submit(
-                        closeout_contract,
-                        submitted_qty=normalized_qty,
-                        broker_asset_available=float(latest_balance.asset_available),
-                    )
 
                 exit_sizing = _build_residual_exit_sizing(qty=normalized_qty, snapshot=snapshot)
                 runtime_state.record_flatten_position_result(
@@ -842,28 +906,16 @@ def flatten_btc_position(*, broker, dry_run: bool = False, trigger: str = "opera
                     }
                     place_order_params = inspect.signature(broker.place_order).parameters
                     if "submit_plan" in place_order_params:
-                        submit_plan = plan_place_order(
-                            broker,
-                            intent=OrderIntent(
-                                client_order_id=client_order_id,
-                                market=settings.PAIR,
-                                side="SELL",
-                                normalized_side="ask",
-                                qty=float(normalized_qty),
-                                price=None,
-                                created_ts=int(time.time() * 1000),
-                                market_price_hint=market_price,
-                                trace_id=client_order_id,
-                            ),
+                        submit_plan = _build_validated_clean_closeout_submit_plan(
+                            broker=broker,
+                            contract=closeout_contract,
                             rules=resolved_rules,
-                            skip_qty_revalidation=True,
-                        )
-                        validate_clean_closeout_contract_for_submit(
-                            closeout_contract,
-                            submitted_qty=float(submit_plan.submitted_qty),
-                            broker_asset_available=float(broker.get_balance().asset_available),
+                            client_order_id=client_order_id,
+                            market_price=market_price,
                         )
                         place_order_kwargs["submit_plan"] = submit_plan
+                    else:
+                        raise ValueError("broker.place_order submit_plan support required for operator clean closeout")
                     order = broker.place_order(**place_order_kwargs)
                     _record_flatten_submit_ack(
                         client_order_id=client_order_id,
@@ -985,12 +1037,24 @@ def flatten_btc_position(*, broker, dry_run: bool = False, trigger: str = "opera
     )
     operator_planned_qty = float(exit_sizing.executable_qty)
     clean_closeout_metrics: dict[str, object] = {}
+    operator_closeout_contract = None
+    operator_resolved_rules = None
+    operator_market_price: float | None = None
+    client_order_id = f"flatten_{int(time.time() * 1000)}"
     if trigger == "operator":
         try:
             quote = fetch_orderbook_top(settings.PAIR)
             bid, _ask = validated_best_quote_prices(quote, requested_market=settings.PAIR)
-            market_price = float(bid)
-            default_planned_qty = _normalize_flatten_qty(qty=float(exit_sizing.executable_qty), market_price=market_price)
+            operator_market_price = float(bid)
+            operator_closeout_contract, operator_resolved_rules = plan_operator_clean_account_closeout_from_flatten_context(
+                broker=broker,
+                raw_total_asset_qty=float(canonical_exposure.raw_total_asset_qty),
+                market_price=operator_market_price,
+                dry_run=dry_run,
+                client_order_id=client_order_id,
+            )
+            clean_closeout_metrics = _clean_closeout_summary_from_contract(operator_closeout_contract)
+            operator_planned_qty = float(operator_closeout_contract.planned_sell_qty)
         except Exception as exc:
             err = f"{type(exc).__name__}: {exc}"
             summary = {
@@ -1007,27 +1071,13 @@ def flatten_btc_position(*, broker, dry_run: bool = False, trigger: str = "opera
             }
             runtime_state.record_flatten_position_result(status="failed", summary=summary)
             return summary
-        try:
-            operator_planned_qty, clean_closeout_metrics = _plan_operator_clean_account_qty(
-                default_planned_qty=default_planned_qty,
-                raw_total_asset_qty=float(canonical_exposure.raw_total_asset_qty),
-                market_price=market_price,
-                broker=broker,
-            )
-        except ValueError as exc:
-            blocked_metrics: dict[str, object] = {}
-            try:
-                parsed = json.loads(str(exc))
-                if isinstance(parsed, dict):
-                    blocked_metrics = parsed
-            except (TypeError, ValueError, json.JSONDecodeError):
-                blocked_metrics = {}
-            reason = str(blocked_metrics.get("closeout_reason_code") or exc)
+        if not bool(operator_closeout_contract.closeout_allowed):
+            reason = str(operator_closeout_contract.block_reason or FULL_CLOSEOUT_WOULD_LEAVE_RESIDUAL)
             summary = {
                 "status": "blocked",
                 "reason": reason,
                 "qty": 0.0,
-                **blocked_metrics,
+                **clean_closeout_metrics,
                 "raw_total_asset_qty": float(canonical_exposure.raw_total_asset_qty),
                 "executable_exposure_qty": float(canonical_exposure.open_exposure_qty),
                 "tracked_dust_qty": float(canonical_exposure.dust_tracking_qty),
@@ -1087,15 +1137,29 @@ def flatten_btc_position(*, broker, dry_run: bool = False, trigger: str = "opera
         runtime_state.record_flatten_position_result(status="dry_run", summary=summary)
         return summary
 
-    client_order_id = f"flatten_{int(time.time() * 1000)}"
     normalized_qty = float(operator_planned_qty)
     submit_attempt_id: str | None = None
     try:
-        quote = fetch_orderbook_top(settings.PAIR)
-        bid, _ask = validated_best_quote_prices(quote, requested_market=settings.PAIR)
-        market_price = float(bid)
+        if trigger == "operator" and operator_market_price is not None:
+            market_price = float(operator_market_price)
+        else:
+            quote = fetch_orderbook_top(settings.PAIR)
+            bid, _ask = validated_best_quote_prices(quote, requested_market=settings.PAIR)
+            market_price = float(bid)
         if trigger != "operator":
             normalized_qty = _normalize_flatten_qty(qty=normalized_qty, market_price=market_price)
+        if trigger == "operator":
+            if settings.MODE != "live":
+                raise ValueError("MODE=live is required for operator clean closeout submit")
+            if bool(settings.LIVE_DRY_RUN):
+                raise ValueError("LIVE_DRY_RUN=false is required for operator clean closeout submit")
+            if not bool(settings.LIVE_REAL_ORDER_ARMED):
+                raise ValueError("LIVE_REAL_ORDER_ARMED=true is required for operator clean closeout submit")
+            if bool(settings.KILL_SWITCH):
+                raise ValueError("KILL_SWITCH=false is required for operator clean closeout submit")
+            if operator_closeout_contract is None or operator_resolved_rules is None:
+                raise ValueError("operator clean closeout contract missing before submit")
+            _assert_no_broker_open_orders(broker)
         _validate_flatten_pretrade(broker=broker, qty=normalized_qty)
         submit_attempt_id, payload_hash, _submit_ts = _stage_flatten_submit_intent(
             client_order_id=client_order_id,
@@ -1114,22 +1178,35 @@ def flatten_btc_position(*, broker, dry_run: bool = False, trigger: str = "opera
         }
         place_order_params = inspect.signature(broker.place_order).parameters
         if "submit_plan" in place_order_params:
-            submit_plan = plan_place_order(
-                broker,
-                intent=OrderIntent(
+            if trigger == "operator":
+                submit_plan = _build_validated_clean_closeout_submit_plan(
+                    broker=broker,
+                    contract=operator_closeout_contract,
+                    rules=operator_resolved_rules,
                     client_order_id=client_order_id,
-                    market=settings.PAIR,
-                    side="SELL",
-                    normalized_side="ask",
-                    qty=float(normalized_qty),
-                    price=None,
-                    created_ts=int(time.time() * 1000),
-                    market_price_hint=market_price,
-                    trace_id=client_order_id,
-                ),
-                skip_qty_revalidation=True,
-            )
+                    market_price=market_price,
+                )
+                normalized_qty = float(submit_plan.submitted_qty)
+                place_order_kwargs["qty"] = normalized_qty
+            else:
+                submit_plan = plan_place_order(
+                    broker,
+                    intent=OrderIntent(
+                        client_order_id=client_order_id,
+                        market=settings.PAIR,
+                        side="SELL",
+                        normalized_side="ask",
+                        qty=float(normalized_qty),
+                        price=None,
+                        created_ts=int(time.time() * 1000),
+                        market_price_hint=market_price,
+                        trace_id=client_order_id,
+                    ),
+                    skip_qty_revalidation=True,
+                )
             place_order_kwargs["submit_plan"] = submit_plan
+        elif trigger == "operator":
+            raise ValueError("broker.place_order submit_plan support required for operator clean closeout")
         order = broker.place_order(**place_order_kwargs)
         _record_flatten_submit_ack(
             client_order_id=client_order_id,

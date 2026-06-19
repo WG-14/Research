@@ -260,6 +260,23 @@ def _format_rule_value_with_source(*, field: str, value: object, source: dict[st
     return f"{value} (source={rule_source_for(field, source)})"
 
 
+def build_quantity_rule_source_diagnostics(resolved_rules, *, market: str) -> dict[str, object]:
+    quantity_contract = ExchangeQuantityContract.from_rule_resolution(resolved_rules, market=market)
+    return quantity_contract.as_dict()
+
+
+def format_quantity_rule_source_diagnostics(quantity_summary: dict[str, object]) -> str:
+    return (
+        f"quantity_rule_source_mode={quantity_summary['quantity_rule_source_mode']} "
+        f"min_qty_source={quantity_summary['min_qty_source']} "
+        f"qty_step_source={quantity_summary['qty_step_source']} "
+        f"max_qty_decimals_source={quantity_summary['max_qty_decimals_source']} "
+        f"qty_step_authority_level={quantity_summary['qty_step_authority_level']} "
+        f"quantity_contract_complete={1 if bool(quantity_summary['quantity_contract_complete']) else 0} "
+        f"quantity_contract_recommended_action={quantity_summary['quantity_contract_recommended_action'] or 'none'}"
+    )
+
+
 def _format_chance_contract_change_detail(change: object | None) -> str:
     if change is None:
         return "tracked_fields=order_types,bid_types,ask_types,order_sides previous_snapshot=none change_detected=0"
@@ -2038,8 +2055,7 @@ def cmd_health() -> None:
         resolved_rules = get_effective_order_rules(PAIR)
         rules = resolved_rules.rules
         source = resolved_rules.source or {}
-        quantity_contract = ExchangeQuantityContract.from_rule_resolution(resolved_rules, market=PAIR)
-        quantity_summary = quantity_contract.as_dict()
+        quantity_summary = build_quantity_rule_source_diagnostics(resolved_rules, market=PAIR)
         buy_price_none_resolution = resolve_buy_price_none_resolution(rules=rules)
         buy_price_none_fields = build_buy_price_none_diagnostic_fields(
             rules=rules,
@@ -2062,13 +2078,7 @@ def cmd_health() -> None:
         )
         print(
             "    "
-            f"quantity_rule_source_mode={quantity_summary['quantity_rule_source_mode']} "
-            f"min_qty_source={quantity_summary['min_qty_source']} "
-            f"qty_step_source={quantity_summary['qty_step_source']} "
-            f"max_qty_decimals_source={quantity_summary['max_qty_decimals_source']} "
-            f"qty_step_authority_level={quantity_summary['qty_step_authority_level']} "
-            f"quantity_contract_complete={1 if bool(quantity_summary['quantity_contract_complete']) else 0} "
-            f"quantity_contract_recommended_action={quantity_summary['quantity_contract_recommended_action'] or 'none'}"
+            f"{format_quantity_rule_source_diagnostics(quantity_summary)}"
         )
         print(
             "    "
@@ -3038,8 +3048,7 @@ def cmd_broker_diagnose() -> None:
         rr = get_effective_order_rules(PAIR)
         rules = rr.rules
         source = rr.source or {}
-        quantity_contract = ExchangeQuantityContract.from_rule_resolution(rr, market=PAIR)
-        quantity_summary = quantity_contract.as_dict()
+        quantity_summary = build_quantity_rule_source_diagnostics(rr, market=PAIR)
         buy_price_none_resolution = resolve_buy_price_none_resolution(rules=rules)
         buy_price_none_fields = build_buy_price_none_diagnostic_fields(
             rules=rules,
@@ -3057,10 +3066,7 @@ def cmd_broker_diagnose() -> None:
                 f"ask_min_total_krw={_format_rule_value_with_source(field='ask_min_total_krw', value=rules.ask_min_total_krw, source=source)} "
                 f"bid_price_unit={_format_rule_value_with_source(field='bid_price_unit', value=rules.bid_price_unit, source=source)} "
                 f"ask_price_unit={_format_rule_value_with_source(field='ask_price_unit', value=rules.ask_price_unit, source=source)} "
-                f"quantity_rule_source_mode={quantity_summary['quantity_rule_source_mode']} "
-                f"qty_step_authority_level={quantity_summary['qty_step_authority_level']} "
-                f"quantity_contract_complete={1 if bool(quantity_summary['quantity_contract_complete']) else 0} "
-                f"quantity_contract_recommended_action={quantity_summary['quantity_contract_recommended_action'] or 'none'}"
+                f"{format_quantity_rule_source_diagnostics(quantity_summary)}"
             ),
             critical=False,
         )
