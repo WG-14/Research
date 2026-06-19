@@ -13,6 +13,12 @@ HALT_POLICY_STAGE = "SAFE_HALT_REVIEW_ONLY"
 _HEALTH_SUMMARY_MAX_LEN = 2400
 _RECONCILE_METADATA_PRESERVE_KEYS = (
     "balance_authority",
+    "unresolved_open_order_count",
+    "submit_unknown_count",
+    "recovery_required_count",
+    "remote_open_order_found",
+    "missing_base_full_closeout_allowed",
+    "missing_base_full_closeout_reason",
     "broker_cash_truth",
     "broker_position_truth",
     "resume_recovery_safety_gate",
@@ -77,10 +83,6 @@ _RECONCILE_METADATA_PRESERVE_KEYS = (
     "dust_effective_flat",
     "dust_partial_flatten_recent",
     "dust_partial_flatten_reason",
-    "unresolved_open_order_count",
-    "submit_unknown_count",
-    "recovery_required_count",
-    "remote_open_order_found",
     "dust_qty_gap_tolerance",
     "dust_qty_gap_small",
     "dust_broker_qty",

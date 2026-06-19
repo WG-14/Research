@@ -2684,8 +2684,22 @@ class BithumbBroker:
         """Return broker balance via configured snapshot source abstraction."""
         return self._get_balance_source().fetch_snapshot().balance
 
-    def get_balance_snapshot(self) -> BalanceSnapshot:
-        return self._get_balance_source().fetch_snapshot()
+    def get_balance_snapshot(
+        self,
+        *,
+        allow_missing_base_for_reconcile: bool = False,
+        missing_base_reconcile_reason: str | None = None,
+    ) -> BalanceSnapshot:
+        source = self._get_balance_source()
+        try:
+            return source.fetch_snapshot(
+                allow_missing_base_for_reconcile=allow_missing_base_for_reconcile,
+                missing_base_reconcile_reason=missing_base_reconcile_reason,
+            )
+        except TypeError:
+            if allow_missing_base_for_reconcile:
+                raise
+            return source.fetch_snapshot()
 
     def get_recent_orders(
         self,

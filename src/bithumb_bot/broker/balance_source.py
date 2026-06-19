@@ -174,10 +174,23 @@ class BalanceSource(Protocol):
         ...
 
 
-def fetch_balance_snapshot(broker: object) -> BalanceSnapshot:
+def fetch_balance_snapshot(
+    broker: object,
+    *,
+    allow_missing_base_for_reconcile: bool = False,
+    missing_base_reconcile_reason: str | None = None,
+) -> BalanceSnapshot:
     fetcher = getattr(broker, "get_balance_snapshot", None)
     if callable(fetcher):
-        snapshot = fetcher()
+        try:
+            snapshot = fetcher(
+                allow_missing_base_for_reconcile=allow_missing_base_for_reconcile,
+                missing_base_reconcile_reason=missing_base_reconcile_reason,
+            )
+        except TypeError:
+            if allow_missing_base_for_reconcile:
+                raise
+            snapshot = fetcher()
         if isinstance(snapshot, BalanceSnapshot):
             return snapshot
 
@@ -304,12 +317,26 @@ class AccountsV1BalanceSource:
             return "auth_failure"
         return "unknown_failure"
 
-    def fetch_snapshot(self) -> BalanceSnapshot:
+    def fetch_snapshot(
+        self,
+        *,
+        allow_missing_base_for_reconcile: bool = False,
+        missing_base_reconcile_reason: str | None = None,
+    ) -> BalanceSnapshot:
         observed_ts_ms = self._now_ms()
-        allow_missing_base = self._allow_missing_base
+        reconcile_allowance = bool(
+            allow_missing_base_for_reconcile
+            and str(settings.MODE).strip().lower() == "live"
+            and not bool(settings.LIVE_DRY_RUN)
+            and bool(settings.LIVE_REAL_ORDER_ARMED)
+        )
+        allow_missing_base = bool(self._allow_missing_base or reconcile_allowance)
         if self._allow_missing_base:
             self._flat_start_allowed = False
             self._flat_start_reason = "dry_run_unarmed_allowance"
+        elif reconcile_allowance:
+            self._flat_start_allowed = False
+            self._flat_start_reason = str(missing_base_reconcile_reason or "full_closeout_reconcile_evidence")
         else:
             self._flat_start_allowed = False
             self._flat_start_reason = "not_applicable"
@@ -343,7 +370,9 @@ class AccountsV1BalanceSource:
         parsed_accounts = None
         try:
             parsed_accounts = self._parse_accounts_response(response)
-            if (
+            if reconcile_allowance:
+                allow_missing_base = True
+            elif (
                 self._allow_missing_base_on_flat_start
                 and self._order_currency not in parsed_accounts.balances
             ):
@@ -378,7 +407,11 @@ class AccountsV1BalanceSource:
                 "execution_mode": self._execution_mode,
                 "quote_currency": self._payment_currency,
                 "base_currency": self._order_currency,
-                "base_currency_missing_policy": self._base_missing_policy,
+                "base_currency_missing_policy": (
+                    "allow_zero_after_terminal_full_closeout_reconcile"
+                    if reconcile_allowance
+                    else self._base_missing_policy
+                ),
                 "allow_missing_base_currency": allow_missing_base,
                 "flat_start_allowed": self._flat_start_allowed,
                 "flat_start_reason": self._flat_start_reason,

@@ -119,6 +119,15 @@ class SubmitUnknownResolution:
     metadata_updates: dict[str, int | str] | None = None
 
 
+@dataclass(frozen=True)
+class _TerminalCloseoutEvidence:
+    client_order_id: str
+    exchange_order_id: str
+    planned_qty: float
+    fill_qty: float
+    prior_position_qty: float
+
+
 def classify_recovery_outcome(
     *,
     reason_code: str,
@@ -1534,6 +1543,87 @@ def _capture_broker_read_journal(metadata: dict[str, int | str], broker: Broker)
         metadata["broker_read_journal"] = str(compact)[:500]
 
 
+def _order_blocker_counts(conn) -> dict[str, int]:
+    row = conn.execute(
+        """
+        SELECT
+            SUM(CASE WHEN status IN ('PENDING_SUBMIT', 'NEW', 'PARTIAL', 'ACCOUNTING_PENDING', 'CANCEL_REQUESTED') THEN 1 ELSE 0 END) AS unresolved_open_order_count,
+            SUM(CASE WHEN status='SUBMIT_UNKNOWN' THEN 1 ELSE 0 END) AS submit_unknown_count,
+            SUM(CASE WHEN status='RECOVERY_REQUIRED' THEN 1 ELSE 0 END) AS recovery_required_count
+        FROM orders
+        """
+    ).fetchone()
+    if row is None:
+        return {
+            "unresolved_open_order_count": 0,
+            "submit_unknown_count": 0,
+            "recovery_required_count": 0,
+        }
+    return {
+        "unresolved_open_order_count": int(row["unresolved_open_order_count"] or 0),
+        "submit_unknown_count": int(row["submit_unknown_count"] or 0),
+        "recovery_required_count": int(row["recovery_required_count"] or 0),
+    }
+
+
+def _qty_close_enough(*, actual: float, expected: float) -> bool:
+    tolerance = max(
+        order_fill_tolerance(max(abs(float(actual)), abs(float(expected)), 0.0)),
+        dust_qty_gap_tolerance(min_qty=0.0, default_abs_tolerance=ASSET_SPLIT_ABS_TOL * 10.0),
+        1e-12,
+    )
+    return abs(float(actual) - float(expected)) <= tolerance
+
+
+def _missing_base_closeout_allowance(
+    *,
+    conn,
+    remote_open_order_count: int,
+    closeout_evidence: list[_TerminalCloseoutEvidence],
+) -> tuple[bool, str]:
+    if str(settings.MODE).strip().lower() != "live":
+        return False, "mode_not_live"
+    if bool(settings.LIVE_DRY_RUN):
+        return False, "live_dry_run_not_reconcile_closeout_allowance"
+    if not bool(settings.LIVE_REAL_ORDER_ARMED):
+        return False, "live_real_order_not_armed"
+    if int(remote_open_order_count) != 0:
+        return False, f"remote_open_orders={int(remote_open_order_count)}"
+
+    blockers = _order_blocker_counts(conn)
+    if blockers["unresolved_open_order_count"] > 0:
+        return False, f"unresolved_open_order_count={blockers['unresolved_open_order_count']}"
+    if blockers["submit_unknown_count"] > 0:
+        return False, f"submit_unknown_count={blockers['submit_unknown_count']}"
+    if blockers["recovery_required_count"] > 0:
+        return False, f"recovery_required_count={blockers['recovery_required_count']}"
+
+    if not closeout_evidence:
+        return False, "terminal_closeout_evidence_missing"
+    if len(closeout_evidence) != 1:
+        return False, f"terminal_closeout_evidence_count={len(closeout_evidence)}"
+
+    evidence = closeout_evidence[0]
+    if evidence.prior_position_qty <= 0:
+        return False, f"prior_position_qty={evidence.prior_position_qty:.12g}"
+    if not _qty_close_enough(actual=evidence.fill_qty, expected=evidence.prior_position_qty):
+        return False, (
+            "terminal_closeout_fill_qty_mismatch"
+            f"(fill_qty={evidence.fill_qty:.12g},prior_position_qty={evidence.prior_position_qty:.12g})"
+        )
+    if not _qty_close_enough(actual=evidence.planned_qty, expected=evidence.prior_position_qty):
+        return False, (
+            "terminal_closeout_planned_qty_mismatch"
+            f"(planned_qty={evidence.planned_qty:.12g},prior_position_qty={evidence.prior_position_qty:.12g})"
+        )
+
+    return True, (
+        "full_closeout_reconcile_evidence"
+        f"(client_order_id={evidence.client_order_id},exchange_order_id={evidence.exchange_order_id or '-'},"
+        f"fill_qty={evidence.fill_qty:.12g},prior_position_qty={evidence.prior_position_qty:.12g})"
+    )
+
+
 def _known_identifier_sets(local_rows: list[object]) -> tuple[list[str], list[str]]:
     exchange_ids: set[str] = set()
     client_ids: set[str] = set()
@@ -2041,6 +2131,14 @@ def reconcile_with_broker(broker: Broker) -> None:
     try:
         synchronize_order_state_invariants(conn)
         init_portfolio(conn)
+        (
+            _initial_cash_available,
+            _initial_cash_locked,
+            initial_asset_available,
+            initial_asset_locked,
+        ) = get_portfolio_breakdown(conn)
+        initial_asset_total = max(0.0, float(initial_asset_available) + float(initial_asset_locked))
+        terminal_closeout_evidence: list[_TerminalCloseoutEvidence] = []
 
         placeholders = ",".join("?" for _ in LOCAL_RECONCILE_STATUSES)
         local_open = conn.execute(
@@ -2321,6 +2419,23 @@ def reconcile_with_broker(broker: Broker) -> None:
                             reason=f"from={prev_status}",
                         )
                     )
+            if (
+                str(row["side"]).upper() == "SELL"
+                and str(remote.status).upper() == "FILLED"
+                and not fill_apply_blocked
+            ):
+                fill_qty = sum(max(0.0, float(fill.qty)) for fill in fills)
+                planned_qty, _planned_qty_source = _order_lot_basis_qty(row=row)
+                if fill_qty > 0:
+                    terminal_closeout_evidence.append(
+                        _TerminalCloseoutEvidence(
+                            client_order_id=str(oid),
+                            exchange_order_id=str(remote.exchange_order_id or ""),
+                            planned_qty=float(planned_qty),
+                            fill_qty=float(fill_qty),
+                            prior_position_qty=float(initial_asset_total),
+                        )
+                    )
 
         remote_open = _get_open_orders_for_known_ids(
             broker,
@@ -2415,7 +2530,20 @@ def reconcile_with_broker(broker: Broker) -> None:
             metadata["source_conflict_halt"] = len(conflicts)
             reason_code = REASON_SOURCE_CONFLICT_HALT
 
-        balance_snapshot = fetch_balance_snapshot(broker)
+        blocker_counts = _order_blocker_counts(conn)
+        metadata.update(blocker_counts)
+        missing_base_allowed, missing_base_reason = _missing_base_closeout_allowance(
+            conn=conn,
+            remote_open_order_count=len(remote_open),
+            closeout_evidence=terminal_closeout_evidence,
+        )
+        metadata["missing_base_full_closeout_allowed"] = 1 if missing_base_allowed else 0
+        metadata["missing_base_full_closeout_reason"] = missing_base_reason
+        balance_snapshot = fetch_balance_snapshot(
+            broker,
+            allow_missing_base_for_reconcile=missing_base_allowed,
+            missing_base_reconcile_reason=missing_base_reason,
+        )
         bal = balance_snapshot.balance
         balance_authority = resolve_balance_authority_matrix(
             mode=str(settings.MODE),
