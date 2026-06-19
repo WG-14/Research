@@ -32,6 +32,21 @@ def _validate(args: argparse.Namespace, _context) -> int:
     return int(cmd_research_validate(manifest_path=str(args.manifest), execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None, candidate_id=str(args.candidate_id) if args.candidate_id else None, out_path=str(args.out) if args.out else None, mode=str(args.mode), notification_policy=str(args.notification_policy) if args.notification_policy else None))
 
 
+def _freeze_dataset(args: argparse.Namespace, _context) -> int:
+    from bithumb_bot.research.dataset_freeze import cmd_research_freeze_dataset
+
+    return int(
+        cmd_research_freeze_dataset(
+            db_path=str(args.db),
+            market=str(args.market),
+            interval=str(args.interval),
+            start=str(args.start),
+            end=str(args.end),
+            out_path=str(args.out),
+        )
+    )
+
+
 def _readiness(args: argparse.Namespace, _context) -> int:
     from bithumb_bot.research.readiness import cmd_research_readiness
 
@@ -150,12 +165,25 @@ def _promotion_provenance_verify(args: argparse.Namespace, _context) -> int:
     return int(cmd_promotion_provenance_verify(artifact_path=str(args.artifact)))
 
 
+def _h74_observation_authority_generate(args: argparse.Namespace, _context) -> int:
+    from bithumb_bot.h74_observation import cmd_h74_observation_authority_generate
+
+    return int(cmd_h74_observation_authority_generate(out_path=str(args.out) if args.out else None))
+
+
+def _h74_observation_authority_verify(args: argparse.Namespace, _context) -> int:
+    from bithumb_bot.h74_observation import cmd_h74_observation_authority_verify
+
+    return int(cmd_h74_observation_authority_verify(authority_path=str(args.authority)))
+
+
 def command_specs() -> list[CommandSpec]:
     common = dict(domain="research", read_only=True, produces_artifact=True, json_output_supported=True)
     return [
         make_spec("research-backtest", handler=_backtest, help="run a reproducible research backtest from a manifest", description="Run pure replay/simulation from a research manifest. Writes deterministic candidate and report artifacts under PathManager-managed research paths.", build=_build_backtest, **common),
         make_spec("research-verify-audit", handler=_verify_audit, help="verify research audit trace manifest and JSONL hash chains", build=lambda p: p.add_argument("--experiment-id", required=True), **common),
         make_spec("research-validate", handler=_validate, help="run the fail-closed end-to-end research validation pipeline", description="Run readiness, backtest, required walk-forward, promotion generation, and reproduce from one fixed manifest and write a hash-bound ValidationRun artifact.", build=_build_validate, **common),
+        make_spec("research-freeze-dataset", handler=_freeze_dataset, help="freeze SQLite candles into an immutable research dataset", description="Create content-addressed immutable SQLite candle artifacts and manifest fragments for production-bound validation.", build=_build_freeze_dataset, **common),
         make_spec("research-readiness", handler=_readiness, help="check manifest data readiness before research execution", description="Read-only manifest readiness report for configured DB candle coverage, top-of-book coverage, calibration, and walk-forward prerequisites.", build=_build_readiness, **common),
         make_spec("research-workload-estimate", handler=_workload_estimate, help="estimate manifest research workload without running a backtest", description="Read-only manifest cardinality and pre-pool workload estimate; does not open broker connections, write DB rows, or create research artifacts.", build=_build_workload_estimate, domain="research", read_only=True, produces_artifact=False, writes_db=False, uses_broker=False, json_output_supported=True),
         make_spec("research-batch", handler=_batch, help="run multiple research manifests with bounded batch concurrency", description="Run manifest-backed research-backtest subprocesses with explicit per-manifest status summary under PathManager-managed report paths.", build=_build_batch, **common),
@@ -171,6 +199,8 @@ def command_specs() -> list[CommandSpec]:
         make_spec("replay-decision", handler=_replay_decision, help="debug one runtime SMA decision at a closed-candle timestamp", description="Read-only single-decision replay from SQLite; does not call live broker APIs or submit orders.", build=_build_replay_decision, **common),
         make_spec("promotion-provenance-verify", handler=_promotion_provenance_verify, help="verify typed promotion provenance on a canonical artifact", description="Read-only provenance check for promotion/canonical artifacts; rejects compatibility fallback evidence.", build=lambda p: p.add_argument("--artifact", required=True), **common),
         make_spec("promotion-verify", handler=_promotion_provenance_verify, help="verify typed promotion provenance on a canonical artifact", description="Read-only promotion verifier for canonical/promotion artifacts.", build=lambda p: p.add_argument("--artifact", required=True), **common),
+        make_spec("h74-observation-authority-generate", handler=_h74_observation_authority_generate, help="generate h74 50k live-observation authority", description="Generate non-promotion h74 live-observation authority for the 50,000 KRW capital-scaled variant.", build=lambda p: p.add_argument("--out"), **common),
+        make_spec("h74-observation-authority-verify", handler=_h74_observation_authority_verify, help="verify h74 50k live-observation authority", description="Verify a non-promotion h74 live-observation authority artifact.", build=lambda p: p.add_argument("--authority", required=True), **common),
         make_spec("decision-equivalence", handler=_decision_equivalence, help="compare research decisions against runtime/paper decision telemetry", description="Credential-free deterministic equivalence check over exported decision JSON artifacts.", build=_build_decision_equivalence, **common),
         make_spec("candidate-regime-policy-equivalence-evidence", handler=_candidate_regime, help="bind promotion-grade decision-equivalence evidence to candidate regime policy equivalence", description="Generate a typed candidate-regime-policy equivalence artifact and optionally bind it into the research backtest report candidate before promotion.", build=_build_candidate_regime, **common),
     ]
@@ -200,6 +230,15 @@ def _build_validate(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--candidate-id")
     parser.add_argument("--out")
     parser.add_argument("--mode", default="strict", choices=["strict"])
+
+
+def _build_freeze_dataset(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--db", required=True)
+    parser.add_argument("--market", required=True)
+    parser.add_argument("--interval", required=True)
+    parser.add_argument("--start", required=True)
+    parser.add_argument("--end", required=True)
+    parser.add_argument("--out", required=True)
 
 
 def _build_readiness(parser: argparse.ArgumentParser) -> None:

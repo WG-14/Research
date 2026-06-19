@@ -131,6 +131,35 @@ Legacy SQLite compatibility example:
 }
 ```
 
+Immutable SQLite freeze/export command:
+
+```bash
+uv run bithumb-bot research-freeze-dataset \
+  --db "$DATA_ROOT/research/source/candles.sqlite" \
+  --market KRW-BTC \
+  --interval 1m \
+  --start 2026-01-01 \
+  --end 2026-02-28 \
+  --out "$DATA_ROOT/research/immutable"
+```
+
+The command writes a content-addressed SQLite candle artifact plus a JSON
+manifest sidecar. The sidecar includes `source_uri`, `source_content_hash`,
+`source_schema_hash`, `locator`, `manifest_fragment`, `canonical_row_hash`,
+`row_count`, `market`, `interval`, `start`, and `end`. The manifest fragment
+uses `dataset.source=frozen_sqlite_candles`; the frozen adapter opens the
+declared locator directly and verifies content and schema hashes before loading
+rows. Do not use mutable `paper.sqlite`, repo-relative paths, `latest`, or
+`current` as production-bound dataset locators.
+
+Dataset provenance blocker next actions:
+
+| reason code | next required action | recommended command |
+| --- | --- | --- |
+| `declared_source_content_hash_missing` | run `research-freeze-dataset` | `uv run bithumb-bot research-freeze-dataset --db <source.sqlite> --market <market> --interval <interval> --start <YYYY-MM-DD> --end <YYYY-MM-DD> --out <runtime-research-immutable-dir>` |
+| `missing_immutable_dataset_locator` | run `research-freeze-dataset` | `uv run bithumb-bot research-freeze-dataset --db <source.sqlite> --market <market> --interval <interval> --start <YYYY-MM-DD> --end <YYYY-MM-DD> --out <runtime-research-immutable-dir>` |
+| `mutable_dataset_locator` | replace dataset source with frozen artifact | `uv run bithumb-bot research-freeze-dataset --db <source.sqlite> --market <market> --interval <interval> --start <YYYY-MM-DD> --end <YYYY-MM-DD> --out <runtime-research-immutable-dir>` |
+
 Adapter locator/provenance example:
 
 ```json

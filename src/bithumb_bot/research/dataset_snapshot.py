@@ -14,6 +14,7 @@ from .datasets.contracts import DatasetLoadContext
 from .datasets.registry import default_dataset_adapter_registry
 from .experiment_manifest import DateRange, ExperimentManifest, ManifestValidationError
 from .hashing import sha256_prefixed
+from .dataset_freeze import canonical_candle_rows_hash, sqlite_candles_schema_hash
 
 
 @dataclass(frozen=True)
@@ -1187,6 +1188,156 @@ class SQLiteCandleAdapter:
         }
 
 
+def _manifest_locator_path(manifest: ExperimentManifest) -> Path:
+    locator = manifest.dataset.locator or {}
+    path = str(locator.get("path") or manifest.dataset.source_uri or "").strip()
+    if not path:
+        raise ValueError("frozen_sqlite_dataset_locator_missing")
+    resolved = Path(path).expanduser()
+    if not resolved.is_absolute():
+        raise ValueError("frozen_sqlite_dataset_locator_must_be_absolute")
+    if "/paper/" in str(resolved).replace("\\", "/"):
+        raise ValueError("frozen_sqlite_dataset_locator_must_not_be_paper_scoped")
+    repo_root = Path(__file__).resolve().parents[3]
+    try:
+        resolved.resolve().relative_to(repo_root)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("frozen_sqlite_dataset_locator_must_not_be_repo_relative")
+    return resolved.resolve()
+
+
+class FrozenSQLiteCandleAdapter:
+    source = "frozen_sqlite_candles"
+    adapter_name = "frozen_sqlite_candle_adapter"
+    adapter_version = "1"
+    supported_capabilities = frozenset({"candles"})
+    supported_top_of_book_sources = frozenset()
+    supported_depth_sources = frozenset()
+    supports_sqlite_streaming_quality_scan = True
+
+    def load_range(
+        self,
+        *,
+        manifest: ExperimentManifest,
+        split_name: str,
+        date_range: DateRange,
+        context: DatasetLoadContext,
+    ) -> DatasetSnapshot:
+        del context
+        path = _manifest_locator_path(manifest)
+        schema_hash = sqlite_candles_schema_hash(path)
+        if manifest.dataset.source_schema_hash and schema_hash != manifest.dataset.source_schema_hash:
+            raise ValueError("source_schema_hash_mismatch")
+        rows = _load_frozen_rows(
+            path,
+            market=manifest.market,
+            interval=manifest.interval,
+            start_ts=date_range.start_ts_ms(),
+            end_ts=date_range.end_ts_ms(),
+        )
+        content_hash = canonical_candle_rows_hash(rows)
+        if manifest.dataset.source_content_hash and content_hash != manifest.dataset.source_content_hash:
+            raise ValueError("source_content_hash_mismatch")
+        _reject_rows_outside_scope(path, market=manifest.market, interval=manifest.interval, start_ts=date_range.start_ts_ms(), end_ts=date_range.end_ts_ms())
+        candles = tuple(
+            Candle(
+                ts=int(row[0]),
+                open=float(row[1]),
+                high=float(row[2]),
+                low=float(row[3]),
+                close=float(row[4]),
+                volume=float(row[5] or 0.0),
+            )
+            for row in rows
+        )
+        return DatasetSnapshot(
+            snapshot_id=manifest.dataset.snapshot_id,
+            source=manifest.dataset.source,
+            market=manifest.market,
+            interval=manifest.interval,
+            split_name=split_name,
+            date_range=date_range,
+            candles=candles,
+            source_uri=str(path),
+            source_content_hash=manifest.dataset.source_content_hash,
+            source_schema_hash=manifest.dataset.source_schema_hash,
+            locator=manifest.dataset.locator,
+            options=manifest.dataset.options,
+        )
+
+    def quality_report(
+        self,
+        *,
+        snapshot: DatasetSnapshot,
+        context: DatasetLoadContext,
+    ) -> DatasetQualityReport:
+        del context
+        return _build_source_agnostic_dataset_quality_report(
+            db_path=None,
+            snapshot=snapshot,
+            adapter_name=self.adapter_name,
+            adapter_version=self.adapter_version,
+            adapter_provenance={
+                "dataset_source": self.source,
+                "adapter_name": self.adapter_name,
+                "adapter_version": self.adapter_version,
+                "source_locator_policy": "manifest_locator_hash_verified",
+            },
+        )
+
+    def provenance(
+        self,
+        *,
+        manifest: ExperimentManifest,
+        context: DatasetLoadContext,
+    ) -> dict[str, Any]:
+        del context
+        path = _manifest_locator_path(manifest)
+        return {
+            "dataset_source": manifest.dataset.source,
+            "adapter_name": self.adapter_name,
+            "adapter_version": self.adapter_version,
+            "source_locator": str(path),
+            "source_content_hash": manifest.dataset.source_content_hash,
+            "source_schema_hash": manifest.dataset.source_schema_hash,
+            "provenance_policy": "manifest_locator_hash_verified",
+        }
+
+
+def _load_frozen_rows(path: Path, *, market: str, interval: str, start_ts: int, end_ts: int) -> list[tuple[Any, ...]]:
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        return conn.execute(
+            """
+            SELECT ts, open, high, low, close, volume
+            FROM candles
+            WHERE pair=? AND interval=? AND ts>=? AND ts<=?
+            ORDER BY ts ASC
+            """,
+            (market, interval, int(start_ts), int(end_ts)),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def _reject_rows_outside_scope(path: Path, *, market: str, interval: str, start_ts: int, end_ts: int) -> None:
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM candles
+            WHERE pair<>? OR interval<>? OR ts<? OR ts>?
+            """,
+            (market, interval, int(start_ts), int(end_ts)),
+        ).fetchone()
+    finally:
+        conn.close()
+    if int(row[0] if row is not None else 0) > 0:
+        raise ValueError("frozen_sqlite_dataset_rows_outside_declared_scope")
+
+
 class SQLiteTopOfBookAdapter:
     source = "sqlite_orderbook_top_snapshots"
     adapter_name = "sqlite_top_of_book_adapter"
@@ -1321,5 +1472,6 @@ def _sqlite_present_tables(db_path: str | Path) -> list[str]:
 
 
 default_dataset_adapter_registry().register(SQLiteCandleAdapter())
+default_dataset_adapter_registry().register(FrozenSQLiteCandleAdapter())
 default_dataset_adapter_registry().register_top_of_book(SQLiteTopOfBookAdapter())
 default_dataset_adapter_registry().register_depth(SQLiteOrderbookDepthAdapter())

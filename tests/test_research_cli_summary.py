@@ -11,6 +11,7 @@ from bithumb_bot.paths import PathManager
 from bithumb_bot.research import cli as research_cli
 from bithumb_bot.research.artifact_store import ArtifactBudgetExceeded
 from bithumb_bot.research.cli import _print_report_summary, _print_research_backtest_progress
+from bithumb_bot.research.cli import _print_validation_run_summary
 from bithumb_bot.research.experiment_registry import (
     EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
     append_attempt_completion,
@@ -207,6 +208,32 @@ def test_fail_report_summary_includes_top_fail_reasons() -> None:
         "min_trade_count_failed": 1,
         "walk_forward_failed": 1,
     }
+
+
+def test_research_validate_summary_prints_recommended_command(capsys) -> None:
+    _print_validation_run_summary(
+        {
+            "validation_run_path": "/tmp/validation.json",
+            "content_hash": "sha256:validation",
+            "validation_run_binding_hash": "sha256:binding",
+            "validation_policy_source": "test",
+            "validation_policy_required_stage_names": ["dataset_quality"],
+            "end_to_end_validation_result": "FAIL_CLOSED",
+            "selected_candidate_id": None,
+            "fail_closed_reasons": ["train:declared_source_content_hash_missing"],
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "recommended_command=uv run bithumb-bot research-freeze-dataset" in output
+
+
+def test_research_validate_json_includes_recommended_command() -> None:
+    from bithumb_bot.research.validation_pipeline import validation_next_action_payload
+
+    payload = validation_next_action_payload(["train:mutable_dataset_locator"])
+
+    assert payload["recommended_command"].startswith("uv run bithumb-bot research-freeze-dataset")
 
 
 def test_research_backtest_progress_prints_parent_serial_stages(capsys) -> None:

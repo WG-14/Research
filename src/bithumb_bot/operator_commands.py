@@ -227,6 +227,32 @@ KILL_SWITCH_LIQUIDATE = settings.KILL_SWITCH_LIQUIDATE
 DEFAULT_BITHUMB_BROKER_CLASS = bithumb_broker_module.BithumbBroker
 
 
+def cmd_smoke_buy(
+    *,
+    krw: float,
+    market: str,
+    confirm: str,
+    authority_path: str | None = None,
+    reference_price: float | None = None,
+) -> None:
+    from .operator_smoke import execute_smoke_buy
+
+    conn = ensure_db()
+    try:
+        broker = build_broker_with_auth_diagnostics()
+        execute_smoke_buy(
+            conn=conn,
+            broker=broker,
+            krw=float(krw),
+            market=str(market),
+            confirm=str(confirm),
+            authority_path=authority_path,
+            reference_price=reference_price,
+        )
+    finally:
+        conn.close()
+
+
 def _format_rule_value_with_source(*, field: str, value: object, source: dict[str, str] | None) -> str:
     return f"{value} (source={rule_source_for(field, source)})"
 

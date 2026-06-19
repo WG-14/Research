@@ -135,10 +135,15 @@ def cmd_profile_generate(
     out_path: str | None,
     market: str | None = None,
     interval: str | None = None,
+    bundle_root: str | None = None,
 ) -> int:
     try:
         if str(mode or "").strip().lower() != "paper":
             raise ApprovedProfileError("profile_generate_requires_paper_mode_use_profile-promote_for_live_modes")
+        if bundle_root:
+            from .evidence_bundle import bundle_artifact_path
+
+            promotion_path = str(bundle_artifact_path(bundle_root, role="promotion"))
         promotion = _load_json(promotion_path)
         profile_market = str(market or promotion.get("market") or "").strip()
         profile_interval = str(interval or promotion.get("interval") or "").strip()

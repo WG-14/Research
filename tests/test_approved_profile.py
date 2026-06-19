@@ -50,6 +50,9 @@ from bithumb_bot.research.strategy_registry import (
 from bithumb_bot.research.strategy_spec import strategy_spec_for_name
 from bithumb_bot.research.validation_pipeline import validation_run_binding_hash, validation_run_content_hash
 from bithumb_bot.storage_io import write_json_atomic
+from bithumb_bot.h74_observation import build_h74_observation_authority_payload
+from bithumb_bot.operator_smoke_authority import build_operator_smoke_authority_payload
+from datetime import datetime, timedelta, timezone
 
 
 def _candidate() -> dict[str, object]:
@@ -257,6 +260,17 @@ def _promotion(**overrides) -> dict[str, object]:
     promotion.update(overrides)
     promotion["content_hash"] = sha256_prefixed(content_hash_payload(promotion))
     return promotion
+
+
+def test_smoke_and_live_observation_artifacts_not_accepted_as_promotion_profiles() -> None:
+    smoke = build_operator_smoke_authority_payload(
+        expires_at=datetime.now(timezone.utc) + timedelta(days=1)
+    )
+    observation = build_h74_observation_authority_payload()
+
+    for payload in (smoke, observation):
+        with pytest.raises(ApprovedProfileError):
+            validate_approved_profile(payload)
 
 
 def _write_source_decision_equivalence_report(candidate: dict[str, object]) -> tuple[Path, str]:

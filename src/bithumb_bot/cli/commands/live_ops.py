@@ -46,6 +46,18 @@ def _flatten(args: argparse.Namespace, _context) -> None:
     cmd_flatten_position(dry_run=bool(args.dry_run))
 
 
+def _smoke_buy(args: argparse.Namespace, _context) -> None:
+    from bithumb_bot.operator_commands import cmd_smoke_buy
+
+    cmd_smoke_buy(
+        krw=float(args.krw),
+        market=str(args.market),
+        confirm=str(args.confirm),
+        authority_path=args.authority_path,
+        reference_price=args.reference_price,
+    )
+
+
 def _panic(args: argparse.Namespace, _context) -> None:
     from bithumb_bot.operator_commands import cmd_panic_stop
 
@@ -115,6 +127,26 @@ def command_specs() -> list[CommandSpec]:
             ),
             build=_build_window_parser,
             requires_live=True,
+            uses_broker=True,
+        ),
+        make_spec(
+            "smoke-buy",
+            domain="live_ops",
+            handler=_smoke_buy,
+            help="operator-only live BUY smoke order",
+            description="Submit an explicitly confirmed operator smoke BUY through the live submit path.",
+            build=lambda p: (
+                p.add_argument("--krw", type=float, default=50000.0),
+                p.add_argument("--market", default="KRW-BTC"),
+                p.add_argument("--confirm", required=True),
+                p.add_argument("--authority-path"),
+                p.add_argument("--reference-price", type=float),
+            ),
+            read_only=False,
+            mutating=True,
+            requires_live=True,
+            guard_policy="live_preflight",
+            writes_db=True,
             uses_broker=True,
         ),
         make_spec(

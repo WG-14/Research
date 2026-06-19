@@ -26,6 +26,24 @@ SKIPPED_NOT_REQUIRED = "SKIPPED_NOT_REQUIRED"
 NOT_RUN = "NOT_RUN"
 ERROR = "ERROR"
 TERMINAL_BAD_STATUSES = {FAIL_CLOSED, NOT_RUN, ERROR}
+VALIDATION_REASON_NEXT_ACTIONS: dict[str, tuple[str, str]] = {
+    "declared_source_content_hash_missing": (
+        "run research-freeze-dataset",
+        "uv run bithumb-bot research-freeze-dataset --db <source.sqlite> --market <market> --interval <interval> --start <YYYY-MM-DD> --end <YYYY-MM-DD> --out <runtime-research-immutable-dir>",
+    ),
+    "missing_immutable_dataset_locator": (
+        "run research-freeze-dataset",
+        "uv run bithumb-bot research-freeze-dataset --db <source.sqlite> --market <market> --interval <interval> --start <YYYY-MM-DD> --end <YYYY-MM-DD> --out <runtime-research-immutable-dir>",
+    ),
+    "mutable_dataset_locator": (
+        "replace dataset source with frozen artifact",
+        "uv run bithumb-bot research-freeze-dataset --db <source.sqlite> --market <market> --interval <interval> --start <YYYY-MM-DD> --end <YYYY-MM-DD> --out <runtime-research-immutable-dir>",
+    ),
+    "wrong_mode_dataset_locator": (
+        "use non-paper immutable dataset path",
+        "uv run bithumb-bot research-freeze-dataset --db <source.sqlite> --market <market> --interval <interval> --start <YYYY-MM-DD> --end <YYYY-MM-DD> --out <runtime-research-immutable-dir>",
+    ),
+}
 VALIDATION_STAGE_ORDER = (
     "readiness",
     "dataset_quality",
@@ -187,8 +205,24 @@ class ValidationRun:
         if not payload[VALIDATION_RUN_BINDING_HASH_FIELD]:
             payload[VALIDATION_RUN_BINDING_HASH_FIELD] = validation_run_binding_hash(payload)
             self.validation_run_binding_hash = str(payload[VALIDATION_RUN_BINDING_HASH_FIELD])
+        if payload.get("end_to_end_validation_result") != PASS:
+            payload.update(validation_next_action_payload(payload.get("fail_closed_reasons") or []))
         payload[VALIDATION_RUN_HASH_FIELD] = validation_run_content_hash(payload)
         return payload
+
+
+def validation_next_action_payload(reasons: Any) -> dict[str, str]:
+    for reason in [str(item) for item in reasons or []]:
+        code = _validation_reason_code(reason)
+        if code in VALIDATION_REASON_NEXT_ACTIONS:
+            action, command = VALIDATION_REASON_NEXT_ACTIONS[code]
+            return {"next_required_action": action, "recommended_command": command}
+    return {"next_required_action": "inspect_validation_run_failure_reasons", "recommended_command": ""}
+
+
+def _validation_reason_code(reason: str) -> str:
+    token = str(reason or "").split(":", 1)[-1]
+    return token.strip()
 
 
 def validation_run_hash_payload(payload: dict[str, Any]) -> dict[str, Any]:

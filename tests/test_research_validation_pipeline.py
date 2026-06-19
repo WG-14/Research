@@ -39,6 +39,29 @@ def test_validation_pipeline_rejects_forward_diagnostics_report_as_candidate_rep
     assert "backtest_forbidden_use:strategy_promotion" in reasons
 
 
+def test_validation_next_action_for_missing_source_hash_points_to_freeze_dataset() -> None:
+    payload = pipeline.validation_next_action_payload(["train:declared_source_content_hash_missing"])
+
+    assert payload["next_required_action"] == "run research-freeze-dataset"
+    assert "research-freeze-dataset" in payload["recommended_command"]
+
+
+def test_validation_next_action_for_mutable_locator_points_to_frozen_dataset() -> None:
+    payload = pipeline.validation_next_action_payload(["train:mutable_dataset_locator"])
+
+    assert payload["next_required_action"] == "replace dataset source with frozen artifact"
+    assert "research-freeze-dataset" in payload["recommended_command"]
+
+
+def test_validation_next_action_recommends_existing_command() -> None:
+    from bithumb_bot.cli.registry import command_registry
+
+    registry = command_registry()
+    commands = set(registry) if isinstance(registry, dict) else {spec.name for spec in registry}
+    for _reason, (_action, command) in pipeline.VALIDATION_REASON_NEXT_ACTIONS.items():
+        assert command.split()[3] in commands
+
+
 def _manager(tmp_path: Path, monkeypatch) -> PathManager:
     monkeypatch.setenv("MODE", "paper")
     for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):

@@ -30,7 +30,7 @@ from .deployment_policy import is_production_bound_target
 from .promotion_gate import PromotionGateError, promote_candidate
 from .lineage import reproduce_promotion
 from .run_summary import ResearchRunSummary, build_research_run_summary
-from .validation_pipeline import ValidationRunError, run_research_validation
+from .validation_pipeline import ValidationRunError, run_research_validation, validation_next_action_payload
 from .validation_protocol import ResearchValidationError, run_research_backtest, run_research_walk_forward
 from .forward_diagnostics_cli import cmd_research_forward_diagnostics
 from .batch_runner import run_research_batch
@@ -731,6 +731,7 @@ def _print_validation_run_summary(payload: dict[str, object]) -> None:
     reasons = payload.get("fail_closed_reasons") or []
     print(f"  fail_closed_reasons={_format_items(tuple(str(item) for item in reasons))}")
     print(f"  next_required_action={_validation_next_action(payload)}")
+    print(f"  recommended_command={payload.get('recommended_command') or validation_next_action_payload(reasons).get('recommended_command') or 'none'}")
 
 
 def _standalone_report_is_non_promotable_production_diagnostic(report: dict[str, object]) -> bool:
@@ -744,9 +745,14 @@ def _standalone_report_is_non_promotable_production_diagnostic(report: dict[str,
 
 
 def _validation_next_action(payload: dict[str, object]) -> str:
+    if payload.get("next_required_action"):
+        return str(payload.get("next_required_action"))
     if payload.get("end_to_end_validation_result") == "PASS":
         return "review_validation_run_and_promotion_artifact"
     reasons = [str(item) for item in payload.get("fail_closed_reasons") or []]
+    mapped = validation_next_action_payload(reasons)
+    if mapped.get("next_required_action") != "inspect_validation_run_failure_reasons":
+        return str(mapped["next_required_action"])
     if any("readiness" in reason for reason in reasons):
         return "fix_data_readiness_then_rerun_research-validate"
     if any("walk_forward" in reason for reason in reasons):
