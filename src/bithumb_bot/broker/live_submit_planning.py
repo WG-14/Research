@@ -16,7 +16,11 @@ def build_live_submit_plan(
     ts: int,
     effective_rules,
     reference_price: float | None,
+    market: str | None = None,
 ) -> SubmitPlan:
+    intent_market = str(market or settings.PAIR or "").strip().upper()
+    if not intent_market:
+        raise ValueError("live_submit_plan_market_required")
     explicit_submit_contract = (
         build_buy_price_none_submit_contract(rules=effective_rules)
         if side == "BUY"
@@ -26,7 +30,7 @@ def build_live_submit_plan(
         broker,
         intent=OrderIntent(
             client_order_id=client_order_id,
-            market=settings.PAIR,
+            market=intent_market,
             side=side,
             normalized_side=("bid" if side == "BUY" else "ask"),
             qty=float(qty),

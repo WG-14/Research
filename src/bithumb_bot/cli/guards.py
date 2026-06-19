@@ -14,24 +14,33 @@ def enforce_guard_policy(spec: CommandSpec, context: AppContext) -> None:
     if getattr(settings, "MODE", None) != "live":
         return
 
-    from bithumb_bot.config import (
-        LiveModeValidationError,
-        validate_live_dry_run_loop_startup_contract,
-        validate_live_mode_preflight,
-        validate_live_run_startup_contract,
-    )
+    from bithumb_bot.config import LiveModeValidationError
 
     try:
-        if policy == "live_run_loop":
+        if policy in {"live_run_loop", "strategy_live_startup"}:
+            from bithumb_bot.config import validate_live_run_startup_contract
+
             validate_live_run_startup_contract(settings)
-        elif policy == "live_dry_run_loop":
+        elif policy in {"live_dry_run_loop", "strategy_live_dry_run"}:
+            from bithumb_bot.config import validate_live_dry_run_loop_startup_contract
+
             validate_live_dry_run_loop_startup_contract(settings)
         elif policy == "live_preflight":
+            from bithumb_bot.config import validate_live_mode_preflight
+
             validate_live_mode_preflight(settings)
+        elif policy == "operator_execution_smoke":
+            from bithumb_bot.operator_smoke_preflight import validate_operator_smoke_cli_guard
+
+            validate_operator_smoke_cli_guard(settings)
+        elif policy in {"operator_risk_reduction", "operator_recovery", "read_only_broker_diagnostic"}:
+            from bithumb_bot.operator_smoke_preflight import validate_live_operator_basic_guard
+
+            validate_live_operator_basic_guard(settings)
         else:
             raise RuntimeError(f"unknown CLI guard policy for {spec.name}: {policy}")
     except LiveModeValidationError as exc:
-        if policy == "live_run_loop":
+        if policy in {"live_run_loop", "strategy_live_startup"}:
             from bithumb_bot.notifier import notify
             from bithumb_bot.observability import safety_event
 

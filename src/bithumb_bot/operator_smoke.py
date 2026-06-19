@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 import uuid
 from dataclasses import dataclass
@@ -10,13 +11,14 @@ from typing import Any
 from .broker.live_submission_execution import submit_live_order_and_confirm
 from .broker.live_submit_orchestrator import StandardSubmitPipelineRequest
 from .broker.live_submit_planning import build_live_submit_plan
-from .config import settings, validate_live_mode_preflight
+from .config import runtime_code_provenance, settings
 from .execution_order_rules import resolve_execution_order_rules
 from .oms import OPEN_ORDER_STATUSES, build_client_order_id, build_order_intent_key, payload_fingerprint
 from .operator_smoke_authority import (
     OPERATOR_SMOKE_MAX_NOTIONAL_KRW,
     load_operator_smoke_authority,
 )
+from .operator_smoke_preflight import validate_operator_smoke_preflight
 
 
 SMOKE_BUY_CONFIRMATION_TOKEN = "LIVE_SMOKE_BUY_50000"
@@ -125,13 +127,28 @@ def execute_smoke_buy(
         krw=float(krw),
         confirm=confirm,
     )
-    validate_live_mode_preflight()
-    if authority_path:
-        load_operator_smoke_authority(authority_path).verify(
-            now=datetime.now(timezone.utc),
-            side="BUY",
-            notional_krw=float(krw),
-        )
+    if bool(settings.LIVE_DRY_RUN):
+        raise OperatorSmokeError("smoke_buy_rejects_live_dry_run")
+    if str(market or "").strip().upper() != str(settings.PAIR or "").strip().upper():
+        raise OperatorSmokeError("smoke_buy_market_mismatch_with_settings_pair")
+    if authority_path is None or not str(authority_path).strip():
+        raise OperatorSmokeError("smoke_buy_requires_authority_path")
+    validate_operator_smoke_preflight(
+        cfg=settings,
+        conn=conn,
+        market=str(market),
+    )
+    code_commit_sha = str(runtime_code_provenance().get("commit_sha") or "unavailable")
+    authority = load_operator_smoke_authority(authority_path)
+    authority.verify(
+        now=datetime.now(timezone.utc),
+        side="BUY",
+        notional_krw=float(krw),
+        market=str(market),
+        db_path=str(settings.DB_PATH),
+        account_key=str(settings.BITHUMB_API_KEY),
+        code_commit_sha=code_commit_sha,
+    )
 
     if _open_local_order_count(conn) > 0:
         raise OperatorSmokeError("smoke_buy_blocked_by_unresolved_local_orders")
@@ -153,10 +170,11 @@ def execute_smoke_buy(
     if min_notional > 0.0 and float(krw) < min_notional:
         raise OperatorSmokeError("smoke_buy_below_min_notional")
     if reference_price is None:
-        reference_price = float(krw)
-        order_qty = 1.0
-    else:
-        order_qty = float(krw) / float(reference_price)
+        raise OperatorSmokeError("smoke_buy_reference_price_required")
+    reference_price = float(reference_price)
+    if not math.isfinite(reference_price) or reference_price <= 0.0:
+        raise OperatorSmokeError("smoke_buy_reference_price_must_be_positive_finite")
+    order_qty = float(krw) / reference_price
     intent_key = build_order_intent_key(
         symbol=market,
         side="BUY",
@@ -173,6 +191,7 @@ def execute_smoke_buy(
         ts=ts,
         effective_rules=type("SmokeRules", (), rules)(),
         reference_price=float(reference_price),
+        market=str(market),
     )
     request = StandardSubmitPipelineRequest(
         conn=conn,
@@ -215,6 +234,15 @@ def execute_smoke_buy(
         submit_truth_source_fields={"origin": OPERATOR_SMOKE_ORIGIN},
         submit_observability_fields=plan_identity.as_dict(),
         sell_observability={},
+    )
+    authority.consume(
+        consumed_at=datetime.now(timezone.utc),
+        side="BUY",
+        notional_krw=float(krw),
+        market=str(market),
+        db_path=str(settings.DB_PATH),
+        account_key=str(settings.BITHUMB_API_KEY),
+        code_commit_sha=code_commit_sha,
     )
     submission = submit_live_order_and_confirm(
         broker=broker,

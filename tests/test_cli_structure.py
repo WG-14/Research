@@ -146,11 +146,13 @@ def test_command_registration_contains_expected_major_groups() -> None:
     } <= {spec.domain for spec in registry.values()}
     assert registry["run"].guard_policy == "live_run_loop"
     assert registry["live-dry-run"].guard_policy == "live_dry_run_loop"
-    assert registry["panic-stop"].guard_policy == "live_preflight"
-    assert registry["flatten-position"].guard_policy == "live_preflight"
-    assert registry["cancel-open-orders"].guard_policy == "live_preflight"
-    assert registry["target-closeout"].guard_policy == "live_preflight"
-    assert registry["recover-order"].guard_policy == "live_preflight"
+    assert registry["smoke-buy"].guard_policy == "operator_execution_smoke"
+    assert registry["panic-stop"].guard_policy == "operator_risk_reduction"
+    assert registry["flatten-position"].guard_policy == "operator_risk_reduction"
+    assert registry["cancel-open-orders"].guard_policy == "operator_risk_reduction"
+    assert registry["target-closeout"].guard_policy == "operator_risk_reduction"
+    assert registry["broker-diagnose"].guard_policy == "read_only_broker_diagnostic"
+    assert registry["recover-order"].guard_policy == "operator_recovery"
     assert registry["run"].mutating is True
     assert registry["run"].uses_broker is True
     assert registry["recover-order"].requires_confirmation is True
@@ -267,6 +269,53 @@ def test_live_guard_policy_is_metadata_driven(monkeypatch: pytest.MonkeyPatch) -
     assert rc == 0
     assert calls == ["preflight"]
     assert handler_called is True
+
+
+def test_operator_smoke_guard_does_not_call_strategy_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    for validator_name in (
+        "validate_live_mode_preflight",
+        "validate_live_strategy_selection",
+        "validate_runtime_strategy_set_selection",
+        "validate_runtime_profile_bindings_for_live_startup",
+    ):
+        monkeypatch.setattr(
+            f"bithumb_bot.config.{validator_name}",
+            lambda *_args, _name=validator_name, **_kwargs: calls.append(_name),
+        )
+    monkeypatch.setattr(
+        "bithumb_bot.operator_smoke_preflight.validate_operator_smoke_cli_guard",
+        lambda _settings: calls.append("operator_smoke"),
+    )
+
+    spec = CommandSpec(
+        name="smoke-buy",
+        domain="live_ops",
+        handler=lambda _args, _context: 0,
+        register_parser=lambda subparsers: subparsers.add_parser("smoke-buy"),
+        guard_policy="operator_execution_smoke",
+    )
+
+    rc = dispatch(
+        argparse.Namespace(cmd="smoke-buy"),
+        AppContext(settings=SimpleNamespace(MODE="live")),
+        {"smoke-buy": spec},
+    )
+
+    assert rc == 0
+    assert calls == ["operator_smoke"]
+
+
+def test_live_ops_commands_have_intent_specific_guard_policies() -> None:
+    registry = command_registry()
+
+    assert registry["run"].guard_policy == "live_run_loop"
+    assert registry["live-dry-run"].guard_policy == "live_dry_run_loop"
+    assert registry["smoke-buy"].guard_policy == "operator_execution_smoke"
+    assert registry["flatten-position"].guard_policy == "operator_risk_reduction"
+    assert registry["broker-diagnose"].guard_policy == "read_only_broker_diagnostic"
+    assert registry["recover-order"].guard_policy == "operator_recovery"
 
 
 @pytest.mark.parametrize(

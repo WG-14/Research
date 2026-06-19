@@ -16,22 +16,42 @@ H74_SOURCE_MAX_ORDER_KRW = 100_000
 H74_OBSERVATION_MAX_ORDER_KRW = 50_000
 H74_OBSERVATION_WINDOW_DAYS = 7
 
-H74_OBSERVATION_PARAMETERS: dict[str, object] = {
-    "strategy_name": H74_STRATEGY_NAME,
-    "market": "KRW-BTC",
-    "interval": "1m",
-    "SMA_SHORT": 10,
-    "SMA_LONG": 86,
-    "STRATEGY_EXIT_MAX_HOLDING_MIN": 74,
-    "DAILY_PARTICIPATION_ENABLED": True,
-    "DAILY_PARTICIPATION_COUNT_BASIS": "filled",
-    "DAILY_PARTICIPATION_FALLBACK_MODE": "unconditional_participation",
-    "DAILY_PARTICIPATION_WINDOW_START_HOUR_KST": 9,
-    "DAILY_PARTICIPATION_WINDOW_END_HOUR_KST": 11,
-    "DAILY_PARTICIPATION_MAX_ORDER_KRW": H74_OBSERVATION_MAX_ORDER_KRW,
-    "max_daily_order_count": 1,
-    "max_notional_krw": H74_OBSERVATION_MAX_ORDER_KRW,
-}
+def _h74_observation_parameters() -> dict[str, object]:
+    from .research.strategy_spec import runtime_bound_behavior_parameter_names
+    from .strategy_plugins.daily_participation_sma import DAILY_PARTICIPATION_SMA_SPEC
+
+    parameters = {
+        name: DAILY_PARTICIPATION_SMA_SPEC.default_parameters[name]
+        for name in runtime_bound_behavior_parameter_names(H74_STRATEGY_NAME)
+        if name in DAILY_PARTICIPATION_SMA_SPEC.default_parameters
+    }
+    parameters.update(
+        {
+            "SMA_SHORT": 10,
+            "SMA_LONG": 86,
+            "STRATEGY_EXIT_MAX_HOLDING_MIN": 74,
+            "DAILY_PARTICIPATION_ENABLED": True,
+            "DAILY_PARTICIPATION_TIMEZONE": "Asia/Seoul",
+            "DAILY_PARTICIPATION_COUNT_BASIS": "filled",
+            "DAILY_PARTICIPATION_FALLBACK_MODE": "unconditional_participation",
+            "DAILY_PARTICIPATION_WINDOW_START_HOUR_KST": 9,
+            "DAILY_PARTICIPATION_WINDOW_END_HOUR_KST": 11,
+            "DAILY_PARTICIPATION_MAX_ORDER_KRW": H74_OBSERVATION_MAX_ORDER_KRW,
+        }
+    )
+    parameters.update(
+        {
+            "strategy_name": H74_STRATEGY_NAME,
+            "market": "KRW-BTC",
+            "interval": "1m",
+            "max_daily_order_count": 1,
+            "max_notional_krw": H74_OBSERVATION_MAX_ORDER_KRW,
+        }
+    )
+    return parameters
+
+
+H74_OBSERVATION_PARAMETERS: dict[str, object] = _h74_observation_parameters()
 
 
 class H74ObservationAuthorityError(ValueError):
@@ -52,6 +72,7 @@ def build_h74_capital_scaled_variant() -> dict[str, Any]:
         "artifact_type": "h74_capital_scaled_observation_variant",
         "source_candidate_id": H74_SOURCE_CANDIDATE_ID,
         "source_candidate_parameter_hash": h74_parameter_hash(source_parameters),
+        "source_authority_bound_parameter_hash": h74_parameter_hash(source_parameters),
         "source_daily_max_order_krw": H74_SOURCE_MAX_ORDER_KRW,
         "observation_daily_max_order_krw": H74_OBSERVATION_MAX_ORDER_KRW,
         "capital_scaling_ratio": 0.5,
@@ -59,6 +80,7 @@ def build_h74_capital_scaled_variant() -> dict[str, Any]:
         "changed_parameters": changed,
         "not_same_candidate": True,
         "observation_parameter_hash": h74_parameter_hash(observation_parameters),
+        "observation_authority_bound_parameter_hash": h74_parameter_hash(observation_parameters),
         "source_backtest_pnl": None,
         "live_observed_pnl": None,
     }
@@ -72,8 +94,19 @@ def build_h74_observation_authority_payload(
 ) -> dict[str, Any]:
     expiry = expires_at or (datetime.now(timezone.utc) + timedelta(days=H74_OBSERVATION_WINDOW_DAYS))
     variant = build_h74_capital_scaled_variant()
+    from .research.strategy_spec import runtime_bound_behavior_parameter_names
+
+    required_behavior_parameters = set(runtime_bound_behavior_parameter_names(H74_STRATEGY_NAME))
+    missing = sorted(required_behavior_parameters - set(H74_OBSERVATION_PARAMETERS))
+    if missing:
+        raise H74ObservationAuthorityError(
+            "h74_observation_authority_missing_behavior_parameters:" + ",".join(missing)
+        )
     hash_bound = {
-        **{k: v for k, v in H74_OBSERVATION_PARAMETERS.items() if k not in {"max_daily_order_count", "max_notional_krw"}},
+        **{
+            k: H74_OBSERVATION_PARAMETERS[k]
+            for k in sorted(required_behavior_parameters | {"strategy_name", "market", "interval"})
+        },
         "max_daily_order_count": int(max_daily_order_count),
         "max_notional_krw": float(max_notional_krw),
         "expires_at": expiry.astimezone(timezone.utc).isoformat(),
@@ -93,6 +126,7 @@ def build_h74_observation_authority_payload(
         "research_promotion_evidence": False,
         "approved_profile_evidence": False,
         "hash_bound_parameters": hash_bound,
+        "runtime_bound_behavior_parameter_names": sorted(required_behavior_parameters),
         "capital_scaled_variant": variant,
         "authority_parameter_hash": sha256_prefixed(hash_bound),
     }
@@ -117,12 +151,23 @@ def verify_h74_observation_authority(
     if expected_hash != actual_hash:
         raise H74ObservationAuthorityError("h74_observation_authority_hash_mismatch")
     bound = dict(payload.get("hash_bound_parameters") or {})
+    from .research.strategy_spec import runtime_bound_behavior_parameter_names
+
+    required_behavior_parameters = set(runtime_bound_behavior_parameter_names(H74_STRATEGY_NAME))
+    missing_bound = sorted(required_behavior_parameters - set(bound))
+    if missing_bound:
+        raise H74ObservationAuthorityError(
+            "h74_observation_authority_missing_behavior_parameters:" + ",".join(missing_bound)
+        )
     for key, expected in bound.items():
         if key in {"expires_at", "capital_scaling_policy", "observation_window_days", "source_candidate_id", "source_candidate_max_order_krw"}:
             continue
         actual = runtime_values.get(key)
         if key in {"max_notional_krw", "DAILY_PARTICIPATION_MAX_ORDER_KRW"}:
-            matched = float(actual) == float(expected)
+            try:
+                matched = float(actual) == float(expected)
+            except (TypeError, ValueError):
+                matched = False
         else:
             matched = str(actual) == str(expected)
         if not matched:
@@ -139,22 +184,19 @@ def verify_h74_observation_authority(
 
 
 def h74_runtime_values_from_settings(settings_obj: object) -> dict[str, object]:
-    return {
+    from .research.strategy_spec import runtime_bound_behavior_parameter_names
+
+    values = {
         "strategy_name": str(getattr(settings_obj, "STRATEGY_NAME", H74_STRATEGY_NAME) or H74_STRATEGY_NAME),
         "market": str(getattr(settings_obj, "PAIR", "KRW-BTC") or "KRW-BTC"),
         "interval": str(getattr(settings_obj, "INTERVAL", "1m") or "1m"),
-        "SMA_SHORT": int(getattr(settings_obj, "SMA_SHORT", 10) or 10),
-        "SMA_LONG": int(getattr(settings_obj, "SMA_LONG", 86) or 86),
-        "STRATEGY_EXIT_MAX_HOLDING_MIN": int(getattr(settings_obj, "STRATEGY_EXIT_MAX_HOLDING_MIN", 74) or 74),
-        "DAILY_PARTICIPATION_ENABLED": bool(getattr(settings_obj, "DAILY_PARTICIPATION_ENABLED", True)),
-        "DAILY_PARTICIPATION_COUNT_BASIS": str(getattr(settings_obj, "DAILY_PARTICIPATION_COUNT_BASIS", "filled") or "filled"),
-        "DAILY_PARTICIPATION_FALLBACK_MODE": str(getattr(settings_obj, "DAILY_PARTICIPATION_FALLBACK_MODE", "unconditional_participation") or "unconditional_participation"),
-        "DAILY_PARTICIPATION_WINDOW_START_HOUR_KST": int(getattr(settings_obj, "DAILY_PARTICIPATION_WINDOW_START_HOUR_KST", 9) or 9),
-        "DAILY_PARTICIPATION_WINDOW_END_HOUR_KST": int(getattr(settings_obj, "DAILY_PARTICIPATION_WINDOW_END_HOUR_KST", 11) or 11),
-        "DAILY_PARTICIPATION_MAX_ORDER_KRW": float(getattr(settings_obj, "DAILY_PARTICIPATION_MAX_ORDER_KRW", H74_OBSERVATION_MAX_ORDER_KRW) or H74_OBSERVATION_MAX_ORDER_KRW),
         "max_daily_order_count": int(getattr(settings_obj, "MAX_DAILY_ORDER_COUNT", 1) or 1),
         "max_notional_krw": float(getattr(settings_obj, "DAILY_PARTICIPATION_MAX_ORDER_KRW", H74_OBSERVATION_MAX_ORDER_KRW) or H74_OBSERVATION_MAX_ORDER_KRW),
     }
+    for name in runtime_bound_behavior_parameter_names(H74_STRATEGY_NAME):
+        fallback = H74_OBSERVATION_PARAMETERS.get(name)
+        values[name] = getattr(settings_obj, name, fallback)
+    return values
 
 
 def verify_h74_observation_authority_file(path: str | Path, *, settings_obj: object) -> None:

@@ -2,17 +2,26 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from bithumb_bot import operator_commands
+from bithumb_bot.cli.context import AppContext
+from bithumb_bot.cli.dispatch import dispatch
+from bithumb_bot.cli.parser import build_parser
+from bithumb_bot.cli.registry import command_registry
 from bithumb_bot.approved_profile import ApprovedProfileError, validate_approved_profile
+from bithumb_bot.db_core import ensure_db
+from bithumb_bot.storage_io import write_json_atomic
 from bithumb_bot.operator_smoke import (
     OPERATOR_SMOKE_STRATEGY_NAME,
     SMOKE_BUY_CONFIRMATION_TOKEN,
     OperatorSmokeError,
     build_smoke_buy_plan,
+    execute_smoke_buy,
     validate_smoke_buy_request,
 )
 from bithumb_bot.operator_smoke_authority import (
@@ -23,6 +32,62 @@ from bithumb_bot.runtime.daily_participation_claims import (
     ensure_daily_participation_claims_schema,
     pending_daily_participation_claim_count,
 )
+
+
+def _live_settings(db_path: Path, **overrides):
+    base = replace(
+        __import__("bithumb_bot.config", fromlist=["settings"]).settings,
+        MODE="live",
+        LIVE_DRY_RUN=False,
+        LIVE_REAL_ORDER_ARMED=True,
+        KILL_SWITCH=False,
+        DB_PATH=str(db_path),
+        PAIR="KRW-BTC",
+        BITHUMB_API_KEY="operator-key",
+        BITHUMB_API_SECRET="x" * 64,
+        APPROVED_STRATEGY_PROFILE_PATH="",
+    )
+    return replace(base, **overrides)
+
+
+def _live_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    for key, dirname in {
+        "ENV_ROOT": "envroot",
+        "RUN_ROOT": "runroot",
+        "DATA_ROOT": "dataroot",
+        "LOG_ROOT": "logroot",
+        "BACKUP_ROOT": "backuproot",
+    }.items():
+        monkeypatch.setenv(key, str(tmp_path / dirname))
+    db_path = tmp_path / "dataroot" / "live" / "trades" / "live.sqlite"
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    return db_path
+
+
+class _SmokeBroker:
+    def get_open_orders(self):
+        return []
+
+    def get_balance(self):
+        return SimpleNamespace(
+            cash_available=100_000.0,
+            cash_locked=0.0,
+            asset_available=0.0,
+            asset_locked=0.0,
+        )
+
+
+def _authority_path(tmp_path: Path, *, db_path: Path, commit: str = "abc123", market: str = "KRW-BTC") -> Path:
+    path = tmp_path / f"smoke-authority-{market}.json"
+    payload = build_operator_smoke_authority_payload(
+        expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        market=market,
+        db_path=str(db_path),
+        account_key="operator-key",
+        code_commit_sha=commit,
+    )
+    write_json_atomic(path, payload)
+    return path
 
 
 def test_smoke_buy_requires_live_mode() -> None:
@@ -121,3 +186,195 @@ def test_smoke_buy_cli_handler_does_not_call_broker_create_order_directly() -> N
     source = inspect.getsource(operator_commands.cmd_smoke_buy)
 
     assert "create_order" not in source
+
+
+def test_execute_smoke_buy_does_not_call_validate_live_mode_preflight(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import bithumb_bot.operator_smoke as smoke
+
+    db_path = _live_roots(monkeypatch, tmp_path)
+    conn = ensure_db(str(db_path))
+    captured: dict[str, object] = {}
+    cfg = _live_settings(db_path)
+    monkeypatch.setattr(smoke, "settings", cfg)
+    monkeypatch.setattr(smoke, "runtime_code_provenance", lambda: {"commit_sha": "abc123"})
+    monkeypatch.setattr(smoke, "validate_operator_smoke_preflight", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        "bithumb_bot.config.validate_live_mode_preflight",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("strategy preflight called")),
+    )
+    monkeypatch.setattr(
+        smoke,
+        "resolve_execution_order_rules",
+        lambda market: SimpleNamespace(as_order_rules=lambda: {"min_notional_krw": 5_000, "min_qty": 0.0, "qty_step": 0.0}),
+    )
+    monkeypatch.setattr(
+        smoke,
+        "build_live_submit_plan",
+        lambda **kwargs: SimpleNamespace(
+            intent=SimpleNamespace(market=kwargs["market"]),
+            submitted_qty=kwargs["qty"],
+            rules=kwargs["effective_rules"],
+            submit_qty_authority="unit",
+            exchange_order_type="market",
+            internal_lot_qty=kwargs["qty"],
+            qty_split=SimpleNamespace(lot_count=1),
+        ),
+    )
+
+    def _submit(**kwargs):
+        captured["request"] = kwargs["request"]
+        return object()
+
+    monkeypatch.setattr(smoke, "submit_live_order_and_confirm", _submit)
+    try:
+        execute_smoke_buy(
+            conn=conn,
+            broker=_SmokeBroker(),
+            krw=50_000,
+            market="KRW-BTC",
+            confirm=SMOKE_BUY_CONFIRMATION_TOKEN,
+            authority_path=str(_authority_path(tmp_path, db_path=db_path)),
+            reference_price=100_000_000.0,
+            now_ms=1_800_000_000_000,
+        )
+    finally:
+        conn.close()
+
+    assert captured["request"].strategy_name == "operator_execution_smoke"
+
+
+def test_smoke_buy_requires_authority_for_real_submit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import bithumb_bot.operator_smoke as smoke
+
+    db_path = _live_roots(monkeypatch, tmp_path)
+    conn = ensure_db(str(db_path))
+    monkeypatch.setattr(smoke, "settings", _live_settings(db_path))
+    try:
+        with pytest.raises(OperatorSmokeError, match="smoke_buy_requires_authority_path"):
+            execute_smoke_buy(
+                conn=conn,
+                broker=_SmokeBroker(),
+                krw=50_000,
+                market="KRW-BTC",
+                confirm=SMOKE_BUY_CONFIRMATION_TOKEN,
+                reference_price=100_000_000.0,
+            )
+    finally:
+        conn.close()
+
+
+def test_smoke_buy_rejects_market_mismatch_with_settings_pair(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import bithumb_bot.operator_smoke as smoke
+
+    db_path = _live_roots(monkeypatch, tmp_path)
+    conn = ensure_db(str(db_path))
+    monkeypatch.setattr(smoke, "settings", _live_settings(db_path, PAIR="KRW-BTC"))
+    try:
+        with pytest.raises(OperatorSmokeError, match="smoke_buy_market_mismatch_with_settings_pair"):
+            execute_smoke_buy(
+                conn=conn,
+                broker=_SmokeBroker(),
+                krw=50_000,
+                market="KRW-ETH",
+                confirm=SMOKE_BUY_CONFIRMATION_TOKEN,
+                authority_path=str(_authority_path(tmp_path, db_path=db_path, market="KRW-ETH")),
+                reference_price=1_000_000.0,
+            )
+    finally:
+        conn.close()
+
+
+def test_smoke_buy_without_reference_price_does_not_create_one_btc_intent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import bithumb_bot.operator_smoke as smoke
+
+    db_path = _live_roots(monkeypatch, tmp_path)
+    conn = ensure_db(str(db_path))
+    monkeypatch.setattr(smoke, "settings", _live_settings(db_path))
+    monkeypatch.setattr(smoke, "runtime_code_provenance", lambda: {"commit_sha": "abc123"})
+    monkeypatch.setattr(smoke, "validate_operator_smoke_preflight", lambda **_kwargs: None)
+    try:
+        with pytest.raises(OperatorSmokeError, match="smoke_buy_reference_price_required"):
+            execute_smoke_buy(
+                conn=conn,
+                broker=_SmokeBroker(),
+                krw=50_000,
+                market="KRW-BTC",
+                confirm=SMOKE_BUY_CONFIRMATION_TOKEN,
+                authority_path=str(_authority_path(tmp_path, db_path=db_path)),
+                reference_price=None,
+            )
+    finally:
+        conn.close()
+
+
+def test_smoke_buy_dispatch_to_submit_without_approved_profile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import bithumb_bot.operator_smoke as smoke
+
+    db_path = _live_roots(monkeypatch, tmp_path)
+    conn = ensure_db(str(db_path))
+    cfg = _live_settings(db_path, APPROVED_STRATEGY_PROFILE_PATH="")
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(smoke, "settings", cfg)
+    monkeypatch.setattr(smoke, "runtime_code_provenance", lambda: {"commit_sha": "abc123"})
+    monkeypatch.setattr(smoke, "validate_operator_smoke_preflight", lambda **_kwargs: None)
+    monkeypatch.setattr(operator_commands, "ensure_db", lambda: conn)
+    monkeypatch.setattr(operator_commands, "build_broker_with_auth_diagnostics", lambda: _SmokeBroker())
+    monkeypatch.setattr(
+        smoke,
+        "resolve_execution_order_rules",
+        lambda market: SimpleNamespace(as_order_rules=lambda: {"min_notional_krw": 5_000, "min_qty": 0.0, "qty_step": 0.0}),
+    )
+    monkeypatch.setattr(
+        smoke,
+        "build_live_submit_plan",
+        lambda **kwargs: SimpleNamespace(
+            intent=SimpleNamespace(market=kwargs["market"]),
+            submitted_qty=kwargs["qty"],
+            rules=kwargs["effective_rules"],
+            submit_qty_authority="unit",
+            exchange_order_type="market",
+            internal_lot_qty=kwargs["qty"],
+            qty_split=SimpleNamespace(lot_count=1),
+        ),
+    )
+
+    def _submit(**kwargs):
+        captured["request"] = kwargs["request"]
+        return object()
+
+    monkeypatch.setattr(smoke, "submit_live_order_and_confirm", _submit)
+    registry = command_registry()
+    parser = build_parser(registry)
+    args = parser.parse_args(
+        [
+            "smoke-buy",
+            "--krw",
+            "50000",
+            "--market",
+            "KRW-BTC",
+            "--confirm",
+            SMOKE_BUY_CONFIRMATION_TOKEN,
+            "--authority-path",
+            str(_authority_path(tmp_path, db_path=db_path)),
+            "--reference-price",
+            "100000000",
+        ]
+    )
+
+    rc = dispatch(args, AppContext(settings=cfg), registry)
+
+    assert rc == 0
+    request = captured["request"]
+    assert request.strategy_name == "operator_execution_smoke"
+    assert request.decision_reason == "operator_smoke"
+    assert request.submit_plan.intent.market == "KRW-BTC"

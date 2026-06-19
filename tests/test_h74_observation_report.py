@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 
 from bithumb_bot.h74_observation_report import build_h74_observation_report
 
@@ -23,6 +24,81 @@ def _conn() -> sqlite3.Connection:
     conn.execute("CREATE TABLE fills (client_order_id TEXT, fee REAL)")
     conn.execute("CREATE TABLE daily_participation_claims (status TEXT)")
     return conn
+
+
+def _ts(value: str) -> int:
+    return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
+
+
+def _window_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """
+        CREATE TABLE orders (
+            client_order_id TEXT,
+            strategy_name TEXT,
+            strategy_instance_id TEXT,
+            pair TEXT,
+            side TEXT,
+            status TEXT,
+            exit_rule_name TEXT,
+            decision_reason TEXT,
+            last_error TEXT,
+            created_ts INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE fills (
+            client_order_id TEXT,
+            fill_ts INTEGER,
+            price REAL,
+            qty REAL,
+            fee REAL,
+            reference_price REAL,
+            slippage_bps REAL
+        )
+        """
+    )
+    return conn
+
+
+def _insert_order(
+    conn: sqlite3.Connection,
+    cid: str,
+    *,
+    created: str,
+    side: str = "BUY",
+    strategy: str = "daily_participation_sma",
+    instance: str = "h74:one",
+    pair: str = "KRW-BTC",
+    status: str = "FILLED",
+    exit_rule: str = "",
+    reason: str = "",
+    error: str = "",
+) -> None:
+    conn.execute(
+        "INSERT INTO orders VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (cid, strategy, instance, pair, side, status, exit_rule, reason, error, _ts(created)),
+    )
+
+
+def _insert_fill(
+    conn: sqlite3.Connection,
+    cid: str,
+    *,
+    fill_ts: str,
+    price: float = 100.0,
+    qty: float = 1.0,
+    fee: float = 1.0,
+    reference_price: float = 100.0,
+    slippage_bps: float | None = None,
+) -> None:
+    conn.execute(
+        "INSERT INTO fills VALUES (?,?,?,?,?,?,?)",
+        (cid, _ts(fill_ts), price, qty, fee, reference_price, slippage_bps),
+    )
 
 
 def test_h74_observation_report_includes_daily_counts() -> None:
@@ -59,7 +135,7 @@ def test_h74_observation_report_flags_duplicate_entry() -> None:
 
     report = build_h74_observation_report(conn=conn, days=7)
 
-    assert report["duplicate_entry_block_count"] == 1
+    assert report["duplicate_entry_block_count"] == 7
 
 
 def test_h74_observation_report_includes_broker_local_mismatch_count() -> None:
@@ -76,3 +152,98 @@ def test_h74_observation_report_does_not_use_backtest_pnl_as_live_pnl() -> None:
 
     assert report["source_backtest_pnl"] is None
     assert report["live_observed_pnl"] is None
+
+
+def test_h74_observation_report_filters_to_requested_7_day_window() -> None:
+    conn = _window_conn()
+    _insert_order(conn, "old", created="2026-06-09T00:00:00Z")
+    _insert_fill(conn, "old", fill_ts="2026-06-09T00:01:00Z")
+    _insert_order(conn, "inside", created="2026-06-18T00:00:00Z")
+    _insert_fill(conn, "inside", fill_ts="2026-06-18T00:01:00Z")
+
+    report = build_h74_observation_report(
+        conn=conn,
+        days=7,
+        now=datetime(2026, 6, 19, tzinfo=timezone.utc),
+        strategy_instance_id="h74:one",
+    )
+
+    assert report["daily_buy_intent_count"] == 1
+    assert report["daily_buy_filled_count"] == 1
+
+
+def test_h74_observation_report_scopes_to_strategy_instance_and_authority_hash() -> None:
+    conn = _window_conn()
+    _insert_order(conn, "one", created="2026-06-18T00:00:00Z", instance="h74:one")
+    _insert_fill(conn, "one", fill_ts="2026-06-18T00:01:00Z")
+    _insert_order(conn, "two", created="2026-06-18T00:00:00Z", instance="h74:two")
+    _insert_fill(conn, "two", fill_ts="2026-06-18T00:01:00Z")
+
+    report = build_h74_observation_report(
+        conn=conn,
+        days=7,
+        now=datetime(2026, 6, 19, tzinfo=timezone.utc),
+        strategy_instance_id="h74:one",
+    )
+
+    assert report["daily_buy_intent_count"] == 1
+
+
+def test_h74_observation_report_detects_same_kst_day_duplicate_buy() -> None:
+    conn = _window_conn()
+    _insert_order(conn, "b1", created="2026-06-18T00:00:00Z")
+    _insert_fill(conn, "b1", fill_ts="2026-06-18T00:01:00Z")
+    _insert_order(conn, "b2", created="2026-06-18T01:00:00Z")
+    _insert_fill(conn, "b2", fill_ts="2026-06-18T01:01:00Z")
+
+    report = build_h74_observation_report(conn=conn, days=7, now=datetime(2026, 6, 19, tzinfo=timezone.utc))
+
+    assert report["duplicate_entry_block_count"] == 1
+
+
+def test_h74_observation_report_excludes_non_h74_fees() -> None:
+    conn = _window_conn()
+    _insert_order(conn, "h74", created="2026-06-18T00:00:00Z")
+    _insert_fill(conn, "h74", fill_ts="2026-06-18T00:01:00Z", fee=2.0)
+    _insert_order(conn, "other", created="2026-06-18T00:00:00Z", strategy="sma_with_filter", instance="other")
+    _insert_fill(conn, "other", fill_ts="2026-06-18T00:01:00Z", fee=99.0)
+
+    report = build_h74_observation_report(conn=conn, days=7, now=datetime(2026, 6, 19, tzinfo=timezone.utc))
+
+    assert report["fee_total_krw"] == 2.0
+
+
+def test_h74_observation_report_computes_exit_delay_from_rows() -> None:
+    conn = _window_conn()
+    _insert_order(conn, "s1", created="2026-06-18T00:00:00Z", side="SELL", exit_rule="max_holding_time")
+    _insert_fill(conn, "s1", fill_ts="2026-06-18T00:01:30Z")
+
+    report = build_h74_observation_report(conn=conn, days=7, now=datetime(2026, 6, 19, tzinfo=timezone.utc))
+
+    assert report["exit_delay_seconds_max"] == 90.0
+
+
+def test_h74_observation_report_computes_observed_fee_bps() -> None:
+    conn = _window_conn()
+    _insert_order(conn, "b1", created="2026-06-18T00:00:00Z")
+    _insert_fill(conn, "b1", fill_ts="2026-06-18T00:01:00Z", price=100.0, qty=2.0, fee=1.0)
+
+    report = build_h74_observation_report(conn=conn, days=7, now=datetime(2026, 6, 19, tzinfo=timezone.utc))
+
+    assert report["observed_fee_bps"] == 50.0
+
+
+def test_h74_observation_report_computes_slippage_bps() -> None:
+    conn = _window_conn()
+    _insert_order(conn, "b1", created="2026-06-18T00:00:00Z")
+    _insert_fill(conn, "b1", fill_ts="2026-06-18T00:01:00Z", slippage_bps=3.5)
+
+    report = build_h74_observation_report(conn=conn, days=7, now=datetime(2026, 6, 19, tzinfo=timezone.utc))
+
+    assert report["slippage_bps_avg"] == 3.5
+
+
+def test_h74_observation_report_complete_false_before_7_days_elapsed() -> None:
+    report = build_h74_observation_report(days=6, now=datetime(2026, 6, 19, tzinfo=timezone.utc))
+
+    assert report["complete"] is False
