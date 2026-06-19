@@ -678,6 +678,9 @@ def test_research_raw_writer_policy_classifies_remaining_direct_storage_calls() 
         "data_plane.py": {
             "write_json_atomic",
         },
+        "dataset_freeze.py": {
+            "write_json_atomic",
+        },
         "execution_calibration.py": {
             "write_json_atomic",
         },
@@ -728,6 +731,7 @@ def test_research_raw_writer_policy_classifies_remaining_direct_storage_calls() 
         "batch_runner.py": "diagnostic research batch summary through PathManager-managed research reports root",
         "cli.py": "untracked minimal artifact-budget failure report through managed research reports root",
         "data_plane.py": "operator-specified diagnostic report outputs validated outside repository",
+        "dataset_freeze.py": "immutable dataset freeze manifest through operator-specified repo-external output root",
         "execution_calibration.py": "accounted non-research execution-quality report artifact",
         "experiment_registry.py": "explicit append-only registry artifact budget exemption",
         "family_registry.py": "explicit append-only registry artifact budget exemption",

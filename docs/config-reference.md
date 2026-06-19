@@ -2,7 +2,7 @@
 
 This file is generated from `src/bithumb_bot/config_spec.py`.
 Schema version: `config_spec_v1`
-Spec hash: `sha256:9542bf13674bb5ffb1fe54ec728309e02a52386297c3b1fd0e9cbb42102a28d8`
+Spec hash: `sha256:c743b13c54f2d29b27386692de5b1c8d7e28daa83108c5f67e3cae09d09db7a1`
 
 | Name | Type | Scope | Default | Live required | Secret | Deprecated/Ignored | Safety | Validation | Description |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -102,6 +102,7 @@ Spec hash: `sha256:9542bf13674bb5ffb1fe54ec728309e02a52386297c3b1fd0e9cbb42102a2
 | `LIVE_FILL_FEE_STRICT_MIN_NOTIONAL_KRW` | number | live |  | no | no | no | P0 |  | LIVE_FILL_FEE_STRICT_MIN_NOTIONAL_KRW runtime configuration. |
 | `LIVE_FILL_FEE_STRICT_MODE` | string | live |  | no | no | no | P0 |  | LIVE_FILL_FEE_STRICT_MODE runtime configuration. |
 | `LIVE_MIN_ORDER_QTY` | string | live |  | no | no | no | P0 |  | LIVE_MIN_ORDER_QTY runtime configuration. |
+| `LIVE_OBSERVATION_AUTHORITY_PATH` | string | live |  | no | no | no | P0 |  | Optional live observation authority artifact path for strategy-specific observation gates. |
 | `LIVE_ORDER_MAX_QTY_DECIMALS` | string | live |  | no | no | no | P0 |  | LIVE_ORDER_MAX_QTY_DECIMALS runtime configuration. |
 | `LIVE_ORDER_QTY_STEP` | string | live |  | no | no | no | P0 |  | LIVE_ORDER_QTY_STEP runtime configuration. |
 | `LIVE_ORDER_RULE_FALLBACK_PROFILE` | string | live | `persisted_snapshot_required` | no | no | no | P0 |  | Controls order-rule fallback posture; armed live must use persisted_snapshot_required. |

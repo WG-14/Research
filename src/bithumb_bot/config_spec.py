@@ -136,6 +136,7 @@ DECLARED_ENV_NAMES: tuple[str, ...] = (
     "LIVE_FILL_FEE_STRICT_MIN_NOTIONAL_KRW",
     "LIVE_FILL_FEE_STRICT_MODE",
     "LIVE_MIN_ORDER_QTY",
+    "LIVE_OBSERVATION_AUTHORITY_PATH",
     "LIVE_ORDER_MAX_QTY_DECIMALS",
     "LIVE_ORDER_QTY_STEP",
     "LIVE_ORDER_RULE_FALLBACK_PROFILE",
@@ -350,6 +351,9 @@ DESCRIPTIONS = {
     ),
     "LIVE_ORDER_RULE_FALLBACK_PROFILE": (
         "Controls order-rule fallback posture; armed live must use persisted_snapshot_required."
+    ),
+    "LIVE_OBSERVATION_AUTHORITY_PATH": (
+        "Optional live observation authority artifact path for strategy-specific observation gates."
     ),
     "NOTIFIER_DEDUPE_WINDOW_SEC": (
         "Notifier duplicate suppression window in seconds. Internal operational setting, documented for reproducibility."

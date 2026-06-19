@@ -524,16 +524,17 @@ def validate_live_strategy_selection(cfg: Settings) -> None:
         return
     strategy_name = str(cfg.STRATEGY_NAME or "").strip().lower()
     observation_authority_path = os.getenv("LIVE_OBSERVATION_AUTHORITY_PATH", "").strip()
-    if strategy_name == "daily_participation_sma" and observation_authority_path:
-        from .h74_observation import verify_h74_observation_authority_file
+    if observation_authority_path:
+        from .h74_observation import H74_STRATEGY_NAME, verify_h74_observation_authority_file
 
-        try:
-            verify_h74_observation_authority_file(observation_authority_path, settings_obj=cfg)
-        except Exception as exc:
-            raise LiveModeValidationError(
-                "live_observation_authority_validation_failed: "
-                f"path={observation_authority_path!r}; reason={type(exc).__name__}:{exc}"
-            ) from exc
+        if strategy_name == H74_STRATEGY_NAME:
+            try:
+                verify_h74_observation_authority_file(observation_authority_path, settings_obj=cfg)
+            except Exception as exc:
+                raise LiveModeValidationError(
+                    "live_observation_authority_validation_failed: "
+                    f"path={observation_authority_path!r}; reason={type(exc).__name__}:{exc}"
+                ) from exc
     from .research.strategy_registry import strategy_runtime_capability_issues
 
     issues = strategy_runtime_capability_issues(
