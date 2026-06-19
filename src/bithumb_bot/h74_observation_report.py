@@ -82,6 +82,7 @@ def build_h74_observation_report(
                 authority_hash=authority_hash,
                 strategy_instance_id=strategy_instance_id,
                 pair=pair,
+                interval=interval,
                 participation_policy_hash=participation_policy_hash,
                 required_kst_days=required_kst_days,
             )
@@ -94,6 +95,8 @@ def build_h74_observation_report(
     payload["required_kst_days"] = required_kst_days
     payload["required_kst_day_count"] = len(required_kst_days)
     payload["authority_scope_applied"] = authority_scope_applied
+    payload["interval_scope_applied"] = bool(payload.get("interval_scope_applied", False))
+    payload["interval_scope_unavailable"] = list(payload.get("interval_scope_unavailable") or [])
     payload["complete"] = bool(
         start <= current
         and end <= current
@@ -102,6 +105,8 @@ def build_h74_observation_report(
         and covered_days == set(required_kst_days)
         and not duplicate_days
         and authority_scope_applied
+        and payload["interval_scope_applied"]
+        and not payload["interval_scope_unavailable"]
     )
     return payload
 
@@ -146,6 +151,7 @@ def _order_scope_filter(
     authority_hash: str | None,
     strategy_instance_id: str | None,
     pair: str,
+    interval: str,
 ) -> tuple[str, list[Any]]:
     clauses = ["strategy_name='daily_participation_sma'"]
     params: list[Any] = []
@@ -155,6 +161,9 @@ def _order_scope_filter(
     if _column_exists(conn, "orders", "pair"):
         clauses.append("pair=?")
         params.append(pair)
+    if _column_exists(conn, "orders", "interval"):
+        clauses.append("interval=?")
+        params.append(interval)
     if strategy_instance_id and _column_exists(conn, "orders", "strategy_instance_id"):
         clauses.append("strategy_instance_id=?")
         params.append(strategy_instance_id)
@@ -176,6 +185,7 @@ def _claim_scope_filter(
     authority_hash: str | None,
     strategy_instance_id: str | None,
     pair: str,
+    interval: str,
     participation_policy_hash: str | None,
 ) -> tuple[str, list[Any]]:
     columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(daily_participation_claims)").fetchall()}
@@ -199,7 +209,41 @@ def _claim_scope_filter(
     if authority_hash and "authority_hash" in columns:
         clauses.append("authority_hash=?")
         params.append(authority_hash)
+    if "interval" in columns:
+        clauses.append("interval=?")
+        params.append(interval)
+    elif (
+        "client_order_id" in columns
+        and _column_exists(conn, "orders", "client_order_id")
+        and _column_exists(conn, "orders", "interval")
+    ):
+        order_scope_sql, order_scope_params = _order_scope_filter(
+            conn,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            authority_hash=authority_hash,
+            strategy_instance_id=strategy_instance_id,
+            pair=pair,
+            interval=interval,
+        )
+        clauses.append(
+            "EXISTS ("
+            "SELECT 1 FROM orders o "
+            "WHERE o.client_order_id=daily_participation_claims.client_order_id "
+            f"AND {order_scope_sql}"
+            ")"
+        )
+        params.extend(order_scope_params)
     return " AND ".join(clauses), params
+
+
+def _claim_interval_scope_available(conn: sqlite3.Connection) -> bool:
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(daily_participation_claims)").fetchall()}
+    return "interval" in columns or (
+        "client_order_id" in columns
+        and _column_exists(conn, "orders", "client_order_id")
+        and _column_exists(conn, "orders", "interval")
+    )
 
 
 def _sqlite_metrics(
@@ -210,10 +254,15 @@ def _sqlite_metrics(
     authority_hash: str | None,
     strategy_instance_id: str | None,
     pair: str,
+    interval: str,
     participation_policy_hash: str | None,
     required_kst_days: list[str],
 ) -> dict[str, Any]:
     metrics: dict[str, Any] = {}
+    interval_scope_unavailable: list[str] = []
+    orders_interval_scoped = _table_exists(conn, "orders") and _column_exists(conn, "orders", "interval")
+    if not orders_interval_scoped:
+        interval_scope_unavailable.extend(["orders", "fills_via_orders"])
     if _table_exists(conn, "orders"):
         scope_sql, scope_params = _order_scope_filter(
             conn,
@@ -222,6 +271,7 @@ def _sqlite_metrics(
             authority_hash=authority_hash,
             strategy_instance_id=strategy_instance_id,
             pair=pair,
+            interval=interval,
         )
         metrics["daily_buy_intent_count"] = int(conn.execute(
             f"SELECT COUNT(*) FROM orders WHERE {scope_sql} AND UPPER(side)='BUY'",
@@ -285,6 +335,7 @@ def _sqlite_metrics(
             authority_hash=authority_hash,
             strategy_instance_id=strategy_instance_id,
             pair=pair,
+            interval=interval,
         )
         metrics["daily_buy_filled_count"] = int(conn.execute(
             f"""
@@ -332,6 +383,8 @@ def _sqlite_metrics(
             metrics["exit_delay_seconds_p50"] = ordered[len(ordered) // 2]
             metrics["exit_delay_seconds_max"] = max(ordered)
     if _table_exists(conn, "daily_participation_claims"):
+        if not _claim_interval_scope_available(conn):
+            interval_scope_unavailable.append("daily_participation_claims")
         claim_sql, claim_params = _claim_scope_filter(
             conn,
             start_ts=start_ts,
@@ -340,6 +393,7 @@ def _sqlite_metrics(
             authority_hash=authority_hash,
             strategy_instance_id=strategy_instance_id,
             pair=pair,
+            interval=interval,
             participation_policy_hash=participation_policy_hash,
         )
         rows = conn.execute(
@@ -353,6 +407,8 @@ def _sqlite_metrics(
     metrics.setdefault("duplicate_entry_block_count", 0)
     metrics.setdefault("covered_kst_days", [])
     metrics.setdefault("duplicate_buy_kst_days", [])
+    metrics["interval_scope_applied"] = not interval_scope_unavailable
+    metrics["interval_scope_unavailable"] = interval_scope_unavailable
     return metrics
 
 

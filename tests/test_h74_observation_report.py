@@ -66,6 +66,42 @@ def _window_conn() -> sqlite3.Connection:
     return conn
 
 
+def _interval_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """
+        CREATE TABLE orders (
+            client_order_id TEXT,
+            strategy_name TEXT,
+            strategy_instance_id TEXT,
+            pair TEXT,
+            interval TEXT,
+            side TEXT,
+            status TEXT,
+            exit_rule_name TEXT,
+            decision_reason TEXT,
+            last_error TEXT,
+            created_ts INTEGER,
+            authority_hash TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE fills (
+            client_order_id TEXT,
+            fill_ts INTEGER,
+            price REAL,
+            qty REAL,
+            fee REAL,
+            reference_price REAL,
+            slippage_bps REAL
+        )
+        """
+    )
+    return conn
+
+
 def _insert_order(
     conn: sqlite3.Connection,
     cid: str,
@@ -84,6 +120,41 @@ def _insert_order(
     conn.execute(
         "INSERT INTO orders VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (cid, strategy, instance, pair, side, status, exit_rule, reason, error, _ts(created), authority_hash),
+    )
+
+
+def _insert_interval_order(
+    conn: sqlite3.Connection,
+    cid: str,
+    *,
+    created: str,
+    interval: str = "1m",
+    side: str = "BUY",
+    strategy: str = "daily_participation_sma",
+    instance: str = "h74:one",
+    pair: str = "KRW-BTC",
+    status: str = "FILLED",
+    exit_rule: str = "",
+    reason: str = "",
+    error: str = "",
+    authority_hash: str = "sha256:auth-a",
+) -> None:
+    conn.execute(
+        "INSERT INTO orders VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            cid,
+            strategy,
+            instance,
+            pair,
+            interval,
+            side,
+            status,
+            exit_rule,
+            reason,
+            error,
+            _ts(created),
+            authority_hash,
+        ),
     )
 
 
@@ -175,6 +246,29 @@ def test_h74_observation_report_filters_to_requested_7_day_window() -> None:
     assert report["daily_buy_filled_count"] == 1
 
 
+def test_h74_observation_report_filters_orders_by_interval_when_column_exists() -> None:
+    conn = _interval_conn()
+    _insert_interval_order(conn, "target", created="2026-06-18T00:00:00Z", interval="1m")
+    _insert_fill(conn, "target", fill_ts="2026-06-18T00:01:00Z", fee=2.0)
+    _insert_interval_order(conn, "wrong_interval", created="2026-06-18T00:00:00Z", interval="5m")
+    _insert_fill(conn, "wrong_interval", fill_ts="2026-06-18T00:01:00Z", fee=99.0)
+
+    report = build_h74_observation_report(
+        conn=conn,
+        days=7,
+        now=datetime(2026, 6, 19, tzinfo=timezone.utc),
+        strategy_instance_id="h74:one",
+        pair="KRW-BTC",
+        interval="1m",
+    )
+
+    assert report["daily_buy_intent_count"] == 1
+    assert report["daily_buy_filled_count"] == 1
+    assert report["fee_total_krw"] == 2.0
+    assert report["interval_scope_applied"] is True
+    assert report["interval_scope_unavailable"] == []
+
+
 def _insert_claim(
     conn: sqlite3.Connection,
     *,
@@ -184,6 +278,7 @@ def _insert_claim(
     policy_hash: str = "sha256:policy-a",
     status: str = "submitted",
     created: str = "2026-06-18T00:00:00Z",
+    client_order_id: str | None = None,
 ) -> None:
     conn.execute(
         """
@@ -195,6 +290,18 @@ def _insert_claim(
         """,
         (instance, pair, kst_day, policy_hash, status, _ts(created), _ts(created)),
     )
+    if client_order_id is not None:
+        conn.execute(
+            """
+            UPDATE daily_participation_claims
+            SET client_order_id=?
+            WHERE strategy_instance_id=?
+              AND pair=?
+              AND kst_day=?
+              AND participation_policy_hash=?
+            """,
+            (client_order_id, instance, pair, kst_day, policy_hash),
+        )
 
 
 def test_h74_observation_report_filters_claims_to_requested_7_day_window() -> None:
@@ -232,6 +339,30 @@ def test_h74_observation_report_scopes_claims_to_strategy_instance_pair_and_poli
     )
 
     assert report["claim_pending_count"] == 1
+
+
+def test_h74_observation_report_filters_claims_by_interval_or_fails_closed_when_required() -> None:
+    conn = _interval_conn()
+    ensure_daily_participation_claims_schema(conn)
+    _insert_interval_order(conn, "claim_1m", created="2026-06-18T00:00:00Z", interval="1m", status="NEW")
+    _insert_claim(conn, kst_day="2026-06-18", policy_hash="sha256:policy-a", client_order_id="claim_1m")
+    _insert_interval_order(conn, "claim_5m", created="2026-06-18T00:00:00Z", interval="5m", status="NEW")
+    _insert_claim(conn, kst_day="2026-06-17", policy_hash="sha256:policy-a", client_order_id="claim_5m")
+
+    report = build_h74_observation_report(
+        conn=conn,
+        observation_start=datetime(2026, 6, 11, 15, tzinfo=timezone.utc),
+        observation_end=datetime(2026, 6, 18, 15, tzinfo=timezone.utc),
+        now=datetime(2026, 6, 19, tzinfo=timezone.utc),
+        strategy_instance_id="h74:one",
+        participation_policy_hash="sha256:policy-a",
+        pair="KRW-BTC",
+        interval="1m",
+    )
+
+    assert report["claim_pending_count"] == 1
+    assert report["interval_scope_applied"] is True
+    assert report["interval_scope_unavailable"] == []
 
 
 def test_h74_observation_report_scopes_to_authority_hash_when_column_exists() -> None:
@@ -313,6 +444,40 @@ def test_h74_observation_report_cli_accepts_authority_scope() -> None:
     assert args.to_date == "2026-06-19"
 
 
+def test_h74_observation_report_cli_passes_interval_to_builder(monkeypatch) -> None:
+    from bithumb_bot.cli.commands import reports
+    from bithumb_bot.cli.parser import build_parser
+    from bithumb_bot.cli.registry import command_registry
+
+    captured: dict[str, object] = {}
+
+    def fake_builder(**kwargs):
+        captured.update(kwargs)
+        return {"complete": False}
+
+    monkeypatch.setattr("bithumb_bot.h74_observation_report.build_h74_observation_report", fake_builder)
+    parser = build_parser(command_registry())
+    args = parser.parse_args(
+        [
+            "h74-observation-report",
+            "--days",
+            "7",
+            "--json",
+            "--authority-hash",
+            "sha256:auth-a",
+            "--from",
+            "2026-06-12",
+            "--to",
+            "2026-06-19",
+            "--interval",
+            "5m",
+        ]
+    )
+
+    assert reports._h74_observation_report(args, None) == 0
+    assert captured["interval"] == "5m"
+
+
 def test_h74_observation_report_detects_same_kst_day_duplicate_buy() -> None:
     conn = _window_conn()
     _insert_order(conn, "b1", created="2026-06-18T00:00:00Z")
@@ -370,6 +535,49 @@ def test_h74_observation_report_computes_slippage_bps() -> None:
 def test_h74_observation_report_complete_false_before_7_days_elapsed() -> None:
     report = build_h74_observation_report(days=6, now=datetime(2026, 6, 19, tzinfo=timezone.utc))
 
+    assert report["complete"] is False
+
+
+def test_h74_observation_report_complete_false_when_interval_scope_unavailable() -> None:
+    conn = _window_conn()
+    for index, created in enumerate(
+        [
+            "2026-06-11T15:00:00Z",
+            "2026-06-12T15:00:00Z",
+            "2026-06-13T15:00:00Z",
+            "2026-06-14T15:00:00Z",
+            "2026-06-15T15:00:00Z",
+            "2026-06-16T15:00:00Z",
+            "2026-06-17T15:00:00Z",
+        ]
+    ):
+        cid = f"b{index}"
+        _insert_order(conn, cid, created=created, instance="h74:one")
+        _insert_fill(conn, cid, fill_ts=created)
+
+    report = build_h74_observation_report(
+        conn=conn,
+        observation_start=datetime(2026, 6, 11, 15, tzinfo=timezone.utc),
+        observation_end=datetime(2026, 6, 18, 15, tzinfo=timezone.utc),
+        now=datetime(2026, 6, 19, tzinfo=timezone.utc),
+        authority_hash="sha256:auth-a",
+        strategy_instance_id="h74:one",
+        pair="KRW-BTC",
+        interval="1m",
+    )
+
+    assert report["covered_kst_days"] == [
+        "2026-06-12",
+        "2026-06-13",
+        "2026-06-14",
+        "2026-06-15",
+        "2026-06-16",
+        "2026-06-17",
+        "2026-06-18",
+    ]
+    assert report["interval_scope_applied"] is False
+    assert "orders" in report["interval_scope_unavailable"]
+    assert "fills_via_orders" in report["interval_scope_unavailable"]
     assert report["complete"] is False
 
 
