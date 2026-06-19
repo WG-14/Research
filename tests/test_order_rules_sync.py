@@ -418,6 +418,40 @@ def test_get_effective_order_rules_rejects_invalid_live_fallback_config(monkeypa
         order_rules.get_effective_order_rules("KRW-BTC")
 
 
+def test_quantity_contract_unknown_authority_requires_manual_action() -> None:
+    contract = ExchangeQuantityContract.from_rule_resolution(
+        SimpleNamespace(
+            rules=order_rules.DerivedOrderConstraints(
+                market_id="KRW-BTC",
+                bid_min_total_krw=5000.0,
+                ask_min_total_krw=5000.0,
+                bid_price_unit=1.0,
+                ask_price_unit=1.0,
+                order_types=("limit", "price", "market"),
+                bid_types=("price",),
+                ask_types=("limit", "market"),
+                order_sides=("bid", "ask"),
+                min_qty=0.0001,
+                qty_step=0.0001,
+                min_notional_krw=5000.0,
+                max_qty_decimals=8,
+            ),
+            source={},
+            source_mode="",
+            snapshot_persisted=False,
+        ),
+        market="KRW-BTC",
+    )
+
+    assert contract.qty_step_authority_level == "unknown"
+    assert contract.quantity_contract_complete is False
+    assert contract.quantity_contract_recommended_action == "refresh_order_rules_or_manual_exchange_closeout"
+    payload = contract.as_dict()
+    assert payload["qty_step_authority_level"] == "unknown"
+    assert payload["quantity_contract_complete"] is False
+    assert payload["quantity_contract_recommended_action"] == "refresh_order_rules_or_manual_exchange_closeout"
+
+
 def test_buy_price_none_market_to_price_alias_flag_is_deprecated_and_ignored(monkeypatch, caplog):
     monkeypatch.setenv("BUY_PRICE_NONE_MARKET_TO_PRICE_ALIAS_ENABLED", "true")
 

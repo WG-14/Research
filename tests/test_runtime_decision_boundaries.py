@@ -52,6 +52,10 @@ from bithumb_bot.runtime_sma_snapshot_builder import (
     RuntimeSmaPolicyHashes,
 )
 from bithumb_bot.runtime_sma_snapshot_builder import build_sma_with_filter_decision_from_normalized_db
+from bithumb_bot.runtime_strategy_set import (
+    RuntimeDecisionRequestBuilder,
+    RuntimeStrategySpec,
+)
 from bithumb_bot.strategy.base import PositionContext
 from bithumb_bot.strategy.sma import create_sma_with_filter_strategy
 
@@ -94,6 +98,58 @@ def test_strategy_exit_does_not_call_operator_clean_closeout_builder() -> None:
         assert "plan_operator_clean_account_closeout_from_flatten_context" not in source, path
         assert "operator_clean_account_closeout" not in source, path
         assert "broker_confirmed_residual_closeout" not in source, path
+
+
+def test_operator_clean_closeout_path_does_not_call_legacy_qty_helpers() -> None:
+    source = Path("src/bithumb_bot/flatten.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    flatten_fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "flatten_btc_position"
+    )
+    flatten_source = ast.get_source_segment(source, flatten_fn) or ""
+
+    assert "_plan_operator_clean_account_qty" not in source
+    assert "_plan_operator_clean_account_qty(" not in flatten_source
+    assert "trigger == \"operator\" and _normalize_flatten_qty" not in flatten_source
+    assert "if trigger == \"operator\":\n            normalized_qty = _normalize_flatten_qty" not in flatten_source
+    assert "if trigger != \"operator\":\n            normalized_qty = _normalize_flatten_qty" in flatten_source
+
+
+def test_operator_clean_closeout_does_not_import_approved_profile_gate() -> None:
+    source = Path("src/bithumb_bot/flatten.py").read_text(encoding="utf-8")
+
+    assert "APPROVED_STRATEGY_PROFILE_PATH" not in source
+    assert "load_approved_profile" not in source
+    assert "profile_runtime_cost_match_status" not in source
+    assert "approved_profile_not_configured" not in source
+
+
+def test_strategy_run_still_blocks_when_approved_profile_missing() -> None:
+    original = {
+        "MODE": settings.MODE,
+        "LIVE_DRY_RUN": settings.LIVE_DRY_RUN,
+        "LIVE_REAL_ORDER_ARMED": settings.LIVE_REAL_ORDER_ARMED,
+        "APPROVED_STRATEGY_PROFILE_PATH": settings.APPROVED_STRATEGY_PROFILE_PATH,
+        "STRATEGY_APPROVED_PROFILE_PATH": getattr(settings, "STRATEGY_APPROVED_PROFILE_PATH", ""),
+    }
+    try:
+        object.__setattr__(settings, "MODE", "live")
+        object.__setattr__(settings, "LIVE_DRY_RUN", False)
+        object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
+        object.__setattr__(settings, "APPROVED_STRATEGY_PROFILE_PATH", "")
+        object.__setattr__(settings, "STRATEGY_APPROVED_PROFILE_PATH", "")
+
+        builder = RuntimeDecisionRequestBuilder(settings_obj=settings)
+        spec = RuntimeStrategySpec(strategy_name="sma_with_filter", pair=settings.PAIR, interval=settings.INTERVAL)
+        with pytest.raises(RuntimeError) as exc:
+            builder.materialize_instance(spec)
+    finally:
+        for key, value in original.items():
+            object.__setattr__(settings, key, value)
+
+    assert "approved_profile_required_for_live_compatible_runtime_strategy" in str(exc.value)
 
 
 class CountingConnection(sqlite3.Connection):

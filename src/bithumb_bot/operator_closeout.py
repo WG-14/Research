@@ -17,6 +17,7 @@ COMMAND_INTENT_EMERGENCY_FLATTEN = "emergency_flatten"
 REASON_BROKER_CONFIRMED_RESIDUAL_CLOSEOUT = "broker_confirmed_residual_closeout"
 REASON_FULL_CLOSEOUT_WOULD_LEAVE_RESIDUAL = "full_closeout_would_leave_residual"
 REASON_QUANTITY_STEP_AUTHORITY_UNKNOWN = "quantity_step_authority_unknown_or_fallback"
+REASON_QUANTITY_CONTRACT_INCOMPLETE = "quantity_contract_incomplete"
 RECOMMENDED_MANUAL_CLOSEOUT = "manual_exchange_closeout_or_rule_update"
 _QTY_EPS = 1e-12
 
@@ -166,6 +167,36 @@ def build_operator_clean_closeout_contract(
             quantity_contract=quantity_contract,
             block_reason="broker_residual_does_not_match_local_evidence",
             recommended_action=RECOMMENDED_MANUAL_CLOSEOUT,
+        )
+    if quantity_contract.qty_step_authority_level == "unknown":
+        return _blocked_contract(
+            market=market,
+            dry_run=dry_run,
+            broker_asset_available=broker_qty,
+            raw_total_asset_qty=raw_qty,
+            planned_sell_qty=0.0,
+            market_price=market_price,
+            quantity_contract=quantity_contract,
+            block_reason=REASON_QUANTITY_STEP_AUTHORITY_UNKNOWN,
+            recommended_action=(
+                quantity_contract.quantity_contract_recommended_action
+                or RECOMMENDED_MANUAL_CLOSEOUT
+            ),
+        )
+    if not quantity_contract.quantity_contract_complete:
+        return _blocked_contract(
+            market=market,
+            dry_run=dry_run,
+            broker_asset_available=broker_qty,
+            raw_total_asset_qty=raw_qty,
+            planned_sell_qty=0.0,
+            market_price=market_price,
+            quantity_contract=quantity_contract,
+            block_reason=REASON_QUANTITY_CONTRACT_INCOMPLETE,
+            recommended_action=(
+                quantity_contract.quantity_contract_recommended_action
+                or RECOMMENDED_MANUAL_CLOSEOUT
+            ),
         )
 
     planned_qty = _floor_to_max_decimals(
@@ -343,6 +374,10 @@ def validate_clean_closeout_contract_for_submit(
 ) -> None:
     if not contract.closeout_allowed or not contract.clean_account_after_sell:
         raise ValueError("operator clean closeout contract is blocked")
+    if contract.quantity_authority.get("qty_step_authority_level") == "unknown":
+        raise ValueError("operator clean closeout quantity step authority unknown")
+    if not bool(contract.quantity_authority.get("quantity_contract_complete")):
+        raise ValueError("operator clean closeout quantity contract incomplete")
     if abs(float(contract.planned_sell_qty) - float(submitted_qty)) > _QTY_EPS:
         raise ValueError(
             "operator clean closeout submit qty mismatch: "
