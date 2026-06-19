@@ -97,8 +97,13 @@ def _open_local_order_count(conn: Any) -> int:
     return int(row["cnt"] if hasattr(row, "keys") else row[0])
 
 
-def _broker_open_order_count(broker: Any) -> int:
-    return len(list(broker.get_open_orders()))
+def _broker_open_order_count(broker: Any, *, market: str) -> int:
+    recent_orders = broker.get_recent_orders_for_recovery(market=str(market), limit=30)
+    return sum(
+        1
+        for order in recent_orders
+        if str(getattr(order, "status", "") or "").strip().upper() in OPEN_ORDER_STATUSES
+    )
 
 
 def _format_balances(balance: Any) -> dict[str, float]:
@@ -155,7 +160,7 @@ def execute_smoke_buy(
 
     if _open_local_order_count(conn) > 0:
         raise OperatorSmokeError("smoke_buy_blocked_by_unresolved_local_orders")
-    if _broker_open_order_count(broker) > 0:
+    if _broker_open_order_count(broker, market=str(market)) > 0:
         raise OperatorSmokeError("smoke_buy_blocked_by_open_broker_orders")
 
     before_balance = _format_balances(broker.get_balance())

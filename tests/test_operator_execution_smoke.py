@@ -66,7 +66,19 @@ def _live_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 
 class _SmokeBroker:
-    def get_open_orders(self):
+    def __init__(self, *, recent_orders: list[object] | None = None) -> None:
+        self.recent_orders = list(recent_orders or [])
+        self.recovery_calls: list[dict[str, object]] = []
+        self.open_order_calls: list[dict[str, object]] = []
+
+    def get_recent_orders_for_recovery(self, *, market: str, limit: int = 100, **kwargs):
+        self.recovery_calls.append({"market": market, "limit": limit, **kwargs})
+        return list(self.recent_orders)
+
+    def get_open_orders(self, **kwargs):
+        self.open_order_calls.append(dict(kwargs))
+        if not kwargs.get("exchange_order_ids") and not kwargs.get("client_order_ids"):
+            raise AssertionError("identifier-free get_open_orders must not be used by operator smoke")
         return []
 
     def get_balance(self):
@@ -137,6 +149,39 @@ def _authority_path(tmp_path: Path, *, db_path: Path, commit: str = "abc123", ma
     )
     write_json_atomic(path, payload)
     return path
+
+
+def _patch_smoke_buy_submit_dependencies(
+    monkeypatch: pytest.MonkeyPatch, smoke, captured: dict[str, object]
+) -> None:
+    monkeypatch.setattr(smoke, "runtime_code_provenance", lambda: {"commit_sha": "abc123"})
+    monkeypatch.setattr(smoke, "validate_operator_smoke_preflight", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        smoke,
+        "resolve_execution_order_rules",
+        lambda market: SimpleNamespace(
+            as_order_rules=lambda: {"min_notional_krw": 5_000, "min_qty": 0.0, "qty_step": 0.0}
+        ),
+    )
+    monkeypatch.setattr(
+        smoke,
+        "build_live_submit_plan",
+        lambda **kwargs: SimpleNamespace(
+            intent=SimpleNamespace(market=kwargs["market"]),
+            submitted_qty=kwargs["qty"],
+            rules=kwargs["effective_rules"],
+            submit_qty_authority="unit",
+            exchange_order_type="market",
+            internal_lot_qty=kwargs["qty"],
+            qty_split=SimpleNamespace(lot_count=1),
+        ),
+    )
+
+    def _submit(**kwargs):
+        captured["request"] = kwargs["request"]
+        return object()
+
+    monkeypatch.setattr(smoke, "submit_live_order_and_confirm", _submit)
 
 
 def test_smoke_buy_requires_live_mode() -> None:
@@ -234,6 +279,25 @@ def test_cmd_smoke_buy_constructs_broker_with_caller(monkeypatch: pytest.MonkeyP
     assert captured["caller"] == "operator_commands.cmd_smoke_buy"
     assert isinstance(captured["broker"], _SmokeBroker)
     assert conn.closed is True
+
+
+def test_broker_open_order_count_uses_market_scoped_recovery_recent_orders() -> None:
+    import bithumb_bot.operator_smoke as smoke
+
+    broker = _SmokeBroker(
+        recent_orders=[
+            SimpleNamespace(status="NEW"),
+            SimpleNamespace(status="PARTIAL"),
+            SimpleNamespace(status="FILLED"),
+            SimpleNamespace(status="CANCELED"),
+        ]
+    )
+
+    count = smoke._broker_open_order_count(broker, market="KRW-BTC")
+
+    assert count == 2
+    assert broker.recovery_calls == [{"market": "KRW-BTC", "limit": 30}]
+    assert broker.open_order_calls == []
 
 
 def test_smoke_buy_not_counted_as_daily_participation_event(tmp_path: Path) -> None:
@@ -350,6 +414,80 @@ def test_smoke_buy_requires_authority_for_real_submit(
             )
     finally:
         conn.close()
+
+
+def test_execute_smoke_buy_blocks_when_recovery_recent_orders_include_unresolved_open(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import bithumb_bot.operator_smoke as smoke
+
+    db_path = _live_roots(monkeypatch, tmp_path)
+    conn = ensure_db(str(db_path))
+    captured: dict[str, object] = {}
+    broker = _SmokeBroker(recent_orders=[SimpleNamespace(status="NEW")])
+    monkeypatch.setattr(smoke, "settings", _live_settings(db_path))
+    monkeypatch.setattr(smoke, "runtime_code_provenance", lambda: {"commit_sha": "abc123"})
+    monkeypatch.setattr(smoke, "validate_operator_smoke_preflight", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        smoke,
+        "submit_live_order_and_confirm",
+        lambda **kwargs: captured.setdefault("request", kwargs["request"]),
+    )
+    try:
+        with pytest.raises(OperatorSmokeError, match="smoke_buy_blocked_by_open_broker_orders"):
+            execute_smoke_buy(
+                conn=conn,
+                broker=broker,
+                krw=50_000,
+                market="KRW-BTC",
+                confirm=SMOKE_BUY_CONFIRMATION_TOKEN,
+                authority_path=str(_authority_path(tmp_path, db_path=db_path)),
+                reference_price=100_000_000.0,
+                now_ms=1_800_000_000_000,
+            )
+    finally:
+        conn.close()
+
+    assert broker.recovery_calls == [{"market": "KRW-BTC", "limit": 30}]
+    assert broker.open_order_calls == []
+    assert captured == {}
+
+
+def test_execute_smoke_buy_submits_when_recovery_recent_orders_are_terminal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import bithumb_bot.operator_smoke as smoke
+
+    db_path = _live_roots(monkeypatch, tmp_path)
+    conn = ensure_db(str(db_path))
+    captured: dict[str, object] = {}
+    broker = _SmokeBroker(
+        recent_orders=[
+            SimpleNamespace(status="FILLED"),
+            SimpleNamespace(status="CANCELED"),
+            SimpleNamespace(status="FAILED"),
+        ]
+    )
+    monkeypatch.setattr(smoke, "settings", _live_settings(db_path))
+    _patch_smoke_buy_submit_dependencies(monkeypatch, smoke, captured)
+    try:
+        result = execute_smoke_buy(
+            conn=conn,
+            broker=broker,
+            krw=50_000,
+            market="KRW-BTC",
+            confirm=SMOKE_BUY_CONFIRMATION_TOKEN,
+            authority_path=str(_authority_path(tmp_path, db_path=db_path)),
+            reference_price=100_000_000.0,
+            now_ms=1_800_000_000_000,
+        )
+    finally:
+        conn.close()
+
+    assert result["status"] == "submitted"
+    assert captured["request"].strategy_name == "operator_execution_smoke"
+    assert broker.recovery_calls == [{"market": "KRW-BTC", "limit": 30}]
+    assert broker.open_order_calls == []
 
 
 def test_smoke_buy_rejects_market_mismatch_with_settings_pair(
