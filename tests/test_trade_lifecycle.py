@@ -6,7 +6,7 @@ import json
 import pytest
 
 from bithumb_bot.config import settings
-from bithumb_bot.db_core import ensure_db
+from bithumb_bot.db_core import ensure_db, set_portfolio_breakdown
 from bithumb_bot.dust import (
     DUST_TRACKING_LOT_STATE,
     OPEN_EXPOSURE_LOT_STATE,
@@ -29,6 +29,7 @@ from bithumb_bot.lifecycle import (
     apply_fill_lifecycle,
     mark_harmless_dust_positions,
     rebuild_lifecycle_projections_from_trades,
+    resolve_execution_quantity_authority,
     summarize_position_lots,
 )
 from bithumb_bot.position_authority_state import build_lot_projection_convergence
@@ -109,6 +110,90 @@ def _test_lot_rules(*, market_price: float = 40_000_000.0):
         rules=rules,
         source_mode="derived",
     )
+
+
+def test_operator_closeout_authority_does_not_create_strategy_lot_authority(tmp_path):
+    conn = ensure_db(str(tmp_path / "operator_closeout_authority.sqlite"))
+    try:
+        set_portfolio_breakdown(
+            conn,
+            cash_available=0.0,
+            cash_locked=0.0,
+            asset_available=0.00049913,
+            asset_locked=0.0,
+        )
+        record_order_if_missing(
+            conn,
+            client_order_id="flatten_operator_closeout",
+            side="SELL",
+            qty_req=0.00049913,
+            price=95_000_000.0,
+            ts_ms=1_781_881_180_147,
+            status="FILLED",
+            final_submitted_qty=0.00049913,
+            decision_reason_code="broker_confirmed_residual_closeout",
+        )
+        apply_fill_and_trade(
+            conn,
+            client_order_id="flatten_operator_closeout",
+            side="SELL",
+            fill_id="operator-closeout-fill",
+            fill_ts=1_781_881_180_197,
+            price=95_000_000.0,
+            qty=0.00049913,
+            fee=0.0,
+            allow_entry_decision_fallback=False,
+        )
+        conn.execute(
+            "UPDATE trades SET asset_after=0 WHERE client_order_id='flatten_operator_closeout'"
+        )
+        evidence = {
+            "authority_type": "operator_clean_account_closeout",
+            "command_intent": "operator_clean_account_closeout",
+            "reason_code": "broker_confirmed_residual_closeout",
+            "raw_total_asset_qty": 0.00049913,
+            "tracked_dust_qty": 0.00049913,
+            "planned_sell_qty": 0.00049913,
+            "submitted_qty": 0.00049913,
+            "payload_volume": 0.00049913,
+            "clean_account_after_sell": True,
+            "estimated_residual_qty": 0.0,
+            "covered_open_exposure_qty": 0.0,
+            "covered_dust_tracking_qty": 0.00049913,
+            "broker_qty_after": 0.0,
+            "portfolio_qty_after": 0.0,
+        }
+        conn.execute(
+            """
+            INSERT INTO order_events(
+                client_order_id, event_type, event_ts, order_status, qty, side,
+                submit_evidence, final_submitted_qty, decision_reason_code, submission_reason_code
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "flatten_operator_closeout",
+                "submit_attempt_preflight",
+                1_781_881_180_147,
+                "PENDING_SUBMIT",
+                0.00049913,
+                "SELL",
+                json.dumps(evidence, sort_keys=True),
+                0.00049913,
+                "broker_confirmed_residual_closeout",
+                "broker_confirmed_residual_closeout",
+            ),
+        )
+        authority = resolve_execution_quantity_authority(
+            conn,
+            client_order_id="flatten_operator_closeout",
+        )
+    finally:
+        conn.close()
+
+    assert authority.authority_type == "operator_clean_account_closeout"
+    assert authority.source != "lot_native"
+    assert authority.source != "strategy_lot_native"
+    assert authority.is_any_supported_terminal_flat_closeout is True
 
 
 def test_trade_lifecycle_tracks_realized_pnl_fee_and_holding_time(tmp_path):

@@ -8,6 +8,7 @@ import uuid
 from types import SimpleNamespace
 
 from . import runtime_state
+from .canonical_decision import sha256_prefixed
 from . import db_core
 from .config import settings
 from .decision_context import resolve_canonical_position_exposure_snapshot
@@ -243,6 +244,38 @@ def _clean_closeout_summary_from_contract(
     return summary
 
 
+def _operator_closeout_submit_evidence(
+    *,
+    clean_closeout_metrics: dict[str, object],
+    raw_total_asset_qty: float,
+    covered_open_exposure_qty: float,
+    covered_dust_tracking_qty: float,
+    broker_qty_after: float | None = None,
+    portfolio_qty_after: float | None = None,
+) -> dict[str, object]:
+    planned_qty = float(clean_closeout_metrics.get("planned_sell_qty") or 0.0)
+    payload_volume = clean_closeout_metrics.get("payload_volume")
+    evidence = {
+        "authority_type": COMMAND_INTENT_OPERATOR_CLEAN_ACCOUNT_CLOSEOUT,
+        "command_intent": COMMAND_INTENT_OPERATOR_CLEAN_ACCOUNT_CLOSEOUT,
+        "reason_code": BROKER_CONFIRMED_RESIDUAL_CLOSEOUT,
+        "raw_total_asset_qty": float(raw_total_asset_qty),
+        "tracked_dust_qty": float(covered_dust_tracking_qty),
+        "planned_sell_qty": planned_qty,
+        "planned_qty": planned_qty,
+        "submitted_qty": planned_qty,
+        "payload_volume": float(payload_volume) if payload_volume is not None else None,
+        "clean_account_after_sell": bool(clean_closeout_metrics.get("clean_account_after_sell")),
+        "estimated_residual_qty": float(clean_closeout_metrics.get("estimated_residual_qty") or 0.0),
+        "covered_dust_tracking_qty": float(covered_dust_tracking_qty),
+        "covered_open_exposure_qty": float(covered_open_exposure_qty),
+        "broker_qty_after": broker_qty_after,
+        "portfolio_qty_after": portfolio_qty_after,
+    }
+    evidence["operator_closeout_contract_hash"] = sha256_prefixed(evidence)
+    return evidence
+
+
 def plan_operator_clean_account_closeout_from_flatten_context(
     *,
     broker,
@@ -396,24 +429,44 @@ def _flatten_submit_evidence(
     exchange_order_id: str | None = None,
     error: str | None = None,
     reason_code: str = "operator_flatten",
+    closeout_contract_evidence: dict[str, object] | None = None,
 ) -> str:
+    evidence: dict[str, object] = {
+        "client_order_id": client_order_id,
+        "submit_attempt_id": submit_attempt_id,
+        "submit_path": "operator_flatten",
+        "reason_code": reason_code,
+        "trigger": trigger,
+        "symbol": settings.PAIR,
+        "side": "SELL",
+        "qty": float(qty),
+        "submitted_qty": float(qty),
+        "price": None,
+        "reference_price": float(market_price) if market_price is not None else None,
+        "phase": phase,
+        "status": status,
+        "exchange_order_id": exchange_order_id,
+        "error": error,
+    }
+    if closeout_contract_evidence:
+        evidence.update(dict(closeout_contract_evidence))
+    if (
+        evidence.get("command_intent") == COMMAND_INTENT_OPERATOR_CLEAN_ACCOUNT_CLOSEOUT
+        and evidence.get("planned_sell_qty") is not None
+        and evidence.get("payload_volume") is not None
+        and abs(float(evidence["planned_sell_qty"]) - float(evidence["payload_volume"])) > _QTY_EPS
+    ):
+        raise ValueError("operator clean closeout payload volume does not match planned sell qty")
+    if evidence.get("command_intent") == COMMAND_INTENT_OPERATOR_CLEAN_ACCOUNT_CLOSEOUT:
+        proof_payload = {
+            key: value
+            for key, value in evidence.items()
+            if key not in {"operator_closeout_contract_hash", "evidence_hash"}
+        }
+        evidence.setdefault("operator_closeout_contract_hash", sha256_prefixed(proof_payload))
+        evidence.setdefault("evidence_hash", evidence["operator_closeout_contract_hash"])
     return json.dumps(
-        {
-            "client_order_id": client_order_id,
-            "submit_attempt_id": submit_attempt_id,
-            "submit_path": "operator_flatten",
-            "reason_code": reason_code,
-            "trigger": trigger,
-            "symbol": settings.PAIR,
-            "side": "SELL",
-            "qty": float(qty),
-            "price": None,
-            "reference_price": float(market_price) if market_price is not None else None,
-            "phase": phase,
-            "status": status,
-            "exchange_order_id": exchange_order_id,
-            "error": error,
-        },
+        evidence,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -429,6 +482,7 @@ def _stage_flatten_submit_intent(
     lot_snapshot,
     exit_sizing,
     reason_code: str = "operator_flatten",
+    closeout_contract_evidence: dict[str, object] | None = None,
 ) -> tuple[str, str, int]:
     submit_attempt_id = f"{client_order_id}:submit:{uuid.uuid4().hex[:8]}"
     ts = int(time.time() * 1000)
@@ -454,6 +508,7 @@ def _stage_flatten_submit_intent(
         phase="pre_submit",
         status="PENDING_SUBMIT",
         reason_code=reason_code,
+        closeout_contract_evidence=closeout_contract_evidence,
     )
     conn = db_core.ensure_db()
     try:
@@ -546,6 +601,7 @@ def _record_flatten_submit_ack(
     market_price: float,
     order,
     reason_code: str = "operator_flatten",
+    closeout_contract_evidence: dict[str, object] | None = None,
 ) -> None:
     exchange_order_id = str(getattr(order, "exchange_order_id", "") or "")
     order_status = str(getattr(order, "status", "") or "NEW")
@@ -560,6 +616,7 @@ def _record_flatten_submit_ack(
         status=order_status,
         exchange_order_id=exchange_order_id or None,
         reason_code=reason_code,
+        closeout_contract_evidence=closeout_contract_evidence,
     )
     conn = db_core.ensure_db()
     try:
@@ -835,6 +892,14 @@ def flatten_btc_position(*, broker, dry_run: bool = False, trigger: str = "opera
 
                 submit_attempt_id: str | None = None
                 try:
+                    closeout_submit_evidence = _operator_closeout_submit_evidence(
+                        clean_closeout_metrics=clean_closeout_metrics,
+                        raw_total_asset_qty=float(canonical_exposure.raw_total_asset_qty),
+                        covered_open_exposure_qty=float(canonical_exposure.open_exposure_qty),
+                        covered_dust_tracking_qty=float(canonical_exposure.dust_tracking_qty),
+                        broker_qty_after=0.0,
+                        portfolio_qty_after=0.0,
+                    )
                     submit_attempt_id, payload_hash, _submit_ts = _stage_flatten_submit_intent(
                         client_order_id=client_order_id,
                         trigger=trigger,
@@ -843,6 +908,7 @@ def flatten_btc_position(*, broker, dry_run: bool = False, trigger: str = "opera
                         lot_snapshot=snapshot.lot_snapshot,
                         exit_sizing=exit_sizing,
                         reason_code=BROKER_CONFIRMED_RESIDUAL_CLOSEOUT,
+                        closeout_contract_evidence=closeout_submit_evidence,
                     )
                     place_order_kwargs = {
                         "client_order_id": client_order_id,
@@ -872,6 +938,7 @@ def flatten_btc_position(*, broker, dry_run: bool = False, trigger: str = "opera
                         market_price=market_price,
                         order=order,
                         reason_code=BROKER_CONFIRMED_RESIDUAL_CLOSEOUT,
+                        closeout_contract_evidence=closeout_submit_evidence,
                     )
                 except Exception as exc:
                     err = f"{type(exc).__name__}: {exc}"
@@ -1131,6 +1198,18 @@ def flatten_btc_position(*, broker, dry_run: bool = False, trigger: str = "opera
                 raise ValueError("operator clean closeout contract missing before submit")
             _assert_no_broker_open_orders(broker)
         _validate_flatten_pretrade(broker=broker, qty=normalized_qty)
+        closeout_submit_evidence = None
+        submit_reason_code = "operator_flatten"
+        if trigger == "operator":
+            closeout_submit_evidence = _operator_closeout_submit_evidence(
+                clean_closeout_metrics=clean_closeout_metrics,
+                raw_total_asset_qty=float(canonical_exposure.raw_total_asset_qty),
+                covered_open_exposure_qty=float(canonical_exposure.open_exposure_qty),
+                covered_dust_tracking_qty=float(canonical_exposure.dust_tracking_qty),
+                broker_qty_after=0.0,
+                portfolio_qty_after=0.0,
+            )
+            submit_reason_code = BROKER_CONFIRMED_RESIDUAL_CLOSEOUT
         submit_attempt_id, payload_hash, _submit_ts = _stage_flatten_submit_intent(
             client_order_id=client_order_id,
             trigger=trigger,
@@ -1138,6 +1217,8 @@ def flatten_btc_position(*, broker, dry_run: bool = False, trigger: str = "opera
             market_price=market_price,
             lot_snapshot=snapshot.lot_snapshot,
             exit_sizing=exit_sizing,
+            reason_code=submit_reason_code,
+            closeout_contract_evidence=closeout_submit_evidence,
         )
 
         place_order_kwargs = {
@@ -1186,6 +1267,8 @@ def flatten_btc_position(*, broker, dry_run: bool = False, trigger: str = "opera
             qty=normalized_qty,
             market_price=market_price,
             order=order,
+            reason_code=submit_reason_code,
+            closeout_contract_evidence=closeout_submit_evidence,
         )
     except Exception as exc:
         err = f"{type(exc).__name__}: {exc}"

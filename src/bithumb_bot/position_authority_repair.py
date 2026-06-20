@@ -369,6 +369,8 @@ def build_flat_stale_lot_projection_repair_preview(conn: sqlite3.Connection) -> 
     )
     if not terminal_sell_ok:
         blockers.append("missing_terminal_flat_sell_evidence")
+        if latest_trade and abs(normalize_asset_qty(float(latest_trade.get("asset_after") or 0.0))) > _EPS:
+            blockers.append("terminal_asset_after_not_flat")
 
     if projected_total_qty <= _EPS:
         blockers.append("stale_lot_projection_not_present")
@@ -393,13 +395,23 @@ def build_flat_stale_lot_projection_repair_preview(conn: sqlite3.Connection) -> 
     authority_expected_closed_qty = normalize_asset_qty(authority_open_qty + authority_dust_qty)
     terminal_flat_sell_detected = bool(
         terminal_sell_ok
-        and latest_sell_authority.is_target_delta_terminal_flat
+        and latest_sell_authority.is_any_supported_terminal_flat_closeout
         and authority_dust_qty > _EPS
         and abs(stale_total_qty - authority_dust_qty) <= _EPS
         and normalize_asset_qty(float(latest_sell_authority.submitted_qty)) + _EPS >= authority_expected_closed_qty
+        and normalize_asset_qty(float(latest_sell_authority.filled_qty)) + _EPS >= authority_expected_closed_qty
     )
     if terminal_sell_ok and not terminal_flat_sell_detected:
-        blockers.append("terminal_flat_target_delta_dust_authority_missing")
+        if not latest_sell_authority.is_any_supported_terminal_flat_closeout:
+            blockers.append("terminal_flat_supported_closeout_authority_missing")
+        if latest_sell_authority.terminal_asset_after is None or abs(float(latest_sell_authority.terminal_asset_after)) > _EPS:
+            blockers.append("terminal_asset_after_not_flat")
+        if normalize_asset_qty(float(latest_sell_authority.filled_qty)) + _EPS < authority_expected_closed_qty:
+            blockers.append("filled_qty_below_covered_qty")
+        if abs(stale_total_qty - authority_dust_qty) > _EPS:
+            blockers.append("covered_dust_tracking_qty_mismatch")
+        if authority_dust_qty <= _EPS:
+            blockers.append("covered_dust_tracking_qty_missing")
 
     blockers = list(dict.fromkeys(blockers))
     needed = bool(projected_total_qty > _EPS and abs(portfolio_qty) <= _EPS and stale_rows)
@@ -424,6 +436,7 @@ def build_flat_stale_lot_projection_repair_preview(conn: sqlite3.Connection) -> 
         "latest_sell_client_order_id": latest_sell.get("latest_sell_client_order_id"),
         "latest_sell_exchange_order_id": latest_sell.get("latest_sell_exchange_order_id"),
         "latest_sell_qty": latest_sell.get("latest_sell_qty"),
+        "authority_type": latest_sell_authority.authority_type,
         "latest_trade_id": latest_sell.get("latest_trade_id"),
         "latest_sell_trade_id": latest_sell.get("latest_trade_id"),
         "latest_trade_asset_after": latest_sell.get("latest_trade_asset_after"),
@@ -1094,6 +1107,7 @@ def build_position_authority_rebuild_preview(
             "current_portfolio_qty": float(flat_preview.get("current_portfolio_qty") or 0.0),
             "materialized_lot_projection_qty": float(flat_preview.get("materialized_lot_projection_qty") or 0.0),
             "terminal_flat_sell_detected": bool(flat_preview.get("terminal_flat_sell_detected")),
+            "authority_type": flat_preview.get("authority_type"),
             "stale_dust_rows_to_clear": list(flat_preview.get("stale_dust_rows_to_clear") or []),
             "safe_to_apply_terminal_flat_projection_repair": bool(
                 flat_preview.get("safe_to_apply_terminal_flat_projection_repair")
@@ -1747,6 +1761,7 @@ def apply_flat_stale_lot_projection_repair(
         "latest_sell_client_order_id": preview.get("latest_sell_client_order_id"),
         "latest_sell_exchange_order_id": preview.get("latest_sell_exchange_order_id"),
         "latest_sell_qty": preview.get("latest_sell_qty"),
+        "authority_type": preview.get("authority_type"),
         "latest_sell_trade_id": preview.get("latest_sell_trade_id"),
         "latest_trade_id": preview.get("latest_trade_id"),
         "latest_trade_asset_after": preview.get("latest_trade_asset_after"),
@@ -1771,6 +1786,7 @@ def apply_flat_stale_lot_projection_repair(
         ).rowcount
         if int(deleted or 0) != len(ids):
             raise RuntimeError("flat stale lot projection repair postcondition failed: stale row set changed")
+        repair_basis["deleted_stale_lot_ids"] = ids
         after = summarize_position_lots(conn, pair=settings.PAIR).as_dict()
         repair_basis["lot_snapshot_after"] = after
         convergence_after = _assert_post_repair_projection_converged(

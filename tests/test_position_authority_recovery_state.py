@@ -36,8 +36,14 @@ from bithumb_bot.fee_pending_repair import (
     apply_fee_pending_accounting_repair,
     build_fee_pending_accounting_repair_preview,
 )
-from bithumb_bot.lifecycle import rebuild_lifecycle_projections_from_trades, summarize_position_lots
+from bithumb_bot.lifecycle import (
+    rebuild_lifecycle_projections_from_trades,
+    resolve_execution_quantity_authority,
+    summarize_position_lots,
+)
+from bithumb_bot.flatten import _flatten_submit_evidence
 from bithumb_bot.oms import set_status
+import bithumb_bot.position_authority_repair as position_authority_repair
 from bithumb_bot.position_authority_repair import (
     _simulate_non_full_position_authority_repair,
     _replace_with_portfolio_anchored_projection,
@@ -903,6 +909,221 @@ def _insert_target_delta_terminal_flat_evidence(
             "target_delta_rebalance",
         ),
     )
+
+
+def _insert_operator_clean_closeout_evidence(
+    conn,
+    *,
+    client_order_id: str,
+    ts_ms: int,
+    submitted_qty: float,
+    covered_open_exposure_qty: float,
+    covered_dust_tracking_qty: float,
+    terminal_asset_after: float = 0.0,
+    clean_account_after_sell: bool = True,
+    payload_volume: float | None = None,
+) -> dict[str, object]:
+    evidence_json = _flatten_submit_evidence(
+        client_order_id=client_order_id,
+        submit_attempt_id=f"{client_order_id}:submit:test",
+        trigger="operator",
+        qty=submitted_qty,
+        market_price=95_499_969.9497125,
+        phase="pre_submit",
+        status="PENDING_SUBMIT",
+        reason_code="broker_confirmed_residual_closeout",
+        closeout_contract_evidence={
+            "authority_type": "operator_clean_account_closeout",
+            "command_intent": "operator_clean_account_closeout",
+            "reason_code": "broker_confirmed_residual_closeout",
+            "raw_total_asset_qty": submitted_qty,
+            "tracked_dust_qty": covered_dust_tracking_qty,
+            "planned_sell_qty": submitted_qty,
+            "planned_qty": submitted_qty,
+            "submitted_qty": submitted_qty,
+            "payload_volume": submitted_qty if payload_volume is None else payload_volume,
+            "clean_account_after_sell": clean_account_after_sell,
+            "estimated_residual_qty": 0.0 if clean_account_after_sell else terminal_asset_after,
+            "covered_dust_tracking_qty": covered_dust_tracking_qty,
+            "covered_open_exposure_qty": covered_open_exposure_qty,
+            "broker_qty_after": 0.0,
+            "portfolio_qty_after": 0.0,
+        },
+    )
+    evidence = json.loads(evidence_json)
+    conn.execute(
+        """
+        INSERT INTO order_events(
+            client_order_id, event_type, event_ts, order_status, qty, side,
+            submit_evidence, final_submitted_qty, decision_reason_code, submission_reason_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            client_order_id,
+            "submit_attempt_preflight",
+            int(ts_ms),
+            "PENDING_SUBMIT",
+            float(submitted_qty),
+            "SELL",
+            evidence_json,
+            float(submitted_qty),
+            "broker_confirmed_residual_closeout",
+            "broker_confirmed_residual_closeout",
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE trades
+        SET asset_after=?
+        WHERE client_order_id=?
+        """,
+        (float(terminal_asset_after), client_order_id),
+    )
+    return evidence
+
+
+def _materialize_ec2_operator_clean_closeout_fixture(
+    conn,
+    *,
+    broker_qty: float = 0.0,
+    portfolio_qty: float = 0.0,
+    open_order_status: str | None = None,
+    covered_dust_tracking_qty: float = 0.00049913,
+    filled_qty: float = 0.00049913,
+    terminal_asset_after: float = 0.0,
+    non_dust_row: bool = False,
+) -> dict[str, object]:
+    _apply_filled_order(
+        conn,
+        client_order_id="ec2_00049913_buy",
+        side="BUY",
+        qty=0.00049913,
+        ts_ms=1_781_881_170_000,
+        fill_id="ec2-00049913-buy-fill",
+        price=95_499_969.9497125,
+        fee=0.0,
+    )
+    _apply_filled_order(
+        conn,
+        client_order_id="flatten_1781881180147",
+        side="SELL",
+        qty=filled_qty,
+        ts_ms=1_781_881_180_147,
+        fill_id="C0101000003112013506:aggregate:1",
+        price=95_499_969.9497125,
+        fee=19.06,
+    )
+    conn.execute(
+        """
+        UPDATE orders
+        SET exchange_order_id=?, decision_reason_code=?, final_submitted_qty=?, qty_filled=?, status='FILLED'
+        WHERE client_order_id='flatten_1781881180147'
+        """,
+        (
+            "C0101000003112013506",
+            "broker_confirmed_residual_closeout",
+            0.00049913,
+            filled_qty,
+        ),
+    )
+    evidence = _insert_operator_clean_closeout_evidence(
+        conn,
+        client_order_id="flatten_1781881180147",
+        ts_ms=1_781_881_180_147,
+        submitted_qty=0.00049913,
+        covered_open_exposure_qty=0.0,
+        covered_dust_tracking_qty=covered_dust_tracking_qty,
+        terminal_asset_after=terminal_asset_after,
+    )
+    buy_trade = conn.execute(
+        "SELECT id, ts FROM trades WHERE client_order_id='ec2_00049913_buy'"
+    ).fetchone()
+    assert buy_trade is not None
+    conn.execute("DELETE FROM open_position_lots WHERE pair=?", (settings.PAIR,))
+    stale_quantities = [0.00024956, 0.00024957]
+    if non_dust_row:
+        stale_quantities[0] = 0.00049913
+    stale_ids: list[int] = []
+    for idx, qty in enumerate(stale_quantities):
+        cursor = conn.execute(
+            """
+            INSERT INTO open_position_lots(
+                pair, entry_trade_id, entry_client_order_id, entry_fill_id, entry_ts, entry_price,
+                qty_open, executable_lot_count, dust_tracking_lot_count, lot_semantic_version,
+                internal_lot_size, lot_min_qty, lot_qty_step, lot_min_notional_krw,
+                lot_max_qty_decimals, lot_rule_source_mode, position_semantic_basis,
+                position_state, entry_fee_total, entry_decision_linkage
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                settings.PAIR,
+                int(buy_trade["id"]),
+                "ec2_00049913_buy",
+                f"ec2-stale-dust-{idx + 1}",
+                int(buy_trade["ts"]),
+                95_499_969.9497125,
+                qty,
+                1 if non_dust_row and idx == 0 else 0,
+                0 if non_dust_row and idx == 0 else 1,
+                1,
+                0.00049913,
+                0.0001,
+                0.0001,
+                5000.0,
+                8,
+                "ledger",
+                "lot-native",
+                "open_exposure" if non_dust_row and idx == 0 else "dust_tracking",
+                0.0,
+                "direct",
+            ),
+        )
+        stale_ids.append(int(cursor.lastrowid))
+    if open_order_status:
+        record_order_if_missing(
+            conn,
+            client_order_id="open-order-blocker",
+            side="SELL",
+            qty_req=0.0001,
+            price=95_499_969.9497125,
+            ts_ms=1_781_881_181_000,
+            status=open_order_status,
+            internal_lot_size=0.00049913,
+            effective_min_trade_qty=0.0001,
+            qty_step=0.0001,
+            min_notional_krw=0.0,
+            intended_lot_count=1,
+            executable_lot_count=1,
+        )
+    set_portfolio_breakdown(
+        conn,
+        cash_available=100000.0 + (0.00049913 * 95_499_969.9497125) - 19.06,
+        cash_locked=0.0,
+        asset_available=portfolio_qty,
+        asset_locked=0.0,
+    )
+    conn.commit()
+    runtime_state.record_reconcile_result(
+        success=True,
+        reason_code="RECENT_FILL_APPLIED",
+        metadata={
+            "balance_source": "accounts_v1_rest_snapshot",
+            "balance_observed_ts_ms": 1_781_881_182_000,
+            "balance_asset_ts_ms": 1_781_881_182_000,
+            "broker_asset_qty": broker_qty,
+            "broker_asset_available": broker_qty,
+            "broker_asset_locked": 0.0,
+            "broker_cash_available": 100000.0 + (0.00049913 * 95_499_969.9497125) - 19.06,
+            "broker_cash_locked": 0.0,
+            "base_currency": "BTC",
+            "quote_currency": "KRW",
+            "remote_open_order_found": 0,
+            "missing_base_full_closeout_allowed": 1,
+            "missing_base_full_closeout_reason": "operator_clean_account_closeout",
+        },
+        now_epoch_sec=1.0,
+    )
+    return {"stale_ids": stale_ids, "evidence": evidence}
 
 
 def _create_terminal_flat_stale_dust_incident(conn) -> None:
@@ -3528,6 +3749,268 @@ def test_repair_plan_reports_target_delta_terminal_flat_stale_dust_clearly(recov
     )
 
 
+def test_terminal_closeout_authority_accepts_operator_clean_account_closeout(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_operator_clean_closeout_fixture(conn)
+        authority = resolve_execution_quantity_authority(
+            conn,
+            client_order_id="flatten_1781881180147",
+        )
+    finally:
+        conn.close()
+
+    assert authority.authority_type == "operator_clean_account_closeout"
+    assert authority.source == "operator_clean_account_closeout"
+    assert authority.is_operator_clean_account_terminal_flat is True
+    assert authority.is_any_supported_terminal_flat_closeout is True
+    assert authority.is_target_delta_terminal_flat is False
+    assert authority.dust_tracking_qty == pytest.approx(0.00049913)
+    assert authority.as_dict()["terminal_closeout_authority"]["command_intent"] == "operator_clean_account_closeout"
+
+
+def test_terminal_closeout_authority_accepts_target_delta(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_flat_stale_projection_fixture(conn)
+        authority = resolve_execution_quantity_authority(
+            conn,
+            client_order_id="live_1777367760000_sell_ae50365f",
+        )
+    finally:
+        conn.close()
+
+    assert authority.authority_type == "target_delta"
+    assert authority.is_target_delta_terminal_flat is True
+    assert authority.is_any_supported_terminal_flat_closeout is True
+
+
+def test_terminal_closeout_authority_rejects_partial_operator_closeout(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_operator_clean_closeout_fixture(conn, filled_qty=0.0004)
+        authority = resolve_execution_quantity_authority(
+            conn,
+            client_order_id="flatten_1781881180147",
+        )
+        preview = build_flat_stale_lot_projection_repair_preview(conn)
+    finally:
+        conn.close()
+
+    assert authority.authority_type == "operator_clean_account_closeout"
+    assert authority.is_any_supported_terminal_flat_closeout is False
+    assert preview["safe_to_apply"] is False
+    assert "filled_qty_below_covered_qty" in preview["blockers"]
+
+
+def test_operator_clean_closeout_evidence_survives_order_event_roundtrip(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        fixture = _materialize_ec2_operator_clean_closeout_fixture(conn)
+        row = conn.execute(
+            """
+            SELECT submit_evidence
+            FROM order_events
+            WHERE client_order_id='flatten_1781881180147'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    evidence = json.loads(row["submit_evidence"])
+    assert evidence["command_intent"] == "operator_clean_account_closeout"
+    assert evidence["reason_code"] == "broker_confirmed_residual_closeout"
+    assert evidence["covered_dust_tracking_qty"] == pytest.approx(0.00049913)
+    assert evidence["planned_sell_qty"] == pytest.approx(0.00049913)
+    assert evidence["payload_volume"] == pytest.approx(0.00049913)
+    assert evidence["clean_account_after_sell"] is True
+    assert evidence["operator_closeout_contract_hash"] == fixture["evidence"]["operator_closeout_contract_hash"]
+
+
+def test_flatten_submit_evidence_rejects_operator_planned_payload_mismatch(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        with pytest.raises(ValueError, match="payload volume"):
+            _insert_operator_clean_closeout_evidence(
+                conn,
+                client_order_id="mismatch",
+                ts_ms=1,
+                submitted_qty=0.00049913,
+                covered_open_exposure_qty=0.0,
+                covered_dust_tracking_qty=0.00049913,
+                payload_volume=0.0004,
+            )
+    finally:
+        conn.close()
+
+
+def test_operator_clean_closeout_flat_stale_projection_preview_is_safe(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_operator_clean_closeout_fixture(conn)
+        preview = build_flat_stale_lot_projection_repair_preview(conn)
+    finally:
+        conn.close()
+
+    assert preview["needed"] is True
+    assert preview["safe_to_apply"] is True
+    assert preview["terminal_flat_sell_detected"] is True
+    assert preview["safe_to_apply_terminal_flat_projection_repair"] is True
+    assert preview["authority_type"] == "operator_clean_account_closeout"
+    assert preview["latest_sell_client_order_id"] == "flatten_1781881180147"
+    assert preview["stale_lot_row_count"] == 2
+    assert preview["stale_lot_qty_total"] == pytest.approx(0.00049913)
+    assert "terminal_flat_target_delta_dust_authority_missing" not in preview["blockers"]
+
+
+def test_ec2_00049913_operator_clean_closeout_projection_converges_without_target_delta_evidence(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_operator_clean_closeout_fixture(conn)
+        before = build_lot_projection_convergence(conn, pair=settings.PAIR)
+        preview = build_flat_stale_lot_projection_repair_preview(conn)
+        result = apply_flat_stale_lot_projection_repair(conn, note="ec2 operator clean closeout regression")
+        conn.commit()
+        after = build_lot_projection_convergence(conn, pair=settings.PAIR)
+    finally:
+        conn.close()
+
+    assert before["projected_total_qty"] == pytest.approx(0.00049913)
+    assert preview["safe_to_apply"] is True
+    assert preview["terminal_flat_quantity_authority"]["authority_type"] == "operator_clean_account_closeout"
+    assert result["projection_publication"]["created"] is True
+    assert result["repair"]["created"] is True
+    assert result["repair_basis"]["authority_type"] == "operator_clean_account_closeout"
+    assert result["post_repair_projection_convergence"]["converged"] is True
+    assert after["projected_total_qty"] == pytest.approx(0.0)
+    assert after["portfolio_qty"] == pytest.approx(0.0)
+    assert after["converged"] is True
+
+
+def test_operator_clean_closeout_projection_apply_records_publication_and_repair_audit(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        fixture = _materialize_ec2_operator_clean_closeout_fixture(conn)
+        result = apply_flat_stale_lot_projection_repair(conn, note="operator audit")
+        conn.commit()
+        publication_count = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM position_authority_projection_publications"
+        ).fetchone()["cnt"]
+        repair_count = conn.execute("SELECT COUNT(*) AS cnt FROM position_authority_repairs").fetchone()["cnt"]
+    finally:
+        conn.close()
+
+    assert result["projection_publication"]["created"] is True
+    assert result["repair"]["created"] is True
+    assert publication_count == 1
+    assert repair_count == 1
+    assert result["repair_basis"]["deleted_stale_lot_ids"] == fixture["stale_ids"]
+    assert result["post_repair_projection_convergence"]["projected_total_qty"] == pytest.approx(0.0)
+
+
+def test_operator_clean_closeout_projection_apply_fails_if_postcondition_not_converged(
+    recovery_db,
+    monkeypatch,
+):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_operator_clean_closeout_fixture(conn)
+
+        def _fail_postcondition(*_args, **_kwargs):
+            raise RuntimeError("position authority repair postcondition failed: injected")
+
+        monkeypatch.setattr(
+            position_authority_repair,
+            "_assert_post_repair_projection_converged",
+            _fail_postcondition,
+        )
+        with pytest.raises(RuntimeError, match="postcondition failed"):
+            apply_flat_stale_lot_projection_repair(conn)
+        repair_count = conn.execute("SELECT COUNT(*) AS cnt FROM position_authority_repairs").fetchone()["cnt"]
+        publication_count = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM position_authority_projection_publications"
+        ).fetchone()["cnt"]
+        stale_count = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM open_position_lots WHERE qty_open > 1e-12"
+        ).fetchone()["cnt"]
+    finally:
+        conn.close()
+
+    assert repair_count == 0
+    assert publication_count == 0
+    assert stale_count == 2
+
+
+def test_operator_clean_closeout_projection_repair_is_idempotent(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_operator_clean_closeout_fixture(conn)
+        first = apply_flat_stale_lot_projection_repair(conn)
+        conn.commit()
+        second_preview = build_flat_stale_lot_projection_repair_preview(conn)
+        second = apply_flat_stale_lot_projection_repair(conn)
+        repair_count = conn.execute("SELECT COUNT(*) AS cnt FROM position_authority_repairs").fetchone()["cnt"]
+    finally:
+        conn.close()
+
+    assert first["repair"]["created"] is True
+    assert second_preview["needed"] is False
+    assert second_preview["recommended_command"] is None
+    assert second["noop"] is True
+    assert repair_count == 1
+
+
+@pytest.mark.parametrize(
+    ("fixture_kwargs", "expected_blocker"),
+    [
+        ({"covered_dust_tracking_qty": 0.0004}, "covered_dust_tracking_qty_mismatch"),
+        ({"terminal_asset_after": 0.0001}, "terminal_asset_after_not_flat"),
+        ({"broker_qty": 0.0001}, "broker_not_flat"),
+        ({"portfolio_qty": 0.0001}, "portfolio_not_flat"),
+        ({"open_order_status": "NEW"}, "open_orders_present"),
+        ({"non_dust_row": True}, "non_dust_tracking_lot_rows_present"),
+    ],
+)
+def test_operator_closeout_projection_repair_blocks_incomplete_or_ambiguous_closeouts(
+    recovery_db,
+    fixture_kwargs,
+    expected_blocker,
+):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_operator_clean_closeout_fixture(conn, **fixture_kwargs)
+        preview = build_flat_stale_lot_projection_repair_preview(conn)
+    finally:
+        conn.close()
+
+    assert preview["safe_to_apply"] is False
+    assert expected_blocker in preview["blockers"]
+
+
+def test_operator_clean_closeout_projection_repair_clears_startup_position_authority_blockers(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_operator_clean_closeout_fixture(conn)
+        before = compute_runtime_readiness_snapshot(conn).as_dict()
+        apply_flat_stale_lot_projection_repair(conn)
+        conn.commit()
+        after = compute_runtime_readiness_snapshot(conn).as_dict()
+        after_convergence = build_lot_projection_convergence(conn, pair=settings.PAIR)
+    finally:
+        conn.close()
+
+    assert before["projection_converged"] is False
+    assert after["projection_converged"] is True
+    assert after_convergence["projected_total_qty"] == pytest.approx(0.0)
+    assert after_convergence["portfolio_qty"] == pytest.approx(0.0)
+    assert "POSITION_AUTHORITY_CORRECTION_REQUIRED" not in after["resume_blockers"]
+    assert "position_authority_projection_rebuild_required" not in str(after)
+    assert "flatten-position" not in str(after.get("recommended_command") or "")
+
+
 def test_flat_stale_lot_projection_apply_clears_projection_and_records_audit(recovery_db):
     conn = ensure_db(str(recovery_db))
     try:
@@ -3819,6 +4302,43 @@ def test_flat_stale_lot_projection_operator_commands_and_repair_plan(recovery_db
     assert "[REBUILD-POSITION-AUTHORITY] applied" in apply_out
     assert "new_projected_total_qty=0.000000000000" in apply_out
     assert "projection_converged_after=1" in apply_out
+
+
+def test_rebuild_position_authority_flat_stale_preview_json_is_parseable(recovery_db, capsys):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_operator_clean_closeout_fixture(conn)
+    finally:
+        conn.close()
+
+    capsys.readouterr()
+    app_main(["rebuild-position-authority", "--flat-stale-projection-repair", "--json"])
+    payload = json.loads(capsys.readouterr().out.strip())
+
+    assert payload["repair_mode"] == "flat_stale_projection_repair"
+    assert payload["needed"] is True
+    assert payload["safe_to_apply"] is True
+    assert payload["final_safe_to_apply"] is True
+    assert payload["authority_type"] == "operator_clean_account_closeout"
+    assert payload["terminal_flat_sell_detected"] is True
+    assert payload["stale_lot_row_count"] == 2
+    assert payload["stale_lot_qty_total"] == pytest.approx(0.00049913)
+    assert payload["projected_total_qty"] == pytest.approx(0.00049913)
+
+
+def test_rebuild_position_authority_json_distinguishes_not_simulated_from_zero(recovery_db, capsys):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_operator_clean_closeout_fixture(conn)
+    finally:
+        conn.close()
+
+    capsys.readouterr()
+    app_main(["rebuild-position-authority", "--flat-stale-projection-repair", "--json"])
+    payload = json.loads(capsys.readouterr().out.strip())
+
+    assert payload["replay_projected_total_qty"] == {"state": "not_simulated", "value": None}
+    assert payload["post_publish_projected_total_qty"] == pytest.approx(0.0)
 
 
 def test_diagnose_fill_trade_linkage_reports_matchable_and_unmatchable_rows(

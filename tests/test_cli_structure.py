@@ -335,6 +335,17 @@ def test_live_ops_commands_have_intent_specific_guard_policies() -> None:
     assert registry["rebuild-position-authority"].guard_policy == "operator_recovery"
 
 
+def test_rebuild_position_authority_json_flag_matches_command_spec() -> None:
+    registry = command_registry()
+    parser = build_parser(registry)
+
+    assert registry["rebuild-position-authority"].json_output_supported is True
+    args = parser.parse_args(["rebuild-position-authority", "--flat-stale-projection-repair", "--json"])
+    assert args.cmd == "rebuild-position-authority"
+    assert args.flat_stale_projection_repair is True
+    assert args.json is True
+
+
 def test_operator_recovery_guard_uses_basic_guard_not_strategy_startup(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     handler_called = False

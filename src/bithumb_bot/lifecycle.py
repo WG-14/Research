@@ -5,6 +5,7 @@ import sqlite3
 from dataclasses import dataclass, replace
 from typing import Any
 
+from .canonical_decision import sha256_prefixed
 from .config import settings
 from .db_core import normalize_asset_qty
 from .dust import (
@@ -267,6 +268,66 @@ class ProjectionReplayResult:
 
 
 @dataclass(frozen=True)
+class TerminalCloseoutAuthority:
+    authority_type: str
+    client_order_id: str | None
+    exchange_order_id: str | None
+    command_intent: str | None
+    reason_code: str | None
+    prior_position_qty: float | None
+    covered_open_exposure_qty: float | None
+    covered_dust_tracking_qty: float | None
+    planned_qty: float | None
+    submitted_qty: float
+    filled_qty: float
+    terminal_asset_after: float | None
+    clean_account_after_sell: bool
+    broker_qty_after: float | None
+    portfolio_qty_after: float | None
+    evidence_source: str
+    evidence_hash: str | None
+
+    @property
+    def covered_qty(self) -> float:
+        return normalize_asset_qty(
+            float(self.covered_open_exposure_qty or 0.0)
+            + float(self.covered_dust_tracking_qty or 0.0)
+        )
+
+    @property
+    def terminal_flat(self) -> bool:
+        return bool(
+            self.clean_account_after_sell
+            and self.terminal_asset_after is not None
+            and abs(float(self.terminal_asset_after)) <= 1e-12
+            and self.filled_qty + 1e-12 >= self.covered_qty
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "authority_type": self.authority_type,
+            "client_order_id": self.client_order_id,
+            "exchange_order_id": self.exchange_order_id,
+            "command_intent": self.command_intent,
+            "reason_code": self.reason_code,
+            "prior_position_qty": self.prior_position_qty,
+            "covered_open_exposure_qty": self.covered_open_exposure_qty,
+            "covered_dust_tracking_qty": self.covered_dust_tracking_qty,
+            "covered_qty": self.covered_qty,
+            "planned_qty": self.planned_qty,
+            "submitted_qty": float(self.submitted_qty),
+            "filled_qty": float(self.filled_qty),
+            "terminal_asset_after": self.terminal_asset_after,
+            "clean_account_after_sell": bool(self.clean_account_after_sell),
+            "broker_qty_after": self.broker_qty_after,
+            "portfolio_qty_after": self.portfolio_qty_after,
+            "terminal_flat": self.terminal_flat,
+            "evidence_source": self.evidence_source,
+            "evidence_hash": self.evidence_hash,
+        }
+
+
+@dataclass(frozen=True)
 class ExecutionQuantityAuthority:
     source: str
     submitted_qty: float
@@ -276,25 +337,78 @@ class ExecutionQuantityAuthority:
     terminal_flat: bool
     decision_reason_code: str | None
     evidence_source: str
+    authority_type: str = "lot_native"
+    command_intent: str | None = None
+    reason_code: str | None = None
+    exchange_order_id: str | None = None
+    filled_qty: float = 0.0
+    planned_qty: float | None = None
+    broker_qty_after: float | None = None
+    portfolio_qty_after: float | None = None
+    clean_account_after_sell: bool = False
+    evidence_hash: str | None = None
+    terminal_closeout_authority: TerminalCloseoutAuthority | None = None
 
     @property
     def is_target_delta_terminal_flat(self) -> bool:
         return (
-            self.source == "target_delta"
+            self.authority_type == "target_delta"
             and self.terminal_flat
+            and self.submitted_qty > 1e-12
+        )
+
+    @property
+    def is_operator_clean_account_terminal_flat(self) -> bool:
+        return (
+            self.authority_type == "operator_clean_account_closeout"
+            and self.terminal_flat
+            and self.submitted_qty > 1e-12
+        )
+
+    @property
+    def is_any_supported_terminal_flat_closeout(self) -> bool:
+        return bool(
+            self.terminal_flat
+            and self.authority_type
+            in {
+                "target_delta",
+                "operator_clean_account_closeout",
+                "strategy_lot_native",
+                "emergency_flatten",
+            }
             and self.submitted_qty > 1e-12
         )
 
     def as_dict(self) -> dict[str, object]:
         return {
             "source": self.source,
+            "authority_type": self.authority_type,
             "submitted_qty": float(self.submitted_qty),
+            "filled_qty": float(self.filled_qty),
+            "planned_qty": self.planned_qty,
             "open_exposure_qty": self.open_exposure_qty,
             "dust_tracking_qty": self.dust_tracking_qty,
+            "covered_open_exposure_qty": self.open_exposure_qty,
+            "covered_dust_tracking_qty": self.dust_tracking_qty,
             "terminal_asset_after": self.terminal_asset_after,
             "terminal_flat": bool(self.terminal_flat),
+            "is_target_delta_terminal_flat": self.is_target_delta_terminal_flat,
+            "is_operator_clean_account_terminal_flat": self.is_operator_clean_account_terminal_flat,
+            "is_any_supported_terminal_flat_closeout": self.is_any_supported_terminal_flat_closeout,
             "decision_reason_code": self.decision_reason_code,
+            "command_intent": self.command_intent,
+            "reason_code": self.reason_code,
+            "exchange_order_id": self.exchange_order_id,
+            "broker_qty_after": self.broker_qty_after,
+            "portfolio_qty_after": self.portfolio_qty_after,
+            "clean_account_after_sell": bool(self.clean_account_after_sell),
             "evidence_source": self.evidence_source,
+            "evidence_hash": self.evidence_hash,
+            "terminal_closeout_authority": (
+                self.terminal_closeout_authority.as_dict()
+                if self.terminal_closeout_authority is not None
+                else None
+            ),
         }
 
 
@@ -338,9 +452,9 @@ def resolve_execution_quantity_authority(
     """Resolve narrow SELL quantity authority for terminal-flat projection closure.
 
     This intentionally avoids replacing lot-native SELL authority. It only
-    recognizes target-delta terminal-flat evidence so lifecycle replay can close
-    dust projection rows that were included in a broker-verified target-delta
-    liquidation fill.
+    recognizes explicit terminal-closeout evidence so lifecycle replay can close
+    dust projection rows that were included in a broker-verified full closeout
+    fill.
     """
 
     trade_row = None
@@ -370,7 +484,7 @@ def resolve_execution_quantity_authority(
         """
         SELECT
             client_order_id, side, qty_req, qty_filled, final_submitted_qty,
-            decision_reason_code
+            decision_reason_code, exchange_order_id
         FROM orders
         WHERE client_order_id=?
         LIMIT 1
@@ -392,12 +506,23 @@ def resolve_execution_quantity_authority(
     ).fetchone()
     evidence = _json_object(_row_value(event_row, "submit_evidence", 0)) if event_row is not None else {}
 
+    reason_code = _first_text(
+        evidence.get("reason_code"),
+        evidence.get("closeout_reason_code"),
+        evidence.get("submission_reason_code"),
+        evidence.get("submission_reason"),
+        _row_value(event_row, "submission_reason_code", 4),
+    )
     decision_reason_code = _first_text(
         evidence.get("decision_reason_code"),
         evidence.get("decision_reason"),
         _row_value(order_row, "decision_reason_code", 5),
         _row_value(event_row, "decision_reason_code", 3),
-        _row_value(event_row, "submission_reason_code", 4),
+        reason_code,
+    )
+    command_intent = _first_text(
+        evidence.get("command_intent"),
+        evidence.get("intent"),
     )
     submit_qty_source = _first_text(
         evidence.get("sell_qty_basis_source"),
@@ -405,19 +530,31 @@ def resolve_execution_quantity_authority(
         evidence.get("authority"),
         evidence.get("source"),
     )
-    source = "target_delta" if (
+    is_target_delta = (
         submit_qty_source == "target_position_delta"
         or evidence.get("authority") == "target_position_delta"
         or evidence.get("source") == "target_delta"
         or decision_reason_code == "target_delta_rebalance"
-    ) else "lot_native"
+    )
+    is_operator_clean_closeout = (
+        command_intent == "operator_clean_account_closeout"
+        or reason_code == "broker_confirmed_residual_closeout"
+    )
+    if is_operator_clean_closeout:
+        source = "operator_clean_account_closeout"
+    elif is_target_delta:
+        source = "target_delta"
+    else:
+        source = "lot_native"
 
     submitted_qty = _first_float(
         evidence.get("final_submitted_qty"),
+        evidence.get("submitted_qty"),
         evidence.get("order_qty"),
         evidence.get("normalized_qty"),
         evidence.get("observed_submit_payload_qty"),
         evidence.get("submit_payload_qty"),
+        evidence.get("payload_volume"),
         _row_value(order_row, "final_submitted_qty", 4),
         _row_value(order_row, "qty_filled", 3),
         _row_value(order_row, "qty_req", 2),
@@ -425,20 +562,80 @@ def resolve_execution_quantity_authority(
         _row_value(event_row, "qty", 1),
         _row_value(trade_row, "qty", 2),
     ) or 0.0
+    filled_qty = _first_float(
+        evidence.get("filled_qty"),
+        _row_value(trade_row, "qty", 2),
+        _row_value(order_row, "qty_filled", 3),
+    ) or 0.0
     open_exposure_qty = _first_float(
+        evidence.get("covered_open_exposure_qty"),
         evidence.get("sell_open_exposure_qty"),
         evidence.get("open_exposure_qty"),
+        evidence.get("executable_exposure_qty"),
     )
     dust_tracking_qty = _first_float(
+        evidence.get("covered_dust_tracking_qty"),
         evidence.get("sell_dust_tracking_qty"),
         evidence.get("dust_tracking_qty"),
+        evidence.get("tracked_dust_qty"),
     )
     terminal_asset_after = _first_float(_row_value(trade_row, "asset_after", 3))
     trade_side = str(_row_value(trade_row, "side", 1) or "").upper()
-    terminal_flat = bool(trade_side == "SELL" and terminal_asset_after is not None and abs(terminal_asset_after) <= 1e-12)
+    clean_account_after_sell = bool(evidence.get("clean_account_after_sell")) if evidence else False
+    if is_target_delta and trade_side == "SELL" and terminal_asset_after is not None and abs(terminal_asset_after) <= 1e-12:
+        clean_account_after_sell = True
+    covered_qty = normalize_asset_qty(float(open_exposure_qty or 0.0) + float(dust_tracking_qty or 0.0))
+    terminal_flat = bool(
+        trade_side == "SELL"
+        and terminal_asset_after is not None
+        and abs(terminal_asset_after) <= 1e-12
+        and (not evidence or clean_account_after_sell or is_target_delta)
+        and float(filled_qty) + 1e-12 >= covered_qty
+    )
     evidence_source = "order_events.submit_evidence" if evidence else (
         "orders+trades" if order_row is not None or trade_row is not None else "missing"
     )
+    evidence_hash = _first_text(
+        evidence.get("operator_closeout_contract_hash"),
+        evidence.get("evidence_hash"),
+    )
+    if evidence and not evidence_hash:
+        evidence_hash = sha256_prefixed(evidence)
+    authority_type = source
+    terminal_closeout_authority = None
+    if authority_type in {
+        "target_delta",
+        "operator_clean_account_closeout",
+        "strategy_lot_native",
+        "emergency_flatten",
+    }:
+        terminal_closeout_authority = TerminalCloseoutAuthority(
+            authority_type=authority_type,
+            client_order_id=str(client_order_id) if client_order_id else None,
+            exchange_order_id=_first_text(
+                evidence.get("exchange_order_id"),
+                _row_value(order_row, "exchange_order_id", 6),
+            ),
+            command_intent=command_intent,
+            reason_code=reason_code or decision_reason_code,
+            prior_position_qty=_first_float(
+                evidence.get("prior_position_qty"),
+                evidence.get("raw_total_asset_qty"),
+                evidence.get("observed_position_qty"),
+            ),
+            covered_open_exposure_qty=open_exposure_qty,
+            covered_dust_tracking_qty=dust_tracking_qty,
+            planned_qty=_first_float(evidence.get("planned_qty"), evidence.get("planned_sell_qty")),
+            submitted_qty=float(submitted_qty),
+            filled_qty=float(filled_qty),
+            terminal_asset_after=terminal_asset_after,
+            clean_account_after_sell=bool(clean_account_after_sell),
+            broker_qty_after=_first_float(evidence.get("broker_qty_after")),
+            portfolio_qty_after=_first_float(evidence.get("portfolio_qty_after")),
+            evidence_source=evidence_source,
+            evidence_hash=evidence_hash,
+        )
+        terminal_flat = bool(terminal_closeout_authority.terminal_flat)
     return ExecutionQuantityAuthority(
         source=source,
         submitted_qty=float(submitted_qty),
@@ -448,6 +645,20 @@ def resolve_execution_quantity_authority(
         terminal_flat=terminal_flat,
         decision_reason_code=decision_reason_code,
         evidence_source=evidence_source,
+        authority_type=authority_type,
+        command_intent=command_intent,
+        reason_code=reason_code,
+        exchange_order_id=_first_text(
+            evidence.get("exchange_order_id"),
+            _row_value(order_row, "exchange_order_id", 6),
+        ),
+        filled_qty=float(filled_qty),
+        planned_qty=_first_float(evidence.get("planned_qty"), evidence.get("planned_sell_qty")),
+        broker_qty_after=_first_float(evidence.get("broker_qty_after")),
+        portfolio_qty_after=_first_float(evidence.get("portfolio_qty_after")),
+        clean_account_after_sell=bool(clean_account_after_sell),
+        evidence_hash=evidence_hash,
+        terminal_closeout_authority=terminal_closeout_authority,
     )
 
 
@@ -2227,11 +2438,11 @@ def _close_terminal_flat_dust_tracking_lots(
     open_exposure_qty_before: float,
     dust_tracking_qty_before: float,
 ) -> int:
-    """Close dust projection rows only for proven target-delta terminal flat SELLs."""
+    """Close dust projection rows only for proven terminal-flat closeout SELLs."""
 
     if dust_tracking_qty_before <= 1e-12:
         return 0
-    if not authority.is_target_delta_terminal_flat:
+    if not authority.is_any_supported_terminal_flat_closeout:
         return 0
 
     evidence_open_qty = (

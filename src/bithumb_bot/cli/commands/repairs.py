@@ -41,6 +41,7 @@ def _rebuild_position_authority(args: argparse.Namespace, _context) -> None:
         note=str(args.note) if args.note is not None else None,
         full_projection_rebuild=bool(args.full_projection_rebuild),
         flat_stale_projection_repair=bool(args.flat_stale_projection_repair),
+        as_json=bool(args.json),
     )
 
 
@@ -173,6 +174,7 @@ def _build_rebuild_position_authority(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--note")
+    parser.add_argument("--json", action="store_true")
 
 
 def _build_external_cash(parser: argparse.ArgumentParser) -> None:

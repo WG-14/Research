@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from bithumb_bot.db_core import ensure_db
+from bithumb_bot.flatten import _flatten_submit_evidence
 from bithumb_bot.oms import (
     OPEN_ORDER_STATUSES,
     TERMINAL_ORDER_STATUSES,
@@ -541,6 +544,106 @@ def test_submit_attempt_event_persists_custom_dust_unsellable_reason_code(tmp_pa
     assert row["broker_response_summary"] == "blocked_before_submit:dust_residual_unsellable"
 
 
+def test_flatten_submit_evidence_contains_operator_closeout_contract_fields(tmp_path):
+    db_path = tmp_path / "operator_closeout_evidence.sqlite"
+    conn = ensure_db(str(db_path))
+    try:
+        create_order(
+            client_order_id="flatten_1781881180147",
+            submit_attempt_id="flatten_1781881180147:submit:test",
+            side="SELL",
+            qty_req=0.00049913,
+            price=None,
+            status="PENDING_SUBMIT",
+            ts_ms=1_781_881_180_147,
+            conn=conn,
+        )
+        evidence_json = _flatten_submit_evidence(
+            client_order_id="flatten_1781881180147",
+            submit_attempt_id="flatten_1781881180147:submit:test",
+            trigger="operator",
+            qty=0.00049913,
+            market_price=95_499_969.9497125,
+            phase="pre_submit",
+            status="PENDING_SUBMIT",
+            reason_code="broker_confirmed_residual_closeout",
+            closeout_contract_evidence={
+                "authority_type": "operator_clean_account_closeout",
+                "command_intent": "operator_clean_account_closeout",
+                "reason_code": "broker_confirmed_residual_closeout",
+                "raw_total_asset_qty": 0.00049913,
+                "tracked_dust_qty": 0.00049913,
+                "planned_sell_qty": 0.00049913,
+                "submitted_qty": 0.00049913,
+                "payload_volume": 0.00049913,
+                "clean_account_after_sell": True,
+                "estimated_residual_qty": 0.0,
+                "covered_open_exposure_qty": 0.0,
+                "covered_dust_tracking_qty": 0.00049913,
+            },
+        )
+        record_submit_attempt(
+            conn=conn,
+            client_order_id="flatten_1781881180147",
+            submit_attempt_id="flatten_1781881180147:submit:test",
+            symbol="BTC_KRW",
+            side="SELL",
+            qty=0.00049913,
+            price=95_499_969.9497125,
+            submit_ts=1_781_881_180_147,
+            payload_fingerprint="operator-closeout",
+            broker_response_summary="operator_flatten_pre_submit_journaled",
+            submission_reason_code="broker_confirmed_residual_closeout",
+            exception_class=None,
+            timeout_flag=False,
+            submit_evidence=evidence_json,
+            exchange_order_id_obtained=False,
+            order_status="PENDING_SUBMIT",
+        )
+        conn.commit()
+        row = conn.execute(
+            """
+            SELECT submit_evidence
+            FROM order_events
+            WHERE client_order_id='flatten_1781881180147'
+              AND submit_evidence IS NOT NULL
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    evidence = json.loads(row["submit_evidence"])
+    assert evidence["command_intent"] == "operator_clean_account_closeout"
+    assert evidence["covered_dust_tracking_qty"] == pytest.approx(0.00049913)
+    assert evidence["planned_sell_qty"] == pytest.approx(0.00049913)
+    assert evidence["payload_volume"] == pytest.approx(0.00049913)
+    assert evidence["clean_account_after_sell"] is True
+    assert evidence["operator_closeout_contract_hash"].startswith("sha256:")
+
+
+def test_flatten_submit_evidence_rejects_operator_closeout_payload_mismatch():
+    with pytest.raises(ValueError, match="payload volume"):
+        _flatten_submit_evidence(
+            client_order_id="flatten_bad",
+            submit_attempt_id="flatten_bad:submit:test",
+            trigger="operator",
+            qty=0.00049913,
+            market_price=95_499_969.9497125,
+            phase="pre_submit",
+            status="PENDING_SUBMIT",
+            reason_code="broker_confirmed_residual_closeout",
+            closeout_contract_evidence={
+                "command_intent": "operator_clean_account_closeout",
+                "planned_sell_qty": 0.00049913,
+                "payload_volume": 0.0004,
+                "covered_dust_tracking_qty": 0.00049913,
+                "covered_open_exposure_qty": 0.0,
+                "clean_account_after_sell": True,
+                "estimated_residual_qty": 0.0,
+            },
+        )
 def test_order_suppression_records_without_order_row_and_dedups(tmp_path):
     db_path = tmp_path / "order_suppression.sqlite"
     conn = ensure_db(str(db_path))

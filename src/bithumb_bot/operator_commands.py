@@ -5989,8 +5989,42 @@ def cmd_rebuild_position_authority(
     note: str | None = None,
     full_projection_rebuild: bool = False,
     flat_stale_projection_repair: bool = False,
+    as_json: bool = False,
 ) -> None:
+    def _json_ready(payload: dict[str, object]) -> dict[str, object]:
+        result = dict(payload)
+        for key in (
+            "replay_projected_total_qty",
+            "projection_converged_after_replay",
+            "replay_projection_converged",
+        ):
+            if key in result and result[key] is None:
+                result[key] = {"state": "not_simulated", "value": None}
+        flat_preview = result.get("flat_stale_projection_repair_preview")
+        if isinstance(flat_preview, dict):
+            result.setdefault("needed", flat_preview.get("needed"))
+            result.setdefault("blockers", list(flat_preview.get("blockers") or []))
+            result.setdefault("authority_type", flat_preview.get("authority_type"))
+            result.setdefault("projected_total_qty", flat_preview.get("projected_total_qty_before"))
+            result.setdefault("terminal_flat_sell_detected", flat_preview.get("terminal_flat_sell_detected"))
+            result.setdefault("stale_lot_row_count", flat_preview.get("stale_lot_row_count"))
+            result.setdefault("stale_lot_qty_total", flat_preview.get("stale_lot_qty_total"))
+        result.setdefault("needed", result.get("needs_rebuild"))
+        result.setdefault("blockers", list(result.get("why_unsafe") or []))
+        result.setdefault("why_unsafe", list(result.get("blockers") or []))
+        result.setdefault("authority_type", result.get("authority_type"))
+        result.setdefault("broker_qty", result.get("broker_qty"))
+        result.setdefault("portfolio_qty", result.get("portfolio_qty"))
+        result.setdefault("projected_total_qty", result.get("projected_total_qty"))
+        result.setdefault("terminal_flat_sell_detected", result.get("terminal_flat_sell_detected"))
+        result.setdefault("stale_lot_row_count", result.get("stale_lot_row_count"))
+        result.setdefault("stale_lot_qty_total", result.get("stale_lot_qty_total"))
+        return result
+
     if full_projection_rebuild and flat_stale_projection_repair:
+        if as_json:
+            print(json.dumps({"ok": False, "error": "choose_one_repair_mode_flag"}, ensure_ascii=False, sort_keys=True))
+            raise SystemExit(1)
         print("[REBUILD-POSITION-AUTHORITY] refused: choose one repair mode flag")
         raise SystemExit(1)
     conn = ensure_db()
@@ -6000,6 +6034,39 @@ def cmd_rebuild_position_authority(
             preview_kwargs["flat_stale_projection_repair"] = True
         preview = build_position_authority_rebuild_preview(conn, **preview_kwargs)
         repair_summary = get_position_authority_repair_summary(conn)
+        if as_json:
+            if not apply:
+                print(json.dumps(_json_ready(preview), ensure_ascii=False, sort_keys=True))
+                return
+            if not bool(preview["safe_to_apply"]):
+                print(json.dumps({"ok": False, "preview": _json_ready(preview), "error": "unsafe_rebuild_request"}, ensure_ascii=False, sort_keys=True))
+                raise SystemExit(1)
+            if not confirm:
+                print(json.dumps({"ok": False, "preview": _json_ready(preview), "error": "confirmation_required"}, ensure_ascii=False, sort_keys=True))
+                raise SystemExit(1)
+            apply_kwargs = {
+                "note": note,
+                "full_projection_rebuild": bool(full_projection_rebuild),
+            }
+            if flat_stale_projection_repair:
+                apply_kwargs["flat_stale_projection_repair"] = True
+            result = apply_position_authority_rebuild(conn, **apply_kwargs)
+            if not bool(result.get("noop")):
+                conn.commit()
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "noop": bool(result.get("noop")),
+                        "preview": _json_ready(preview),
+                        "result": result,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            return
+        result = None
         print("[REBUILD-POSITION-AUTHORITY] preview")
         print(
             "  "
