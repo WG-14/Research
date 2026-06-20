@@ -230,7 +230,11 @@ def _build_full_projection_rebuild_gate_report(
             f"replay_qty={replay_qty:.12f},"
             f"portfolio_qty={portfolio_qty:.12f}"
         )
-    if not explicit_full_projection_rebuild and not bool(authority_assessment.get("needs_full_projection_rebuild")):
+    canonical_internal_lot_size = float(authority_assessment.get("canonical_internal_lot_size") or 0.0)
+    if (
+        not bool(authority_assessment.get("needs_full_projection_rebuild"))
+        and (not explicit_full_projection_rebuild or canonical_internal_lot_size > _EPS)
+    ):
         reasons.append("full_projection_rebuild_not_required")
     return {
         "broker_qty": broker_qty,

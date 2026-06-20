@@ -309,15 +309,6 @@ def reconcile_apply_fills_and_refresh(
     )
     fee_pending_fills = [fill for fill in fills if _fill_accounting_status(fill) == "fee_pending"]
     fee_rate_warning_fills = [fill for fill in fills if _fill_has_expected_fee_rate_warning(fill)]
-    order_level_accounting_complete_fills = [
-        fill
-        for fill in fills
-        if _fill_accounting_status(fill) == "accounting_complete"
-        and (
-            str(getattr(fill, "fee_source", "") or "") == "order_level_paid_fee"
-            or "order_level_paid_fee" in str(getattr(fill, "fee_provenance", "") or "")
-        )
-    ]
     observation_summary: dict[str, int | str] | None = None
     if fee_pending_fills:
         observation_summary = _record_application_fill_observations(
@@ -336,15 +327,6 @@ def reconcile_apply_fills_and_refresh(
             side=side,
             fills=fills,
             source="live_application_fee_rate_warning",
-        )
-    elif order_level_accounting_complete_fills:
-        observation_summary = _record_application_fill_observations(
-            conn=conn,
-            client_order_id=client_order_id,
-            exchange_order_id=exchange_order_id,
-            side=side,
-            fills=fills,
-            source="live_application_fee_finalized",
         )
 
     try:
