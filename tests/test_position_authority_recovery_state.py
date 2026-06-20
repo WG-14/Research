@@ -47,8 +47,10 @@ import bithumb_bot.position_authority_repair as position_authority_repair
 from bithumb_bot.position_authority_repair import (
     _simulate_non_full_position_authority_repair,
     _replace_with_portfolio_anchored_projection,
+    apply_legacy_operator_closeout_evidence_enrichment,
     apply_flat_stale_lot_projection_repair,
     apply_position_authority_rebuild,
+    build_legacy_operator_closeout_evidence_enrichment_preview,
     build_flat_stale_lot_projection_repair_preview,
     build_position_authority_rebuild_preview,
 )
@@ -980,6 +982,208 @@ def _insert_operator_clean_closeout_evidence(
         (float(terminal_asset_after), client_order_id),
     )
     return evidence
+
+
+def _insert_legacy_operator_closeout_evidence(conn, *, client_order_id: str, ts_ms: int, qty: float) -> None:
+    base = {
+        "client_order_id": client_order_id,
+        "error": None,
+        "exchange_order_id": None,
+        "phase": "pre_submit",
+        "price": None,
+        "qty": qty,
+        "reason_code": "broker_confirmed_residual_closeout",
+        "reference_price": 95_500_000.0,
+        "side": "SELL",
+        "status": "PENDING_SUBMIT",
+        "submit_attempt_id": f"{client_order_id}:submit:fb0e8cb2",
+        "submit_path": "operator_flatten",
+        "symbol": "KRW-BTC",
+        "trigger": "operator",
+    }
+    ack = {
+        **base,
+        "exchange_order_id": "C0101000003112013506",
+        "phase": "broker_ack",
+        "status": "NEW",
+    }
+    for event_type, status, evidence in (
+        ("submit_attempt_preflight", "PENDING_SUBMIT", base),
+        ("submit_broker_ack", "NEW", ack),
+    ):
+        conn.execute(
+            """
+            INSERT INTO order_events(
+                client_order_id, event_type, event_ts, order_status, exchange_order_id,
+                qty, side, submit_attempt_id, submit_evidence, final_submitted_qty,
+                decision_reason_code, submission_reason_code
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                client_order_id,
+                event_type,
+                int(ts_ms),
+                status,
+                evidence.get("exchange_order_id"),
+                float(qty),
+                "SELL",
+                evidence["submit_attempt_id"],
+                json.dumps(evidence, sort_keys=True),
+                float(qty),
+                "broker_confirmed_residual_closeout",
+                "broker_confirmed_residual_closeout",
+            ),
+        )
+
+
+def _materialize_ec2_legacy_operator_closeout_fixture(
+    conn,
+    *,
+    broker_qty: float = 0.0,
+    portfolio_qty: float = 0.0,
+    open_order_status: str | None = None,
+    remote_open_order_count: int = 0,
+    stale_quantities: list[float] | None = None,
+    terminal_asset_after: float = 0.0,
+    order_side: str = "SELL",
+    order_status: str = "FILLED",
+    reason_code: str = "broker_confirmed_residual_closeout",
+    trade_side: str = "SELL",
+    trade_qty: float = 0.00049913,
+    non_dust_row: bool = False,
+    executable_lot_count: int = 0,
+) -> dict[str, object]:
+    _apply_filled_order(
+        conn,
+        client_order_id="ec2_00049913_buy",
+        side="BUY",
+        qty=0.00049913,
+        ts_ms=1_781_881_170_000,
+        fill_id="ec2-00049913-buy-fill",
+        price=95_499_969.9497125,
+        fee=0.0,
+    )
+    _apply_filled_order(
+        conn,
+        client_order_id="flatten_1781881180147",
+        side="SELL",
+        qty=trade_qty,
+        ts_ms=1_781_881_180_147,
+        fill_id="C0101000003112013506:aggregate:1",
+        price=95_499_969.9497125,
+        fee=19.06,
+    )
+    conn.execute(
+        """
+        UPDATE orders
+        SET exchange_order_id=?, decision_reason_code=?, final_submitted_qty=?,
+            qty_filled=?, status=?, side=?
+        WHERE client_order_id='flatten_1781881180147'
+        """,
+        (
+            "C0101000003112013506",
+            reason_code,
+            0.00049913,
+            0.00049913,
+            order_status,
+            order_side,
+        ),
+    )
+    conn.execute(
+        "UPDATE trades SET side=?, qty=?, asset_after=? WHERE client_order_id='flatten_1781881180147'",
+        (trade_side, trade_qty, terminal_asset_after),
+    )
+    _insert_legacy_operator_closeout_evidence(
+        conn,
+        client_order_id="flatten_1781881180147",
+        ts_ms=1_781_881_180_147,
+        qty=0.00049913,
+    )
+    buy_trade = conn.execute(
+        "SELECT id, ts FROM trades WHERE client_order_id='ec2_00049913_buy'"
+    ).fetchone()
+    assert buy_trade is not None
+    conn.execute("DELETE FROM open_position_lots WHERE pair=?", (settings.PAIR,))
+    stale_ids: list[int] = []
+    quantities = stale_quantities or [0.00011161, 0.00038752]
+    for idx, qty in enumerate(quantities):
+        cursor = conn.execute(
+            """
+            INSERT INTO open_position_lots(
+                pair, entry_trade_id, entry_client_order_id, entry_fill_id, entry_ts, entry_price,
+                qty_open, executable_lot_count, dust_tracking_lot_count, lot_semantic_version,
+                internal_lot_size, lot_min_qty, lot_qty_step, lot_min_notional_krw,
+                lot_max_qty_decimals, lot_rule_source_mode, position_semantic_basis,
+                position_state, entry_fee_total, entry_decision_linkage
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                settings.PAIR,
+                int(buy_trade["id"]),
+                "ec2_00049913_buy",
+                f"ec2-legacy-stale-dust-{idx + 1}",
+                int(buy_trade["ts"]),
+                95_499_969.9497125,
+                qty,
+                executable_lot_count if idx == 0 else 0,
+                1,
+                1,
+                0.00049913,
+                0.0001,
+                0.0001,
+                5000.0,
+                8,
+                "ledger",
+                "lot-native",
+                "open_exposure" if non_dust_row and idx == 0 else "dust_tracking",
+                0.0,
+                "direct",
+            ),
+        )
+        stale_ids.append(int(cursor.lastrowid))
+    if open_order_status:
+        record_order_if_missing(
+            conn,
+            client_order_id="open-order-blocker",
+            side="SELL",
+            qty_req=0.0001,
+            price=95_499_969.9497125,
+            ts_ms=1_781_881_181_000,
+            status=open_order_status,
+            internal_lot_size=0.00049913,
+            effective_min_trade_qty=0.0001,
+            qty_step=0.0001,
+            min_notional_krw=0.0,
+            intended_lot_count=1,
+            executable_lot_count=1,
+        )
+    set_portfolio_breakdown(
+        conn,
+        cash_available=100000.0 + (0.00049913 * 95_499_969.9497125) - 19.06,
+        cash_locked=0.0,
+        asset_available=portfolio_qty,
+        asset_locked=0.0,
+    )
+    conn.commit()
+    runtime_state.record_reconcile_result(
+        success=True,
+        reason_code="RECENT_FILL_APPLIED",
+        metadata={
+            "balance_source": "accounts_v1_rest_snapshot",
+            "balance_observed_ts_ms": 1_781_881_182_000,
+            "balance_asset_ts_ms": 1_781_881_182_000,
+            "broker_asset_qty": broker_qty,
+            "broker_asset_available": broker_qty,
+            "broker_asset_locked": 0.0,
+            "broker_cash_available": 100000.0 + (0.00049913 * 95_499_969.9497125) - 19.06,
+            "broker_cash_locked": 0.0,
+            "base_currency": "BTC",
+            "quote_currency": "KRW",
+            "remote_open_order_found": remote_open_order_count,
+        },
+        now_epoch_sec=1.0,
+    )
+    return {"stale_ids": stale_ids}
 
 
 def _materialize_ec2_operator_clean_closeout_fixture(
@@ -3828,6 +4032,283 @@ def test_operator_clean_closeout_evidence_survives_order_event_roundtrip(recover
     assert evidence["payload_volume"] == pytest.approx(0.00049913)
     assert evidence["clean_account_after_sell"] is True
     assert evidence["operator_closeout_contract_hash"] == fixture["evidence"]["operator_closeout_contract_hash"]
+
+
+def test_legacy_operator_closeout_evidence_enrichment_preview_safe_for_flatten_1781881180147_shape(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        fixture = _materialize_ec2_legacy_operator_closeout_fixture(conn)
+        preview = build_legacy_operator_closeout_evidence_enrichment_preview(conn)
+    finally:
+        conn.close()
+
+    assert preview["client_order_id"] == "flatten_1781881180147"
+    assert preview["exchange_order_id"] == "C0101000003112013506"
+    assert preview["needed"] is True
+    assert preview["safe_to_apply"] is True
+    assert preview["final_safe_to_apply"] is True
+    assert preview["blockers"] == []
+    assert preview["order_status"] == "FILLED"
+    assert preview["order_side"] == "SELL"
+    assert preview["order_qty_filled"] == pytest.approx(0.00049913)
+    assert preview["trade_qty"] == pytest.approx(0.00049913)
+    assert preview["trade_asset_after"] == pytest.approx(0.0)
+    assert preview["broker_qty"] == pytest.approx(0.0)
+    assert preview["portfolio_qty"] == pytest.approx(0.0)
+    assert preview["stale_lot_row_count"] == 2
+    assert preview["stale_lot_qty_total"] == pytest.approx(0.00049913)
+    assert [row["id"] for row in preview["stale_lot_rows"]] == fixture["stale_ids"]
+    enriched = preview["enriched_submit_evidence_preview"]
+    assert enriched["command_intent"] == "operator_clean_account_closeout"
+    assert enriched["covered_dust_tracking_qty"] == pytest.approx(0.00049913)
+    assert enriched["covered_open_exposure_qty"] == pytest.approx(0.0)
+    assert enriched["clean_account_after_sell"] is True
+    assert enriched["planned_sell_qty"] == pytest.approx(0.00049913)
+    assert enriched["submitted_qty"] == pytest.approx(0.00049913)
+    assert enriched["filled_qty"] == pytest.approx(0.00049913)
+    assert enriched["payload_volume"] == pytest.approx(0.00049913)
+    assert str(enriched["operator_closeout_contract_hash"]).startswith("sha256:")
+    assert preview["would_update_event_types"] == ["submit_attempt_preflight", "submit_broker_ack"]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_blocker"),
+    [
+        (lambda conn: conn.execute("UPDATE trades SET asset_after=0.00000001 WHERE client_order_id='flatten_1781881180147'"), "legacy_closeout_trade_asset_after_not_flat"),
+        (lambda conn: conn.execute("UPDATE trades SET qty=0.0004 WHERE client_order_id='flatten_1781881180147'"), "legacy_closeout_trade_qty_mismatch"),
+        (lambda conn: conn.execute("DELETE FROM trades WHERE client_order_id='flatten_1781881180147'"), "legacy_closeout_trade_missing"),
+        (lambda conn: conn.execute("UPDATE trades SET side='BUY' WHERE client_order_id='flatten_1781881180147'"), "legacy_closeout_trade_not_sell"),
+        (lambda conn: conn.execute("UPDATE orders SET side='BUY' WHERE client_order_id='flatten_1781881180147'"), "legacy_closeout_order_not_sell"),
+        (lambda conn: conn.execute("UPDATE orders SET status='NEW' WHERE client_order_id='flatten_1781881180147'"), "legacy_closeout_order_not_filled"),
+        (lambda conn: [conn.execute("UPDATE orders SET decision_reason_code='other' WHERE client_order_id='flatten_1781881180147'"), conn.execute("UPDATE order_events SET decision_reason_code='other', submission_reason_code='other', submit_evidence=json_set(submit_evidence, '$.reason_code', 'other') WHERE client_order_id='flatten_1781881180147'")], "legacy_closeout_reason_not_operator_residual_closeout"),
+        (lambda conn: [conn.execute("DELETE FROM order_events WHERE client_order_id='flatten_1781881180147'"), conn.execute("DELETE FROM fills WHERE client_order_id='flatten_1781881180147'"), conn.execute("DELETE FROM trades WHERE client_order_id='flatten_1781881180147'"), conn.execute("DELETE FROM orders WHERE client_order_id='flatten_1781881180147'")], "legacy_closeout_order_missing"),
+        (lambda conn: [conn.execute("UPDATE orders SET exchange_order_id=NULL WHERE client_order_id='flatten_1781881180147'"), conn.execute("UPDATE order_events SET exchange_order_id=NULL, submit_evidence=json_remove(submit_evidence, '$.exchange_order_id') WHERE client_order_id='flatten_1781881180147'")], "legacy_closeout_exchange_order_id_missing"),
+        (lambda conn: conn.execute("DELETE FROM open_position_lots"), "stale_lot_rows_missing"),
+        (lambda conn: conn.execute("UPDATE open_position_lots SET qty_open=internal_lot_size, position_state='open_exposure', executable_lot_count=1, dust_tracking_lot_count=0 WHERE id=(SELECT MIN(id) FROM open_position_lots)"), "non_dust_tracking_lot_rows_present"),
+        (lambda conn: conn.execute("UPDATE open_position_lots SET qty_open=internal_lot_size, position_state='open_exposure', executable_lot_count=1, dust_tracking_lot_count=0 WHERE id=(SELECT MIN(id) FROM open_position_lots)"), "executable_lot_rows_present"),
+        (lambda conn: conn.execute("UPDATE open_position_lots SET qty_open=0.0002 WHERE id=(SELECT MIN(id) FROM open_position_lots)"), "stale_lot_total_qty_mismatch_order_qty"),
+        (lambda conn: record_order_if_missing(conn, client_order_id="open-blocker", side="SELL", qty_req=0.0001, price=95_499_969.9497125, ts_ms=1_781_881_181_000, status="NEW", internal_lot_size=0.00049913, effective_min_trade_qty=0.0001, qty_step=0.0001, min_notional_krw=0.0, intended_lot_count=1, executable_lot_count=1), "open_orders_present"),
+        (lambda conn: record_order_if_missing(conn, client_order_id="pending-blocker", side="SELL", qty_req=0.0001, price=95_499_969.9497125, ts_ms=1_781_881_181_000, status="PENDING_SUBMIT", internal_lot_size=0.00049913, effective_min_trade_qty=0.0001, qty_step=0.0001, min_notional_krw=0.0, intended_lot_count=1, executable_lot_count=1), "pending_submit_present"),
+        (lambda conn: record_order_if_missing(conn, client_order_id="unknown-blocker", side="SELL", qty_req=0.0001, price=95_499_969.9497125, ts_ms=1_781_881_181_000, status="SUBMIT_UNKNOWN", internal_lot_size=0.00049913, effective_min_trade_qty=0.0001, qty_step=0.0001, min_notional_krw=0.0, intended_lot_count=1, executable_lot_count=1), "submit_unknown_present"),
+        (lambda conn: record_order_if_missing(conn, client_order_id="recovery-blocker", side="SELL", qty_req=0.0001, price=95_499_969.9497125, ts_ms=1_781_881_181_000, status="RECOVERY_REQUIRED", internal_lot_size=0.00049913, effective_min_trade_qty=0.0001, qty_step=0.0001, min_notional_krw=0.0, intended_lot_count=1, executable_lot_count=1), "recovery_required_orders_present"),
+        (lambda conn: set_portfolio_breakdown(conn, cash_available=100000.0, cash_locked=0.0, asset_available=0.0001, asset_locked=0.0), "portfolio_not_flat"),
+    ],
+)
+def test_legacy_operator_closeout_evidence_enrichment_preview_blocks_unsafe_conditions(
+    recovery_db,
+    mutate,
+    expected_blocker,
+):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_legacy_operator_closeout_fixture(conn)
+        mutate(conn)
+        conn.commit()
+        preview = build_legacy_operator_closeout_evidence_enrichment_preview(
+            conn,
+            client_order_id="flatten_1781881180147",
+        )
+    finally:
+        conn.close()
+
+    assert preview["safe_to_apply"] is False
+    assert expected_blocker in preview["blockers"]
+
+
+def test_legacy_operator_closeout_evidence_enrichment_preview_blocks_when_open_orders_exist(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_legacy_operator_closeout_fixture(conn, open_order_status="NEW")
+        preview = build_legacy_operator_closeout_evidence_enrichment_preview(conn)
+    finally:
+        conn.close()
+
+    assert preview["safe_to_apply"] is False
+    assert "open_orders_present" in preview["blockers"]
+
+
+def test_legacy_operator_closeout_evidence_enrichment_preview_blocks_when_broker_or_portfolio_not_flat(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_legacy_operator_closeout_fixture(conn, broker_qty=0.0001, portfolio_qty=0.0001)
+        preview = build_legacy_operator_closeout_evidence_enrichment_preview(conn)
+    finally:
+        conn.close()
+
+    assert preview["safe_to_apply"] is False
+    assert "broker_not_flat" in preview["blockers"]
+    assert "portfolio_not_flat" in preview["blockers"]
+
+
+def test_legacy_operator_closeout_evidence_enrichment_preview_blocks_when_broker_qty_unknown(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_legacy_operator_closeout_fixture(conn)
+        runtime_state.record_reconcile_result(
+            success=True,
+            reason_code="RECENT_FILL_APPLIED",
+            metadata={"remote_open_order_found": 0},
+            now_epoch_sec=2.0,
+        )
+        preview = build_legacy_operator_closeout_evidence_enrichment_preview(conn)
+    finally:
+        conn.close()
+
+    assert preview["safe_to_apply"] is False
+    assert "broker_qty_unknown" in preview["blockers"]
+
+
+def test_legacy_operator_closeout_evidence_enrichment_preview_blocks_when_remote_open_orders_exist(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_legacy_operator_closeout_fixture(conn, remote_open_order_count=1)
+        preview = build_legacy_operator_closeout_evidence_enrichment_preview(conn)
+    finally:
+        conn.close()
+
+    assert preview["safe_to_apply"] is False
+    assert "remote_open_orders_present" in preview["blockers"]
+
+
+def test_legacy_operator_closeout_evidence_enrichment_preview_blocks_when_accounting_projection_mismatch(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_legacy_operator_closeout_fixture(conn)
+        set_portfolio_breakdown(
+            conn,
+            cash_available=100000.0,
+            cash_locked=0.0,
+            asset_available=0.0001,
+            asset_locked=0.0,
+        )
+        preview = build_legacy_operator_closeout_evidence_enrichment_preview(conn)
+    finally:
+        conn.close()
+
+    assert preview["safe_to_apply"] is False
+    assert "accounting_projection_mismatch" in preview["blockers"]
+
+
+def test_legacy_operator_closeout_evidence_enrichment_preview_blocks_when_active_fee_issue_exists(
+    recovery_db,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_legacy_operator_closeout_fixture(conn)
+        monkeypatch.setattr(
+            position_authority_repair,
+            "summarize_fill_accounting_incident_projection",
+            lambda _conn: {"active_issue_count": 1},
+        )
+        preview = build_legacy_operator_closeout_evidence_enrichment_preview(conn)
+    finally:
+        conn.close()
+
+    assert preview["safe_to_apply"] is False
+    assert "active_fee_accounting_issues_present" in preview["blockers"]
+
+
+def test_legacy_operator_closeout_evidence_enrichment_apply_updates_submit_evidence_only(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_legacy_operator_closeout_fixture(conn)
+        before_orders = [dict(row) for row in conn.execute("SELECT * FROM orders ORDER BY id").fetchall()]
+        before_trades = [dict(row) for row in conn.execute("SELECT * FROM trades ORDER BY id").fetchall()]
+        before_portfolio = [dict(row) for row in conn.execute("SELECT * FROM portfolio ORDER BY id").fetchall()]
+        before_lots = [dict(row) for row in conn.execute("SELECT * FROM open_position_lots ORDER BY id").fetchall()]
+        result = apply_legacy_operator_closeout_evidence_enrichment(conn)
+        after_orders = [dict(row) for row in conn.execute("SELECT * FROM orders ORDER BY id").fetchall()]
+        after_trades = [dict(row) for row in conn.execute("SELECT * FROM trades ORDER BY id").fetchall()]
+        after_portfolio = [dict(row) for row in conn.execute("SELECT * FROM portfolio ORDER BY id").fetchall()]
+        after_lots = [dict(row) for row in conn.execute("SELECT * FROM open_position_lots ORDER BY id").fetchall()]
+        rows = conn.execute(
+            """
+            SELECT submit_evidence
+            FROM order_events
+            WHERE client_order_id='flatten_1781881180147'
+              AND submit_evidence IS NOT NULL
+            ORDER BY id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert result["updated_order_event_count"] == 2
+    assert before_orders == after_orders
+    assert before_trades == after_trades
+    assert before_portfolio == after_portfolio
+    assert before_lots == after_lots
+    for row in rows:
+        evidence = json.loads(row["submit_evidence"])
+        assert evidence["legacy_evidence_enriched"] is True
+        assert evidence["covered_dust_tracking_qty"] == pytest.approx(0.00049913)
+        assert evidence["covered_open_exposure_qty"] == pytest.approx(0.0)
+
+
+def test_legacy_operator_closeout_evidence_enrichment_apply_is_idempotent(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_legacy_operator_closeout_fixture(conn)
+        first = apply_legacy_operator_closeout_evidence_enrichment(conn)
+        conn.commit()
+        evidence_after_first = [
+            row["submit_evidence"]
+            for row in conn.execute(
+                "SELECT submit_evidence FROM order_events WHERE client_order_id='flatten_1781881180147' ORDER BY id"
+            ).fetchall()
+        ]
+        second = apply_legacy_operator_closeout_evidence_enrichment(conn)
+        conn.commit()
+        evidence_after_second = [
+            row["submit_evidence"]
+            for row in conn.execute(
+                "SELECT submit_evidence FROM order_events WHERE client_order_id='flatten_1781881180147' ORDER BY id"
+            ).fetchall()
+        ]
+        repair_count = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM position_authority_repairs WHERE reason=?",
+            ("legacy_operator_residual_closeout_terminal_flat",),
+        ).fetchone()["cnt"]
+    finally:
+        conn.close()
+
+    assert first["updated_order_event_count"] == 2
+    assert second["updated_order_event_count"] == 0
+    assert second["audit"]["created"] is False
+    assert repair_count == 1
+    assert evidence_after_first == evidence_after_second
+
+
+def test_legacy_operator_closeout_evidence_enrichment_makes_flat_stale_projection_preview_safe(recovery_db):
+    conn = ensure_db(str(recovery_db))
+    try:
+        _materialize_ec2_legacy_operator_closeout_fixture(conn)
+        before = build_flat_stale_lot_projection_repair_preview(conn)
+        enrichment = apply_legacy_operator_closeout_evidence_enrichment(conn)
+        conn.commit()
+        after = build_flat_stale_lot_projection_repair_preview(conn)
+    finally:
+        conn.close()
+
+    assert before["safe_to_apply"] is False
+    assert before["terminal_flat_sell_detected"] is False
+    assert "covered_dust_tracking_qty_missing" in before["blockers"]
+    assert "covered_dust_tracking_qty_mismatch" in before["blockers"]
+    assert "terminal_flat_supported_closeout_authority_missing" in before["blockers"]
+    assert enrichment["updated_order_event_count"] == 2
+    assert after["authority_type"] == "operator_clean_account_closeout"
+    assert after["terminal_flat_sell_detected"] is True
+    assert after["safe_to_apply_terminal_flat_projection_repair"] is True
+    assert after["safe_to_apply"] is True
+    assert after["final_safe_to_apply"] is True
+    assert after["blockers"] == []
+    assert after["terminal_flat_authority_dust_tracking_qty"] == pytest.approx(0.00049913)
+    assert after["terminal_flat_authority_open_exposure_qty"] == pytest.approx(0.0)
+    assert after["terminal_flat_authority_expected_closed_qty"] == pytest.approx(0.00049913)
+    assert after["recommended_command"] == (
+        "uv run bithumb-bot rebuild-position-authority --flat-stale-projection-repair --apply --yes"
+    )
 
 
 def test_flatten_submit_evidence_rejects_operator_planned_payload_mismatch(recovery_db):

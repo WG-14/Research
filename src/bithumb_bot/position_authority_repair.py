@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from typing import Any
 
+from .canonical_decision import sha256_prefixed
 from .config import settings
 from .db_core import (
     compute_accounting_replay,
@@ -38,9 +40,88 @@ from .runtime_readiness import build_broker_position_evidence, compute_runtime_r
 _EPS = 1e-12
 FULL_PROJECTION_REBUILD_REASON = "full_projection_materialized_rebuild"
 FLAT_STALE_LOT_PROJECTION_REPAIR_REASON = "flat_stale_lot_projection_repair"
+LEGACY_OPERATOR_CLOSEOUT_EVIDENCE_ENRICHMENT_REASON = (
+    "legacy_operator_residual_closeout_terminal_flat"
+)
 FLAT_STALE_LOT_PROJECTION_REPAIR_COMMAND = (
     "uv run bithumb-bot rebuild-position-authority --flat-stale-projection-repair --apply --yes"
 )
+LEGACY_OPERATOR_CLOSEOUT_EVIDENCE_ENRICHMENT_COMMAND = (
+    "uv run bithumb-bot rebuild-position-authority --flat-stale-projection-repair "
+    "--enrich-legacy-operator-closeout-evidence --apply --yes"
+)
+
+
+def _json_dict(value: object) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if value is None:
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def _legacy_closeout_repair_key(*, client_order_id: str, evidence_hash: str) -> str:
+    return f"legacy_operator_closeout_evidence_enrichment:{client_order_id}:{evidence_hash}"
+
+
+def _operator_closeout_hash_payload(evidence: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in evidence.items()
+        if key not in {"operator_closeout_contract_hash", "evidence_hash"}
+    }
+
+
+def _find_legacy_operator_closeout_client_order_id(conn: sqlite3.Connection) -> str | None:
+    row = conn.execute(
+        """
+        SELECT o.client_order_id
+        FROM orders o
+        LEFT JOIN trades t ON t.client_order_id=o.client_order_id AND t.side='SELL'
+        WHERE (
+                o.decision_reason_code='broker_confirmed_residual_closeout'
+                OR EXISTS (
+                    SELECT 1
+                    FROM order_events oe
+                    WHERE oe.client_order_id=o.client_order_id
+                      AND (
+                            oe.decision_reason_code='broker_confirmed_residual_closeout'
+                            OR oe.submission_reason_code='broker_confirmed_residual_closeout'
+                            OR json_extract(oe.submit_evidence, '$.reason_code')='broker_confirmed_residual_closeout'
+                          )
+                )
+              )
+        ORDER BY COALESCE(t.ts, o.updated_ts, o.created_ts) DESC, o.id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is not None and row["client_order_id"]:
+        return str(row["client_order_id"])
+    row = conn.execute(
+        """
+        SELECT client_order_id
+        FROM order_events
+        WHERE json_extract(submit_evidence, '$.submit_path')='operator_flatten'
+           OR json_extract(submit_evidence, '$.trigger')='operator'
+        ORDER BY event_ts DESC, id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is not None and row["client_order_id"]:
+        return str(row["client_order_id"])
+    row = conn.execute(
+        """
+        SELECT client_order_id
+        FROM trades
+        ORDER BY ts DESC, id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return str(row["client_order_id"]) if row is not None and row["client_order_id"] else None
 
 
 def _fetch_anchor_buy_row(conn: sqlite3.Connection) -> sqlite3.Row | None:
@@ -469,6 +550,357 @@ def build_flat_stale_lot_projection_repair_preview(conn: sqlite3.Connection) -> 
         ],
         "expected_after": "open_position_lots projection converges to broker/portfolio flat state",
         "preconditions": "broker_qty=0, portfolio_qty=0, latest SELL filled, stale dust_tracking projection present",
+    }
+
+
+def build_legacy_operator_closeout_evidence_enrichment_preview(
+    conn: sqlite3.Connection,
+    *,
+    client_order_id: str | None = None,
+) -> dict[str, Any]:
+    target_client_order_id = str(client_order_id or _find_legacy_operator_closeout_client_order_id(conn) or "")
+    event_rows: list[sqlite3.Row] = []
+    legacy_before: list[dict[str, Any]] = []
+    order_row = None
+    trade_rows: list[sqlite3.Row] = []
+    if target_client_order_id:
+        order_row = conn.execute(
+            """
+            SELECT id, client_order_id, exchange_order_id, status, side, qty_req,
+                   qty_filled, final_submitted_qty, decision_reason_code, created_ts, updated_ts
+            FROM orders
+            WHERE client_order_id=?
+            LIMIT 1
+            """,
+            (target_client_order_id,),
+        ).fetchone()
+        event_rows = conn.execute(
+            """
+            SELECT id, event_type, event_ts, order_status, exchange_order_id, qty, side,
+                   submit_attempt_id, submit_evidence, final_submitted_qty,
+                   decision_reason_code, submission_reason_code
+            FROM order_events
+            WHERE client_order_id=?
+              AND submit_evidence IS NOT NULL
+              AND TRIM(submit_evidence) <> ''
+            ORDER BY id ASC
+            """,
+            (target_client_order_id,),
+        ).fetchall()
+        trade_rows = conn.execute(
+            """
+            SELECT id, ts, client_order_id, side, qty, asset_after
+            FROM trades
+            WHERE client_order_id=?
+            ORDER BY ts ASC, id ASC
+            """,
+            (target_client_order_id,),
+        ).fetchall()
+    legacy_before = [_json_dict(row["submit_evidence"]) for row in event_rows]
+    first_evidence = legacy_before[0] if legacy_before else {}
+    last_evidence = legacy_before[-1] if legacy_before else {}
+
+    order_qty = normalize_asset_qty(float(order_row["qty_filled"] or 0.0)) if order_row is not None else 0.0
+    trade_qty = normalize_asset_qty(sum(float(row["qty"] or 0.0) for row in trade_rows))
+    latest_trade = trade_rows[-1] if trade_rows else None
+    trade_asset_after = (
+        normalize_asset_qty(float(latest_trade["asset_after"] or 0.0)) if latest_trade is not None else None
+    )
+    order_exchange_id = (
+        str(order_row["exchange_order_id"])
+        if order_row is not None and order_row["exchange_order_id"]
+        else None
+    )
+    event_exchange_id = next(
+        (
+            str(value)
+            for value in [
+                *(evidence.get("exchange_order_id") for evidence in reversed(legacy_before)),
+                *(row["exchange_order_id"] for row in reversed(event_rows)),
+            ]
+            if value
+        ),
+        None,
+    )
+    exchange_order_id = event_exchange_id or order_exchange_id
+    symbol = str(last_evidence.get("symbol") or settings.PAIR)
+    reference_price = last_evidence.get("reference_price")
+    reason_code = str(
+        (
+            last_evidence.get("reason_code")
+            or (order_row["decision_reason_code"] if order_row is not None else None)
+            or (event_rows[-1]["submission_reason_code"] if event_rows else None)
+            or (event_rows[-1]["decision_reason_code"] if event_rows else None)
+            or ""
+        )
+    )
+
+    snapshot = compute_runtime_readiness_snapshot(conn)
+    broker_evidence = build_broker_position_evidence(snapshot.reconcile_metadata, pair=settings.PAIR)
+    broker_qty_known = bool(broker_evidence.get("broker_qty_known"))
+    broker_qty = normalize_asset_qty(float(broker_evidence.get("broker_qty") or 0.0))
+    portfolio_qty = _portfolio_asset_qty(conn)
+    broker_portfolio_converged = bool(broker_qty_known and abs(broker_qty - portfolio_qty) <= _EPS)
+    gate_counts = _query_runtime_gate_counts(conn)
+    remote_open_order_count = int(snapshot.reconcile_metadata.get("remote_open_order_found", 0) or 0)
+    stale_rows = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT id, pair, entry_trade_id, entry_client_order_id, entry_fill_id, entry_ts, entry_price,
+                   qty_open, executable_lot_count, dust_tracking_lot_count, internal_lot_size,
+                   lot_min_qty, lot_qty_step, lot_min_notional_krw, lot_max_qty_decimals,
+                   lot_rule_source_mode, position_semantic_basis, position_state, entry_fee_total,
+                   strategy_name, entry_decision_id, entry_decision_linkage
+            FROM open_position_lots
+            WHERE pair=? AND qty_open > 1e-12
+            ORDER BY id ASC
+            """,
+            (settings.PAIR,),
+        ).fetchall()
+    ]
+    stale_lot_qty_total = normalize_asset_qty(sum(float(row.get("qty_open") or 0.0) for row in stale_rows))
+    projection = build_lot_projection_convergence(conn, pair=settings.PAIR)
+    projected_total_qty = normalize_asset_qty(float(projection.get("projected_total_qty") or 0.0))
+    try:
+        accounting_replay = compute_accounting_replay(conn)
+        accounting_projection_ok = bool(
+            abs(normalize_asset_qty(float(accounting_replay.get("replay_qty") or 0.0)) - portfolio_qty) <= _EPS
+        )
+    except RuntimeError as exc:
+        accounting_replay = {"error": str(exc)}
+        accounting_projection_ok = False
+    active_fee_accounting_issue_count = int(
+        summarize_fill_accounting_incident_projection(conn).get("active_issue_count") or 0
+    )
+
+    blockers: list[str] = []
+    if order_row is None:
+        blockers.append("legacy_closeout_order_missing")
+    else:
+        if str(order_row["side"] or "").upper() != "SELL":
+            blockers.append("legacy_closeout_order_not_sell")
+        if str(order_row["status"] or "").upper() != "FILLED":
+            blockers.append("legacy_closeout_order_not_filled")
+        if reason_code != "broker_confirmed_residual_closeout":
+            blockers.append("legacy_closeout_reason_not_operator_residual_closeout")
+        if order_qty <= _EPS:
+            blockers.append("legacy_closeout_trade_qty_mismatch")
+    if not trade_rows:
+        blockers.append("legacy_closeout_trade_missing")
+    else:
+        if any(str(row["side"] or "").upper() != "SELL" for row in trade_rows):
+            blockers.append("legacy_closeout_trade_not_sell")
+        if abs(trade_qty - order_qty) > _EPS:
+            blockers.append("legacy_closeout_trade_qty_mismatch")
+        if trade_asset_after is None or abs(trade_asset_after) > _EPS:
+            blockers.append("legacy_closeout_trade_asset_after_not_flat")
+    if not exchange_order_id:
+        blockers.append("legacy_closeout_exchange_order_id_missing")
+    if not broker_qty_known:
+        blockers.append("broker_qty_unknown")
+    elif abs(broker_qty) > _EPS:
+        blockers.append("broker_not_flat")
+    if abs(portfolio_qty) > _EPS:
+        blockers.append("portfolio_not_flat")
+    if not broker_portfolio_converged:
+        blockers.append("broker_portfolio_not_converged")
+    if not stale_rows:
+        blockers.append("stale_lot_rows_missing")
+    if any(str(row.get("position_state") or "") != DUST_TRACKING_STATE for row in stale_rows):
+        blockers.append("non_dust_tracking_lot_rows_present")
+    if any(int(row.get("executable_lot_count") or 0) != 0 for row in stale_rows):
+        blockers.append("executable_lot_rows_present")
+    if abs(stale_lot_qty_total - projected_total_qty) > _EPS:
+        blockers.append("stale_lot_total_projection_mismatch")
+    if abs(stale_lot_qty_total - order_qty) > _EPS:
+        blockers.append("stale_lot_total_qty_mismatch_order_qty")
+    if int(gate_counts["unresolved_open_order_count"]) > 0:
+        blockers.append("open_orders_present")
+    if remote_open_order_count > 0:
+        blockers.append("remote_open_orders_present")
+    if int(gate_counts["pending_submit_count"]) > 0:
+        blockers.append("pending_submit_present")
+    if int(gate_counts["submit_unknown_count"]) > 0:
+        blockers.append("submit_unknown_present")
+    if int(gate_counts["recovery_required_count"]) > 0:
+        blockers.append("recovery_required_orders_present")
+    if not accounting_projection_ok:
+        blockers.append("accounting_projection_mismatch")
+    if active_fee_accounting_issue_count > 0:
+        blockers.append("active_fee_accounting_issues_present")
+    blockers = list(dict.fromkeys(blockers))
+
+    base_evidence = dict(last_evidence or first_evidence)
+    planned_qty = order_qty or trade_qty
+    enriched = {
+        **base_evidence,
+        "authority_type": "operator_clean_account_closeout",
+        "command_intent": "operator_clean_account_closeout",
+        "reason_code": "broker_confirmed_residual_closeout",
+        "client_order_id": target_client_order_id or None,
+        "exchange_order_id": exchange_order_id,
+        "submit_path": base_evidence.get("submit_path") or "operator_flatten",
+        "side": "SELL",
+        "symbol": symbol,
+        "planned_sell_qty": planned_qty,
+        "planned_qty": planned_qty,
+        "submitted_qty": planned_qty,
+        "filled_qty": order_qty,
+        "payload_volume": planned_qty,
+        "raw_total_asset_qty": planned_qty,
+        "tracked_dust_qty": stale_lot_qty_total,
+        "covered_dust_tracking_qty": stale_lot_qty_total,
+        "covered_open_exposure_qty": 0.0,
+        "clean_account_after_sell": True,
+        "estimated_residual_qty": 0.0,
+        "broker_qty_after": broker_qty if broker_qty_known else None,
+        "portfolio_qty_after": portfolio_qty,
+        "legacy_evidence_enriched": True,
+        "legacy_evidence_enrichment_reason": LEGACY_OPERATOR_CLOSEOUT_EVIDENCE_ENRICHMENT_REASON,
+    }
+    if reference_price is not None:
+        enriched["reference_price"] = reference_price
+    enriched["operator_closeout_contract_hash"] = sha256_prefixed(_operator_closeout_hash_payload(enriched))
+
+    would_update_ids: list[int] = []
+    would_update_types: list[str] = []
+    for row, evidence in zip(event_rows, legacy_before, strict=False):
+        candidate = {**evidence, **{key: value for key, value in enriched.items() if value is not None}}
+        candidate["operator_closeout_contract_hash"] = enriched["operator_closeout_contract_hash"]
+        if candidate != evidence:
+            would_update_ids.append(int(row["id"]))
+            would_update_types.append(str(row["event_type"]))
+
+    already_enriched = bool(
+        event_rows
+        and not would_update_ids
+        and last_evidence.get("command_intent") == "operator_clean_account_closeout"
+        and last_evidence.get("covered_dust_tracking_qty") is not None
+        and last_evidence.get("operator_closeout_contract_hash")
+    )
+    needed = bool(event_rows and not already_enriched and would_update_ids)
+    safe = bool(not blockers and (needed or already_enriched))
+    action_state = (
+        "safe_to_apply_now"
+        if needed and safe
+        else ("already_enriched" if already_enriched and not blockers else "blocked_pending_evidence")
+    )
+    return {
+        "client_order_id": target_client_order_id or None,
+        "exchange_order_id": exchange_order_id,
+        "needed": needed,
+        "safe_to_apply": safe,
+        "final_safe_to_apply": safe,
+        "action_state": action_state,
+        "blockers": blockers,
+        "why_unsafe": blockers,
+        "legacy_submit_evidence_before": legacy_before,
+        "enriched_submit_evidence_preview": enriched,
+        "order_status": str(order_row["status"]) if order_row is not None else None,
+        "order_side": str(order_row["side"]) if order_row is not None else None,
+        "order_qty_filled": order_qty,
+        "trade_qty": trade_qty,
+        "trade_asset_after": trade_asset_after,
+        "broker_qty": broker_qty if broker_qty_known else None,
+        "broker_qty_known": broker_qty_known,
+        "portfolio_qty": portfolio_qty,
+        "broker_portfolio_converged": broker_portfolio_converged,
+        "stale_lot_row_count": len(stale_rows),
+        "stale_lot_qty_total": stale_lot_qty_total,
+        "stale_lot_rows": stale_rows,
+        "covered_open_exposure_qty": 0.0,
+        "covered_dust_tracking_qty": stale_lot_qty_total,
+        "clean_account_after_sell": True,
+        "operator_closeout_contract_hash": enriched["operator_closeout_contract_hash"],
+        "would_update_order_event_ids": would_update_ids,
+        "would_update_event_types": would_update_types,
+        "remote_open_order_count": remote_open_order_count,
+        **gate_counts,
+        "accounting_projection_ok": accounting_projection_ok,
+        "accounting_replay": accounting_replay,
+        "active_fee_accounting_issue_count": active_fee_accounting_issue_count,
+        "recommended_command": LEGACY_OPERATOR_CLOSEOUT_EVIDENCE_ENRICHMENT_COMMAND if safe else None,
+        "preview_command": (
+            "uv run bithumb-bot rebuild-position-authority --flat-stale-projection-repair "
+            "--enrich-legacy-operator-closeout-evidence --json"
+        ),
+        "touched_tables": ["order_events", "position_authority_repairs"],
+        "untouched_tables": ["orders", "fills", "trades", "portfolio", "open_position_lots"],
+    }
+
+
+def apply_legacy_operator_closeout_evidence_enrichment(
+    conn: sqlite3.Connection,
+    *,
+    client_order_id: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    preview = build_legacy_operator_closeout_evidence_enrichment_preview(
+        conn,
+        client_order_id=client_order_id,
+    )
+    if not bool(preview.get("safe_to_apply")):
+        raise RuntimeError(
+            "legacy operator closeout evidence enrichment is not safe to apply: "
+            f"{'|'.join(str(item) for item in preview.get('blockers') or []) or 'unknown'}"
+        )
+    event_ids = [int(value) for value in preview.get("would_update_order_event_ids") or []]
+    client_id = str(preview.get("client_order_id") or "")
+    evidence_hash = str(preview.get("operator_closeout_contract_hash") or "")
+    event_ts = int(time.time() * 1000)
+    update_count = 0
+    if event_ids:
+        rows = conn.execute(
+            f"""
+            SELECT id, submit_evidence
+            FROM order_events
+            WHERE id IN ({','.join('?' for _ in event_ids)})
+            ORDER BY id ASC
+            """,
+            tuple(event_ids),
+        ).fetchall()
+        if [int(row["id"]) for row in rows] != event_ids:
+            raise RuntimeError("legacy operator closeout evidence enrichment target row set changed")
+        enrichment = dict(preview["enriched_submit_evidence_preview"])
+        for row in rows:
+            current = _json_dict(row["submit_evidence"])
+            updated = {**current, **{key: value for key, value in enrichment.items() if value is not None}}
+            updated["operator_closeout_contract_hash"] = evidence_hash
+            if updated != current:
+                conn.execute(
+                    "UPDATE order_events SET submit_evidence=? WHERE id=?",
+                    (json.dumps(updated, ensure_ascii=False, sort_keys=True), int(row["id"])),
+                )
+                update_count += 1
+    repair_basis = {
+        "event_type": "legacy_operator_closeout_evidence_enrichment",
+        "reason": LEGACY_OPERATOR_CLOSEOUT_EVIDENCE_ENRICHMENT_REASON,
+        "client_order_id": client_id,
+        "exchange_order_id": preview.get("exchange_order_id"),
+        "operator_closeout_contract_hash": evidence_hash,
+        "updated_order_event_ids": event_ids,
+        "updated_event_types": list(preview.get("would_update_event_types") or []),
+        "preview": preview,
+        "touched_tables": ["order_events", "position_authority_repairs"],
+        "untouched_tables": ["orders", "fills", "trades", "portfolio", "open_position_lots"],
+    }
+    audit = record_position_authority_repair(
+        conn,
+        event_ts=event_ts,
+        source="legacy_operator_closeout_evidence_enrichment",
+        reason=LEGACY_OPERATOR_CLOSEOUT_EVIDENCE_ENRICHMENT_REASON,
+        repair_basis=repair_basis,
+        note=note,
+        repair_key=_legacy_closeout_repair_key(client_order_id=client_id, evidence_hash=evidence_hash),
+    )
+    return {
+        "preview": preview,
+        "updated_order_event_count": update_count,
+        "updated_order_event_ids": event_ids,
+        "audit": audit,
+        "noop": bool(update_count == 0 and not bool(audit.get("created"))),
+        "post_flat_stale_projection_repair_preview": None,
     }
 
 

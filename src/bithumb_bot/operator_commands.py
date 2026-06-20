@@ -110,7 +110,9 @@ from .execution_quality import (
 )
 from .research.execution_calibration import build_calibration_artifact, write_calibration_artifact
 from .position_authority_repair import (
+    apply_legacy_operator_closeout_evidence_enrichment,
     apply_position_authority_rebuild,
+    build_legacy_operator_closeout_evidence_enrichment_preview,
     build_position_authority_rebuild_preview,
 )
 from .runtime_readiness import compute_runtime_readiness_snapshot
@@ -5989,6 +5991,7 @@ def cmd_rebuild_position_authority(
     note: str | None = None,
     full_projection_rebuild: bool = False,
     flat_stale_projection_repair: bool = False,
+    enrich_legacy_operator_closeout_evidence: bool = False,
     as_json: bool = False,
 ) -> None:
     def _json_ready(payload: dict[str, object]) -> dict[str, object]:
@@ -6021,7 +6024,14 @@ def cmd_rebuild_position_authority(
         result.setdefault("stale_lot_qty_total", result.get("stale_lot_qty_total"))
         return result
 
-    if full_projection_rebuild and flat_stale_projection_repair:
+    selected_modes = [
+        bool(full_projection_rebuild),
+        bool(flat_stale_projection_repair),
+        bool(enrich_legacy_operator_closeout_evidence),
+    ]
+    if sum(1 for selected in selected_modes if selected) > 1 and not (
+        flat_stale_projection_repair and enrich_legacy_operator_closeout_evidence and sum(1 for selected in selected_modes if selected) == 2
+    ):
         if as_json:
             print(json.dumps({"ok": False, "error": "choose_one_repair_mode_flag"}, ensure_ascii=False, sort_keys=True))
             raise SystemExit(1)
@@ -6029,6 +6039,85 @@ def cmd_rebuild_position_authority(
         raise SystemExit(1)
     conn = ensure_db()
     try:
+        if enrich_legacy_operator_closeout_evidence:
+            preview = build_legacy_operator_closeout_evidence_enrichment_preview(conn)
+            if as_json:
+                if not apply:
+                    print(json.dumps(preview, ensure_ascii=False, sort_keys=True))
+                    return
+                if not bool(preview["safe_to_apply"]):
+                    print(json.dumps({"ok": False, "preview": preview, "error": "unsafe_enrichment_request"}, ensure_ascii=False, sort_keys=True))
+                    raise SystemExit(1)
+                if not confirm:
+                    print(json.dumps({"ok": False, "preview": preview, "error": "confirmation_required"}, ensure_ascii=False, sort_keys=True))
+                    raise SystemExit(1)
+                result = apply_legacy_operator_closeout_evidence_enrichment(conn, note=note)
+                conn.commit()
+                print(
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "noop": bool(result.get("noop")),
+                            "preview": preview,
+                            "result": result,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                return
+            print("[REBUILD-POSITION-AUTHORITY] legacy operator closeout evidence enrichment preview")
+            print(
+                "  "
+                f"client_order_id={preview.get('client_order_id') or 'none'} "
+                f"exchange_order_id={preview.get('exchange_order_id') or 'none'} "
+                f"needed={1 if bool(preview.get('needed')) else 0} "
+                f"safe_to_apply={1 if bool(preview.get('safe_to_apply')) else 0} "
+                f"action_state={preview.get('action_state') or 'unknown'}"
+            )
+            print(
+                "  "
+                f"order_status={preview.get('order_status') or 'none'} "
+                f"order_side={preview.get('order_side') or 'none'} "
+                f"order_qty_filled={float(preview.get('order_qty_filled') or 0.0):.12f} "
+                f"trade_qty={float(preview.get('trade_qty') or 0.0):.12f} "
+                f"trade_asset_after={preview.get('trade_asset_after') if preview.get('trade_asset_after') is not None else 'none'}"
+            )
+            print(
+                "  "
+                f"broker_qty={preview.get('broker_qty') if preview.get('broker_qty') is not None else 'unknown'} "
+                f"portfolio_qty={float(preview.get('portfolio_qty') or 0.0):.12f} "
+                f"stale_lot_row_count={int(preview.get('stale_lot_row_count') or 0)} "
+                f"stale_lot_qty_total={float(preview.get('stale_lot_qty_total') or 0.0):.12f}"
+            )
+            print(
+                "  "
+                "blockers="
+                f"{'|'.join(str(item) for item in (preview.get('blockers') or [])) or 'none'} "
+                "would_update_order_event_ids="
+                f"{'|'.join(str(item) for item in (preview.get('would_update_order_event_ids') or [])) or 'none'}"
+            )
+            print(f"  preview_command={preview.get('preview_command') or 'none'}")
+            print(f"  recommended_command={preview.get('recommended_command') or 'none'}")
+            if not apply:
+                print("[REBUILD-POSITION-AUTHORITY] dry-run: no changes applied")
+                return
+            if not bool(preview["safe_to_apply"]):
+                print("[REBUILD-POSITION-AUTHORITY] refused: unsafe enrichment request")
+                raise SystemExit(1)
+            if not confirm:
+                print("[REBUILD-POSITION-AUTHORITY] confirmation required: re-run with --apply --yes")
+                raise SystemExit(1)
+            result = apply_legacy_operator_closeout_evidence_enrichment(conn, note=note)
+            conn.commit()
+            print("[REBUILD-POSITION-AUTHORITY] legacy operator closeout evidence enrichment applied")
+            print(
+                "  "
+                f"updated_order_event_count={int(result.get('updated_order_event_count') or 0)} "
+                f"audit_created={1 if bool((result.get('audit') or {}).get('created')) else 0} "
+                f"operator_closeout_contract_hash={preview.get('operator_closeout_contract_hash') or 'none'}"
+            )
+            return
         preview_kwargs = {"full_projection_rebuild": bool(full_projection_rebuild)}
         if flat_stale_projection_repair:
             preview_kwargs["flat_stale_projection_repair"] = True

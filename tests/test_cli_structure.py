@@ -346,6 +346,56 @@ def test_rebuild_position_authority_json_flag_matches_command_spec() -> None:
     assert args.json is True
 
 
+def test_legacy_operator_closeout_evidence_enrichment_cli_supports_json_preview() -> None:
+    registry = command_registry()
+    parser = build_parser(registry)
+
+    args = parser.parse_args([
+        "rebuild-position-authority",
+        "--flat-stale-projection-repair",
+        "--enrich-legacy-operator-closeout-evidence",
+        "--json",
+    ])
+
+    assert args.cmd == "rebuild-position-authority"
+    assert args.flat_stale_projection_repair is True
+    assert args.enrich_legacy_operator_closeout_evidence is True
+    assert args.json is True
+    assert args.apply is False
+    assert args.yes is False
+
+
+def test_legacy_operator_closeout_evidence_enrichment_requires_apply_yes_for_mutation() -> None:
+    registry = command_registry()
+    parser = build_parser(registry)
+
+    preview = parser.parse_args([
+        "rebuild-position-authority",
+        "--flat-stale-projection-repair",
+        "--enrich-legacy-operator-closeout-evidence",
+        "--json",
+    ])
+    apply_without_yes = parser.parse_args([
+        "rebuild-position-authority",
+        "--flat-stale-projection-repair",
+        "--enrich-legacy-operator-closeout-evidence",
+        "--apply",
+        "--json",
+    ])
+    apply_with_yes = parser.parse_args([
+        "rebuild-position-authority",
+        "--flat-stale-projection-repair",
+        "--enrich-legacy-operator-closeout-evidence",
+        "--apply",
+        "--yes",
+        "--json",
+    ])
+
+    assert preview.apply is False and preview.yes is False
+    assert apply_without_yes.apply is True and apply_without_yes.yes is False
+    assert apply_with_yes.apply is True and apply_with_yes.yes is True
+
+
 def test_operator_recovery_guard_uses_basic_guard_not_strategy_startup(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     handler_called = False
