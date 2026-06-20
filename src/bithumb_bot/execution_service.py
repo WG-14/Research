@@ -1357,6 +1357,20 @@ def _operator_live_pipeline_smoke_authorized_target_plan(
         return False
     if str(target_plan.get("operator_authorization") or "") != "live_pipeline_smoke_authority":
         return False
+    if str(target_plan.get("pre_submit_risk_status") or "") != "ALLOW":
+        return False
+    if (
+        str(target_plan.get("pre_submit_risk_reason_code") or "")
+        != "OPERATOR_LIVE_PIPELINE_SMOKE_AUTHORIZED"
+    ):
+        return False
+    if str(target_plan.get("risk_policy_source") or "") != "operator_live_pipeline_smoke_authority":
+        return False
+    if (
+        str(target_plan.get("pre_submit_risk_policy_composition_rule") or "")
+        != "operator_bounded_smoke_only"
+    ):
+        return False
     if str(target_plan.get("market_reference_source") or "") not in {
         "orderbook_top_mid",
         "latest_closed_candle",

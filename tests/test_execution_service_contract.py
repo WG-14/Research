@@ -18,6 +18,7 @@ from bithumb_bot.execution_service import (
     SignalExecutionRequest,
     TypedExecutionRequest,
     execution_submit_plan_payload_hash,
+    _operator_live_pipeline_smoke_authorized_target_plan,
     validate_execution_submit_plan_payload,
     validate_execution_submit_plan_serialization,
 )
@@ -149,6 +150,9 @@ def _operator_live_pipeline_smoke_target_submit_plan() -> dict[str, object]:
             "operator_live_pipeline_smoke": True,
             "operator_authorization": "live_pipeline_smoke_authority",
             "execution_mode": "live_pipeline_smoke",
+            "candle_checkpoint_authority": "smoke_step_checkpoint",
+            "market_reference_source": "orderbook_top_mid",
+            "pair": str(settings.PAIR),
             "normal_h74_strategy_performance_authority": False,
             "normal_strategy_gate_modified": False,
         }
@@ -169,6 +173,16 @@ def _operator_live_pipeline_smoke_target_submit_plan() -> dict[str, object]:
         "risk_policy_source": "operator_live_pipeline_smoke_authority",
         "pre_submit_risk_policy_composition_rule": "operator_bounded_smoke_only",
         "strategy_risk_profile_hashes": ["sha256:" + "8" * 64],
+    }
+
+
+def _operator_live_pipeline_smoke_decision_context() -> dict[str, object]:
+    return {
+        "execution_mode": "live_pipeline_smoke",
+        "candle_checkpoint_authority": "smoke_step_checkpoint",
+        "market_reference_source": "orderbook_top_mid",
+        "normal_h74_strategy_performance_authority": False,
+        "normal_strategy_gate_modified": False,
     }
 
 
@@ -1078,6 +1092,88 @@ def test_normal_live_target_delta_buy_with_blocked_performance_gate_does_not_rea
     assert calls == []
     assert "reason=insufficient_sample" in caplog.text
     assert not live_broker._is_operator_live_pipeline_smoke_submit(plan, strategy_name="sma_with_filter")
+
+
+def test_operator_live_pipeline_smoke_bypasses_strategy_gate_with_exact_markers() -> None:
+    _arm_live_real_orders(engine="target_delta")
+    calls: list[dict[str, object]] = []
+    plan = {
+        **_operator_live_pipeline_smoke_target_submit_plan(),
+        "strategy_performance_gate": {
+            "enabled": True,
+            "allowed": False,
+            "blocked": True,
+            "reason_code": "insufficient_sample",
+        },
+        "strategy_performance_gate_blocked": True,
+        "strategy_performance_gate_status": "blocked",
+        "strategy_performance_gate_reason_code": "insufficient_sample",
+    }
+
+    result = _service(calls).execute(
+        SignalExecutionRequest(
+            signal="BUY",
+            ts=123,
+            market_price=100_000_000.0,
+            strategy_name="operator_live_pipeline_smoke",
+            decision_reason="operator_authorized_pipeline_smoke",
+            decision_context=_operator_live_pipeline_smoke_decision_context(),
+            execution_decision_summary=_typed_target_execution_summary_with_plan(plan),
+        )
+    )
+
+    assert result == {"status": "submitted", "signal": "BUY"}
+    assert len(calls) == 1
+    submitted_plan = calls[0]["kwargs"]["execution_submit_plan"]  # type: ignore[index]
+    assert submitted_plan["operator_live_pipeline_smoke"] is True
+    assert submitted_plan["pre_submit_risk_reason_code"] == "OPERATOR_LIVE_PIPELINE_SMOKE_AUTHORIZED"
+    assert submitted_plan["risk_policy_source"] == "operator_live_pipeline_smoke_authority"
+
+
+@pytest.mark.parametrize(
+    ("marker", "wrong_value"),
+    [
+        ("pre_submit_risk_status", "BLOCK"),
+        ("pre_submit_risk_reason_code", "OK"),
+        ("risk_policy_source", "strategy_risk_profiles"),
+        ("pre_submit_risk_policy_composition_rule", "most_restrictive_selected_strategy_policy"),
+    ],
+)
+def test_execution_service_smoke_authority_requires_pre_submit_risk_markers(
+    marker: str,
+    wrong_value: object,
+) -> None:
+    request = TypedExecutionRequest(
+        signal="BUY",
+        ts=123,
+        market_price=100_000_000.0,
+        strategy_name="operator_live_pipeline_smoke",
+        decision_reason="operator_authorized_pipeline_smoke",
+    )
+    valid_plan = _operator_live_pipeline_smoke_target_submit_plan()
+    decision_context = _operator_live_pipeline_smoke_decision_context()
+
+    assert _operator_live_pipeline_smoke_authorized_target_plan(
+        request=request,
+        decision_context=decision_context,
+        target_plan=valid_plan,
+    )
+
+    missing = dict(valid_plan)
+    missing.pop(marker)
+    assert not _operator_live_pipeline_smoke_authorized_target_plan(
+        request=request,
+        decision_context=decision_context,
+        target_plan=missing,
+    )
+
+    wrong = dict(valid_plan)
+    wrong[marker] = wrong_value
+    assert not _operator_live_pipeline_smoke_authorized_target_plan(
+        request=request,
+        decision_context=decision_context,
+        target_plan=wrong,
+    )
 
 
 def test_broker_performance_gate_bypass_requires_exact_operator_smoke_markers() -> None:
