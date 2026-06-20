@@ -1329,6 +1329,83 @@ def _target_delta_buy_blocked_by_performance_gate(raw_gate: object | None, *, si
     return bool(payload and payload.get("enabled", True) and not bool(payload.get("allowed", True)))
 
 
+def _operator_live_pipeline_smoke_authorized_target_plan(
+    *,
+    request: TypedExecutionRequest,
+    decision_context: Mapping[str, object],
+    target_plan: Mapping[str, object],
+) -> bool:
+    if str(request.strategy_name or "").strip() != "operator_live_pipeline_smoke":
+        return False
+    if str(request.decision_reason or "").strip() != "operator_authorized_pipeline_smoke":
+        return False
+    if str(target_plan.get("source") or "") != "target_delta":
+        return False
+    if str(target_plan.get("authority") or "") != "canonical_target_delta_sizing":
+        return False
+    if str(target_plan.get("side") or "").strip().upper() not in {"BUY", "SELL"}:
+        return False
+    if not bool(target_plan.get("operator_live_pipeline_smoke")):
+        return False
+    if str(target_plan.get("execution_mode") or "") != "live_pipeline_smoke":
+        return False
+    if str(decision_context.get("execution_mode") or "") != "live_pipeline_smoke":
+        return False
+    if str(decision_context.get("candle_checkpoint_authority") or "") != "smoke_step_checkpoint":
+        return False
+    if str(target_plan.get("candle_checkpoint_authority") or "") != "smoke_step_checkpoint":
+        return False
+    if str(target_plan.get("operator_authorization") or "") != "live_pipeline_smoke_authority":
+        return False
+    if str(target_plan.get("market_reference_source") or "") not in {
+        "orderbook_top_mid",
+        "latest_closed_candle",
+    }:
+        return False
+    if str(decision_context.get("market_reference_source") or "") != str(
+        target_plan.get("market_reference_source") or ""
+    ):
+        return False
+    if bool(target_plan.get("normal_strategy_gate_modified")):
+        return False
+    if bool(decision_context.get("normal_strategy_gate_modified")):
+        return False
+    if bool(target_plan.get("normal_h74_strategy_performance_authority")):
+        return False
+    if bool(decision_context.get("normal_h74_strategy_performance_authority")):
+        return False
+    plan_pair = str(target_plan.get("pair") or target_plan.get("authoritative_pair") or "").strip().upper()
+    settings_pair = str(getattr(settings, "PAIR", "") or "").strip().upper()
+    return bool(plan_pair and settings_pair and plan_pair == settings_pair)
+
+
+def _target_delta_buy_performance_gate_block_reason(
+    target_plan: Mapping[str, object],
+    *,
+    request: TypedExecutionRequest,
+    decision_context: Mapping[str, object],
+) -> str | None:
+    if str(target_plan.get("side") or "").strip().upper() != "BUY":
+        return None
+    if not _live_real_order_performance_gate_applies():
+        return None
+    blocked = bool(target_plan.get("strategy_performance_gate_blocked"))
+    enabled = True
+    gate = target_plan.get("strategy_performance_gate")
+    if isinstance(gate, Mapping):
+        enabled = bool(gate.get("enabled", True))
+        blocked = blocked or not bool(gate.get("allowed", True))
+    if not (enabled and blocked):
+        return None
+    if _operator_live_pipeline_smoke_authorized_target_plan(
+        request=request,
+        decision_context=decision_context,
+        target_plan=target_plan,
+    ):
+        return None
+    return str(target_plan.get("strategy_performance_gate_reason_code") or "STRATEGY_PERFORMANCE_BLOCKED")
+
+
 def _cost_edge_context(decision_context: dict[str, object]) -> dict[str, object]:
     filters = decision_context.get("filters")
     if not isinstance(filters, dict):
@@ -2883,6 +2960,19 @@ class LiveSignalExecutionService:
                 if str(target_plan.get("pre_submit_proof_status") or "") != "passed":
                     _block_live_submit_plan(
                         reason="target_delta_pre_submit_proof_not_passed",
+                        field_name="target_submit_plan",
+                        source=target_plan.get("source"),
+                        side=target_plan.get("side"),
+                    )
+                    return None
+                performance_gate_block_reason = _target_delta_buy_performance_gate_block_reason(
+                    target_plan,
+                    request=request,
+                    decision_context=decision_context,
+                )
+                if performance_gate_block_reason is not None:
+                    _block_live_submit_plan(
+                        reason=performance_gate_block_reason,
                         field_name="target_submit_plan",
                         source=target_plan.get("source"),
                         side=target_plan.get("side"),

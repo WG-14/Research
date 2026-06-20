@@ -6,6 +6,7 @@ import pytest
 
 from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_db
+from bithumb_bot.execution_service import LiveSignalExecutionService
 from bithumb_bot.live_pipeline_smoke import (
     LivePipelineSmokeError,
     LivePipelineSmokeExecutionService,
@@ -40,9 +41,15 @@ def _patch_settings(monkeypatch, db_path):
         "LIVE_DRY_RUN": False,
         "LIVE_REAL_ORDER_ARMED": True,
         "KILL_SWITCH": False,
+        "EXECUTION_ENGINE": "target_delta",
         "PAIR": "KRW-BTC",
+        "INTERVAL": "1m",
         "DB_PATH": str(db_path),
         "BITHUMB_API_KEY": "account",
+        "LIVE_MIN_ORDER_QTY": 0.00000001,
+        "LIVE_ORDER_QTY_STEP": 0.00000001,
+        "LIVE_ORDER_MAX_QTY_DECIMALS": 8,
+        "MIN_ORDER_NOTIONAL_KRW": 5_000.0,
     }.items():
         old[name] = getattr(settings, name)
         object.__setattr__(settings, name, value)
@@ -67,11 +74,25 @@ def _authority(tmp_path, db_path):
     return path
 
 
+def _insert_top_of_book(conn) -> None:
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO orderbook_top_snapshots(
+            ts, pair, bid_price, ask_price, spread_bps, source, observed_at_epoch_sec
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (1_800_000_000_000, "KRW-BTC", 99_900_000.0, 100_100_000.0, 20.0, "unit", 1_800_000_000.0),
+    )
+    conn.commit()
+
+
 def test_fake_broker_executes_five_round_trips(monkeypatch, tmp_path) -> None:
     db_path = tmp_path / "live.sqlite"
     old = _patch_settings(monkeypatch, db_path)
     try:
         conn = ensure_db(str(db_path))
+        _insert_top_of_book(conn)
         broker = _Broker()
         authority = _authority(tmp_path, db_path)
         monkeypatch.setattr("bithumb_bot.live_pipeline_smoke.runtime_code_provenance", lambda: {"commit_sha": "unavailable"})
@@ -105,11 +126,82 @@ def test_fake_broker_executes_five_round_trips(monkeypatch, tmp_path) -> None:
         _restore_settings(old)
 
 
+def test_real_live_service_executes_five_round_trips_with_fake_executor(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "live.sqlite"
+    old = _patch_settings(monkeypatch, db_path)
+    try:
+        conn = ensure_db(str(db_path))
+        _insert_top_of_book(conn)
+        broker = _Broker()
+        authority = _authority(tmp_path, db_path)
+        calls: list[dict[str, object]] = []
+
+        def _executor(_broker, signal, ts, market_price, **kwargs):
+            plan = dict(kwargs["execution_submit_plan"])
+            side = str(signal).upper()
+            qty = float(plan["qty"])
+            broker.apply_fill(side=side, qty=qty)
+            calls.append(
+                {
+                    "signal": side,
+                    "ts": ts,
+                    "market_price": market_price,
+                    "plan": plan,
+                }
+            )
+            return {
+                "status": "submitted",
+                "client_order_id": f"lps_live_service_{len(calls)}",
+                "exchange_order_id": f"ex_lps_live_service_{len(calls)}",
+                "side": side,
+                "filled_qty": qty,
+            }
+
+        monkeypatch.setattr("bithumb_bot.live_pipeline_smoke.runtime_code_provenance", lambda: {"commit_sha": "unavailable"})
+        monkeypatch.setattr("bithumb_bot.live_pipeline_smoke.validate_live_pipeline_smoke_start_preflight", lambda **_kwargs: None)
+        service = LiveSignalExecutionService(
+            broker=broker,
+            executor=_executor,
+            harmless_dust_recorder=lambda **_kwargs: False,
+        )
+
+        payload = run_live_pipeline_smoke(
+            conn=conn,
+            broker=broker,
+            cycles=5,
+            max_orders=10,
+            max_notional_krw=10_000.0,
+            yes=True,
+            authority_path=str(authority),
+            confirm=LIVE_PIPELINE_SMOKE_CONFIRMATION_TOKEN,
+            execution_service=service,
+            readiness_provider=lambda: _readiness_from_broker(broker),
+            post_trade_reconcile=lambda: None,
+            run_id="lps_real_service_test",
+        )
+
+        assert payload["status"] == "passed"
+        assert payload["orders_submitted"] == 10
+        assert payload["buy_submitted"] == 5
+        assert payload["sell_submitted"] == 5
+        assert payload["final"]["broker_qty"] == 0.0
+        assert len(calls) == 10
+        assert [call["signal"] for call in calls].count("BUY") == 5
+        assert [call["signal"] for call in calls].count("SELL") == 5
+        assert payload["execution_mode_metadata"]["market_reference_source"] == "orderbook_top_mid"
+        buy_plans = [call["plan"] for call in calls if call["signal"] == "BUY"]
+        assert all(plan["strategy_performance_gate_blocked"] is True for plan in buy_plans)
+        assert all(plan["operator_live_pipeline_smoke"] is True for plan in buy_plans)
+    finally:
+        _restore_settings(old)
+
+
 def test_failure_after_step_prevents_next_step(monkeypatch, tmp_path) -> None:
     db_path = tmp_path / "live.sqlite"
     old = _patch_settings(monkeypatch, db_path)
     try:
         conn = ensure_db(str(db_path))
+        _insert_top_of_book(conn)
         broker = _Broker()
         authority = _authority(tmp_path, db_path)
         monkeypatch.setattr("bithumb_bot.live_pipeline_smoke.runtime_code_provenance", lambda: {"commit_sha": "unavailable"})
@@ -134,6 +226,43 @@ def test_failure_after_step_prevents_next_step(monkeypatch, tmp_path) -> None:
         assert payload["status"] == "failed"
         assert payload["orders_submitted"] == 1
         assert len(service.submissions) == 1
+    finally:
+        _restore_settings(old)
+
+
+def test_execute_none_does_not_increment_orders_submitted(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "live.sqlite"
+    old = _patch_settings(monkeypatch, db_path)
+    try:
+        conn = ensure_db(str(db_path))
+        _insert_top_of_book(conn)
+        broker = _Broker()
+        authority = _authority(tmp_path, db_path)
+        monkeypatch.setattr("bithumb_bot.live_pipeline_smoke.runtime_code_provenance", lambda: {"commit_sha": "unavailable"})
+        monkeypatch.setattr("bithumb_bot.live_pipeline_smoke.validate_live_pipeline_smoke_start_preflight", lambda **_kwargs: None)
+
+        class _NoneService:
+            def execute(self, _request):
+                return None
+
+        payload = run_live_pipeline_smoke(
+            conn=conn,
+            broker=broker,
+            cycles=5,
+            max_orders=10,
+            max_notional_krw=10_000.0,
+            yes=True,
+            authority_path=str(authority),
+            confirm=LIVE_PIPELINE_SMOKE_CONFIRMATION_TOKEN,
+            execution_service=_NoneService(),
+            readiness_provider=lambda: _readiness_from_broker(broker),
+            post_trade_reconcile=lambda: None,
+            run_id="lps_test",
+        )
+
+        assert payload["status"] == "failed"
+        assert payload["orders_submitted"] == 0
+        assert broker.qty == 0.0
     finally:
         _restore_settings(old)
 

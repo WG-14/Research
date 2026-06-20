@@ -626,6 +626,29 @@ def _typed_target_execution_summary() -> ExecutionDecisionSummary:
     )
 
 
+def _typed_target_execution_summary_with_plan(plan: dict[str, object]) -> ExecutionDecisionSummary:
+    return ExecutionDecisionSummary(
+        raw_signal=str(plan["side"]),
+        final_signal=str(plan["side"]),
+        final_action=str(plan["final_action"]),
+        submit_expected=bool(plan["submit_expected"]),
+        pre_submit_proof_status=str(plan["pre_submit_proof_status"]),
+        block_reason=str(plan["block_reason"]),
+        strategy_sell_candidate=None,
+        residual_sell_candidate=None,
+        target_exposure_krw=plan["target_exposure_krw"],  # type: ignore[arg-type]
+        current_effective_exposure_krw=plan["current_effective_exposure_krw"],  # type: ignore[arg-type]
+        tracked_residual_exposure_krw=None,
+        buy_delta_krw=plan["delta_krw"],  # type: ignore[arg-type]
+        residual_live_sell_mode="block",
+        residual_buy_sizing_mode="block",
+        residual_submit_plan=None,
+        buy_submit_plan=None,
+        target_shadow_decision=None,
+        target_submit_plan=_typed_plan(plan),
+    )
+
+
 def _typed_buy_execution_summary(
     *,
     plan: dict[str, object] | None = None,
@@ -966,6 +989,54 @@ def test_typed_execution_summary_can_supply_validated_target_submit_plan() -> No
     assert calls[0]["kwargs"]["execution_submit_plan"] == expected_payload  # type: ignore[index]
     assert calls[0]["kwargs"]["execution_submit_plan"]["submit_plan_hash"] == expected_payload["submit_plan_hash"]  # type: ignore[index]
     assert str(calls[0]["kwargs"]["execution_submit_plan"]["submit_plan_hash"]).startswith("sha256:")  # type: ignore[index]
+
+
+def test_normal_live_target_delta_buy_with_blocked_performance_gate_does_not_reach_executor(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _arm_live_real_orders(engine="target_delta")
+    calls: list[dict[str, object]] = []
+    base = {
+        key: value
+        for key, value in _valid_target_submit_plan().items()
+        if not str(key).startswith("pre_submit_risk_")
+        and key
+        not in {
+            "effective_pre_submit_risk_policy_hash",
+            "risk_policy_source",
+            "strategy_risk_profile_hashes",
+        }
+    }
+    plan = _with_pre_submit_risk_proof(
+        {
+            **base,
+            "strategy_performance_gate": {
+                "enabled": True,
+                "allowed": False,
+                "blocked": True,
+                "reason_code": "insufficient_sample",
+            },
+            "strategy_performance_gate_blocked": True,
+            "strategy_performance_gate_status": "blocked",
+            "strategy_performance_gate_reason_code": "insufficient_sample",
+        }
+    )
+
+    result = _service(calls).execute(
+        SignalExecutionRequest(
+            signal="BUY",
+            ts=123,
+            market_price=100_000_000.0,
+            strategy_name="sma_with_filter",
+            decision_reason="normal_strategy",
+            decision_context={},
+            execution_decision_summary=_typed_target_execution_summary_with_plan(plan),
+        )
+    )
+
+    assert result is None
+    assert calls == []
+    assert "reason=insufficient_sample" in caplog.text
 
 
 def test_execution_intent_telemetry_does_not_change_live_target_delta_submit_size() -> None:

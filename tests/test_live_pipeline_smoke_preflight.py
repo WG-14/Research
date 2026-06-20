@@ -27,6 +27,7 @@ def _cfg():
         LIVE_DRY_RUN=False,
         LIVE_REAL_ORDER_ARMED=True,
         KILL_SWITCH=False,
+        EXECUTION_ENGINE="target_delta",
         PAIR="KRW-BTC",
         BITHUMB_API_KEY="key",
         BITHUMB_API_SECRET="secret",

@@ -130,6 +130,8 @@ def validate_live_pipeline_smoke_start_preflight(
         raise LivePipelineSmokePreflightError("live_pipeline_smoke_requires_live_real_order_armed")
     if bool(cfg.KILL_SWITCH):
         raise LivePipelineSmokePreflightError("live_pipeline_smoke_blocked_by_kill_switch")
+    if str(getattr(cfg, "EXECUTION_ENGINE", "") or "").strip().lower() != "target_delta":
+        raise LivePipelineSmokePreflightError("live_pipeline_smoke_requires_execution_engine_target_delta")
     if str(market or "").strip().upper() != str(cfg.PAIR or "").strip().upper():
         raise LivePipelineSmokePreflightError("live_pipeline_smoke_market_mismatch_with_settings_pair")
     try:

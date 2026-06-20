@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 import uuid
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .config import runtime_code_provenance, settings
 from .db_core import ensure_db, record_strategy_decision
+from .decision_equivalence import sha256_prefixed
+from .execution_order_rules import ExecutionOrderRules, resolve_execution_order_rules
 from .execution_service import ExecutionDecisionSummary, ExecutionSubmitPlan, build_signal_execution_service
 from .live_pipeline_smoke_authority import (
     LIVE_PIPELINE_SMOKE_CONFIRMATION_TOKEN,
@@ -26,21 +30,31 @@ from .live_pipeline_smoke_preflight import (
     validate_live_pipeline_smoke_step_readiness,
 )
 from .runtime_readiness import compute_runtime_readiness_snapshot
+from .runtime_data_access import select_latest_closed_candle
 from .runtime.execution_coordinator import ExecutionCoordinator, build_signal_execution_request
 from .runtime.live_pipeline_smoke_decision import (
     OPERATOR_LIVE_PIPELINE_SMOKE_STRATEGY_NAME,
     LivePipelineSmokeDecisionProvider,
 )
+from .utils_time import parse_interval_sec
 
 
 class LivePipelineSmokeError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class MarketReference:
+    price: float
+    source: str
+    ts: int | None = None
+    bid_price: float | None = None
+    ask_price: float | None = None
+
+
 @dataclass
 class LivePipelineSmokeExecutionService:
     broker: Any
-    reference_price: float = 100_000_000.0
     fail_at_step: int | None = None
     submissions: list[dict[str, Any]] = field(default_factory=list)
 
@@ -140,6 +154,143 @@ def _readiness_from_broker(broker: Any) -> LivePipelineSmokeReadiness:
     )
 
 
+def _positive_finite(value: object) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed) or parsed <= 0.0:
+        return None
+    return parsed
+
+
+def _row_value(row: Any, key: str, index: int) -> Any:
+    if row is None:
+        return None
+    if hasattr(row, "keys"):
+        return row[key]
+    return row[index]
+
+
+def _is_closed_candle(*, candle_ts_ms: int, now_ms: int, interval_sec: int) -> bool:
+    interval_ms = max(1, int(interval_sec)) * 1000
+    close_guard_ms = max(2_000, min(30_000, interval_ms // 20))
+    return int(now_ms) >= int(candle_ts_ms) + interval_ms + close_guard_ms
+
+
+def _resolve_market_reference(conn: Any, *, market: str, now_ms: int) -> MarketReference:
+    top_row = conn.execute(
+        """
+        SELECT ts, bid_price, ask_price
+        FROM orderbook_top_snapshots
+        WHERE pair=?
+        ORDER BY ts DESC
+        LIMIT 1
+        """,
+        (market,),
+    ).fetchone()
+    if top_row is not None:
+        bid = _positive_finite(_row_value(top_row, "bid_price", 1))
+        ask = _positive_finite(_row_value(top_row, "ask_price", 2))
+        if bid is not None and ask is not None and ask >= bid:
+            return MarketReference(
+                price=(bid + ask) / 2.0,
+                source="orderbook_top_mid",
+                ts=int(_row_value(top_row, "ts", 0)),
+                bid_price=bid,
+                ask_price=ask,
+            )
+
+    interval = str(getattr(settings, "INTERVAL", "1m") or "1m")
+    interval_sec = parse_interval_sec(interval)
+    candle_row, _incomplete_ts = select_latest_closed_candle(
+        conn,
+        pair=market,
+        interval=interval,
+        interval_sec=interval_sec,
+        now_ms=now_ms,
+        is_closed_candle=_is_closed_candle,
+    )
+    if candle_row is not None:
+        close = _positive_finite(_row_value(candle_row, "close", 1))
+        if close is not None:
+            return MarketReference(
+                price=close,
+                source="latest_closed_candle",
+                ts=int(_row_value(candle_row, "ts", 0)),
+            )
+    raise LivePipelineSmokePreflightError("live_pipeline_smoke_market_reference_unavailable")
+
+
+def _validate_smoke_order_rules(
+    *,
+    rules: ExecutionOrderRules,
+    market: str,
+    settings_pair: str,
+    side: str,
+    qty: float,
+    notional_krw: float,
+) -> None:
+    if str(market or "").strip().upper() != str(settings_pair or "").strip().upper():
+        raise LivePipelineSmokePreflightError("live_pipeline_smoke_market_mismatch_with_settings_pair")
+    if str(rules.market or "").strip().upper() != str(market or "").strip().upper():
+        raise LivePipelineSmokePreflightError("live_pipeline_smoke_order_rules_market_mismatch")
+    if rules.min_qty is None or rules.min_notional_krw is None:
+        raise LivePipelineSmokePreflightError("live_pipeline_smoke_order_rules_missing_required_fields")
+    if bool(rules.stale):
+        raise LivePipelineSmokePreflightError("live_pipeline_smoke_order_rules_stale")
+    if _positive_finite(qty) is None:
+        raise LivePipelineSmokePreflightError("live_pipeline_smoke_non_positive_qty")
+    if _positive_finite(notional_krw) is None:
+        raise LivePipelineSmokePreflightError("live_pipeline_smoke_non_positive_notional")
+    if float(qty) + 1e-12 < float(rules.min_qty):
+        raise LivePipelineSmokePreflightError("live_pipeline_smoke_qty_below_min_qty")
+    side_upper = str(side or "").upper()
+    side_min_total = rules.bid_min_total_krw if side_upper == "BUY" else rules.ask_min_total_krw
+    min_notional = max(float(rules.min_notional_krw), float(side_min_total or 0.0))
+    if float(notional_krw) + 1e-9 < min_notional:
+        raise LivePipelineSmokePreflightError("live_pipeline_smoke_notional_below_min_notional")
+
+
+def _smoke_risk_policy_hash() -> str:
+    return sha256_prefixed({"risk_policy": "operator_live_pipeline_smoke_minimal_allow"})
+
+
+def _smoke_strategy_risk_profile_hash() -> str:
+    return sha256_prefixed({"strategy": OPERATOR_LIVE_PIPELINE_SMOKE_STRATEGY_NAME})
+
+
+def _smoke_pre_submit_risk_proof(*, submit_plan_hash: str) -> dict[str, object]:
+    proof_input = {
+        "authority": "operator_live_pipeline_smoke",
+        "submit_plan_hash": str(submit_plan_hash),
+    }
+    policy_hash = _smoke_risk_policy_hash()
+    profile_hash = _smoke_strategy_risk_profile_hash()
+    return {
+        "pre_submit_risk_required": True,
+        "pre_submit_risk_decision": {
+            "evaluation_point": "pre_submit",
+            "status": "ALLOW",
+            "reason_code": "OPERATOR_LIVE_PIPELINE_SMOKE_AUTHORIZED",
+            "reason": "operator authorized bounded live pipeline smoke",
+            "allowed_actions": ["submit"],
+        },
+        "pre_submit_risk_status": "ALLOW",
+        "pre_submit_risk_decision_hash": sha256_prefixed({**proof_input, "decision": "ALLOW"}),
+        "pre_submit_risk_policy_hash": policy_hash,
+        "effective_pre_submit_risk_policy_hash": policy_hash,
+        "pre_submit_risk_input_hash": sha256_prefixed({**proof_input, "input": "smoke"}),
+        "pre_submit_risk_evidence_hash": sha256_prefixed({**proof_input, "evidence": "smoke"}),
+        "pre_submit_risk_plan_hash": str(submit_plan_hash),
+        "pre_submit_risk_reason_code": "OPERATOR_LIVE_PIPELINE_SMOKE_AUTHORIZED",
+        "pre_submit_risk_state_source": "operator_live_pipeline_smoke_preflight",
+        "risk_policy_source": "operator_live_pipeline_smoke_authority",
+        "pre_submit_risk_policy_composition_rule": "operator_bounded_smoke_only",
+        "strategy_risk_profile_hashes": [profile_hash],
+    }
+
+
 def _summary_for_step(
     *,
     side: str,
@@ -148,9 +299,56 @@ def _summary_for_step(
     qty: float,
     notional_krw: float,
     market: str,
+    market_reference: MarketReference,
+    order_rules: ExecutionOrderRules,
     context: dict[str, object],
 ) -> ExecutionDecisionSummary:
-    plan = ExecutionSubmitPlan(
+    order_rule_payload = order_rules.as_order_rules()
+    policy_hash = _smoke_risk_policy_hash()
+    profile_hash = _smoke_strategy_risk_profile_hash()
+    extra_payload = {
+        "portfolio_target_authoritative": True,
+        "portfolio_target_hash": "sha256:live_pipeline_smoke_portfolio_target",
+        "allocation_decision_hash": "sha256:live_pipeline_smoke_allocation",
+        "allocator_config_hash": "sha256:live_pipeline_smoke_allocator",
+        "strategy_contribution_hash": "sha256:live_pipeline_smoke_contribution",
+        "runtime_pair": str(market),
+        "authoritative_pair": str(market),
+        "operator_live_pipeline_smoke": True,
+        "operator_authorization": "live_pipeline_smoke_authority",
+        "execution_mode": "live_pipeline_smoke",
+        "candle_checkpoint_authority": "smoke_step_checkpoint",
+        "market_reference_source": market_reference.source,
+        "market_reference_price": float(market_reference.price),
+        "market_reference_ts": market_reference.ts,
+        "market_reference_bid_price": market_reference.bid_price,
+        "market_reference_ask_price": market_reference.ask_price,
+        "normal_h74_strategy_performance_authority": False,
+        "normal_strategy_gate_modified": False,
+        "strategy_performance_gate": {
+            "enabled": True,
+            "allowed": False,
+            "blocked": True,
+            "reason_code": "operator_live_pipeline_smoke_bypasses_strategy_performance_gate",
+            "reason": "operator smoke is not ordinary strategy performance authority",
+            "scope": "operator_live_pipeline_smoke_only",
+        },
+        "strategy_performance_gate_status": "blocked",
+        "strategy_performance_gate_blocked": True,
+        "strategy_performance_gate_enforced": False,
+        "strategy_performance_gate_would_block_if_armed": True,
+        "strategy_performance_gate_reason_code": (
+            "operator_live_pipeline_smoke_bypasses_strategy_performance_gate"
+        ),
+        "strategy_performance_gate_reason": (
+            "operator smoke is not ordinary strategy performance authority"
+        ),
+        "effective_pre_submit_risk_policy_hash": policy_hash,
+        "risk_policy_source": "operator_live_pipeline_smoke_authority",
+        "strategy_risk_profile_hashes": [profile_hash],
+        **order_rule_payload,
+    }
+    base_plan = ExecutionSubmitPlan(
         side=str(side).upper(),
         source="target_delta",
         authority="canonical_target_delta_sizing",
@@ -168,15 +366,13 @@ def _summary_for_step(
         scope_key_hash="sha256:live_pipeline_smoke_scope",
         portfolio_target_hash="sha256:live_pipeline_smoke_portfolio_target",
         submit_authority_policy_hash="sha256:live_pipeline_smoke_submit_policy",
+        extra_payload=extra_payload,
+    )
+    plan = replace(
+        base_plan,
         extra_payload={
-            "portfolio_target_authoritative": True,
-            "portfolio_target_hash": "sha256:live_pipeline_smoke_portfolio_target",
-            "allocation_decision_hash": "sha256:live_pipeline_smoke_allocation",
-            "allocator_config_hash": "sha256:live_pipeline_smoke_allocator",
-            "strategy_contribution_hash": "sha256:live_pipeline_smoke_contribution",
-            "runtime_pair": str(market),
-            "authoritative_pair": str(market),
-            "operator_live_pipeline_smoke": True,
+            **extra_payload,
+            **_smoke_pre_submit_risk_proof(submit_plan_hash=base_plan.content_hash()),
         },
     )
     return ExecutionDecisionSummary(
@@ -202,7 +398,8 @@ def _summary_for_step(
             "target_delta_notional_krw": float(notional_krw),
             "target_delta_side": str(side).upper(),
             "target_qty": float(qty if side == "BUY" else 0.0),
-            "target_reference_price": 100_000_000.0,
+            "target_reference_price": float(market_reference.price),
+            "market_reference_source": market_reference.source,
             "target_origin": "operator_live_pipeline_smoke",
             "target_adoption_reason": "operator_authorized_pipeline_smoke",
         },
@@ -211,7 +408,14 @@ def _summary_for_step(
     )
 
 
-def _record_smoke_decision(conn: Any, *, ts: int, side: str, context: dict[str, object]) -> int:
+def _record_smoke_decision(
+    conn: Any,
+    *,
+    ts: int,
+    side: str,
+    market_price: float,
+    context: dict[str, object],
+) -> int:
     return record_strategy_decision(
         conn,
         decision_ts=ts,
@@ -219,7 +423,7 @@ def _record_smoke_decision(conn: Any, *, ts: int, side: str, context: dict[str, 
         signal=str(side).upper(),
         reason="operator_authorized_pipeline_smoke",
         candle_ts=ts,
-        market_price=100_000_000.0,
+        market_price=float(market_price),
         confidence=1.0,
         context=context,
         strategy_decision_projection_type="operator_live_pipeline_smoke",
@@ -266,23 +470,32 @@ def run_live_pipeline_smoke(
         max_notional_krw=max_notional_krw,
     )
     smoke_run_id = str(run_id or f"lps_{uuid.uuid4().hex[:12]}")
-    validate_live_pipeline_smoke_start_preflight(
-        cfg=settings,
-        conn=conn,
-        broker=broker,
-        market=market,
-    )
-    authority.consume(
-        consumed_at=datetime.now(timezone.utc),
-        market=market,
-        db_path=str(settings.DB_PATH),
-        account_key=str(settings.BITHUMB_API_KEY),
-        code_commit_sha=code_commit_sha,
-        cycles=cycles,
-        max_orders=max_orders,
-        max_notional_krw=max_notional_krw,
-        run_id=smoke_run_id,
-    )
+    try:
+        validate_live_pipeline_smoke_start_preflight(
+            cfg=settings,
+            conn=conn,
+            broker=broker,
+            market=market,
+        )
+        authority.consume(
+            consumed_at=datetime.now(timezone.utc),
+            market=market,
+            db_path=str(settings.DB_PATH),
+            account_key=str(settings.BITHUMB_API_KEY),
+            code_commit_sha=code_commit_sha,
+            cycles=cycles,
+            max_orders=max_orders,
+            max_notional_krw=max_notional_krw,
+            run_id=smoke_run_id,
+        )
+    except Exception as exc:
+        return _failure_payload(
+            run_id=smoke_run_id,
+            reason=str(exc),
+            step=0,
+            round_index=1,
+            orders_submitted=0,
+        )
 
     provider = LivePipelineSmokeDecisionProvider(
         run_id=smoke_run_id,
@@ -301,23 +514,56 @@ def run_live_pipeline_smoke(
     orders_submitted = 0
     buy_submitted = 0
     sell_submitted = 0
+    market_reference_sources: set[str] = set()
 
     for step in range(max_orders):
-        current = readiness()
-        side = provider.next_side(current)
-        if side == "STOP":
-            break
-        validate_live_pipeline_smoke_step_readiness(current, expected_side=side)
+        try:
+            current = readiness()
+            side = provider.next_side(current)
+            if side == "STOP":
+                break
+            validate_live_pipeline_smoke_step_readiness(current, expected_side=side)
+            ts = int(time.time() * 1000) + step
+            market_reference = _resolve_market_reference(conn, market=market, now_ms=ts)
+        except Exception as exc:
+            return _failure_payload(
+                run_id=smoke_run_id,
+                reason=str(exc),
+                step=step,
+                round_index=(step // 2) + 1,
+                orders_submitted=orders_submitted,
+            )
         context = provider.context_for_step(side=side)
-        ts = int(time.time() * 1000) + step
-        current_exposure = float(current.broker_qty) * 100_000_000.0
+        context["market_reference_source"] = market_reference.source
+        context["market_reference_price"] = float(market_reference.price)
+        context["market_reference_ts"] = market_reference.ts
+        market_reference_sources.add(market_reference.source)
+        current_exposure = float(current.broker_qty) * float(market_reference.price)
         target_exposure = provider.target_exposure_krw_for_side(side)
         qty = (
-            float(max_notional_krw) / 100_000_000.0
+            float(max_notional_krw) / float(market_reference.price)
             if side == "BUY"
             else float(current.broker_qty)
         )
         notional = float(max_notional_krw) if side == "BUY" else max(0.0, float(current_exposure))
+        try:
+            order_rules = resolve_execution_order_rules(market=market)
+            _validate_smoke_order_rules(
+                rules=order_rules,
+                market=market,
+                settings_pair=str(settings.PAIR),
+                side=side,
+                qty=qty,
+                notional_krw=notional,
+            )
+        except Exception as exc:
+            return _failure_payload(
+                run_id=smoke_run_id,
+                reason=str(exc),
+                step=step,
+                round_index=(step // 2) + 1,
+                orders_submitted=orders_submitted,
+            )
         summary = _summary_for_step(
             side=side,
             target_exposure_krw=target_exposure,
@@ -325,10 +571,18 @@ def run_live_pipeline_smoke(
             qty=qty,
             notional_krw=notional,
             market=market,
+            market_reference=market_reference,
+            order_rules=order_rules,
             context=context,
         )
         context["execution_decision"] = summary.as_dict()
-        decision_id = _record_smoke_decision(conn, ts=ts, side=side, context=context)
+        decision_id = _record_smoke_decision(
+            conn,
+            ts=ts,
+            side=side,
+            market_price=market_reference.price,
+            context=context,
+        )
         conn.commit()
         def _submit_invoker(
             *,
@@ -337,12 +591,13 @@ def run_live_pipeline_smoke(
             _decision_id: int = decision_id,
             _summary: ExecutionDecisionSummary = summary,
             _context: dict[str, object] = context,
+            _market_reference: MarketReference = market_reference,
         ) -> Any:
             return service.execute(
                 build_signal_execution_request(
                     signal=_side,
                     ts=_ts,
-                    market_price=100_000_000.0,
+                    market_price=float(_market_reference.price),
                     strategy_name=OPERATOR_LIVE_PIPELINE_SMOKE_STRATEGY_NAME,
                     decision_id=_decision_id,
                     decision_reason="operator_authorized_pipeline_smoke",
@@ -357,7 +612,7 @@ def run_live_pipeline_smoke(
             candle_ts=ts,
             decision_id=decision_id,
             signal=side,
-            market_price=100_000_000.0,
+            market_price=float(market_reference.price),
             strategy_name=OPERATOR_LIVE_PIPELINE_SMOKE_STRATEGY_NAME,
             decision_reason="operator_authorized_pipeline_smoke",
             decision_context=context,
@@ -368,7 +623,19 @@ def run_live_pipeline_smoke(
             post_trade_reconcile=reconcile,
             input_hash=None,
         )
-        if not result.submitted or result.halt_transition:
+        trade = dict(result.trade or {}) if isinstance(result.trade, Mapping) else {}
+        try:
+            filled_qty = float(trade.get("filled_qty") or 0.0)
+        except (TypeError, ValueError):
+            filled_qty = 0.0
+        if (
+            not result.submitted
+            or result.halt_transition
+            or not trade
+            or not str(trade.get("client_order_id") or "").strip()
+            or str(trade.get("side") or "").upper() != str(side).upper()
+            or filled_qty <= 0.0
+        ):
             return _failure_payload(
                 run_id=smoke_run_id,
                 reason=result.planning_status,
@@ -387,7 +654,6 @@ def run_live_pipeline_smoke(
                 round_index=(step // 2) + 1,
                 orders_submitted=orders_submitted + 1,
             )
-        trade = dict(result.trade or {})
         evidence = {
             "decision_id": decision_id,
             "client_order_id": trade.get("client_order_id"),
@@ -395,7 +661,9 @@ def run_live_pipeline_smoke(
             "submitted": True,
             "post_trade_reconciled": bool(result.post_trade_reconciled),
             "broker_qty_after": float(after.broker_qty),
-            "filled_qty": float(trade.get("filled_qty") or qty),
+            "filled_qty": filled_qty,
+            "market_reference_source": market_reference.source,
+            "market_reference_price": float(market_reference.price),
         }
         if not result.post_trade_reconciled:
             return _failure_payload(
@@ -451,7 +719,12 @@ def run_live_pipeline_smoke(
         "execution_mode_metadata": {
             "execution_mode": "live_pipeline_smoke",
             "candle_checkpoint_authority": "smoke_step_checkpoint",
-            "market_reference_source": "latest_closed_candle_or_top_of_book",
+            "market_reference_source": (
+                next(iter(market_reference_sources))
+                if len(market_reference_sources) == 1
+                else "mixed"
+            ),
+            "market_reference_sources": sorted(market_reference_sources),
             "normal_h74_strategy_performance_authority": False,
         },
     }
