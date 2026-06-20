@@ -292,7 +292,19 @@ def test_live_guard_policy_is_metadata_driven(monkeypatch: pytest.MonkeyPatch) -
     assert handler_called is True
 
 
-def test_operator_smoke_guard_does_not_call_strategy_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("command", "policy"),
+    [
+        ("smoke-buy", "operator_execution_smoke"),
+        ("live-pipeline-smoke", "operator_live_pipeline_smoke"),
+        ("live-pipeline-smoke-authority", "operator_live_pipeline_smoke_authority"),
+    ],
+)
+def test_operator_smoke_guard_does_not_call_strategy_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    policy: str,
+) -> None:
     calls: list[str] = []
 
     for validator_name in (
@@ -311,17 +323,17 @@ def test_operator_smoke_guard_does_not_call_strategy_preflight(monkeypatch: pyte
     )
 
     spec = CommandSpec(
-        name="smoke-buy",
+        name=command,
         domain="live_ops",
         handler=lambda _args, _context: 0,
-        register_parser=lambda subparsers: subparsers.add_parser("smoke-buy"),
-        guard_policy="operator_execution_smoke",
+        register_parser=lambda subparsers: subparsers.add_parser(command),
+        guard_policy=policy,
     )
 
     rc = dispatch(
-        argparse.Namespace(cmd="smoke-buy"),
+        argparse.Namespace(cmd=command),
         AppContext(settings=SimpleNamespace(MODE="live")),
-        {"smoke-buy": spec},
+        {command: spec},
     )
 
     assert rc == 0

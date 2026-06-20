@@ -29,7 +29,11 @@ def enforce_guard_policy(spec: CommandSpec, context: AppContext) -> None:
             from bithumb_bot.config import validate_live_mode_preflight
 
             validate_live_mode_preflight(settings)
-        elif policy == "operator_execution_smoke":
+        elif policy in {
+            "operator_execution_smoke",
+            "operator_live_pipeline_smoke",
+            "operator_live_pipeline_smoke_authority",
+        }:
             from bithumb_bot.operator_smoke_preflight import validate_operator_smoke_cli_guard
 
             validate_operator_smoke_cli_guard(settings)
