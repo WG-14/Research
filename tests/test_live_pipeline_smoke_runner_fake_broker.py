@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from bithumb_bot.broker import live as live_broker
 from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_db
 from bithumb_bot.execution_service import LiveSignalExecutionService
@@ -185,6 +186,8 @@ def test_real_live_service_executes_five_round_trips_with_fake_executor(monkeypa
         assert payload["buy_submitted"] == 5
         assert payload["sell_submitted"] == 5
         assert payload["final"]["broker_qty"] == 0.0
+        assert payload["final"]["portfolio_qty"] == 0.0
+        assert payload["final"]["projected_total_qty"] == 0.0
         assert len(calls) == 10
         assert [call["signal"] for call in calls].count("BUY") == 5
         assert [call["signal"] for call in calls].count("SELL") == 5
@@ -192,6 +195,14 @@ def test_real_live_service_executes_five_round_trips_with_fake_executor(monkeypa
         buy_plans = [call["plan"] for call in calls if call["signal"] == "BUY"]
         assert all(plan["strategy_performance_gate_blocked"] is True for plan in buy_plans)
         assert all(plan["operator_live_pipeline_smoke"] is True for plan in buy_plans)
+        assert all(plan["market_reference_source"] == "orderbook_top_mid" for plan in buy_plans)
+        assert all(
+            live_broker._is_operator_live_pipeline_smoke_submit(
+                plan,
+                strategy_name="operator_live_pipeline_smoke",
+            )
+            for plan in buy_plans
+        )
     finally:
         _restore_settings(old)
 

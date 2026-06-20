@@ -2488,6 +2488,29 @@ def _target_delta_submit_plan(
     }
 
 
+def _is_operator_live_pipeline_smoke_submit(
+    target_plan: dict[str, object],
+    *,
+    strategy_name: str | None,
+) -> bool:
+    return bool(
+        strategy_name == "operator_live_pipeline_smoke"
+        and target_plan.get("operator_live_pipeline_smoke") is True
+        and target_plan.get("operator_authorization") == "live_pipeline_smoke_authority"
+        and target_plan.get("execution_mode") == "live_pipeline_smoke"
+        and target_plan.get("normal_h74_strategy_performance_authority") is False
+        and target_plan.get("normal_strategy_gate_modified") is False
+        and target_plan.get("source") == "target_delta"
+        and target_plan.get("authority") == "canonical_target_delta_sizing"
+        and target_plan.get("pre_submit_risk_status") == "ALLOW"
+        and target_plan.get("pre_submit_risk_reason_code")
+        == "OPERATOR_LIVE_PIPELINE_SMOKE_AUTHORIZED"
+        and target_plan.get("risk_policy_source") == "operator_live_pipeline_smoke_authority"
+        and target_plan.get("pre_submit_risk_policy_composition_rule")
+        == "operator_bounded_smoke_only"
+    )
+
+
 def _lot_native_buy_submit_plan(
     execution_submit_plan: dict[str, object] | None,
 ) -> dict[str, object] | None:
@@ -2694,13 +2717,17 @@ def _determine_live_execution_intent(
         _copy_pre_submit_authority_fields(target_observability, target_plan)
         position_state.decision_observability.update(target_observability)
         if target_side == "BUY" and _live_real_order_performance_gate_applies():
-            if _record_strategy_performance_gate_block(
-                conn=conn,
-                decision_observability=decision_observability,
+            if not _is_operator_live_pipeline_smoke_submit(
+                target_plan,
                 strategy_name=strategy_name,
-                authority_source="target_delta",
             ):
-                return None
+                if _record_strategy_performance_gate_block(
+                    conn=conn,
+                    decision_observability=decision_observability,
+                    strategy_name=strategy_name,
+                    authority_source="target_delta",
+                ):
+                    return None
         return _LiveExecutionIntent(
             side=target_side,
             order_qty=target_qty,

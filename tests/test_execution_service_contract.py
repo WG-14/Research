@@ -132,6 +132,46 @@ def _valid_target_submit_plan() -> dict[str, object]:
     })
 
 
+def _operator_live_pipeline_smoke_target_submit_plan() -> dict[str, object]:
+    payload = {
+        key: value
+        for key, value in _valid_target_submit_plan().items()
+        if not str(key).startswith("pre_submit_risk_")
+        and key
+        not in {
+            "effective_pre_submit_risk_policy_hash",
+            "risk_policy_source",
+            "strategy_risk_profile_hashes",
+        }
+    }
+    payload.update(
+        {
+            "operator_live_pipeline_smoke": True,
+            "operator_authorization": "live_pipeline_smoke_authority",
+            "execution_mode": "live_pipeline_smoke",
+            "normal_h74_strategy_performance_authority": False,
+            "normal_strategy_gate_modified": False,
+        }
+    )
+    plan_hash = execution_submit_plan_payload_hash(payload)
+    return {
+        **payload,
+        "submit_plan_hash": plan_hash,
+        "pre_submit_risk_status": "ALLOW",
+        "pre_submit_risk_decision_hash": "sha256:" + "1" * 64,
+        "pre_submit_risk_policy_hash": "sha256:" + "2" * 64,
+        "effective_pre_submit_risk_policy_hash": "sha256:" + "2" * 64,
+        "pre_submit_risk_input_hash": "sha256:" + "3" * 64,
+        "pre_submit_risk_evidence_hash": "sha256:" + "4" * 64,
+        "pre_submit_risk_plan_hash": plan_hash,
+        "pre_submit_risk_reason_code": "OPERATOR_LIVE_PIPELINE_SMOKE_AUTHORIZED",
+        "pre_submit_risk_state_source": "operator_live_pipeline_smoke_preflight",
+        "risk_policy_source": "operator_live_pipeline_smoke_authority",
+        "pre_submit_risk_policy_composition_rule": "operator_bounded_smoke_only",
+        "strategy_risk_profile_hashes": ["sha256:" + "8" * 64],
+    }
+
+
 def _valid_residual_submit_plan() -> dict[str, object]:
     return _with_pre_submit_risk_proof({
         "side": "SELL",
@@ -1037,6 +1077,47 @@ def test_normal_live_target_delta_buy_with_blocked_performance_gate_does_not_rea
     assert result is None
     assert calls == []
     assert "reason=insufficient_sample" in caplog.text
+    assert not live_broker._is_operator_live_pipeline_smoke_submit(plan, strategy_name="sma_with_filter")
+
+
+def test_broker_performance_gate_bypass_requires_exact_operator_smoke_markers() -> None:
+    ordinary = _valid_target_submit_plan()
+    smoke = _operator_live_pipeline_smoke_target_submit_plan()
+
+    assert not live_broker._is_operator_live_pipeline_smoke_submit(
+        ordinary,
+        strategy_name="operator_live_pipeline_smoke",
+    )
+    assert live_broker._is_operator_live_pipeline_smoke_submit(
+        smoke,
+        strategy_name="operator_live_pipeline_smoke",
+    )
+
+    required_markers = (
+        "operator_live_pipeline_smoke",
+        "operator_authorization",
+        "execution_mode",
+        "normal_h74_strategy_performance_authority",
+        "normal_strategy_gate_modified",
+        "source",
+        "authority",
+        "pre_submit_risk_status",
+        "pre_submit_risk_reason_code",
+        "risk_policy_source",
+        "pre_submit_risk_policy_composition_rule",
+    )
+    for marker in required_markers:
+        tampered = dict(smoke)
+        tampered.pop(marker)
+        assert not live_broker._is_operator_live_pipeline_smoke_submit(
+            tampered,
+            strategy_name="operator_live_pipeline_smoke",
+        ), marker
+
+    assert not live_broker._is_operator_live_pipeline_smoke_submit(
+        smoke,
+        strategy_name="sma_with_filter",
+    )
 
 
 def test_execution_intent_telemetry_does_not_change_live_target_delta_submit_size() -> None:
