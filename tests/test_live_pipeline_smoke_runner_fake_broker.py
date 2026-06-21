@@ -172,7 +172,7 @@ def test_fake_broker_executes_five_round_trips(monkeypatch, tmp_path) -> None:
         assert payload["final"]["broker_qty"] == 0.0
         assert conn.execute("SELECT COUNT(*) FROM strategy_decisions WHERE strategy_name='operator_live_pipeline_smoke'").fetchone()[0] == 10
         assert len(service.submissions) == 10
-        assert reconcile_attempts == ["reconcile"] * 10
+        assert reconcile_attempts == ["reconcile"] * 19
     finally:
         _restore_settings(old)
 
@@ -245,7 +245,7 @@ def test_real_live_service_executes_five_round_trips_with_fake_executor(monkeypa
         assert payload["final"]["portfolio_qty"] == 0.0
         assert payload["final"]["projected_total_qty"] == 0.0
         assert len(calls) == 10
-        assert reconcile_attempts == ["reconcile"] * 10
+        assert reconcile_attempts == ["reconcile"] * 19
         assert [call["signal"] for call in calls].count("BUY") == 5
         assert [call["signal"] for call in calls].count("SELL") == 5
         assert payload["execution_mode_metadata"]["market_reference_source"] == "orderbook_top_mid"
@@ -300,7 +300,7 @@ def test_failure_after_step_prevents_next_step(monkeypatch, tmp_path) -> None:
         assert payload["status"] == "failed"
         assert payload["orders_submitted"] == 1
         assert len(service.submissions) == 1
-        assert reconcile_attempts == ["reconcile"]
+        assert reconcile_attempts == ["reconcile"] * 2
     finally:
         _restore_settings(old)
 
