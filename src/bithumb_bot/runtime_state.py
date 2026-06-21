@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass
 from threading import Lock
 
@@ -197,6 +198,13 @@ class RuntimeState:
 
 _STATE = RuntimeState()
 _LOCK = Lock()
+
+
+def _ensure_runtime_state_schema_after_missing_table() -> None:
+    conn = ensure_db(ensure_schema_ready=True)
+    conn.close()
+
+
 def _sync_state_from_persisted_locked() -> None:
     persisted = _read_persisted_state()
     if persisted is None:
@@ -386,7 +394,15 @@ def _persist_state(state: RuntimeState) -> None:
             )
             conn.commit()
 
-        run_with_locked_db_retry(_write, context="runtime_state.persist")
+        try:
+            run_with_locked_db_retry(_write, context="runtime_state.persist")
+        except sqlite3.OperationalError as exc:
+            if "no such table: bot_health" not in str(exc):
+                raise
+            conn.close()
+            _ensure_runtime_state_schema_after_missing_table()
+            conn = ensure_db(ensure_schema_ready=False)
+            run_with_locked_db_retry(_write, context="runtime_state.persist")
     finally:
         conn.close()
 
@@ -443,7 +459,15 @@ def _read_persisted_state() -> RuntimeState | None:
                 """
             ).fetchone()
 
-        row = run_with_locked_db_retry(_read, context="runtime_state.read")
+        try:
+            row = run_with_locked_db_retry(_read, context="runtime_state.read")
+        except sqlite3.OperationalError as exc:
+            if "no such table: bot_health" not in str(exc):
+                raise
+            conn.close()
+            _ensure_runtime_state_schema_after_missing_table()
+            conn = ensure_db(ensure_schema_ready=False)
+            row = run_with_locked_db_retry(_read, context="runtime_state.read")
     finally:
         conn.close()
 
@@ -587,7 +611,7 @@ def refresh_open_order_health(now_epoch_sec: float | None = None) -> None:
 
         now_sec = time.time()
 
-    conn = ensure_db(ensure_schema_ready=False)
+    conn = ensure_db(ensure_schema_ready=True)
     try:
         placeholders = ",".join("?" for _ in OPEN_ORDER_STATUSES)
         unresolved_row = conn.execute(

@@ -1721,6 +1721,9 @@ class _LoopConn:
         if "FROM broker_fill_observations" in q:
             return _Rows([])
 
+        if q == "BEGIN IMMEDIATE":
+            return _Rows(None)
+
         if "INSERT INTO strategy_decisions" in q:
             return _Rows(None, rowcount=1, lastrowid=42)
 
@@ -2140,6 +2143,7 @@ def _prepare_run_loop(
         validate_market_runtime=validate_market_runtime,
         interval_parser=interval_parser,
         runtime_strategy_set_manifest_provider=runtime_strategy_set_manifest_provider,
+        live_executor=lambda *args, **kwargs: engine_legacy.live_execute_signal(*args, **kwargs),
     )
     app = replace(
         app,

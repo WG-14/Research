@@ -455,7 +455,13 @@ def _batch_selected_pair_plan_error(
         if bool(getattr(primary_plan, "submit_expected", False)):
             if not str(getattr(pair_plan, "lock_evidence_hash", "") or "").strip():
                 return "execution_plan_batch_lock_evidence_missing"
-            if str(getattr(pair_plan, "lock_status", "") or "").strip() not in {"active", "not_required"}:
+            lock_status = str(getattr(pair_plan, "lock_status", "") or "").strip()
+            if lock_status == "intent_pending_persistence" and not _lock_intent_persisted_for_pair_plan(
+                pair_plan=pair_plan,
+                decision_context=decision_context,
+            ):
+                return "execution_plan_batch_lock_persistence_missing"
+            if lock_status not in {"active", "not_required", "intent_pending_persistence"}:
                 return "execution_plan_batch_lock_status_invalid"
     batch_hash = batch.content_hash() if callable(getattr(batch, "content_hash", None)) else ""
     if isinstance(decision_context, Mapping):
@@ -467,6 +473,30 @@ def _batch_selected_pair_plan_error(
         if expected_pair_hash and expected_pair_hash != pair_hash:
             return "pair_execution_plan_hash_mismatch"
     return None
+
+
+def _lock_intent_persisted_for_pair_plan(
+    *,
+    pair_plan: object,
+    decision_context: Mapping[str, object] | None,
+) -> bool:
+    if not isinstance(decision_context, Mapping):
+        return False
+    if decision_context.get("decision_id") is None or decision_context.get("execution_plan_id") is None:
+        return False
+    if decision_context.get("decision_persistence_transaction_elapsed_ms") is None:
+        return False
+    pair_lock_hash = str(getattr(pair_plan, "lock_evidence_hash", "") or "").strip()
+    if not pair_lock_hash:
+        return False
+    for intent in decision_context.get("lock_intents") or ():
+        if not isinstance(intent, Mapping):
+            continue
+        if str(intent.get("evidence_hash") or intent.get("lock_hash") or "").strip() == pair_lock_hash:
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class TypedExecutionSubmitExpectation:
     submit_expected: bool

@@ -28,7 +28,7 @@ from ..runtime_strategy_set import (
     normalized_runtime_strategy_set_manifest,
 )
 from ..broker.bithumb import BithumbBroker, build_broker_with_auth_diagnostics
-from ..db_core import ensure_db, record_runtime_strategy_set_manifest
+from ..db_core import ensure_db, record_runtime_strategy_set_manifest, upsert_target_position_state
 from ..runtime_data_access import (
     count_open_orders as _count_open_orders,
     latest_order_identifiers as _latest_order_identifiers,
@@ -464,13 +464,22 @@ def _resolve_target_position_state_for_run_loop(
     raw_signal: str,
     updated_ts: int,
 ) -> dict[str, object]:
-    return resolve_target_position_state_for_run_loop(
+    resolved = resolve_target_position_state_for_run_loop(
         conn,
         readiness_payload=readiness_payload,
         reference_price=reference_price,
         raw_signal=raw_signal,
         updated_ts=updated_ts,
     )
+    metadata = resolved.get("target_policy_metadata")
+    intent = (
+        metadata.get("target_state_update_intent")
+        if isinstance(metadata, dict)
+        else None
+    )
+    if isinstance(intent, dict):
+        upsert_target_position_state(conn, **intent)
+    return resolved
 
 
 def _persist_target_position_state_for_run_loop(

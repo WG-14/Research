@@ -1805,6 +1805,14 @@ class ExecutionPlanner:
             typed_input=authority.typed_planning_input(),
             strategy_performance_gate=authority.performance_gate_result,
         )
+        if run_loop_uses_target_delta(self.settings_obj):
+            submit_plan = execution_decision_summary.typed_target_submit_plan()
+            if (
+                submit_plan is not None
+                and bool(submit_plan.submit_expected)
+                and str(submit_plan.side or "").upper() in {"BUY", "SELL"}
+            ):
+                context["authoritative_execution_signal"] = str(submit_plan.side).upper()
         context = self.persistence_context_builder(
             decision_context=context,
             execution_decision_summary=execution_decision_summary,
