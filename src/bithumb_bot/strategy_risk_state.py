@@ -269,12 +269,12 @@ def _minutes_since_last_loss_for_instance(
     *,
     pair: str,
     strategy_instance_id: str,
-) -> float | None:
+) -> tuple[float | None, str]:
     if not _table_exists(conn, "trade_lifecycles"):
-        return None
+        return None, "source_table_missing"
     columns = _table_columns(conn, "trade_lifecycles")
     if not {"exit_ts", "pair", "strategy_instance_id", "net_pnl"}.issubset(columns):
-        return None
+        return None, "source_columns_missing"
     row = conn.execute(
         """
         SELECT MAX(exit_ts) AS last_loss_ts
@@ -288,8 +288,8 @@ def _minutes_since_last_loss_for_instance(
     ).fetchone()
     last_loss_ts = row["last_loss_ts"] if hasattr(row, "keys") else row[0]
     if last_loss_ts is None:
-        return None
-    return max(0.0, (int(ts_ms) - int(last_loss_ts)) / 60_000.0)
+        return None, "no_prior_loss"
+    return max(0.0, (int(ts_ms) - int(last_loss_ts)) / 60_000.0), "available"
 
 
 def _current_drawdown_pct_for_instance(
@@ -334,17 +334,28 @@ def _missing_required_state(policy: RiskPolicy, snapshot: RiskSnapshot) -> tuple
     missing: list[str] = []
     if float(policy.max_daily_loss_krw) > 0.0 and snapshot.loss_today is None:
         missing.append("loss_today")
-    if float(policy.max_position_loss_pct) > 0.0 and (
-        snapshot.current_asset_qty is None or snapshot.position_entry_price is None
-    ):
-        missing.append("position_loss_state")
+    if float(policy.max_position_loss_pct) > 0.0:
+        if snapshot.current_asset_qty is None:
+            missing.append("position_loss_state")
+        elif float(snapshot.current_asset_qty) > 1e-12 and snapshot.position_entry_price is None:
+            missing.append("position_loss_state")
     if int(policy.max_daily_order_count) > 0 and snapshot.daily_order_count is None:
         missing.append("daily_order_count")
     if int(policy.max_trade_count_per_day) > 0 and snapshot.daily_trade_count is None:
         missing.append("daily_trade_count")
     if float(policy.max_drawdown_pct) > 0.0 and snapshot.current_drawdown_pct is None:
         missing.append("current_drawdown_pct")
-    if int(policy.cooldown_after_loss_min) > 0 and snapshot.minutes_since_last_loss is None:
+    cooldown_source_state = str(
+        (snapshot.evidence or {})
+        .get("state_derivation", {})
+        .get("minutes_since_last_loss", {})
+        .get("source_state", "")
+    )
+    if (
+        int(policy.cooldown_after_loss_min) > 0
+        and snapshot.minutes_since_last_loss is None
+        and cooldown_source_state != "no_prior_loss"
+    ):
         missing.append("minutes_since_last_loss")
     return tuple(dict.fromkeys(missing))
 
@@ -420,7 +431,10 @@ class StrategyRiskStateProvider:
             pair=pair,
             strategy_decision_ids=strategy_decision_ids,
         )
-        minutes_since_last_loss = _minutes_since_last_loss_for_instance(
+        (
+            minutes_since_last_loss,
+            minutes_since_last_loss_source_state,
+        ) = _minutes_since_last_loss_for_instance(
             self.conn,
             int(as_of_ts_ms),
             pair=pair,
@@ -546,6 +560,10 @@ class StrategyRiskStateProvider:
                         "exit_ts_lte_as_of": True,
                     },
                     "value_available": minutes_since_last_loss is not None,
+                    "source_state": minutes_since_last_loss_source_state,
+                    "no_active_cooldown_when_no_prior_loss": (
+                        minutes_since_last_loss_source_state == "no_prior_loss"
+                    ),
                 },
                 "unresolved_order_evidence": {
                     "scope": "account_global",

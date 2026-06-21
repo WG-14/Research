@@ -353,7 +353,7 @@ def test_strategy_risk_state_provider_does_not_share_same_pair_instance_state(tm
     assert alpha.evidence["state_derivation"]["current_drawdown_pct"]["scope"] == "strategy_instance"
 
 
-def test_enforced_strategy_risk_state_fails_closed_without_scoped_position_loss_state(tmp_path) -> None:
+def test_enforced_strategy_risk_state_allows_flat_without_position_entry_price(tmp_path) -> None:
     db_path = tmp_path / "strategy-risk-missing-position.sqlite"
     conn = ensure_db(str(db_path))
     record_strategy_decision(
@@ -379,9 +379,77 @@ def test_enforced_strategy_risk_state_fails_closed_without_scoped_position_loss_
         enforced=True,
     )
 
+    assert snapshot.current_asset_qty == pytest.approx(0.0)
+    assert snapshot.position_entry_price is None
+    assert missing_required_risk_state(policy, snapshot) == ()
+    assert "missing_required_risk_state" not in snapshot.evidence
+
+
+def test_enforced_strategy_risk_state_fails_closed_without_scoped_position_state(tmp_path) -> None:
+    db_path = tmp_path / "strategy-risk-position-table-missing.sqlite"
+    conn = ensure_db(str(db_path))
+    record_strategy_decision(
+        conn,
+        decision_ts=1_800_000_000_000,
+        strategy_name="sma_with_filter",
+        signal="BUY",
+        reason="unit",
+        candle_ts=1_800_000_000_000,
+        market_price=100.0,
+        context={"strategy_instance_id": "alpha", "pair": "KRW-BTC", "interval": "1m"},
+    )
+    conn.execute("DROP TABLE open_position_lots")
+    conn.commit()
+    policy = RiskPolicy(max_position_loss_pct=1.0, source="unit")
+    snapshot = StrategyRiskStateProvider(conn).snapshot(
+        strategy_instance_id="alpha",
+        strategy_name="sma_with_filter",
+        pair="KRW-BTC",
+        interval="1m",
+        as_of_ts_ms=1_800_000_120_000,
+        mark_price=90.0,
+        policy=policy,
+        enforced=True,
+    )
+
+    assert snapshot.current_asset_qty is None
+    assert snapshot.position_entry_price is None
     assert missing_required_risk_state(policy, snapshot) == ("position_loss_state",)
     assert snapshot.evidence["missing_required_risk_state"] == ["position_loss_state"]
     assert snapshot.evidence["missing_required_risk_state_behavior"] == "fail_closed"
+
+
+def test_strategy_risk_state_treats_no_prior_loss_as_no_active_cooldown(tmp_path) -> None:
+    db_path = tmp_path / "strategy-risk-no-prior-loss.sqlite"
+    conn = ensure_db(str(db_path))
+    record_strategy_decision(
+        conn,
+        decision_ts=1_800_000_000_000,
+        strategy_name="sma_with_filter",
+        signal="BUY",
+        reason="unit",
+        candle_ts=1_800_000_000_000,
+        market_price=100.0,
+        context={"strategy_instance_id": "alpha", "pair": "KRW-BTC", "interval": "1m"},
+    )
+    conn.commit()
+    policy = RiskPolicy(cooldown_after_loss_min=15, source="unit")
+    snapshot = StrategyRiskStateProvider(conn).snapshot(
+        strategy_instance_id="alpha",
+        strategy_name="sma_with_filter",
+        pair="KRW-BTC",
+        interval="1m",
+        as_of_ts_ms=1_800_000_120_000,
+        mark_price=100.0,
+        policy=policy,
+        enforced=True,
+    )
+
+    cooldown_evidence = snapshot.evidence["state_derivation"]["minutes_since_last_loss"]
+    assert snapshot.minutes_since_last_loss is None
+    assert cooldown_evidence["source_state"] == "no_prior_loss"
+    assert missing_required_risk_state(policy, snapshot) == ()
+    assert RiskPolicyEngine(policy).evaluate_pre_decision(snapshot).status == "ALLOW"
 
 
 def test_enforced_strategy_risk_state_reports_missing_required_fields() -> None:

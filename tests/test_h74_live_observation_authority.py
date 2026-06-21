@@ -2,9 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from bithumb_bot.db_core import ensure_db, set_portfolio_breakdown
+from bithumb_bot.run_loop_execution_planner import ExecutionPlanner
+from bithumb_bot.strategy_policy_contract import (
+    EntryExecutionIntent,
+    PositionSnapshot,
+    StrategyDecisionV2,
+)
 from bithumb_bot.h74_observation import (
     H74_OBSERVATION_PARAMETERS,
     H74_SOURCE_OBSERVATION_PARAMETERS,
@@ -27,6 +35,7 @@ from bithumb_bot.execution_authority import execution_authority_from_payload
 from bithumb_bot.research.strategy_spec import runtime_bound_behavior_parameter_names
 from bithumb_bot.runtime_strategy_set import (
     ProfileAuthorityContext,
+    RuntimeMarketScope,
     RuntimeDecisionRequestBuilder,
     RuntimeStrategySet,
     RuntimeStrategySpec,
@@ -89,6 +98,141 @@ def _h74_source_cfg(authority_path: Path | str, **overrides) -> object:
         if key.isupper():
             object.__setattr__(cfg, key, value)
     return cfg
+
+
+def _flat_readiness_payload() -> dict[str, object]:
+    return {
+        "residual_inventory_qty": 0.0,
+        "residual_inventory_notional_krw": 0.0,
+        "residual_inventory_state": "flat",
+        "residual_inventory_policy_allows_buy": True,
+        "residual_inventory_policy_allows_sell": False,
+        "residual_inventory_policy_allows_run": True,
+        "cash_available": 1_000_000.0,
+        "broker_position_evidence": {
+            "broker_qty_known": True,
+            "broker_qty": 0.0,
+            "balance_source_stale": False,
+        },
+        "projection_converged": True,
+        "projection_convergence": {"converged": True},
+        "broker_portfolio_converged": True,
+        "open_order_count": 0,
+        "accounting_projection_ok": True,
+        "active_fee_accounting_blocker": False,
+        "residual_proof_min_qty": 0.0001,
+        "residual_proof_min_notional_krw": 5000.0,
+    }
+
+
+class _Readiness:
+    def as_dict(self) -> dict[str, object]:
+        return _flat_readiness_payload()
+
+
+def _h74_buy_decision(candle_ts: int) -> StrategyDecisionV2:
+    return StrategyDecisionV2(
+        strategy_name="daily_participation_sma",
+        raw_signal="BUY",
+        raw_reason="daily_participation_fallback_allowed",
+        entry_signal="BUY",
+        entry_reason="daily_participation_fallback_allowed",
+        exit_signal="HOLD",
+        exit_reason="no_exit",
+        final_signal="BUY",
+        final_reason="daily_participation_fallback_allowed",
+        blocked_filters=(),
+        entry_blocked=False,
+        entry_block_reason=None,
+        exit_rule=None,
+        exit_evaluations=(),
+        protective_exit_overrode_entry=False,
+        exit_filter_suppression_prevented=False,
+        position_snapshot=PositionSnapshot(
+            in_position=False,
+            entry_allowed=True,
+            exit_allowed=False,
+            terminal_state="flat",
+            dust_state="flat",
+            effective_flat=True,
+        ),
+        execution_intent=EntryExecutionIntent(
+            side="BUY",
+            intent="enter",
+            pair="KRW-BTC",
+            requires_execution_sizing=True,
+            budget_fraction_of_cash=1.0,
+            max_budget_krw=100_000.0,
+        ),
+        entry_decision=object(),  # type: ignore[arg-type]
+        trace={
+            "entry_signal_source": "daily_participation_fallback",
+            "reason_code": "daily_participation_fallback_allowed",
+            "candle_ts": candle_ts,
+        },
+        policy_hash="sha256:h74-policy",
+        policy_contract_hash="sha256:h74-contract",
+        policy_input_hash="sha256:h74-input",
+        policy_decision_hash="sha256:h74-decision",
+    )
+
+
+def _h74_runtime_bundle(
+    *,
+    candle_ts: int,
+    authority_context: ProfileAuthorityContext,
+) -> SimpleNamespace:
+    strategy_instance_id = "h74-source-observation"
+    spec = RuntimeStrategySpec(
+        "daily_participation_sma",
+        strategy_instance_id=strategy_instance_id,
+        pair="KRW-BTC",
+        interval="1m",
+        desired_exposure_krw=100_000.0,
+        parameters=_source_parameters(),
+    )
+    strategy_set = RuntimeStrategySet(
+        source="RUNTIME_STRATEGY_SET_JSON",
+        strategies=(spec,),
+        market_scope=RuntimeMarketScope(mode="single_pair", pair="KRW-BTC", interval="1m"),
+    )
+    decision = _h74_buy_decision(candle_ts)
+    base_context = {
+        "strategy": "daily_participation_sma",
+        "strategy_instance_id": strategy_instance_id,
+        "pair": "KRW-BTC",
+        "interval": "1m",
+        "runtime_decision_request_hash": "sha256:h74-request",
+        "strategy_parameters_hash": "sha256:h74-params",
+        "approved_profile_hash": None,
+        "runtime_contract_hash": "sha256:h74-runtime-contract",
+        "plugin_contract_hash": "sha256:h74-plugin-contract",
+        "scope_key_hash": "sha256:h74-scope",
+        "through_ts_ms": candle_ts,
+        "profile_authority_context": authority_context.as_dict(),
+    }
+    result = SimpleNamespace(
+        decision=decision,
+        base_context=base_context,
+        candle_ts=candle_ts,
+        market_price=100_000_000.0,
+        policy_hashes={
+            "policy_contract_hash": decision.policy_contract_hash,
+            "policy_input_hash": decision.policy_input_hash,
+            "policy_decision_hash": decision.policy_decision_hash,
+        },
+        replay_fingerprint={"runtime_decision_request_hash": "sha256:h74-request"},
+        boundary={"phase": "h74_live_observation_test"},
+        as_legacy_dict=lambda: dict(base_context),
+    )
+    return SimpleNamespace(
+        strategy_set=strategy_set,
+        results=(result,),
+        candle_ts=candle_ts,
+        market_price=100_000_000.0,
+        as_dict=lambda: {"schema_version": 1, "results": [result.as_legacy_dict()]},
+        content_hash=lambda: "sha256:h74-runtime-bundle",
+    )
 
 
 def test_h74_observation_authority_hash_binds_50k_parameters() -> None:
@@ -534,6 +678,66 @@ def test_h74_source_observation_live_dry_run_materializes_risk_profile(
     assert instance.risk_profile.policy.max_open_positions == 1
     assert instance.risk_profile.policy.unresolved_order_policy == "block"
     assert instance.risk_profile.risk_policy_hash == authority["risk_policy_hash"]
+
+
+def test_h74_source_flat_first_entry_live_observation_reaches_execution_planning(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    authority = _source_authority()
+    path = tmp_path / "source-authority.json"
+    path.write_text(json.dumps(authority), encoding="utf-8")
+    monkeypatch.setenv("H74_SOURCE_OBSERVATION_AUTHORITY_PATH", str(path))
+    cfg = _h74_source_cfg(path)
+    conn = ensure_db(str(tmp_path / "h74-flat-first-entry.sqlite"))
+    set_portfolio_breakdown(
+        conn,
+        cash_available=1_000_000.0,
+        cash_locked=0.0,
+        asset_available=0.0,
+        asset_locked=0.0,
+    )
+    strategy_set = RuntimeStrategySet(
+        source="RUNTIME_STRATEGY_SET_JSON",
+        strategies=(
+            RuntimeStrategySpec(
+                "daily_participation_sma",
+                strategy_instance_id="h74-source-observation",
+                pair="KRW-BTC",
+                interval="1m",
+                desired_exposure_krw=100_000.0,
+                parameters=_source_parameters(),
+            ),
+        ),
+        market_scope=RuntimeMarketScope(mode="single_pair", pair="KRW-BTC", interval="1m"),
+    )
+    authority_context = ProfileAuthorityContext.for_strategy_set(strategy_set, settings_obj=cfg)
+    bundle = _h74_runtime_bundle(
+        candle_ts=1_704_046_800_000,
+        authority_context=authority_context,
+    )
+    planner = ExecutionPlanner(
+        settings_obj=cfg,
+        readiness_snapshot_builder=lambda _conn: _Readiness(),
+        target_state_resolver=lambda *_args, **_kwargs: {
+            "previous_target_exposure_krw": 0.0,
+            "target_policy_metadata": {},
+        },
+    )
+
+    plan = planner.plan_runtime_strategy_results(conn, bundle, updated_ts=1_704_046_800_000)
+
+    preference = plan.persistence_context["strategy_preferences"][0]
+    risk_decision = preference["strategy_risk_decision"]
+    risk_evidence = risk_decision["evidence"]
+    assert risk_decision["status"] != "BLOCK"
+    assert risk_decision["reason_code"] != "STRATEGY_RISK_STATE_INCOMPLETE"
+    assert "missing_required_risk_state" not in risk_evidence
+    assert preference["strategy_risk_status"] == "ALLOW"
+    assert plan.submit_plan is not None
+    assert plan.submit_plan.side == "BUY"
+    assert plan.persistence_context["allocation_selected_signal"] == "BUY"
+    conn.close()
 
 
 def test_h74_source_observation_other_strategy_still_requires_approved_profile(
