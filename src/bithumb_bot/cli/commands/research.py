@@ -177,6 +177,26 @@ def _h74_observation_authority_verify(args: argparse.Namespace, _context) -> int
     return int(cmd_h74_observation_authority_verify(authority_path=str(args.authority)))
 
 
+def _h74_source_observation_authority_generate(args: argparse.Namespace, _context) -> int:
+    from bithumb_bot.h74_observation import cmd_h74_source_observation_authority_generate
+
+    return int(
+        cmd_h74_source_observation_authority_generate(
+            out_path=str(args.out) if args.out else None,
+            source_candidate_artifact_hash=str(args.source_candidate_artifact_hash),
+            backtest_report_hash=args.backtest_report_hash,
+            validation_run_hash=args.validation_run_hash,
+            code_commit_sha=args.code_commit_sha,
+        )
+    )
+
+
+def _h74_source_observation_authority_verify(args: argparse.Namespace, _context) -> int:
+    from bithumb_bot.h74_observation import cmd_h74_source_observation_authority_verify
+
+    return int(cmd_h74_source_observation_authority_verify(authority_path=str(args.authority)))
+
+
 def command_specs() -> list[CommandSpec]:
     common = dict(domain="research", read_only=True, produces_artifact=True, json_output_supported=True)
     return [
@@ -201,9 +221,19 @@ def command_specs() -> list[CommandSpec]:
         make_spec("promotion-verify", handler=_promotion_provenance_verify, help="verify typed promotion provenance on a canonical artifact", description="Read-only promotion verifier for canonical/promotion artifacts.", build=lambda p: p.add_argument("--artifact", required=True), **common),
         make_spec("h74-observation-authority-generate", handler=_h74_observation_authority_generate, help="generate h74 50k live-observation authority", description="Generate non-promotion h74 live-observation authority for the 50,000 KRW capital-scaled variant. This artifact is extra validation/reporting only and is not an approved-profile substitute.", build=lambda p: p.add_argument("--out"), **common),
         make_spec("h74-observation-authority-verify", handler=_h74_observation_authority_verify, help="verify h74 50k live-observation authority", description="Verify a non-promotion h74 live-observation authority artifact. This artifact is not an approved-profile substitute.", build=lambda p: p.add_argument("--authority", required=True), **common),
+        make_spec("h74-source-observation-authority-generate", handler=_h74_source_observation_authority_generate, help="generate h74 source-candidate live-observation authority", description="Generate non-production h74 source-candidate observation authority for 100,000 KRW time-boxed live forward observation. This is not an approved-profile substitute.", build=_build_h74_source_observation_authority_generate, **common),
+        make_spec("h74-source-observation-authority-verify", handler=_h74_source_observation_authority_verify, help="verify h74 source-candidate live-observation authority", description="Verify non-production h74 source-candidate observation authority.", build=lambda p: p.add_argument("--authority", required=True), **common),
         make_spec("decision-equivalence", handler=_decision_equivalence, help="compare research decisions against runtime/paper decision telemetry", description="Credential-free deterministic equivalence check over exported decision JSON artifacts.", build=_build_decision_equivalence, **common),
         make_spec("candidate-regime-policy-equivalence-evidence", handler=_candidate_regime, help="bind promotion-grade decision-equivalence evidence to candidate regime policy equivalence", description="Generate a typed candidate-regime-policy equivalence artifact and optionally bind it into the research backtest report candidate before promotion.", build=_build_candidate_regime, **common),
     ]
+
+
+def _build_h74_source_observation_authority_generate(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--out")
+    parser.add_argument("--source-candidate-artifact-hash", required=True)
+    parser.add_argument("--backtest-report-hash")
+    parser.add_argument("--validation-run-hash")
+    parser.add_argument("--code-commit-sha")
 
 
 def _build_manifest_calibration(parser: argparse.ArgumentParser) -> None:

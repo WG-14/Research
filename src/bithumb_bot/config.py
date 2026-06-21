@@ -430,6 +430,21 @@ def validate_runtime_profile_bindings_for_live_startup(
         runtime_contract = runtime_contract_from_settings(cfg)
         profile_path = str(runtime_contract.get("profile_selector") or "").strip()
         profile_required = bool(cfg.LIVE_DRY_RUN or cfg.LIVE_REAL_ORDER_ARMED)
+        h74_source_authority_verified = False
+        h74_source_authority_path = str(getattr(cfg, "H74_SOURCE_OBSERVATION_AUTHORITY_PATH", "") or "").strip()
+        if profile_required and not profile_path and h74_source_authority_path:
+            from .h74_observation import H74_STRATEGY_NAME, verify_h74_source_observation_authority_file
+
+            if str(runtime_contract.get("strategy_name") or cfg.STRATEGY_NAME).strip().lower() == H74_STRATEGY_NAME:
+                try:
+                    verify_h74_source_observation_authority_file(h74_source_authority_path, settings_obj=cfg)
+                    h74_source_authority_verified = True
+                    profile_required = False
+                except Exception as exc:
+                    issues.append(
+                        "h74_source_observation_authority_validation_failed: "
+                        f"path={h74_source_authority_path!r}; reason={type(exc).__name__}:{exc}"
+                    )
         if expected_profile_modes is None:
             expected_modes, mode_reason = expected_profile_modes_for_runtime(runtime_contract)
         else:
@@ -445,11 +460,11 @@ def validate_runtime_profile_bindings_for_live_startup(
         bindings.append(
             SingleStrategyProfileBinding(
                 strategy_name=str(runtime_contract.get("strategy_name") or cfg.STRATEGY_NAME),
-                profile_path=profile_path,
+                profile_path=profile_path or h74_source_authority_path,
                 profile_hash=profile_result.profile_hash,
             )
         )
-        if not profile_result.ok:
+        if not profile_result.ok and not h74_source_authority_verified:
             issues.append(
                 "approved profile verification failed: "
                 f"reason={profile_result.reason} path={profile_result.profile_path or '-'}"
@@ -541,6 +556,23 @@ def validate_live_strategy_selection(cfg: Settings) -> None:
                     "live_observation_authority_validation_failed: "
                     f"path={observation_authority_path!r}; reason={type(exc).__name__}:{exc}"
                 ) from exc
+    h74_source_authority_verified = False
+    h74_source_authority_path = (
+        str(getattr(cfg, "H74_SOURCE_OBSERVATION_AUTHORITY_PATH", "") or "").strip()
+        or os.getenv("H74_SOURCE_OBSERVATION_AUTHORITY_PATH", "").strip()
+    )
+    if h74_source_authority_path:
+        from .h74_observation import H74_STRATEGY_NAME, verify_h74_source_observation_authority_file
+
+        if strategy_name == H74_STRATEGY_NAME:
+            try:
+                verify_h74_source_observation_authority_file(h74_source_authority_path, settings_obj=cfg)
+                h74_source_authority_verified = True
+            except Exception as exc:
+                raise LiveModeValidationError(
+                    "h74_source_observation_authority_validation_failed: "
+                    f"path={h74_source_authority_path!r}; reason={type(exc).__name__}:{exc}"
+                ) from exc
     from .research.strategy_registry import strategy_runtime_capability_issues
 
     issues = strategy_runtime_capability_issues(
@@ -550,6 +582,7 @@ def validate_live_strategy_selection(cfg: Settings) -> None:
         approved_profile_path=(
             str(cfg.APPROVED_STRATEGY_PROFILE_PATH or "").strip()
             or str(getattr(cfg, "STRATEGY_APPROVED_PROFILE_PATH", "") or "").strip()
+            or ("h74_source_observation_authority_verified" if h74_source_authority_verified else "")
         ),
         require_promotion_runtime=True,
         require_runtime_replay=True,
@@ -826,6 +859,11 @@ class Settings:
     STRATEGY_APPROVED_PROFILE_PATH: str = os.getenv("STRATEGY_APPROVED_PROFILE_PATH", "").strip()
     APPROVED_STRATEGY_PROFILE_PATH: str = approved_profile_path_from_env()
     STRATEGY_CANDIDATE_PROFILE_PATH: str = os.getenv("STRATEGY_CANDIDATE_PROFILE_PATH", "").strip()
+    H74_SOURCE_OBSERVATION_AUTHORITY_PATH: str = os.getenv("H74_SOURCE_OBSERVATION_AUTHORITY_PATH", "").strip()
+    H74_SOURCE_OBSERVATION_LIVE_PIPELINE_SMOKE_EVIDENCE_PATH: str = os.getenv(
+        "H74_SOURCE_OBSERVATION_LIVE_PIPELINE_SMOKE_EVIDENCE_PATH",
+        "",
+    ).strip()
     LIVE_PERFORMANCE_GATE_ENABLED: bool = parse_bool_env("LIVE_PERFORMANCE_GATE_ENABLED", "true")
     LIVE_PERFORMANCE_GATE_MIN_SAMPLE: int = int(os.getenv("LIVE_PERFORMANCE_GATE_MIN_SAMPLE", "30"))
     LIVE_PERFORMANCE_GATE_RECENT_LIMIT: int = int(os.getenv("LIVE_PERFORMANCE_GATE_RECENT_LIMIT", "200"))
@@ -1290,6 +1328,7 @@ def validate_live_mode_preflight(cfg: Settings) -> None:
         and not bool(cfg.LIVE_DRY_RUN)
         and bool(cfg.LIVE_REAL_ORDER_ARMED)
         and not str(cfg.APPROVED_STRATEGY_PROFILE_PATH or "").strip()
+        and not str(getattr(cfg, "H74_SOURCE_OBSERVATION_AUTHORITY_PATH", "") or "").strip()
     ):
         issues.append("approved_profile_missing")
     try:

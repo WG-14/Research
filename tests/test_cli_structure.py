@@ -99,6 +99,8 @@ EXPECTED_COMMANDS = {
     "promotion-verify",
     "h74-observation-authority-generate",
     "h74-observation-authority-verify",
+    "h74-source-observation-authority-generate",
+    "h74-source-observation-authority-verify",
     "decision-equivalence",
     "candidate-regime-policy-equivalence-evidence",
     "profile-generate",

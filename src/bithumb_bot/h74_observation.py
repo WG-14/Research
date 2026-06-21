@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -10,11 +11,16 @@ from .storage_io import write_json_atomic
 
 
 H74_OBSERVATION_AUTHORITY_ARTIFACT_TYPE = "h74_live_observation_authority"
+H74_SOURCE_OBSERVATION_AUTHORITY_ARTIFACT_TYPE = "h74_source_live_observation_authority"
+H74_SOURCE_OBSERVATION_AUTHORITY_ENV = "H74_SOURCE_OBSERVATION_AUTHORITY_PATH"
+H74_SOURCE_OBSERVATION_SMOKE_EVIDENCE_ENV = "H74_SOURCE_OBSERVATION_LIVE_PIPELINE_SMOKE_EVIDENCE_PATH"
 H74_STRATEGY_NAME = "daily_participation_sma"
 H74_SOURCE_CANDIDATE_ID = "candidate_9738b8d6"
 H74_SOURCE_MAX_ORDER_KRW = 100_000
 H74_OBSERVATION_MAX_ORDER_KRW = 50_000
 H74_OBSERVATION_WINDOW_DAYS = 7
+H74_SOURCE_OBSERVATION_MAX_DAILY_ENTRY_COUNT = 1
+H74_SOURCE_OBSERVATION_MAX_DAILY_TOTAL_ORDER_COUNT = 2
 
 def _h74_observation_parameters() -> dict[str, object]:
     from .research.strategy_spec import runtime_bound_behavior_parameter_names
@@ -52,6 +58,28 @@ def _h74_observation_parameters() -> dict[str, object]:
 
 
 H74_OBSERVATION_PARAMETERS: dict[str, object] = _h74_observation_parameters()
+
+
+def _h74_source_observation_parameters() -> dict[str, object]:
+    parameters = dict(H74_OBSERVATION_PARAMETERS)
+    parameters.update(
+        {
+            "SMA_FILTER_GAP_MIN_RATIO": 0.0002,
+            "STRATEGY_EXIT_RULES": "max_holding_time",
+            "DAILY_PARTICIPATION_BUY_FRACTION": 1.0,
+            "DAILY_PARTICIPATION_MAX_ORDER_KRW": H74_SOURCE_MAX_ORDER_KRW,
+            "max_daily_entry_count": H74_SOURCE_OBSERVATION_MAX_DAILY_ENTRY_COUNT,
+            "max_daily_total_order_count": H74_SOURCE_OBSERVATION_MAX_DAILY_TOTAL_ORDER_COUNT,
+            "max_daily_order_count": H74_SOURCE_OBSERVATION_MAX_DAILY_TOTAL_ORDER_COUNT,
+            "max_entry_notional_krw": H74_SOURCE_MAX_ORDER_KRW,
+            "max_notional_krw": H74_SOURCE_MAX_ORDER_KRW,
+            "exit_closeout_not_blocked_by_entry_cap": True,
+        }
+    )
+    return parameters
+
+
+H74_SOURCE_OBSERVATION_PARAMETERS: dict[str, object] = _h74_source_observation_parameters()
 
 
 class H74ObservationAuthorityError(ValueError):
@@ -136,6 +164,68 @@ def build_h74_observation_authority_payload(
     return payload
 
 
+def build_h74_source_observation_authority_payload(
+    *,
+    expires_at: datetime | None = None,
+    source_candidate_artifact_hash: str,
+    backtest_report_hash: str | None = None,
+    validation_run_hash: str | None = None,
+    code_commit_sha: str | None = None,
+) -> dict[str, Any]:
+    expiry = expires_at or (datetime.now(timezone.utc) + timedelta(days=H74_OBSERVATION_WINDOW_DAYS))
+    from .config import runtime_code_provenance
+    from .research.strategy_spec import runtime_bound_behavior_parameter_names
+
+    required_behavior_parameters = set(runtime_bound_behavior_parameter_names(H74_STRATEGY_NAME))
+    missing = sorted(required_behavior_parameters - set(H74_SOURCE_OBSERVATION_PARAMETERS))
+    if missing:
+        raise H74ObservationAuthorityError(
+            "h74_source_observation_authority_missing_behavior_parameters:" + ",".join(missing)
+        )
+    commit = str(code_commit_sha or runtime_code_provenance().get("commit_sha") or "unavailable")
+    hash_bound = {
+        **{
+            k: H74_SOURCE_OBSERVATION_PARAMETERS[k]
+            for k in sorted(required_behavior_parameters | {"strategy_name", "market", "interval"})
+        },
+        "candidate_id": H74_SOURCE_CANDIDATE_ID,
+        "source_candidate_artifact_hash": str(source_candidate_artifact_hash or "").strip(),
+        "backtest_report_hash": str(backtest_report_hash or "").strip() or None,
+        "validation_run_hash": str(validation_run_hash or "").strip() or None,
+        "max_entry_notional_krw": H74_SOURCE_MAX_ORDER_KRW,
+        "max_daily_entry_count": H74_SOURCE_OBSERVATION_MAX_DAILY_ENTRY_COUNT,
+        "max_daily_total_order_count": H74_SOURCE_OBSERVATION_MAX_DAILY_TOTAL_ORDER_COUNT,
+        "exit_closeout_not_blocked_by_entry_cap": True,
+        "expires_at": expiry.astimezone(timezone.utc).isoformat(),
+        "observation_window_days": H74_OBSERVATION_WINDOW_DAYS,
+        "market": "KRW-BTC",
+        "interval": "1m",
+        "code_commit_sha": commit,
+        "production_approval": False,
+        "approved_profile_evidence": False,
+    }
+    if not hash_bound["source_candidate_artifact_hash"]:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_source_hash_missing")
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "artifact_type": H74_SOURCE_OBSERVATION_AUTHORITY_ARTIFACT_TYPE,
+        "authority_type": H74_SOURCE_OBSERVATION_AUTHORITY_ARTIFACT_TYPE,
+        "candidate_id": H74_SOURCE_CANDIDATE_ID,
+        "promotion_grade": False,
+        "research_promotion_evidence": False,
+        "approved_profile_evidence": False,
+        "production_approval": False,
+        "contract_scope": "h74_source_live_observation_only",
+        "hash_bound_parameters": hash_bound,
+        "runtime_bound_behavior_parameter_names": sorted(required_behavior_parameters),
+        "authority_parameter_hash": sha256_prefixed(hash_bound),
+    }
+    payload["authority_content_hash"] = sha256_prefixed(
+        {k: v for k, v in payload.items() if k != "authority_content_hash"}
+    )
+    return payload
+
+
 def verify_h74_observation_authority(
     payload: dict[str, Any],
     *,
@@ -183,6 +273,115 @@ def verify_h74_observation_authority(
         raise H74ObservationAuthorityError("h74_observation_authority_holding_invalid")
 
 
+def _values_match(key: str, actual: object, expected: object) -> bool:
+    if key in {
+        "max_notional_krw",
+        "max_entry_notional_krw",
+        "DAILY_PARTICIPATION_MAX_ORDER_KRW",
+        "DAILY_PARTICIPATION_BUY_FRACTION",
+        "SMA_FILTER_GAP_MIN_RATIO",
+        "STRATEGY_EXIT_STOP_LOSS_RATIO",
+        "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO",
+        "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO",
+    }:
+        try:
+            return float(actual) == float(expected)
+        except (TypeError, ValueError):
+            return False
+    if isinstance(expected, bool):
+        if isinstance(actual, bool):
+            return actual is expected
+        return (str(actual).strip().lower() in {"1", "true", "yes", "on"}) is expected
+    return str(actual) == str(expected)
+
+
+def verify_h74_source_observation_authority(
+    payload: dict[str, Any],
+    *,
+    runtime_values: dict[str, object],
+    now: datetime | None = None,
+) -> None:
+    if str(payload.get("artifact_type") or "") != H74_SOURCE_OBSERVATION_AUTHORITY_ARTIFACT_TYPE:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_artifact_type_invalid")
+    if str(payload.get("candidate_id") or "") != H74_SOURCE_CANDIDATE_ID:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_candidate_id_invalid")
+    for key in ("promotion_grade", "research_promotion_evidence", "approved_profile_evidence", "production_approval"):
+        if bool(payload.get(key)) is not False:
+            raise H74ObservationAuthorityError(f"h74_source_observation_authority_{key}_must_be_false")
+    expected_hash = str(payload.get("authority_content_hash") or "")
+    actual_hash = sha256_prefixed({k: v for k, v in payload.items() if k != "authority_content_hash"})
+    if expected_hash != actual_hash:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_hash_mismatch")
+    bound = dict(payload.get("hash_bound_parameters") or {})
+    from .research.strategy_spec import runtime_bound_behavior_parameter_names
+
+    required_behavior_parameters = set(runtime_bound_behavior_parameter_names(H74_STRATEGY_NAME))
+    missing_bound = sorted(required_behavior_parameters - set(bound))
+    if missing_bound:
+        raise H74ObservationAuthorityError(
+            "h74_source_observation_authority_missing_behavior_parameters:" + ",".join(missing_bound)
+        )
+    for required_key in (
+        "candidate_id",
+        "source_candidate_artifact_hash",
+        "max_entry_notional_krw",
+        "max_daily_entry_count",
+        "max_daily_total_order_count",
+        "observation_window_days",
+        "expires_at",
+        "market",
+        "interval",
+        "code_commit_sha",
+    ):
+        if required_key not in bound or bound.get(required_key) in (None, ""):
+            raise H74ObservationAuthorityError(
+                f"h74_source_observation_authority_required_field_missing:{required_key}"
+            )
+    if int(bound.get("observation_window_days")) != H74_OBSERVATION_WINDOW_DAYS:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_window_days_invalid")
+    if float(bound.get("max_entry_notional_krw") or 0.0) > H74_SOURCE_MAX_ORDER_KRW:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_max_notional_above_100000")
+    if float(bound.get("DAILY_PARTICIPATION_MAX_ORDER_KRW") or 0.0) > H74_SOURCE_MAX_ORDER_KRW:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_daily_max_order_above_100000")
+    if int(bound.get("max_daily_entry_count")) != H74_SOURCE_OBSERVATION_MAX_DAILY_ENTRY_COUNT:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_entry_count_invalid")
+    if int(bound.get("max_daily_total_order_count")) != H74_SOURCE_OBSERVATION_MAX_DAILY_TOTAL_ORDER_COUNT:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_total_order_count_invalid")
+    if int(bound.get("DAILY_PARTICIPATION_WINDOW_START_HOUR_KST")) != 9:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_window_start_invalid")
+    if int(bound.get("DAILY_PARTICIPATION_WINDOW_END_HOUR_KST")) != 11:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_window_end_invalid")
+    if int(bound.get("STRATEGY_EXIT_MAX_HOLDING_MIN")) != 74:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_holding_invalid")
+    if str(bound.get("STRATEGY_EXIT_RULES") or "").strip().lower() != "max_holding_time":
+        raise H74ObservationAuthorityError("h74_source_observation_authority_exit_rules_invalid")
+    if str(bound.get("market") or "").strip().upper() != "KRW-BTC":
+        raise H74ObservationAuthorityError("h74_source_observation_authority_market_invalid")
+    if str(bound.get("interval") or "").strip() != "1m":
+        raise H74ObservationAuthorityError("h74_source_observation_authority_interval_invalid")
+    if str(bound.get("source_candidate_artifact_hash") or "").strip() == "":
+        raise H74ObservationAuthorityError("h74_source_observation_authority_source_hash_missing")
+    for key, expected in bound.items():
+        if key in {
+            "expires_at",
+            "observation_window_days",
+            "candidate_id",
+            "source_candidate_artifact_hash",
+            "backtest_report_hash",
+            "validation_run_hash",
+            "code_commit_sha",
+            "approved_profile_evidence",
+            "production_approval",
+        }:
+            continue
+        actual = runtime_values.get(key)
+        if not _values_match(key, actual, expected):
+            raise H74ObservationAuthorityError(f"h74_source_observation_authority_runtime_mismatch:{key}")
+    expires_at = datetime.fromisoformat(str(bound.get("expires_at")).replace("Z", "+00:00"))
+    if expires_at <= (now or datetime.now(timezone.utc)).astimezone(timezone.utc):
+        raise H74ObservationAuthorityError("h74_source_observation_authority_expired")
+
+
 def h74_runtime_values_from_settings(settings_obj: object) -> dict[str, object]:
     from .research.strategy_spec import runtime_bound_behavior_parameter_names
 
@@ -199,12 +398,142 @@ def h74_runtime_values_from_settings(settings_obj: object) -> dict[str, object]:
     return values
 
 
+def h74_source_runtime_values_from_settings(settings_obj: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "strategy_name": str(getattr(settings_obj, "STRATEGY_NAME", H74_STRATEGY_NAME) or H74_STRATEGY_NAME),
+        "market": str(getattr(settings_obj, "PAIR", "KRW-BTC") or "KRW-BTC"),
+        "interval": str(getattr(settings_obj, "INTERVAL", "1m") or "1m"),
+        "max_daily_order_count": int(
+            getattr(settings_obj, "MAX_DAILY_ORDER_COUNT", H74_SOURCE_OBSERVATION_MAX_DAILY_TOTAL_ORDER_COUNT)
+            or H74_SOURCE_OBSERVATION_MAX_DAILY_TOTAL_ORDER_COUNT
+        ),
+        "max_daily_entry_count": int(
+            getattr(settings_obj, "DAILY_PARTICIPATION_MAX_DAILY_ENTRY_COUNT", H74_SOURCE_OBSERVATION_MAX_DAILY_ENTRY_COUNT)
+            or H74_SOURCE_OBSERVATION_MAX_DAILY_ENTRY_COUNT
+        ),
+        "max_daily_total_order_count": int(
+            getattr(settings_obj, "MAX_DAILY_ORDER_COUNT", H74_SOURCE_OBSERVATION_MAX_DAILY_TOTAL_ORDER_COUNT)
+            or H74_SOURCE_OBSERVATION_MAX_DAILY_TOTAL_ORDER_COUNT
+        ),
+        "max_entry_notional_krw": float(
+            getattr(settings_obj, "MAX_ORDER_KRW", H74_SOURCE_MAX_ORDER_KRW) or H74_SOURCE_MAX_ORDER_KRW
+        ),
+        "max_notional_krw": float(
+            getattr(settings_obj, "DAILY_PARTICIPATION_MAX_ORDER_KRW", H74_SOURCE_MAX_ORDER_KRW)
+            or H74_SOURCE_MAX_ORDER_KRW
+        ),
+        "exit_closeout_not_blocked_by_entry_cap": True,
+    }
+    for name, fallback in H74_SOURCE_OBSERVATION_PARAMETERS.items():
+        if name in values:
+            continue
+        values[name] = getattr(settings_obj, name, os.getenv(name, fallback))
+    return values
+
+
 def verify_h74_observation_authority_file(path: str | Path, *, settings_obj: object) -> None:
     with Path(path).expanduser().open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
     if not isinstance(payload, dict):
         raise H74ObservationAuthorityError("h74_observation_authority_payload_not_object")
     verify_h74_observation_authority(payload, runtime_values=h74_runtime_values_from_settings(settings_obj))
+
+
+def verify_h74_source_observation_authority_file(path: str | Path, *, settings_obj: object) -> None:
+    with Path(path).expanduser().open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise H74ObservationAuthorityError("h74_source_observation_authority_payload_not_object")
+    verify_h74_source_observation_authority(
+        payload,
+        runtime_values=h74_source_runtime_values_from_settings(settings_obj),
+    )
+    smoke_evidence_path = (
+        str(getattr(settings_obj, H74_SOURCE_OBSERVATION_SMOKE_EVIDENCE_ENV, "") or "").strip()
+        or os.getenv(H74_SOURCE_OBSERVATION_SMOKE_EVIDENCE_ENV, "").strip()
+    )
+    real_order = (
+        str(getattr(settings_obj, "MODE", "") or "").strip().lower() == "live"
+        and not bool(getattr(settings_obj, "LIVE_DRY_RUN", False))
+        and bool(getattr(settings_obj, "LIVE_REAL_ORDER_ARMED", False))
+    )
+    if real_order and not smoke_evidence_path:
+        raise H74ObservationAuthorityError("h74_source_observation_live_pipeline_smoke_evidence_missing")
+    if smoke_evidence_path:
+        verify_h74_source_live_pipeline_smoke_evidence_file(smoke_evidence_path)
+
+
+def verify_h74_source_live_pipeline_smoke_evidence_file(path: str | Path) -> None:
+    with Path(path).expanduser().open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise H74ObservationAuthorityError("h74_source_observation_smoke_evidence_payload_not_object")
+    if str(payload.get("status") or "").strip().lower() != "passed":
+        raise H74ObservationAuthorityError("h74_source_observation_smoke_evidence_not_passed")
+    if str(payload.get("execution_mode") or "").strip() != "live_pipeline_smoke":
+        raise H74ObservationAuthorityError("h74_source_observation_smoke_evidence_mode_invalid")
+    if bool(payload.get("manual_intervention_required")):
+        raise H74ObservationAuthorityError("h74_source_observation_smoke_evidence_manual_intervention")
+    final = payload.get("final")
+    if not isinstance(final, dict):
+        raise H74ObservationAuthorityError("h74_source_observation_smoke_evidence_final_missing")
+    for key in ("broker_qty", "portfolio_qty", "projected_total_qty"):
+        try:
+            value = float(final.get(key))
+        except (TypeError, ValueError):
+            raise H74ObservationAuthorityError(
+                f"h74_source_observation_smoke_evidence_final_invalid:{key}"
+            ) from None
+        if value != 0.0:
+            raise H74ObservationAuthorityError(
+                f"h74_source_observation_smoke_evidence_not_flat:{key}"
+            )
+    for key in ("open_order_count", "submit_unknown_count", "recovery_required_count"):
+        try:
+            value = int(final.get(key))
+        except (TypeError, ValueError):
+            raise H74ObservationAuthorityError(
+                f"h74_source_observation_smoke_evidence_final_invalid:{key}"
+            ) from None
+        if value != 0:
+            raise H74ObservationAuthorityError(
+                f"h74_source_observation_smoke_evidence_not_converged:{key}"
+            )
+
+
+def h74_source_observation_policy_from_settings(settings_obj: object) -> dict[str, object] | None:
+    authority_path = (
+        str(getattr(settings_obj, H74_SOURCE_OBSERVATION_AUTHORITY_ENV, "") or "").strip()
+        or os.getenv(H74_SOURCE_OBSERVATION_AUTHORITY_ENV, "").strip()
+    )
+    if not authority_path:
+        return None
+    try:
+        verify_h74_source_observation_authority_file(authority_path, settings_obj=settings_obj)
+    except Exception as exc:
+        return {
+            "_policy_load_error": f"h74_source_observation_authority_invalid:{type(exc).__name__}:{exc}",
+            "_policy_source": authority_path,
+            "h74_observation_authority_verified": False,
+            "approved_profile_verification_ok": False,
+            "approved_profile_block_reason": "h74_source_observation_authority_invalid",
+            "approved_profile_contract_scope": "h74_source_live_observation_only",
+            "production_approval": False,
+        }
+    return {
+        "_policy_source": authority_path,
+        "h74_observation_authority_verified": True,
+        "h74_source_observation_authority_path": str(Path(authority_path).expanduser().resolve()),
+        "approved_profile_verification_ok": False,
+        "approved_profile_block_reason": "h74_source_observation_authority_used",
+        "approved_profile_loaded": False,
+        "approved_profile_schema_hash_valid": False,
+        "approved_profile_source_verified": False,
+        "approved_profile_evidence_verified": False,
+        "approved_profile_runtime_verified": False,
+        "approved_profile_contract_scope": "h74_source_live_observation_only",
+        "production_approval": False,
+    }
 
 
 def cmd_h74_observation_authority_generate(*, out_path: str | None = None) -> int:
@@ -219,5 +548,33 @@ def cmd_h74_observation_authority_verify(*, authority_path: str) -> int:
     with Path(authority_path).expanduser().open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
     verify_h74_observation_authority(payload, runtime_values=H74_OBSERVATION_PARAMETERS)
+    print(json.dumps({"ok": True, "authority_path": str(authority_path)}, sort_keys=True))
+    return 0
+
+
+def cmd_h74_source_observation_authority_generate(
+    *,
+    out_path: str | None = None,
+    source_candidate_artifact_hash: str,
+    backtest_report_hash: str | None = None,
+    validation_run_hash: str | None = None,
+    code_commit_sha: str | None = None,
+) -> int:
+    payload = build_h74_source_observation_authority_payload(
+        source_candidate_artifact_hash=source_candidate_artifact_hash,
+        backtest_report_hash=backtest_report_hash,
+        validation_run_hash=validation_run_hash,
+        code_commit_sha=code_commit_sha,
+    )
+    if out_path:
+        write_json_atomic(Path(out_path).expanduser(), payload)
+    print(json.dumps(payload, sort_keys=True, ensure_ascii=False))
+    return 0
+
+
+def cmd_h74_source_observation_authority_verify(*, authority_path: str) -> int:
+    with Path(authority_path).expanduser().open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    verify_h74_source_observation_authority(payload, runtime_values=H74_SOURCE_OBSERVATION_PARAMETERS)
     print(json.dumps({"ok": True, "authority_path": str(authority_path)}, sort_keys=True))
     return 0

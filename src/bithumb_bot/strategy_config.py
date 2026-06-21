@@ -77,6 +77,7 @@ def sma_strategy_config_from_settings(
     profile_or_candidate_path = (
         approved_profile_selector
         or str(settings.STRATEGY_CANDIDATE_PROFILE_PATH or "").strip()
+        or str(getattr(settings, "H74_SOURCE_OBSERVATION_AUTHORITY_PATH", "") or "").strip()
     )
     candidate_regime_policy = _candidate_regime_policy_from_configured_profile(
         profile_or_candidate_path,
@@ -119,6 +120,12 @@ def _candidate_regime_policy_from_configured_profile(
         return None
     approved_profile_path = str(approved_profile_path or "").strip()
     if str(settings.MODE or "").strip().lower() == "live" and not approved_profile_path:
+        if str(getattr(settings, "STRATEGY_NAME", "") or "").strip().lower() == "daily_participation_sma":
+            from .h74_observation import h74_source_observation_policy_from_settings
+
+            h74_policy = h74_source_observation_policy_from_settings(settings)
+            if h74_policy is not None:
+                return h74_policy
         return {
             "_policy_load_error": "approved_profile_missing",
             "_policy_source": raw_path,
