@@ -31,6 +31,10 @@ class LivePipelineSmokeReadiness:
     broker_qty_known: bool
     balance_source_stale: bool
     projection_converged: bool
+    historical_fee_pending_observation_count: int = 0
+    broker_fill_fee_pending_count: int = 0
+    broker_fill_latest_unresolved_fee_pending_count: int = 0
+    fill_accounting_active_issue_count: int = 0
 
     @property
     def converged(self) -> bool:
@@ -63,6 +67,14 @@ class LivePipelineSmokeReadiness:
             "broker_qty_known": bool(self.broker_qty_known),
             "balance_source_stale": bool(self.balance_source_stale),
             "projection_converged": bool(self.projection_converged),
+            "historical_fee_pending_observation_count": int(
+                self.historical_fee_pending_observation_count
+            ),
+            "broker_fill_fee_pending_count": int(self.broker_fill_fee_pending_count),
+            "broker_fill_latest_unresolved_fee_pending_count": int(
+                self.broker_fill_latest_unresolved_fee_pending_count
+            ),
+            "fill_accounting_active_issue_count": int(self.fill_accounting_active_issue_count),
             "converged": bool(self.converged),
             "flat": bool(self.flat),
             "in_position": bool(self.in_position),
@@ -72,6 +84,23 @@ class LivePipelineSmokeReadiness:
 def readiness_from_snapshot(snapshot: Any) -> LivePipelineSmokeReadiness:
     evidence = dict(getattr(snapshot, "broker_position_evidence", {}) or {})
     projection = dict(getattr(snapshot, "projection_convergence", {}) or {})
+    fill_summary = dict(getattr(snapshot, "fill_accounting_incident_summary", {}) or {})
+    active_issue_count = int(
+        getattr(
+            snapshot,
+            "fill_accounting_active_issue_count",
+            fill_summary.get("fill_accounting_active_issue_count", fill_summary.get("active_issue_count", 0)),
+        )
+        or 0
+    )
+    latest_unresolved_count = int(
+        getattr(
+            snapshot,
+            "broker_fill_latest_unresolved_fee_pending_count",
+            fill_summary.get("broker_fill_latest_unresolved_fee_pending_count", active_issue_count),
+        )
+        or 0
+    )
     return LivePipelineSmokeReadiness(
         broker_qty=float(evidence.get("broker_qty") or 0.0),
         portfolio_qty=float(projection.get("portfolio_qty") or 0.0),
@@ -79,11 +108,35 @@ def readiness_from_snapshot(snapshot: Any) -> LivePipelineSmokeReadiness:
         open_order_count=int(getattr(snapshot, "open_order_count", 0) or 0),
         submit_unknown_count=int(getattr(snapshot, "submit_unknown_count", 0) or 0),
         recovery_required_count=int(getattr(snapshot, "recovery_required_count", 0) or 0),
-        fee_pending_count=int(getattr(snapshot, "fee_pending_count", 0) or 0),
-        active_fee_accounting_blocker=bool(getattr(snapshot, "active_fee_accounting_blocker", False)),
+        fee_pending_count=int(getattr(snapshot, "fee_pending_count", latest_unresolved_count) or 0),
+        active_fee_accounting_blocker=bool(
+            getattr(snapshot, "active_fee_accounting_blocker", False)
+            or active_issue_count > 0
+        ),
         broker_qty_known=bool(evidence.get("broker_qty_known")),
         balance_source_stale=bool(evidence.get("balance_source_stale")),
         projection_converged=bool(projection.get("converged")),
+        historical_fee_pending_observation_count=int(
+            getattr(
+                snapshot,
+                "historical_fee_pending_observation_count",
+                fill_summary.get(
+                    "historical_fee_pending_observation_count",
+                    fill_summary.get("broker_fill_fee_pending_count", 0),
+                ),
+            )
+            or 0
+        ),
+        broker_fill_fee_pending_count=int(
+            getattr(
+                snapshot,
+                "broker_fill_fee_pending_count",
+                fill_summary.get("broker_fill_fee_pending_count", 0),
+            )
+            or 0
+        ),
+        broker_fill_latest_unresolved_fee_pending_count=latest_unresolved_count,
+        fill_accounting_active_issue_count=active_issue_count,
     )
 
 

@@ -5464,6 +5464,7 @@ def summarize_fill_accounting_incident_projection(conn: sqlite3.Connection) -> d
     complete = [
         v for v in verdicts if v.latest_observation_accounting_status == "accounting_complete" and not v.active_issue
     ]
+    historical_fee_pending_observation_count = sum(int(v.fee_pending_observation_count) for v in verdicts)
     return {
         "projection_kind": "fill_accounting_incident_projection",
         "incident_count": len(verdicts),
@@ -5473,6 +5474,10 @@ def summarize_fill_accounting_incident_projection(conn: sqlite3.Connection) -> d
         "fee_validation_blocked_count": len(fee_validation_blocked),
         "fee_finalized_count": len(finalized),
         "active_issue_count": len(active),
+        "fill_accounting_active_issue_count": len(active),
+        "broker_fill_latest_unresolved_fee_pending_count": len(active),
+        "broker_fill_fee_pending_count": historical_fee_pending_observation_count,
+        "historical_fee_pending_observation_count": historical_fee_pending_observation_count,
         "already_accounted_observation_stale_count": len(stale),
         "repaired_count": len(repaired),
         "latest_accounting_complete_count": len(complete),

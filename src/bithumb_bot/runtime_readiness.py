@@ -49,6 +49,10 @@ class RuntimeReadinessSnapshot:
     lot_snapshot: Any
     reconcile_metadata: dict[str, object]
     fee_pending_count: int
+    historical_fee_pending_observation_count: int
+    broker_fill_fee_pending_count: int
+    broker_fill_latest_unresolved_fee_pending_count: int
+    fill_accounting_active_issue_count: int
     auto_recovery_count: int
     fill_accounting_incident_summary: dict[str, object]
     fee_gap_recovery_required: bool
@@ -122,6 +126,14 @@ class RuntimeReadinessSnapshot:
             "normalized_exposure": self.position_state.normalized_exposure.as_dict(),
             "lot_snapshot": self.lot_snapshot.as_dict(),
             "fee_pending_count": int(self.fee_pending_count),
+            "historical_fee_pending_observation_count": int(
+                self.historical_fee_pending_observation_count
+            ),
+            "broker_fill_fee_pending_count": int(self.broker_fill_fee_pending_count),
+            "broker_fill_latest_unresolved_fee_pending_count": int(
+                self.broker_fill_latest_unresolved_fee_pending_count
+            ),
+            "fill_accounting_active_issue_count": int(self.fill_accounting_active_issue_count),
             "auto_recovery_count": int(self.auto_recovery_count),
             "fill_accounting_incident_summary": dict(self.fill_accounting_incident_summary),
             "fee_gap_recovery_required": bool(self.fee_gap_recovery_required),
@@ -818,6 +830,20 @@ def compute_runtime_readiness_snapshot(conn=None) -> RuntimeReadinessSnapshot:
         fee_validation_blocked_count = int(
             fill_accounting_incident_summary.get("fee_validation_blocked_count") or 0
         )
+        fill_accounting_active_issue_count = int(
+            fill_accounting_incident_summary.get("active_issue_count") or 0
+        )
+        broker_fill_latest_unresolved_fee_pending_count = int(
+            fill_accounting_incident_summary.get("broker_fill_latest_unresolved_fee_pending_count")
+            or fill_accounting_active_issue_count
+        )
+        broker_fill_fee_pending_count = int(
+            fill_accounting_incident_summary.get("broker_fill_fee_pending_count") or 0
+        )
+        historical_fee_pending_observation_count = int(
+            fill_accounting_incident_summary.get("historical_fee_pending_observation_count")
+            or broker_fill_fee_pending_count
+        )
         fee_pending_count = unapplied_principal_pending_count
         fee_gap_required = _metadata_int(metadata, "fee_gap_recovery_required") > 0
         fee_gap_adjustment_count = _metadata_int(metadata, "fee_gap_adjustment_count")
@@ -1362,6 +1388,10 @@ def compute_runtime_readiness_snapshot(conn=None) -> RuntimeReadinessSnapshot:
             lot_snapshot=lot_snapshot,
             reconcile_metadata=metadata,
             fee_pending_count=fee_pending_count,
+            historical_fee_pending_observation_count=historical_fee_pending_observation_count,
+            broker_fill_fee_pending_count=broker_fill_fee_pending_count,
+            broker_fill_latest_unresolved_fee_pending_count=broker_fill_latest_unresolved_fee_pending_count,
+            fill_accounting_active_issue_count=fill_accounting_active_issue_count,
             auto_recovery_count=max(
                 accounting_pending_count,
                 unapplied_principal_pending_count + principal_applied_fee_pending_count,

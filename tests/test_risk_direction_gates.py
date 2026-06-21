@@ -24,6 +24,32 @@ def test_fee_pending_blocks_new_buy_but_not_authorized_terminal_flat_sell() -> N
     assert sell.exposure_increase_allowed is False
 
 
+def test_fee_pending_still_blocks_exposure_increase_buy() -> None:
+    result = evaluate_risk_direction_gates(
+        fee_pending=True,
+        side="BUY",
+        broker_qty=0.0,
+        requested_qty=0.0002,
+    )
+
+    assert result.exposure_increase_allowed is False
+    assert result.strategy_new_cycle_allowed is False
+    assert result.reason_code == "fee_pending_blocks_exposure_increase"
+
+
+def test_authorized_terminal_sell_policy_unchanged_under_fee_pending() -> None:
+    result = evaluate_risk_direction_gates(
+        fee_pending=True,
+        side="SELL",
+        broker_qty=0.0002,
+        requested_qty=0.0002,
+        terminal_flat_authority=True,
+    )
+
+    assert result.terminal_flat_closeout_allowed is True
+    assert result.reason_code == "fee_pending_allows_authorized_risk_reduction"
+
+
 def test_h74_protective_exit_path_under_fee_pending_is_explicitly_classified() -> None:
     test_fee_pending_blocks_new_buy_but_not_authorized_terminal_flat_sell()
 

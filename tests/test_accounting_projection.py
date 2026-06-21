@@ -709,6 +709,11 @@ def test_fee_pending_observation_without_fill_remains_active_incident(projection
     assert replay["unresolved_fee_state"] is True
     assert replay["broker_fill_latest_unresolved_fee_pending_count"] == 1
     assert readiness.fee_pending_count == 1
+    assert readiness.broker_fill_fee_pending_count == 1
+    assert readiness.historical_fee_pending_observation_count == 1
+    assert readiness.broker_fill_latest_unresolved_fee_pending_count == 1
+    assert readiness.fill_accounting_active_issue_count == 1
+    assert readiness.active_fee_accounting_blocker is True
     assert readiness.recovery_stage == "UNAPPLIED_PRINCIPAL_PENDING"
     assert preview["needs_repair"] is True
     assert preview["safe_to_apply"] is True
@@ -763,6 +768,12 @@ def test_already_accounted_fill_reclassifies_stale_fee_pending_observation(proje
     assert replay["broker_fill_fee_pending_count"] == 1
     assert replay["broker_fill_latest_unresolved_fee_pending_count"] == 0
     assert replay["unresolved_fee_state"] is False
+    assert readiness.fee_pending_count == 0
+    assert readiness.broker_fill_fee_pending_count == 1
+    assert readiness.historical_fee_pending_observation_count == 1
+    assert readiness.broker_fill_latest_unresolved_fee_pending_count == 0
+    assert readiness.fill_accounting_active_issue_count == 0
+    assert readiness.active_fee_accounting_blocker is False
     assert ledger["broker_fill_latest_unresolved_fee_pending_count"] == 0
     assert ledger["fill_accounting_already_accounted_observation_stale_count"] == 1
     assert "broker_fill_latest_unresolved_fee_pending_count=0" in audit_out

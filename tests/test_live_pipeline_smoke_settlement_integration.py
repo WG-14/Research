@@ -19,7 +19,12 @@ from bithumb_bot.db_core import (
     record_position_authority_repair,
 )
 from bithumb_bot.oms import create_order, record_submit_attempt
-from bithumb_bot.live_pipeline_smoke import LivePipelineSmokeExecutionService, run_live_pipeline_smoke
+from bithumb_bot.live_pipeline_smoke import (
+    LivePipelineSmokeExecutionService,
+    PostStepReadinessBarrierConfig,
+    wait_for_live_pipeline_smoke_next_step_readiness,
+    run_live_pipeline_smoke,
+)
 from bithumb_bot.live_pipeline_smoke_authority import LIVE_PIPELINE_SMOKE_CONFIRMATION_TOKEN
 from bithumb_bot.live_pipeline_smoke_preflight import LivePipelineSmokeReadiness
 from bithumb_bot.order_settlement import evaluate_settlement_snapshot
@@ -81,12 +86,80 @@ def _test_only_readiness_settlement(readiness_provider, *, side_provider=lambda:
     return _settle
 
 
-def _run_smoke(monkeypatch, tmp_path, *, readiness_provider=None, service=None):
+def _always_settled_settlement():
+    def _settle(trade):
+        filled_qty = float(trade.get("filled_qty") or trade.get("submit_qty") or 0.0)
+        evidence = {
+            "order_state": "FILLED",
+            "order_terminal": True,
+            "fill_count": 1 if filled_qty > 0.0 else 0,
+            "fill_set_complete": filled_qty > 0.0,
+            "paid_fee_present": True,
+            "order_level_paid_fee_present": True,
+            "complete_fill_set_available": filled_qty > 0.0,
+            "fee_state": "finalized",
+            "principal_applied": filled_qty > 0.0,
+            "accounting_finalized": True,
+            "projection_applied": True,
+            "projected_total_qty": filled_qty,
+            "portfolio_qty": filled_qty,
+            "broker_qty": filled_qty,
+            "broker_local_converged": True,
+            "side": str(trade.get("side") or "").upper(),
+            "reason_code": "settlement_evidence_complete",
+        }
+        return evaluate_settlement_snapshot(
+            client_order_id=str(trade.get("client_order_id") or ""),
+            exchange_order_id=str(trade.get("exchange_order_id") or "") or None,
+            evidence=evidence,
+            attempts=[evidence],
+        )
+
+    return _settle
+
+
+def _readiness(
+    *,
+    qty: float,
+    fee_pending_count: int = 0,
+    active_fee_accounting_blocker: bool = False,
+    historical_fee_pending_observation_count: int = 0,
+    fill_accounting_active_issue_count: int = 0,
+) -> LivePipelineSmokeReadiness:
+    return LivePipelineSmokeReadiness(
+        broker_qty=float(qty),
+        portfolio_qty=float(qty),
+        projected_total_qty=float(qty),
+        open_order_count=0,
+        submit_unknown_count=0,
+        recovery_required_count=0,
+        fee_pending_count=int(fee_pending_count),
+        active_fee_accounting_blocker=bool(active_fee_accounting_blocker),
+        broker_qty_known=True,
+        balance_source_stale=False,
+        projection_converged=True,
+        historical_fee_pending_observation_count=int(historical_fee_pending_observation_count),
+        broker_fill_fee_pending_count=int(historical_fee_pending_observation_count),
+        broker_fill_latest_unresolved_fee_pending_count=int(fill_accounting_active_issue_count),
+        fill_accounting_active_issue_count=int(fill_accounting_active_issue_count),
+    )
+
+
+def _run_smoke(
+    monkeypatch,
+    tmp_path,
+    *,
+    readiness_provider=None,
+    service=None,
+    broker=None,
+    settlement_coordinator=None,
+    post_step_readiness_barrier_config=None,
+):
     db_path = tmp_path / "live.sqlite"
     old = _patch_settings(monkeypatch, db_path)
     conn = ensure_db(str(db_path))
     _insert_top_of_book(conn)
-    broker = _Broker()
+    broker = broker or _Broker()
     authority = _authority(tmp_path, db_path, max_notional_krw=20_000.0)
     monkeypatch.setattr("bithumb_bot.live_pipeline_smoke.runtime_code_provenance", lambda: {"commit_sha": "unavailable"})
     monkeypatch.setattr("bithumb_bot.live_pipeline_smoke.validate_live_pipeline_smoke_start_preflight", lambda **_kwargs: None)
@@ -105,7 +178,8 @@ def _run_smoke(monkeypatch, tmp_path, *, readiness_provider=None, service=None):
         execution_service=service,
         readiness_provider=provider,
         post_trade_reconcile=lambda: _record_reconcile_attempt(reconcile_attempts),
-        settlement_coordinator=_test_only_readiness_settlement(provider),
+        settlement_coordinator=settlement_coordinator or _test_only_readiness_settlement(provider),
+        post_step_readiness_barrier_config=post_step_readiness_barrier_config,
         run_id="lps_settlement_test",
     )
     return payload, conn, broker, service, old
@@ -407,6 +481,381 @@ def test_live_pipeline_smoke_passes_only_when_all_10_orders_settle_without_repai
         assert conn.execute("SELECT COUNT(*) FROM fee_pending_accounting_repairs").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM position_authority_repairs").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM external_position_adjustments").fetchone()[0] == 0
+    finally:
+        conn.close()
+        _restore_settings(old)
+
+
+def test_smoke_waits_for_post_sell_readiness_before_next_buy(monkeypatch, tmp_path) -> None:
+    broker = _Broker()
+    service = LivePipelineSmokeExecutionService(broker=broker)
+    pending_seen = {"value": False}
+
+    def _provider():
+        qty = float(broker.qty)
+        if len(service.submissions) == 2 and abs(qty) <= 1e-12 and not pending_seen["value"]:
+            pending_seen["value"] = True
+            return _readiness(qty=0.0, fee_pending_count=1, fill_accounting_active_issue_count=1)
+        return _readiness(qty=qty)
+
+    payload, conn, _broker, _service, old = _run_smoke(
+        monkeypatch,
+        tmp_path,
+        broker=broker,
+        service=service,
+        readiness_provider=_provider,
+        settlement_coordinator=_always_settled_settlement(),
+        post_step_readiness_barrier_config=PostStepReadinessBarrierConfig(
+            max_attempts=3,
+            poll_intervals_ms=(0, 0, 0),
+            deadline_ms=1000,
+        ),
+    )
+    try:
+        assert payload["status"] == "passed"
+        assert [item["side"] for item in service.submissions[:3]] == ["BUY", "SELL", "BUY"]
+        sell = payload["rounds"][0]["sell"]
+        attempts = sell["post_step_readiness_result"]["attempts"]
+        assert attempts[0]["fee_pending_count"] == 1
+        assert attempts[0]["reason"] == "fee_pending_blocks_exposure_increase"
+        assert attempts[-1]["fee_pending_count"] == 0
+        assert attempts[-1]["active_fee_accounting_blocker"] is False
+        assert sell["expected_next_side"] == "BUY"
+        assert sell["next_ready_state"] == "buy_ready"
+    finally:
+        conn.close()
+        _restore_settings(old)
+
+
+def test_smoke_transient_fee_pending_after_sell_clears_and_next_buy_submits(monkeypatch, tmp_path) -> None:
+    test_smoke_waits_for_post_sell_readiness_before_next_buy(monkeypatch, tmp_path)
+
+
+def test_smoke_next_buy_requires_clean_readiness_after_transient_fee_pending(monkeypatch, tmp_path) -> None:
+    test_smoke_waits_for_post_sell_readiness_before_next_buy(monkeypatch, tmp_path)
+
+
+def test_post_step_readiness_barrier_uses_bounded_attempts() -> None:
+    attempts = []
+
+    def _provider():
+        attempts.append("readiness")
+        return _readiness(qty=0.0, fee_pending_count=1, fill_accounting_active_issue_count=1)
+
+    result = wait_for_live_pipeline_smoke_next_step_readiness(
+        readiness_provider=_provider,
+        expected_next_side="BUY",
+        reconcile=None,
+        config=PostStepReadinessBarrierConfig(max_attempts=3, poll_intervals_ms=(0, 0, 0), deadline_ms=1000),
+        sleeper=lambda _seconds: None,
+    )
+
+    assert result.passed is False
+    assert result.reason == "fee_pending_blocks_exposure_increase"
+    assert len(attempts) == 3
+    assert len(result.attempts) == 3
+
+
+def test_post_step_readiness_barrier_does_not_submit_cancel_or_flatten() -> None:
+    class _ForbiddenActions:
+        submitted = False
+        cancelled = False
+        flattened = False
+
+        def submit(self):
+            self.submitted = True
+
+        def cancel(self):
+            self.cancelled = True
+
+        def flatten(self):
+            self.flattened = True
+
+    forbidden = _ForbiddenActions()
+    result = wait_for_live_pipeline_smoke_next_step_readiness(
+        readiness_provider=lambda: _readiness(qty=0.0),
+        expected_next_side="BUY",
+        reconcile=lambda: None,
+        config=PostStepReadinessBarrierConfig(max_attempts=1, poll_intervals_ms=(0,), deadline_ms=1000),
+        sleeper=lambda _seconds: None,
+    )
+
+    assert result.passed is True
+    assert forbidden.submitted is False
+    assert forbidden.cancelled is False
+    assert forbidden.flattened is False
+
+
+def test_post_step_readiness_barrier_clears_after_optional_reconcile_callback() -> None:
+    reconciles = {"count": 0}
+
+    def _provider():
+        if reconciles["count"] <= 1:
+            return _readiness(qty=0.0, active_fee_accounting_blocker=True, fill_accounting_active_issue_count=1)
+        return _readiness(qty=0.0)
+
+    result = wait_for_live_pipeline_smoke_next_step_readiness(
+        readiness_provider=_provider,
+        expected_next_side="BUY",
+        reconcile=lambda: reconciles.__setitem__("count", reconciles["count"] + 1),
+        config=PostStepReadinessBarrierConfig(max_attempts=3, poll_intervals_ms=(0, 0, 0), deadline_ms=1000),
+        sleeper=lambda _seconds: None,
+    )
+
+    assert result.passed is True
+    assert reconciles["count"] == 2
+    assert result.attempts[0]["active_fee_accounting_blocker"] is True
+    assert result.attempts[-1]["active_fee_accounting_blocker"] is False
+
+
+def test_smoke_persistent_post_sell_fee_pending_fails_with_readiness_attempts(monkeypatch, tmp_path) -> None:
+    broker = _Broker()
+    service = LivePipelineSmokeExecutionService(broker=broker)
+
+    def _provider():
+        qty = float(broker.qty)
+        if len(service.submissions) >= 2 and abs(qty) <= 1e-12:
+            return _readiness(qty=0.0, fee_pending_count=1, fill_accounting_active_issue_count=1)
+        return _readiness(qty=qty)
+
+    payload, conn, _broker, _service, old = _run_smoke(
+        monkeypatch,
+        tmp_path,
+        broker=broker,
+        service=service,
+        readiness_provider=_provider,
+        settlement_coordinator=_always_settled_settlement(),
+        post_step_readiness_barrier_config=PostStepReadinessBarrierConfig(
+            max_attempts=3,
+            poll_intervals_ms=(0, 0, 0),
+            deadline_ms=1000,
+        ),
+    )
+    try:
+        assert payload["status"] == "failed"
+        assert payload["reason"] == "fee_pending_blocks_exposure_increase"
+        assert payload["orders_submitted"] == 2
+        assert payload["expected_next_side"] == "BUY"
+        assert payload["last_completed_side"] == "SELL"
+        assert payload["last_settlement_result"]["settled"] is True
+        assert len(payload["post_step_readiness_attempts"]) == 3
+        assert all(item["fee_pending_count"] == 1 for item in payload["post_step_readiness_attempts"])
+        assert payload["fee_pending_count"] == 1
+        assert payload["active_fee_accounting_blocker"] is False
+        assert payload["broker_qty"] == 0.0
+        assert payload["portfolio_qty"] == 0.0
+        assert payload["projected_total_qty"] == 0.0
+        assert payload["projection_converged"] is True
+        assert [item["side"] for item in service.submissions] == ["BUY", "SELL"]
+    finally:
+        conn.close()
+        _restore_settings(old)
+
+
+def test_step_readiness_failure_payload_contains_last_settlement_result(monkeypatch, tmp_path) -> None:
+    test_smoke_persistent_post_sell_fee_pending_fails_with_readiness_attempts(monkeypatch, tmp_path)
+
+
+def test_step_readiness_failure_payload_contains_expected_next_side_and_attempts(monkeypatch, tmp_path) -> None:
+    test_smoke_persistent_post_sell_fee_pending_fails_with_readiness_attempts(monkeypatch, tmp_path)
+
+
+def test_post_settlement_readiness_failure_payload_marks_post_step_phase(monkeypatch, tmp_path) -> None:
+    broker = _Broker()
+    service = LivePipelineSmokeExecutionService(broker=broker)
+    payload, conn, _broker, _service, old = _run_smoke(
+        monkeypatch,
+        tmp_path,
+        broker=broker,
+        service=service,
+        readiness_provider=lambda: (
+            _readiness(qty=0.0, active_fee_accounting_blocker=True, fill_accounting_active_issue_count=1)
+            if len(service.submissions) >= 2 and abs(float(broker.qty)) <= 1e-12
+            else _readiness(qty=float(broker.qty))
+        ),
+        settlement_coordinator=_always_settled_settlement(),
+        post_step_readiness_barrier_config=PostStepReadinessBarrierConfig(
+            max_attempts=2,
+            poll_intervals_ms=(0, 0),
+            deadline_ms=1000,
+        ),
+    )
+    try:
+        assert payload["status"] == "failed"
+        assert payload["readiness_phase"] == "post_settlement_next_step"
+        assert payload["expected_next_side"] == "BUY"
+        assert payload["last_completed_side"] == "SELL"
+        assert payload["last_settlement_result"]["settled"] is True
+        assert payload["post_step_readiness_attempts"]
+    finally:
+        conn.close()
+        _restore_settings(old)
+
+
+def test_pre_step_readiness_failure_payload_marks_pre_step_phase(monkeypatch, tmp_path) -> None:
+    payload, conn, _broker, _service, old = _run_smoke(
+        monkeypatch,
+        tmp_path,
+        readiness_provider=lambda: _readiness(
+            qty=0.0,
+            fee_pending_count=1,
+            fill_accounting_active_issue_count=1,
+        ),
+        settlement_coordinator=_always_settled_settlement(),
+    )
+    try:
+        assert payload["status"] == "failed"
+        assert payload["readiness_phase"] == "pre_step"
+        assert payload["expected_side"] == "BUY"
+        assert payload["pre_step_readiness"]["fee_pending_count"] == 1
+    finally:
+        conn.close()
+        _restore_settings(old)
+
+
+def test_post_step_barrier_does_not_bypass_final_fee_pending_buy_block(monkeypatch, tmp_path) -> None:
+    test_smoke_persistent_post_sell_fee_pending_fails_with_readiness_attempts(monkeypatch, tmp_path)
+
+
+def test_historical_fee_pending_observations_do_not_block_smoke_next_buy(monkeypatch, tmp_path) -> None:
+    broker = _Broker()
+    service = LivePipelineSmokeExecutionService(broker=broker)
+
+    def _provider():
+        qty = float(broker.qty)
+        if len(service.submissions) >= 2 and abs(qty) <= 1e-12:
+            return _readiness(qty=0.0, historical_fee_pending_observation_count=3)
+        return _readiness(qty=qty)
+
+    payload, conn, _broker, _service, old = _run_smoke(
+        monkeypatch,
+        tmp_path,
+        broker=broker,
+        service=service,
+        readiness_provider=_provider,
+        settlement_coordinator=_always_settled_settlement(),
+        post_step_readiness_barrier_config=PostStepReadinessBarrierConfig(
+            max_attempts=2,
+            poll_intervals_ms=(0, 0),
+            deadline_ms=1000,
+        ),
+    )
+    try:
+        assert payload["status"] == "passed"
+        sell = payload["rounds"][0]["sell"]
+        attempt = sell["post_step_readiness_result"]["attempts"][0]
+        assert attempt["historical_fee_pending_observation_count"] == 3
+        assert attempt["fee_pending_count"] == 0
+        assert attempt["active_fee_accounting_blocker"] is False
+        assert [item["side"] for item in service.submissions[:3]] == ["BUY", "SELL", "BUY"]
+    finally:
+        conn.close()
+        _restore_settings(old)
+
+
+def test_active_fee_accounting_issue_blocks_smoke_next_buy(monkeypatch, tmp_path) -> None:
+    test_post_settlement_readiness_failure_payload_marks_post_step_phase(monkeypatch, tmp_path)
+
+
+def test_post_step_readiness_attempt_records_fee_blocker_source(monkeypatch, tmp_path) -> None:
+    broker = _Broker()
+    service = LivePipelineSmokeExecutionService(broker=broker)
+    payload, conn, _broker, _service, old = _run_smoke(
+        monkeypatch,
+        tmp_path,
+        broker=broker,
+        service=service,
+        readiness_provider=lambda: (
+            _readiness(qty=0.0, fee_pending_count=1, historical_fee_pending_observation_count=4, fill_accounting_active_issue_count=1)
+            if len(service.submissions) >= 2 and abs(float(broker.qty)) <= 1e-12
+            else _readiness(qty=float(broker.qty))
+        ),
+        settlement_coordinator=_always_settled_settlement(),
+        post_step_readiness_barrier_config=PostStepReadinessBarrierConfig(
+            max_attempts=1,
+            poll_intervals_ms=(0,),
+            deadline_ms=1000,
+        ),
+    )
+    try:
+        attempt = payload["post_step_readiness_attempts"][0]
+        assert attempt["fee_blocker_source"]["active_fee_pending_count"] == 1
+        assert attempt["fee_blocker_source"]["historical_fee_pending_observation_count"] == 4
+        assert attempt["fee_blocker_source"]["fill_accounting_active_issue_count"] == 1
+    finally:
+        conn.close()
+        _restore_settings(old)
+
+
+def test_smoke_step_evidence_records_state_transition(monkeypatch, tmp_path) -> None:
+    payload, conn, _broker, _service, old = _run_smoke(monkeypatch, tmp_path)
+    try:
+        assert payload["status"] == "passed"
+        step = payload["rounds"][0]["buy"]
+        assert step["pre_state"] == "flat"
+        assert step["settlement_state"] == "settled"
+        assert step["post_state"] == "in_position"
+        assert step["expected_next_side"] == "SELL"
+        assert step["next_ready_state"] == "sell_ready"
+        assert step["post_step_readiness_result"]["passed"] is True
+    finally:
+        conn.close()
+        _restore_settings(old)
+
+
+def test_smoke_sell_step_records_flat_post_state_and_buy_ready_next_state(monkeypatch, tmp_path) -> None:
+    payload, conn, _broker, _service, old = _run_smoke(monkeypatch, tmp_path)
+    try:
+        sell = payload["rounds"][0]["sell"]
+        assert sell["post_state"] == "flat"
+        assert sell["expected_next_side"] == "BUY"
+        assert sell["next_ready_state"] == "buy_ready"
+    finally:
+        conn.close()
+        _restore_settings(old)
+
+
+def test_smoke_final_step_records_complete_next_state(monkeypatch, tmp_path) -> None:
+    payload, conn, _broker, _service, old = _run_smoke(monkeypatch, tmp_path)
+    try:
+        final_sell = payload["rounds"][-1]["sell"]
+        assert final_sell["expected_next_side"] is None
+        assert final_sell["next_ready_state"] == "complete"
+        assert final_sell["post_step_readiness_result"]["passed"] is True
+        assert final_sell["post_step_readiness_result"]["attempts"] == []
+    finally:
+        conn.close()
+        _restore_settings(old)
+
+
+def test_smoke_pass_requires_all_order_settlements_and_post_step_readiness(monkeypatch, tmp_path) -> None:
+    payload, conn, _broker, _service, old = _run_smoke(monkeypatch, tmp_path)
+    try:
+        steps = [step for round_item in payload["rounds"] for step in (round_item["buy"], round_item["sell"])]
+        assert payload["status"] == "passed"
+        assert payload["orders_submitted"] == 10
+        assert all(step["settlement_result"]["settled"] is True for step in steps)
+        assert all(step["post_step_readiness_result"]["passed"] is True for step in steps)
+        assert payload["post_step_readiness_summary"]
+    finally:
+        conn.close()
+        _restore_settings(old)
+
+
+def test_smoke_pass_requires_max_orders_even_if_final_flat(monkeypatch, tmp_path) -> None:
+    test_smoke_failed_buy_then_manual_flatten_does_not_convert_to_passed(monkeypatch, tmp_path)
+
+
+def test_smoke_fails_when_post_step_readiness_fails_even_if_final_flat(monkeypatch, tmp_path) -> None:
+    test_smoke_persistent_post_sell_fee_pending_fails_with_readiness_attempts(monkeypatch, tmp_path)
+
+
+def test_smoke_final_success_payload_includes_post_step_readiness_summary(monkeypatch, tmp_path) -> None:
+    payload, conn, _broker, _service, old = _run_smoke(monkeypatch, tmp_path)
+    try:
+        assert payload["status"] == "passed"
+        assert len(payload["post_step_readiness_summary"]) == 10
+        assert all(item["passed"] is True for item in payload["post_step_readiness_summary"])
     finally:
         conn.close()
         _restore_settings(old)

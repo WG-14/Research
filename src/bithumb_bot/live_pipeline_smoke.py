@@ -86,6 +86,34 @@ class LivePipelineSmokeExecutionService:
         return submission
 
 
+@dataclass(frozen=True)
+class PostStepReadinessBarrierConfig:
+    max_attempts: int = 5
+    poll_intervals_ms: tuple[int, ...] = (100, 250, 500, 1000, 2000)
+    deadline_ms: int = 5000
+
+
+@dataclass(frozen=True)
+class PostStepReadinessResult:
+    passed: bool
+    expected_next_side: str | None
+    readiness: LivePipelineSmokeReadiness | None
+    attempts: tuple[dict[str, Any], ...]
+    reason: str | None = None
+    deadline_exceeded: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "passed": bool(self.passed),
+            "expected_next_side": self.expected_next_side,
+            "reason": self.reason,
+            "deadline_exceeded": bool(self.deadline_exceeded),
+            "attempt_count": len(self.attempts),
+            "readiness": None if self.readiness is None else self.readiness.as_dict(),
+            "attempts": [dict(item) for item in self.attempts],
+        }
+
+
 def validate_live_pipeline_smoke_request(
     *,
     apply: bool,
@@ -153,6 +181,152 @@ def _readiness_from_broker(broker: Any) -> LivePipelineSmokeReadiness:
         broker_qty_known=True,
         balance_source_stale=False,
         projection_converged=True,
+    )
+
+
+def _readiness_state(readiness: LivePipelineSmokeReadiness) -> str:
+    if readiness.flat:
+        return "flat"
+    if readiness.in_position:
+        return "in_position"
+    if readiness.converged:
+        return "non_flat_converged"
+    return "not_converged"
+
+
+def _next_ready_state(*, expected_next_side: str | None, passed: bool) -> str:
+    if expected_next_side is None:
+        return "complete"
+    if not passed:
+        return "post_settlement_pending_readiness"
+    side = str(expected_next_side).upper()
+    if side == "BUY":
+        return "buy_ready"
+    if side == "SELL":
+        return "sell_ready"
+    return "unknown"
+
+
+def _readiness_attempt_payload(
+    *,
+    attempt_index: int,
+    expected_next_side: str,
+    readiness: LivePipelineSmokeReadiness,
+    validation_passed: bool,
+    reason: str | None,
+    reconciled: bool,
+) -> dict[str, Any]:
+    payload = readiness.as_dict()
+    payload.update(
+        {
+            "attempt_index": int(attempt_index),
+            "expected_next_side": str(expected_next_side).upper(),
+            "validation_passed": bool(validation_passed),
+            "reason": reason,
+            "reconciled": bool(reconciled),
+            "fee_blocker_source": {
+                "active_fee_pending_count": int(readiness.fee_pending_count),
+                "active_fee_accounting_blocker": bool(readiness.active_fee_accounting_blocker),
+                "fill_accounting_active_issue_count": int(readiness.fill_accounting_active_issue_count),
+                "broker_fill_latest_unresolved_fee_pending_count": int(
+                    readiness.broker_fill_latest_unresolved_fee_pending_count
+                ),
+                "historical_fee_pending_observation_count": int(
+                    readiness.historical_fee_pending_observation_count
+                ),
+                "broker_fill_fee_pending_count": int(readiness.broker_fill_fee_pending_count),
+            },
+        }
+    )
+    return payload
+
+
+def wait_for_live_pipeline_smoke_next_step_readiness(
+    *,
+    readiness_provider: Callable[[], LivePipelineSmokeReadiness],
+    expected_next_side: str,
+    requested_qty_provider: Callable[[LivePipelineSmokeReadiness], float | None] | None = None,
+    terminal_flat_authority: bool = False,
+    reconcile: Callable[[], Any] | None = None,
+    config: PostStepReadinessBarrierConfig | None = None,
+    monotonic: Callable[[], float] | None = None,
+    sleeper: Callable[[float], None] | None = None,
+) -> PostStepReadinessResult:
+    barrier_config = config or PostStepReadinessBarrierConfig()
+    clock = monotonic or time.monotonic
+    sleep = sleeper or time.sleep
+    start = clock()
+    deadline_at = start + (max(0, int(barrier_config.deadline_ms)) / 1000.0)
+    max_attempts = max(1, int(barrier_config.max_attempts))
+    intervals = tuple(int(v) for v in barrier_config.poll_intervals_ms)
+    attempts: list[dict[str, Any]] = []
+    last_readiness: LivePipelineSmokeReadiness | None = None
+    last_reason: str | None = None
+
+    for attempt_index in range(max_attempts):
+        if attempt_index > 0 and clock() > deadline_at:
+            break
+        reconciled = False
+        if reconcile is not None:
+            reconcile()
+            reconciled = True
+        readiness = readiness_provider()
+        last_readiness = readiness
+        try:
+            validate_live_pipeline_smoke_step_readiness(
+                readiness,
+                expected_side=expected_next_side,
+                requested_qty=(
+                    requested_qty_provider(readiness)
+                    if requested_qty_provider is not None
+                    else (float(readiness.broker_qty) if str(expected_next_side).upper() == "SELL" else None)
+                ),
+                terminal_flat_authority=terminal_flat_authority,
+            )
+        except LivePipelineSmokePreflightError as exc:
+            last_reason = str(exc)
+            attempts.append(
+                _readiness_attempt_payload(
+                    attempt_index=attempt_index,
+                    expected_next_side=expected_next_side,
+                    readiness=readiness,
+                    validation_passed=False,
+                    reason=last_reason,
+                    reconciled=reconciled,
+                )
+            )
+        else:
+            attempts.append(
+                _readiness_attempt_payload(
+                    attempt_index=attempt_index,
+                    expected_next_side=expected_next_side,
+                    readiness=readiness,
+                    validation_passed=True,
+                    reason=None,
+                    reconciled=reconciled,
+                )
+            )
+            return PostStepReadinessResult(
+                passed=True,
+                expected_next_side=str(expected_next_side).upper(),
+                readiness=readiness,
+                attempts=tuple(attempts),
+            )
+        if attempt_index >= max_attempts - 1:
+            break
+        delay_ms = intervals[min(attempt_index, len(intervals) - 1)] if intervals else 0
+        if delay_ms > 0:
+            sleep_for = min(delay_ms / 1000.0, max(0.0, deadline_at - clock()))
+            if sleep_for > 0:
+                sleep(sleep_for)
+
+    return PostStepReadinessResult(
+        passed=False,
+        expected_next_side=str(expected_next_side).upper(),
+        readiness=last_readiness,
+        attempts=tuple(attempts),
+        reason=last_reason or "live_pipeline_smoke_post_step_readiness_not_ready",
+        deadline_exceeded=True,
     )
 
 
@@ -496,6 +670,7 @@ def run_live_pipeline_smoke(
     readiness_provider: Callable[[], LivePipelineSmokeReadiness] | None = None,
     post_trade_reconcile: Callable[[], Any] | None = None,
     settlement_coordinator: Callable[[Mapping[str, Any]], Any] | None = None,
+    post_step_readiness_barrier_config: PostStepReadinessBarrierConfig | None = None,
     run_id: str | None = None,
     market: str | None = None,
 ) -> dict[str, Any]:
@@ -576,6 +751,8 @@ def run_live_pipeline_smoke(
     repair_counters_before = _repair_event_counters(conn)
 
     for step in range(max_orders):
+        current: LivePipelineSmokeReadiness | None = None
+        side: str | None = None
         try:
             current = readiness()
             side = provider.next_side(current)
@@ -587,6 +764,20 @@ def run_live_pipeline_smoke(
                 requested_qty=(float(current.broker_qty) if side == "SELL" else None),
                 terminal_flat_authority=(side == "SELL"),
             )
+        except Exception as exc:
+            return _failure_payload(
+                run_id=smoke_run_id,
+                reason=str(exc),
+                step=step,
+                round_index=(step // 2) + 1,
+                orders_submitted=orders_submitted,
+                readiness_phase="pre_step",
+                expected_side=side,
+                current_side=side,
+                pre_step_readiness=(None if current is None else current.as_dict()),
+                readiness_snapshot=(None if current is None else current.as_dict()),
+            )
+        try:
             ts = int(time.time() * 1000) + step
             market_reference = _resolve_market_reference(conn, market=market, now_ms=ts)
         except Exception as exc:
@@ -596,7 +787,14 @@ def run_live_pipeline_smoke(
                 step=step,
                 round_index=(step // 2) + 1,
                 orders_submitted=orders_submitted,
+                readiness_phase="pre_step",
+                expected_side=side,
+                current_side=side,
+                pre_step_readiness=(None if current is None else current.as_dict()),
+                readiness_snapshot=(None if current is None else current.as_dict()),
             )
+        assert current is not None
+        assert side is not None
         context = provider.context_for_step(side=side)
         context["market_reference_source"] = market_reference.source
         context["market_reference_price"] = float(market_reference.price)
@@ -633,6 +831,11 @@ def run_live_pipeline_smoke(
                 step=step,
                 round_index=(step // 2) + 1,
                 orders_submitted=orders_submitted,
+                readiness_phase="pre_step",
+                expected_side=side,
+                current_side=side,
+                pre_step_readiness=current.as_dict(),
+                readiness_snapshot=current.as_dict(),
             )
         summary = _summary_for_step(
             side=side,
@@ -739,25 +942,64 @@ def run_live_pipeline_smoke(
                 settlement_result=settlement_result,
                 failed_trade=trade,
                 failed_side=side,
+                current_side=side,
             )
-        after = readiness()
-        try:
-            next_side = "SELL" if side == "BUY" else "BUY"
-            validate_live_pipeline_smoke_step_readiness(
-                after,
-                expected_side=next_side,
-                requested_qty=(float(after.broker_qty) if next_side == "SELL" else None),
-                terminal_flat_authority=(next_side == "SELL"),
+        is_final_step = step >= max_orders - 1
+        expected_next_side = None if is_final_step else ("SELL" if side == "BUY" else "BUY")
+        if expected_next_side is None:
+            after = readiness()
+            post_step_readiness_result = PostStepReadinessResult(
+                passed=True,
+                expected_next_side=None,
+                readiness=after,
+                attempts=(),
             )
-        except LivePipelineSmokePreflightError as exc:
-            return _failure_payload(
-                run_id=smoke_run_id,
-                reason=str(exc),
-                step=step,
-                round_index=(step // 2) + 1,
-                orders_submitted=orders_submitted + 1,
+        else:
+            post_step_readiness_result = wait_for_live_pipeline_smoke_next_step_readiness(
+                readiness_provider=readiness,
+                expected_next_side=expected_next_side,
+                requested_qty_provider=(
+                    (lambda value: float(value.broker_qty))
+                    if expected_next_side == "SELL"
+                    else (lambda _value: None)
+                ),
+                terminal_flat_authority=(expected_next_side == "SELL"),
+                reconcile=reconcile,
+                config=post_step_readiness_barrier_config,
             )
+            after = post_step_readiness_result.readiness or readiness()
+            if not post_step_readiness_result.passed:
+                return _failure_payload(
+                    run_id=smoke_run_id,
+                    reason=str(post_step_readiness_result.reason),
+                    step=step,
+                    round_index=(step // 2) + 1,
+                    orders_submitted=orders_submitted + 1,
+                    readiness_phase="post_settlement_next_step",
+                    expected_side=expected_next_side,
+                    expected_next_side=expected_next_side,
+                    current_side=side,
+                    last_completed_side=side,
+                    last_settlement_result=settlement_result,
+                    settlement_result=settlement_result,
+                    post_step_readiness_attempts=post_step_readiness_result.attempts,
+                    readiness_snapshot=after.as_dict(),
+                    failed_trade=trade,
+                    failed_side=side,
+                )
         evidence = {
+            "step_index": int(step),
+            "round_index": int((step // 2) + 1),
+            "side": side,
+            "pre_state": _readiness_state(current),
+            "settlement_state": "settled",
+            "post_state": _readiness_state(after),
+            "expected_next_side": expected_next_side,
+            "next_ready_state": _next_ready_state(
+                expected_next_side=expected_next_side,
+                passed=post_step_readiness_result.passed,
+            ),
+            "post_step_readiness_result": post_step_readiness_result.as_dict(),
             "decision_id": decision_id,
             "client_order_id": trade.get("client_order_id"),
             "exchange_order_id": trade.get("exchange_order_id"),
@@ -824,6 +1066,11 @@ def run_live_pipeline_smoke(
         or not final_flat
         or repair_events_created != 0
         or manual_intervention_required
+        or not all(
+            bool(step_evidence.get("post_step_readiness_result", {}).get("passed"))
+            for round_item in rounds
+            for step_evidence in (round_item.get("buy", {}), round_item.get("sell", {}))
+        )
     ):
         return _failure_payload(
             run_id=smoke_run_id,
@@ -845,6 +1092,19 @@ def run_live_pipeline_smoke(
         "manual_intervention_required": bool(manual_intervention_required),
         "repair_event_delta": repair_delta,
         "rounds": rounds,
+        "post_step_readiness_summary": [
+            {
+                "step_index": int(step_evidence.get("step_index", -1)),
+                "side": step_evidence.get("side"),
+                "expected_next_side": step_evidence.get("expected_next_side"),
+                "next_ready_state": step_evidence.get("next_ready_state"),
+                "passed": bool(
+                    step_evidence.get("post_step_readiness_result", {}).get("passed")
+                ),
+            }
+            for round_item in rounds
+            for step_evidence in (round_item.get("buy", {}), round_item.get("sell", {}))
+        ],
         "final": {
             "broker_qty": float(final.broker_qty),
             "portfolio_qty": float(final.portfolio_qty),
@@ -877,6 +1137,15 @@ def _failure_payload(
     settlement_result: Mapping[str, Any] | None = None,
     failed_trade: Mapping[str, Any] | None = None,
     failed_side: str | None = None,
+    readiness_phase: str | None = None,
+    expected_side: str | None = None,
+    expected_next_side: str | None = None,
+    current_side: str | None = None,
+    last_completed_side: str | None = None,
+    pre_step_readiness: Mapping[str, Any] | None = None,
+    readiness_snapshot: Mapping[str, Any] | None = None,
+    last_settlement_result: Mapping[str, Any] | None = None,
+    post_step_readiness_attempts: tuple[dict[str, Any], ...] | list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "status": "failed",
@@ -888,6 +1157,62 @@ def _failure_payload(
         "orders_submitted": int(orders_submitted),
         "next_operator_action": "inspect health/audit and use flatten-position if exposure remains",
     }
+    if readiness_phase is not None:
+        payload["readiness_phase"] = str(readiness_phase)
+    if expected_side is not None:
+        payload["expected_side"] = str(expected_side).upper()
+    if expected_next_side is not None:
+        payload["expected_next_side"] = str(expected_next_side).upper()
+    if current_side is not None:
+        payload["current_side"] = str(current_side).upper()
+    if last_completed_side is not None:
+        payload["last_completed_side"] = str(last_completed_side).upper()
+    if pre_step_readiness is not None:
+        payload["pre_step_readiness"] = dict(pre_step_readiness)
+    if readiness_snapshot is not None:
+        payload["readiness_snapshot"] = dict(readiness_snapshot)
+        for key in (
+            "fee_pending_count",
+            "active_fee_accounting_blocker",
+            "broker_qty",
+            "portfolio_qty",
+            "projected_total_qty",
+            "projection_converged",
+            "open_order_count",
+            "submit_unknown_count",
+            "recovery_required_count",
+            "historical_fee_pending_observation_count",
+            "broker_fill_fee_pending_count",
+            "broker_fill_latest_unresolved_fee_pending_count",
+            "fill_accounting_active_issue_count",
+        ):
+            if key in readiness_snapshot:
+                payload[key] = readiness_snapshot[key]
+    if last_settlement_result is not None:
+        payload["last_settlement_result"] = dict(last_settlement_result)
+    if post_step_readiness_attempts is not None:
+        payload["post_step_readiness_attempts"] = [
+            dict(item) for item in post_step_readiness_attempts
+        ]
+        if post_step_readiness_attempts:
+            last_attempt = dict(list(post_step_readiness_attempts)[-1])
+            for key in (
+                "fee_pending_count",
+                "active_fee_accounting_blocker",
+                "broker_qty",
+                "portfolio_qty",
+                "projected_total_qty",
+                "projection_converged",
+                "open_order_count",
+                "submit_unknown_count",
+                "recovery_required_count",
+                "historical_fee_pending_observation_count",
+                "broker_fill_fee_pending_count",
+                "broker_fill_latest_unresolved_fee_pending_count",
+                "fill_accounting_active_issue_count",
+            ):
+                if key in last_attempt:
+                    payload[key] = last_attempt[key]
     if settlement_result is not None:
         settlement_payload = dict(settlement_result)
         payload["settlement_result"] = settlement_payload
