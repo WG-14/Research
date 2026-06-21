@@ -62,6 +62,11 @@ class RuntimeReadinessSnapshot:
     fee_gap_adjustment_count: int
     material_zero_fee_fill_count: int
     fee_gap_incident: Any
+    fee_gap_policy_reason: str
+    fee_gap_repair_eligibility_state: str
+    fee_gap_incident_scope: str
+    fee_gap_incident_active_issue: bool
+    fee_gap_incident_historical_context: bool
     open_order_count: int
     unresolved_open_order_count: int
     recovery_required_count: int
@@ -93,6 +98,14 @@ class RuntimeReadinessSnapshot:
     residual_proof_min_qty: float | None
     residual_proof_min_notional_krw: float | None
     residual_proof_locked_qty: float
+    fee_validation_blocked_count: int
+    unapplied_principal_pending_count: int
+    principal_applied_fee_pending_count: int
+    active_fill_accounting_blocker: bool
+    active_fill_accounting_blocker_reasons: tuple[str, ...]
+    new_entry_fee_blocker: bool
+    new_entry_fee_blocker_reasons: tuple[str, ...]
+    diagnostic_historical_fee_context: dict[str, object]
     active_fee_accounting_blocker: bool
     accounting_projection_ok: bool
     idempotency_scope: str
@@ -143,6 +156,12 @@ class RuntimeReadinessSnapshot:
             "fee_gap_adjustment_count": int(self.fee_gap_adjustment_count),
             "material_zero_fee_fill_count": int(self.material_zero_fee_fill_count),
             "fee_gap_incident": self.fee_gap_incident.as_dict(),
+            "fee_gap_policy_reason": self.fee_gap_policy_reason,
+            "fee_gap_repair_eligibility_state": self.fee_gap_repair_eligibility_state,
+            "repair_eligibility_state": self.fee_gap_repair_eligibility_state,
+            "fee_gap_incident_scope": self.fee_gap_incident_scope,
+            "fee_gap_incident_active_issue": bool(self.fee_gap_incident_active_issue),
+            "fee_gap_incident_historical_context": bool(self.fee_gap_incident_historical_context),
             "open_order_count": int(self.open_order_count),
             "unresolved_open_order_count": int(self.unresolved_open_order_count),
             "recovery_required_count": int(self.recovery_required_count),
@@ -216,6 +235,14 @@ class RuntimeReadinessSnapshot:
             "residual_proof_min_qty": self.residual_proof_min_qty,
             "residual_proof_min_notional_krw": self.residual_proof_min_notional_krw,
             "residual_proof_locked_qty": float(self.residual_proof_locked_qty),
+            "fee_validation_blocked_count": int(self.fee_validation_blocked_count),
+            "unapplied_principal_pending_count": int(self.unapplied_principal_pending_count),
+            "principal_applied_fee_pending_count": int(self.principal_applied_fee_pending_count),
+            "active_fill_accounting_blocker": bool(self.active_fill_accounting_blocker),
+            "active_fill_accounting_blocker_reasons": list(self.active_fill_accounting_blocker_reasons),
+            "new_entry_fee_blocker": bool(self.new_entry_fee_blocker),
+            "new_entry_fee_blocker_reasons": list(self.new_entry_fee_blocker_reasons),
+            "diagnostic_historical_fee_context": dict(self.diagnostic_historical_fee_context),
             "active_fee_accounting_blocker": bool(self.active_fee_accounting_blocker),
             "accounting_projection_ok": bool(self.accounting_projection_ok),
             "idempotency_scope": self.idempotency_scope,
@@ -594,6 +621,28 @@ def _optional_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _active_fee_blocker_reasons(
+    *,
+    fee_pending_count: int,
+    fee_validation_blocked_count: int,
+    unapplied_principal_pending_count: int,
+    broker_fill_latest_unresolved_fee_pending_count: int,
+    fill_accounting_active_issue_count: int,
+) -> tuple[str, ...]:
+    reasons: list[str] = []
+    if int(fee_pending_count) > 0:
+        reasons.append("fee_pending_count")
+    if int(fee_validation_blocked_count) > 0:
+        reasons.append("fee_validation_blocked_count")
+    if int(unapplied_principal_pending_count) > 0:
+        reasons.append("unapplied_principal_pending_count")
+    if int(broker_fill_latest_unresolved_fee_pending_count) > 0:
+        reasons.append("broker_fill_latest_unresolved_fee_pending_count")
+    if int(fill_accounting_active_issue_count) > 0:
+        reasons.append("fill_accounting_active_issue_count")
+    return tuple(dict.fromkeys(reasons))
 
 
 def _split_pair_currencies(pair: str) -> tuple[str | None, str | None]:
@@ -1366,6 +1415,22 @@ def compute_runtime_readiness_snapshot(conn=None) -> RuntimeReadinessSnapshot:
             tradeability=tradeability,
             dust_fields=dust_context.fields,
         )
+        active_fill_accounting_blocker_reasons = _active_fee_blocker_reasons(
+            fee_pending_count=fee_pending_count,
+            fee_validation_blocked_count=fee_validation_blocked_count,
+            unapplied_principal_pending_count=unapplied_principal_pending_count,
+            broker_fill_latest_unresolved_fee_pending_count=broker_fill_latest_unresolved_fee_pending_count,
+            fill_accounting_active_issue_count=fill_accounting_active_issue_count,
+        )
+        active_fill_accounting_blocker = bool(active_fill_accounting_blocker_reasons)
+        new_entry_fee_blocker_reasons = active_fill_accounting_blocker_reasons
+        new_entry_fee_blocker = bool(new_entry_fee_blocker_reasons)
+        diagnostic_historical_fee_context = {
+            "historical_fee_pending_observation_count": int(historical_fee_pending_observation_count),
+            "broker_fill_fee_pending_count": int(broker_fill_fee_pending_count),
+            "fee_gap_incident_historical_context": bool(fee_gap_incident.historical_context),
+            "fee_gap_incident_scope": str(fee_gap_incident.incident_scope),
+        }
 
         next_action = operator_next_action
         if (
@@ -1404,6 +1469,11 @@ def compute_runtime_readiness_snapshot(conn=None) -> RuntimeReadinessSnapshot:
             fee_gap_adjustment_count=fee_gap_adjustment_count,
             material_zero_fee_fill_count=material_zero_fee_fill_count,
             fee_gap_incident=fee_gap_incident,
+            fee_gap_policy_reason=fee_gap_policy.policy_reason,
+            fee_gap_repair_eligibility_state=fee_gap_policy.repair_eligibility_state,
+            fee_gap_incident_scope=fee_gap_incident.incident_scope,
+            fee_gap_incident_active_issue=fee_gap_incident.active_issue,
+            fee_gap_incident_historical_context=fee_gap_incident.historical_context,
             open_order_count=open_order_count,
             unresolved_open_order_count=unresolved_open_order_count,
             recovery_required_count=recovery_required_count,
@@ -1437,11 +1507,15 @@ def compute_runtime_readiness_snapshot(conn=None) -> RuntimeReadinessSnapshot:
                 None if lot_definition is None else _optional_float(lot_definition.min_notional_krw)
             ),
             residual_proof_locked_qty=float(broker_position_evidence.get("asset_locked") or 0.0),
-            active_fee_accounting_blocker=bool(
-                fee_validation_blocked_count > 0
-                or unapplied_principal_pending_count > 0
-                or fee_gap_policy.closeout_blocking
-            ),
+            fee_validation_blocked_count=fee_validation_blocked_count,
+            unapplied_principal_pending_count=unapplied_principal_pending_count,
+            principal_applied_fee_pending_count=principal_applied_fee_pending_count,
+            active_fill_accounting_blocker=active_fill_accounting_blocker,
+            active_fill_accounting_blocker_reasons=active_fill_accounting_blocker_reasons,
+            new_entry_fee_blocker=new_entry_fee_blocker,
+            new_entry_fee_blocker_reasons=new_entry_fee_blocker_reasons,
+            diagnostic_historical_fee_context=diagnostic_historical_fee_context,
+            active_fee_accounting_blocker=active_fill_accounting_blocker,
             accounting_projection_ok=bool(projection_convergence.get("converged")),
             idempotency_scope="live_client_order_id_generator",
             structured_blockers=tuple(structured_blockers),

@@ -714,6 +714,9 @@ def test_fee_pending_observation_without_fill_remains_active_incident(projection
     assert readiness.broker_fill_latest_unresolved_fee_pending_count == 1
     assert readiness.fill_accounting_active_issue_count == 1
     assert readiness.active_fee_accounting_blocker is True
+    assert readiness.active_fill_accounting_blocker is True
+    assert readiness.new_entry_fee_blocker is True
+    assert "unapplied_principal_pending_count" in readiness.active_fill_accounting_blocker_reasons
     assert readiness.recovery_stage == "UNAPPLIED_PRINCIPAL_PENDING"
     assert preview["needs_repair"] is True
     assert preview["safe_to_apply"] is True
@@ -774,9 +777,51 @@ def test_already_accounted_fill_reclassifies_stale_fee_pending_observation(proje
     assert readiness.broker_fill_latest_unresolved_fee_pending_count == 0
     assert readiness.fill_accounting_active_issue_count == 0
     assert readiness.active_fee_accounting_blocker is False
+    assert readiness.active_fill_accounting_blocker is False
+    assert readiness.new_entry_fee_blocker is False
     assert ledger["broker_fill_latest_unresolved_fee_pending_count"] == 0
     assert ledger["fill_accounting_already_accounted_observation_stale_count"] == 1
     assert "broker_fill_latest_unresolved_fee_pending_count=0" in audit_out
+
+
+def test_fee_gap_closeout_policy_remains_exposed_but_not_new_entry_blocker(projection_db):
+    conn = ensure_db(str(projection_db))
+    try:
+        init_portfolio(conn)
+        runtime_state.record_reconcile_result(
+            success=True,
+            reason_code="ok",
+            metadata={
+                "fee_gap_recovery_required": 1,
+                "material_zero_fee_fill_count": 1,
+                "material_zero_fee_fill_latest_ts": 1_700_000_000_000,
+                "fee_gap_adjustment_count": 1,
+                "fee_gap_adjustment_total_krw": 100.0,
+                "fee_gap_adjustment_latest_event_ts": 1_700_000_000_100,
+                "external_cash_adjustment_reason": "reconcile_fee_gap_cash_drift",
+                "broker_asset_qty": 0.0,
+                "broker_asset_available": 0.0,
+                "broker_asset_locked": 0.0,
+                "balance_source_base_currency": "BTC",
+                "balance_source_quote_currency": "KRW",
+                "balance_observed_ts_ms": 1_700_000_000_200,
+                "balance_source_stale": False,
+                "balance_source": "test_fixture",
+            },
+            now_epoch_sec=2.0,
+        )
+        readiness = compute_runtime_readiness_snapshot(conn)
+    finally:
+        conn.close()
+        runtime_state.record_reconcile_result(success=True, reason_code="ok", metadata={}, now_epoch_sec=3.0)
+
+    assert readiness.fee_gap_closeout_blocking is True
+    assert readiness.fee_gap_resume_blocking is True
+    assert readiness.fee_gap_policy_reason
+    assert readiness.fee_gap_repair_eligibility_state == "safe_to_apply_now"
+    assert readiness.active_fill_accounting_blocker is False
+    assert readiness.new_entry_fee_blocker is False
+    assert readiness.active_fee_accounting_blocker is False
 
 
 def test_incident_shape_buy_order_level_candidate_applies_principal_immediately(projection_db):

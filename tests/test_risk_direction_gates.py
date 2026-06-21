@@ -37,6 +37,14 @@ def test_fee_pending_still_blocks_exposure_increase_buy() -> None:
     assert result.reason_code == "fee_pending_blocks_exposure_increase"
 
 
+def test_fee_pending_risk_gate_policy_remains_unchanged() -> None:
+    test_fee_pending_still_blocks_exposure_increase_buy()
+
+
+def test_fee_pending_risk_gate_still_blocks_buy() -> None:
+    test_fee_pending_still_blocks_exposure_increase_buy()
+
+
 def test_authorized_terminal_sell_policy_unchanged_under_fee_pending() -> None:
     result = evaluate_risk_direction_gates(
         fee_pending=True,

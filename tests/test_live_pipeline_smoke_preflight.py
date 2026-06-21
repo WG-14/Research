@@ -7,6 +7,7 @@ import pytest
 from bithumb_bot.live_pipeline_smoke_preflight import (
     LivePipelineSmokePreflightError,
     LivePipelineSmokeReadiness,
+    validate_live_pipeline_smoke_step_readiness,
     validate_live_pipeline_smoke_start_preflight,
 )
 
@@ -60,6 +61,10 @@ def _snapshot(**overrides):
         "recovery_required_count": 0,
         "fee_pending_count": 0,
         "active_fee_accounting_blocker": False,
+        "active_fill_accounting_blocker": False,
+        "new_entry_fee_blocker": False,
+        "fee_gap_closeout_blocking": False,
+        "fee_gap_resume_blocking": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -71,7 +76,7 @@ def _snapshot(**overrides):
         ({"submit_unknown_count": 1}, "submit_unknown"),
         ({"recovery_required_count": 1}, "recovery_required"),
         ({"fee_pending_count": 1}, "fee_pending"),
-        ({"active_fee_accounting_blocker": True}, "active_fee_accounting_blocker"),
+        ({"new_entry_fee_blocker": True}, "fee_pending"),
         ({"projection_convergence": {"converged": False}}, "projection_non_converged"),
         ({"broker_position_evidence": {"broker_qty_known": False}}, "broker_qty_evidence"),
         ({"broker_position_evidence": {"broker_qty_known": True, "balance_source_stale": True}}, "broker_qty_evidence"),
@@ -89,6 +94,66 @@ def test_preflight_blocks_runtime_readiness_issues(snapshot_overrides, match) ->
             cli_guard=lambda _cfg: None,
             schema_validator=lambda _conn: None,
         )
+
+
+def test_step_readiness_uses_new_entry_fee_blocker_not_closeout_blocker() -> None:
+    readiness = LivePipelineSmokeReadiness(
+        broker_qty=0.0,
+        portfolio_qty=0.0,
+        projected_total_qty=0.0,
+        open_order_count=0,
+        submit_unknown_count=0,
+        recovery_required_count=0,
+        fee_pending_count=0,
+        active_fee_accounting_blocker=False,
+        broker_qty_known=True,
+        balance_source_stale=False,
+        projection_converged=True,
+        new_entry_fee_blocker=False,
+        fee_gap_closeout_blocking=True,
+        fee_gap_resume_blocking=True,
+    )
+
+    validate_live_pipeline_smoke_step_readiness(readiness, expected_side="BUY")
+
+
+def test_smoke_next_buy_blocks_on_active_unresolved_fee() -> None:
+    readiness = LivePipelineSmokeReadiness(
+        broker_qty=0.0,
+        portfolio_qty=0.0,
+        projected_total_qty=0.0,
+        open_order_count=0,
+        submit_unknown_count=0,
+        recovery_required_count=0,
+        fee_pending_count=0,
+        active_fee_accounting_blocker=False,
+        broker_qty_known=True,
+        balance_source_stale=False,
+        projection_converged=True,
+        broker_fill_latest_unresolved_fee_pending_count=1,
+    )
+
+    with pytest.raises(LivePipelineSmokePreflightError, match="fee_pending_blocks_exposure_increase"):
+        validate_live_pipeline_smoke_step_readiness(readiness, expected_side="BUY")
+
+
+def test_fee_pending_count_still_blocks_next_buy() -> None:
+    readiness = LivePipelineSmokeReadiness(
+        broker_qty=0.0,
+        portfolio_qty=0.0,
+        projected_total_qty=0.0,
+        open_order_count=0,
+        submit_unknown_count=0,
+        recovery_required_count=0,
+        fee_pending_count=1,
+        active_fee_accounting_blocker=False,
+        broker_qty_known=True,
+        balance_source_stale=False,
+        projection_converged=True,
+    )
+
+    with pytest.raises(LivePipelineSmokePreflightError, match="fee_pending_blocks_exposure_increase"):
+        validate_live_pipeline_smoke_step_readiness(readiness, expected_side="BUY")
 
 
 def test_preflight_blocks_open_local_and_broker_orders() -> None:

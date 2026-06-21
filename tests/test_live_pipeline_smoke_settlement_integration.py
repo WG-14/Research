@@ -26,7 +26,10 @@ from bithumb_bot.live_pipeline_smoke import (
     run_live_pipeline_smoke,
 )
 from bithumb_bot.live_pipeline_smoke_authority import LIVE_PIPELINE_SMOKE_CONFIRMATION_TOKEN
+from bithumb_bot.live_pipeline_smoke_preflight import LivePipelineSmokePreflightError
 from bithumb_bot.live_pipeline_smoke_preflight import LivePipelineSmokeReadiness
+from bithumb_bot.live_pipeline_smoke_preflight import readiness_from_snapshot
+from bithumb_bot.live_pipeline_smoke_preflight import validate_live_pipeline_smoke_step_readiness
 from bithumb_bot.order_settlement import evaluate_settlement_snapshot
 from bithumb_bot.runtime.live_order_settlement import LiveOrderSettlementWrapper
 from tests.test_live_pipeline_smoke_runner_fake_broker import (
@@ -123,9 +126,25 @@ def _readiness(
     qty: float,
     fee_pending_count: int = 0,
     active_fee_accounting_blocker: bool = False,
+    active_fill_accounting_blocker: bool | None = None,
+    new_entry_fee_blocker: bool | None = None,
+    fee_gap_closeout_blocking: bool = False,
+    fee_gap_resume_blocking: bool = False,
+    fee_gap_policy_reason: str = "none",
+    fee_gap_repair_eligibility_state: str = "not_applicable",
+    fee_gap_incident_scope: str = "none",
+    fee_validation_blocked_count: int = 0,
+    unapplied_principal_pending_count: int = 0,
+    principal_applied_fee_pending_count: int = 0,
     historical_fee_pending_observation_count: int = 0,
     fill_accounting_active_issue_count: int = 0,
 ) -> LivePipelineSmokeReadiness:
+    active_fill = (
+        bool(active_fee_accounting_blocker)
+        if active_fill_accounting_blocker is None
+        else bool(active_fill_accounting_blocker)
+    )
+    new_entry = bool(active_fill if new_entry_fee_blocker is None else new_entry_fee_blocker)
     return LivePipelineSmokeReadiness(
         broker_qty=float(qty),
         portfolio_qty=float(qty),
@@ -134,10 +153,24 @@ def _readiness(
         submit_unknown_count=0,
         recovery_required_count=0,
         fee_pending_count=int(fee_pending_count),
-        active_fee_accounting_blocker=bool(active_fee_accounting_blocker),
+        active_fee_accounting_blocker=active_fill,
         broker_qty_known=True,
         balance_source_stale=False,
         projection_converged=True,
+        active_fill_accounting_blocker=active_fill,
+        active_fill_accounting_blocker_reasons=("active_fee_accounting_blocker",) if active_fill else (),
+        new_entry_fee_blocker=new_entry,
+        new_entry_fee_blocker_reasons=("active_fee_accounting_blocker",) if new_entry else (),
+        fee_gap_closeout_blocking=bool(fee_gap_closeout_blocking),
+        fee_gap_resume_blocking=bool(fee_gap_resume_blocking),
+        fee_gap_policy_reason=fee_gap_policy_reason,
+        fee_gap_repair_eligibility_state=fee_gap_repair_eligibility_state,
+        fee_gap_incident_scope=fee_gap_incident_scope,
+        fee_gap_incident_active_issue=False,
+        fee_gap_incident_historical_context=bool(fee_gap_incident_scope == "historical_context"),
+        fee_validation_blocked_count=int(fee_validation_blocked_count),
+        unapplied_principal_pending_count=int(unapplied_principal_pending_count),
+        principal_applied_fee_pending_count=int(principal_applied_fee_pending_count),
         historical_fee_pending_observation_count=int(historical_fee_pending_observation_count),
         broker_fill_fee_pending_count=int(historical_fee_pending_observation_count),
         broker_fill_latest_unresolved_fee_pending_count=int(fill_accounting_active_issue_count),
@@ -753,6 +786,88 @@ def test_historical_fee_pending_observations_do_not_block_smoke_next_buy(monkeyp
         _restore_settings(old)
 
 
+def test_smoke_next_buy_ignores_fee_gap_closeout_blocking_when_active_fee_clear() -> None:
+    readiness = _readiness(
+        qty=0.0,
+        active_fill_accounting_blocker=False,
+        new_entry_fee_blocker=False,
+        fee_gap_closeout_blocking=True,
+        fee_gap_resume_blocking=True,
+        fee_gap_policy_reason="historical fee-gap repair is applicable now",
+        fee_gap_repair_eligibility_state="safe_to_apply_now",
+        fee_gap_incident_scope="active_blocking",
+    )
+
+    validate_live_pipeline_smoke_step_readiness(readiness, expected_side="BUY")
+
+    payload = readiness.as_dict()
+    assert payload["fee_gap_closeout_blocking"] is True
+    assert payload["new_entry_fee_blocker"] is False
+    assert payload["active_fill_accounting_blocker"] is False
+
+
+def test_smoke_next_buy_blocks_on_active_unresolved_fee() -> None:
+    readiness = _readiness(qty=0.0, fill_accounting_active_issue_count=1)
+
+    with pytest.raises(LivePipelineSmokePreflightError, match="fee_pending_blocks_exposure_increase"):
+        validate_live_pipeline_smoke_step_readiness(readiness, expected_side="BUY")
+
+    assert readiness.new_entry_fee_blocker is True
+    assert readiness.active_fill_accounting_blocker is True
+
+
+def test_active_fee_validation_blocked_still_blocks_next_buy() -> None:
+    readiness = _readiness(qty=0.0, fee_validation_blocked_count=1)
+
+    with pytest.raises(LivePipelineSmokePreflightError, match="fee_pending_blocks_exposure_increase"):
+        validate_live_pipeline_smoke_step_readiness(readiness, expected_side="BUY")
+
+
+def test_unapplied_principal_pending_still_blocks_next_buy() -> None:
+    readiness = _readiness(qty=0.0, unapplied_principal_pending_count=1)
+
+    with pytest.raises(LivePipelineSmokePreflightError, match="fee_pending_blocks_exposure_increase"):
+        validate_live_pipeline_smoke_step_readiness(readiness, expected_side="BUY")
+
+
+def test_latest_unresolved_fee_pending_still_blocks_next_buy() -> None:
+    readiness = _readiness(qty=0.0, fill_accounting_active_issue_count=1)
+
+    with pytest.raises(LivePipelineSmokePreflightError, match="fee_pending_blocks_exposure_increase"):
+        validate_live_pipeline_smoke_step_readiness(readiness, expected_side="BUY")
+
+
+def test_step_readiness_uses_new_entry_fee_blocker_not_closeout_blocker() -> None:
+    readiness = _readiness(
+        qty=0.0,
+        active_fill_accounting_blocker=False,
+        new_entry_fee_blocker=False,
+        fee_gap_closeout_blocking=True,
+    )
+
+    validate_live_pipeline_smoke_step_readiness(readiness, expected_side="BUY")
+
+
+def test_fee_gap_closeout_policy_remains_exposed_but_not_new_entry_blocker() -> None:
+    readiness = _readiness(
+        qty=0.0,
+        active_fill_accounting_blocker=False,
+        new_entry_fee_blocker=False,
+        fee_gap_closeout_blocking=True,
+        fee_gap_resume_blocking=True,
+        fee_gap_policy_reason="historical fee-gap repair is applicable now",
+        fee_gap_repair_eligibility_state="safe_to_apply_now",
+    )
+
+    payload = readiness.as_dict()
+
+    assert payload["fee_gap_closeout_blocking"] is True
+    assert payload["fee_gap_resume_blocking"] is True
+    assert payload["fee_gap_policy_reason"] == "historical fee-gap repair is applicable now"
+    assert payload["new_entry_fee_blocker"] is False
+    assert payload["active_fill_accounting_blocker"] is False
+
+
 def test_active_fee_accounting_issue_blocks_smoke_next_buy(monkeypatch, tmp_path) -> None:
     test_post_settlement_readiness_failure_payload_marks_post_step_phase(monkeypatch, tmp_path)
 
@@ -782,9 +897,72 @@ def test_post_step_readiness_attempt_records_fee_blocker_source(monkeypatch, tmp
         assert attempt["fee_blocker_source"]["active_fee_pending_count"] == 1
         assert attempt["fee_blocker_source"]["historical_fee_pending_observation_count"] == 4
         assert attempt["fee_blocker_source"]["fill_accounting_active_issue_count"] == 1
+        assert attempt["fee_blocker_source"]["new_entry_fee_blocker"] is True
+        assert "fee_pending_count" in attempt["fee_blocker_source"]["new_entry_fee_blocker_reasons"]
+        assert attempt["fee_blocker_source"]["active_fill_accounting_blocker"] is True
+        assert attempt["fee_blocker_source"]["active_fill_accounting_blocker_reasons"]
     finally:
         conn.close()
         _restore_settings(old)
+
+
+def test_post_step_readiness_attempt_records_new_entry_fee_blocker_source() -> None:
+    result = wait_for_live_pipeline_smoke_next_step_readiness(
+        readiness_provider=lambda: _readiness(qty=0.0, fee_pending_count=1),
+        expected_next_side="BUY",
+        config=PostStepReadinessBarrierConfig(max_attempts=1, poll_intervals_ms=(0,), deadline_ms=1000),
+        sleeper=lambda _seconds: None,
+    )
+
+    attempt = result.attempts[0]
+    assert result.passed is False
+    assert attempt["new_entry_fee_blocker"] is True
+    assert attempt["new_entry_fee_blocker_reasons"] == ["fee_pending_count"]
+    assert attempt["fee_blocker_source"]["new_entry_fee_blocker"] is True
+    assert attempt["fee_blocker_source"]["new_entry_fee_blocker_reasons"] == ["fee_pending_count"]
+
+
+def test_post_step_readiness_attempt_records_fee_gap_policy_source() -> None:
+    result = wait_for_live_pipeline_smoke_next_step_readiness(
+        readiness_provider=lambda: _readiness(
+            qty=0.0,
+            active_fill_accounting_blocker=False,
+            new_entry_fee_blocker=False,
+            fee_gap_closeout_blocking=True,
+            fee_gap_resume_blocking=True,
+            fee_gap_policy_reason="historical fee-gap repair is applicable now",
+            fee_gap_repair_eligibility_state="safe_to_apply_now",
+            fee_gap_incident_scope="active_blocking",
+        ),
+        expected_next_side="BUY",
+        config=PostStepReadinessBarrierConfig(max_attempts=1, poll_intervals_ms=(0,), deadline_ms=1000),
+        sleeper=lambda _seconds: None,
+    )
+
+    attempt = result.attempts[0]
+    assert result.passed is True
+    assert attempt["new_entry_fee_blocker"] is False
+    assert attempt["active_fill_accounting_blocker"] is False
+    assert attempt["fee_gap_closeout_blocking"] is True
+    assert attempt["fee_blocker_source"]["fee_gap_closeout_blocking"] is True
+    assert attempt["fee_blocker_source"]["fee_gap_policy_reason"] == "historical fee-gap repair is applicable now"
+
+
+def test_post_step_failure_payload_identifies_closeout_policy_not_active_fee_issue() -> None:
+    readiness = _readiness(
+        qty=0.0,
+        active_fill_accounting_blocker=False,
+        new_entry_fee_blocker=False,
+        fee_gap_closeout_blocking=True,
+        fee_gap_policy_reason="historical fee-gap repair is applicable now",
+    )
+
+    payload = readiness.as_dict()
+
+    assert payload["fee_gap_closeout_blocking"] is True
+    assert payload["new_entry_fee_blocker"] is False
+    assert payload["active_fill_accounting_blocker"] is False
+    assert payload["active_fill_accounting_blocker_reasons"] == []
 
 
 def test_smoke_step_evidence_records_state_transition(monkeypatch, tmp_path) -> None:

@@ -130,8 +130,11 @@ def _validate_operator_smoke_broker_local_consistency(conn: Any) -> None:
         issues.append(f"recovery_required_count={int(snapshot.recovery_required_count)}")
     if int(snapshot.fee_pending_count or 0) > 0:
         issues.append(f"fee_pending_count={int(snapshot.fee_pending_count)}")
-    if bool(snapshot.active_fee_accounting_blocker):
-        issues.append("active_fee_accounting_blocker=true")
+    new_entry_fee_blocker = bool(
+        getattr(snapshot, "new_entry_fee_blocker", getattr(snapshot, "active_fee_accounting_blocker", False))
+    )
+    if new_entry_fee_blocker:
+        issues.append("new_entry_fee_blocker=true")
 
     if issues:
         raise LiveModeValidationError(

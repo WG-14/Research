@@ -70,6 +70,20 @@ EXECUTION_PLANNING_READINESS_KEYS = frozenset(
         "residual_proof_min_notional_krw",
         "residual_proof_locked_qty",
         "active_fee_accounting_blocker",
+        "active_fill_accounting_blocker",
+        "active_fill_accounting_blocker_reasons",
+        "new_entry_fee_blocker",
+        "new_entry_fee_blocker_reasons",
+        "fee_gap_closeout_blocking",
+        "fee_gap_resume_blocking",
+        "fee_gap_policy_reason",
+        "fee_gap_repair_eligibility_state",
+        "fee_gap_incident_scope",
+        "fee_gap_incident_active_issue",
+        "fee_gap_incident_historical_context",
+        "fee_validation_blocked_count",
+        "unapplied_principal_pending_count",
+        "principal_applied_fee_pending_count",
         "accounting_projection_ok",
         "idempotency_scope",
         "cash_available",
@@ -1584,8 +1598,8 @@ def build_residual_sell_presubmit_proof(decision_context: dict[str, object] | No
         reasons.append("missing_locked_qty")
     elif float(locked_qty or 0.0) > 1e-12:
         reasons.append("locked_qty_nonzero")
-    if bool(decision_context.get("active_fee_accounting_blocker")):
-        reasons.append("active_fee_accounting_blocker")
+    if bool(decision_context.get("new_entry_fee_blocker", decision_context.get("active_fee_accounting_blocker"))):
+        reasons.append("new_entry_fee_blocker")
     if not bool(broker_evidence.get("broker_qty_known")):
         reasons.append("broker_qty_unknown")
     if bool(broker_evidence.get("balance_source_stale")):

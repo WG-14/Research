@@ -227,6 +227,15 @@ def _readiness_attempt_payload(
             "fee_blocker_source": {
                 "active_fee_pending_count": int(readiness.fee_pending_count),
                 "active_fee_accounting_blocker": bool(readiness.active_fee_accounting_blocker),
+                "active_fill_accounting_blocker": bool(readiness.active_fill_accounting_blocker),
+                "active_fill_accounting_blocker_reasons": list(
+                    readiness.active_fill_accounting_blocker_reasons
+                ),
+                "new_entry_fee_blocker": bool(readiness.new_entry_fee_blocker),
+                "new_entry_fee_blocker_reasons": list(readiness.new_entry_fee_blocker_reasons),
+                "fee_validation_blocked_count": int(readiness.fee_validation_blocked_count),
+                "unapplied_principal_pending_count": int(readiness.unapplied_principal_pending_count),
+                "principal_applied_fee_pending_count": int(readiness.principal_applied_fee_pending_count),
                 "fill_accounting_active_issue_count": int(readiness.fill_accounting_active_issue_count),
                 "broker_fill_latest_unresolved_fee_pending_count": int(
                     readiness.broker_fill_latest_unresolved_fee_pending_count
@@ -235,6 +244,15 @@ def _readiness_attempt_payload(
                     readiness.historical_fee_pending_observation_count
                 ),
                 "broker_fill_fee_pending_count": int(readiness.broker_fill_fee_pending_count),
+                "fee_gap_closeout_blocking": bool(readiness.fee_gap_closeout_blocking),
+                "fee_gap_resume_blocking": bool(readiness.fee_gap_resume_blocking),
+                "fee_gap_policy_reason": readiness.fee_gap_policy_reason,
+                "fee_gap_repair_eligibility_state": readiness.fee_gap_repair_eligibility_state,
+                "fee_gap_incident_scope": readiness.fee_gap_incident_scope,
+                "fee_gap_incident_active_issue": bool(readiness.fee_gap_incident_active_issue),
+                "fee_gap_incident_historical_context": bool(
+                    readiness.fee_gap_incident_historical_context
+                ),
             },
         }
     )
@@ -1174,6 +1192,20 @@ def _failure_payload(
         for key in (
             "fee_pending_count",
             "active_fee_accounting_blocker",
+            "active_fill_accounting_blocker",
+            "active_fill_accounting_blocker_reasons",
+            "new_entry_fee_blocker",
+            "new_entry_fee_blocker_reasons",
+            "fee_gap_closeout_blocking",
+            "fee_gap_resume_blocking",
+            "fee_gap_policy_reason",
+            "fee_gap_repair_eligibility_state",
+            "fee_gap_incident_scope",
+            "fee_gap_incident_active_issue",
+            "fee_gap_incident_historical_context",
+            "fee_validation_blocked_count",
+            "unapplied_principal_pending_count",
+            "principal_applied_fee_pending_count",
             "broker_qty",
             "portfolio_qty",
             "projected_total_qty",
@@ -1199,6 +1231,20 @@ def _failure_payload(
             for key in (
                 "fee_pending_count",
                 "active_fee_accounting_blocker",
+                "active_fill_accounting_blocker",
+                "active_fill_accounting_blocker_reasons",
+                "new_entry_fee_blocker",
+                "new_entry_fee_blocker_reasons",
+                "fee_gap_closeout_blocking",
+                "fee_gap_resume_blocking",
+                "fee_gap_policy_reason",
+                "fee_gap_repair_eligibility_state",
+                "fee_gap_incident_scope",
+                "fee_gap_incident_active_issue",
+                "fee_gap_incident_historical_context",
+                "fee_validation_blocked_count",
+                "unapplied_principal_pending_count",
+                "principal_applied_fee_pending_count",
                 "broker_qty",
                 "portfolio_qty",
                 "projected_total_qty",

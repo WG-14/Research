@@ -51,6 +51,8 @@ def _readiness_snapshot(
     recovery_required_count: int = 0,
     fee_pending_count: int = 0,
     active_fee_accounting_blocker: bool = False,
+    new_entry_fee_blocker: bool = False,
+    fee_gap_closeout_blocking: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         broker_position_evidence={
@@ -68,6 +70,8 @@ def _readiness_snapshot(
         recovery_required_count=recovery_required_count,
         fee_pending_count=fee_pending_count,
         active_fee_accounting_blocker=active_fee_accounting_blocker,
+        new_entry_fee_blocker=new_entry_fee_blocker,
+        fee_gap_closeout_blocking=fee_gap_closeout_blocking,
     )
 
 
@@ -104,6 +108,52 @@ def test_operator_smoke_preflight_rejects_broker_local_mismatch(
     )
     try:
         with pytest.raises(LiveModeValidationError, match="broker_local_mismatch"):
+            validate_operator_smoke_preflight(
+                cfg=_live_settings(db_path, APPROVED_STRATEGY_PROFILE_PATH=""),
+                conn=conn,
+                market="KRW-BTC",
+                market_preflight=lambda _cfg: None,
+            )
+    finally:
+        conn.close()
+
+
+def test_operator_smoke_preflight_uses_new_entry_fee_blocker_not_closeout_blocker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db_path = _live_roots(monkeypatch, tmp_path)
+    conn = ensure_db(str(db_path))
+    monkeypatch.setattr(
+        smoke_preflight,
+        "compute_runtime_readiness_snapshot",
+        lambda _conn: _readiness_snapshot(
+            new_entry_fee_blocker=False,
+            fee_gap_closeout_blocking=True,
+        ),
+    )
+    try:
+        validate_operator_smoke_preflight(
+            cfg=_live_settings(db_path, APPROVED_STRATEGY_PROFILE_PATH=""),
+            conn=conn,
+            market="KRW-BTC",
+            market_preflight=lambda _cfg: None,
+        )
+    finally:
+        conn.close()
+
+
+def test_operator_smoke_preflight_blocks_new_entry_fee_blocker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db_path = _live_roots(monkeypatch, tmp_path)
+    conn = ensure_db(str(db_path))
+    monkeypatch.setattr(
+        smoke_preflight,
+        "compute_runtime_readiness_snapshot",
+        lambda _conn: _readiness_snapshot(new_entry_fee_blocker=True),
+    )
+    try:
+        with pytest.raises(LiveModeValidationError, match="new_entry_fee_blocker=true"):
             validate_operator_smoke_preflight(
                 cfg=_live_settings(db_path, APPROVED_STRATEGY_PROFILE_PATH=""),
                 conn=conn,

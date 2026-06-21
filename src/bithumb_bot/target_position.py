@@ -299,8 +299,8 @@ def _first_truth_blocker(payload: dict[str, object], broker_evidence: dict[str, 
         return "recovery_required_count_nonzero"
     if _as_int(payload.get("submit_unknown_count")) > 0:
         return "submit_unknown_count_nonzero"
-    if bool(payload.get("active_fee_accounting_blocker")):
-        return "active_fee_accounting_blocker"
+    if bool(payload.get("new_entry_fee_blocker", payload.get("active_fee_accounting_blocker"))):
+        return "new_entry_fee_blocker"
     if "accounting_projection_ok" in payload and not bool(payload.get("accounting_projection_ok")):
         return "accounting_projection_not_ok"
     return None
