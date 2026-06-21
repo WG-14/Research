@@ -8,6 +8,7 @@ from typing import Any
 
 from .research.hashing import sha256_prefixed
 from .storage_io import write_json_atomic
+from .strategy_risk_profile import risk_policy_from_mapping
 
 
 H74_OBSERVATION_AUTHORITY_ARTIFACT_TYPE = "h74_live_observation_authority"
@@ -21,6 +22,9 @@ H74_OBSERVATION_MAX_ORDER_KRW = 50_000
 H74_OBSERVATION_WINDOW_DAYS = 7
 H74_SOURCE_OBSERVATION_MAX_DAILY_ENTRY_COUNT = 1
 H74_SOURCE_OBSERVATION_MAX_DAILY_TOTAL_ORDER_COUNT = 2
+H74_SOURCE_OBSERVATION_RISK_POLICY_SOURCE = H74_SOURCE_OBSERVATION_AUTHORITY_ARTIFACT_TYPE
+H74_SOURCE_OBSERVATION_MAX_DAILY_LOSS_KRW = 5_000.0
+H74_SOURCE_OBSERVATION_MAX_POSITION_LOSS_PCT = 0.03
 
 def _h74_observation_parameters() -> dict[str, object]:
     from .research.strategy_spec import runtime_bound_behavior_parameter_names
@@ -88,6 +92,28 @@ class H74ObservationAuthorityError(ValueError):
 
 def h74_parameter_hash(parameters: dict[str, object]) -> str:
     return sha256_prefixed(dict(sorted(parameters.items())))
+
+
+def h74_source_observation_risk_policy() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "policy_status": "enabled",
+        "missing_policy": "fail_closed_for_live",
+        "source": H74_SOURCE_OBSERVATION_RISK_POLICY_SOURCE,
+        "max_daily_loss_krw": H74_SOURCE_OBSERVATION_MAX_DAILY_LOSS_KRW,
+        "max_position_loss_pct": H74_SOURCE_OBSERVATION_MAX_POSITION_LOSS_PCT,
+        "max_daily_order_count": H74_SOURCE_OBSERVATION_MAX_DAILY_TOTAL_ORDER_COUNT,
+        "max_trade_count_per_day": H74_SOURCE_OBSERVATION_MAX_DAILY_TOTAL_ORDER_COUNT,
+        "max_drawdown_pct": H74_SOURCE_OBSERVATION_MAX_POSITION_LOSS_PCT,
+        "cooldown_after_loss_min": 0,
+        "max_open_positions": 1,
+        "unresolved_order_policy": "block",
+        "kill_switch": False,
+    }
+
+
+def h74_source_observation_risk_policy_hash(policy: dict[str, object] | None = None) -> str:
+    return risk_policy_from_mapping(policy or h74_source_observation_risk_policy()).policy_hash()
 
 
 def build_h74_capital_scaled_variant() -> dict[str, Any]:
@@ -182,6 +208,8 @@ def build_h74_source_observation_authority_payload(
         raise H74ObservationAuthorityError(
             "h74_source_observation_authority_missing_behavior_parameters:" + ",".join(missing)
         )
+    risk_policy = h74_source_observation_risk_policy()
+    risk_policy_hash = h74_source_observation_risk_policy_hash(risk_policy)
     commit = str(code_commit_sha or runtime_code_provenance().get("commit_sha") or "unavailable")
     hash_bound = {
         **{
@@ -203,6 +231,7 @@ def build_h74_source_observation_authority_payload(
         "code_commit_sha": commit,
         "production_approval": False,
         "approved_profile_evidence": False,
+        "risk_policy_hash": risk_policy_hash,
     }
     if not hash_bound["source_candidate_artifact_hash"]:
         raise H74ObservationAuthorityError("h74_source_observation_authority_source_hash_missing")
@@ -217,6 +246,10 @@ def build_h74_source_observation_authority_payload(
         "production_approval": False,
         "contract_scope": "h74_source_live_observation_only",
         "hash_bound_parameters": hash_bound,
+        "risk_policy": risk_policy,
+        "risk_policy_hash": risk_policy_hash,
+        "risk_profile_source": H74_SOURCE_OBSERVATION_RISK_POLICY_SOURCE,
+        "risk_enforcement_mode": "enforced",
         "runtime_bound_behavior_parameter_names": sorted(required_behavior_parameters),
         "authority_parameter_hash": sha256_prefixed(hash_bound),
     }
@@ -313,6 +346,19 @@ def verify_h74_source_observation_authority(
     if expected_hash != actual_hash:
         raise H74ObservationAuthorityError("h74_source_observation_authority_hash_mismatch")
     bound = dict(payload.get("hash_bound_parameters") or {})
+    risk_policy_payload = payload.get("risk_policy")
+    if not isinstance(risk_policy_payload, dict):
+        raise H74ObservationAuthorityError("h74_source_observation_authority_risk_policy_missing")
+    risk_policy_hash = str(payload.get("risk_policy_hash") or "").strip()
+    if not risk_policy_hash:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_risk_policy_hash_missing")
+    actual_risk_policy_hash = h74_source_observation_risk_policy_hash(risk_policy_payload)
+    if risk_policy_hash != actual_risk_policy_hash:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_risk_policy_hash_mismatch")
+    bound_risk_policy_hash = str(bound.get("risk_policy_hash") or "").strip()
+    if bound_risk_policy_hash != risk_policy_hash:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_bound_risk_policy_hash_mismatch")
+    _verify_h74_source_observation_risk_policy(risk_policy_payload)
     from .research.strategy_spec import runtime_bound_behavior_parameter_names
 
     required_behavior_parameters = set(runtime_bound_behavior_parameter_names(H74_STRATEGY_NAME))
@@ -332,6 +378,7 @@ def verify_h74_source_observation_authority(
         "market",
         "interval",
         "code_commit_sha",
+        "risk_policy_hash",
     ):
         if required_key not in bound or bound.get(required_key) in (None, ""):
             raise H74ObservationAuthorityError(
@@ -372,6 +419,7 @@ def verify_h74_source_observation_authority(
             "code_commit_sha",
             "approved_profile_evidence",
             "production_approval",
+            "risk_policy_hash",
         }:
             continue
         actual = runtime_values.get(key)
@@ -380,6 +428,44 @@ def verify_h74_source_observation_authority(
     expires_at = datetime.fromisoformat(str(bound.get("expires_at")).replace("Z", "+00:00"))
     if expires_at <= (now or datetime.now(timezone.utc)).astimezone(timezone.utc):
         raise H74ObservationAuthorityError("h74_source_observation_authority_expired")
+
+
+def _verify_h74_source_observation_risk_policy(policy_payload: dict[str, object]) -> None:
+    policy = risk_policy_from_mapping(policy_payload)
+    if policy.policy_status != "enabled":
+        raise H74ObservationAuthorityError("h74_source_observation_authority_risk_policy_disabled")
+    if policy.missing_policy != "fail_closed_for_live":
+        raise H74ObservationAuthorityError(
+            "h74_source_observation_authority_risk_policy_missing_policy_invalid"
+        )
+    if policy.source != H74_SOURCE_OBSERVATION_RISK_POLICY_SOURCE:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_risk_policy_source_invalid")
+    if policy.max_daily_order_count > H74_SOURCE_OBSERVATION_MAX_DAILY_TOTAL_ORDER_COUNT:
+        raise H74ObservationAuthorityError(
+            "h74_source_observation_authority_risk_policy_daily_order_count_too_high"
+        )
+    if policy.max_trade_count_per_day > H74_SOURCE_OBSERVATION_MAX_DAILY_TOTAL_ORDER_COUNT:
+        raise H74ObservationAuthorityError(
+            "h74_source_observation_authority_risk_policy_trade_count_too_high"
+        )
+    if policy.max_open_positions != 1:
+        raise H74ObservationAuthorityError(
+            "h74_source_observation_authority_risk_policy_open_positions_invalid"
+        )
+    if policy.unresolved_order_policy != "block":
+        raise H74ObservationAuthorityError(
+            "h74_source_observation_authority_risk_policy_unresolved_order_policy_invalid"
+        )
+    if policy.kill_switch is not False:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_risk_policy_kill_switch_invalid")
+    if policy.max_daily_loss_krw <= 0.0 or policy.max_daily_loss_krw > H74_SOURCE_MAX_ORDER_KRW:
+        raise H74ObservationAuthorityError(
+            "h74_source_observation_authority_risk_policy_daily_loss_invalid"
+        )
+    if policy.max_position_loss_pct <= 0.0 or policy.max_position_loss_pct > 0.05:
+        raise H74ObservationAuthorityError(
+            "h74_source_observation_authority_risk_policy_position_loss_invalid"
+        )
 
 
 def h74_runtime_values_from_settings(settings_obj: object) -> dict[str, object]:
@@ -463,6 +549,36 @@ def verify_h74_source_observation_authority_file(path: str | Path, *, settings_o
         verify_h74_source_live_pipeline_smoke_evidence_file(smoke_evidence_path)
 
 
+def h74_source_observation_risk_profile_payload_from_settings(
+    settings_obj: object,
+) -> dict[str, object] | None:
+    authority_path = (
+        str(getattr(settings_obj, H74_SOURCE_OBSERVATION_AUTHORITY_ENV, "") or "").strip()
+        or os.getenv(H74_SOURCE_OBSERVATION_AUTHORITY_ENV, "").strip()
+    )
+    if not authority_path:
+        return None
+    with Path(authority_path).expanduser().open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise H74ObservationAuthorityError("h74_source_observation_authority_payload_not_object")
+    verify_h74_source_observation_authority_file(authority_path, settings_obj=settings_obj)
+    risk_policy = payload.get("risk_policy")
+    if not isinstance(risk_policy, dict):
+        raise H74ObservationAuthorityError("h74_source_observation_authority_risk_policy_missing")
+    return {
+        "risk_policy": dict(risk_policy),
+        "risk_policy_hash": str(payload.get("risk_policy_hash") or "").strip(),
+        "risk_profile_source": H74_SOURCE_OBSERVATION_RISK_POLICY_SOURCE,
+        "risk_enforcement_mode": "enforced",
+        "missing_risk_policy_behavior": "fail_closed_for_live",
+        "approved_profile_verification_ok": False,
+        "approved_profile_block_reason": "h74_source_observation_authority_used",
+        "approved_profile_contract_scope": "h74_source_live_observation_only",
+        "production_approval": False,
+    }
+
+
 def verify_h74_source_live_pipeline_smoke_evidence_file(path: str | Path) -> None:
     with Path(path).expanduser().open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
@@ -533,6 +649,8 @@ def h74_source_observation_policy_from_settings(settings_obj: object) -> dict[st
         "approved_profile_runtime_verified": False,
         "approved_profile_contract_scope": "h74_source_live_observation_only",
         "production_approval": False,
+        "risk_profile_source": H74_SOURCE_OBSERVATION_RISK_POLICY_SOURCE,
+        "risk_enforcement_mode": "enforced",
     }
 
 

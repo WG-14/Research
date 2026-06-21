@@ -135,6 +135,30 @@ def _plugin_accepts_empty_runtime_parameters(plugin: object | None) -> bool:
     )
 
 
+def _h74_source_observation_profile_payload(
+    *,
+    settings_obj: object,
+    strategy_name: str,
+    approved_profile_path: str | None,
+    live_like: bool,
+) -> Mapping[str, object] | None:
+    if not live_like:
+        return None
+    if str(strategy_name or "").strip().lower() != "daily_participation_sma":
+        return None
+    if str(approved_profile_path or "").strip():
+        return None
+    authority_path = (
+        str(getattr(settings_obj, "H74_SOURCE_OBSERVATION_AUTHORITY_PATH", "") or "").strip()
+        or os.getenv("H74_SOURCE_OBSERVATION_AUTHORITY_PATH", "").strip()
+    )
+    if not authority_path:
+        return None
+    from .h74_observation import h74_source_observation_risk_profile_payload_from_settings
+
+    return h74_source_observation_risk_profile_payload_from_settings(settings_obj)
+
+
 SUPPORTED_RUNTIME_SCOPE = "multi_strategy_single_pair_single_interval"
 RUNTIME_SCOPE_DESCRIPTION = "multi-strategy / single-pair / single-interval runtime"
 RUNTIME_SCOPE_MODE = "single_pair"
@@ -1441,13 +1465,19 @@ class RuntimeDecisionRequestBuilder:
         if live_like and spec.risk_snapshot is not None:
             raise RuntimeError(f"static_risk_snapshot_rejected_for_live_authority:{spec.strategy_name}")
         spec_profile_path = str(spec.approved_profile_path or "").strip()
+        h74_observation_profile_payload = _h74_source_observation_profile_payload(
+            settings_obj=self.settings_obj,
+            strategy_name=spec.strategy_name,
+            approved_profile_path=spec_profile_path,
+            live_like=live_like,
+        )
         spec_profile_hash = str(spec.approved_profile_hash or "").strip()
         if authority_context.require_spec_bound_profile:
-            if not spec_profile_path:
+            if not spec_profile_path and h74_observation_profile_payload is None:
                 raise RuntimeError(
                     f"spec_bound_approved_profile_path_missing_for_runtime_strategy:{spec.strategy_name}"
                 )
-            if not spec_profile_hash:
+            if not spec_profile_hash and h74_observation_profile_payload is None:
                 raise RuntimeError(
                     f"spec_bound_approved_profile_hash_missing_for_runtime_strategy:{spec.strategy_name}"
                 )
@@ -1565,11 +1595,24 @@ class RuntimeDecisionRequestBuilder:
             strategy_name=spec.strategy_name,
             pair=str(spec.pair),
             interval=str(spec.interval),
-            profile_payload=profile,
+            profile_payload=profile or h74_observation_profile_payload,
             approved_runtime_profile_path=approved_profile_path,
             approved_runtime_profile_hash=approved_profile_hash,
             inline_risk_policy=spec.risk_policy,
             declared_risk_policy_hash=spec.risk_policy_hash,
+            risk_profile_source=(
+                None
+                if h74_observation_profile_payload is None
+                else "h74_source_live_observation_authority"
+            ),
+            enforcement_mode=(
+                None if h74_observation_profile_payload is None else "enforced"
+            ),
+            missing_policy_behavior=(
+                None
+                if h74_observation_profile_payload is None
+                else "fail_closed_for_live"
+            ),
             live_like=live_like,
             live_real_order=live_real_order,
         )

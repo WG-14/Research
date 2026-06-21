@@ -10,6 +10,7 @@ from .risk_contract import RiskPolicy
 RiskProfileSource = Literal[
     "approved_runtime_profile",
     "approved_risk_profile",
+    "h74_source_live_observation_authority",
     "runtime_strategy_spec_fixture",
     "research_missing_policy_explicit",
 ]
@@ -136,6 +137,7 @@ def strategy_risk_profile_from_profile_payload(
     if source not in {
         "approved_runtime_profile",
         "approved_risk_profile",
+        "h74_source_live_observation_authority",
         "runtime_strategy_spec_fixture",
         "research_missing_policy_explicit",
     }:

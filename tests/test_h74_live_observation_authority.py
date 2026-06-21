@@ -11,6 +11,7 @@ from bithumb_bot.h74_observation import (
     H74ObservationAuthorityError,
     build_h74_observation_authority_payload,
     build_h74_source_observation_authority_payload,
+    h74_source_observation_risk_policy_hash,
     h74_source_runtime_values_from_settings,
     verify_h74_observation_authority,
     verify_h74_source_observation_authority,
@@ -18,6 +19,12 @@ from bithumb_bot.h74_observation import (
 from bithumb_bot.config import LiveModeValidationError, settings, validate_live_strategy_selection
 from bithumb_bot.execution_authority import execution_authority_from_payload
 from bithumb_bot.research.strategy_spec import runtime_bound_behavior_parameter_names
+from bithumb_bot.runtime_strategy_set import (
+    ProfileAuthorityContext,
+    RuntimeDecisionRequestBuilder,
+    RuntimeStrategySet,
+    RuntimeStrategySpec,
+)
 from dataclasses import replace
 import json
 
@@ -30,6 +37,12 @@ def _rehash_authority(payload: dict) -> dict:
         {k: v for k, v in payload.items() if k != "authority_content_hash"}
     )
     return payload
+
+
+def _rehash_source_risk_policy(payload: dict) -> dict:
+    payload["risk_policy_hash"] = h74_source_observation_risk_policy_hash(payload["risk_policy"])
+    payload["hash_bound_parameters"]["risk_policy_hash"] = payload["risk_policy_hash"]
+    return _rehash_authority(payload)
 
 
 def _source_authority() -> dict:
@@ -196,7 +209,74 @@ def test_h74_source_observation_authority_verifies_100k_exact_params() -> None:
     assert bound["max_daily_total_order_count"] == 2
     assert bound["observation_window_days"] == 7
     assert bound["code_commit_sha"] == "test-commit"
+    assert payload["risk_policy_hash"] == h74_source_observation_risk_policy_hash(payload["risk_policy"])
+    assert bound["risk_policy_hash"] == payload["risk_policy_hash"]
+    assert payload["risk_profile_source"] == "h74_source_live_observation_authority"
+    assert payload["risk_enforcement_mode"] == "enforced"
     verify_h74_source_observation_authority(payload, runtime_values=H74_SOURCE_OBSERVATION_PARAMETERS)
+
+
+def test_h74_source_observation_rejects_missing_risk_policy() -> None:
+    payload = _source_authority()
+    payload.pop("risk_policy")
+    _rehash_authority(payload)
+
+    with pytest.raises(H74ObservationAuthorityError, match="risk_policy_missing"):
+        verify_h74_source_observation_authority(payload, runtime_values=H74_SOURCE_OBSERVATION_PARAMETERS)
+
+
+def test_h74_source_observation_rejects_risk_policy_hash_mismatch() -> None:
+    payload = _source_authority()
+    payload["risk_policy"]["max_daily_order_count"] = 1
+    _rehash_authority(payload)
+
+    with pytest.raises(H74ObservationAuthorityError, match="risk_policy_hash_mismatch"):
+        verify_h74_source_observation_authority(payload, runtime_values=H74_SOURCE_OBSERVATION_PARAMETERS)
+
+
+def test_h74_source_observation_rejects_disabled_risk_policy() -> None:
+    payload = _source_authority()
+    payload["risk_policy"]["policy_status"] = "disabled"
+    _rehash_source_risk_policy(payload)
+
+    with pytest.raises(H74ObservationAuthorityError, match="risk_policy_disabled"):
+        verify_h74_source_observation_authority(payload, runtime_values=H74_SOURCE_OBSERVATION_PARAMETERS)
+
+
+def test_h74_source_observation_rejects_daily_order_count_above_2() -> None:
+    payload = _source_authority()
+    payload["risk_policy"]["max_daily_order_count"] = 3
+    _rehash_source_risk_policy(payload)
+
+    with pytest.raises(H74ObservationAuthorityError, match="daily_order_count_too_high"):
+        verify_h74_source_observation_authority(payload, runtime_values=H74_SOURCE_OBSERVATION_PARAMETERS)
+
+
+def test_h74_source_observation_rejects_trade_count_above_2() -> None:
+    payload = _source_authority()
+    payload["risk_policy"]["max_trade_count_per_day"] = 3
+    _rehash_source_risk_policy(payload)
+
+    with pytest.raises(H74ObservationAuthorityError, match="trade_count_too_high"):
+        verify_h74_source_observation_authority(payload, runtime_values=H74_SOURCE_OBSERVATION_PARAMETERS)
+
+
+def test_h74_source_observation_rejects_open_positions_not_one() -> None:
+    payload = _source_authority()
+    payload["risk_policy"]["max_open_positions"] = 2
+    _rehash_source_risk_policy(payload)
+
+    with pytest.raises(H74ObservationAuthorityError, match="open_positions_invalid"):
+        verify_h74_source_observation_authority(payload, runtime_values=H74_SOURCE_OBSERVATION_PARAMETERS)
+
+
+def test_h74_source_observation_rejects_unresolved_order_policy_not_block() -> None:
+    payload = _source_authority()
+    payload["risk_policy"]["unresolved_order_policy"] = "allow"
+    _rehash_source_risk_policy(payload)
+
+    with pytest.raises(H74ObservationAuthorityError, match="unresolved_order_policy_invalid"):
+        verify_h74_source_observation_authority(payload, runtime_values=H74_SOURCE_OBSERVATION_PARAMETERS)
 
 
 def test_h74_source_observation_rejects_50k_authority() -> None:
@@ -301,6 +381,92 @@ def test_h74_source_observation_allows_live_dry_run_materialization(tmp_path, mo
     runtime = h74_source_runtime_values_from_settings(cfg)
     assert runtime["max_daily_total_order_count"] == 2
     assert runtime["exit_closeout_not_blocked_by_entry_cap"] is True
+
+
+def test_h74_source_observation_live_dry_run_materializes_risk_profile(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    authority = _source_authority()
+    path = tmp_path / "source-authority.json"
+    path.write_text(json.dumps(authority), encoding="utf-8")
+    monkeypatch.setenv("H74_SOURCE_OBSERVATION_AUTHORITY_PATH", str(path))
+    cfg = replace(
+        settings,
+        MODE="live",
+        LIVE_DRY_RUN=True,
+        LIVE_REAL_ORDER_ARMED=False,
+        STRATEGY_NAME="daily_participation_sma",
+        PAIR="KRW-BTC",
+        INTERVAL="1m",
+        STRATEGY_EXIT_RULES="max_holding_time",
+        STRATEGY_EXIT_MAX_HOLDING_MIN=74,
+        MAX_ORDER_KRW=100_000,
+        MAX_DAILY_ORDER_COUNT=2,
+        APPROVED_STRATEGY_PROFILE_PATH="",
+        STRATEGY_APPROVED_PROFILE_PATH="",
+        H74_SOURCE_OBSERVATION_AUTHORITY_PATH=str(path),
+    )
+    for key, value in H74_SOURCE_OBSERVATION_PARAMETERS.items():
+        if key.isupper():
+            object.__setattr__(cfg, key, value)
+    parameters = {
+        name: H74_SOURCE_OBSERVATION_PARAMETERS[name]
+        for name in runtime_bound_behavior_parameter_names("daily_participation_sma")
+    }
+    strategy_set = RuntimeStrategySet(
+        source="RUNTIME_STRATEGY_SET_JSON",
+        strategies=(
+            RuntimeStrategySpec(
+                "daily_participation_sma",
+                pair="KRW-BTC",
+                interval="1m",
+                parameters=parameters,
+            ),
+        ),
+    )
+    context = ProfileAuthorityContext.for_strategy_set(strategy_set, settings_obj=cfg)
+
+    instance = RuntimeDecisionRequestBuilder(settings_obj=cfg).with_authority_context(
+        context
+    ).materialize_instance(strategy_set.active_strategies[0])
+
+    assert instance.approved_profile_path is None
+    assert instance.approved_profile_hash is None
+    assert instance.risk_profile is not None
+    assert instance.risk_profile.risk_profile_source == "h74_source_live_observation_authority"
+    assert instance.risk_profile.enforcement_mode == "enforced"
+    assert instance.risk_profile.policy.policy_status == "enabled"
+    assert instance.risk_profile.policy.max_daily_order_count == 2
+    assert instance.risk_profile.policy.max_trade_count_per_day == 2
+    assert instance.risk_profile.policy.max_open_positions == 1
+    assert instance.risk_profile.policy.unresolved_order_policy == "block"
+    assert instance.risk_profile.risk_policy_hash == authority["risk_policy_hash"]
+
+
+def test_h74_source_observation_other_strategy_still_requires_approved_profile(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    authority = _source_authority()
+    path = tmp_path / "source-authority.json"
+    path.write_text(json.dumps(authority), encoding="utf-8")
+    monkeypatch.setenv("H74_SOURCE_OBSERVATION_AUTHORITY_PATH", str(path))
+    cfg = replace(
+        settings,
+        MODE="live",
+        LIVE_DRY_RUN=True,
+        LIVE_REAL_ORDER_ARMED=False,
+        STRATEGY_NAME="sma_with_filter",
+        PAIR="KRW-BTC",
+        INTERVAL="1m",
+        APPROVED_STRATEGY_PROFILE_PATH="",
+        STRATEGY_APPROVED_PROFILE_PATH="",
+        H74_SOURCE_OBSERVATION_AUTHORITY_PATH=str(path),
+    )
+
+    with pytest.raises(LiveModeValidationError, match="approved_profile_required_for_strategy:sma_with_filter"):
+        validate_live_strategy_selection(cfg)
 
 
 def _write_smoke_success(path) -> None:
@@ -424,6 +590,8 @@ def test_h74_source_observation_policy_does_not_set_approved_profile_ok(
     assert config.candidate_regime_policy["approved_profile_block_reason"] == "h74_source_observation_authority_used"
     assert config.candidate_regime_policy["approved_profile_contract_scope"] == "h74_source_live_observation_only"
     assert config.candidate_regime_policy["production_approval"] is False
+    assert config.candidate_regime_policy["risk_profile_source"] == "h74_source_live_observation_authority"
+    assert config.candidate_regime_policy["risk_enforcement_mode"] == "enforced"
 
 
 def test_h74_source_observation_exit_closeout_not_blocked_by_entry_cap_after_buy() -> None:
