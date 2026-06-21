@@ -1598,8 +1598,10 @@ def build_residual_sell_presubmit_proof(decision_context: dict[str, object] | No
         reasons.append("missing_locked_qty")
     elif float(locked_qty or 0.0) > 1e-12:
         reasons.append("locked_qty_nonzero")
-    if bool(decision_context.get("new_entry_fee_blocker", decision_context.get("active_fee_accounting_blocker"))):
+    if bool(decision_context.get("new_entry_fee_blocker")):
         reasons.append("new_entry_fee_blocker")
+    elif bool(decision_context.get("active_fee_accounting_blocker")):
+        reasons.append("active_fee_accounting_blocker")
     if not bool(broker_evidence.get("broker_qty_known")):
         reasons.append("broker_qty_unknown")
     if bool(broker_evidence.get("balance_source_stale")):

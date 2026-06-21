@@ -71,12 +71,13 @@ class LivePipelineSmokeReadiness:
             and "fill_accounting_active_issue_count" not in active_reasons
         ):
             active_reasons.append("fill_accounting_active_issue_count")
-        active_blocker = bool(self.active_fill_accounting_blocker or self.active_fee_accounting_blocker or active_reasons)
-        object.__setattr__(self, "active_fill_accounting_blocker", active_blocker)
+        active_fee_blocker = bool(self.active_fee_accounting_blocker)
+        active_fill_blocker = bool(self.active_fill_accounting_blocker or active_fee_blocker or active_reasons)
+        object.__setattr__(self, "active_fill_accounting_blocker", active_fill_blocker)
         object.__setattr__(self, "active_fill_accounting_blocker_reasons", tuple(dict.fromkeys(active_reasons)))
-        object.__setattr__(self, "active_fee_accounting_blocker", active_blocker)
+        object.__setattr__(self, "active_fee_accounting_blocker", active_fee_blocker)
         new_entry_reasons = list(self.new_entry_fee_blocker_reasons or active_reasons)
-        new_entry_blocker = bool(self.new_entry_fee_blocker or active_blocker or self.fee_pending_count > 0)
+        new_entry_blocker = bool(self.new_entry_fee_blocker or active_fill_blocker or self.fee_pending_count > 0)
         object.__setattr__(self, "new_entry_fee_blocker", new_entry_blocker)
         object.__setattr__(self, "new_entry_fee_blocker_reasons", tuple(dict.fromkeys(new_entry_reasons)))
 
