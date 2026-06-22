@@ -719,6 +719,46 @@ def evaluate_daily_loss_state(
     max_daily_loss_krw = float(settings.MAX_DAILY_LOSS_KRW)
     day_kst = _day_kst(ts_ms)
     if max_daily_loss_krw <= 0:
+        if (
+            str(settings.MODE).strip().lower() == "live"
+            and str(evaluation_origin).strip() == "live_real_submit_authority_pre_submit"
+        ):
+            current_snapshot = _build_current_snapshot(
+                conn,
+                broker=broker,
+                ts_ms=ts_ms,
+                mark_price=float(price),
+                mark_price_source=mark_price_source,
+                evaluation_origin=evaluation_origin,
+            )
+            if isinstance(current_snapshot, DailyLossEvaluation):
+                _record_risk_evaluation(conn, current_snapshot)
+                return current_snapshot
+            current_equity = float(current_snapshot["cash_krw"]) + float(current_snapshot["asset_qty"]) * float(price)
+            evaluation = DailyLossEvaluation(
+                blocked=False,
+                reason="ok",
+                reason_code="DISABLED",
+                decision="allow",
+                evaluation_ts_ms=int(ts_ms),
+                day_kst=day_kst,
+                max_daily_loss_krw=max_daily_loss_krw,
+                start_equity=None,
+                current_equity=current_equity,
+                loss_today=None,
+                current_cash_krw=float(current_snapshot["cash_krw"]),
+                current_asset_qty=float(current_snapshot["asset_qty"]),
+                mark_price=float(price),
+                mark_price_source=str(mark_price_source),
+                details={
+                    **dict(current_snapshot),
+                    "evaluation_origin": evaluation_origin,
+                    "daily_loss_policy_status": "disabled",
+                    "broker_snapshot_required_for_pre_submit": True,
+                },
+            )
+            _record_risk_evaluation(conn, evaluation)
+            return evaluation
         evaluation = DailyLossEvaluation(
             blocked=False,
             reason="ok",

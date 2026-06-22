@@ -51,6 +51,47 @@ class RiskPolicyEngine:
         )
 
     def _evaluate(self, *, snapshot: RiskSnapshot, evaluation_point: str) -> RiskDecision:
+        if evaluation_point == "pre_submit" and (
+            bool(snapshot.broker_local_mismatch) or str(snapshot.recovery_risk_mismatch_reason or "").strip()
+        ):
+            pure = evaluate_pure_risk(
+                PureRiskInput(
+                    evaluation_ts_ms=int(snapshot.evaluation_ts_ms),
+                    current_equity=snapshot.current_equity,
+                    baseline_equity=snapshot.baseline_equity,
+                    loss_today=snapshot.loss_today,
+                    max_daily_loss_krw=float(self.policy.max_daily_loss_krw),
+                    mark_price=float(snapshot.mark_price),
+                    current_cash_krw=snapshot.current_cash_krw,
+                    current_asset_qty=snapshot.current_asset_qty,
+                    position_entry_price=snapshot.position_entry_price,
+                    max_position_loss_pct=float(self.policy.max_position_loss_pct),
+                    broker_local_mismatch=bool(snapshot.broker_local_mismatch),
+                    recovery_risk_mismatch_reason=snapshot.recovery_risk_mismatch_reason,
+                )
+            )
+            evidence = {
+                **dict(snapshot.evidence),
+                "pure_risk": {
+                    "reason_code": pure.reason_code,
+                    "daily_loss": pure.daily_loss,
+                    "position_loss_pct": pure.position_loss_pct,
+                },
+                "risk_policy_status": str(self.policy.policy_status),
+                "pre_submit_broker_snapshot_hard_gate": True,
+            }
+            return build_risk_decision(
+                evaluation_point="pre_submit",
+                status="REQUIRE_RECONCILE",
+                reason_code=pure.reason_code,
+                reason=pure.reason,
+                allowed_actions=("HOLD",),
+                recommended_action="reconcile",
+                snapshot=snapshot,
+                policy=self.policy,
+                evidence=evidence,
+            )
+
         if self.policy.policy_status == "disabled_explicit":
             return build_risk_decision(
                 evaluation_point=evaluation_point,  # type: ignore[arg-type]

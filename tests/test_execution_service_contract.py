@@ -4,6 +4,7 @@ from collections.abc import Callable
 import inspect
 import json
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -743,6 +744,19 @@ def _seed_execution_plan_row(db_path, submit_plan_hash: str) -> None:
     try:
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS portfolio (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                cash_krw REAL NOT NULL,
+                asset_qty REAL NOT NULL,
+                cash_available REAL NOT NULL DEFAULT 0,
+                cash_locked REAL NOT NULL DEFAULT 0,
+                asset_available REAL NOT NULL DEFAULT 0,
+                asset_locked REAL NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE execution_plan (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 execution_submit_plan_hash TEXT,
@@ -1016,6 +1030,75 @@ def test_live_target_delta_pre_submit_broker_none_fails_closed(tmp_path, monkeyp
     assert stored["final_submit_payload_persistence_status"] == "post_proof_submit_skipped"
     assert stored["pre_submit_risk_reason_code"] == "RISK_STATE_MISMATCH"
     assert stored["pre_submit_risk_status"] != "ALLOW"
+
+
+def test_live_target_delta_pre_submit_does_not_pass_when_daily_loss_disabled_and_broker_missing(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _arm_live_real_orders(engine="target_delta")
+    object.__setattr__(settings, "MAX_DAILY_LOSS_KRW", 0.0)
+    calls: list[dict[str, object]] = []
+    plan_payload = _target_plan_requiring_pre_submit(RiskPolicy(source="unit_disabled_daily_loss", max_daily_loss_krw=0.0))
+    summary = _typed_target_execution_summary_with_plan(plan_payload)
+    expected = summary.target_submit_plan.as_final_payload()  # type: ignore[union-attr]
+    db_path = tmp_path / "pre-submit-disabled-daily-loss-broker-none.sqlite"
+    _seed_execution_plan_row(db_path, str(expected["submit_plan_hash"]))
+
+    def _forbidden_ensure_db(*_args, **_kwargs):
+        raise AssertionError("live pre-submit path must use injected runtime db factory")
+
+    monkeypatch.setattr("bithumb_bot.execution_service.ensure_db", _forbidden_ensure_db)
+    monkeypatch.setattr(
+        "bithumb_bot.risk.runtime_state.snapshot",
+        lambda: SimpleNamespace(
+            last_reconcile_epoch_sec=1_800_000_000.0,
+            last_reconcile_reason_code="OK",
+            last_reconcile_status="ok",
+        ),
+    )
+    monkeypatch.setattr("bithumb_bot.runtime_risk_engine._latest_position_entry_price", lambda _conn: None)
+    monkeypatch.setattr("bithumb_bot.runtime_risk_engine._count_orders_today", lambda _conn, _ts: 0)
+    monkeypatch.setattr(
+        "bithumb_bot.runtime_risk_engine.collect_risky_order_state",
+        lambda *_args, **_kwargs: {},
+    )
+
+    def _runtime_db_factory():
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    service = LiveSignalExecutionService(
+        broker=None,  # type: ignore[arg-type]
+        executor=lambda *_args, **kwargs: calls.append(kwargs) or {"status": "submitted"},
+        harmless_dust_recorder=lambda **_kwargs: False,
+        db_factory=_runtime_db_factory,
+    )
+    result = service.execute(
+        TypedExecutionRequest(
+            signal="BUY",
+            ts=1_800_000_000_000,
+            market_price=100_000_000.0,
+            strategy_name="daily_participation_sma",
+            decision_reason="unit",
+            execution_decision_summary=summary,
+        )
+    )
+
+    assert result is None
+    assert calls == []
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute("SELECT execution_submit_plan_json FROM execution_plan").fetchone()
+        stored = json.loads(row[0])
+    finally:
+        conn.close()
+    assert stored["pre_submit_proof_status"] == "passed"
+    assert stored["final_submit_payload_persistence_status"] == "post_proof_submit_skipped"
+    assert stored["pre_submit_risk_status"] != "ALLOW"
+    assert stored["pre_submit_risk_reason_code"] == "RISK_STATE_MISMATCH"
+    assert stored["pre_submit_risk_evidence"]["pre_submit_broker_snapshot_hard_gate"] is True
 
 
 def test_pre_submit_evidence_separates_submit_qty_and_current_asset_qty(monkeypatch) -> None:

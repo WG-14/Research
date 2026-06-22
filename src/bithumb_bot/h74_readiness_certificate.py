@@ -30,6 +30,15 @@ def build_h74_readiness_certificate(
 ) -> dict[str, Any]:
     if str(rehearsal.get("artifact_type") or "") != "h74_live_rehearsal":
         raise H74ReadinessCertificateError("h74_certificate_requires_h74_live_rehearsal")
+    if str(rehearsal.get("source_artifact_status") or "") != "loaded":
+        raise H74ReadinessCertificateError("h74_certificate_source_artifact_not_loaded")
+    if str(rehearsal.get("experiment_equivalence_status") or "") != "pass":
+        raise H74ReadinessCertificateError("h74_certificate_experiment_equivalence_not_pass")
+    gate_trace = rehearsal.get("gate_trace")
+    if not isinstance(gate_trace, list):
+        raise H74ReadinessCertificateError("h74_certificate_gate_trace_missing")
+    if any(bool(entry.get("blocking")) for entry in gate_trace if isinstance(entry, Mapping)):
+        raise H74ReadinessCertificateError("h74_certificate_gate_trace_blocking")
     required = {
         "pre_submit_risk_status": "ALLOW",
         "submit_authority_reason": "allowed_target_delta",
@@ -76,6 +85,11 @@ def validate_h74_readiness_certificate(
     env_file: str | None,
     broker_balance_snapshot_hash: str,
     now_sec: float | None = None,
+    current_commit_sha: str | None = None,
+    current_db_schema_hash: str | None = None,
+    current_order_rule_fee_authority_hash: str | None = None,
+    current_gate_trace_hash: str | None = None,
+    current_would_submit_plan_hash: str | None = None,
 ) -> dict[str, Any]:
     expected_env_hash = _file_hash(env_file)
     reasons: list[str] = []
@@ -85,6 +99,22 @@ def validate_h74_readiness_certificate(
         reasons.append("broker_balance_snapshot_changed")
     if float(certificate.get("expires_at_sec") or 0.0) <= float(time.time() if now_sec is None else now_sec):
         reasons.append("certificate_expired")
+    comparisons = (
+        ("commit_sha", current_commit_sha, "commit_sha_changed"),
+        ("db_schema_hash", current_db_schema_hash, "db_schema_hash_changed"),
+        (
+            "order_rule_fee_authority_hash",
+            current_order_rule_fee_authority_hash,
+            "order_rule_fee_authority_hash_changed",
+        ),
+        ("gate_trace_hash", current_gate_trace_hash, "gate_trace_hash_changed"),
+        ("would_submit_plan_hash", current_would_submit_plan_hash, "would_submit_plan_hash_changed"),
+    )
+    for field, current, reason in comparisons:
+        if current is None:
+            continue
+        if str(certificate.get(field) or "") != str(current):
+            reasons.append(reason)
     return {
         "valid": not reasons,
         "status": "pass" if not reasons else "invalid",
