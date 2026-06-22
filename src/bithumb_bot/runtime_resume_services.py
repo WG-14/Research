@@ -328,7 +328,7 @@ class RuntimeResumeService:
         )
         dust_resume_blocker = (
             None
-            if residual_disposition is not None
+            if residual_run_allowed
             else dust_residual_resume_blocker(dust_context_for_halt)
         )
         if dust_resume_blocker is not None:
