@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
-
 from bithumb_bot.h74_live_rehearsal import H74LiveRehearsalConfig, run_h74_live_rehearsal
 
 
@@ -12,19 +10,6 @@ def _source_artifact(tmp_path) -> str:
         encoding="utf-8",
     )
     return str(source)
-
-
-def _blocked(base: dict[str, object], *, gate: str, reason: str) -> dict[str, object]:
-    artifact = deepcopy(base)
-    artifact["broker_submit_reached"] = False
-    artifact["would_submit"] = False
-    artifact["submit_authority_allowed"] = False
-    artifact["primary_block_gate"] = gate
-    artifact["primary_block_reason"] = reason
-    artifact["gate_trace"] = [
-        {"gate": gate, "status": "BLOCK", "reason_code": reason, "blocking": True}
-    ]
-    return artifact
 
 
 def _assert_blocked(artifact: dict[str, object], *, gate: str, reason: str) -> None:
@@ -50,36 +35,57 @@ def test_broker_snapshot_failure_blocks_submit(tmp_path) -> None:
 
 
 def test_stale_broker_snapshot_blocks_submit(tmp_path) -> None:
-    base = run_h74_live_rehearsal(H74LiveRehearsalConfig(source_artifact_path=_source_artifact(tmp_path)))
-    artifact = _blocked(base, gate="broker_snapshot", reason="STALE_BROKER_SNAPSHOT")
+    artifact = run_h74_live_rehearsal(
+        H74LiveRehearsalConfig(
+            source_artifact_path=_source_artifact(tmp_path),
+            broker_snapshot_stale=True,
+        )
+    )
 
-    _assert_blocked(artifact, gate="broker_snapshot", reason="STALE_BROKER_SNAPSHOT")
+    _assert_blocked(artifact, gate="pre_submit_risk", reason="RISK_STATE_MISMATCH")
 
 
 def test_open_order_blocks_submit(tmp_path) -> None:
-    base = run_h74_live_rehearsal(H74LiveRehearsalConfig(source_artifact_path=_source_artifact(tmp_path)))
-    artifact = _blocked(base, gate="pre_submit_risk", reason="UNRESOLVED_OPEN_ORDER_PRESENT")
+    artifact = run_h74_live_rehearsal(
+        H74LiveRehearsalConfig(
+            source_artifact_path=_source_artifact(tmp_path),
+            unresolved_order_status="NEW",
+            unresolved_order_created_ts_ms=9_999_999_999_999,
+        )
+    )
 
     _assert_blocked(artifact, gate="pre_submit_risk", reason="UNRESOLVED_OPEN_ORDER_PRESENT")
 
 
 def test_submit_unknown_blocks_submit(tmp_path) -> None:
-    base = run_h74_live_rehearsal(H74LiveRehearsalConfig(source_artifact_path=_source_artifact(tmp_path)))
-    artifact = _blocked(base, gate="pre_submit_risk", reason="SUBMIT_UNKNOWN_PRESENT")
+    artifact = run_h74_live_rehearsal(
+        H74LiveRehearsalConfig(
+            source_artifact_path=_source_artifact(tmp_path),
+            unresolved_order_status="SUBMIT_UNKNOWN",
+        )
+    )
 
     _assert_blocked(artifact, gate="pre_submit_risk", reason="SUBMIT_UNKNOWN_PRESENT")
 
 
 def test_recovery_required_blocks_submit(tmp_path) -> None:
-    base = run_h74_live_rehearsal(H74LiveRehearsalConfig(source_artifact_path=_source_artifact(tmp_path)))
-    artifact = _blocked(base, gate="pre_submit_risk", reason="RECOVERY_REQUIRED_PRESENT")
+    artifact = run_h74_live_rehearsal(
+        H74LiveRehearsalConfig(
+            source_artifact_path=_source_artifact(tmp_path),
+            unresolved_order_status="RECOVERY_REQUIRED",
+        )
+    )
 
     _assert_blocked(artifact, gate="pre_submit_risk", reason="RECOVERY_REQUIRED_PRESENT")
 
 
 def test_projection_mismatch_blocks_submit(tmp_path) -> None:
-    base = run_h74_live_rehearsal(H74LiveRehearsalConfig(source_artifact_path=_source_artifact(tmp_path)))
-    artifact = _blocked(base, gate="readiness", reason="PROJECTION_MISMATCH")
+    artifact = run_h74_live_rehearsal(
+        H74LiveRehearsalConfig(
+            source_artifact_path=_source_artifact(tmp_path),
+            projection_converged=False,
+        )
+    )
 
     _assert_blocked(artifact, gate="readiness", reason="PROJECTION_MISMATCH")
 

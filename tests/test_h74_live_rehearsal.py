@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from bithumb_bot import h74_live_rehearsal
 from bithumb_bot.h74_live_rehearsal import (
     H74LiveRehearsalConfig,
     H74LiveRehearsalError,
@@ -59,6 +60,36 @@ def test_h74_rehearsal_invokes_live_signal_execution_service_before_mock_submit(
     assert payload["pre_submit_proof_created"] is True
     assert payload["submit_authority_allowed"] is True
     assert payload["broker_submit_reached"] is True
+
+
+def test_h74_rehearsal_uses_production_target_delta_planner(tmp_path, monkeypatch) -> None:
+    from bithumb_bot import execution_service
+
+    calls = {"count": 0}
+    original = execution_service.build_target_delta_execution_sizing
+
+    def _wrapped(*args, **kwargs):
+        calls["count"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(execution_service, "build_target_delta_execution_sizing", _wrapped)
+
+    payload = run_h74_live_rehearsal(H74LiveRehearsalConfig(source_artifact_path=_source_artifact(tmp_path)))
+
+    assert calls["count"] == 1
+    assert payload["would_submit_plan"]["source"] == "target_delta"
+    assert payload["would_submit_plan"]["authority"] == "canonical_target_delta_sizing"
+    assert payload["broker_submit_reached"] is True
+
+
+def test_h74_rehearsal_fails_if_target_plan_is_manual_fixture(tmp_path) -> None:
+    assert not hasattr(h74_live_rehearsal, "_target_delta_submit_plan")
+
+    payload = run_h74_live_rehearsal(H74LiveRehearsalConfig(source_artifact_path=_source_artifact(tmp_path)))
+
+    assert payload["would_submit_plan"]["source"] == "target_delta"
+    assert payload["would_submit_plan"].get("authority_source") == "target_delta"
+    assert payload["would_submit_plan"].get("portfolio_target_authoritative") is True
 
 
 def test_h74_rehearsal_fails_if_daily_participation_plugin_not_called(tmp_path, monkeypatch) -> None:

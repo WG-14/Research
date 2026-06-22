@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
+import sqlite3
 
 
 SUBMIT_NOT_REACHED = "submit_not_reached"
 EXCHANGE_REJECTED = "exchange_rejected"
 SUBMITTED_NO_FILL = "submitted_no_fill"
 SUBMITTED_FILLED = "submitted_filled"
+BROKER_LOOKUP_UNAVAILABLE = "broker_lookup_unavailable"
 
 
 def classify_exchange_submit_reachability(
@@ -14,6 +16,8 @@ def classify_exchange_submit_reachability(
     local_order: Mapping[str, object] | None,
     order_events: Sequence[Mapping[str, object]] = (),
     broker_recent_orders: Sequence[Mapping[str, object]] = (),
+    broker_lookup_available: bool = True,
+    broker_lookup_error: str | None = None,
 ) -> dict[str, Any]:
     if not local_order:
         return {
@@ -32,6 +36,15 @@ def classify_exchange_submit_reachability(
         exchange_order_id=exchange_order_id,
         broker_recent_orders=broker_recent_orders,
     )
+    if remote is None and not broker_lookup_available:
+        return {
+            "reason_code": BROKER_LOOKUP_UNAVAILABLE,
+            "exchange_submit_reached": False,
+            "client_order_id": client_order_id,
+            "exchange_order_id": exchange_order_id or None,
+            "matched_by": "none",
+            "lookup_error": str(broker_lookup_error or "broker_recent_order_lookup_unavailable"),
+        }
     if remote is None and not exchange_order_id and not submit_started:
         return {
             "reason_code": SUBMIT_NOT_REACHED,
@@ -93,9 +106,49 @@ def _float(value: object) -> float:
         return 0.0
 
 
+def diagnose_exchange_submit_reachability(
+    conn: sqlite3.Connection,
+    *,
+    client_order_id: str,
+    broker_recent_orders: Sequence[Mapping[str, object]] = (),
+    broker_lookup_available: bool = True,
+    broker_lookup_error: str | None = None,
+) -> dict[str, Any]:
+    normalized_client_order_id = str(client_order_id or "").strip()
+    if not normalized_client_order_id:
+        raise ValueError("client_order_id_required")
+    conn.row_factory = sqlite3.Row
+    local_row = conn.execute(
+        """
+        SELECT client_order_id, side, status, exchange_order_id, created_ts, last_error
+        FROM orders
+        WHERE client_order_id=?
+        """,
+        (normalized_client_order_id,),
+    ).fetchone()
+    events = conn.execute(
+        """
+        SELECT client_order_id, event_type, event_ts, exchange_order_id_obtained, submission_reason_code
+        FROM order_events
+        WHERE client_order_id=?
+        ORDER BY event_ts ASC, id ASC
+        """,
+        (normalized_client_order_id,),
+    ).fetchall()
+    return classify_exchange_submit_reachability(
+        local_order=None if local_row is None else dict(local_row),
+        order_events=[dict(row) for row in events],
+        broker_recent_orders=broker_recent_orders,
+        broker_lookup_available=broker_lookup_available,
+        broker_lookup_error=broker_lookup_error,
+    )
+
+
 __all__ = [
     "EXCHANGE_REJECTED",
     "SUBMITTED_NO_FILL",
     "SUBMIT_NOT_REACHED",
+    "BROKER_LOOKUP_UNAVAILABLE",
     "classify_exchange_submit_reachability",
+    "diagnose_exchange_submit_reachability",
 ]

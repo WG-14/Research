@@ -28,6 +28,9 @@ def build_h74_equivalence_manifest(
         "candidate_id": H74_SOURCE_CANDIDATE_ID,
         "source_artifact_status": "missing" if source_missing else "loaded",
         "source_artifact_path": None if source_artifact_path is None else str(source_artifact_path),
+        "source_artifact_hash": "" if source is None else sha256_prefixed(source),
+        "source_assumption_status": source_cost["source_assumption_status"],
+        "source_missing_assumption_fields": source_cost["source_missing_assumption_fields"],
         "fee_rate": source_cost["fee_rate"],
         "fee_source": source_cost["fee_source"],
         "slippage_bps": source_cost["slippage_bps"],
@@ -79,9 +82,12 @@ def compare_h74_equivalence(
         for key in ("min_qty", "min_notional_krw")
     }
     source_missing = str(manifest.get("source_artifact_status") or "") == "missing"
+    source_assumptions_valid = str(manifest.get("source_assumption_status") or "") == "valid"
     missing_rules = list(manifest.get("missing_order_rule_fields") or [])
     if source_missing:
         status = "unknown_source_artifact_missing"
+    elif not source_assumptions_valid:
+        status = "unknown_source_assumption_missing"
     elif not fee_match or missing_rules or not all(order_rule_matches.values()):
         status = "mismatch"
     else:
@@ -116,6 +122,8 @@ def _load_source_artifact(source_artifact_path: str | Path | None) -> Mapping[st
 def _source_cost_assumptions(source: Mapping[str, object] | None) -> dict[str, object]:
     if source is None:
         return {
+            "source_assumption_status": "missing_source",
+            "source_missing_assumption_fields": ["source_artifact"],
             "fee_rate": H74_SOURCE_BASE_FEE_RATE,
             "fee_source": "source_artifact_missing_reference_default_non_pass",
             "slippage_bps": H74_SOURCE_BASE_SLIPPAGE_BPS,
@@ -125,7 +133,16 @@ def _source_cost_assumptions(source: Mapping[str, object] | None) -> dict[str, o
     cost = source.get("runtime_base_cost_assumption")
     if not isinstance(cost, Mapping):
         cost = source.get("cost_model") if isinstance(source.get("cost_model"), Mapping) else {}
+    missing: list[str] = []
+    if "fee_rate" not in cost:
+        missing.append("fee_rate")
+    if "slippage_bps" not in cost:
+        missing.append("slippage_bps")
+    if "candle_timing" not in source:
+        missing.append("candle_timing")
     return {
+        "source_assumption_status": "valid" if not missing else "missing_required_fields",
+        "source_missing_assumption_fields": missing,
         "fee_rate": float(cost.get("fee_rate", H74_SOURCE_BASE_FEE_RATE) or 0.0),
         "fee_source": str(cost.get("fee_source") or "source_artifact"),
         "slippage_bps": float(cost.get("slippage_bps", H74_SOURCE_BASE_SLIPPAGE_BPS) or 0.0),

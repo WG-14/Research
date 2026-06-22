@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 
 from bithumb_bot.cli.registry import CommandSpec
 
@@ -106,7 +107,10 @@ def _h74_live_rehearsal(args: argparse.Namespace, _context) -> None:
 
 def _h74_readiness_certificate(args: argparse.Namespace, _context) -> None:
     from bithumb_bot.h74_live_rehearsal import H74LiveRehearsalConfig, run_h74_live_rehearsal
-    from bithumb_bot.h74_readiness_certificate import build_h74_readiness_certificate
+    from bithumb_bot.h74_readiness_certificate import (
+        build_h74_readiness_certificate,
+        validate_h74_readiness_certificate,
+    )
 
     rehearsal = run_h74_live_rehearsal(
         H74LiveRehearsalConfig(
@@ -119,10 +123,63 @@ def _h74_readiness_certificate(args: argparse.Namespace, _context) -> None:
         rehearsal,
         env_file=os.getenv("BITHUMB_ENV_FILE"),
     )
+    validation = validate_h74_readiness_certificate(
+        payload,
+        env_file=os.getenv("BITHUMB_ENV_FILE"),
+        broker_balance_snapshot_hash=str(payload.get("broker_balance_snapshot_hash") or ""),
+        current_commit_sha=str(payload.get("commit_sha") or ""),
+        current_db_schema_hash=str(payload.get("db_schema_hash") or ""),
+        current_order_rule_fee_authority_hash=str(payload.get("order_rule_fee_authority_hash") or ""),
+        current_gate_trace_hash=str(payload.get("gate_trace_hash") or ""),
+        current_would_submit_plan_hash=str(payload.get("would_submit_plan_hash") or ""),
+        strict=True,
+    )
+    if not bool(validation.get("valid")):
+        raise SystemExit("h74_readiness_certificate_invalid:" + ",".join(validation.get("reasons") or []))
     if bool(args.json):
         print(json.dumps(payload, sort_keys=True))
         return
     print(payload["certificate_hash"])
+
+
+def _exchange_submit_diagnose(args: argparse.Namespace, _context) -> None:
+    from bithumb_bot.config import settings
+    from bithumb_bot.exchange_submit_diagnostics import diagnose_exchange_submit_reachability
+
+    client_order_id = str(args.client_order_id)
+    broker_orders: list[dict[str, object]] = []
+    lookup_available = True
+    lookup_error: str | None = None
+    try:
+        from bithumb_bot.broker.bithumb import BithumbBroker
+
+        broker = BithumbBroker()
+        broker_orders = list(
+            broker.get_recent_orders(
+                limit=int(args.limit),
+                client_order_ids=(client_order_id,),
+                exchange_order_ids=(),
+            )
+        )
+    except Exception as exc:
+        lookup_available = False
+        lookup_error = f"{type(exc).__name__}: {exc}"
+    db_uri = f"file:{settings.DB_PATH}?mode=ro"
+    conn = sqlite3.connect(db_uri, uri=True)
+    try:
+        payload = diagnose_exchange_submit_reachability(
+            conn,
+            client_order_id=client_order_id,
+            broker_recent_orders=broker_orders,
+            broker_lookup_available=lookup_available,
+            broker_lookup_error=lookup_error,
+        )
+    finally:
+        conn.close()
+    if bool(args.json):
+        print(json.dumps(payload, sort_keys=True))
+        return
+    print(payload["reason_code"])
 
 
 def _panic(args: argparse.Namespace, _context) -> None:
@@ -299,6 +356,26 @@ def command_specs() -> list[CommandSpec]:
             requires_live=True,
             uses_broker=False,
             produces_artifact=True,
+            json_output_supported=True,
+        ),
+        make_spec(
+            "exchange-submit-diagnose",
+            domain="live_ops",
+            handler=_exchange_submit_diagnose,
+            help="read-only exchange submit/reject diagnosis for a local order",
+            description=(
+                "Compare local orders/order_events with broker recent orders without placing or "
+                "canceling orders."
+            ),
+            build=lambda p: (
+                p.add_argument("--client-order-id", required=True),
+                p.add_argument("--limit", type=int, default=100),
+                p.add_argument("--json", action="store_true"),
+            ),
+            read_only=True,
+            requires_live=True,
+            guard_policy="read_only_broker_diagnostic",
+            uses_broker=True,
             json_output_supported=True,
         ),
         make_spec(

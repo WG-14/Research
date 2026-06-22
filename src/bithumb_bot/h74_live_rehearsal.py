@@ -14,15 +14,20 @@ from .config import settings
 from .decision_equivalence import sha256_prefixed
 from .execution_service import (
     ExecutionDecisionSummary,
-    ExecutionSubmitPlan,
+    ExecutionReadinessPlanningInput,
+    ExecutionTargetPlanningInput,
     LiveSignalExecutionService,
     TypedExecutionRequest,
+    TypedExecutionPlanningInput,
+    build_typed_execution_decision_summary,
 )
 from .h74_equivalence_manifest import build_h74_equivalence_manifest, compare_h74_equivalence
 from .h74_observation import H74_STRATEGY_NAME
+from .portfolio_target import PortfolioTarget
 from .risk_contract import RiskPolicy
 from .runtime.execution_coordinator import ExecutionCoordinator
 from .submit_authority_policy import evaluate_submit_authority_policy
+from .strategy_policy_contract import EntryExecutionIntent, PositionSnapshot, StrategyDecisionV2
 
 
 class H74LiveRehearsalError(ValueError):
@@ -39,17 +44,35 @@ class H74LiveRehearsalConfig:
     current_fee_rate: float = 0.0004
     fee_authority_source: str = "runtime_fee_authority"
     order_rules: Mapping[str, object] | None = None
+    broker_snapshot_stale: bool = False
+    unresolved_order_status: str | None = None
+    unresolved_order_created_ts_ms: int | None = None
+    projection_converged: bool = True
+    active_fee_accounting_blocker: bool = False
+    closeout_existing_qty: float = 0.0
 
 
 class _H74NoSubmitBroker:
-    def __init__(self, *, available: bool, observed_ts_ms: int, cash_krw: float) -> None:
+    def __init__(
+        self,
+        *,
+        available: bool,
+        observed_ts_ms: int,
+        cash_krw: float,
+        asset_qty: float = 0.0,
+        stale: bool = False,
+    ) -> None:
         self.available = bool(available)
         self.observed_ts_ms = int(observed_ts_ms)
         self.cash_krw = float(cash_krw)
+        self.asset_qty = float(asset_qty)
+        self.stale = bool(stale)
 
     def get_balance_snapshot(self) -> BalanceSnapshot:
         if not self.available:
             raise RuntimeError("h74_rehearsal_broker_snapshot_unavailable")
+        if self.stale:
+            raise RuntimeError("h74_rehearsal_broker_snapshot_stale")
         return BalanceSnapshot(
             source_id="h74_rehearsal_recorded_broker_snapshot",
             observed_ts_ms=self.observed_ts_ms,
@@ -57,7 +80,7 @@ class _H74NoSubmitBroker:
             balance=BrokerBalance(
                 cash_available=self.cash_krw,
                 cash_locked=0.0,
-                asset_available=0.0,
+                asset_available=self.asset_qty,
                 asset_locked=0.0,
             ),
         )
@@ -103,7 +126,13 @@ def _h74_reconcile_snapshot(ts_ms: int) -> Iterator[None]:
         risk.runtime_state.snapshot = original_snapshot
 
 
-def _seed_rehearsal_db(path: str, *, submit_plan_hash: str) -> None:
+def _seed_rehearsal_db(
+    path: str,
+    *,
+    submit_plan_hash: str,
+    unresolved_order_status: str | None = None,
+    unresolved_order_created_ts_ms: int | None = None,
+) -> None:
     conn = sqlite3.connect(path)
     try:
         conn.execute(
@@ -170,6 +199,19 @@ def _seed_rehearsal_db(path: str, *, submit_plan_hash: str) -> None:
             "INSERT INTO execution_plan(execution_submit_plan_hash, execution_submit_plan_json) VALUES (?, ?)",
             (submit_plan_hash, "{}"),
         )
+        if unresolved_order_status:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO orders(client_order_id, exchange_order_id, status, created_ts)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    f"h74-{str(unresolved_order_status).lower()}-fixture",
+                    "",
+                    str(unresolved_order_status).upper(),
+                    int(unresolved_order_created_ts_ms or 0),
+                ),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -216,37 +258,81 @@ def _strategy_decision_trace(ts_ms: int) -> dict[str, object]:
     }
 
 
-def _target_delta_submit_plan(trace: Mapping[str, object]) -> ExecutionSubmitPlan:
+def _h74_strategy_decision(trace: Mapping[str, object], *, closeout: bool = False) -> StrategyDecisionV2:
+    final_signal = "SELL" if closeout else str(trace["final_signal"])
+    final_reason = "max_holding_closeout" if closeout else str(trace["final_reason"])
+    return StrategyDecisionV2(
+        strategy_name=H74_STRATEGY_NAME,
+        raw_signal=final_signal,
+        raw_reason=final_reason,
+        entry_signal="HOLD" if closeout else final_signal,
+        entry_reason="closeout_existing_position" if closeout else final_reason,
+        exit_signal="SELL" if closeout else "HOLD",
+        exit_reason=final_reason if closeout else "no_exit_signal",
+        final_signal=final_signal,
+        final_reason=final_reason,
+        blocked_filters=(),
+        entry_blocked=False,
+        entry_block_reason=None,
+        exit_rule=None,
+        exit_evaluations=(),
+        protective_exit_overrode_entry=False,
+        exit_filter_suppression_prevented=False,
+        position_snapshot=PositionSnapshot(
+            in_position=bool(closeout),
+            entry_allowed=not bool(closeout),
+            exit_allowed=bool(closeout),
+            exit_block_reason="" if closeout else "flat_no_exit",
+            terminal_state="open_exposure" if closeout else "flat",
+            qty_open=0.00059999 if closeout else 0.0,
+            raw_qty_open=0.00059999 if closeout else 0.0,
+            raw_total_asset_qty=0.00059999 if closeout else 0.0,
+            open_lot_count=1 if closeout else 0,
+            sellable_executable_lot_count=1 if closeout else 0,
+            effective_flat=not bool(closeout),
+            has_executable_exposure=bool(closeout),
+        ),
+        execution_intent=None if closeout else EntryExecutionIntent(
+            side="BUY",
+            intent="enter",
+            pair=str(settings.PAIR),
+            requires_execution_sizing=True,
+            budget_fraction_of_cash=1.0,
+            max_budget_krw=10_000.0,
+        ),
+        entry_decision=None,
+        trace=dict(trace),
+        policy_hash=sha256_prefixed({"h74": "policy", "trace": trace}),
+        policy_contract_hash=sha256_prefixed({"h74": "policy_contract"}),
+        policy_input_hash=str(trace["participation_input_hash"]),
+        policy_decision_hash=str(trace["participation_decision_hash"]),
+    )
+
+
+def _h74_portfolio_target(trace: Mapping[str, object], *, closeout: bool = False) -> PortfolioTarget:
     risk_policy = RiskPolicy(source="h74_rehearsal_pre_submit", max_daily_loss_krw=0.0)
-    return ExecutionSubmitPlan(
-        side="BUY",
-        source="target_delta",
-        authority="canonical_target_delta_sizing",
-        final_action="REBALANCE_TO_TARGET",
-        qty=0.0001,
-        notional_krw=10_000.0,
-        target_exposure_krw=10_000.0,
-        current_effective_exposure_krw=0.0,
-        delta_krw=10_000.0,
-        submit_expected=True,
-        pre_submit_proof_status="passed",
-        block_reason="none",
-        idempotency_key="h74-rehearsal-target-delta-buy",
+    return PortfolioTarget(
         pair=str(settings.PAIR),
-        portfolio_target_hash=sha256_prefixed({"h74": "portfolio_target", "target": 10_000.0}),
-        extra_payload={
+        target_exposure_krw=0.0 if closeout else 10_000.0,
+        target_qty=0.0 if closeout else 0.0001,
+        allocator_policy_name="deterministic_priority_target_v1",
+        allocator_policy_version="1",
+        allocator_config_hash=sha256_prefixed({"h74": "allocator_config"}),
+        strategy_contribution_hash=sha256_prefixed({"h74": "strategy_contribution"}),
+        allocation_input_hash=sha256_prefixed({"h74": "allocation_input"}),
+        reason="daily_participation_target_delta",
+        authoritative=True,
+        conflict_resolution={
             "strategy_name": H74_STRATEGY_NAME,
             "strategy_instance_id": "h74-source-observation",
-            "portfolio_target_authoritative": True,
-            "portfolio_target_hash": sha256_prefixed({"h74": "portfolio_target", "target": 10_000.0}),
-            "allocation_decision_hash": sha256_prefixed({"h74": "allocation"}),
-            "allocator_config_hash": sha256_prefixed({"h74": "allocator_config"}),
-            "strategy_contribution_hash": sha256_prefixed({"h74": "strategy_contribution"}),
+            "selected_strategy_instance_ids": ["h74-source-observation"],
             "allocator_policy": "deterministic_priority_target_v1:1",
             "allocator_reason": "daily_participation_target_delta",
             "allocation_conflict_count": 0,
             "allocation_primary_block_reason": "none",
-            "pre_submit_risk_required": True,
+            "target_exposure_source": "daily_participation_sma",
+            "allocation_target_source": "daily_participation_sma",
+            "strict_target_exposure_required": True,
             "strategy_risk_profiles": [
                 {
                     "strategy_instance_id": "h74-source-observation",
@@ -256,7 +342,17 @@ def _target_delta_submit_plan(trace: Mapping[str, object]) -> ExecutionSubmitPla
                     "risk_policy_hash": risk_policy.policy_hash(),
                 }
             ],
-            "portfolio_risk_policy_hash": sha256_prefixed({"h74": "portfolio_risk_policy"}),
+            "selected_strategy_risk_profiles": [
+                {
+                    "strategy_instance_id": "h74-source-observation",
+                    "strategy_name": H74_STRATEGY_NAME,
+                    "strategy_risk_profile_hash": sha256_prefixed({"h74": "strategy_risk_profile"}),
+                    "risk_policy": risk_policy.as_dict(),
+                    "risk_policy_hash": risk_policy.policy_hash(),
+                }
+            ],
+            "selected_strategy_risk_profile_hashes": [sha256_prefixed({"h74": "strategy_risk_profile"})],
+            "selected_strategy_risk_policy_hashes": [risk_policy.policy_hash()],
             "daily_count_snapshot_hash": trace["daily_count_snapshot_hash"],
             "daily_count_snapshot_event_set_hash": trace["daily_count_snapshot_event_set_hash"],
             "participation_policy_hash": trace["participation_policy_hash"],
@@ -271,26 +367,76 @@ def _target_delta_submit_plan(trace: Mapping[str, object]) -> ExecutionSubmitPla
     )
 
 
-def _summary(plan: ExecutionSubmitPlan) -> ExecutionDecisionSummary:
-    return ExecutionDecisionSummary(
-        raw_signal="BUY",
-        final_signal="BUY",
-        final_action="REBALANCE_TO_TARGET",
-        submit_expected=True,
-        pre_submit_proof_status="passed",
-        block_reason="none",
-        strategy_sell_candidate=None,
-        residual_sell_candidate=None,
-        target_exposure_krw=plan.target_exposure_krw,
-        current_effective_exposure_krw=plan.current_effective_exposure_krw,
-        tracked_residual_exposure_krw=None,
-        buy_delta_krw=plan.delta_krw,
-        residual_live_sell_mode="block",
-        residual_buy_sizing_mode="block",
-        residual_submit_plan=None,
-        buy_submit_plan=None,
-        target_shadow_decision=None,
-        target_submit_plan=plan,
+def _target_delta_planning_summary(
+    trace: Mapping[str, object],
+    *,
+    ts_ms: int,
+    order_rules: Mapping[str, object],
+    projection_converged: bool,
+    active_fee_accounting_blocker: bool,
+    closeout_existing_qty: float,
+) -> ExecutionDecisionSummary:
+    closeout = float(closeout_existing_qty or 0.0) > 0.0
+    target = _h74_portfolio_target(trace, closeout=closeout)
+    allocation_decision_hash = sha256_prefixed({"h74": "allocation", "target": target.content_hash()})
+    current_exposure_krw = float(closeout_existing_qty or 0.0) * 100_000_000.0
+    readiness_payload = {
+        "broker_position_evidence": {
+            "broker_qty_known": True,
+            "broker_qty": float(closeout_existing_qty or 0.0),
+            "balance_source_stale": False,
+        },
+        "projection_converged": bool(projection_converged),
+        "projection_convergence": {"converged": bool(projection_converged)},
+        "broker_portfolio_converged": bool(projection_converged),
+        "open_order_count": 0,
+        "unresolved_open_order_count": 0,
+        "recovery_required_count": 0,
+        "submit_unknown_count": 0,
+        "accounting_projection_ok": bool(projection_converged),
+        "total_effective_exposure_qty": float(closeout_existing_qty or 0.0),
+        "total_effective_exposure_notional_krw": current_exposure_krw,
+        "residual_inventory_notional_krw": 0.0,
+        "active_fee_accounting_blocker": bool(active_fee_accounting_blocker),
+        "new_entry_fee_blocker": bool(active_fee_accounting_blocker),
+        "cash_available": float(settings.START_CASH_KRW),
+        "runtime_pair": str(settings.PAIR),
+        "min_qty": float(order_rules.get("min_qty") or 0.0001),
+        "qty_step": float(order_rules.get("qty_step") or order_rules.get("min_qty") or 0.0001),
+        "min_notional_krw": float(order_rules.get("min_notional_krw") or 5000.0),
+        "max_qty_decimals": int(order_rules.get("max_qty_decimals") or 8),
+        "order_types": ["bid", "ask"],
+        "bid_types": ["market"],
+        "ask_types": ["market"],
+        "allocation_decision_hash": allocation_decision_hash,
+        "allocator_config_hash": target.allocator_config_hash,
+        "strategy_contribution_hash": target.strategy_contribution_hash,
+        "allocator_policy": "deterministic_priority_target_v1:1",
+        "allocator_reason": "daily_participation_target_delta",
+        "allocation_conflict_count": 0,
+        "allocation_primary_block_reason": "none",
+        "strategy_trace": (
+            {}
+            if closeout
+            else {"execution_intent": _h74_strategy_decision(trace).execution_intent.as_dict()}
+        ),
+    }
+    return build_typed_execution_decision_summary(
+        typed_input=TypedExecutionPlanningInput(
+            strategy_decision=_h74_strategy_decision(trace, closeout=closeout),
+            candle_ts=int(ts_ms),
+            market_price=100_000_000.0,
+            readiness=ExecutionReadinessPlanningInput.from_payload(readiness_payload),
+            target=ExecutionTargetPlanningInput(
+                previous_target_exposure_krw=current_exposure_krw if closeout else 0.0,
+                portfolio_target=target,
+                portfolio_target_hash=target.content_hash(),
+                allocation_decision_hash=allocation_decision_hash,
+                allocator_config_hash=target.allocator_config_hash,
+                strategy_contribution_hash=target.strategy_contribution_hash,
+            ),
+            observability_context=readiness_payload,
+        )
     )
 
 
@@ -328,7 +474,17 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
 
     with _h74_live_settings():
         trace = _strategy_decision_trace(ts_ms)
-        target_plan = _target_delta_submit_plan(trace)
+        summary = _target_delta_planning_summary(
+            trace,
+            ts_ms=ts_ms,
+            order_rules=order_rules,
+            projection_converged=cfg.projection_converged,
+            active_fee_accounting_blocker=cfg.active_fee_accounting_blocker,
+            closeout_existing_qty=cfg.closeout_existing_qty,
+        )
+        target_plan = summary.typed_target_submit_plan()
+        if target_plan is None:
+            raise H74LiveRehearsalError("h74_rehearsal_target_delta_planner_missing_target_plan")
         would_submit_plan = target_plan.as_final_payload()
         submit_authority = evaluate_submit_authority_policy(
             would_submit_plan,
@@ -344,7 +500,12 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
         if equivalence_allows:
             with tempfile.TemporaryDirectory(prefix="h74-live-rehearsal-") as tmp_dir:
                 db_path = f"{tmp_dir}/h74-rehearsal.sqlite"
-                _seed_rehearsal_db(db_path, submit_plan_hash=str(would_submit_plan["submit_plan_hash"]))
+                _seed_rehearsal_db(
+                    db_path,
+                    submit_plan_hash=str(would_submit_plan["submit_plan_hash"]),
+                    unresolved_order_status=cfg.unresolved_order_status,
+                    unresolved_order_created_ts_ms=cfg.unresolved_order_created_ts_ms,
+                )
 
                 def _db_factory() -> sqlite3.Connection:
                     conn = sqlite3.connect(db_path)
@@ -353,8 +514,10 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
 
                 broker = _H74NoSubmitBroker(
                     available=cfg.broker_snapshot_available,
-                    observed_ts_ms=ts_ms,
+                    observed_ts_ms=ts_ms - (30 * 60 * 1000) if cfg.broker_snapshot_stale else ts_ms,
                     cash_krw=float(settings.START_CASH_KRW),
+                    asset_qty=float(cfg.closeout_existing_qty or 0.0),
+                    stale=cfg.broker_snapshot_stale,
                 )
                 service = LiveSignalExecutionService(
                     broker=broker,
@@ -378,7 +541,7 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
                         strategy_name=H74_STRATEGY_NAME,
                         decision_id=1,
                         decision_reason=str(trace["final_reason"]),
-                        execution_decision_summary=_summary(target_plan),
+                        execution_decision_summary=summary,
                     )
                     execution_result = ExecutionCoordinator("target_delta").execute_cycle(
                         candle_ts=ts_ms,
@@ -387,7 +550,7 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
                         market_price=100_000_000.0,
                         strategy_name=H74_STRATEGY_NAME,
                         decision_reason=str(trace["final_reason"]),
-                        execution_decision_summary=_summary(target_plan),
+                        execution_decision_summary=summary,
                         submit_invoker=lambda: service.execute(request),
                         input_hash=sha256_prefixed({"h74": "execution_input", "trace": trace}),
                     )
@@ -417,6 +580,7 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
                         conn.close()
         submit_authority_allowed = bool(captured)
         submit_authority_reason = "allowed_target_delta" if submit_authority_allowed else submit_authority.reason
+        readiness_blocks = not bool(cfg.projection_converged)
         gate_trace = [
             {"gate": "time_window", "status": "ALLOW", "reason_code": "within_kst_window", "blocking": False},
             {"gate": "runtime_cycle_pipeline", "status": "ALLOW", "reason_code": "RuntimeCyclePipeline/ExecutionCoordinator", "blocking": False},
@@ -425,6 +589,12 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
                 "status": "ALLOW" if equivalence_allows else "BLOCK",
                 "reason_code": equivalence_status,
                 "blocking": not equivalence_allows,
+            },
+            {
+                "gate": "readiness",
+                "status": "BLOCK" if readiness_blocks else "ALLOW",
+                "reason_code": "PROJECTION_MISMATCH" if readiness_blocks else "OK",
+                "blocking": readiness_blocks,
             },
             {"gate": "strategy_risk", "status": "ALLOW", "reason_code": "OK", "blocking": False},
             {"gate": "portfolio_risk", "status": "ALLOW", "reason_code": "OK", "blocking": False},

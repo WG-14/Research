@@ -90,6 +90,7 @@ def validate_h74_readiness_certificate(
     current_order_rule_fee_authority_hash: str | None = None,
     current_gate_trace_hash: str | None = None,
     current_would_submit_plan_hash: str | None = None,
+    strict: bool = False,
 ) -> dict[str, Any]:
     expected_env_hash = _file_hash(env_file)
     reasons: list[str] = []
@@ -100,18 +101,26 @@ def validate_h74_readiness_certificate(
     if float(certificate.get("expires_at_sec") or 0.0) <= float(time.time() if now_sec is None else now_sec):
         reasons.append("certificate_expired")
     comparisons = (
-        ("commit_sha", current_commit_sha, "commit_sha_changed"),
-        ("db_schema_hash", current_db_schema_hash, "db_schema_hash_changed"),
+        ("commit_sha", current_commit_sha, "commit_sha_changed", "missing_current_commit_sha"),
+        ("db_schema_hash", current_db_schema_hash, "db_schema_hash_changed", "missing_current_db_schema_hash"),
         (
             "order_rule_fee_authority_hash",
             current_order_rule_fee_authority_hash,
             "order_rule_fee_authority_hash_changed",
+            "missing_current_order_rule_fee_authority_hash",
         ),
-        ("gate_trace_hash", current_gate_trace_hash, "gate_trace_hash_changed"),
-        ("would_submit_plan_hash", current_would_submit_plan_hash, "would_submit_plan_hash_changed"),
+        ("gate_trace_hash", current_gate_trace_hash, "gate_trace_hash_changed", "missing_current_gate_trace_hash"),
+        (
+            "would_submit_plan_hash",
+            current_would_submit_plan_hash,
+            "would_submit_plan_hash_changed",
+            "missing_current_would_submit_plan_hash",
+        ),
     )
-    for field, current, reason in comparisons:
+    for field, current, reason, missing_reason in comparisons:
         if current is None:
+            if strict:
+                reasons.append(missing_reason)
             continue
         if str(certificate.get(field) or "") != str(current):
             reasons.append(reason)

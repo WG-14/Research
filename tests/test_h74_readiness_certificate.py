@@ -179,3 +179,50 @@ def test_certificate_invalid_when_db_schema_hash_changes(tmp_path) -> None:
 
     assert verdict["valid"] is False
     assert "db_schema_hash_changed" in verdict["reasons"]
+
+
+def test_certificate_validation_requires_current_commit_db_order_gate_plan_hashes(tmp_path) -> None:
+    cert, rehearsal, env = _certificate(tmp_path)
+
+    verdict = validate_h74_readiness_certificate(
+        cert,
+        env_file=env,
+        broker_balance_snapshot_hash=str(rehearsal["broker_balance_snapshot_hash"]),
+        current_commit_sha=str(cert["commit_sha"]),
+        current_db_schema_hash=str(cert["db_schema_hash"]),
+        current_order_rule_fee_authority_hash=str(cert["order_rule_fee_authority_hash"]),
+        current_gate_trace_hash=str(cert["gate_trace_hash"]),
+        current_would_submit_plan_hash=str(cert["would_submit_plan_hash"]),
+        strict=True,
+        now_sec=1,
+    )
+
+    assert verdict["valid"] is True
+    assert verdict["reasons"] == []
+
+
+def test_certificate_invalid_when_current_hash_argument_missing_in_strict_mode(tmp_path) -> None:
+    cert, rehearsal, env = _certificate(tmp_path)
+
+    verdict = validate_h74_readiness_certificate(
+        cert,
+        env_file=env,
+        broker_balance_snapshot_hash=str(rehearsal["broker_balance_snapshot_hash"]),
+        current_commit_sha=str(cert["commit_sha"]),
+        current_db_schema_hash=None,
+        current_order_rule_fee_authority_hash=str(cert["order_rule_fee_authority_hash"]),
+        current_gate_trace_hash=str(cert["gate_trace_hash"]),
+        current_would_submit_plan_hash=str(cert["would_submit_plan_hash"]),
+        strict=True,
+        now_sec=1,
+    )
+
+    assert verdict["valid"] is False
+    assert "missing_current_db_schema_hash" in verdict["reasons"]
+
+
+def test_certificate_not_issued_when_source_artifact_missing() -> None:
+    rehearsal = run_h74_live_rehearsal(H74LiveRehearsalConfig(source_artifact_path=None))
+
+    with pytest.raises(H74ReadinessCertificateError, match="source_artifact_not_loaded"):
+        build_h74_readiness_certificate(rehearsal, env_file=None)
