@@ -628,6 +628,7 @@ def _active_fee_blocker_reasons(
     fee_pending_count: int,
     fee_validation_blocked_count: int,
     unapplied_principal_pending_count: int,
+    principal_applied_fee_pending_count: int,
     broker_fill_latest_unresolved_fee_pending_count: int,
     fill_accounting_active_issue_count: int,
 ) -> tuple[str, ...]:
@@ -638,6 +639,8 @@ def _active_fee_blocker_reasons(
         reasons.append("fee_validation_blocked_count")
     if int(unapplied_principal_pending_count) > 0:
         reasons.append("unapplied_principal_pending_count")
+    if int(principal_applied_fee_pending_count) > 0:
+        reasons.append("principal_applied_fee_pending_count")
     if int(broker_fill_latest_unresolved_fee_pending_count) > 0:
         reasons.append("broker_fill_latest_unresolved_fee_pending_count")
     if int(fill_accounting_active_issue_count) > 0:
@@ -911,6 +914,22 @@ def compute_runtime_readiness_snapshot(conn=None) -> RuntimeReadinessSnapshot:
             projection_convergence=projection_convergence,
             authority_assessment=authority_assessment,
         )
+        broker_portfolio_projection_converged = _broker_portfolio_projection_match(
+            broker_qty_known=bool(broker_position_evidence.get("broker_qty_known")),
+            broker_qty=float(broker_position_evidence.get("broker_qty") or 0.0),
+            portfolio_qty=float(projection_convergence.get("portfolio_qty") or 0.0),
+            projected_total_qty=float(projection_convergence.get("projected_total_qty") or 0.0),
+        )
+        broker_portfolio_projection_mismatch = bool(
+            bool(broker_position_evidence.get("broker_qty_known"))
+            and bool(projection_convergence.get("converged"))
+            and not broker_portfolio_projection_converged
+            and (
+                abs(float(broker_position_evidence.get("broker_qty") or 0.0)) > 1e-12
+                or abs(float(projection_convergence.get("portfolio_qty") or 0.0)) > 1e-12
+                or abs(float(projection_convergence.get("projected_total_qty") or 0.0)) > 1e-12
+            )
+        )
         projection_non_convergence_blocking = bool(
             not bool(projection_convergence.get("converged"))
             and int(projection_convergence.get("lot_row_count") or 0) > 0
@@ -1183,6 +1202,30 @@ def compute_runtime_readiness_snapshot(conn=None) -> RuntimeReadinessSnapshot:
                     authority_assessment=authority_assessment,
                 )
             )
+        elif broker_portfolio_projection_mismatch:
+            stage = "BROKER_LOCAL_PROJECTION_MISMATCH"
+            blockers.append("BROKER_LOCAL_PROJECTION_MISMATCH")
+            categories.append("runtime_resume_gate")
+            operator_next_action = "reconcile_broker_local_projection"
+            recommended_command = "uv run python bot.py recovery-report"
+            structured_blockers.append(
+                _make_structured_blocker(
+                    code="BROKER_LOCAL_PROJECTION_MISMATCH",
+                    category="runtime_resume_gate",
+                    stage=stage,
+                    detail=(
+                        "broker/local projection mismatch="
+                        f"broker_qty={float(broker_position_evidence.get('broker_qty') or 0.0):.12f},"
+                        f"portfolio_qty={float(projection_convergence.get('portfolio_qty') or 0.0):.12f},"
+                        f"projected_total_qty={float(projection_convergence.get('projected_total_qty') or 0.0):.12f}"
+                    ),
+                    operator_next_action=operator_next_action,
+                    recommended_command=recommended_command,
+                    projection_convergence=projection_convergence,
+                    authority_truth_model=authority_truth_model,
+                    authority_assessment=authority_assessment,
+                )
+            )
         elif projection_non_convergence_blocking:
             stage = "AUTHORITY_PROJECTION_NON_CONVERGED_PENDING"
             blockers.append("POSITION_AUTHORITY_PROJECTION_CONVERGENCE_REQUIRED")
@@ -1419,6 +1462,7 @@ def compute_runtime_readiness_snapshot(conn=None) -> RuntimeReadinessSnapshot:
             fee_pending_count=fee_pending_count,
             fee_validation_blocked_count=fee_validation_blocked_count,
             unapplied_principal_pending_count=unapplied_principal_pending_count,
+            principal_applied_fee_pending_count=principal_applied_fee_pending_count,
             broker_fill_latest_unresolved_fee_pending_count=broker_fill_latest_unresolved_fee_pending_count,
             fill_accounting_active_issue_count=fill_accounting_active_issue_count,
         )

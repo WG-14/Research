@@ -1212,6 +1212,12 @@ def set_status(
             order_status=status,
             message=last_error,
         )
+        sync_daily_participation_claim_from_order_status(
+            conn,
+            client_order_id=client_order_id,
+            status=status,
+            ts_ms=ts,
+        )
         if own_conn:
             conn.commit()
     except Exception:

@@ -52,6 +52,44 @@ def test_h74_rehearsal_uses_runtime_cycle_pipeline(tmp_path) -> None:
     assert payload["execution_result_status"] == "submitted"
 
 
+def test_h74_rehearsal_uses_production_runtime_strategy_set(tmp_path, monkeypatch) -> None:
+    calls = {"count": 0}
+    original = h74_live_rehearsal.runtime_strategy_set_manifest_hash
+
+    def _wrapped(strategy_set):
+        calls["count"] += 1
+        return original(strategy_set)
+
+    monkeypatch.setattr(h74_live_rehearsal, "runtime_strategy_set_manifest_hash", _wrapped)
+
+    payload = run_h74_live_rehearsal(H74LiveRehearsalConfig(source_artifact_path=_source_artifact(tmp_path)))
+
+    assert calls["count"] >= 1
+    assert payload["production_runtime_strategy_set_called"] is True
+    assert str(payload["runtime_strategy_set_manifest_hash"]).startswith("sha256:")
+    assert payload["broker_submit_reached"] is True
+
+
+def test_h74_rehearsal_uses_production_allocator_portfolio_target(tmp_path, monkeypatch) -> None:
+    from bithumb_bot import run_loop_execution_planner
+
+    calls = {"count": 0}
+    original = run_loop_execution_planner.PortfolioAllocator.allocate
+
+    def _wrapped(self, allocation_input):
+        calls["count"] += 1
+        return original(self, allocation_input)
+
+    monkeypatch.setattr(run_loop_execution_planner.PortfolioAllocator, "allocate", _wrapped)
+
+    payload = run_h74_live_rehearsal(H74LiveRehearsalConfig(source_artifact_path=_source_artifact(tmp_path)))
+
+    assert calls["count"] == 1
+    assert payload["production_allocator_portfolio_target_called"] is True
+    assert str(payload["portfolio_target_hash"]).startswith("sha256:")
+    assert payload["broker_submit_reached"] is True
+
+
 def test_h74_rehearsal_invokes_live_signal_execution_service_before_mock_submit(tmp_path) -> None:
     payload = run_h74_live_rehearsal(H74LiveRehearsalConfig(source_artifact_path=_source_artifact(tmp_path)))
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, Iterator, Mapping
@@ -11,23 +11,32 @@ from typing import Any, Iterator, Mapping
 from .broker.balance_source import BalanceSnapshot
 from .broker.base import BrokerBalance
 from .config import settings
+from .db_core import ensure_schema
 from .decision_equivalence import sha256_prefixed
 from .execution_service import (
-    ExecutionDecisionSummary,
-    ExecutionReadinessPlanningInput,
-    ExecutionTargetPlanningInput,
     LiveSignalExecutionService,
     TypedExecutionRequest,
-    TypedExecutionPlanningInput,
-    build_typed_execution_decision_summary,
 )
 from .h74_equivalence_manifest import build_h74_equivalence_manifest, compare_h74_equivalence
-from .h74_observation import H74_STRATEGY_NAME
-from .portfolio_target import PortfolioTarget
-from .risk_contract import RiskPolicy
+from .h74_observation import H74_STRATEGY_NAME, H74_SOURCE_OBSERVATION_PARAMETERS
+from .run_loop_execution_planner import ExecutionPlanner
 from .runtime.execution_coordinator import ExecutionCoordinator
 from .submit_authority_policy import evaluate_submit_authority_policy
-from .strategy_policy_contract import EntryExecutionIntent, PositionSnapshot, StrategyDecisionV2
+from .runtime_data_provider import RuntimeDataAvailabilityReport, RuntimeFeatureSnapshot
+from .runtime_strategy_decision import (
+    _attach_runtime_feature_snapshot_metadata,
+    _attach_runtime_request_metadata,
+    get_runtime_decision_adapter,
+)
+from .runtime_strategy_set import (
+    RuntimeDecisionRequestBuilder,
+    RuntimeMarketScope,
+    RuntimeStrategyDecisionResultBundle,
+    RuntimeStrategySet,
+    RuntimeStrategySpec,
+    runtime_strategy_set_manifest_hash,
+)
+from .strategy_plugins import daily_participation_sma
 
 
 class H74LiveRehearsalError(ValueError):
@@ -95,6 +104,11 @@ def _h74_live_settings() -> Iterator[None]:
         "EXECUTION_ENGINE",
         "MAX_DAILY_LOSS_KRW",
         "MAX_DAILY_ORDER_COUNT",
+        "STRATEGY_NAME",
+        "PAIR",
+        "INTERVAL",
+        "TARGET_EXPOSURE_KRW",
+        "MAX_ORDER_KRW",
     )
     original = {key: getattr(settings, key) for key in keys}
     try:
@@ -104,6 +118,11 @@ def _h74_live_settings() -> Iterator[None]:
         object.__setattr__(settings, "EXECUTION_ENGINE", "target_delta")
         object.__setattr__(settings, "MAX_DAILY_LOSS_KRW", 0.0)
         object.__setattr__(settings, "MAX_DAILY_ORDER_COUNT", 0)
+        object.__setattr__(settings, "STRATEGY_NAME", H74_STRATEGY_NAME)
+        object.__setattr__(settings, "PAIR", "KRW-BTC")
+        object.__setattr__(settings, "INTERVAL", "1m")
+        object.__setattr__(settings, "TARGET_EXPOSURE_KRW", 100_000.0)
+        object.__setattr__(settings, "MAX_ORDER_KRW", 100_000.0)
         yield
     finally:
         for key, value in original.items():
@@ -126,6 +145,18 @@ def _h74_reconcile_snapshot(ts_ms: int) -> Iterator[None]:
         risk.runtime_state.snapshot = original_snapshot
 
 
+@contextmanager
+def _temporary_settings(**updates: object) -> Iterator[None]:
+    original = {key: getattr(settings, key) for key in updates}
+    try:
+        for key, value in updates.items():
+            object.__setattr__(settings, key, value)
+        yield
+    finally:
+        for key, value in original.items():
+            object.__setattr__(settings, key, value)
+
+
 def _seed_rehearsal_db(
     path: str,
     *,
@@ -135,6 +166,7 @@ def _seed_rehearsal_db(
 ) -> None:
     conn = sqlite3.connect(path)
     try:
+        ensure_schema(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS portfolio (
@@ -196,9 +228,36 @@ def _seed_rehearsal_db(
             """
         )
         conn.execute(
-            "INSERT INTO execution_plan(execution_submit_plan_hash, execution_submit_plan_json) VALUES (?, ?)",
-            (submit_plan_hash, "{}"),
+            """
+            INSERT INTO execution_plan(
+                allocation_id, execution_plan_bundle_hash, execution_submit_plan_hash,
+                submit_expected, final_action, block_reason, status,
+                execution_plan_bundle_json, execution_submit_plan_json
+            )
+            VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)
+            """,
+            (
+                0,
+                sha256_prefixed({"h74": "pending_execution_plan_bundle"}),
+                submit_plan_hash,
+                "PLANNING_PENDING",
+                "planning_pending",
+                "planning_pending",
+                "{}",
+                "{}",
+            ),
         )
+        base_ts = int(datetime(2026, 6, 22, 8, 0, 0, tzinfo=timezone(timedelta(hours=9))).timestamp() * 1000)
+        for index in range(121):
+            close = 100_000_000.0 + float(index)
+            ts = base_ts + (index * 60_000)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO candles(ts, pair, interval, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ts, "KRW-BTC", "1m", close, close, close, close, 1.0),
+            )
         if unresolved_order_status:
             conn.execute(
                 """
@@ -217,170 +276,134 @@ def _seed_rehearsal_db(
         conn.close()
 
 
-def _strategy_decision_trace(ts_ms: int) -> dict[str, object]:
-    from .strategy.daily_participation_policy import DailyParticipationStateSnapshot
-    from .strategy_plugins import daily_participation_sma
-
+def _h74_runtime_strategy_parameters() -> dict[str, object]:
+    accepted = set(daily_participation_sma.DAILY_PARTICIPATION_SMA_SPEC.accepted_parameter_names)
     params = {
-        **daily_participation_sma.DAILY_PARTICIPATION_SMA_SPEC.default_parameters,
-        "DAILY_PARTICIPATION_ENABLED": True,
-        "DAILY_PARTICIPATION_WINDOW_START_HOUR_KST": 9,
-        "DAILY_PARTICIPATION_WINDOW_END_HOUR_KST": 11,
-        "DAILY_PARTICIPATION_BUY_FRACTION": 0.01,
-        "DAILY_PARTICIPATION_MAX_ORDER_KRW": 10_000.0,
-        "DAILY_PARTICIPATION_FALLBACK_MODE": "unconditional_participation",
+        key: value
+        for key, value in H74_SOURCE_OBSERVATION_PARAMETERS.items()
+        if key in accepted
     }
-    participation_config = daily_participation_sma.daily_participation_config_from_parameters(params)
-    participation = daily_participation_sma.evaluate_daily_participation_policy(
-        config=participation_config,
-        state=DailyParticipationStateSnapshot(
-            decision_ts=int(ts_ms),
-            count_for_kst_day=0,
-            position_open=False,
-            entry_allowed=True,
-            market_open=True,
-            pending_claim_count=0,
-            daily_count_snapshot_hash=sha256_prefixed({"h74": "daily_count", "ts": int(ts_ms)}),
+    params.update(
+        {
+            "DAILY_PARTICIPATION_ENABLED": True,
+            "DAILY_PARTICIPATION_WINDOW_START_HOUR_KST": 9,
+            "DAILY_PARTICIPATION_WINDOW_END_HOUR_KST": 11,
+            "DAILY_PARTICIPATION_BUY_FRACTION": 1.0,
+            "DAILY_PARTICIPATION_MAX_ORDER_KRW": 100_000.0,
+            "DAILY_PARTICIPATION_FALLBACK_MODE": "unconditional_participation",
+        }
+    )
+    return params
+
+
+def _h74_runtime_strategy_set() -> RuntimeStrategySet:
+    return RuntimeStrategySet(
+        source="h74_live_rehearsal_runtime_strategy_set",
+        market_scope=RuntimeMarketScope(pair="KRW-BTC", interval="1m"),
+        strategies=(
+            RuntimeStrategySpec(
+                strategy_name=H74_STRATEGY_NAME,
+                strategy_instance_id="h74-source-observation",
+                pair="KRW-BTC",
+                interval="1m",
+                priority=10,
+                weight=1.0,
+                desired_exposure_krw=100_000.0,
+                parameters=_h74_runtime_strategy_parameters(),
+            ),
         ),
     )
-    return {
-        "strategy_plugin_called": True,
-        "strategy_name": H74_STRATEGY_NAME,
-        "final_signal": "BUY" if participation.allowed else "HOLD",
-        "final_reason": participation.reason_code,
-        "entry_signal_source": "daily_participation_fallback" if participation.allowed else "hold",
-        "fallback_mode": participation_config.fallback_mode,
-        "daily_count_snapshot_hash": participation.daily_count_snapshot_hash,
-        "daily_count_snapshot_event_set_hash": sha256_prefixed({"h74": "daily_count_events"}),
-        "participation_policy_hash": participation.participation_policy_hash,
-        "participation_input_hash": participation.participation_input_hash,
-        "participation_decision_hash": participation.participation_decision_hash,
+
+
+def _base_runtime_feature_snapshot(ts_ms: int) -> RuntimeFeatureSnapshot:
+    rows = []
+    start_ts = int(ts_ms) - (120 * 60_000)
+    for index in range(121):
+        close = 100_000_000.0 + float(index)
+        rows.append(
+            {
+                "ts": start_ts + (index * 60_000),
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 1.0,
+            }
+        )
+    payload = {
+        "pair": "KRW-BTC",
+        "interval": "1m",
+        "through_ts_ms": int(ts_ms),
+        "feature_payload": {"capabilities": {"candles": {"rows": rows}}},
     }
+    payload["feature_snapshot_hash"] = sha256_prefixed(payload)
+    return RuntimeFeatureSnapshot(payload)
 
 
-def _h74_strategy_decision(trace: Mapping[str, object], *, closeout: bool = False) -> StrategyDecisionV2:
-    final_signal = "SELL" if closeout else str(trace["final_signal"])
-    final_reason = "max_holding_closeout" if closeout else str(trace["final_reason"])
-    return StrategyDecisionV2(
-        strategy_name=H74_STRATEGY_NAME,
-        raw_signal=final_signal,
-        raw_reason=final_reason,
-        entry_signal="HOLD" if closeout else final_signal,
-        entry_reason="closeout_existing_position" if closeout else final_reason,
-        exit_signal="SELL" if closeout else "HOLD",
-        exit_reason=final_reason if closeout else "no_exit_signal",
-        final_signal=final_signal,
-        final_reason=final_reason,
-        blocked_filters=(),
-        entry_blocked=False,
-        entry_block_reason=None,
-        exit_rule=None,
-        exit_evaluations=(),
-        protective_exit_overrode_entry=False,
-        exit_filter_suppression_prevented=False,
-        position_snapshot=PositionSnapshot(
-            in_position=bool(closeout),
-            entry_allowed=not bool(closeout),
-            exit_allowed=bool(closeout),
-            exit_block_reason="" if closeout else "flat_no_exit",
-            terminal_state="open_exposure" if closeout else "flat",
-            qty_open=0.00059999 if closeout else 0.0,
-            raw_qty_open=0.00059999 if closeout else 0.0,
-            raw_total_asset_qty=0.00059999 if closeout else 0.0,
-            open_lot_count=1 if closeout else 0,
-            sellable_executable_lot_count=1 if closeout else 0,
-            effective_flat=not bool(closeout),
-            has_executable_exposure=bool(closeout),
-        ),
-        execution_intent=None if closeout else EntryExecutionIntent(
-            side="BUY",
-            intent="enter",
-            pair=str(settings.PAIR),
-            requires_execution_sizing=True,
-            budget_fraction_of_cash=1.0,
-            max_budget_krw=10_000.0,
-        ),
-        entry_decision=None,
-        trace=dict(trace),
-        policy_hash=sha256_prefixed({"h74": "policy", "trace": trace}),
-        policy_contract_hash=sha256_prefixed({"h74": "policy_contract"}),
-        policy_input_hash=str(trace["participation_input_hash"]),
-        policy_decision_hash=str(trace["participation_decision_hash"]),
-    )
+def _runtime_data_report(strategy_set: RuntimeStrategySet, ts_ms: int) -> RuntimeDataAvailabilityReport:
+    scope = f"h74-source-observation:KRW-BTC:1m"
+    payload = {
+        "schema_version": 1,
+        "status": "PASS",
+        "reasons": [],
+        "strategy_set_hash": runtime_strategy_set_manifest_hash(strategy_set),
+        "through_ts_ms": int(ts_ms),
+        "coverage_by_scope": {scope: {"status": "PASS"}},
+        "selected_candle_by_scope": {scope: int(ts_ms)},
+        "source_schema_hash_by_scope": {scope: sha256_prefixed({"source_schema": "h74_rehearsal"})},
+        "freshness_by_scope": {scope: {"status": "PASS"}},
+    }
+    payload["report_hash"] = sha256_prefixed(payload)
+    return RuntimeDataAvailabilityReport(payload)
 
 
-def _h74_portfolio_target(trace: Mapping[str, object], *, closeout: bool = False) -> PortfolioTarget:
-    risk_policy = RiskPolicy(source="h74_rehearsal_pre_submit", max_daily_loss_krw=0.0)
-    return PortfolioTarget(
-        pair=str(settings.PAIR),
-        target_exposure_krw=0.0 if closeout else 10_000.0,
-        target_qty=0.0 if closeout else 0.0001,
-        allocator_policy_name="deterministic_priority_target_v1",
-        allocator_policy_version="1",
-        allocator_config_hash=sha256_prefixed({"h74": "allocator_config"}),
-        strategy_contribution_hash=sha256_prefixed({"h74": "strategy_contribution"}),
-        allocation_input_hash=sha256_prefixed({"h74": "allocation_input"}),
-        reason="daily_participation_target_delta",
-        authoritative=True,
-        conflict_resolution={
-            "strategy_name": H74_STRATEGY_NAME,
-            "strategy_instance_id": "h74-source-observation",
-            "selected_strategy_instance_ids": ["h74-source-observation"],
-            "allocator_policy": "deterministic_priority_target_v1:1",
-            "allocator_reason": "daily_participation_target_delta",
-            "allocation_conflict_count": 0,
-            "allocation_primary_block_reason": "none",
-            "target_exposure_source": "daily_participation_sma",
-            "allocation_target_source": "daily_participation_sma",
-            "strict_target_exposure_required": True,
-            "strategy_risk_profiles": [
-                {
-                    "strategy_instance_id": "h74-source-observation",
-                    "strategy_name": H74_STRATEGY_NAME,
-                    "strategy_risk_profile_hash": sha256_prefixed({"h74": "strategy_risk_profile"}),
-                    "risk_policy": risk_policy.as_dict(),
-                    "risk_policy_hash": risk_policy.policy_hash(),
-                }
-            ],
-            "selected_strategy_risk_profiles": [
-                {
-                    "strategy_instance_id": "h74-source-observation",
-                    "strategy_name": H74_STRATEGY_NAME,
-                    "strategy_risk_profile_hash": sha256_prefixed({"h74": "strategy_risk_profile"}),
-                    "risk_policy": risk_policy.as_dict(),
-                    "risk_policy_hash": risk_policy.policy_hash(),
-                }
-            ],
-            "selected_strategy_risk_profile_hashes": [sha256_prefixed({"h74": "strategy_risk_profile"})],
-            "selected_strategy_risk_policy_hashes": [risk_policy.policy_hash()],
-            "daily_count_snapshot_hash": trace["daily_count_snapshot_hash"],
-            "daily_count_snapshot_event_set_hash": trace["daily_count_snapshot_event_set_hash"],
-            "participation_policy_hash": trace["participation_policy_hash"],
-            "participation_input_hash": trace["participation_input_hash"],
-            "participation_decision_hash": trace["participation_decision_hash"],
-            "fallback_mode": trace["fallback_mode"],
-            "entry_signal_source": trace["entry_signal_source"],
-            "fee_authority_hash": sha256_prefixed({"h74": "fee_authority"}),
-            "order_rules_hash": sha256_prefixed({"h74": "order_rules"}),
-            "price_protection_hash": sha256_prefixed({"h74": "price_protection"}),
-        },
-    )
+def _runtime_decision_bundle(conn: sqlite3.Connection, *, ts_ms: int) -> RuntimeStrategyDecisionResultBundle:
+    strategy_set = _h74_runtime_strategy_set()
+    spec = strategy_set.active_strategies[0]
+    decision_settings = replace(settings, MODE="paper", LIVE_DRY_RUN=True, LIVE_REAL_ORDER_ARMED=False)
+    with _temporary_settings(
+        MODE="paper",
+        LIVE_DRY_RUN=True,
+        LIVE_REAL_ORDER_ARMED=False,
+        MIN_ORDER_NOTIONAL_KRW=5000.0,
+        LIVE_MIN_ORDER_QTY=0.0001,
+        LIVE_ORDER_QTY_STEP=0.0001,
+        LIVE_ORDER_MAX_QTY_DECIMALS=8,
+    ):
+        request = RuntimeDecisionRequestBuilder(settings_obj=decision_settings).build_for_spec(spec, through_ts_ms=ts_ms)
+        base_snapshot = _base_runtime_feature_snapshot(ts_ms)
+        feature_snapshot = daily_participation_sma.runtime_feature_snapshot_builder(
+            conn=conn,
+            request=request,
+            feature_snapshot=base_snapshot,
+        )
+        if feature_snapshot is None:
+            raise H74LiveRehearsalError("h74_rehearsal_daily_participation_feature_snapshot_missing")
+        adapter = get_runtime_decision_adapter(H74_STRATEGY_NAME)
+        if adapter is None:
+            raise H74LiveRehearsalError("h74_rehearsal_daily_participation_adapter_missing")
+        result = adapter.decide_feature_snapshot(request, feature_snapshot)
+        if result is None:
+            raise H74LiveRehearsalError("h74_rehearsal_daily_participation_decision_missing")
+        _attach_runtime_feature_snapshot_metadata(result, feature_snapshot)
+        _attach_runtime_request_metadata(result, request)
+        return RuntimeStrategyDecisionResultBundle(
+            strategy_set=strategy_set,
+            results=(result,),
+            data_availability_report=_runtime_data_report(strategy_set, ts_ms),
+            runtime_data_cycle_preflight_hash=sha256_prefixed({"h74": "runtime_cycle_preflight", "ts": int(ts_ms)}),
+        )
 
 
-def _target_delta_planning_summary(
-    trace: Mapping[str, object],
+def _readiness_snapshot_payload(
     *,
-    ts_ms: int,
     order_rules: Mapping[str, object],
     projection_converged: bool,
     active_fee_accounting_blocker: bool,
     closeout_existing_qty: float,
-) -> ExecutionDecisionSummary:
-    closeout = float(closeout_existing_qty or 0.0) > 0.0
-    target = _h74_portfolio_target(trace, closeout=closeout)
-    allocation_decision_hash = sha256_prefixed({"h74": "allocation", "target": target.content_hash()})
+) -> dict[str, object]:
     current_exposure_krw = float(closeout_existing_qty or 0.0) * 100_000_000.0
-    readiness_payload = {
+    return {
         "broker_position_evidence": {
             "broker_qty_known": True,
             "broker_qty": float(closeout_existing_qty or 0.0),
@@ -408,36 +431,47 @@ def _target_delta_planning_summary(
         "order_types": ["bid", "ask"],
         "bid_types": ["market"],
         "ask_types": ["market"],
-        "allocation_decision_hash": allocation_decision_hash,
-        "allocator_config_hash": target.allocator_config_hash,
-        "strategy_contribution_hash": target.strategy_contribution_hash,
-        "allocator_policy": "deterministic_priority_target_v1:1",
-        "allocator_reason": "daily_participation_target_delta",
-        "allocation_conflict_count": 0,
-        "allocation_primary_block_reason": "none",
-        "strategy_trace": (
-            {}
-            if closeout
-            else {"execution_intent": _h74_strategy_decision(trace).execution_intent.as_dict()}
-        ),
     }
-    return build_typed_execution_decision_summary(
-        typed_input=TypedExecutionPlanningInput(
-            strategy_decision=_h74_strategy_decision(trace, closeout=closeout),
-            candle_ts=int(ts_ms),
-            market_price=100_000_000.0,
-            readiness=ExecutionReadinessPlanningInput.from_payload(readiness_payload),
-            target=ExecutionTargetPlanningInput(
-                previous_target_exposure_krw=current_exposure_krw if closeout else 0.0,
-                portfolio_target=target,
-                portfolio_target_hash=target.content_hash(),
-                allocation_decision_hash=allocation_decision_hash,
-                allocator_config_hash=target.allocator_config_hash,
-                strategy_contribution_hash=target.strategy_contribution_hash,
-            ),
-            observability_context=readiness_payload,
-        )
+
+
+def _target_delta_planning_bundle(
+    conn: sqlite3.Connection,
+    *,
+    ts_ms: int,
+    order_rules: Mapping[str, object],
+    projection_converged: bool,
+    active_fee_accounting_blocker: bool,
+    closeout_existing_qty: float,
+):
+    result_bundle = _runtime_decision_bundle(conn, ts_ms=ts_ms)
+    readiness_payload = _readiness_snapshot_payload(
+        order_rules=order_rules,
+        projection_converged=projection_converged,
+        active_fee_accounting_blocker=active_fee_accounting_blocker,
+        closeout_existing_qty=closeout_existing_qty,
     )
+
+    class _ReadinessSnapshot:
+        def as_dict(self) -> dict[str, object]:
+            return dict(readiness_payload)
+
+    def _target_state_resolver(*_args, **_kwargs) -> dict[str, object]:
+        current_exposure_krw = float(closeout_existing_qty or 0.0) * 100_000_000.0
+        return {
+            "previous_target_exposure_krw": current_exposure_krw,
+            "target_policy_metadata": {
+                "target_policy_action": "use_existing_target" if current_exposure_krw else "initialize_flat_target",
+                "target_origin": "h74_rehearsal_runtime_target_state",
+            },
+        }
+
+    planning_settings = replace(settings, MODE="paper", LIVE_DRY_RUN=True, LIVE_REAL_ORDER_ARMED=False)
+    planner = ExecutionPlanner(
+        settings_obj=planning_settings,
+        readiness_snapshot_builder=lambda _conn: _ReadinessSnapshot(),
+        target_state_resolver=_target_state_resolver,
+    )
+    return planner.plan_runtime_strategy_results(conn, result_bundle, updated_ts=int(ts_ms))
 
 
 def _blocking_gate(gate_trace: list[dict[str, object]]) -> tuple[str, str]:
@@ -473,39 +507,77 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
     equivalence_allows = equivalence_status == "pass"
 
     with _h74_live_settings():
-        trace = _strategy_decision_trace(ts_ms)
-        summary = _target_delta_planning_summary(
-            trace,
-            ts_ms=ts_ms,
-            order_rules=order_rules,
-            projection_converged=cfg.projection_converged,
-            active_fee_accounting_blocker=cfg.active_fee_accounting_blocker,
-            closeout_existing_qty=cfg.closeout_existing_qty,
-        )
-        target_plan = summary.typed_target_submit_plan()
-        if target_plan is None:
-            raise H74LiveRehearsalError("h74_rehearsal_target_delta_planner_missing_target_plan")
-        would_submit_plan = target_plan.as_final_payload()
-        submit_authority = evaluate_submit_authority_policy(
-            would_submit_plan,
-            settings_obj=settings,
-            plan_kind="target",
-            require_final_payload=True,
-        )
         captured: list[dict[str, object]] = []
         pre_submit_status = "BLOCK"
         pre_submit_reason = "equivalence_blocked" if not equivalence_allows else "not_evaluated"
         broker_snapshot_hash = ""
         execution_result_status = "submit_blocked"
-        if equivalence_allows:
-            with tempfile.TemporaryDirectory(prefix="h74-live-rehearsal-") as tmp_dir:
-                db_path = f"{tmp_dir}/h74-rehearsal.sqlite"
-                _seed_rehearsal_db(
-                    db_path,
-                    submit_plan_hash=str(would_submit_plan["submit_plan_hash"]),
-                    unresolved_order_status=cfg.unresolved_order_status,
-                    unresolved_order_created_ts_ms=cfg.unresolved_order_created_ts_ms,
+        with tempfile.TemporaryDirectory(prefix="h74-live-rehearsal-") as tmp_dir:
+            db_path = f"{tmp_dir}/h74-rehearsal.sqlite"
+            _seed_rehearsal_db(
+                db_path,
+                submit_plan_hash="sha256:h74_rehearsal_planning_pending",
+                unresolved_order_status=cfg.unresolved_order_status,
+                unresolved_order_created_ts_ms=cfg.unresolved_order_created_ts_ms,
+            )
+
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                planning_bundle = _target_delta_planning_bundle(
+                    conn,
+                    ts_ms=ts_ms,
+                    order_rules=order_rules,
+                    projection_converged=cfg.projection_converged,
+                    active_fee_accounting_blocker=cfg.active_fee_accounting_blocker,
+                    closeout_existing_qty=cfg.closeout_existing_qty,
                 )
+            finally:
+                conn.close()
+            summary = planning_bundle.summary
+            if summary is None:
+                raise H74LiveRehearsalError(
+                    str(planning_bundle.planning_error or "h74_rehearsal_target_delta_planner_missing_summary")
+                )
+            target_plan = summary.typed_target_submit_plan()
+            if target_plan is None:
+                raise H74LiveRehearsalError("h74_rehearsal_target_delta_planner_missing_target_plan")
+            would_submit_plan = target_plan.as_final_payload()
+            planning_context = dict(planning_bundle.persistence_context)
+            trace = dict(planning_context.get("pure_policy_trace") or {})
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO execution_plan(
+                        allocation_id, execution_plan_bundle_hash, execution_submit_plan_hash,
+                        submit_expected, final_action, block_reason, status,
+                        execution_plan_bundle_json, execution_submit_plan_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        1,
+                        str(planning_bundle.content_hash()),
+                        str(would_submit_plan["submit_plan_hash"]),
+                        1 if bool(would_submit_plan.get("submit_expected")) else 0,
+                        str(would_submit_plan.get("final_action") or ""),
+                        str(would_submit_plan.get("block_reason") or ""),
+                        "planned",
+                        __import__("json").dumps(planning_bundle.as_dict(), sort_keys=True),
+                        __import__("json").dumps(would_submit_plan, sort_keys=True),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            submit_authority = evaluate_submit_authority_policy(
+                would_submit_plan,
+                settings_obj=settings,
+                plan_kind="target",
+                require_final_payload=True,
+            )
+            if equivalence_allows:
 
                 def _db_factory() -> sqlite3.Connection:
                     conn = sqlite3.connect(db_path)
@@ -540,7 +612,7 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
                         market_price=100_000_000.0,
                         strategy_name=H74_STRATEGY_NAME,
                         decision_id=1,
-                        decision_reason=str(trace["final_reason"]),
+                        decision_reason=str(planning_context.get("final_reason") or trace.get("final_reason") or ""),
                         execution_decision_summary=summary,
                     )
                     execution_result = ExecutionCoordinator("target_delta").execute_cycle(
@@ -549,10 +621,10 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
                         signal="BUY",
                         market_price=100_000_000.0,
                         strategy_name=H74_STRATEGY_NAME,
-                        decision_reason=str(trace["final_reason"]),
+                        decision_reason=str(planning_context.get("final_reason") or trace.get("final_reason") or ""),
                         execution_decision_summary=summary,
                         submit_invoker=lambda: service.execute(request),
-                        input_hash=sha256_prefixed({"h74": "execution_input", "trace": trace}),
+                        input_hash=sha256_prefixed({"h74": "execution_input", "planning": planning_context}),
                     )
                 execution_result_status = execution_result.planning_status
                 if captured:
@@ -570,7 +642,15 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
                 else:
                     conn = sqlite3.connect(db_path)
                     try:
-                        row = conn.execute("SELECT execution_submit_plan_json FROM execution_plan").fetchone()
+                        row = conn.execute(
+                            """
+                            SELECT execution_submit_plan_json FROM execution_plan
+                            WHERE execution_submit_plan_hash=?
+                            ORDER BY id DESC
+                            LIMIT 1
+                            """,
+                            (str(would_submit_plan.get("submit_plan_hash") or ""),),
+                        ).fetchone()
                         if row and row[0]:
                             stored = dict(__import__("json").loads(row[0]))
                             pre_submit_status = str(stored.get("pre_submit_risk_status") or "BLOCK")
@@ -614,6 +694,12 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
             },
         ]
     primary_gate, primary_reason = _blocking_gate(gate_trace)
+    participation_decision = trace.get("daily_participation_decision")
+    daily_reason = ""
+    if isinstance(participation_decision, Mapping):
+        daily_reason = str(participation_decision.get("reason_code") or "")
+    if not daily_reason:
+        daily_reason = str(trace.get("final_reason") or planning_context.get("final_reason") or "")
     payload: dict[str, Any] = {
         "artifact_type": "h74_live_rehearsal",
         "schema_version": 1,
@@ -624,11 +710,19 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
         "kst_time": cfg.kst_time,
         "strategy_name": H74_STRATEGY_NAME,
         "operator_live_pipeline_smoke": False,
-        "runtime_cycle_pipeline_called": True,
+        "runtime_cycle_pipeline_called": bool(planning_bundle.execution_plan_batch is not None),
+        "production_runtime_strategy_set_called": bool(planning_context.get("runtime_strategy_set_manifest_hash")),
+        "production_allocator_portfolio_target_called": bool(planning_context.get("portfolio_target_hash")),
+        "production_target_delta_planner_called": str(would_submit_plan.get("source") or "") == "target_delta",
+        "runtime_strategy_set_manifest_hash": planning_context.get("runtime_strategy_set_manifest_hash"),
+        "runtime_strategy_result_bundle_hash": planning_context.get("runtime_strategy_result_bundle_hash"),
+        "portfolio_allocation_decision_hash": planning_context.get("allocation_decision_hash"),
+        "portfolio_target_hash": planning_context.get("portfolio_target_hash"),
+        "execution_plan_batch_hash": planning_context.get("execution_plan_batch_hash"),
         "live_signal_execution_service_called": bool(equivalence_allows),
-        "daily_participation_plugin_called": bool(trace.get("strategy_plugin_called")),
+        "daily_participation_plugin_called": str(trace.get("strategy_family") or "") == "daily_participation_sma",
         "target_delta_final_payload_created": bool(would_submit_plan.get("schema_version")),
-        "daily_participation_reason_code": trace["final_reason"],
+        "daily_participation_reason_code": daily_reason,
         "pre_submit_risk_status": pre_submit_status,
         "pre_submit_risk_reason_code": pre_submit_reason,
         "pre_submit_proof_created": bool(would_submit_plan.get("pre_submit_risk_decision_hash")),
