@@ -27,6 +27,13 @@ H74_BEHAVIOR_FIELDS = (
     "initial_position_policy",
     "partial_fill_policy",
     "fee_application_policy",
+    "entry_submit_semantics",
+)
+H74_SUBMIT_SEMANTICS_FIELDS = (
+    "entry_order_type",
+    "entry_submit_field",
+    "entry_quote_notional_krw",
+    "entry_volume_forbidden",
 )
 
 
@@ -63,6 +70,8 @@ def build_h74_equivalence_manifest(
         "initial_position_policy": source_cost["initial_position_policy"],
         "partial_fill_policy": source_cost["partial_fill_policy"],
         "fee_application_policy": source_cost["fee_application_policy"],
+        "entry_submit_semantics": source_cost["entry_submit_semantics"],
+        "submit_semantics_hash": source_cost["submit_semantics_hash"],
         "time_window": {
             "timezone": parameters["DAILY_PARTICIPATION_TIMEZONE"],
             "start_hour_kst": parameters["DAILY_PARTICIPATION_WINDOW_START_HOUR_KST"],
@@ -88,6 +97,7 @@ def build_h74_equivalence_manifest(
         if manifest["order_rules"].get(key) in (None, "")
     ]
     manifest["behavior_fields"] = list(H74_BEHAVIOR_FIELDS)
+    manifest["submit_semantics_fields"] = list(H74_SUBMIT_SEMANTICS_FIELDS)
     manifest["order_type_semantics"] = {
         "buy": str(manifest["order_rules"].get("order_type_buy") or "price"),
         "sell": str(manifest["order_rules"].get("order_type_sell") or "market"),
@@ -136,6 +146,10 @@ def compare_h74_equivalence(
         "initial_position_policy": current_behavior.get("initial_position_policy", manifest.get("initial_position_policy")),
         "partial_fill_policy": current_behavior.get("partial_fill_policy", manifest.get("partial_fill_policy")),
         "fee_application_policy": current_behavior.get("fee_application_policy", manifest.get("fee_application_policy")),
+        "entry_submit_semantics": current_behavior.get(
+            "entry_submit_semantics",
+            manifest.get("entry_submit_semantics"),
+        ),
     }
     expected_field_values = {
         "fee_rate": manifest.get("fee_rate"),
@@ -152,6 +166,7 @@ def compare_h74_equivalence(
         "initial_position_policy": manifest.get("initial_position_policy"),
         "partial_fill_policy": manifest.get("partial_fill_policy"),
         "fee_application_policy": manifest.get("fee_application_policy"),
+        "entry_submit_semantics": manifest.get("entry_submit_semantics"),
     }
     behavior_comparison = {
         field: _field_comparison(
@@ -253,6 +268,8 @@ def _source_cost_assumptions(source: Mapping[str, object] | None) -> dict[str, o
             "initial_position_policy": None,
             "partial_fill_policy": None,
             "fee_application_policy": None,
+            "entry_submit_semantics": None,
+            "submit_semantics_hash": "",
         }
     cost = source.get("runtime_base_cost_assumption")
     if not isinstance(cost, Mapping):
@@ -264,8 +281,11 @@ def _source_cost_assumptions(source: Mapping[str, object] | None) -> dict[str, o
         missing.append("slippage_bps")
     if "candle_timing" not in source:
         missing.append("candle_timing")
-    behavior = source.get("behavior_contract") if isinstance(source.get("behavior_contract"), Mapping) else source
-    defaults = {
+    behavior = source.get("behavior_contract") if isinstance(source.get("behavior_contract"), Mapping) else None
+    if behavior is None:
+        missing.append("behavior_contract")
+        behavior = {}
+    required_behavior = {
         "position_mode": POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT,
         "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
         "residual_inventory_mode": "terminal_dust_reported_not_reused_without_authority",
@@ -273,8 +293,17 @@ def _source_cost_assumptions(source: Mapping[str, object] | None) -> dict[str, o
         "partial_fill_policy": "accumulate_cycle_acquired_qty",
         "fee_application_policy": "repository_observed_fee_fields",
     }
-    for key in defaults:
-        if key not in behavior and key not in source:
+    for key in required_behavior:
+        if key not in behavior:
+            missing.append(key)
+    submit_semantics = source.get("entry_submit_semantics")
+    if not isinstance(submit_semantics, Mapping):
+        submit_semantics = behavior.get("entry_submit_semantics")
+    if not isinstance(submit_semantics, Mapping):
+        missing.append("entry_submit_semantics")
+        submit_semantics = {}
+    for key in H74_SUBMIT_SEMANTICS_FIELDS:
+        if key not in submit_semantics:
             missing.append(key)
     return {
         "source_assumption_status": "valid" if not missing else "missing_required_fields",
@@ -285,9 +314,11 @@ def _source_cost_assumptions(source: Mapping[str, object] | None) -> dict[str, o
         "slippage_source": str(cost.get("slippage_source") or "source_artifact"),
         "candle_timing": None if "candle_timing" in missing else str(source.get("candle_timing")),
         **{
-            key: None if key in missing else str(behavior.get(key, source.get(key, defaults[key])))
-            for key in defaults
+            key: None if key in missing else str(behavior.get(key))
+            for key in required_behavior
         },
+        "entry_submit_semantics": None if "entry_submit_semantics" in missing else dict(submit_semantics),
+        "submit_semantics_hash": "" if "entry_submit_semantics" in missing else sha256_prefixed(dict(submit_semantics)),
     }
 
 
@@ -325,7 +356,12 @@ def _field_comparison(field: str, *, expected: object, current: object) -> dict[
             "match": False,
             "reason_code": "current_assumption_missing",
         }
-    match = _values_equal(expected, current)
+    if isinstance(expected, Mapping) or isinstance(current, Mapping):
+        match = sha256_prefixed(expected if isinstance(expected, Mapping) else {}) == sha256_prefixed(
+            current if isinstance(current, Mapping) else {}
+        )
+    else:
+        match = _values_equal(expected, current)
     return {
         "expected": expected,
         "current": current,
@@ -338,4 +374,5 @@ __all__ = [
     "build_h74_equivalence_manifest",
     "compare_h74_equivalence",
     "H74_BEHAVIOR_FIELDS",
+    "H74_SUBMIT_SEMANTICS_FIELDS",
 ]

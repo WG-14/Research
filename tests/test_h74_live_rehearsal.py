@@ -24,12 +24,23 @@ def _source_artifact(tmp_path, *, fee_rate: float = 0.0004) -> str:
                     "slippage_source": "research_assumption",
                 },
                 "candle_timing": "closed_candle_kst",
-                "position_mode": "fixed_fill_qty_until_exit",
-                "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
-                "residual_inventory_mode": "terminal_dust_reported_not_reused_without_authority",
-                "initial_position_policy": "flat_start_required",
-                "partial_fill_policy": "accumulate_cycle_acquired_qty",
-                "fee_application_policy": "repository_observed_fee_fields",
+                "behavior_contract": {
+                    "position_mode": "fixed_fill_qty_until_exit",
+                    "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
+                    "residual_inventory_mode": "terminal_dust_reported_not_reused_without_authority",
+                    "initial_position_policy": "flat_start_required",
+                    "partial_fill_policy": "accumulate_cycle_acquired_qty",
+                    "fee_application_policy": "repository_observed_fee_fields",
+                },
+                "entry_submit_semantics": {
+                    "schema_version": 1,
+                    "entry_order_type": "price",
+                    "entry_submit_field": "price",
+                    "entry_quote_notional_krw": 100_000,
+                    "entry_volume_forbidden": True,
+                    "entry_qty_preview_authoritative": False,
+                    "entry_fill_qty_authority": "broker_fills",
+                },
             }
         ),
         encoding="utf-8",
@@ -159,8 +170,8 @@ def test_h74_rehearsal_uses_production_target_delta_planner(tmp_path, monkeypatc
     payload = run_h74_live_rehearsal(H74LiveRehearsalConfig(source_artifact_path=_source_artifact(tmp_path)))
 
     assert calls["count"] == 1
-    assert payload["would_submit_plan"]["source"] == "target_delta"
-    assert payload["would_submit_plan"]["authority"] == "canonical_target_delta_sizing"
+    assert payload["would_submit_plan"]["source"] == "h74_source_observation"
+    assert payload["would_submit_plan"]["authority"] == "h74_fixed_fill_quote_notional_buy"
     assert payload["broker_submit_reached"] is True
 
 
@@ -197,8 +208,8 @@ def test_h74_rehearsal_fails_if_target_plan_is_manual_fixture(tmp_path) -> None:
 
     payload = run_h74_live_rehearsal(H74LiveRehearsalConfig(source_artifact_path=_source_artifact(tmp_path)))
 
-    assert payload["would_submit_plan"]["source"] == "target_delta"
-    assert payload["would_submit_plan"].get("authority_source") == "target_delta"
+    assert payload["would_submit_plan"]["source"] == "h74_source_observation"
+    assert payload["would_submit_plan"].get("authority_source") == "h74_fixed_fill_quote_notional_buy"
     assert payload["would_submit_plan"].get("portfolio_target_authoritative") is True
 
 

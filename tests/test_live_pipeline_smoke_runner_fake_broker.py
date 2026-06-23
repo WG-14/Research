@@ -13,6 +13,7 @@ from bithumb_bot.live_pipeline_smoke import (
     LivePipelineSmokeExecutionService,
     _validate_smoke_roundtrip_notional_buffer,
     _readiness_from_broker,
+    build_live_pipeline_smoke_plan,
     run_live_pipeline_smoke,
     validate_live_pipeline_smoke_request,
 )
@@ -175,6 +176,19 @@ def test_fake_broker_executes_five_round_trips(monkeypatch, tmp_path) -> None:
         assert reconcile_attempts == ["reconcile"] * 19
     finally:
         _restore_settings(old)
+
+
+def test_smoke_evidence_does_not_mark_h74_readiness_pass() -> None:
+    payload = build_live_pipeline_smoke_plan(
+        cycles=5,
+        max_orders=10,
+        max_notional_krw=20_000.0,
+        market="KRW-BTC",
+    )
+
+    assert payload["execution_mode"] == "live_pipeline_smoke"
+    assert payload["readiness_scope"] == "operator_pipeline_only"
+    assert payload["normal_h74_readiness"] is False
 
 
 def test_real_live_service_executes_five_round_trips_with_fake_executor(monkeypatch, tmp_path) -> None:

@@ -50,6 +50,31 @@ def build_h74_readiness_certificate(
     for key, expected in required.items():
         if rehearsal.get(key) != expected:
             raise H74ReadinessCertificateError(f"h74_certificate_rehearsal_requirement_failed:{key}")
+    plan = rehearsal.get("would_submit_plan")
+    if not isinstance(plan, Mapping):
+        raise H74ReadinessCertificateError("h74_certificate_would_submit_plan_missing")
+    payload_preview = rehearsal.get("broker_payload_preview")
+    if not isinstance(payload_preview, Mapping):
+        raise H74ReadinessCertificateError("h74_certificate_broker_payload_preview_missing")
+    try:
+        plan_notional = float(plan.get("notional_krw") or 0.0)
+        exchange_notional = float(plan.get("exchange_submit_notional_krw") or 0.0)
+    except (TypeError, ValueError):
+        raise H74ReadinessCertificateError("h74_certificate_quote_notional_invalid") from None
+    if not (99_999.0 <= plan_notional <= 100_001.0 and 99_999.0 <= exchange_notional <= 100_001.0):
+        raise H74ReadinessCertificateError("h74_certificate_quote_notional_not_100000")
+    if str(plan.get("exchange_order_type") or "") != "price":
+        raise H74ReadinessCertificateError("h74_certificate_exchange_order_type_not_price")
+    if str(plan.get("exchange_submit_field") or "") != "price":
+        raise H74ReadinessCertificateError("h74_certificate_exchange_submit_field_not_price")
+    if payload_preview.get("volume_present") is not False:
+        raise H74ReadinessCertificateError("h74_certificate_payload_volume_present")
+    submit_semantics_hash = str(rehearsal.get("submit_semantics_hash") or "")
+    if not submit_semantics_hash:
+        raise H74ReadinessCertificateError("h74_certificate_submit_semantics_hash_missing")
+    broker_payload_preview_hash = str(rehearsal.get("broker_payload_preview_hash") or "")
+    if not broker_payload_preview_hash:
+        raise H74ReadinessCertificateError("h74_certificate_broker_payload_preview_hash_missing")
     if negative_rehearsal is None:
         from .h74_live_rehearsal import H74LiveRehearsalConfig, run_h74_live_rehearsal
 
@@ -103,6 +128,11 @@ def build_h74_readiness_certificate(
         "gate_trace_hash": str(rehearsal.get("gate_trace_hash") or ""),
         "negative_rehearsal_gate_trace_hash": str(negative_rehearsal.get("gate_trace_hash") or ""),
         "would_submit_plan_hash": str(rehearsal.get("would_submit_plan_hash") or ""),
+        "submit_semantics_hash": submit_semantics_hash,
+        "entry_quote_notional_krw": plan_notional,
+        "exchange_order_type": str(plan.get("exchange_order_type") or ""),
+        "exchange_submit_field": str(plan.get("exchange_submit_field") or ""),
+        "broker_payload_preview_hash": broker_payload_preview_hash,
         "negative_rehearsal_would_submit_plan_hash": str(
             negative_rehearsal.get("would_submit_plan_hash") or ""
         ),
@@ -132,6 +162,12 @@ def build_h74_readiness_certificate(
                 }
             ),
             "startup_gate_hash": rehearsal.get("startup_gate_hash") or rehearsal.get("gate_trace_hash"),
+            "submit_semantics_hash": submit_semantics_hash,
+            "entry_quote_notional_krw": plan_notional,
+            "exchange_order_type": str(plan.get("exchange_order_type") or ""),
+            "exchange_submit_field": str(plan.get("exchange_submit_field") or ""),
+            "would_submit_plan_hash": str(rehearsal.get("would_submit_plan_hash") or ""),
+            "broker_payload_preview_hash": broker_payload_preview_hash,
         }
     ).as_payload()
     payload["experiment_execution_contract"] = contract_payload
@@ -153,6 +189,11 @@ def validate_h74_readiness_certificate(
     current_would_submit_plan_hash: str | None = None,
     current_behavior_comparison_hash: str | None = None,
     current_contract_hash: str | None = None,
+    current_submit_semantics_hash: str | None = None,
+    current_entry_quote_notional_krw: float | None = None,
+    current_exchange_order_type: str | None = None,
+    current_exchange_submit_field: str | None = None,
+    current_broker_payload_preview_hash: str | None = None,
     strict: bool = False,
 ) -> dict[str, Any]:
     expected_env_hash = _file_hash(env_file)
@@ -186,6 +227,30 @@ def validate_h74_readiness_certificate(
             "missing_current_behavior_comparison_hash",
         ),
         ("contract_hash", current_contract_hash, "contract_hash_mismatch", "missing_current_contract_hash"),
+        (
+            "submit_semantics_hash",
+            current_submit_semantics_hash,
+            "submit_semantics_hash_changed",
+            "missing_current_submit_semantics_hash",
+        ),
+        (
+            "exchange_order_type",
+            current_exchange_order_type,
+            "payload_order_type_changed",
+            "missing_current_exchange_order_type",
+        ),
+        (
+            "exchange_submit_field",
+            current_exchange_submit_field,
+            "exchange_submit_field_changed",
+            "missing_current_exchange_submit_field",
+        ),
+        (
+            "broker_payload_preview_hash",
+            current_broker_payload_preview_hash,
+            "broker_payload_preview_hash_changed",
+            "missing_current_broker_payload_preview_hash",
+        ),
     )
     for field, current, reason, missing_reason in comparisons:
         if current is None:
@@ -194,6 +259,15 @@ def validate_h74_readiness_certificate(
             continue
         if str(certificate.get(field) or "") != str(current):
             reasons.append(reason)
+    if current_entry_quote_notional_krw is None:
+        if strict:
+            reasons.append("missing_current_entry_quote_notional_krw")
+    else:
+        try:
+            if abs(float(certificate.get("entry_quote_notional_krw") or 0.0) - float(current_entry_quote_notional_krw)) > 1.0:
+                reasons.append("entry_quote_notional_krw_changed")
+        except (TypeError, ValueError):
+            reasons.append("entry_quote_notional_krw_changed")
     return {
         "valid": not reasons,
         "status": "pass" if not reasons else "invalid",
@@ -216,6 +290,23 @@ def validate_h74_long_run_preflight(certificate: Mapping[str, Any]) -> dict[str,
             reasons.append(f"{key}_missing_or_false")
     if not str(certificate.get("entry_authority_gate_hash") or "").strip():
         reasons.append("entry_authority_gate_hash_missing")
+    if not str(certificate.get("contract_hash") or "").strip():
+        reasons.append("contract_hash_missing")
+    if not str(certificate.get("submit_semantics_hash") or "").strip():
+        reasons.append("submit_semantics_hash_missing")
+    if not str(certificate.get("would_submit_plan_hash") or "").strip():
+        reasons.append("would_submit_plan_hash_missing")
+    if not str(certificate.get("broker_payload_preview_hash") or "").strip():
+        reasons.append("broker_payload_preview_hash_missing")
+    try:
+        if not (99_999.0 <= float(certificate.get("entry_quote_notional_krw") or 0.0) <= 100_001.0):
+            reasons.append("entry_quote_notional_krw_not_100000")
+    except (TypeError, ValueError):
+        reasons.append("entry_quote_notional_krw_not_100000")
+    if str(certificate.get("exchange_order_type") or "") != "price":
+        reasons.append("payload_order_type_mismatch")
+    if str(certificate.get("exchange_submit_field") or "") != "price":
+        reasons.append("exchange_submit_field_mismatch")
     return {
         "valid": not reasons,
         "status": "pass" if not reasons else "blocked",

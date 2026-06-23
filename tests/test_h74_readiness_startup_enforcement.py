@@ -26,6 +26,11 @@ def _certificate(**overrides):
         "would_submit_plan_hash": "sha256:plan",
         "behavior_comparison_hash": "sha256:behavior",
         "contract_hash": "sha256:contract",
+        "submit_semantics_hash": "sha256:submit-semantics",
+        "entry_quote_notional_krw": 100_000.0,
+        "exchange_order_type": "price",
+        "exchange_submit_field": "price",
+        "broker_payload_preview_hash": "sha256:payload-preview",
     }
     payload.update(overrides)
     return payload
@@ -144,6 +149,11 @@ def test_h74_live_start_passes_contract_hash_when_current_values_match() -> None
         current_would_submit_plan_hash="sha256:plan",
         current_behavior_comparison_hash="sha256:behavior",
         current_contract_hash="sha256:contract",
+        current_submit_semantics_hash="sha256:submit-semantics",
+        current_entry_quote_notional_krw=100_000.0,
+        current_exchange_order_type="price",
+        current_exchange_submit_field="price",
+        current_broker_payload_preview_hash="sha256:payload-preview",
         strict=True,
     )
 

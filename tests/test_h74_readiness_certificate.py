@@ -24,12 +24,23 @@ def _source_artifact(tmp_path, *, fee_rate: float = 0.0004) -> str:
                     "slippage_source": "research_assumption",
                 },
                 "candle_timing": "closed_candle_kst",
-                "position_mode": "fixed_fill_qty_until_exit",
-                "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
-                "residual_inventory_mode": "terminal_dust_reported_not_reused_without_authority",
-                "initial_position_policy": "flat_start_required",
-                "partial_fill_policy": "accumulate_cycle_acquired_qty",
-                "fee_application_policy": "repository_observed_fee_fields",
+                "behavior_contract": {
+                    "position_mode": "fixed_fill_qty_until_exit",
+                    "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
+                    "residual_inventory_mode": "terminal_dust_reported_not_reused_without_authority",
+                    "initial_position_policy": "flat_start_required",
+                    "partial_fill_policy": "accumulate_cycle_acquired_qty",
+                    "fee_application_policy": "repository_observed_fee_fields",
+                },
+                "entry_submit_semantics": {
+                    "schema_version": 1,
+                    "entry_order_type": "price",
+                    "entry_submit_field": "price",
+                    "entry_quote_notional_krw": 100_000,
+                    "entry_volume_forbidden": True,
+                    "entry_qty_preview_authoritative": False,
+                    "entry_fill_qty_authority": "broker_fills",
+                },
             }
         ),
         encoding="utf-8",
@@ -236,6 +247,11 @@ def test_certificate_validation_requires_current_commit_db_order_gate_plan_hashe
         current_would_submit_plan_hash=str(cert["would_submit_plan_hash"]),
         current_behavior_comparison_hash=str(cert["behavior_comparison_hash"]),
         current_contract_hash=str(cert["contract_hash"]),
+        current_submit_semantics_hash=str(cert["submit_semantics_hash"]),
+        current_entry_quote_notional_krw=float(cert["entry_quote_notional_krw"]),
+        current_exchange_order_type=str(cert["exchange_order_type"]),
+        current_exchange_submit_field=str(cert["exchange_submit_field"]),
+        current_broker_payload_preview_hash=str(cert["broker_payload_preview_hash"]),
         strict=True,
         now_sec=1,
     )
@@ -264,8 +280,61 @@ def test_certificate_invalid_when_current_hash_argument_missing_in_strict_mode(t
     assert "missing_current_db_schema_hash" in verdict["reasons"]
 
 
+def test_certificate_contains_submit_semantics_hash(tmp_path) -> None:
+    cert, _rehearsal, _env = _certificate(tmp_path)
+
+    assert str(cert["submit_semantics_hash"]).startswith("sha256:")
+    assert cert["entry_quote_notional_krw"] == pytest.approx(100_000.0)
+    assert cert["exchange_order_type"] == "price"
+    assert cert["exchange_submit_field"] == "price"
+    assert str(cert["broker_payload_preview_hash"]).startswith("sha256:")
+
+
+def test_certificate_invalid_when_quote_notional_changes(tmp_path) -> None:
+    cert, rehearsal, env = _certificate(tmp_path)
+
+    verdict = validate_h74_readiness_certificate(
+        cert,
+        env_file=env,
+        broker_balance_snapshot_hash=str(rehearsal["broker_balance_snapshot_hash"]),
+        current_entry_quote_notional_krw=90_000.0,
+        now_sec=1,
+    )
+
+    assert verdict["valid"] is False
+    assert "entry_quote_notional_krw_changed" in verdict["reasons"]
+
+
+def test_certificate_invalid_when_payload_order_type_changes(tmp_path) -> None:
+    cert, rehearsal, env = _certificate(tmp_path)
+
+    verdict = validate_h74_readiness_certificate(
+        cert,
+        env_file=env,
+        broker_balance_snapshot_hash=str(rehearsal["broker_balance_snapshot_hash"]),
+        current_exchange_order_type="market",
+        now_sec=1,
+    )
+
+    assert verdict["valid"] is False
+    assert "payload_order_type_changed" in verdict["reasons"]
+
+
 def test_certificate_not_issued_when_source_artifact_missing() -> None:
     rehearsal = run_h74_live_rehearsal(H74LiveRehearsalConfig(source_artifact_path=None))
 
     with pytest.raises(H74ReadinessCertificateError, match="source_artifact_not_loaded"):
         build_h74_readiness_certificate(rehearsal, env_file=None)
+
+
+def test_h74_readiness_requires_quote_notional_rehearsal_even_with_smoke_evidence() -> None:
+    smoke_evidence = {
+        "artifact_type": "live_pipeline_smoke",
+        "status": "passed",
+        "execution_mode": "live_pipeline_smoke",
+        "readiness_scope": "operator_pipeline_only",
+        "normal_h74_readiness": False,
+    }
+
+    with pytest.raises(H74ReadinessCertificateError, match="requires_h74_live_rehearsal"):
+        build_h74_readiness_certificate(smoke_evidence, env_file=None)

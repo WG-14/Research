@@ -24,6 +24,7 @@ from .execution_service import (
 )
 from .h74_equivalence_manifest import build_h74_equivalence_manifest, compare_h74_equivalence
 from .h74_observation import (
+    H74_ENTRY_SUBMIT_SEMANTICS,
     H74_SOURCE_OBSERVATION_AUTHORITY_ENV,
     H74_STRATEGY_NAME,
     H74_SOURCE_OBSERVATION_PARAMETERS,
@@ -625,6 +626,7 @@ def _blocking_gate(gate_trace: list[dict[str, object]]) -> tuple[str, str]:
         "readiness": 10,
         "entry_authority": 20,
         "pre_submit_risk": 30,
+        "submit_semantics": 35,
         "fee_equivalence": 40,
         "submit_authority": 50,
     }
@@ -699,6 +701,7 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
             "initial_position_policy": "flat_start_required",
             "partial_fill_policy": "accumulate_cycle_acquired_qty",
             "fee_application_policy": "repository_observed_fee_fields",
+            "entry_submit_semantics": dict(H74_ENTRY_SUBMIT_SEMANTICS),
         },
     )
     equivalence_status = str(equivalence["experiment_equivalence_status"])
@@ -786,12 +789,7 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
                 conn.commit()
             finally:
                 conn.close()
-            submit_authority = evaluate_submit_authority_policy(
-                would_submit_plan,
-                settings_obj=settings,
-                plan_kind="target",
-                require_final_payload=True,
-            )
+            submit_authority = None
             if equivalence_allows:
 
                 def _db_factory() -> sqlite3.Connection:
@@ -873,8 +871,18 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
                             would_submit_plan = stored or would_submit_plan
                     finally:
                         conn.close()
+            submit_authority = evaluate_submit_authority_policy(
+                would_submit_plan,
+                settings_obj=settings,
+                plan_kind="target",
+                require_final_payload=True,
+            )
         submit_authority_allowed = bool(captured)
-        submit_authority_reason = "allowed_target_delta" if submit_authority_allowed else submit_authority.reason
+        submit_authority_reason = (
+            "allowed_target_delta"
+            if submit_authority_allowed
+            else str(getattr(submit_authority, "reason", "submit_authority_not_evaluated"))
+        )
         readiness_blocks = not bool(cfg.projection_converged)
         planning_path_mode = str(getattr(settings, "MODE", ""))
         planning_path_live_dry_run = bool(getattr(settings, "LIVE_DRY_RUN", True))
@@ -903,6 +911,58 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
                 "blocking": True,
                 "source": "daily_participation_entry_authority",
             }
+        expected_semantics = dict(equivalence_manifest.get("entry_submit_semantics") or {})
+        payload_preview = {
+            "order_type": would_submit_plan.get("exchange_order_type"),
+            "price": would_submit_plan.get("exchange_submit_notional_krw"),
+            "volume_present": would_submit_plan.get("exchange_submit_qty") is not None,
+        }
+        semantics_reasons: list[str] = []
+        if equivalence_status == "unknown_source_assumption_missing":
+            missing_fields = set(str(item) for item in equivalence_manifest.get("source_missing_assumption_fields") or [])
+            if "entry_submit_semantics" in missing_fields or "entry_quote_notional_krw" in missing_fields:
+                semantics_reasons.append("source_entry_submit_semantics_missing")
+        if daily_entry_allowed:
+            plan_notional = would_submit_plan.get("notional_krw")
+            exchange_notional = would_submit_plan.get("exchange_submit_notional_krw")
+            try:
+                plan_notional_ok = 99_999.0 <= float(plan_notional) <= 100_001.0
+            except (TypeError, ValueError):
+                plan_notional_ok = False
+            try:
+                exchange_notional_ok = 99_999.0 <= float(exchange_notional) <= 100_001.0
+            except (TypeError, ValueError):
+                exchange_notional_ok = False
+            if not plan_notional_ok:
+                semantics_reasons.append("would_submit_plan_notional_not_100000")
+            if not exchange_notional_ok:
+                semantics_reasons.append("exchange_submit_notional_not_100000")
+            if str(would_submit_plan.get("position_mode") or "") != H74_POSITION_MODE:
+                semantics_reasons.append("position_mode_mismatch")
+            if str(would_submit_plan.get("source") or "") != "h74_source_observation":
+                semantics_reasons.append("h74_source_observation_source_missing")
+            if str(would_submit_plan.get("authority") or "") != "h74_fixed_fill_quote_notional_buy":
+                semantics_reasons.append("h74_quote_notional_authority_missing")
+            if str(would_submit_plan.get("exchange_order_type") or "") != "price":
+                semantics_reasons.append("exchange_order_type_not_price")
+            if str(would_submit_plan.get("exchange_submit_field") or "") != "price":
+                semantics_reasons.append("exchange_submit_field_not_price")
+            if payload_preview["volume_present"]:
+                semantics_reasons.append("price_order_volume_present")
+            if isinstance(expected_semantics, Mapping) and expected_semantics:
+                expected_notional = expected_semantics.get("entry_quote_notional_krw")
+                expected_order_type = str(expected_semantics.get("entry_order_type") or "")
+                expected_submit_field = str(expected_semantics.get("entry_submit_field") or "")
+                try:
+                    if abs(float(expected_notional) - float(exchange_notional or 0.0)) > 1.0:
+                        semantics_reasons.append("source_live_quote_notional_mismatch")
+                except (TypeError, ValueError):
+                    semantics_reasons.append("source_quote_notional_invalid")
+                if expected_order_type != str(would_submit_plan.get("exchange_order_type") or ""):
+                    semantics_reasons.append("source_live_order_type_mismatch")
+                if expected_submit_field != str(would_submit_plan.get("exchange_submit_field") or ""):
+                    semantics_reasons.append("source_live_submit_field_mismatch")
+        submit_semantics_blocking = bool(semantics_reasons)
         gate_trace = [
             {
                 "gate": "time_window",
@@ -916,6 +976,12 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
                 "status": "ALLOW" if equivalence_allows else "BLOCK",
                 "reason_code": fee_gate_reason,
                 "blocking": not equivalence_allows,
+            },
+            {
+                "gate": "submit_semantics",
+                "status": "BLOCK" if submit_semantics_blocking else "ALLOW",
+                "reason_code": ",".join(semantics_reasons) if semantics_reasons else "OK",
+                "blocking": submit_semantics_blocking,
             },
             {
                 "gate": "readiness",
@@ -977,7 +1043,9 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
         "runtime_cycle_pipeline_called": bool(planning_bundle.execution_plan_batch is not None),
         "production_runtime_strategy_set_called": bool(planning_context.get("runtime_strategy_set_manifest_hash")),
         "production_allocator_portfolio_target_called": bool(planning_context.get("portfolio_target_hash")),
-        "production_target_delta_planner_called": str(would_submit_plan.get("source") or "") == "target_delta",
+        "production_target_delta_planner_called": isinstance(
+            would_submit_plan.get("target_sizing"), Mapping
+        ),
         "runtime_strategy_set_manifest_hash": planning_context.get("runtime_strategy_set_manifest_hash"),
         "runtime_strategy_result_bundle_hash": planning_context.get("runtime_strategy_result_bundle_hash"),
         "portfolio_allocation_decision_hash": planning_context.get("allocation_decision_hash"),
@@ -1004,9 +1072,13 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
         "submit_authority_allowed": submit_authority_allowed,
         "broker_submit_reached": bool(captured),
         "actual_submit": False,
-        "would_submit": bool(equivalence_allows and captured),
+        "would_submit": bool(equivalence_allows and captured and not submit_semantics_blocking),
         "would_submit_plan": would_submit_plan,
         "would_submit_plan_hash": sha256_prefixed(would_submit_plan),
+        "broker_payload_preview": payload_preview,
+        "submit_semantics_hash": str(equivalence_manifest.get("submit_semantics_hash") or ""),
+        "entry_submit_semantics": expected_semantics,
+        "broker_payload_preview_hash": sha256_prefixed(payload_preview),
         "broker_balance_snapshot_hash": broker_snapshot_hash,
         "experiment_equivalence_status": equivalence_status,
         "source_artifact_status": equivalence_manifest["source_artifact_status"],

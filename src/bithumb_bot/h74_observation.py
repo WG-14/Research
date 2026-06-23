@@ -10,6 +10,12 @@ from .research.hashing import sha256_prefixed
 from .storage_io import write_json_atomic
 from .strategy_risk_profile import risk_policy_from_mapping
 from .experiment_execution_contract import POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
+from .h74_submit_semantics import (
+    H74_ENTRY_SUBMIT_SEMANTICS,
+    H74_ENTRY_SUBMIT_SEMANTICS_AUTHORITY,
+    H74_ENTRY_SUBMIT_SEMANTICS_NAME,
+    H74_SOURCE_MAX_ORDER_KRW,
+)
 
 
 H74_OBSERVATION_AUTHORITY_ARTIFACT_TYPE = "h74_live_observation_authority"
@@ -18,7 +24,6 @@ H74_SOURCE_OBSERVATION_AUTHORITY_ENV = "H74_SOURCE_OBSERVATION_AUTHORITY_PATH"
 H74_SOURCE_OBSERVATION_SMOKE_EVIDENCE_ENV = "H74_SOURCE_OBSERVATION_LIVE_PIPELINE_SMOKE_EVIDENCE_PATH"
 H74_STRATEGY_NAME = "daily_participation_sma"
 H74_SOURCE_CANDIDATE_ID = "candidate_9738b8d6"
-H74_SOURCE_MAX_ORDER_KRW = 100_000
 H74_OBSERVATION_MAX_ORDER_KRW = 50_000
 H74_OBSERVATION_WINDOW_DAYS = 7
 H74_SOURCE_OBSERVATION_MAX_DAILY_ENTRY_COUNT = 1
@@ -94,6 +99,8 @@ def _h74_source_observation_parameters() -> dict[str, object]:
             "initial_position_policy": "flat_start_required",
             "partial_fill_policy": "accumulate_cycle_acquired_qty",
             "fee_application_policy": "repository_observed_fee_fields",
+            "entry_submit_semantics": dict(H74_ENTRY_SUBMIT_SEMANTICS),
+            "entry_submit_semantics_name": H74_ENTRY_SUBMIT_SEMANTICS_NAME,
         }
     )
     return parameters
@@ -251,6 +258,9 @@ def build_h74_source_observation_authority_payload(
         "approved_profile_evidence": False,
         "risk_policy_hash": risk_policy_hash,
         "position_mode": H74_POSITION_MODE,
+        "entry_submit_semantics": dict(H74_ENTRY_SUBMIT_SEMANTICS),
+        "entry_submit_semantics_name": H74_ENTRY_SUBMIT_SEMANTICS_NAME,
+        "submit_semantics_hash": sha256_prefixed(H74_ENTRY_SUBMIT_SEMANTICS),
         "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
         "residual_inventory_mode": "terminal_dust_reported_not_reused_without_authority",
         "initial_position_policy": "flat_start_required",
@@ -440,6 +450,18 @@ def verify_h74_source_observation_authority(
         raise H74ObservationAuthorityError("h74_source_observation_authority_interval_invalid")
     if str(bound.get("source_candidate_artifact_hash") or "").strip() == "":
         raise H74ObservationAuthorityError("h74_source_observation_authority_source_hash_missing")
+    entry_submit_semantics = bound.get("entry_submit_semantics")
+    if not isinstance(entry_submit_semantics, dict):
+        raise H74ObservationAuthorityError("h74_source_observation_authority_entry_submit_semantics_missing")
+    for key, expected in H74_ENTRY_SUBMIT_SEMANTICS.items():
+        if entry_submit_semantics.get(key) != expected:
+            raise H74ObservationAuthorityError(
+                f"h74_source_observation_authority_entry_submit_semantics_mismatch:{key}"
+            )
+    if str(bound.get("entry_submit_semantics_name") or "").strip() != H74_ENTRY_SUBMIT_SEMANTICS_NAME:
+        raise H74ObservationAuthorityError("h74_source_observation_authority_submit_semantics_name_invalid")
+    if str(bound.get("submit_semantics_hash") or "").strip() != sha256_prefixed(entry_submit_semantics):
+        raise H74ObservationAuthorityError("h74_source_observation_authority_submit_semantics_hash_mismatch")
     for key, expected in bound.items():
         if key in {
             "expires_at",
@@ -452,6 +474,9 @@ def verify_h74_source_observation_authority(
             "approved_profile_evidence",
             "production_approval",
             "risk_policy_hash",
+            "entry_submit_semantics",
+            "entry_submit_semantics_name",
+            "submit_semantics_hash",
         }:
             continue
         actual = runtime_values.get(key)

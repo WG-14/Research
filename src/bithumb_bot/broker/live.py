@@ -2476,11 +2476,12 @@ def _target_delta_submit_plan(
         return None
     if not _broker_submit_authority_allowed(execution_submit_plan, plan_kind="target"):
         return None
-    if str(execution_submit_plan.get("source") or "") != "target_delta":
+    if str(execution_submit_plan.get("source") or "") not in {"target_delta", "h74_source_observation"}:
         return None
     if str(execution_submit_plan.get("authority") or "") not in {
         "canonical_target_delta_sizing",
         "target_position_delta",
+        "h74_fixed_fill_quote_notional_buy",
     }:
         return None
     target_side = str(execution_submit_plan.get("side") or "").upper()
@@ -2689,7 +2690,7 @@ def _determine_live_execution_intent(
         )
         target_observability = {
             "execution_engine": "target_delta",
-            "execution_submit_plan_source": "target_delta",
+            "execution_submit_plan_source": str(target_plan.get("source") or "target_delta"),
             "execution_submit_plan_authority": str(target_plan.get("authority") or "canonical_target_delta_sizing"),
             "execution_submit_plan_hash": str(
                 target_plan.get("submit_plan_hash") or target_plan.get("content_hash") or ""
@@ -2702,8 +2703,8 @@ def _determine_live_execution_intent(
             "target_delta_qty": target_plan.get("target_delta_qty"),
             "target_delta_side": target_side,
             "target_delta_notional_krw": target_plan.get("delta_krw"),
-            "target_delta_intent_type": "target_delta_rebalance",
-            "target_delta_strategy_context": "target_delta",
+            "target_delta_intent_type": str(target_plan.get("intent_type") or "target_delta_rebalance"),
+            "target_delta_strategy_context": str(target_plan.get("strategy_context") or "target_delta"),
             "target_delta_idempotency_key": target_plan.get("idempotency_key"),
             "target_desired_qty": target_plan.get("target_desired_qty"),
             "target_exchange_constrained_qty": target_plan.get("target_exchange_constrained_qty"),
@@ -2718,16 +2719,28 @@ def _determine_live_execution_intent(
             "rejected_remainder": target_plan.get("rejected_remainder"),
             "target_dust_classification": target_plan.get("target_dust_classification"),
             "target_position_truth_state": target_plan.get("target_position_truth_state"),
-            "source": "target_delta",
-            "authority": "canonical_target_delta_sizing",
-            "submit_qty_source": "canonical_target_delta_sizing",
-            "submit_qty_source_truth_source": "order_sizing.build_target_delta_execution_sizing",
+            "source": str(target_plan.get("source") or "target_delta"),
+            "authority": str(target_plan.get("authority") or "canonical_target_delta_sizing"),
+            "submit_qty_source": str(target_plan.get("submit_qty_authority") or target_plan.get("authority") or "canonical_target_delta_sizing"),
+            "submit_qty_source_truth_source": (
+                "ExecutionSubmitPlan.quote_notional_krw"
+                if str(target_plan.get("submit_semantics") or "") == "quote_notional_market_buy"
+                else "order_sizing.build_target_delta_execution_sizing"
+            ),
             "position_state_source": "broker_verified_current_position",
             "position_state_source_truth_source": "target_delta.broker_position_evidence",
             "sell_qty_basis_qty": target_qty,
             "sell_qty_basis_source": "canonical_target_delta_sizing",
             "sell_qty_basis_qty_truth_source": "target_delta.exchange_constrained_qty",
             "sell_qty_basis_source_truth_source": "order_sizing.build_target_delta_execution_sizing",
+            "quote_notional_krw": target_plan.get("quote_notional_krw"),
+            "quote_notional_authority": target_plan.get("quote_notional_authority"),
+            "submit_semantics": target_plan.get("submit_semantics"),
+            "submit_semantics_authority": target_plan.get("submit_semantics_authority"),
+            "exchange_order_type": target_plan.get("exchange_order_type"),
+            "exchange_submit_field": target_plan.get("exchange_submit_field"),
+            "exchange_submit_notional_krw": target_plan.get("exchange_submit_notional_krw"),
+            "exchange_submit_qty": target_plan.get("exchange_submit_qty"),
         }
         _copy_pre_submit_authority_fields(target_observability, target_plan)
         position_state.decision_observability.update(target_observability)
@@ -2746,14 +2759,14 @@ def _determine_live_execution_intent(
         return _LiveExecutionIntent(
             side=target_side,
             order_qty=target_qty,
-            submit_qty_source="canonical_target_delta_sizing",
+            submit_qty_source=str(target_plan.get("submit_qty_authority") or target_plan.get("authority") or "canonical_target_delta_sizing"),
             harmless_dust_checked=True,
             entry_sizing=(target_sizing if target_side == "BUY" else None),
             exit_sizing=(target_sizing if target_side == "SELL" else None),
             canonical_sell=None,
             diagnostic_sell_qty=None,
-            intent_type="target_delta_rebalance",
-            strategy_context="target_delta",
+            intent_type=str(target_plan.get("intent_type") or "target_delta_rebalance"),
+            strategy_context=str(target_plan.get("strategy_context") or "target_delta"),
             use_qty_intent_key=True,
             idempotency_key=(
                 str(target_plan.get("idempotency_key"))

@@ -4,7 +4,12 @@ import pytest
 
 from bithumb_bot.broker import order_rules
 from bithumb_bot.broker.base import BrokerRejectError
-from bithumb_bot.broker.order_payloads import build_order_payload, build_order_payload_from_plan, validate_client_order_id
+from bithumb_bot.broker.order_payloads import (
+    build_order_payload,
+    build_order_payload_from_plan,
+    validate_client_order_id,
+    validate_order_submit_payload,
+)
 from bithumb_bot.execution_models import OrderIntent
 from bithumb_bot.execution_planner import build_submit_plan
 
@@ -42,6 +47,19 @@ def test_build_market_buy_payload_uses_doc_fields() -> None:
         "order_type": "price",
         "price": "10000",
     }
+
+
+def test_quote_notional_price_buy_payload_rejects_volume() -> None:
+    with pytest.raises(BrokerRejectError, match="order_type=price must not include volume"):
+        validate_order_submit_payload(
+            {
+                "market": "KRW-BTC",
+                "side": "bid",
+                "order_type": "price",
+                "price": "100000",
+                "volume": "0.0009",
+            }
+        )
 
 
 def test_build_market_sell_payload_uses_doc_fields() -> None:

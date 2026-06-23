@@ -281,6 +281,20 @@ def build_submit_plan(
             exchange_constrained_qty = float(requested_qty)
             exchange_submit_qty = float(internal_lot_qty)
 
+        quote_notional_krw = (
+            None if intent.quote_notional_krw is None else max(0.0, float(intent.quote_notional_krw))
+        )
+        has_quote_notional_buy = (
+            intent.normalized_side == "bid"
+            and quote_notional_krw is not None
+            and str(intent.submit_semantics or "") == "quote_notional_market_buy"
+        )
+        if has_quote_notional_buy:
+            if buy_submit_contract is None:
+                raise BrokerRejectError("quote-notional BUY requires explicit buy submit contract")
+            if str(exchange_order_type) != "price" or str(exchange_submit_field) != "price":
+                raise BrokerRejectError("quote-notional BUY requires order_type=price submit_field=price")
+
         submitted_qty = float(exchange_submit_qty)
         rejected_qty_remainder = max(0.0, float(requested_qty) - float(submitted_qty))
         lifecycle_executable_qty = (
@@ -294,9 +308,13 @@ def build_submit_plan(
             else str(qty_split.non_executable_reason or "none")
         )
         submit_qty_authority = (
-            "submit_plan.exchange_constraints"
-            if intent.normalized_side == "bid"
-            else "submit_plan.internal_lot_normalization"
+            "non_authoritative_preview"
+            if has_quote_notional_buy
+            else (
+                "submit_plan.exchange_constraints"
+                if intent.normalized_side == "bid"
+                else "submit_plan.internal_lot_normalization"
+            )
         )
         quantity_contract = build_quantity_contract_snapshot(
             requested_qty=float(requested_qty),
@@ -334,7 +352,29 @@ def build_submit_plan(
         exchange_submit_volume: float | None = None
         exchange_submit_notional_krw: float | None = None
 
-        if intent.price is None and intent.normalized_side == "bid":
+        if has_quote_notional_buy:
+            exchange_submit_notional_krw = float(quote_notional_krw)
+            price_unit = float(submit_price_tick_policy.price_unit)
+            if price_unit > 0:
+                exchange_submit_notional_krw = math.floor(exchange_submit_notional_krw / price_unit) * price_unit
+            min_total = max(
+                float(side_min_total_krw(rules=resolved_rules, side=order_side)),
+                float(getattr(resolved_rules, "min_notional_krw", 0.0) or 0.0),
+            )
+            if min_total > 0 and exchange_submit_notional_krw < float(min_total):
+                raise BrokerRejectError(
+                    "order notional below side minimum for quote-notional market BUY: "
+                    f"side={order_side} notional={exchange_submit_notional_krw:.8f} min_total={min_total:.8f}"
+                )
+            exchange_submit_price = float(exchange_submit_notional_krw)
+            exchange_submit_volume = None
+            submit_contract_context["exchange_submit_notional_krw"] = float(exchange_submit_notional_krw)
+            submit_contract_context["exchange_submit_qty"] = None
+            submit_contract_context["internal_executable_qty"] = float(internal_lot_qty)
+            submit_contract_context["submit_semantics"] = str(intent.submit_semantics)
+            submit_contract_context["submit_semantics_authority"] = str(intent.submit_semantics_authority or "")
+            submit_contract_context["quote_notional_authority"] = str(intent.quote_notional_authority or "")
+        elif intent.price is None and intent.normalized_side == "bid":
             if effective_market_price is None:
                 raise BrokerRejectError("market BUY planning requires effective market price")
             exchange_submit_notional_krw = float(effective_market_price) * float(internal_lot_qty)
@@ -409,6 +449,14 @@ def build_submit_plan(
             qty_split=qty_split,
             internal_lot_qty=float(internal_lot_qty),
             exchange_submit_qty=float(exchange_submit_qty),
+            quote_notional_krw=(
+                float(exchange_submit_notional_krw)
+                if has_quote_notional_buy and exchange_submit_notional_krw is not None
+                else None
+            ),
+            quote_notional_authority=intent.quote_notional_authority,
+            submit_semantics=intent.submit_semantics,
+            submit_semantics_authority=intent.submit_semantics_authority,
             buy_price_none_submit_contract=buy_submit_contract,
             trace_id=trace_id,
             plan_id=f"{trace_id}:plan",

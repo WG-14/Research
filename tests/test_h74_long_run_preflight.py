@@ -15,6 +15,13 @@ def _certificate() -> dict[str, object]:
         "entry_authority_gate_present": True,
         "out_of_window_buy_blocked": True,
         "entry_authority_gate_hash": "sha256:entry",
+        "contract_hash": "sha256:contract",
+        "submit_semantics_hash": "sha256:submit-semantics",
+        "would_submit_plan_hash": "sha256:plan",
+        "broker_payload_preview_hash": "sha256:payload-preview",
+        "entry_quote_notional_krw": 100_000.0,
+        "exchange_order_type": "price",
+        "exchange_submit_field": "price",
     }
 
 
@@ -43,6 +50,16 @@ def test_preflight_accepts_positive_and_negative_certificate() -> None:
 
     assert verdict["valid"] is True
     assert verdict["status"] == "pass"
+
+
+def test_long_run_preflight_blocks_submit_semantics_mismatch() -> None:
+    cert = _certificate()
+    cert["exchange_order_type"] = "market"
+
+    verdict = validate_h74_long_run_preflight(cert)
+
+    assert verdict["valid"] is False
+    assert "payload_order_type_mismatch" in verdict["reasons"]
 
 
 def test_preflight_command_exits_nonzero_without_negative(tmp_path, capsys) -> None:

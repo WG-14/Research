@@ -5,6 +5,7 @@ from __future__ import annotations
 EXECUTION_SUBMIT_PLAN_SCHEMA_KNOWN_SOURCES = frozenset(
     {
         "target_delta",
+        "h74_source_observation",
         "strategy_position",
         "residual_inventory",
         "research_backtest",
@@ -13,6 +14,7 @@ EXECUTION_SUBMIT_PLAN_SCHEMA_KNOWN_SOURCES = frozenset(
 EXECUTION_SUBMIT_PLAN_SCHEMA_KNOWN_AUTHORITIES = frozenset(
     {
         "canonical_target_delta_sizing",
+        "h74_fixed_fill_quote_notional_buy",
         "configured_strategy_order_size",
         "residual_inventory_policy",
         "residual_inventory_delta",

@@ -28,6 +28,7 @@ from bithumb_bot.strategy.daily_participation_policy import (
     DailyParticipationStateSnapshot,
     evaluate_daily_participation_policy,
 )
+from bithumb_bot.target_position import TargetPositionSettings, build_target_position_decision
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "bithumb" / "live_paid_fee_single_fill_buy_2026_04_24.json"
@@ -40,12 +41,23 @@ def _source_artifact(tmp_path) -> str:
             {
                 "runtime_base_cost_assumption": {"fee_rate": 0.0004, "slippage_bps": 10},
                 "candle_timing": "closed_candle_kst",
-                "position_mode": "fixed_fill_qty_until_exit",
-                "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
-                "residual_inventory_mode": "terminal_dust_reported_not_reused_without_authority",
-                "initial_position_policy": "flat_start_required",
-                "partial_fill_policy": "accumulate_cycle_acquired_qty",
-                "fee_application_policy": "repository_observed_fee_fields",
+                "behavior_contract": {
+                    "position_mode": "fixed_fill_qty_until_exit",
+                    "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
+                    "residual_inventory_mode": "terminal_dust_reported_not_reused_without_authority",
+                    "initial_position_policy": "flat_start_required",
+                    "partial_fill_policy": "accumulate_cycle_acquired_qty",
+                    "fee_application_policy": "repository_observed_fee_fields",
+                },
+                "entry_submit_semantics": {
+                    "schema_version": 1,
+                    "entry_order_type": "price",
+                    "entry_submit_field": "price",
+                    "entry_quote_notional_krw": 100_000,
+                    "entry_volume_forbidden": True,
+                    "entry_qty_preview_authoritative": False,
+                    "entry_fill_qty_authority": "broker_fills",
+                },
             }
         ),
         encoding="utf-8",
@@ -213,9 +225,16 @@ def _runtime_settlement(order: BrokerOrder, fills: list[BrokerFill], db_path: Pa
     )
 
 
-def _record_h74_buy_intent(conn: sqlite3.Connection, order: BrokerOrder, fill: BrokerFill) -> None:
+def _record_h74_buy_intent(
+    conn: sqlite3.Connection,
+    order: BrokerOrder,
+    fill: BrokerFill,
+    *,
+    requested_qty: float | None = None,
+) -> None:
     key = _claim_key()
     authority_hash = "sha256:h74-roundtrip-authority"
+    submit_qty = float(fill.qty if requested_qty is None else requested_qty)
     cycle_id = build_h74_cycle_id(
         strategy_instance_id=key.strategy_instance_id,
         entry_client_order_id=order.client_order_id,
@@ -225,7 +244,7 @@ def _record_h74_buy_intent(conn: sqlite3.Connection, order: BrokerOrder, fill: B
         conn,
         client_order_id=order.client_order_id,
         side="BUY",
-        qty_req=float(fill.qty),
+        qty_req=submit_qty,
         price=float(fill.price),
         symbol=key.pair,
         strategy_name="daily_participation_sma",
@@ -241,10 +260,10 @@ def _record_h74_buy_intent(conn: sqlite3.Connection, order: BrokerOrder, fill: B
         effective_min_trade_qty=0.0001,
         qty_step=0.0001,
         min_notional_krw=5_000.0,
-        intended_lot_count=max(1, int(float(fill.qty) / 0.0001)),
-        executable_lot_count=max(1, int(float(fill.qty) / 0.0001)),
-        final_intended_qty=float(fill.qty),
-        final_submitted_qty=float(fill.qty),
+        intended_lot_count=max(1, int(submit_qty / 0.0001)),
+        executable_lot_count=max(1, int(submit_qty / 0.0001)),
+        final_intended_qty=submit_qty,
+        final_submitted_qty=submit_qty,
         decision_reason_code="daily_participation_fallback_allowed",
         local_intent_state="submitted",
         ts_ms=int(fill.fill_ts),
@@ -325,7 +344,66 @@ def test_h74_buy_fill_marks_daily_claim_fulfilled(tmp_path, roundtrip_db) -> Non
     assert settlement.projection_applied is True
     assert settlement.broker_local_converged is True
     assert rehearsal["would_submit_plan"]["side"] == "BUY"
-    assert rehearsal["would_submit_plan"]["source"] == "target_delta"
+    assert rehearsal["would_submit_plan"]["source"] == "h74_source_observation"
+
+
+def test_h74_buy_quote_notional_records_acquired_qty_from_broker_fill(roundtrip_db) -> None:
+    order, fills = _recorded_broker_roundtrip()
+    broker_fill = BrokerFill(
+        client_order_id=fills[0].client_order_id,
+        exchange_order_id=fills[0].exchange_order_id,
+        fill_id=fills[0].fill_id,
+        fill_ts=fills[0].fill_ts,
+        price=fills[0].price,
+        qty=0.000997,
+        fee=fills[0].fee,
+        fee_status=fills[0].fee_status,
+        fee_source=fills[0].fee_source,
+        fee_confidence=fills[0].fee_confidence,
+        fee_provenance=fills[0].fee_provenance,
+        raw=fills[0].raw,
+    )
+    preview_qty = 0.0009
+    conn = _conn(roundtrip_db)
+    try:
+        _record_h74_buy_intent(conn, order, broker_fill, requested_qty=preview_qty)
+        apply_fill_and_trade(
+            conn,
+            client_order_id=order.client_order_id,
+            side="BUY",
+            fill_id=broker_fill.fill_id,
+            fill_ts=int(broker_fill.fill_ts),
+            price=float(broker_fill.price),
+            qty=float(broker_fill.qty),
+            fee=float(broker_fill.fee or 0.0),
+            strategy_name="daily_participation_sma",
+            pair="KRW-BTC",
+            signal_ts=int(broker_fill.fill_ts),
+            note="quote-notional broker fill authority regression",
+        )
+        order_row = conn.execute(
+            "SELECT cycle_id, qty_req FROM orders WHERE client_order_id=?",
+            (order.client_order_id,),
+        ).fetchone()
+        inventory = load_h74_cycle_inventory(conn, cycle_id=str(order_row["cycle_id"]))
+    finally:
+        conn.close()
+
+    assert order_row["qty_req"] == pytest.approx(preview_qty)
+    assert inventory is not None
+    assert inventory.acquired_qty == pytest.approx(0.000997)
+    assert inventory.remaining_cycle_qty == pytest.approx(0.000997)
+
+
+def test_h74_buy_preview_qty_is_not_cycle_authority(tmp_path) -> None:
+    rehearsal = run_h74_live_rehearsal(H74LiveRehearsalConfig(source_artifact_path=_source_artifact(tmp_path)))
+    plan = rehearsal["would_submit_plan"]
+
+    assert plan["exchange_submit_notional_krw"] == pytest.approx(100_000.0)
+    assert plan["exchange_submit_qty"] is None
+    assert plan["submit_qty_authority"] == "non_authoritative_preview"
+    assert plan["entry_qty_preview_authoritative"] is False
+    assert plan["entry_fill_qty_authority"] == "broker_fills"
 
 
 def test_next_cycle_same_kst_day_does_not_submit_second_buy(tmp_path, roundtrip_db) -> None:
@@ -474,7 +552,7 @@ def test_h74_roundtrip_uses_recorded_broker_fill_fixture(tmp_path, roundtrip_db)
         conn.close()
 
     assert FIXTURE.exists()
-    assert rehearsal["would_submit_plan"]["source"] == "target_delta"
+    assert rehearsal["would_submit_plan"]["source"] == "h74_source_observation"
     assert order.raw is not None
     assert fills[0].fee == 27.86
     assert evidence["fill_set_complete"] is True
@@ -504,3 +582,40 @@ def test_h74_roundtrip_verifies_sell_closeout_path(tmp_path, roundtrip_db) -> No
     assert sell_closeout["would_submit_plan"]["side"] == "SELL"
     assert sell_closeout["would_submit_plan"]["source"] == "target_delta"
     assert sell_closeout["would_submit_plan"]["final_action"] == "REBALANCE_TO_TARGET"
+
+
+def test_h74_sell_uses_remaining_cycle_qty_after_quote_buy_fill(tmp_path, roundtrip_db) -> None:
+    order, fills = _recorded_broker_roundtrip()
+    conn = _conn(roundtrip_db)
+    try:
+        _apply_recorded_buy_fill(conn, order, fills[0])
+        order_row = conn.execute(
+            "SELECT cycle_id FROM orders WHERE client_order_id=?",
+            (order.client_order_id,),
+        ).fetchone()
+        inventory = load_h74_cycle_inventory(conn, cycle_id=str(order_row["cycle_id"]))
+        remaining_qty = float(inventory.remaining_cycle_qty)
+    finally:
+        conn.close()
+
+    sell_decision = build_target_position_decision(
+        raw_signal="SELL",
+        previous_target_exposure_krw=100_000.0,
+        current_position_snapshot={},
+        readiness_payload={
+            "h74_cycle_id": str(order_row["cycle_id"]),
+            "remaining_cycle_qty": remaining_qty,
+        },
+        order_rules={"min_qty": 0.0001, "qty_step": 0.0001, "min_notional_krw": 5000.0},
+        reference_price=100_000_000.0,
+        settings=TargetPositionSettings(
+            execution_engine="target_delta",
+            target_exposure_krw=100_000.0,
+            max_order_krw=100_000.0,
+            position_mode="fixed_fill_qty_until_exit",
+        ),
+    )
+
+    assert sell_decision.delta_side == "SELL"
+    assert sell_decision.submit_qty == pytest.approx(remaining_qty)
+    assert sell_decision.h74_remaining_cycle_qty == pytest.approx(remaining_qty)

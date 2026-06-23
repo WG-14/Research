@@ -449,7 +449,13 @@ def _apply_fill_and_trade_core(
             projected_qty,
             fill_tol,
         )
-        if projected_qty > qty_req + fill_tol:
+        h74_quote_notional_entry_fill = (
+            side == "BUY"
+            and bool(order_cycle_id)
+            and order_strategy_name == "daily_participation_sma"
+            and order_strategy_instance_id == "h74-source-observation"
+        )
+        if projected_qty > qty_req + fill_tol and not h74_quote_notional_entry_fill:
             raise RuntimeError(
                 f"overfill detected for {client_order_id}: existing={qty_filled}, fill={qty}, requested={qty_req}, tolerance={fill_tol}"
             )

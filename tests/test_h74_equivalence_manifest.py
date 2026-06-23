@@ -15,6 +15,15 @@ _BEHAVIOR = {
     "partial_fill_policy": "accumulate_cycle_acquired_qty",
     "fee_application_policy": "repository_observed_fee_fields",
 }
+_SUBMIT_SEMANTICS = {
+    "schema_version": 1,
+    "entry_order_type": "price",
+    "entry_submit_field": "price",
+    "entry_quote_notional_krw": 100_000,
+    "entry_volume_forbidden": True,
+    "entry_qty_preview_authoritative": False,
+    "entry_fill_qty_authority": "broker_fills",
+}
 
 
 def _source_payload() -> dict[str, object]:
@@ -26,7 +35,8 @@ def _source_payload() -> dict[str, object]:
             "slippage_source": "research_assumption",
         },
         "candle_timing": "closed_candle_kst",
-        **_BEHAVIOR,
+        "behavior_contract": dict(_BEHAVIOR),
+        "entry_submit_semantics": dict(_SUBMIT_SEMANTICS),
     }
 
 
@@ -118,7 +128,8 @@ def test_source_candidate_artifact_fee_slippage_loaded_from_real_schema(tmp_path
                     "slippage_source": "research_assumption",
                     },
                     "candle_timing": "closed_candle_kst",
-                    **_BEHAVIOR,
+                    "behavior_contract": dict(_BEHAVIOR),
+                    "entry_submit_semantics": dict(_SUBMIT_SEMANTICS),
                 }
             ),
         encoding="utf-8",
@@ -178,6 +189,131 @@ def test_source_missing_slippage_or_candle_timing_never_passes_equivalence(tmp_p
     assert result["experiment_equivalence_status"] == "unknown_source_assumption_missing"
 
 
+def test_h74_equivalence_requires_entry_submit_semantics(tmp_path) -> None:
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(_source_payload()), encoding="utf-8")
+
+    manifest = build_h74_equivalence_manifest(source_artifact_path=source, order_rules=_rules())
+
+    assert manifest["entry_submit_semantics"]["entry_quote_notional_krw"] == 100_000
+    assert str(manifest["submit_semantics_hash"]).startswith("sha256:")
+
+
+def test_h74_equivalence_fails_when_entry_submit_semantics_missing(tmp_path) -> None:
+    payload = _source_payload()
+    payload.pop("entry_submit_semantics")
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = build_h74_equivalence_manifest(source_artifact_path=source, order_rules=_rules())
+    result = compare_h74_equivalence(
+        manifest,
+        current_fee_rate=0.0004,
+        current_fee_authority_source="runtime_fee_authority",
+        current_order_rules=_rules(),
+        current_behavior={"slippage_bps": 10, "candle_timing": "closed_candle_kst", **_BEHAVIOR},
+    )
+
+    assert result["experiment_equivalence_status"] == "unknown_source_assumption_missing"
+    assert "entry_submit_semantics" in manifest["source_missing_assumption_fields"]
+
+
+def test_h74_equivalence_fails_when_entry_order_type_mismatch(tmp_path) -> None:
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(_source_payload()), encoding="utf-8")
+    manifest = build_h74_equivalence_manifest(source_artifact_path=source, order_rules=_rules())
+    current_semantics = dict(_SUBMIT_SEMANTICS)
+    current_semantics["entry_order_type"] = "market"
+
+    result = compare_h74_equivalence(
+        manifest,
+        current_fee_rate=0.0004,
+        current_fee_authority_source="runtime_fee_authority",
+        current_order_rules=_rules(),
+        current_behavior={
+            "slippage_bps": 10,
+            "candle_timing": "closed_candle_kst",
+            **_BEHAVIOR,
+            "entry_submit_semantics": current_semantics,
+        },
+    )
+
+    assert result["experiment_equivalence_status"] == "mismatch"
+    assert result["behavior_field_comparison"]["entry_submit_semantics"]["match"] is False
+
+
+def test_missing_behavior_contract_blocks_equivalence(tmp_path) -> None:
+    payload = _source_payload()
+    payload.pop("behavior_contract")
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = build_h74_equivalence_manifest(source_artifact_path=source, order_rules=_rules())
+    result = compare_h74_equivalence(
+        manifest,
+        current_fee_rate=0.0004,
+        current_fee_authority_source="runtime_fee_authority",
+        current_order_rules=_rules(),
+    )
+
+    assert result["experiment_equivalence_status"] == "unknown_source_assumption_missing"
+    assert "behavior_contract" in manifest["source_missing_assumption_fields"]
+
+
+def test_missing_submit_semantics_blocks_equivalence(tmp_path) -> None:
+    payload = _source_payload()
+    payload.pop("entry_submit_semantics")
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = build_h74_equivalence_manifest(source_artifact_path=source, order_rules=_rules())
+    result = compare_h74_equivalence(
+        manifest,
+        current_fee_rate=0.0004,
+        current_fee_authority_source="runtime_fee_authority",
+        current_order_rules=_rules(),
+    )
+
+    assert result["experiment_equivalence_status"] == "unknown_source_assumption_missing"
+    assert "entry_submit_semantics" in manifest["source_missing_assumption_fields"]
+
+
+def test_behavior_and_submit_semantics_pass_when_hash_bound(tmp_path) -> None:
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(_source_payload()), encoding="utf-8")
+
+    manifest = build_h74_equivalence_manifest(source_artifact_path=source, order_rules=_rules())
+    result = compare_h74_equivalence(
+        manifest,
+        current_fee_rate=0.0004,
+        current_fee_authority_source="runtime_fee_authority",
+        current_order_rules=_rules(),
+        current_behavior={
+            "slippage_bps": 10,
+            "candle_timing": "closed_candle_kst",
+            **_BEHAVIOR,
+            "entry_submit_semantics": dict(_SUBMIT_SEMANTICS),
+        },
+    )
+
+    assert result["experiment_equivalence_status"] == "pass"
+
+
+def test_source_artifact_hash_changes_when_submit_semantics_added(tmp_path) -> None:
+    without_semantics = _source_payload()
+    without_semantics.pop("entry_submit_semantics")
+    with_semantics = _source_payload()
+    source_a = tmp_path / "source-a.json"
+    source_b = tmp_path / "source-b.json"
+    source_a.write_text(json.dumps(without_semantics), encoding="utf-8")
+    source_b.write_text(json.dumps(with_semantics), encoding="utf-8")
+
+    manifest_a = build_h74_equivalence_manifest(source_artifact_path=source_a, order_rules=_rules())
+    manifest_b = build_h74_equivalence_manifest(source_artifact_path=source_b, order_rules=_rules())
+
+    assert manifest_a["source_artifact_hash"] != manifest_b["source_artifact_hash"]
+
+
 def test_runtime_base_cost_schema_binds_source_hash_fee_slippage_and_candle_timing(tmp_path) -> None:
     source = tmp_path / "candidate_9738b8d6-runtime-base.json"
     source.write_text(
@@ -192,7 +328,8 @@ def test_runtime_base_cost_schema_binds_source_hash_fee_slippage_and_candle_timi
                     "slippage_source": "research_assumption",
                 },
                     "candle_timing": "closed_candle_kst",
-                    **_BEHAVIOR,
+                    "behavior_contract": dict(_BEHAVIOR),
+                    "entry_submit_semantics": dict(_SUBMIT_SEMANTICS),
                 }
             ),
         encoding="utf-8",

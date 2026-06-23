@@ -21,6 +21,10 @@ class OrderIntent:
     price: float | None
     created_ts: int
     submit_contract: Any | None = None
+    quote_notional_krw: float | None = None
+    quote_notional_authority: str | None = None
+    submit_semantics: str | None = None
+    submit_semantics_authority: str | None = None
     market_price_hint: float | None = None
     trace_id: str | None = None
 
@@ -55,6 +59,10 @@ class SubmitPlan:
     qty_split: Any
     internal_lot_qty: float
     exchange_submit_qty: float
+    quote_notional_krw: float | None = None
+    quote_notional_authority: str | None = None
+    submit_semantics: str | None = None
+    submit_semantics_authority: str | None = None
     buy_price_none_submit_contract: Any | None = None
     trace_id: str | None = None
     plan_id: str | None = None

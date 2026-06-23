@@ -1114,6 +1114,26 @@ def execute_live_submission_and_application(
             ts=int(ts),
             effective_rules=position_state.effective_rules,
             reference_price=reference_price,
+            quote_notional_krw=(
+                None
+                if decision_observability.get("quote_notional_krw") is None
+                else float(decision_observability["quote_notional_krw"])
+            ),
+            quote_notional_authority=(
+                None
+                if decision_observability.get("quote_notional_authority") is None
+                else str(decision_observability.get("quote_notional_authority") or "")
+            ),
+            submit_semantics=(
+                None
+                if decision_observability.get("submit_semantics") is None
+                else str(decision_observability.get("submit_semantics") or "")
+            ),
+            submit_semantics_authority=(
+                None
+                if decision_observability.get("submit_semantics_authority") is None
+                else str(decision_observability.get("submit_semantics_authority") or "")
+            ),
         )
     except Exception as error:
         record_standard_submit_planning_failure(

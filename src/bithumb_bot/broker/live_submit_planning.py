@@ -17,6 +17,10 @@ def build_live_submit_plan(
     effective_rules,
     reference_price: float | None,
     market: str | None = None,
+    quote_notional_krw: float | None = None,
+    quote_notional_authority: str | None = None,
+    submit_semantics: str | None = None,
+    submit_semantics_authority: str | None = None,
 ) -> SubmitPlan:
     intent_market = str(market or settings.PAIR or "").strip().upper()
     if not intent_market:
@@ -37,6 +41,10 @@ def build_live_submit_plan(
             price=None,
             created_ts=int(ts),
             submit_contract=explicit_submit_contract,
+            quote_notional_krw=quote_notional_krw,
+            quote_notional_authority=quote_notional_authority,
+            submit_semantics=submit_semantics,
+            submit_semantics_authority=submit_semantics_authority,
             market_price_hint=reference_price,
             trace_id=client_order_id,
         ),

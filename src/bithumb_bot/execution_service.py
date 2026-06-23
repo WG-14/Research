@@ -45,6 +45,12 @@ from .experiment_execution_contract import (
     current_h74_experiment_execution_contract_from_payload,
 )
 from .h74_readiness_certificate import _file_hash, validate_h74_readiness_certificate
+from .h74_submit_semantics import (
+    H74_ENTRY_SUBMIT_SEMANTICS,
+    H74_ENTRY_SUBMIT_SEMANTICS_AUTHORITY,
+    H74_ENTRY_SUBMIT_SEMANTICS_NAME,
+    H74_SOURCE_MAX_ORDER_KRW,
+)
 from .virtual_target_state import assert_not_live_submit_authority
 
 if False:  # pragma: no cover
@@ -2049,6 +2055,17 @@ def _build_execution_decision_summary_from_authority_payload(
                 payload["order_rule_snapshot_hash"] = order_rule_snapshot_hash
                 payload["fee_slippage_timing_hash"] = fee_slippage_timing_hash
                 payload["commit_sha"] = current_commit_sha
+                payload["submit_semantics_hash"] = sha256_prefixed(H74_ENTRY_SUBMIT_SEMANTICS)
+                payload["quote_notional_krw"] = float(H74_SOURCE_MAX_ORDER_KRW)
+                payload["exchange_order_type"] = "price"
+                payload["exchange_submit_field"] = "price"
+                payload["broker_payload_preview_hash"] = sha256_prefixed(
+                    {
+                        "order_type": "price",
+                        "price": float(H74_SOURCE_MAX_ORDER_KRW),
+                        "volume_present": False,
+                    }
+                )
                 if (
                     str(getattr(settings, "MODE", "") or "").strip().lower() == "live"
                     and bool(getattr(settings, "LIVE_REAL_ORDER_ARMED", False))
@@ -2083,6 +2100,23 @@ def _build_execution_decision_summary_from_authority_payload(
                                     payload.get("behavior_comparison_hash") or ""
                                 ),
                                 current_contract_hash=str(current_contract["contract_hash"]),
+                                current_submit_semantics_hash=str(
+                                    payload.get("submit_semantics_hash") or ""
+                                ),
+                                current_entry_quote_notional_krw=(
+                                    None
+                                    if payload.get("quote_notional_krw") is None
+                                    else float(payload.get("quote_notional_krw") or 0.0)
+                                ),
+                                current_exchange_order_type=str(
+                                    payload.get("exchange_order_type") or ""
+                                ),
+                                current_exchange_submit_field=str(
+                                    payload.get("exchange_submit_field") or ""
+                                ),
+                                current_broker_payload_preview_hash=str(
+                                    payload.get("broker_payload_preview_hash") or ""
+                                ),
                                 strict=True,
                             )
                             if not bool(verdict.get("valid")):
@@ -2091,6 +2125,13 @@ def _build_execution_decision_summary_from_authority_payload(
                                 )
                         except Exception as exc:
                             target_authority_error = f"h74_certificate_gate_block:{type(exc).__name__}"
+            is_h74_fixed_buy = (
+                configured_position_mode == POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
+                and str(target_decision.delta_side) == "BUY"
+            )
+            h74_quote_notional_krw = (
+                float(H74_SOURCE_MAX_ORDER_KRW) if is_h74_fixed_buy else None
+            )
             target_idempotency_key = None
             if target_sizing is not None and target_sizing.allowed:
                 target_idempotency_key = build_order_intent_key(
@@ -2151,9 +2192,21 @@ def _build_execution_decision_summary_from_authority_payload(
                 target_authority_error or sizing_block_reason or target_decision.block_reason
             )
             target_plan_extra = {
-                "intent_type": "target_delta_rebalance",
-                "strategy_context": "target_delta",
-                "authority_source": "target_delta",
+                "intent_type": (
+                    "h74_fixed_fill_quote_notional_buy"
+                    if is_h74_fixed_buy
+                    else "target_delta_rebalance"
+                ),
+                "strategy_context": (
+                    "h74_source_observation"
+                    if is_h74_fixed_buy
+                    else "target_delta"
+                ),
+                "authority_source": (
+                    H74_ENTRY_SUBMIT_SEMANTICS_AUTHORITY
+                    if is_h74_fixed_buy
+                    else "target_delta"
+                ),
                 "entry_authority": entry_authority.as_dict(),
                 "entry_authority_status": entry_authority.status,
                 "entry_authority_reason_code": entry_authority.reason_code,
@@ -2196,9 +2249,39 @@ def _build_execution_decision_summary_from_authority_payload(
                     None if target_sizing is None else target_sizing.final_submitted_qty
                 ),
                 "target_final_submitted_notional_krw": (
-                    None if target_sizing is None else target_sizing.final_submitted_notional_krw
+                    h74_quote_notional_krw
+                    if is_h74_fixed_buy
+                    else None if target_sizing is None else target_sizing.final_submitted_notional_krw
                 ),
                 "target_sizing": target_sizing_dict,
+                "entry_submit_semantics": (
+                    dict(H74_ENTRY_SUBMIT_SEMANTICS) if is_h74_fixed_buy else None
+                ),
+                "submit_semantics": (
+                    H74_ENTRY_SUBMIT_SEMANTICS_NAME if is_h74_fixed_buy else "base_qty"
+                ),
+                "submit_semantics_authority": (
+                    H74_ENTRY_SUBMIT_SEMANTICS_AUTHORITY
+                    if is_h74_fixed_buy
+                    else "canonical_target_delta_sizing"
+                ),
+                "quote_notional_krw": h74_quote_notional_krw,
+                "quote_notional_authority": (
+                    H74_ENTRY_SUBMIT_SEMANTICS_AUTHORITY if is_h74_fixed_buy else None
+                ),
+                "exchange_order_type": "price" if is_h74_fixed_buy else None,
+                "exchange_submit_field": "price" if is_h74_fixed_buy else None,
+                "exchange_submit_notional_krw": h74_quote_notional_krw,
+                "exchange_submit_qty": (
+                    None if is_h74_fixed_buy else None if target_sizing is None else target_sizing.final_submitted_qty
+                ),
+                "submit_qty_authority": (
+                    "non_authoritative_preview"
+                    if is_h74_fixed_buy
+                    else "canonical_target_delta_sizing"
+                ),
+                "entry_qty_preview_authoritative": False if is_h74_fixed_buy else None,
+                "entry_fill_qty_authority": "broker_fills" if is_h74_fixed_buy else None,
                 "invariant_status": (
                     "not_required" if target_sizing is None else target_sizing.invariant_status
                 ),
@@ -2375,12 +2458,18 @@ def _build_execution_decision_summary_from_authority_payload(
                 target_plan_extra.update(performance_gate_fields)
             target_plan = ExecutionSubmitPlan(
                 side=str(target_decision.delta_side),
-                source="target_delta",
-                authority="canonical_target_delta_sizing",
+                source="h74_source_observation" if is_h74_fixed_buy else "target_delta",
+                authority=(
+                    H74_ENTRY_SUBMIT_SEMANTICS_AUTHORITY
+                    if is_h74_fixed_buy
+                    else "canonical_target_delta_sizing"
+                ),
                 final_action=target_final_action,
                 qty=(None if target_sizing is None else target_sizing.final_submitted_qty),
                 notional_krw=(
-                    None if target_sizing is None else target_sizing.final_submitted_notional_krw
+                    h74_quote_notional_krw
+                    if is_h74_fixed_buy
+                    else None if target_sizing is None else target_sizing.final_submitted_notional_krw
                 ),
                 target_exposure_krw=target_decision.new_target_exposure_krw,
                 current_effective_exposure_krw=target_decision.current_exposure_krw,
@@ -3242,7 +3331,7 @@ class LiveSignalExecutionService:
                         side=target_plan.get("side"),
                     )
                     return None
-                if str(target_plan.get("source")) != "target_delta":
+                if str(target_plan.get("source")) not in {"target_delta", "h74_source_observation"}:
                     _block_live_submit_plan(
                         reason="target_delta_invalid_target_submit_plan_source",
                         field_name="target_submit_plan",
@@ -3253,6 +3342,7 @@ class LiveSignalExecutionService:
                 if str(target_plan.get("authority")) not in {
                     "canonical_target_delta_sizing",
                     "target_position_delta",
+                    H74_ENTRY_SUBMIT_SEMANTICS_AUTHORITY,
                 }:
                     _block_live_submit_plan(
                         reason="target_delta_invalid_target_submit_plan_authority",

@@ -7,10 +7,13 @@ from typing import Mapping
 
 
 TARGET_DELTA_SUBMIT_SOURCE = "target_delta"
+H74_SOURCE_OBSERVATION_SUBMIT_SOURCE = "h74_source_observation"
+H74_SOURCE_OBSERVATION_SUBMIT_AUTHORITY = "h74_fixed_fill_quote_notional_buy"
 TARGET_DELTA_SUBMIT_AUTHORITIES = frozenset(
     {
         "canonical_target_delta_sizing",
         "target_position_delta",
+        H74_SOURCE_OBSERVATION_SUBMIT_AUTHORITY,
     }
 )
 RESIDUAL_SUBMIT_SOURCE = "residual_inventory"
@@ -117,7 +120,11 @@ def submit_authority_policy_from_settings(settings_obj: object) -> SubmitAuthori
             submit_authority_mode="live_real_order_target_delta_only",
             live_real_order_requires_target_delta=True,
             legacy_lot_native_compat_enabled=False,
-            allowed_submit_plan_sources=(TARGET_DELTA_SUBMIT_SOURCE, RESIDUAL_SUBMIT_SOURCE),
+            allowed_submit_plan_sources=(
+                TARGET_DELTA_SUBMIT_SOURCE,
+                H74_SOURCE_OBSERVATION_SUBMIT_SOURCE,
+                RESIDUAL_SUBMIT_SOURCE,
+            ),
             allowed_submit_plan_authorities=tuple(
                 sorted(TARGET_DELTA_SUBMIT_AUTHORITIES | RESIDUAL_SUBMIT_AUTHORITIES)
             ),
@@ -128,7 +135,14 @@ def submit_authority_policy_from_settings(settings_obj: object) -> SubmitAuthori
             live_real_order_requires_target_delta=False,
             legacy_lot_native_compat_enabled=True,
             allowed_submit_plan_sources=tuple(
-                sorted({TARGET_DELTA_SUBMIT_SOURCE, RESIDUAL_SUBMIT_SOURCE} | LEGACY_BUY_SUBMIT_SOURCES)
+                sorted(
+                    {
+                        TARGET_DELTA_SUBMIT_SOURCE,
+                        H74_SOURCE_OBSERVATION_SUBMIT_SOURCE,
+                        RESIDUAL_SUBMIT_SOURCE,
+                    }
+                    | LEGACY_BUY_SUBMIT_SOURCES
+                )
             ),
             allowed_submit_plan_authorities=tuple(
                 sorted(
@@ -146,6 +160,7 @@ def submit_authority_policy_from_settings(settings_obj: object) -> SubmitAuthori
             sorted(
                 {
                     TARGET_DELTA_SUBMIT_SOURCE,
+                    H74_SOURCE_OBSERVATION_SUBMIT_SOURCE,
                     RESIDUAL_SUBMIT_SOURCE,
                     "research_backtest",
                 }
@@ -267,7 +282,7 @@ def evaluate_submit_authority_policy(
                 final_error = final_payload_error()
                 if final_error is not None:
                     return decision(False, final_error)
-            if source != TARGET_DELTA_SUBMIT_SOURCE:
+            if source not in {TARGET_DELTA_SUBMIT_SOURCE, H74_SOURCE_OBSERVATION_SUBMIT_SOURCE}:
                 return decision(False, "live_real_order_target_plan_invalid_source")
             if authority not in TARGET_DELTA_SUBMIT_AUTHORITIES:
                 return decision(False, "live_real_order_target_plan_invalid_authority")
@@ -287,6 +302,17 @@ def evaluate_submit_authority_policy(
                 return decision(False, "live_real_order_target_plan_missing_allocation_decision_hash")
             if not str(payload.get("strategy_contribution_hash") or "").strip():
                 return decision(False, "live_real_order_target_plan_missing_strategy_contribution_hash")
+            if source == H74_SOURCE_OBSERVATION_SUBMIT_SOURCE:
+                if side != "BUY":
+                    return decision(False, "h74_source_observation_requires_buy")
+                if authority != H74_SOURCE_OBSERVATION_SUBMIT_AUTHORITY:
+                    return decision(False, "h74_source_observation_invalid_authority")
+                if str(payload.get("submit_semantics") or "") != "quote_notional_market_buy":
+                    return decision(False, "h74_source_observation_submit_semantics_missing")
+                if str(payload.get("exchange_order_type") or "") != "price":
+                    return decision(False, "h74_source_observation_order_type_not_price")
+                if str(payload.get("exchange_submit_field") or "") != "price":
+                    return decision(False, "h74_source_observation_submit_field_not_price")
             return decision(True, "allowed_target_delta")
         if normalized_kind == "buy":
             return decision(False, "live_real_order_buy_plan_rejected_target_delta_required")
