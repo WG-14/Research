@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 from .config import runtime_code_provenance
 from .decision_equivalence import sha256_prefixed
+from .experiment_execution_contract import experiment_execution_contract_from_mapping
 
 
 class H74ReadinessCertificateError(ValueError):
@@ -98,6 +99,7 @@ def build_h74_readiness_certificate(
                 "fee_authority_source": rehearsal.get("fee_authority_source"),
             }
         ),
+        "behavior_comparison_hash": str(rehearsal.get("behavior_comparison_hash") or ""),
         "gate_trace_hash": str(rehearsal.get("gate_trace_hash") or ""),
         "negative_rehearsal_gate_trace_hash": str(negative_rehearsal.get("gate_trace_hash") or ""),
         "would_submit_plan_hash": str(rehearsal.get("would_submit_plan_hash") or ""),
@@ -112,6 +114,28 @@ def build_h74_readiness_certificate(
         "issued_at_sec": float(time.time()),
         "expires_at_sec": float(expires_at_sec if expires_at_sec is not None else time.time() + 3600),
     }
+    contract_payload = experiment_execution_contract_from_mapping(
+        {
+            "source_artifact_hash": rehearsal.get("source_artifact_hash"),
+            "authority_hash": rehearsal.get("authority_content_hash") or rehearsal.get("rehearsal_hash"),
+            "code_commit_sha": provenance.get("commit_sha") or "unavailable",
+            "env_file_hash": env_hash,
+            "strategy_parameter_hash": rehearsal.get("authority_parameter_hash"),
+            "position_mode": rehearsal.get("position_mode"),
+            "quantity_contract_hash": rehearsal.get("quantity_contract_hash"),
+            "order_rule_snapshot_hash": rehearsal.get("order_rule_snapshot_hash"),
+            "fee_slippage_timing_hash": sha256_prefixed(
+                {
+                    "fee": rehearsal.get("fee_comparison"),
+                    "slippage_bps": rehearsal.get("slippage_bps"),
+                    "candle_timing": rehearsal.get("candle_timing"),
+                }
+            ),
+            "startup_gate_hash": rehearsal.get("startup_gate_hash") or rehearsal.get("gate_trace_hash"),
+        }
+    ).as_payload()
+    payload["experiment_execution_contract"] = contract_payload
+    payload["contract_hash"] = str(contract_payload["contract_hash"])
     payload["certificate_hash"] = sha256_prefixed(payload)
     return payload
 
@@ -127,6 +151,8 @@ def validate_h74_readiness_certificate(
     current_order_rule_fee_authority_hash: str | None = None,
     current_gate_trace_hash: str | None = None,
     current_would_submit_plan_hash: str | None = None,
+    current_behavior_comparison_hash: str | None = None,
+    current_contract_hash: str | None = None,
     strict: bool = False,
 ) -> dict[str, Any]:
     expected_env_hash = _file_hash(env_file)
@@ -153,6 +179,13 @@ def validate_h74_readiness_certificate(
             "would_submit_plan_hash_changed",
             "missing_current_would_submit_plan_hash",
         ),
+        (
+            "behavior_comparison_hash",
+            current_behavior_comparison_hash,
+            "behavior_comparison_hash_changed",
+            "missing_current_behavior_comparison_hash",
+        ),
+        ("contract_hash", current_contract_hash, "contract_hash_mismatch", "missing_current_contract_hash"),
     )
     for field, current, reason, missing_reason in comparisons:
         if current is None:
@@ -187,7 +220,7 @@ def validate_h74_long_run_preflight(certificate: Mapping[str, Any]) -> dict[str,
         "valid": not reasons,
         "status": "pass" if not reasons else "blocked",
         "reasons": reasons,
-        "run_startup_enforced": False,
+        "run_startup_enforced": True,
     }
 
 

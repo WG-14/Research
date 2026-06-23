@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from .decision_equivalence import sha256_prefixed
+from .experiment_execution_contract import POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
 
 
 ENTRY_AUTHORITY_GATE = "entry_authority"
@@ -91,6 +92,11 @@ def evaluate_entry_authority(
         and current_exposure > 1e-9
         and target_exposure <= previous_target_exposure + 1e-9
     )
+    if (
+        str(payload.get("position_mode") or "").strip() == POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
+        and final_signal == "HOLD"
+    ):
+        existing_target_rebalance = False
     input_payload = {
         "side": normalized_side,
         "current_exposure_krw": current_exposure,

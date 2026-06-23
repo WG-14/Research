@@ -9,6 +9,7 @@ from typing import Any
 from .research.hashing import sha256_prefixed
 from .storage_io import write_json_atomic
 from .strategy_risk_profile import risk_policy_from_mapping
+from .experiment_execution_contract import POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
 
 
 H74_OBSERVATION_AUTHORITY_ARTIFACT_TYPE = "h74_live_observation_authority"
@@ -25,6 +26,7 @@ H74_SOURCE_OBSERVATION_MAX_DAILY_TOTAL_ORDER_COUNT = 2
 H74_SOURCE_OBSERVATION_RISK_POLICY_SOURCE = H74_SOURCE_OBSERVATION_AUTHORITY_ARTIFACT_TYPE
 H74_SOURCE_OBSERVATION_MAX_DAILY_LOSS_KRW = 5_000.0
 H74_SOURCE_OBSERVATION_MAX_POSITION_LOSS_PCT = 0.03
+H74_POSITION_MODE = POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
 
 def _h74_observation_parameters() -> dict[str, object]:
     from .research.strategy_spec import runtime_bound_behavior_parameter_names
@@ -86,6 +88,12 @@ def _h74_source_observation_parameters() -> dict[str, object]:
             "max_entry_notional_krw": H74_SOURCE_MAX_ORDER_KRW,
             "max_notional_krw": H74_SOURCE_MAX_ORDER_KRW,
             "exit_closeout_not_blocked_by_entry_cap": True,
+            "position_mode": H74_POSITION_MODE,
+            "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
+            "residual_inventory_mode": "terminal_dust_reported_not_reused_without_authority",
+            "initial_position_policy": "flat_start_required",
+            "partial_fill_policy": "accumulate_cycle_acquired_qty",
+            "fee_application_policy": "repository_observed_fee_fields",
         }
     )
     return parameters
@@ -242,6 +250,12 @@ def build_h74_source_observation_authority_payload(
         "production_approval": False,
         "approved_profile_evidence": False,
         "risk_policy_hash": risk_policy_hash,
+        "position_mode": H74_POSITION_MODE,
+        "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
+        "residual_inventory_mode": "terminal_dust_reported_not_reused_without_authority",
+        "initial_position_policy": "flat_start_required",
+        "partial_fill_policy": "accumulate_cycle_acquired_qty",
+        "fee_application_policy": "repository_observed_fee_fields",
     }
     if not hash_bound["source_candidate_artifact_hash"]:
         raise H74ObservationAuthorityError("h74_source_observation_authority_source_hash_missing")
@@ -260,6 +274,7 @@ def build_h74_source_observation_authority_payload(
         "risk_policy_hash": risk_policy_hash,
         "risk_profile_source": H74_SOURCE_OBSERVATION_RISK_POLICY_SOURCE,
         "risk_enforcement_mode": "enforced",
+        "position_mode": H74_POSITION_MODE,
         "runtime_bound_behavior_parameter_names": sorted(required_behavior_parameters),
         "authority_parameter_hash": sha256_prefixed(hash_bound),
     }

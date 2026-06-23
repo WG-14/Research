@@ -56,6 +56,8 @@ def record_order_if_missing(
     symbol: str | None = None,
     strategy_name: str | None = None,
     strategy_instance_id: str | None = None,
+    cycle_id: str | None = None,
+    authority_hash: str | None = None,
     entry_decision_id: int | None = None,
     exit_decision_id: int | None = None,
     decision_reason: str | None = None,
@@ -94,6 +96,8 @@ def record_order_if_missing(
         symbol=symbol,
         strategy_name=strategy_name,
         strategy_instance_id=strategy_instance_id,
+        cycle_id=cycle_id,
+        authority_hash=authority_hash,
         entry_decision_id=entry_decision_id,
         exit_decision_id=exit_decision_id,
         decision_reason=decision_reason,
@@ -397,6 +401,9 @@ def _apply_fill_and_trade_core(
             qty_req,
             qty_filled,
             strategy_name,
+            strategy_instance_id,
+            cycle_id,
+            authority_hash,
             entry_decision_id,
             exit_decision_id,
             decision_reason,
@@ -407,6 +414,9 @@ def _apply_fill_and_trade_core(
         (client_order_id,),
     ).fetchone()
     order_strategy_name: str | None = None
+    order_strategy_instance_id: str | None = None
+    order_cycle_id: str | None = None
+    order_authority_hash: str | None = None
     order_exchange_order_id: str | None = None
     order_entry_decision_id: int | None = None
     order_exit_decision_id: int | None = None
@@ -419,6 +429,9 @@ def _apply_fill_and_trade_core(
         qty_filled = float(order["qty_filled"])
         submit_qty = float(qty_req)
         order_strategy_name = str(order["strategy_name"]) if order["strategy_name"] is not None else None
+        order_strategy_instance_id = str(order["strategy_instance_id"]) if order["strategy_instance_id"] is not None else None
+        order_cycle_id = str(order["cycle_id"]) if order["cycle_id"] is not None else None
+        order_authority_hash = str(order["authority_hash"]) if order["authority_hash"] is not None else None
         order_entry_decision_id = int(order["entry_decision_id"]) if order["entry_decision_id"] is not None else None
         order_exit_decision_id = int(order["exit_decision_id"]) if order["exit_decision_id"] is not None else None
         order_decision_reason = str(order["decision_reason"]) if order["decision_reason"] is not None else None
@@ -485,6 +498,7 @@ def _apply_fill_and_trade_core(
         asset_locked=max(asset_locked_after, 0.0),
     )
     effective_strategy_name = strategy_name or order_strategy_name
+    effective_strategy_instance_id = order_strategy_instance_id
     effective_entry_decision_id = entry_decision_id if entry_decision_id is not None else order_entry_decision_id
     effective_exit_decision_id = exit_decision_id if exit_decision_id is not None else order_exit_decision_id
     effective_exit_reason = exit_reason or order_decision_reason
@@ -554,6 +568,20 @@ def _apply_fill_and_trade_core(
         exit_rule_name=(effective_exit_rule_name if side == "SELL" else None),
         allow_entry_decision_fallback=allow_entry_decision_fallback,
     )
+    if effective_strategy_name == "daily_participation_sma" and order_cycle_id:
+        from .h74_cycle_state import upsert_h74_cycle_fill
+
+        upsert_h74_cycle_fill(
+            conn,
+            cycle_id=order_cycle_id,
+            authority_hash=order_authority_hash or "",
+            strategy_instance_id=effective_strategy_instance_id or "",
+            pair=trade_pair,
+            side=side,
+            qty=float(qty),
+            client_order_id=client_order_id,
+            fill_ts=int(fill_ts),
+        )
     fill_signal_ts = int(signal_ts if signal_ts is not None else fill_ts)
     filled_qty = float(qty)
     _LOG.info(

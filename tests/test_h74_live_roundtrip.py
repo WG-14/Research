@@ -34,7 +34,18 @@ FIXTURE = Path(__file__).parent / "fixtures" / "bithumb" / "live_paid_fee_single
 def _source_artifact(tmp_path) -> str:
     source = tmp_path / "source.json"
     source.write_text(
-        '{"runtime_base_cost_assumption":{"fee_rate":0.0004,"slippage_bps":10},"candle_timing":"closed_candle_kst"}',
+        json.dumps(
+            {
+                "runtime_base_cost_assumption": {"fee_rate": 0.0004, "slippage_bps": 10},
+                "candle_timing": "closed_candle_kst",
+                "position_mode": "fixed_fill_qty_until_exit",
+                "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
+                "residual_inventory_mode": "terminal_dust_reported_not_reused_without_authority",
+                "initial_position_policy": "flat_start_required",
+                "partial_fill_policy": "accumulate_cycle_acquired_qty",
+                "fee_application_policy": "repository_observed_fee_fields",
+            }
+        ),
         encoding="utf-8",
     )
     return str(source)

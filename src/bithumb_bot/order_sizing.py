@@ -16,6 +16,7 @@ from .fee_authority import (
 from .broker.order_rules import get_effective_order_rules
 from .lifecycle import LotDefinitionSnapshot
 from .lot_model import build_market_lot_rules, lot_count_to_qty
+from .quantity_kernel import OrderRuleSnapshot, plan_buy_notional, plan_sell_qty
 
 _DECIMAL_ZERO = Decimal("0")
 
@@ -111,6 +112,7 @@ class TargetDeltaExecutionSizingPlan:
     fee_rate_used: float
     slippage_bps: float
     price_protection_basis: str
+    quantity_contract_hash: str = ""
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -136,6 +138,7 @@ class TargetDeltaExecutionSizingPlan:
             "fee_rate_used": self.fee_rate_used,
             "slippage_bps": self.slippage_bps,
             "price_protection_basis": self.price_protection_basis,
+            "quantity_contract_hash": self.quantity_contract_hash,
         }
 
 
@@ -669,6 +672,7 @@ def build_target_delta_execution_sizing(
             fee_rate_used=float(settings.LIVE_FEE_RATE_ESTIMATE),
             slippage_bps=float(settings.STRATEGY_ENTRY_SLIPPAGE_BPS),
             price_protection_basis="live_price_protection_pretrade",
+            quantity_contract_hash="",
         )
 
     if normalized_side not in {"BUY", "SELL"}:
@@ -687,11 +691,26 @@ def build_target_delta_execution_sizing(
         min_qty=float(resolved_min_qty),
         max_qty_decimals=int(resolved_decimals),
     )
-    constrained_qty = _floor_qty_to_exchange_constraints(
-        qty=float(raw_desired_qty),
+    kernel_rules = OrderRuleSnapshot(
+        min_qty=float(resolved_min_qty),
         qty_step=float(effective_qty_step),
         max_qty_decimals=int(resolved_decimals),
+        min_notional_krw=float(resolved_min_notional),
     )
+    kernel_result = (
+        plan_buy_notional(
+            requested_notional_krw=float(raw_desired_qty) * float(price),
+            reference_price=float(price),
+            rules=kernel_rules,
+        )
+        if normalized_side == "BUY"
+        else plan_sell_qty(
+            requested_qty=float(raw_desired_qty),
+            reference_price=float(price),
+            rules=kernel_rules,
+        )
+    )
+    constrained_qty = float(kernel_result.constrained_qty)
     rejected_remainder = max(0.0, float(raw_desired_qty) - float(constrained_qty))
     final_notional = float(constrained_qty) * float(price)
     intended_lot_count = (
@@ -735,4 +754,5 @@ def build_target_delta_execution_sizing(
         fee_rate_used=float(settings.LIVE_FEE_RATE_ESTIMATE),
         slippage_bps=float(settings.STRATEGY_ENTRY_SLIPPAGE_BPS),
         price_protection_basis="live_price_protection_pretrade",
+        quantity_contract_hash=kernel_result.quantity_contract_hash,
     )

@@ -15,6 +15,7 @@ from bithumb_bot.execution_service import (
     build_typed_execution_decision_summary,
 )
 from bithumb_bot.lot_model import quantize_to_lot_count
+from bithumb_bot.quantity_kernel import OrderRuleSnapshot, plan_buy_notional, plan_sell_qty
 from bithumb_bot.strategy_policy_contract import PositionSnapshot, StrategyDecisionV2
 
 from .diagnostic_authority import (
@@ -128,8 +129,19 @@ def _research_typed_buy_submit_plan_from_intent(
     max_budget = float(intent_payload.get("max_budget_krw") or 0.0)
     if max_budget > 0.0:
         requested_notional = min(requested_notional, max_budget)
-    qty = requested_notional / float(reference_price) if reference_price > 0.0 else None
-    submit_expected = bool(requested_notional > 0.0 and qty is not None and qty > 0.0)
+    rules = OrderRuleSnapshot(
+        min_qty=float(intent_payload.get("min_qty") or 0.0001),
+        qty_step=float(intent_payload.get("qty_step") or 0.0001),
+        max_qty_decimals=int(intent_payload.get("max_qty_decimals") or 8),
+        min_notional_krw=float(intent_payload.get("min_notional_krw") or 5000.0),
+    )
+    quantity = plan_buy_notional(
+        requested_notional_krw=requested_notional,
+        reference_price=float(reference_price),
+        rules=rules,
+    )
+    qty = quantity.submitted_qty if quantity.allowed else None
+    submit_expected = bool(quantity.allowed)
     return ExecutionSubmitPlan(
         side="BUY",
         source="strategy_position",
@@ -149,6 +161,8 @@ def _research_typed_buy_submit_plan_from_intent(
             "entry_signal_source": str(policy_decision.trace.get("entry_signal_source") or ""),
             "entry_sizing_source": str(policy_decision.trace.get("entry_sizing_source") or ""),
             "decision_ts": int(policy_decision.trace.get("decision_ts") or candle_ts),
+            "quantity_contract_hash": quantity.quantity_contract_hash,
+            "quantity_kernel": quantity.as_dict(),
         },
     )
 

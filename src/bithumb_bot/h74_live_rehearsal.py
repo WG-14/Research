@@ -26,8 +26,10 @@ from .h74_observation import (
     H74_SOURCE_OBSERVATION_AUTHORITY_ENV,
     H74_STRATEGY_NAME,
     H74_SOURCE_OBSERVATION_PARAMETERS,
+    H74_POSITION_MODE,
     build_h74_source_observation_authority_payload,
 )
+from .quantity_kernel import OrderRuleSnapshot
 from .run_loop_execution_planner import ExecutionPlanner
 from .runtime.execution_coordinator import ExecutionCoordinator
 from .submit_authority_policy import evaluate_submit_authority_policy
@@ -624,7 +626,18 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
 
     kst = timezone(timedelta(hours=9))
     ts_ms = int(datetime(2026, 6, 22, kst_hour, kst_minute, 0, tzinfo=kst).timestamp() * 1000)
-    order_rules = dict(cfg.order_rules or {"min_qty": 0.0001, "min_notional_krw": 5000.0})
+    order_rules = dict(
+        cfg.order_rules
+        or {
+            "min_qty": 0.0001,
+            "qty_step": 0.0001,
+            "max_qty_decimals": 8,
+            "min_notional_krw": 5000.0,
+            "order_type_buy": "price",
+            "order_type_sell": "market",
+        }
+    )
+    order_rule_snapshot = OrderRuleSnapshot.from_mapping(order_rules)
     equivalence_manifest = build_h74_equivalence_manifest(
         source_artifact_path=cfg.source_artifact_path,
         order_rules=order_rules,
@@ -634,6 +647,16 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
         current_fee_rate=float(cfg.current_fee_rate),
         current_fee_authority_source=cfg.fee_authority_source,
         current_order_rules=order_rules,
+        current_behavior={
+            "slippage_bps": 10.0,
+            "candle_timing": "closed_candle_kst",
+            "position_mode": H74_POSITION_MODE,
+            "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
+            "residual_inventory_mode": "terminal_dust_reported_not_reused_without_authority",
+            "initial_position_policy": "flat_start_required",
+            "partial_fill_policy": "accumulate_cycle_acquired_qty",
+            "fee_application_policy": "repository_observed_fee_fields",
+        },
     )
     equivalence_status = str(equivalence["experiment_equivalence_status"])
     equivalence_allows = equivalence_status == "pass"
@@ -917,6 +940,12 @@ def run_h74_live_rehearsal(config: H74LiveRehearsalConfig | None = None) -> dict
         "fee_authority_source": equivalence["fee_authority_source"],
         "fee_comparison": equivalence["fee_comparison"],
         "order_rule_comparison": equivalence["order_rule_comparison"],
+        "behavior_field_comparison": equivalence["behavior_field_comparison"],
+        "behavior_comparison_hash": equivalence["behavior_comparison_hash"],
+        "source_artifact_hash": equivalence_manifest["source_artifact_hash"],
+        "position_mode": H74_POSITION_MODE,
+        "quantity_contract_hash": order_rule_snapshot.contract_hash(),
+        "order_rule_snapshot_hash": order_rule_snapshot.contract_hash(),
         "execution_result_status": execution_result_status,
         "gate_trace": gate_trace,
         "primary_block_gate": primary_gate,

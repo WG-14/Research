@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import logging
+import json
+import os
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Callable, Mapping, Protocol
 
 from . import runtime_state
@@ -37,6 +40,8 @@ from .submit_authority_policy import (
     submit_authority_policy_from_settings,
 )
 from .target_position import TargetPositionSettings, build_target_position_decision
+from .experiment_execution_contract import POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
+from .h74_readiness_certificate import validate_h74_readiness_certificate
 from .virtual_target_state import assert_not_live_submit_authority
 
 if False:  # pragma: no cover
@@ -1818,6 +1823,74 @@ def _build_execution_decision_summary_from_authority_payload(
             required=execution_engine == "target_delta" and bool(portfolio_target_required),
         )
         target_authority_error = target_authority_error or pair_authority_error
+        configured_position_mode = str(
+            payload.get("position_mode")
+            or getattr(settings, "POSITION_MODE", "")
+            or (
+                POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
+                if str(payload.get("strategy") or payload.get("strategy_name") or "").strip().lower()
+                == "daily_participation_sma"
+                and bool(payload.get("h74_fixed_position_contract_active"))
+                else "continuous_notional_target"
+            )
+        )
+        if (
+            configured_position_mode == POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
+            and raw == "BUY"
+            and str(payload.get("h74_startup_gate_status") or "").strip() == "START_BLOCKED"
+        ):
+            target_authority_error = str(payload.get("h74_startup_gate_reason_code") or "h74_startup_gate_block")
+        if (
+            target_authority_error is None
+            and configured_position_mode == POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
+            and raw == "BUY"
+            and str(getattr(settings, "MODE", "") or "").strip().lower() == "live"
+            and bool(getattr(settings, "LIVE_REAL_ORDER_ARMED", False))
+            and not bool(getattr(settings, "LIVE_DRY_RUN", True))
+            and str(os.environ.get("H74_LIVE_REHEARSAL_NO_SUBMIT_BOUNDARY") or "").strip().lower()
+            not in {"1", "true", "yes", "on"}
+        ):
+            cert_path = str(
+                payload.get("h74_readiness_certificate_path")
+                or getattr(settings, "H74_READINESS_CERTIFICATE_PATH", "")
+                or ""
+            ).strip()
+            if not cert_path:
+                target_authority_error = "h74_readiness_certificate_missing"
+            else:
+                try:
+                    certificate = json.loads(Path(cert_path).read_text(encoding="utf-8"))
+                    verdict = validate_h74_readiness_certificate(
+                        certificate if isinstance(certificate, Mapping) else {},
+                        env_file=str(os.environ.get("BITHUMB_ENV_FILE") or ""),
+                        broker_balance_snapshot_hash=str(payload.get("broker_balance_snapshot_hash") or ""),
+                        current_commit_sha=str(payload.get("commit_sha") or certificate.get("commit_sha") or ""),
+                        current_db_schema_hash=str(payload.get("db_schema_hash") or certificate.get("db_schema_hash") or ""),
+                        current_order_rule_fee_authority_hash=str(
+                            payload.get("order_rule_fee_authority_hash")
+                            or certificate.get("order_rule_fee_authority_hash")
+                            or ""
+                        ),
+                        current_gate_trace_hash=str(payload.get("gate_trace_hash") or certificate.get("gate_trace_hash") or ""),
+                        current_would_submit_plan_hash=str(
+                            payload.get("would_submit_plan_hash")
+                            or certificate.get("would_submit_plan_hash")
+                            or ""
+                        ),
+                        current_behavior_comparison_hash=str(
+                            payload.get("behavior_comparison_hash")
+                            or certificate.get("behavior_comparison_hash")
+                            or ""
+                        ),
+                        current_contract_hash=str(payload.get("contract_hash") or certificate.get("contract_hash") or ""),
+                        strict=True,
+                    )
+                    if not bool(verdict.get("valid")):
+                        target_authority_error = "h74_certificate_gate_block:" + ",".join(
+                            str(reason) for reason in verdict.get("reasons", [])
+                        )
+                except Exception as exc:
+                    target_authority_error = f"h74_certificate_gate_block:{type(exc).__name__}"
         authoritative_target_exposure_krw = (
             None
             if portfolio_target is None or target_authority_error is not None
@@ -1836,6 +1909,7 @@ def _build_execution_decision_summary_from_authority_payload(
                 target_exposure_krw=getattr(settings, "TARGET_EXPOSURE_KRW", None),
                 max_order_krw=float(getattr(settings, "MAX_ORDER_KRW", 0.0) or 0.0),
                 hold_policy=str(getattr(settings, "TARGET_HOLD_POLICY", "maintain_previous_target")),
+                position_mode=configured_position_mode,
             ),
             authoritative_target_exposure_krw=authoritative_target_exposure_krw,
         )

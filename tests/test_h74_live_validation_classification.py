@@ -60,7 +60,7 @@ def _seed_buy(
     )
 
 
-def test_daily_participation_fill_is_validation_sample() -> None:
+def test_daily_participation_fill_is_entry_path_sample_not_cycle_success() -> None:
     classified = classify_h74_live_trade(
         {
             "side": "BUY",
@@ -71,7 +71,9 @@ def test_daily_participation_fill_is_validation_sample() -> None:
         }
     )
 
-    assert classified["h74_backtest_validation_sample"] is True
+    assert classified["h74_entry_path_sample"] is True
+    assert classified["h74_backtest_validation_sample"] is False
+    assert classified["h74_cycle_validation_success"] is False
     assert classified["incident_type"] == "none"
 
 
@@ -122,8 +124,11 @@ def test_performance_report_excludes_incident_samples() -> None:
         for row in report["h74_live_trade_classifications"]
     }
 
-    assert report["h74_backtest_validation_sample_count"] == 1
-    assert rows["daily-buy"]["h74_backtest_validation_sample"] is True
+    assert report["entry_path_sample_count"] == 1
+    assert report["cycle_validation_success_count"] == 0
+    assert report["h74_backtest_validation_sample_count"] == 0
+    assert rows["daily-buy"]["h74_entry_path_sample"] is True
+    assert rows["daily-buy"]["h74_backtest_validation_sample"] is False
     assert rows["live_1782120240000_buy_ae16bfbd"]["h74_backtest_validation_sample"] is False
     assert rows["live_1782120240000_buy_ae16bfbd"]["incident_type"] == "out_of_window_target_delta_entry"
 

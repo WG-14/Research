@@ -24,6 +24,12 @@ def _source_artifact(tmp_path, *, fee_rate: float = 0.0004) -> str:
                     "slippage_source": "research_assumption",
                 },
                 "candle_timing": "closed_candle_kst",
+                "position_mode": "fixed_fill_qty_until_exit",
+                "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
+                "residual_inventory_mode": "terminal_dust_reported_not_reused_without_authority",
+                "initial_position_policy": "flat_start_required",
+                "partial_fill_policy": "accumulate_cycle_acquired_qty",
+                "fee_application_policy": "repository_observed_fee_fields",
             }
         ),
         encoding="utf-8",
@@ -228,6 +234,8 @@ def test_certificate_validation_requires_current_commit_db_order_gate_plan_hashe
         current_order_rule_fee_authority_hash=str(cert["order_rule_fee_authority_hash"]),
         current_gate_trace_hash=str(cert["gate_trace_hash"]),
         current_would_submit_plan_hash=str(cert["would_submit_plan_hash"]),
+        current_behavior_comparison_hash=str(cert["behavior_comparison_hash"]),
+        current_contract_hash=str(cert["contract_hash"]),
         strict=True,
         now_sec=1,
     )

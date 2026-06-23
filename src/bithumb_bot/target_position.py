@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass
 
 from .canonical_decision import sha256_prefixed
+from .experiment_execution_contract import POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
 
 
 TARGET_ENGINE_MODE_SHADOW = "shadow"
@@ -38,6 +39,7 @@ class TargetPositionSettings:
     target_exposure_krw: float | None = None
     max_order_krw: float = 0.0
     hold_policy: str = "maintain_previous_target"
+    position_mode: str = "continuous_notional_target"
 
 
 @dataclass(frozen=True)
@@ -183,6 +185,10 @@ class TargetPositionDecision:
     target_missing_state_resolution: str = ""
     target_closeout_requested: bool = False
     target_strategy_signal_source: str = ""
+    position_mode: str = "continuous_notional_target"
+    h74_cycle_id: str = ""
+    h74_remaining_cycle_qty: float | None = None
+    h74_no_submit_reason: str = ""
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -223,6 +229,10 @@ class TargetPositionDecision:
             "target_missing_state_resolution": self.target_missing_state_resolution,
             "target_closeout_requested": bool(self.target_closeout_requested),
             "target_strategy_signal_source": self.target_strategy_signal_source,
+            "position_mode": self.position_mode,
+            "h74_cycle_id": self.h74_cycle_id,
+            "h74_remaining_cycle_qty": self.h74_remaining_cycle_qty,
+            "h74_no_submit_reason": self.h74_no_submit_reason,
         }
 
 
@@ -508,6 +518,12 @@ def build_target_position_decision(
         "target_missing_state_resolution": str(payload.get("target_missing_state_resolution") or ""),
         "target_closeout_requested": bool(payload.get("target_closeout_requested")),
         "target_strategy_signal_source": str(payload.get("target_strategy_signal_source") or signal),
+        "position_mode": str(settings.position_mode or payload.get("position_mode") or "continuous_notional_target"),
+        "h74_cycle_id": str(payload.get("h74_cycle_id") or payload.get("cycle_id") or ""),
+        "h74_remaining_cycle_qty": _as_float(
+            payload.get("remaining_cycle_qty", payload.get("h74_remaining_cycle_qty"))
+        ),
+        "h74_no_submit_reason": "",
     }
 
     def _decision(**overrides: object) -> TargetPositionDecision:
@@ -534,6 +550,56 @@ def build_target_position_decision(
         target_exposure = max(0.0, float(previous_target_exposure_krw))
     else:
         target_exposure = None
+
+    fixed_h74 = str(base["position_mode"]) == POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
+    if fixed_h74 and signal == "HOLD":
+        return _decision(
+            new_target_exposure_krw=previous_target_exposure_krw,
+            target_qty=None,
+            delta_qty=0.0,
+            delta_notional_krw=0.0,
+            delta_side="NONE",
+            submit_qty=0.0,
+            submit_notional_krw=0.0,
+            block_reason="h74_fixed_position_hold",
+            position_truth_state="h74_cycle_holding",
+            dust_classification="not_applicable",
+            h74_no_submit_reason="h74_fixed_position_hold",
+        )
+
+    if fixed_h74 and signal == "SELL":
+        cycle_id = str(base["h74_cycle_id"] or "")
+        remaining_qty = base["h74_remaining_cycle_qty"]
+        if not cycle_id:
+            return _decision(
+                new_target_exposure_krw=0.0,
+                block_reason="h74_cycle_id_required_for_exit",
+                position_truth_state="blocked",
+            )
+        if remaining_qty is None:
+            return _decision(
+                new_target_exposure_krw=0.0,
+                block_reason="h74_remaining_cycle_qty_required_for_exit",
+                position_truth_state="blocked",
+            )
+        if price is None or price <= 0.0:
+            return _decision(new_target_exposure_krw=0.0, block_reason="missing_reference_price")
+        cycle_qty = max(0.0, float(remaining_qty))
+        return _decision(
+            new_target_exposure_krw=0.0,
+            current_qty=cycle_qty,
+            current_exposure_krw=cycle_qty * float(price),
+            target_qty=0.0,
+            delta_qty=-cycle_qty,
+            delta_notional_krw=-(cycle_qty * float(price)),
+            delta_side="SELL" if cycle_qty > 1e-12 else "NONE",
+            would_submit=bool(cycle_qty > 1e-12),
+            submit_qty=cycle_qty,
+            submit_notional_krw=cycle_qty * float(price),
+            block_reason="none" if cycle_qty > 1e-12 else "h74_remaining_cycle_qty_zero",
+            position_truth_state="h74_cycle_exit_due",
+            dust_classification="cycle_owned_qty",
+        )
 
     if target_exposure is None:
         return _decision(

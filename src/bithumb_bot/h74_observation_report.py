@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .live_trade_classification import classify_h74_live_trade
+from .h74_pnl_attribution import build_pnl_attribution, build_terminal_residual
 from .research.hashing import sha256_prefixed
 
 
@@ -67,6 +68,19 @@ def build_h74_observation_report(
         "interval": interval,
         "source_backtest_pnl": None,
         "live_observed_pnl": None,
+        "terminal_residual": build_terminal_residual(
+            residual_qty=0.0,
+            residual_mark_price=0.0,
+            origin_cycle_id="",
+            allow_true_dust_next_cycle=True,
+        ),
+        "pnl_attribution": build_pnl_attribution(
+            backtest_expected_entry_price=0.0,
+            live_entry_avg_price=0.0,
+            backtest_expected_exit_price=0.0,
+            live_exit_avg_price=0.0,
+            qty=0.0,
+        ),
     }
     metrics = {field: 0 for field in H74_OBSERVATION_REPORT_FIELDS if field not in payload}
     metrics["exit_delay_seconds_p50"] = 0.0
@@ -455,6 +469,12 @@ def _sqlite_metrics(
         metrics["h74_live_trade_classifications"] = classified_rows
         metrics["h74_backtest_validation_sample_count"] = sum(
             1 for row in classified_rows if bool(row.get("h74_backtest_validation_sample"))
+        )
+        metrics["entry_path_sample_count"] = sum(
+            1 for row in classified_rows if bool(row.get("h74_entry_path_sample"))
+        )
+        metrics["cycle_validation_success_count"] = sum(
+            1 for row in classified_rows if bool(row.get("h74_cycle_validation_success"))
         )
         incident_counts: dict[str, int] = {}
         for row in classified_rows:

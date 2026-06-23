@@ -2356,6 +2356,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             qty_filled REAL NOT NULL DEFAULT 0,
             strategy_name TEXT,
             strategy_instance_id TEXT,
+            cycle_id TEXT,
+            authority_hash TEXT,
             entry_decision_id INTEGER,
             exit_decision_id INTEGER,
             decision_reason TEXT,
@@ -2392,6 +2394,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "orders", "order_type", "order_type TEXT")
     _ensure_column(conn, "orders", "strategy_name", "strategy_name TEXT")
     _ensure_column(conn, "orders", "strategy_instance_id", "strategy_instance_id TEXT")
+    _ensure_column(conn, "orders", "cycle_id", "cycle_id TEXT")
+    _ensure_column(conn, "orders", "authority_hash", "authority_hash TEXT")
     _ensure_column(conn, "orders", "entry_decision_id", "entry_decision_id INTEGER")
     _ensure_column(conn, "orders", "exit_decision_id", "exit_decision_id INTEGER")
     _ensure_column(conn, "orders", "decision_reason", "decision_reason TEXT")
@@ -2440,6 +2444,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             intended_lot_count INTEGER,
             executable_lot_count INTEGER,
             internal_lot_size REAL,
+            cycle_id TEXT,
+            authority_hash TEXT,
             FOREIGN KEY (client_order_id) REFERENCES orders(client_order_id)
         )
         """
@@ -2479,6 +2485,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "fills", "intended_lot_count", "intended_lot_count INTEGER")
     _ensure_column(conn, "fills", "executable_lot_count", "executable_lot_count INTEGER")
     _ensure_column(conn, "fills", "internal_lot_size", "internal_lot_size REAL")
+    _ensure_column(conn, "fills", "cycle_id", "cycle_id TEXT")
+    _ensure_column(conn, "fills", "authority_hash", "authority_hash TEXT")
 
     conn.execute(
         """
@@ -3076,6 +3084,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             position_state TEXT NOT NULL DEFAULT '{open_state}' CHECK (position_state IN ({allowed_states})),
             entry_fee_total REAL NOT NULL DEFAULT 0,
             strategy_name TEXT,
+            strategy_instance_id TEXT,
+            cycle_id TEXT,
+            authority_hash TEXT,
             entry_decision_id INTEGER,
             entry_decision_linkage TEXT,
             created_ts INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
@@ -3120,6 +3131,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "position_semantic_basis TEXT NOT NULL DEFAULT 'lot-native'",
     )
     _ensure_column(conn, "open_position_lots", "strategy_name", "strategy_name TEXT")
+    _ensure_column(conn, "open_position_lots", "strategy_instance_id", "strategy_instance_id TEXT")
+    _ensure_column(conn, "open_position_lots", "cycle_id", "cycle_id TEXT")
+    _ensure_column(conn, "open_position_lots", "authority_hash", "authority_hash TEXT")
     _ensure_column(conn, "open_position_lots", "entry_decision_id", "entry_decision_id INTEGER")
     _ensure_column(conn, "open_position_lots", "entry_decision_linkage", "entry_decision_linkage TEXT")
     conn.execute(
