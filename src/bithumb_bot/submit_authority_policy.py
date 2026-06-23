@@ -114,19 +114,29 @@ def live_real_order_enabled(settings_obj: object) -> bool:
     )
 
 
+def h74_source_observation_submit_enabled(settings_obj: object) -> bool:
+    return bool(
+        live_real_order_enabled(settings_obj)
+        and str(getattr(settings_obj, "H74_SOURCE_OBSERVATION_AUTHORITY_PATH", "") or "").strip()
+    )
+
+
 def submit_authority_policy_from_settings(settings_obj: object) -> SubmitAuthorityPolicy:
     if live_real_order_enabled(settings_obj):
+        h74_enabled = h74_source_observation_submit_enabled(settings_obj)
+        target_sources = [TARGET_DELTA_SUBMIT_SOURCE]
+        target_authorities = set(TARGET_DELTA_SUBMIT_AUTHORITIES)
+        if h74_enabled:
+            target_sources.append(H74_SOURCE_OBSERVATION_SUBMIT_SOURCE)
+        else:
+            target_authorities.discard(H74_SOURCE_OBSERVATION_SUBMIT_AUTHORITY)
         return SubmitAuthorityPolicy(
             submit_authority_mode="live_real_order_target_delta_only",
             live_real_order_requires_target_delta=True,
             legacy_lot_native_compat_enabled=False,
-            allowed_submit_plan_sources=(
-                TARGET_DELTA_SUBMIT_SOURCE,
-                H74_SOURCE_OBSERVATION_SUBMIT_SOURCE,
-                RESIDUAL_SUBMIT_SOURCE,
-            ),
+            allowed_submit_plan_sources=tuple(target_sources + [RESIDUAL_SUBMIT_SOURCE]),
             allowed_submit_plan_authorities=tuple(
-                sorted(TARGET_DELTA_SUBMIT_AUTHORITIES | RESIDUAL_SUBMIT_AUTHORITIES)
+                sorted(target_authorities | RESIDUAL_SUBMIT_AUTHORITIES)
             ),
         )
     if str(getattr(settings_obj, "MODE", "") or "").strip().lower() == "live":
@@ -282,8 +292,12 @@ def evaluate_submit_authority_policy(
                 final_error = final_payload_error()
                 if final_error is not None:
                     return decision(False, final_error)
+            if source not in policy.allowed_submit_plan_sources:
+                return decision(False, "submit_plan_source_not_allowed_for_mode")
             if source not in {TARGET_DELTA_SUBMIT_SOURCE, H74_SOURCE_OBSERVATION_SUBMIT_SOURCE}:
                 return decision(False, "live_real_order_target_plan_invalid_source")
+            if authority not in policy.allowed_submit_plan_authorities:
+                return decision(False, "submit_plan_authority_not_allowed_for_mode")
             if authority not in TARGET_DELTA_SUBMIT_AUTHORITIES:
                 return decision(False, "live_real_order_target_plan_invalid_authority")
             if side not in {"BUY", "SELL"}:

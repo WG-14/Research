@@ -2688,6 +2688,11 @@ def _determine_live_execution_intent(
             min_notional_krw=float(position_state.effective_rules.min_notional_krw),
             non_executable_reason="executable",
         )
+        target_submit_qty_source = (
+            str(target_plan.get("authority") or "canonical_target_delta_sizing")
+            if str(target_plan.get("source") or "") == "h74_source_observation"
+            else "canonical_target_delta_sizing"
+        )
         target_observability = {
             "execution_engine": "target_delta",
             "execution_submit_plan_source": str(target_plan.get("source") or "target_delta"),
@@ -2721,7 +2726,7 @@ def _determine_live_execution_intent(
             "target_position_truth_state": target_plan.get("target_position_truth_state"),
             "source": str(target_plan.get("source") or "target_delta"),
             "authority": str(target_plan.get("authority") or "canonical_target_delta_sizing"),
-            "submit_qty_source": str(target_plan.get("submit_qty_authority") or target_plan.get("authority") or "canonical_target_delta_sizing"),
+            "submit_qty_source": target_submit_qty_source,
             "submit_qty_source_truth_source": (
                 "ExecutionSubmitPlan.quote_notional_krw"
                 if str(target_plan.get("submit_semantics") or "") == "quote_notional_market_buy"
@@ -2759,7 +2764,7 @@ def _determine_live_execution_intent(
         return _LiveExecutionIntent(
             side=target_side,
             order_qty=target_qty,
-            submit_qty_source=str(target_plan.get("submit_qty_authority") or target_plan.get("authority") or "canonical_target_delta_sizing"),
+            submit_qty_source=target_submit_qty_source,
             harmless_dust_checked=True,
             entry_sizing=(target_sizing if target_side == "BUY" else None),
             exit_sizing=(target_sizing if target_side == "SELL" else None),

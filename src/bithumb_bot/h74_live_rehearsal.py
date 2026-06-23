@@ -626,8 +626,8 @@ def _blocking_gate(gate_trace: list[dict[str, object]]) -> tuple[str, str]:
         "readiness": 10,
         "entry_authority": 20,
         "pre_submit_risk": 30,
-        "submit_semantics": 35,
-        "fee_equivalence": 40,
+        "fee_equivalence": 35,
+        "submit_semantics": 40,
         "submit_authority": 50,
     }
     blocked = [entry for entry in gate_trace if bool(entry.get("blocking"))]
