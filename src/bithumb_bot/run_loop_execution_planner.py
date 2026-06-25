@@ -55,11 +55,7 @@ from .h74_cycle_state import (
     load_h74_cycle_inventory,
     load_open_h74_cycle_inventories,
 )
-from .h74_observation import (
-    H74_SOURCE_OBSERVATION_AUTHORITY_ENV,
-    verify_h74_source_observation_authority,
-    h74_source_runtime_values_from_settings,
-)
+from .h74_observation import H74_SOURCE_OBSERVATION_AUTHORITY_ENV
 from .h74_submit_semantics import (
     H74_ENTRY_SUBMIT_SEMANTICS_AUTHORITY,
     H74_ENTRY_SUBMIT_SEMANTICS_NAME,
@@ -142,14 +138,14 @@ def _load_h74_source_authority_payload(settings_obj: object) -> dict[str, object
     )
     if not authority_path:
         return {}
-    with Path(authority_path).expanduser().open("r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-    if not isinstance(payload, dict):
-        raise ValueError("h74_source_observation_authority_payload_not_object")
-    verify_h74_source_observation_authority(
-        payload,
-        runtime_values=h74_source_runtime_values_from_settings(settings_obj),
+
+    from .h74_authority_alignment import (
+        load_h74_authority_payload,
+        validate_h74_authority_env_alignment,
     )
+
+    payload = load_h74_authority_payload(authority_path)
+    validate_h74_authority_env_alignment(payload, settings_obj=settings_obj)
     return payload
 
 
