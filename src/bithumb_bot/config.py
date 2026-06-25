@@ -445,7 +445,12 @@ def _h74_source_observation_authority_selection(
     if not authority_path:
         return H74SourceObservationAuthoritySelection(verified=False)
 
+    from .h74_authority_alignment import (
+        load_h74_authority_payload,
+        validate_h74_authority_file_env_alignment,
+    )
     from .h74_observation import (
+        H74_SOURCE_OBSERVATION_AUTHORITY_ARTIFACT_TYPE,
         H74_SOURCE_OBSERVATION_RISK_POLICY_SOURCE,
         H74_STRATEGY_NAME,
         verify_h74_source_observation_authority_file,
@@ -455,7 +460,13 @@ def _h74_source_observation_authority_selection(
         return H74SourceObservationAuthoritySelection(verified=False)
 
     try:
-        verify_h74_source_observation_authority_file(authority_path, settings_obj=cfg)
+        payload = load_h74_authority_payload(authority_path)
+        authority_type = str(payload.get("authority_type") or payload.get("artifact_type") or "")
+        if authority_type == H74_SOURCE_OBSERVATION_AUTHORITY_ARTIFACT_TYPE:
+            verify_h74_source_observation_authority_file(authority_path, settings_obj=cfg)
+        else:
+            alignment = validate_h74_authority_file_env_alignment(authority_path, settings_obj=cfg)
+            authority_type = str(alignment.authority_type)
     except Exception as exc:
         raise LiveModeValidationError(
             "h74_source_observation_authority_validation_failed: "
@@ -468,9 +479,10 @@ def _h74_source_observation_authority_selection(
         diagnostics={
             "h74_observation_authority_verified": True,
             "h74_source_observation_authority_verified": True,
+            "h74_authority_type": authority_type,
             "approved_profile_verification_ok": False,
             "approved_profile_block_reason": H74_SOURCE_OBSERVATION_APPROVED_PROFILE_BLOCK_REASON,
-            "approved_profile_contract_scope": H74_SOURCE_OBSERVATION_CONTRACT_SCOPE,
+            "approved_profile_contract_scope": authority_type or H74_SOURCE_OBSERVATION_CONTRACT_SCOPE,
             "production_approval": False,
             "risk_profile_source": H74_SOURCE_OBSERVATION_RISK_POLICY_SOURCE,
         },

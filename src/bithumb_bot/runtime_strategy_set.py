@@ -108,6 +108,52 @@ def runtime_authority_scope_from_settings(settings_obj: object = settings) -> Ru
 def h74_runtime_adapter_materialized_values_from_settings(settings_obj: object) -> dict[str, object]:
     from .h74_observation import H74_STRATEGY_NAME
 
+    raw_strategy_set_json = str(
+        getattr(settings_obj, "RUNTIME_STRATEGY_SET_JSON", "")
+        or os.getenv("RUNTIME_STRATEGY_SET_JSON", "")
+        or ""
+    ).strip()
+    if raw_strategy_set_json:
+        try:
+            payload = json.loads(raw_strategy_set_json)
+        except json.JSONDecodeError:
+            payload = None
+        strategies_payload = None
+        if isinstance(payload, Mapping):
+            strategies_payload = payload.get("strategies")
+        elif isinstance(payload, list):
+            strategies_payload = payload
+        if isinstance(strategies_payload, list):
+            matches: list[Mapping[str, object]] = []
+            for item in strategies_payload:
+                if not isinstance(item, Mapping):
+                    continue
+                enabled = item.get("enabled", True)
+                if isinstance(enabled, str):
+                    enabled_ok = enabled.strip().lower() not in {"0", "false", "no", "off"}
+                else:
+                    enabled_ok = bool(enabled)
+                if not enabled_ok:
+                    continue
+                if str(item.get("strategy_name") or "").strip().lower() != H74_STRATEGY_NAME:
+                    continue
+                if isinstance(item.get("parameters"), Mapping):
+                    matches.append(item)
+            if len(matches) > 1:
+                raise RuntimeError("h74_runtime_strategy_set_ambiguous")
+            if len(matches) == 1:
+                raw_parameters = dict(matches[0].get("parameters") or {})
+                return materialize_strategy_parameters(
+                    H74_STRATEGY_NAME,
+                    raw_parameters,
+                    fee_rate=_optional_float(
+                        raw_parameters.get("LIVE_FEE_RATE_ESTIMATE", getattr(settings_obj, "LIVE_FEE_RATE_ESTIMATE", None))
+                    ),
+                    slippage_bps=_optional_float(
+                        raw_parameters.get("STRATEGY_ENTRY_SLIPPAGE_BPS", getattr(settings_obj, "STRATEGY_ENTRY_SLIPPAGE_BPS", None))
+                    ),
+                )
+
     plugin = _resolve_plugin_or_none(H74_STRATEGY_NAME)
     adapter = getattr(plugin, "runtime_parameter_adapter", None)
     if adapter is None:
