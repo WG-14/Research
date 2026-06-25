@@ -2,7 +2,7 @@
 
 This file is generated from `src/bithumb_bot/config_spec.py`.
 Schema version: `config_spec_v1`
-Spec hash: `sha256:ce8fcc87a6ee9de3069b450ec834425269d4194764a18ab16d097807866e5f7e`
+Spec hash: `sha256:d22b938725262c3add3efd8bce4f9d5eae2542b94d9e80294e4b7d6d0fe8855c`
 
 | Name | Type | Scope | Default | Live required | Secret | Deprecated/Ignored | Safety | Validation | Description |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -85,6 +85,8 @@ Spec hash: `sha256:ce8fcc87a6ee9de3069b450ec834425269d4194764a18ab16d097807866e5
 | `EXECUTION_TOP_OF_BOOK_REQUIRED` | string | common |  | no | no | no | P1 |  | EXECUTION_TOP_OF_BOOK_REQUIRED runtime configuration. |
 | `EXECUTION_TRADE_TICK_REQUIRED` | string | common |  | no | no | no | P1 |  | EXECUTION_TRADE_TICK_REQUIRED runtime configuration. |
 | `FEE_RATE` | number | common |  | no | no | no | P1 |  | FEE_RATE runtime configuration. |
+| `H74_EXECUTION_PATH_PROBE_PRE_SUBMIT_EVIDENCE_PATH` | string | common |  | no | no | no | P1 |  | H74_EXECUTION_PATH_PROBE_PRE_SUBMIT_EVIDENCE_PATH runtime configuration. |
+| `H74_EXECUTION_PATH_PROBE_RUN_ID` | string | common |  | no | no | no | P1 |  | H74_EXECUTION_PATH_PROBE_RUN_ID runtime configuration. |
 | `H74_LIVE_REHEARSAL_NO_SUBMIT_BOUNDARY` | string | internal |  | no | no | no | internal |  | H74_LIVE_REHEARSAL_NO_SUBMIT_BOUNDARY runtime configuration. |
 | `H74_READINESS_CERTIFICATE_PATH` | string | common |  | no | no | no | P1 |  | H74_READINESS_CERTIFICATE_PATH runtime configuration. |
 | `H74_SOURCE_OBSERVATION_AUTHORITY_PATH` | string | common |  | no | no | no | P1 |  | H74_SOURCE_OBSERVATION_AUTHORITY_PATH runtime configuration. |

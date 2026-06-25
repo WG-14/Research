@@ -1780,6 +1780,7 @@ def _h74_execution_path_probe_authority_allows_submit(
         validate_h74_authority_file_env_alignment,
     )
     from .h74_observation import H74_SOURCE_VARIANT_OBSERVATION_AUTHORITY_ARTIFACT_TYPE
+    from .h74_pre_submit_evidence import require_pre_submit_bundle_hash
 
     run_id = str(
         getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", "")
@@ -1789,7 +1790,7 @@ def _h74_execution_path_probe_authority_allows_submit(
     if not run_id:
         return False
     payload_run_id = str(payload.get("h74_execution_path_probe_run_id") or "").strip()
-    if payload_run_id and payload_run_id != run_id:
+    if not payload_run_id or payload_run_id != run_id:
         return False
     if str(getattr(settings_obj, "MODE", "") or "").strip().lower() != "live":
         return False
@@ -1873,7 +1874,51 @@ def _h74_execution_path_probe_authority_allows_submit(
         "max_entry_notional_krw": H74_SOURCE_MAX_ORDER_KRW,
         "DAILY_PARTICIPATION_MAX_ORDER_KRW": H74_SOURCE_MAX_ORDER_KRW,
     }
-    return all(_exact_number(bound.get(key), expected) for key, expected in expected_bound.items())
+    if not all(_exact_number(bound.get(key), expected) for key, expected in expected_bound.items()):
+        return False
+    evidence_path = str(
+        getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_PRE_SUBMIT_EVIDENCE_PATH", "")
+        or os.environ.get("H74_EXECUTION_PATH_PROBE_PRE_SUBMIT_EVIDENCE_PATH", "")
+        or ""
+    ).strip()
+    if not evidence_path:
+        return False
+    try:
+        evidence_payload = json.loads(Path(evidence_path).expanduser().read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(evidence_payload, Mapping):
+        return False
+    try:
+        require_pre_submit_bundle_hash(evidence_payload)
+    except Exception:
+        return False
+    if str(evidence_payload.get("artifact_type") or "") != "h74_pre_submit_evidence_bundle":
+        return False
+    if str(evidence_payload.get("authority_hash") or "") != str(
+        authority_payload.get("authority_content_hash") or ""
+    ):
+        return False
+    if str(evidence_payload.get("env_hash") or "").strip() != str(
+        authority_payload.get("env_hash") or ""
+    ).strip():
+        return False
+    if bool(evidence_payload.get("production_approval")):
+        return False
+    for key in (
+        "research_promotion_evidence",
+        "promotion_grade",
+        "approved_profile_evidence",
+        "equivalence_to_source_candidate",
+    ):
+        if bool(evidence_payload.get(key)):
+            return False
+    if str(evidence_payload.get("research_equivalence_status") or "NOT_APPLICABLE") not in {
+        "",
+        "NOT_APPLICABLE",
+    }:
+        return False
+    return True
 
 
 def _authoritative_target_pair_error(
@@ -2067,6 +2112,7 @@ def _build_execution_decision_summary_from_authority_payload(
             required=execution_engine == "target_delta" and bool(portfolio_target_required),
         )
         target_authority_error = target_authority_error or pair_authority_error
+        h74_readiness_probe_authorized: bool | None = None
         configured_position_mode = str(
             payload.get("position_mode")
             or getattr(settings_obj, "POSITION_MODE", "")
@@ -2094,10 +2140,11 @@ def _build_execution_decision_summary_from_authority_payload(
                 or getattr(settings_obj, "H74_READINESS_CERTIFICATE_PATH", "")
                 or ""
             ).strip()
-            if not cert_path and not _h74_execution_path_probe_authority_allows_submit(
+            h74_readiness_probe_authorized = _h74_execution_path_probe_authority_allows_submit(
                 payload,
                 settings_obj,
-            ):
+            )
+            if not cert_path and not h74_readiness_probe_authorized:
                 target_authority_error = "h74_readiness_certificate_missing"
         authoritative_target_exposure_krw = (
             None
@@ -2263,12 +2310,17 @@ def _build_execution_decision_summary_from_authority_payload(
                         or getattr(settings_obj, "H74_READINESS_CERTIFICATE_PATH", "")
                         or ""
                     ).strip()
-                    if not cert_path and not _h74_execution_path_probe_authority_allows_submit(
-                        payload,
-                        settings_obj,
-                    ):
+                    probe_authorized = (
+                        h74_readiness_probe_authorized
+                        if h74_readiness_probe_authorized is not None
+                        else _h74_execution_path_probe_authority_allows_submit(
+                            payload,
+                            settings_obj,
+                        )
+                    )
+                    if not cert_path and not probe_authorized:
                         target_authority_error = "h74_readiness_certificate_missing"
-                    else:
+                    elif cert_path:
                         try:
                             certificate = json.loads(Path(cert_path).read_text(encoding="utf-8"))
                             verdict = validate_h74_readiness_certificate(
@@ -2689,6 +2741,7 @@ def _build_execution_decision_summary_from_authority_payload(
                 "startup_gate",
                 "contract_hash",
                 "experiment_execution_contract",
+                "h74_execution_path_probe_run_id",
             ):
                 if h74_key in payload:
                     target_plan_extra[h74_key] = payload[h74_key]
