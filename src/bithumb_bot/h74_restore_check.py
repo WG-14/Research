@@ -10,6 +10,7 @@ from .h74_observation import (
     h74_parameter_hash,
     h74_source_runtime_values_from_settings,
 )
+from .runtime_strategy_set import h74_runtime_adapter_materialized_values_from_settings
 from .research.hashing import sha256_prefixed
 
 
@@ -33,7 +34,10 @@ def verify_h74_restore_original_window(
     if str(authority_payload.get("authority_type") or authority_payload.get("artifact_type") or "") != H74_SOURCE_OBSERVATION_AUTHORITY_ARTIFACT_TYPE:
         raise H74ObservationAuthorityError("restore_original_window_requires_source_authority")
     alignment = validate_h74_authority_env_alignment(authority_payload, settings_obj=settings_obj)
-    effective = h74_source_runtime_values_from_settings(settings_obj)
+    effective = {
+        **h74_source_runtime_values_from_settings(settings_obj),
+        **h74_runtime_adapter_materialized_values_from_settings(settings_obj),
+    }
     expected = {key: H74_SOURCE_OBSERVATION_PARAMETERS.get(key) for key in RESTORE_REQUIRED_KEYS}
     expected["MAX_DAILY_ORDER_COUNT"] = H74_SOURCE_OBSERVATION_PARAMETERS.get("max_daily_order_count")
     actual = {key: effective.get(key) for key in RESTORE_REQUIRED_KEYS}

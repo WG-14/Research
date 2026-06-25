@@ -105,6 +105,22 @@ def runtime_authority_scope_from_settings(settings_obj: object = settings) -> Ru
     return "paper_legacy"
 
 
+def h74_runtime_adapter_materialized_values_from_settings(settings_obj: object) -> dict[str, object]:
+    from .h74_observation import H74_STRATEGY_NAME
+
+    plugin = _resolve_plugin_or_none(H74_STRATEGY_NAME)
+    adapter = getattr(plugin, "runtime_parameter_adapter", None)
+    if adapter is None:
+        raise RuntimeError("h74_runtime_parameter_adapter_missing")
+    raw_parameters = dict(adapter.from_settings(settings_obj))
+    return materialize_strategy_parameters(
+        H74_STRATEGY_NAME,
+        raw_parameters,
+        fee_rate=_optional_float(getattr(settings_obj, "LIVE_FEE_RATE_ESTIMATE", None)),
+        slippage_bps=_optional_float(getattr(settings_obj, "STRATEGY_ENTRY_SLIPPAGE_BPS", None)),
+    )
+
+
 def _optional_float(value: object) -> float | None:
     if value is None or value == "":
         return None

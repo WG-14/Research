@@ -3,42 +3,48 @@ from __future__ import annotations
 from bithumb_bot.h74_probe_acceptance import evaluate_h74_execution_path_probe_acceptance
 
 
-def _full() -> dict[str, object]:
+def _pass_report() -> dict[str, object]:
     return {
-        "buy_decision": True,
-        "buy_execution_plan": True,
-        "buy_order_event": True,
-        "buy_fill": True,
-        "open_lot": True,
-        "sell_decision": True,
-        "sell_execution_plan": True,
-        "sell_order_event": True,
-        "sell_fill": True,
-        "closed_trade_lifecycle": True,
+        "artifact_type": "h74_execution_path_probe_report",
+        "probe_run_id": "probe-1",
+        "execution_path_probe_status": "PASS",
+        "buy_decision_id": 1,
+        "buy_execution_plan_id": 2,
+        "buy_order_id": 3,
+        "buy_client_order_id": "buy-1",
+        "buy_fill_id": 4,
+        "open_lot_id": 5,
+        "sell_decision_id": 6,
+        "sell_execution_plan_id": 7,
+        "sell_order_id": 8,
+        "sell_client_order_id": "sell-1",
+        "sell_fill_id": 9,
+        "lifecycle_id": 10,
+        "accounting": {"validated": True},
         "final_flat_or_documented_dust": True,
+        "research_equivalence": False,
+        "research_equivalence_status": "NOT_APPLICABLE",
+        "production_approval": False,
     }
 
 
-def test_no_window_probe_pass_requires_buy_and_sell_fills() -> None:
-    result = evaluate_h74_execution_path_probe_acceptance(_full())
+def test_acceptance_consumes_probe_report_schema() -> None:
+    result = evaluate_h74_execution_path_probe_acceptance(_pass_report())
     assert result["execution_path_probe_status"] == "PASS"
+    assert result["acceptance_track"] == "execution_path_probe"
 
 
-def test_no_window_probe_without_sell_fill_is_incomplete() -> None:
-    evidence = _full()
-    evidence["sell_fill"] = False
-    result = evaluate_h74_execution_path_probe_acceptance(evidence)
+def test_acceptance_rejects_report_without_lifecycle_id() -> None:
+    report = _pass_report()
+    report["lifecycle_id"] = None
+    result = evaluate_h74_execution_path_probe_acceptance(report)
     assert result["execution_path_probe_status"] != "PASS"
-    assert "sell_fill" in result["missing_evidence"]
+    assert "lifecycle_id" in result["missing_evidence"]
 
 
-def test_no_window_probe_never_sets_research_equivalence_true() -> None:
-    result = evaluate_h74_execution_path_probe_acceptance(_full())
+def test_acceptance_artifact_never_enables_research_or_production() -> None:
+    result = evaluate_h74_execution_path_probe_acceptance(_pass_report())
     assert result["research_equivalence"] is False
     assert result["research_equivalence_status"] == "NOT_APPLICABLE"
-
-
-def test_no_window_probe_never_sets_production_approval_true() -> None:
-    result = evaluate_h74_execution_path_probe_acceptance(_full())
     assert result["production_approval"] is False
     assert result["promotion_grade"] is False

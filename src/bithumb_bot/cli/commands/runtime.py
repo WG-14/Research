@@ -129,23 +129,81 @@ def _h74_clear_non_authoritative_state(args: argparse.Namespace, context) -> int
 
 
 def _h74_no_window_probe(args: argparse.Namespace, context) -> int:
-    import json
     from pathlib import Path
 
+    from bithumb_bot.db_core import ensure_db
+    from bithumb_bot.h74_authority_alignment import load_h74_authority_payload
+    from bithumb_bot.h74_execution_path_probe import generate_h74_execution_path_probe_report
+    from bithumb_bot.h74_probe_acceptance import evaluate_h74_execution_path_probe_acceptance
     from bithumb_bot.h74_pre_submit_evidence import require_pre_submit_bundle_hash
+    from bithumb_bot.h74_restore_check import verify_h74_restore_original_window
+    from bithumb_bot.paths import PathManager
+    from bithumb_bot.research.hashing import sha256_prefixed
+    from bithumb_bot.storage_io import write_json_atomic
 
     if not args.pre_submit_evidence:
         context.printer("h74_no_window_probe_failed reason=h74_no_window_probe_pre_submit_evidence_hash_required")
         return 1
+    probe_run_id = str(args.probe_run_id or "").strip()
+    if not probe_run_id:
+        context.printer("h74_no_window_probe_failed reason=probe_run_id_required")
+        return 1
     with Path(args.pre_submit_evidence).expanduser().open("r", encoding="utf-8") as handle:
         bundle = json.load(handle)
     require_pre_submit_bundle_hash(bundle)
+    manager = PathManager.from_env(Path.cwd())
+    startup_path = manager.report_path("h74_no_window_probe_startup", ext="json")
+    startup_artifact = {
+        "artifact_type": "h74_no_window_probe_startup",
+        "probe_run_id": probe_run_id,
+        "pre_submit_evidence_hash": str(bundle["pre_submit_evidence_hash"]),
+    }
+    startup_artifact["startup_artifact_hash"] = sha256_prefixed(startup_artifact)
+    write_json_atomic(startup_path, startup_artifact)
+
+    conn = ensure_db(str(args.db) if args.db else None, ensure_schema_ready=False)
+    try:
+        report = generate_h74_execution_path_probe_report(
+            conn,
+            probe_run_id=probe_run_id,
+            pair=str(args.pair or getattr(context.settings, "PAIR", "KRW-BTC") or "KRW-BTC"),
+            min_executable_qty=float(args.min_executable_qty),
+        )
+    finally:
+        conn.close()
+    report_path = manager.report_path("h74_execution_path_probe_report", ext="json")
+    write_json_atomic(report_path, report)
+    acceptance = evaluate_h74_execution_path_probe_acceptance(report)
+    acceptance["acceptance_artifact_hash"] = sha256_prefixed(acceptance)
+    acceptance_path = manager.report_path("h74_execution_path_probe_acceptance", ext="json")
+    write_json_atomic(acceptance_path, acceptance)
+
+    restore_path_text = ""
+    if report["execution_path_probe_status"] == "PASS":
+        authority_path = str(args.restore_authority or getattr(context.settings, "H74_SOURCE_OBSERVATION_AUTHORITY_PATH", "") or "").strip()
+        if not authority_path:
+            context.printer("h74_no_window_probe_failed reason=restore_source_authority_required")
+            return 1
+        restore = verify_h74_restore_original_window(
+            authority_payload=load_h74_authority_payload(authority_path),
+            settings_obj=context.settings,
+            env_hash=str(bundle.get("env_hash") or ""),
+        )
+        restore_path = manager.report_path("h74_restore_original_window_check", ext="json")
+        write_json_atomic(restore_path, restore)
+        restore_path_text = f" restore_artifact={restore_path}"
     context.printer(
-        "h74_no_window_probe_ready "
+        "h74_no_window_probe_complete "
         f"pre_submit_evidence_hash={bundle['pre_submit_evidence_hash']} "
-        "submit_path_entry=external_run_wrapper_required"
+        f"probe_run_id={probe_run_id} "
+        f"execution_path_probe_status={report['execution_path_probe_status']} "
+        f"acceptance_status={acceptance['execution_path_probe_status']} "
+        f"startup_artifact={startup_path} "
+        f"report_artifact={report_path} "
+        f"acceptance_artifact={acceptance_path}"
+        f"{restore_path_text}"
     )
-    return 0
+    return 0 if acceptance["execution_path_probe_status"] == "PASS" else 1
 
 
 def _runtime_strategy_set_lint(_args: argparse.Namespace, context) -> int:
@@ -297,8 +355,9 @@ def command_specs() -> list[CommandSpec]:
             domain="runtime",
             handler=_h74_no_window_probe,
             help="validate no-window H74 probe pre-submit evidence before execution",
-            build=lambda p: p.add_argument("--pre-submit-evidence"),
+            build=_build_h74_no_window_probe,
             read_only=True,
+            produces_artifact=True,
         ),
         make_spec(
             "runtime-strategy-set-lint",
@@ -334,3 +393,12 @@ def _build_h74_clear_non_authoritative_state(parser: argparse.ArgumentParser) ->
     parser.add_argument("--require-flat", action="store_true")
     parser.add_argument("--backup", action="store_true", help="required; cleanup always writes a backup artifact")
     parser.add_argument("--allow-broker-unverified", action="store_true")
+
+
+def _build_h74_no_window_probe(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--pre-submit-evidence", required=True)
+    parser.add_argument("--probe-run-id", required=True)
+    parser.add_argument("--db")
+    parser.add_argument("--pair", default="KRW-BTC")
+    parser.add_argument("--min-executable-qty", type=float, default=0.0)
+    parser.add_argument("--restore-authority")

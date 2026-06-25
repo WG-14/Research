@@ -58,3 +58,20 @@ def build_h74_pre_submit_evidence_bundle(
 def require_pre_submit_bundle_hash(bundle: Mapping[str, object] | None) -> None:
     if not bundle or not str(bundle.get("pre_submit_evidence_hash") or "").strip():
         raise H74PreSubmitEvidenceError("h74_no_window_probe_pre_submit_evidence_hash_required")
+    payload = dict(bundle)
+    expected_hash = str(payload.pop("pre_submit_evidence_hash") or "").strip()
+    if sha256_prefixed(payload) != expected_hash:
+        raise H74PreSubmitEvidenceError("h74_no_window_probe_pre_submit_evidence_hash_mismatch")
+    alignment = bundle.get("authority_env_alignment")
+    if not isinstance(alignment, Mapping) or not bool(alignment.get("ok")):
+        raise H74PreSubmitEvidenceError("h74_no_window_probe_authority_env_alignment_failed")
+    flat_start_proof = bundle.get("flat_start_proof")
+    if not isinstance(flat_start_proof, Mapping) or not bool(flat_start_proof.get("flat")):
+        raise H74PreSubmitEvidenceError("h74_no_window_probe_flat_start_proof_failed")
+    disk_capacity_proof = bundle.get("disk_capacity_proof")
+    if not isinstance(disk_capacity_proof, Mapping):
+        raise H74PreSubmitEvidenceError("h74_no_window_probe_disk_capacity_proof_missing")
+    if int(disk_capacity_proof.get("free_bytes") or 0) < int(disk_capacity_proof.get("min_free_bytes") or 1):
+        raise H74PreSubmitEvidenceError("h74_no_window_probe_disk_capacity_proof_failed")
+    if not str(bundle.get("db_snapshot_hash") or "").strip() and not str(bundle.get("db_snapshot_locator") or "").strip():
+        raise H74PreSubmitEvidenceError("h74_no_window_probe_db_snapshot_proof_failed")

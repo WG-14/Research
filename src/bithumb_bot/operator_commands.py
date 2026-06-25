@@ -1406,6 +1406,9 @@ def _print_live_dry_run_decision_summary(summary: dict[str, object]) -> None:
 
 
 def cmd_live_dry_run() -> None:
+    from .live_dry_run_isolation import validate_live_dry_run_state_isolation
+
+    validate_live_dry_run_state_isolation(settings)
     log_live_execution_contract(
         settings,
         caller="cmd_live_dry_run",
