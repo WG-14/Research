@@ -445,17 +445,17 @@ def _h74_source_observation_authority_selection(
     if not authority_path:
         return H74SourceObservationAuthoritySelection(verified=False)
 
-    from .h74_authority_alignment import validate_h74_authority_file_env_alignment
     from .h74_observation import (
         H74_SOURCE_OBSERVATION_RISK_POLICY_SOURCE,
         H74_STRATEGY_NAME,
+        verify_h74_source_observation_authority_file,
     )
 
     if str(strategy_name or "").strip().lower() != H74_STRATEGY_NAME:
         return H74SourceObservationAuthoritySelection(verified=False)
 
     try:
-        validate_h74_authority_file_env_alignment(authority_path, settings_obj=cfg)
+        verify_h74_source_observation_authority_file(authority_path, settings_obj=cfg)
     except Exception as exc:
         raise LiveModeValidationError(
             "h74_source_observation_authority_validation_failed: "
@@ -1722,8 +1722,6 @@ def validate_live_real_order_execution_preflight(cfg: Settings) -> None:
 
 def validate_live_dry_run_loop_startup_contract(cfg: Settings) -> None:
     """Validate that the live dry-run loop is explicitly unarmed and no-submit."""
-    from .live_dry_run_isolation import validate_live_dry_run_state_isolation
-
     issues: list[str] = []
     if cfg.MODE != "live":
         issues.append(f"MODE=live is required for live-dry-run (got MODE={cfg.MODE})")
@@ -1735,10 +1733,6 @@ def validate_live_dry_run_loop_startup_contract(cfg: Settings) -> None:
         raise LiveModeValidationError(
             "live dry-run loop startup contract failed: " + "; ".join(issues)
         )
-    try:
-        validate_live_dry_run_state_isolation(cfg)
-    except Exception as exc:
-        raise LiveModeValidationError(f"live dry-run loop startup contract failed: {exc}") from exc
     validate_live_mode_preflight(cfg)
     profile_report = validate_runtime_profile_bindings_for_live_startup(
         cfg,

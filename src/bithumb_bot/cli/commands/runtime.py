@@ -207,7 +207,7 @@ def _h74_no_window_probe(args: argparse.Namespace, context) -> int:
 
 
 def _runtime_strategy_set_lint(_args: argparse.Namespace, context) -> int:
-    from bithumb_bot.config import validate_runtime_strategy_set_selection
+    from bithumb_bot.config import LiveModeValidationError, validate_runtime_strategy_set_selection
     from bithumb_bot.h74_authority_alignment import validate_h74_authority_file_env_alignment
     from bithumb_bot.runtime_strategy_set import normalized_runtime_strategy_set_manifest
 
@@ -230,11 +230,13 @@ def _runtime_strategy_set_lint(_args: argparse.Namespace, context) -> int:
                     f"authority_type={alignment.authority_type} "
                     f"mismatched_keys={','.join(alignment.mismatched_keys)}"
                 )
-                return 1
+                raise LiveModeValidationError(
+                    f"{alignment.reason_code}:" + ",".join(alignment.mismatched_keys)
+                )
         manifest = normalized_runtime_strategy_set_manifest(settings_obj=context.settings)
     except Exception as exc:
         context.printer(f"runtime_strategy_set_lint_failed reason={type(exc).__name__}:{exc}")
-        return 1
+        raise
     context.printer(
         "runtime_strategy_set_lint_ok "
         f"runtime_scope={manifest['runtime_scope']!r} "

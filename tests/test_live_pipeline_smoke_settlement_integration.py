@@ -50,6 +50,18 @@ from tests.test_live_settlement_integration_fixtures import (
 )
 
 
+_MISSING_SETTING = object()
+
+
+def _restore_scripted_smoke_settings(old: dict[str, object]) -> None:
+    for name, value in old.items():
+        if value is _MISSING_SETTING:
+            if hasattr(settings, name):
+                object.__delattr__(settings, name)
+            continue
+        object.__setattr__(settings, name, value)
+
+
 def _record_reconcile_attempt(attempts: list[str] | None = None):
     if attempts is not None:
         attempts.append("reconcile")
@@ -459,12 +471,38 @@ def _patch_settlement_readiness(monkeypatch, broker: _SequencedBithumbBroker) ->
 
 
 def _run_scripted_smoke(monkeypatch, tmp_path, *, delayed_first_buy: bool, cycles: int = 5):
+    setting_names = (
+        "MODE",
+        "DB_PATH",
+        "LIVE_DRY_RUN",
+        "LIVE_REAL_ORDER_ARMED",
+        "EXECUTION_ENGINE",
+        "STRATEGY_NAME",
+        "PAIR",
+        "INTERVAL",
+        "START_CASH_KRW",
+        "MIN_ORDER_NOTIONAL_KRW",
+        "BITHUMB_API_KEY",
+        "BITHUMB_API_SECRET",
+        "LIVE_FILL_FEE_ALERT_MIN_NOTIONAL_KRW",
+        "LIVE_FILL_FEE_RATIO_MIN",
+        "LIVE_FILL_FEE_RATIO_MAX",
+        "LIVE_FEE_RATE_ESTIMATE",
+        "LIVE_INTERNAL_LOT_SIZE",
+        "LIVE_MIN_ORDER_QTY",
+        "LIVE_ORDER_QTY_STEP",
+    )
+    old = {
+        name: (getattr(settings, name) if hasattr(settings, name) else _MISSING_SETTING)
+        for name in setting_names
+    }
     conn = _configure_live_fixture(tmp_path, monkeypatch)
     object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
     object.__setattr__(settings, "EXECUTION_ENGINE", "target_delta")
     object.__setattr__(settings, "STRATEGY_NAME", "sma_with_filter")
     object.__setattr__(settings, "MIN_ORDER_NOTIONAL_KRW", 5_000.0)
     object.__setattr__(settings, "BITHUMB_API_KEY", "account")
+    object.__setattr__(settings, "LIVE_FEE_RATE_ESTIMATE", 0.0005)
     broker = _SequencedBithumbBroker(delayed_first_buy=delayed_first_buy, rounds=cycles)
     _patch_settlement_readiness(monkeypatch, broker)
     _insert_top_of_book(conn)
@@ -489,7 +527,7 @@ def _run_scripted_smoke(monkeypatch, tmp_path, *, delayed_first_buy: bool, cycle
         post_trade_reconcile=service.reconcile_last_submission,
         run_id="lps_scripted_v1_order",
     )
-    return payload, conn, broker, service
+    return payload, conn, broker, service, old
 
 
 def test_live_pipeline_smoke_passes_only_when_all_10_orders_settle_without_repair(monkeypatch, tmp_path) -> None:
@@ -1167,7 +1205,7 @@ def test_live_pipeline_smoke_records_settlement_evidence_for_each_step(monkeypat
 
 
 def test_live_pipeline_smoke_uses_broker_order_fill_settlement_wrapper(monkeypatch, tmp_path) -> None:
-    payload, conn, broker, _service = _run_scripted_smoke(
+    payload, conn, broker, _service, old = _run_scripted_smoke(
         monkeypatch,
         tmp_path,
         delayed_first_buy=False,
@@ -1183,10 +1221,11 @@ def test_live_pipeline_smoke_uses_broker_order_fill_settlement_wrapper(monkeypat
         assert all(step["settlement_result"]["evidence"]["attempts"] for step in steps)
     finally:
         conn.close()
+        _restore_scripted_smoke_settings(old)
 
 
 def test_live_pipeline_smoke_settlement_calls_get_order_and_get_fills(monkeypatch, tmp_path) -> None:
-    payload, conn, broker, _service = _run_scripted_smoke(
+    payload, conn, broker, _service, old = _run_scripted_smoke(
         monkeypatch,
         tmp_path,
         delayed_first_buy=False,
@@ -1204,6 +1243,7 @@ def test_live_pipeline_smoke_settlement_calls_get_order_and_get_fills(monkeypatc
         assert broker.private_calls
     finally:
         conn.close()
+        _restore_scripted_smoke_settings(old)
 
 
 def test_live_pipeline_smoke_does_not_use_readiness_only_observer_for_apply_path() -> None:
@@ -1222,7 +1262,7 @@ def test_live_pipeline_smoke_apply_path_uses_nonzero_settlement_intervals() -> N
 
 
 def test_live_pipeline_smoke_delayed_paid_fee_settles_and_advances_to_sell(monkeypatch, tmp_path) -> None:
-    payload, conn, broker, service = _run_scripted_smoke(
+    payload, conn, broker, service, old = _run_scripted_smoke(
         monkeypatch,
         tmp_path,
         delayed_first_buy=True,
@@ -1245,12 +1285,13 @@ def test_live_pipeline_smoke_delayed_paid_fee_settles_and_advances_to_sell(monke
         assert _table_count(conn, "manual_flat_accounting_repairs") == 0
     finally:
         conn.close()
+        _restore_scripted_smoke_settings(old)
 
 
 def test_live_pipeline_smoke_scripted_v1_order_completes_one_round_trip_without_manual_repair(
     monkeypatch, tmp_path
 ) -> None:
-    payload, conn, _broker, service = _run_scripted_smoke(
+    payload, conn, _broker, service, old = _run_scripted_smoke(
         monkeypatch,
         tmp_path,
         delayed_first_buy=False,
@@ -1263,10 +1304,11 @@ def test_live_pipeline_smoke_scripted_v1_order_completes_one_round_trip_without_
         assert _table_count(conn, "manual_flat_accounting_repairs") == 0
     finally:
         conn.close()
+        _restore_scripted_smoke_settings(old)
 
 
 def test_live_pipeline_smoke_scripted_v1_order_five_round_trips_without_repair(monkeypatch, tmp_path) -> None:
-    payload, conn, _broker, service = _run_scripted_smoke(
+    payload, conn, _broker, service, old = _run_scripted_smoke(
         monkeypatch,
         tmp_path,
         delayed_first_buy=False,
@@ -1283,6 +1325,7 @@ def test_live_pipeline_smoke_scripted_v1_order_five_round_trips_without_repair(m
         assert _table_count(conn, "manual_flat_accounting_repairs") == 0
     finally:
         conn.close()
+        _restore_scripted_smoke_settings(old)
 
 
 def test_smoke_timed_out_failure_payload_contains_settlement_attempts(monkeypatch, tmp_path) -> None:

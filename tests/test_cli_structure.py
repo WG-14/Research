@@ -37,6 +37,8 @@ EXPECTED_COMMANDS = {
     "trades",
     "run",
     "live-dry-run",
+    "h74-clear-non-authoritative-state",
+    "h74-no-window-probe",
     "pause",
     "resume",
     "reconcile",
