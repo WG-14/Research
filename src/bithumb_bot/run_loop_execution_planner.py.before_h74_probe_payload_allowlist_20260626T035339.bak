@@ -124,8 +124,6 @@ READINESS_CONTEXT_KEYS = (
     "startup_gate",
     "contract_hash",
     "experiment_execution_contract",
-    "h74_execution_path_probe_run_id",
-    "h74_fixed_position_contract_active",
     "cash_available",
 )
 
@@ -220,10 +218,6 @@ def _h74_authority_planning_fields(settings_obj: object) -> dict[str, object]:
             authority.get("partial_fill_policy")
             or bound.get("partial_fill_policy")
             or "accumulate_cycle_fills"
-        ),
-        "h74_fixed_position_contract_active": (
-            str(authority.get("position_mode") or bound.get("position_mode") or "")
-            == POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
         ),
         "h74_execution_path_probe_run_id": str(
             getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", "") or ""

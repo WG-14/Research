@@ -142,8 +142,6 @@ EXECUTION_PLANNING_READINESS_KEYS = frozenset(
         "authority_source",
         "h74_source_authority_hash",
         "h74_source_authority",
-        "h74_execution_path_probe_run_id",
-        "h74_fixed_position_contract_active",
     }
 )
 
@@ -2743,7 +2741,6 @@ def _build_execution_decision_summary_from_authority_payload(
                 "startup_gate",
                 "contract_hash",
                 "experiment_execution_contract",
-                "h74_fixed_position_contract_active",
                 "h74_execution_path_probe_run_id",
             ):
                 if h74_key in payload:
