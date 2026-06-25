@@ -219,9 +219,6 @@ def _h74_authority_planning_fields(settings_obj: object) -> dict[str, object]:
             or bound.get("partial_fill_policy")
             or "accumulate_cycle_fills"
         ),
-        "h74_execution_path_probe_run_id": str(
-            getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", "") or ""
-        ),
     }
 
 
