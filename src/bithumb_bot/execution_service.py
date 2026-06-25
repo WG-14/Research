@@ -1771,6 +1771,111 @@ def _portfolio_target_authority_error(
     return None
 
 
+def _h74_execution_path_probe_authority_allows_submit(
+    payload: Mapping[str, object],
+    settings_obj: object,
+) -> bool:
+    from .h74_authority_alignment import (
+        load_h74_authority_payload,
+        validate_h74_authority_file_env_alignment,
+    )
+    from .h74_observation import H74_SOURCE_VARIANT_OBSERVATION_AUTHORITY_ARTIFACT_TYPE
+
+    run_id = str(
+        getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", "")
+        or os.environ.get("H74_EXECUTION_PATH_PROBE_RUN_ID", "")
+        or ""
+    ).strip()
+    if not run_id:
+        return False
+    payload_run_id = str(payload.get("h74_execution_path_probe_run_id") or "").strip()
+    if payload_run_id and payload_run_id != run_id:
+        return False
+    if str(getattr(settings_obj, "MODE", "") or "").strip().lower() != "live":
+        return False
+    if not bool(getattr(settings_obj, "LIVE_REAL_ORDER_ARMED", False)):
+        return False
+    if bool(getattr(settings_obj, "LIVE_DRY_RUN", True)):
+        return False
+    if bool(getattr(settings_obj, "H74_LIVE_REHEARSAL_NO_SUBMIT_BOUNDARY", False)):
+        return False
+    if str(os.environ.get("H74_LIVE_REHEARSAL_NO_SUBMIT_BOUNDARY") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return False
+    if (
+        str(payload.get("strategy") or payload.get("strategy_name") or "").strip().lower()
+        != H74_EXECUTION_STRATEGY_NAME
+    ):
+        return False
+    if not bool(payload.get("h74_fixed_position_contract_active")):
+        return False
+    authority_path = str(
+        getattr(settings_obj, "H74_SOURCE_OBSERVATION_AUTHORITY_PATH", "")
+        or os.environ.get("H74_SOURCE_OBSERVATION_AUTHORITY_PATH", "")
+        or ""
+    ).strip()
+    if not authority_path:
+        return False
+    authority_file = Path(authority_path).expanduser()
+    if not authority_file.is_file():
+        return False
+
+    def _exact_number(value: object, expected: float) -> bool:
+        try:
+            return float(value) == float(expected)
+        except (TypeError, ValueError):
+            return False
+
+    try:
+        authority_payload = load_h74_authority_payload(authority_file)
+        alignment = validate_h74_authority_file_env_alignment(
+            authority_file,
+            settings_obj=settings_obj,
+            raise_on_mismatch=True,
+        )
+    except Exception:
+        return False
+    if not bool(alignment.ok):
+        return False
+    expected_authority_type = H74_SOURCE_VARIANT_OBSERVATION_AUTHORITY_ARTIFACT_TYPE
+    if str(authority_payload.get("artifact_type") or "") != expected_authority_type:
+        return False
+    if str(authority_payload.get("authority_type") or "") != expected_authority_type:
+        return False
+    if str(authority_payload.get("contract_scope") or "") != "h74_source_variant_live_probe_buy_sell_path_only":
+        return False
+    if str(authority_payload.get("acceptance_track") or "") != "execution_path_probe":
+        return False
+    if str(authority_payload.get("probe_scope") or "") != "buy_sell_path_only":
+        return False
+    if bool(authority_payload.get("production_approval")) is not False:
+        return False
+    if bool(authority_payload.get("equivalence_to_source_candidate")) is not False:
+        return False
+    if not _exact_number(getattr(settings_obj, "MAX_ORDER_KRW", None), H74_SOURCE_MAX_ORDER_KRW):
+        return False
+    if not _exact_number(
+        getattr(settings_obj, "DAILY_PARTICIPATION_MAX_ORDER_KRW", None),
+        H74_SOURCE_MAX_ORDER_KRW,
+    ):
+        return False
+    bound = dict(authority_payload.get("hash_bound_parameters") or {})
+    expected_bound = {
+        "DAILY_PARTICIPATION_WINDOW_START_HOUR_KST": 0,
+        "DAILY_PARTICIPATION_WINDOW_END_HOUR_KST": 24,
+        "SMA_SHORT": 10,
+        "SMA_LONG": 86,
+        "STRATEGY_EXIT_MAX_HOLDING_MIN": 74,
+        "max_entry_notional_krw": H74_SOURCE_MAX_ORDER_KRW,
+        "DAILY_PARTICIPATION_MAX_ORDER_KRW": H74_SOURCE_MAX_ORDER_KRW,
+    }
+    return all(_exact_number(bound.get(key), expected) for key, expected in expected_bound.items())
+
+
 def _authoritative_target_pair_error(
     *,
     payload: Mapping[str, object],
@@ -1989,7 +2094,10 @@ def _build_execution_decision_summary_from_authority_payload(
                 or getattr(settings_obj, "H74_READINESS_CERTIFICATE_PATH", "")
                 or ""
             ).strip()
-            if not cert_path:
+            if not cert_path and not _h74_execution_path_probe_authority_allows_submit(
+                payload,
+                settings_obj,
+            ):
                 target_authority_error = "h74_readiness_certificate_missing"
         authoritative_target_exposure_krw = (
             None
@@ -2155,7 +2263,10 @@ def _build_execution_decision_summary_from_authority_payload(
                         or getattr(settings_obj, "H74_READINESS_CERTIFICATE_PATH", "")
                         or ""
                     ).strip()
-                    if not cert_path:
+                    if not cert_path and not _h74_execution_path_probe_authority_allows_submit(
+                        payload,
+                        settings_obj,
+                    ):
                         target_authority_error = "h74_readiness_certificate_missing"
                     else:
                         try:
