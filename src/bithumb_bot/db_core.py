@@ -1009,6 +1009,98 @@ def _backfill_trade_lifecycle_owner_actor_scope(conn: sqlite3.Connection) -> Non
         )
 
 
+def _ensure_migration_evidence_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS migration_evidence (
+            migration_id TEXT PRIMARY KEY,
+            applied_at INTEGER NOT NULL,
+            affected_row_count INTEGER NOT NULL,
+            backfill_hash TEXT NOT NULL,
+            evidence_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+
+
+def _trade_lifecycle_owner_actor_scope_backfill_evidence(
+    conn: sqlite3.Connection,
+) -> tuple[int, str, str]:
+    required_columns = {
+        "id",
+        "owner_strategy_name",
+        "owner_strategy_instance_id",
+        "owner_risk_scope_id",
+        "risk_scope_id",
+        "entry_actor",
+        "exit_actor",
+        "exit_authority",
+        "operator_intervention",
+        "exit_initiator_type",
+    }
+    available_columns = {
+        str(row["name"] if hasattr(row, "keys") else row[1])
+        for row in conn.execute("PRAGMA table_info(trade_lifecycles)").fetchall()
+    }
+    if not required_columns.issubset(available_columns):
+        payload = {
+            "migration_id": "trade_lifecycle_owner_actor_scope_backfill_v1",
+            "status": "columns_missing",
+            "available_columns": sorted(available_columns),
+        }
+        return 0, sha256_prefixed(payload), _json_dumps_stable(payload)
+    rows = conn.execute(
+        """
+        SELECT
+            id,
+            owner_strategy_name,
+            owner_strategy_instance_id,
+            owner_risk_scope_id,
+            risk_scope_id,
+            entry_actor,
+            exit_actor,
+            exit_authority,
+            operator_intervention,
+            exit_initiator_type
+        FROM trade_lifecycles
+        ORDER BY id
+        """
+    ).fetchall()
+    payload_rows = [{str(key): row[key] for key in row.keys()} for row in rows]
+    payload = {
+        "migration_id": "trade_lifecycle_owner_actor_scope_backfill_v1",
+        "status": "applied",
+        "row_count": len(payload_rows),
+        "rows": payload_rows,
+    }
+    return len(payload_rows), sha256_prefixed(payload), _json_dumps_stable(payload)
+
+
+def _record_trade_lifecycle_owner_actor_scope_backfill_evidence(conn: sqlite3.Connection) -> None:
+    migration_id = "trade_lifecycle_owner_actor_scope_backfill_v1"
+    affected_count, backfill_hash, evidence_json = _trade_lifecycle_owner_actor_scope_backfill_evidence(conn)
+    existing = conn.execute(
+        "SELECT backfill_hash FROM migration_evidence WHERE migration_id=?",
+        (migration_id,),
+    ).fetchone()
+    if existing is not None and str(existing["backfill_hash"]) == backfill_hash:
+        return
+    conn.execute(
+        """
+        INSERT INTO migration_evidence(
+            migration_id, applied_at, affected_row_count, backfill_hash, evidence_json
+        )
+        VALUES (?, strftime('%s', 'now'), ?, ?, ?)
+        ON CONFLICT(migration_id) DO UPDATE SET
+            applied_at=excluded.applied_at,
+            affected_row_count=excluded.affected_row_count,
+            backfill_hash=excluded.backfill_hash,
+            evidence_json=excluded.evidence_json
+        """,
+        (migration_id, int(affected_count), backfill_hash, evidence_json),
+    )
+
+
 def _strategy_decision_experiment_context(*, strategy_name: str) -> dict[str, Any]:
     payload = {
         "strategy_name": str(strategy_name).strip().lower(),
@@ -3435,8 +3527,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         ON strategy_risk_capital_basis(risk_scope_id)
         """
     )
+    _ensure_migration_evidence_schema(conn)
     _backfill_trade_lifecycle_strategy_scope(conn)
     _backfill_trade_lifecycle_owner_actor_scope(conn)
+    _record_trade_lifecycle_owner_actor_scope_backfill_evidence(conn)
 
     _ensure_multi_strategy_artifact_schema(conn)
     _ensure_schema_meta_table(conn)

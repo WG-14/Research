@@ -1743,10 +1743,27 @@ def validate_live_dry_run_loop_startup_contract(cfg: Settings) -> None:
         )
 
 
-def validate_live_run_startup_contract(cfg: Settings) -> None:
+def validate_live_run_startup_contract(
+    cfg: Settings,
+    *,
+    code_provenance: dict[str, object] | None = None,
+) -> dict[str, object]:
     """Single startup gate for live run-loop execution."""
     validate_live_mode_preflight(cfg)
     validate_live_real_order_execution_preflight(cfg)
+    provenance = validate_runtime_code_provenance_for_live_real_order(
+        cfg,
+        code_provenance=code_provenance,
+    )
+    if not bool(provenance.get("ok")):
+        raise LiveModeValidationError(
+            "live run startup contract failed: "
+            f"reason_code={provenance.get('reason_code')}"
+        )
+    return {
+        "startup_contract_artifact_type": "live_run_startup_contract",
+        **provenance,
+    }
 
 
 def _git_output(args: tuple[str, ...], *, cwd: Path) -> str | None:

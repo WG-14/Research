@@ -1355,3 +1355,12 @@ def test_h74_blocked_projection_is_not_entry_state() -> None:
     )
 
     assert result.allowed is True
+
+
+def test_h74_real_observation_records_included_history_policy() -> None:
+    payload = _source_authority()
+
+    assert payload["included_history_policy"] == "declared_live_history_scope"
+    assert payload["hash_bound_parameters"]["included_history_policy"] == "declared_live_history_scope"
+    assert str(payload["experiment_envelope_hash"]).startswith("sha256:")
+    assert str(payload["risk_baseline_certificate_hash"]).startswith("sha256:")

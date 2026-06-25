@@ -24,6 +24,56 @@ def _insert_legacy(conn) -> None:
     )
 
 
+def test_trade_lifecycle_owner_actor_migration_records_evidence(tmp_path) -> None:
+    db_path = tmp_path / "migration-evidence.sqlite"
+    conn = ensure_db(str(db_path))
+    _insert_legacy(conn)
+    conn.commit()
+
+    ensure_db(str(db_path)).close()
+    row = conn.execute(
+        """
+        SELECT migration_id, affected_row_count, backfill_hash
+        FROM migration_evidence
+        WHERE migration_id='trade_lifecycle_owner_actor_scope_backfill_v1'
+        """
+    ).fetchone()
+
+    assert row is not None
+    assert row["affected_row_count"] == 1
+    assert str(row["backfill_hash"]).startswith("sha256:")
+
+
+def test_trade_lifecycle_owner_actor_migration_evidence_is_idempotent(tmp_path) -> None:
+    db_path = tmp_path / "migration.sqlite"
+    conn = ensure_db(str(db_path))
+    _insert_legacy(conn)
+    conn.commit()
+
+    ensure_db(str(db_path)).close()
+    first = conn.execute(
+        """
+        SELECT tl.c AS lifecycle_count, me.affected_row_count, me.backfill_hash
+        FROM (SELECT COUNT(*) AS c FROM trade_lifecycles) tl
+        JOIN migration_evidence me
+          ON me.migration_id='trade_lifecycle_owner_actor_scope_backfill_v1'
+        """
+    ).fetchone()
+    ensure_db(str(db_path)).close()
+    second = conn.execute(
+        """
+        SELECT tl.c AS lifecycle_count, me.affected_row_count, me.backfill_hash
+        FROM (SELECT COUNT(*) AS c FROM trade_lifecycles) tl
+        JOIN migration_evidence me
+          ON me.migration_id='trade_lifecycle_owner_actor_scope_backfill_v1'
+        """
+    ).fetchone()
+
+    assert first["lifecycle_count"] == second["lifecycle_count"] == 1
+    assert first["affected_row_count"] == second["affected_row_count"] == 1
+    assert first["backfill_hash"] == second["backfill_hash"]
+
+
 def test_trade_lifecycle_owner_actor_migration_is_idempotent(tmp_path) -> None:
     db_path = tmp_path / "migration.sqlite"
     conn = ensure_db(str(db_path))

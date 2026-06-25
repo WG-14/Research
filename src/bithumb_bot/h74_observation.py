@@ -293,6 +293,10 @@ def build_h74_source_observation_authority_payload(
     backtest_report_hash: str | None = None,
     validation_run_hash: str | None = None,
     code_commit_sha: str | None = None,
+    experiment_envelope_hash: str | None = None,
+    risk_baseline_certificate_hash: str | None = None,
+    included_history_policy: str | None = None,
+    db_snapshot_hash: str | None = None,
 ) -> dict[str, Any]:
     expiry = expires_at or (datetime.now(timezone.utc) + timedelta(days=H74_OBSERVATION_WINDOW_DAYS))
     from .config import runtime_code_provenance
@@ -307,6 +311,31 @@ def build_h74_source_observation_authority_payload(
     risk_policy = h74_source_observation_risk_policy()
     risk_policy_hash = h74_source_observation_risk_policy_hash(risk_policy)
     commit = str(code_commit_sha or runtime_code_provenance().get("commit_sha") or "unavailable")
+    baseline_hash = str(risk_baseline_certificate_hash or "").strip() or sha256_prefixed(
+        {
+            "risk_policy_hash": risk_policy_hash,
+            "risk_capital_basis": H74_SOURCE_OBSERVATION_RISK_CAPITAL_BASIS,
+            "risk_capital_krw": H74_SOURCE_OBSERVATION_RISK_CAPITAL_KRW,
+        }
+    )
+    history_policy = str(included_history_policy or "declared_live_history_scope").strip()
+    snapshot_hash = str(db_snapshot_hash or "").strip() or sha256_prefixed(
+        {
+            "db_snapshot_hash": "not_captured_at_authority_generation",
+            "included_history_policy": history_policy,
+            "source_candidate_artifact_hash": str(source_candidate_artifact_hash or "").strip(),
+        }
+    )
+    envelope_hash = str(experiment_envelope_hash or "").strip() or sha256_prefixed(
+        {
+            "artifact_type": "h74_observation_experiment_envelope_reference",
+            "risk_policy_hash": risk_policy_hash,
+            "risk_baseline_certificate_hash": baseline_hash,
+            "included_history_policy": history_policy,
+            "db_snapshot_hash": snapshot_hash,
+            "code_commit_sha": commit,
+        }
+    )
     hash_bound = {
         **{
             k: H74_SOURCE_OBSERVATION_PARAMETERS[k]
@@ -330,6 +359,10 @@ def build_h74_source_observation_authority_payload(
         "production_approval": False,
         "approved_profile_evidence": False,
         "risk_policy_hash": risk_policy_hash,
+        "experiment_envelope_hash": envelope_hash,
+        "risk_baseline_certificate_hash": baseline_hash,
+        "included_history_policy": history_policy,
+        "db_snapshot_hash": snapshot_hash,
         "risk_capital_basis": H74_SOURCE_OBSERVATION_RISK_CAPITAL_BASIS,
         "risk_capital_krw": H74_SOURCE_OBSERVATION_RISK_CAPITAL_KRW,
         "position_mode": H74_POSITION_MODE,
@@ -357,6 +390,10 @@ def build_h74_source_observation_authority_payload(
         "hash_bound_parameters": hash_bound,
         "risk_policy": risk_policy,
         "risk_policy_hash": risk_policy_hash,
+        "experiment_envelope_hash": envelope_hash,
+        "risk_baseline_certificate_hash": baseline_hash,
+        "included_history_policy": history_policy,
+        "db_snapshot_hash": snapshot_hash,
         "risk_profile_source": H74_SOURCE_OBSERVATION_RISK_POLICY_SOURCE,
         "risk_enforcement_mode": "enforced",
         "position_mode": H74_POSITION_MODE,
@@ -496,10 +533,28 @@ def verify_h74_source_observation_authority(
         "interval",
         "code_commit_sha",
         "risk_policy_hash",
+        "experiment_envelope_hash",
+        "risk_baseline_certificate_hash",
+        "included_history_policy",
+        "db_snapshot_hash",
     ):
         if required_key not in bound or bound.get(required_key) in (None, ""):
             raise H74ObservationAuthorityError(
                 f"h74_source_observation_authority_required_field_missing:{required_key}"
+            )
+    for required_key in (
+        "experiment_envelope_hash",
+        "risk_baseline_certificate_hash",
+        "included_history_policy",
+        "db_snapshot_hash",
+    ):
+        if payload.get(required_key) in (None, ""):
+            raise H74ObservationAuthorityError(
+                f"h74_source_observation_authority_required_field_missing:{required_key}"
+            )
+        if str(payload.get(required_key)) != str(bound.get(required_key)):
+            raise H74ObservationAuthorityError(
+                f"h74_source_observation_authority_envelope_field_mismatch:{required_key}"
             )
     if int(bound.get("observation_window_days")) != H74_OBSERVATION_WINDOW_DAYS:
         raise H74ObservationAuthorityError("h74_source_observation_authority_window_days_invalid")
@@ -549,6 +604,10 @@ def verify_h74_source_observation_authority(
             "approved_profile_evidence",
             "production_approval",
             "risk_policy_hash",
+            "experiment_envelope_hash",
+            "risk_baseline_certificate_hash",
+            "included_history_policy",
+            "db_snapshot_hash",
             "entry_submit_semantics",
             "entry_submit_semantics_name",
             "submit_semantics_hash",

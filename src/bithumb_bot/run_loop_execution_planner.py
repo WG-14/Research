@@ -164,6 +164,18 @@ def _h74_authority_planning_fields(settings_obj: object) -> dict[str, object]:
         "authority_hash": str(authority.get("authority_content_hash") or ""),
         "h74_source_authority_hash": str(authority.get("authority_content_hash") or ""),
         "authority_parameter_hash": str(authority.get("authority_parameter_hash") or ""),
+        "experiment_envelope_hash": str(
+            authority.get("experiment_envelope_hash") or bound.get("experiment_envelope_hash") or ""
+        ),
+        "risk_baseline_certificate_hash": str(
+            authority.get("risk_baseline_certificate_hash")
+            or bound.get("risk_baseline_certificate_hash")
+            or ""
+        ),
+        "included_history_policy": str(
+            authority.get("included_history_policy") or bound.get("included_history_policy") or ""
+        ),
+        "db_snapshot_hash": str(authority.get("db_snapshot_hash") or bound.get("db_snapshot_hash") or ""),
         "source_artifact_hash": str(
             bound.get("source_candidate_artifact_hash") or bound.get("source_artifact_hash") or ""
         ),
@@ -171,6 +183,10 @@ def _h74_authority_planning_fields(settings_obj: object) -> dict[str, object]:
             "artifact_type": authority.get("artifact_type"),
             "authority_content_hash": authority.get("authority_content_hash"),
             "authority_parameter_hash": authority.get("authority_parameter_hash"),
+            "experiment_envelope_hash": authority.get("experiment_envelope_hash"),
+            "risk_baseline_certificate_hash": authority.get("risk_baseline_certificate_hash"),
+            "included_history_policy": authority.get("included_history_policy"),
+            "db_snapshot_hash": authority.get("db_snapshot_hash"),
             "hash_bound_parameters": bound,
         },
         "strategy_instance_id": str(authority.get("strategy_instance_id") or bound.get("strategy_instance_id") or ""),
@@ -1760,6 +1776,17 @@ class ExecutionPlanner:
                                 policy=risk_profile.policy,
                                 broker=self._strategy_risk_broker(),
                                 enforced=enforced,
+                                risk_scope_id=str(result_metadata.get("risk_scope_id") or ""),
+                                experiment_envelope_hash=str(
+                                    context.get("experiment_envelope_hash") or ""
+                                ),
+                                risk_baseline_certificate_hash=str(
+                                    context.get("risk_baseline_certificate_hash") or ""
+                                ),
+                                included_history_policy=str(
+                                    context.get("included_history_policy") or ""
+                                ),
+                                db_snapshot_hash=str(context.get("db_snapshot_hash") or ""),
                             )
                             missing_state = missing_required_risk_state(risk_profile.policy, snapshot)
                         if enforced and missing_state:
@@ -1821,6 +1848,32 @@ class ExecutionPlanner:
                                 else None,
                             }
                         )
+                        if (
+                            isinstance(strategy_risk_decision_payload, dict)
+                            and str(strategy_risk_decision_payload.get("status") or "").upper()
+                            == "BLOCK"
+                            and str(getattr(result.decision, "final_signal", "") or "").upper()
+                            == "BUY"
+                            and isinstance(
+                                result_metadata.get("virtual_target_state_update_intent"),
+                                Mapping,
+                            )
+                        ):
+                            blocked_projection = dict(
+                                result_metadata["virtual_target_state_update_intent"]  # type: ignore[index]
+                            )
+                            blocked_projection["lifecycle_state"] = "blocked_projection"
+                            blocked_projection["strategy_risk_status"] = "BLOCK"
+                            blocked_projection["strategy_risk_reason_code"] = str(
+                                strategy_risk_decision_payload.get("reason_code") or ""
+                            )
+                            blocked_projection["submit_expected"] = False
+                            result_metadata["virtual_target_state_blocked_projection"] = blocked_projection
+                            result_metadata.pop("virtual_target_state_update_intent", None)
+                            result_metadata["virtual_target_lifecycle_status"] = "skipped"
+                            result_metadata["virtual_target_lifecycle_skip_reason"] = (
+                                "strategy_risk_blocked_buy"
+                            )
                     preference_list.append(
                         strategy_decision_to_preference(
                             result.decision,

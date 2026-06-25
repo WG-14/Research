@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from bithumb_bot.db_core import ensure_db
 from bithumb_bot.h74_startup_gate import evaluate_h74_startup_gate
+from bithumb_bot.runtime.decision_persistence import DecisionPersistenceUnitOfWork
 from bithumb_bot.virtual_target_state import StrategyVirtualTargetState
 
 
@@ -29,6 +31,47 @@ def test_risk_blocked_buy_does_not_create_active_virtual_open() -> None:
     )
 
     assert state.as_dict()["live_submit_authority"] is False
+
+
+def test_risk_blocked_buy_does_not_persist_virtual_open(tmp_path) -> None:
+    conn = ensure_db(str(tmp_path / "blocked-virtual.sqlite"))
+    intent = {
+        "strategy_instance_id": "s",
+        "strategy_name": "daily_participation_sma",
+        "pair": "KRW-BTC",
+        "interval": "1m",
+        "scope_key_hash": "sha256:" + "a" * 64,
+        "runtime_contract_hash": "sha256:" + "b" * 64,
+        "virtual_target_exposure_krw": 100_000.0,
+        "virtual_target_qty": 1.0,
+        "lifecycle_state": "virtual_open",
+        "last_signal": "BUY",
+        "updated_ts": 1,
+        "strategy_risk_status": "BLOCK",
+        "strategy_risk_reason_code": "MAX_DRAWDOWN_PCT",
+        "submit_expected": False,
+    }
+
+    DecisionPersistenceUnitOfWork()._persist_virtual_target_state_intents(
+        conn,
+        context={"virtual_target_state_update_intents": [intent]},
+    )
+    row = conn.execute("SELECT COUNT(*) AS count FROM strategy_virtual_target_state").fetchone()
+
+    assert row["count"] == 0
+
+
+def test_blocked_projection_is_excluded_from_active_query() -> None:
+    result = evaluate_h74_startup_gate(
+        readiness_payload=_readiness(),
+        target_state={
+            "lifecycle_state": "blocked_projection",
+            "target_exposure_krw": 100_000.0,
+            "live_submit_authority": False,
+        },
+    )
+
+    assert result.allowed is True
 
 
 def test_startup_gate_ignores_non_authoritative_virtual_state() -> None:

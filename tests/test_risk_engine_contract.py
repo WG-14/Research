@@ -480,7 +480,7 @@ def test_enforced_strategy_risk_state_reports_missing_required_fields() -> None:
     )
 
 
-def test_max_drawdown_block_uses_typed_metric_contract() -> None:
+def test_max_drawdown_block_uses_policy_derived_limit() -> None:
     decision = RiskPolicyEngine(_policy()).evaluate_pre_decision(
         _snapshot(
             current_drawdown_metric=RiskMetric(
@@ -499,6 +499,36 @@ def test_max_drawdown_block_uses_typed_metric_contract() -> None:
 
     assert decision.reason_code == "MAX_DRAWDOWN_PCT"
     assert decision.evidence["drawdown_metric_comparison"]["metric"]["state"] == "valid"
+    assert decision.evidence["drawdown_metric_comparison"]["limit"]["unit"] == "percent_point"
+    assert decision.evidence["drawdown_metric_comparison"]["limit"]["scope"] == "risk_scope"
+
+
+def test_max_drawdown_block_uses_typed_metric_contract() -> None:
+    test_max_drawdown_block_uses_policy_derived_limit()
+
+
+def test_engine_does_not_copy_metric_unit_to_limit() -> None:
+    decision = RiskPolicyEngine(_policy()).evaluate_pre_decision(
+        _snapshot(
+            current_drawdown_metric=RiskMetric(
+                value=0.50,
+                unit="ratio",
+                scope="risk_scope",
+                denominator_kind="allocated_capital",
+                denominator_value=100_000.0,
+                sample_count=3,
+                state="valid",
+                source_table="trade_lifecycles",
+                formula_version="unit",
+            )
+        )
+    )
+
+    comparison = decision.evidence["drawdown_metric_comparison"]
+
+    assert decision.reason_code == "RISK_METRIC_UNIT_MISMATCH"
+    assert comparison["metric"]["unit"] == "ratio"
+    assert comparison["limit"]["unit"] == "percent_point"
 
 
 def test_runtime_risk_evaluation_records_typed_decision_identity(tmp_path) -> None:

@@ -15,11 +15,11 @@ from .risk_contract import (
     RiskDecision,
     RiskEvent,
     RiskPolicy,
-    RiskLimit,
     RiskSnapshot,
     SubmitPlan,
     build_risk_decision,
     compare_risk_metric_to_limit,
+    risk_limit_from_policy,
 )
 
 
@@ -215,12 +215,7 @@ class RiskPolicyEngine:
 
         drawdown_limit = float(self.policy.max_drawdown_pct)
         if drawdown_limit > 0.0 and snapshot.current_drawdown_metric is not None:
-            limit = RiskLimit(
-                value=drawdown_limit,
-                unit=snapshot.current_drawdown_metric.unit,
-                scope=snapshot.current_drawdown_metric.scope,
-                reason_code=MAX_DRAWDOWN_PCT,
-            )
+            limit = risk_limit_from_policy(self.policy)
             comparison = compare_risk_metric_to_limit(snapshot.current_drawdown_metric, limit)
             if comparison.reason_code != "OK" and not comparison.exceeded:
                 return build_risk_decision(

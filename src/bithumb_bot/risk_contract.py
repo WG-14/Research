@@ -141,6 +141,18 @@ class RiskMetricComparison:
         }
 
 
+def risk_limit_from_policy(policy: RiskPolicy, *, metric_kind: str = "drawdown") -> RiskLimit:
+    normalized_kind = str(metric_kind or "").strip().lower()
+    if normalized_kind != "drawdown":
+        raise ValueError(f"unsupported_risk_limit_metric_kind:{normalized_kind or 'missing'}")
+    return RiskLimit(
+        value=float(policy.max_drawdown_pct),
+        unit="percent_point",
+        scope="risk_scope",
+        reason_code=MAX_DRAWDOWN_PCT,
+    )
+
+
 def compare_risk_metric_to_limit(metric: RiskMetric, limit: RiskLimit) -> RiskMetricComparison:
     if metric.unit != limit.unit:
         return RiskMetricComparison(False, RISK_METRIC_UNIT_MISMATCH, metric, limit)

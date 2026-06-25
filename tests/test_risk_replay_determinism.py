@@ -23,6 +23,23 @@ def test_same_snapshot_replays_same_risk_decision_hash(tmp_path) -> None:
     assert first["risk_decision_hash"] == second["risk_decision_hash"]
 
 
+def test_same_snapshot_replays_same_execution_plan_hash(tmp_path) -> None:
+    conn = ensure_db(str(tmp_path / "replay-execution.sqlite"))
+    kwargs = {
+        "db_snapshot_hash": "sha256:" + "a" * 64,
+        "env_hash": "sha256:" + "b" * 64,
+        "runtime_scope_id": "scope",
+        "risk_scope_id": "risk",
+        "candle_ts": 1,
+        "mark_price": 100.0,
+    }
+
+    first = build_risk_replay_input_artifact(conn, **kwargs)
+    second = build_risk_replay_input_artifact(conn, **kwargs)
+
+    assert first["execution_plan_hash"] == second["execution_plan_hash"]
+
+
 def test_db_history_change_changes_risk_input_hash(tmp_path) -> None:
     conn = ensure_db(str(tmp_path / "replay-change.sqlite"))
     kwargs = {

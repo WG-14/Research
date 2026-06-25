@@ -2244,10 +2244,42 @@ def _build_execution_decision_summary_from_authority_payload(
                     performance_gate_fields.get("strategy_performance_gate_reason_code")
                     or "STRATEGY_PERFORMANCE_BLOCKED"
                 )
+            strategy_risk_status = str(payload.get("strategy_risk_status") or "").strip().upper()
+            strategy_risk_reason_code = str(payload.get("strategy_risk_reason_code") or "").strip()
+            strategy_risk_policy_blocked = strategy_risk_status == "BLOCK"
+            primary_block_gate = (
+                "strategy_risk"
+                if strategy_risk_policy_blocked
+                else (
+                    "target_authority"
+                    if target_authority_error is not None
+                    else (
+                        "entry_authority"
+                        if entry_authority.status == ENTRY_AUTHORITY_BLOCK
+                        else "none"
+                    )
+                )
+            )
+            primary_block_reason = (
+                strategy_risk_reason_code
+                if strategy_risk_policy_blocked
+                else (
+                    str(target_authority_error)
+                    if target_authority_error is not None
+                    else (
+                        str(entry_authority.reason_code)
+                        if entry_authority.status == ENTRY_AUTHORITY_BLOCK
+                        else "none"
+                    )
+                )
+            )
             target_final_action = (
                 "REBALANCE_TO_TARGET"
                 if submit_allowed
                 else (
+                    "BLOCK_STRATEGY_RISK"
+                    if strategy_risk_policy_blocked
+                    else (
                     "BLOCK_PORTFOLIO_TARGET_AUTHORITY"
                     if target_authority_error is not None
                     else (
@@ -2263,10 +2295,13 @@ def _build_execution_decision_summary_from_authority_payload(
                     )
                     )
                     )
+                    )
                 )
             )
             target_block_reason = str(
-                target_authority_error or sizing_block_reason or target_decision.block_reason
+                primary_block_reason
+                if primary_block_gate != "none"
+                else sizing_block_reason or target_decision.block_reason
             )
             target_plan_extra = {
                 "intent_type": (
@@ -2482,6 +2517,18 @@ def _build_execution_decision_summary_from_authority_payload(
                     or payload.get("allocation_primary_block_reason")
                     or "none"
                 ),
+                "primary_block_gate": primary_block_gate,
+                "primary_block_reason": primary_block_reason,
+                "risk_status": strategy_risk_status or None,
+                "risk_reason_code": strategy_risk_reason_code or None,
+                "upstream_gate_trace": [
+                    {
+                        "gate": "strategy_risk",
+                        "status": strategy_risk_status or "UNKNOWN",
+                        "reason_code": strategy_risk_reason_code or "none",
+                        "blocking": bool(strategy_risk_policy_blocked),
+                    }
+                ],
                 "submit_authority_mode": submit_authority_policy.submit_authority_mode,
                 "live_real_order_requires_target_delta": (
                     submit_authority_policy.live_real_order_requires_target_delta

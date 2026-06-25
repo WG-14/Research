@@ -101,6 +101,17 @@ def build_risk_replay_input_artifact(
             "risk_scope_id": str(risk_scope_id),
         }
     )
+    payload["execution_plan_hash"] = sha256_prefixed(
+        {
+            "schema_version": 1,
+            "risk_input_hash": payload["risk_input_hash"],
+            "risk_decision_hash": payload["risk_decision_hash"],
+            "runtime_scope_id": str(runtime_scope_id),
+            "risk_scope_id": str(risk_scope_id),
+            "candle_ts": int(candle_ts),
+            "mark_price": float(mark_price),
+        }
+    )
     return payload
 
 

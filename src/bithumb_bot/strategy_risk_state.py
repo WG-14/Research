@@ -33,10 +33,24 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     }
 
 
-def _strategy_decision_ids_for_instance(
+def _table_content_hash(conn: sqlite3.Connection, table: str) -> str:
+    if not _table_exists(conn, table):
+        return canonical_payload_hash({"table": table, "rows": []})
+    rows = conn.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+    payload_rows: list[dict[str, object]] = []
+    for row in rows:
+        if hasattr(row, "keys"):
+            payload_rows.append({str(key): row[key] for key in row.keys()})
+        else:
+            payload_rows.append({str(index): value for index, value in enumerate(row)})
+    return canonical_payload_hash({"table": table, "rows": payload_rows})
+
+
+def _strategy_decision_ids_for_risk_scope(
     conn: sqlite3.Connection,
     *,
     strategy_instance_id: str,
+    risk_scope_id: str,
     pair: str,
     interval: str,
     as_of_ts_ms: int,
@@ -64,7 +78,16 @@ def _strategy_decision_ids_for_instance(
             continue
         if not isinstance(context, dict):
             continue
-        if str(context.get("strategy_instance_id") or "").strip() != str(strategy_instance_id):
+        context_scope = str(
+            context.get("owner_risk_scope_id")
+            or context.get("risk_scope_id")
+            or context.get("position_owner_id")
+            or ""
+        ).strip()
+        if context_scope:
+            if context_scope != str(risk_scope_id):
+                continue
+        elif str(context.get("strategy_instance_id") or "").strip() != str(strategy_instance_id):
             continue
         context_pair = str(context.get("pair") or context.get("market") or "").strip()
         context_interval = str(context.get("interval") or "").strip()
@@ -238,54 +261,110 @@ def _position_entry_price_for_instance(
     return weighted / qty
 
 
-def _loss_today_for_instance(
+def _lifecycle_scope_predicate(columns: set[str]) -> tuple[str, str]:
+    if {"owner_risk_scope_id", "risk_scope_id", "strategy_instance_id"}.issubset(columns):
+        return (
+            """
+          AND (
+            owner_risk_scope_id = ?
+            OR risk_scope_id = ?
+            OR (
+              (owner_risk_scope_id IS NULL OR TRIM(owner_risk_scope_id) = '')
+              AND (risk_scope_id IS NULL OR TRIM(risk_scope_id) = '')
+              AND strategy_instance_id = ?
+            )
+          )
+            """,
+            "owner_risk_scope_id|risk_scope_id|legacy_strategy_instance_id",
+        )
+    if "owner_risk_scope_id" in columns:
+        return "          AND owner_risk_scope_id = ?", "owner_risk_scope_id"
+    if "risk_scope_id" in columns:
+        return "          AND risk_scope_id = ?", "risk_scope_id"
+    return "          AND strategy_instance_id = ?", "legacy_strategy_instance_id"
+
+
+def _scope_params(scope_column: str, *, risk_scope_id: str, strategy_instance_id: str) -> tuple[object, ...]:
+    if "|" in scope_column:
+        return (str(risk_scope_id), str(risk_scope_id), str(strategy_instance_id))
+    if scope_column == "legacy_strategy_instance_id":
+        return (str(strategy_instance_id),)
+    return (str(risk_scope_id),)
+
+
+def _loss_today_for_risk_scope(
     conn: sqlite3.Connection,
     ts_ms: int,
     *,
     pair: str,
     strategy_instance_id: str,
+    risk_scope_id: str,
 ) -> float | None:
     if not _table_exists(conn, "trade_lifecycles"):
         return None
     columns = _table_columns(conn, "trade_lifecycles")
-    if not {"exit_ts", "pair", "strategy_instance_id", "net_pnl"}.issubset(columns):
+    if not {"exit_ts", "pair", "net_pnl"}.issubset(columns):
+        return None
+    scope_predicate, scope_column = _lifecycle_scope_predicate(columns)
+    if scope_column == "legacy_strategy_instance_id" and "strategy_instance_id" not in columns:
         return None
     day_start_ms = int(ts_ms) - (int(ts_ms) % 86_400_000)
     row = conn.execute(
-        """
+        f"""
         SELECT COALESCE(SUM(CASE WHEN net_pnl < 0 THEN -net_pnl ELSE 0 END), 0.0) AS loss
         FROM trade_lifecycles
         WHERE exit_ts >= ? AND exit_ts <= ?
           AND pair=?
-          AND strategy_instance_id=?
+{scope_predicate}
         """,
-        (day_start_ms, int(ts_ms), str(pair), str(strategy_instance_id)),
+        (
+            day_start_ms,
+            int(ts_ms),
+            str(pair),
+            *_scope_params(
+                scope_column,
+                risk_scope_id=str(risk_scope_id),
+                strategy_instance_id=str(strategy_instance_id),
+            ),
+        ),
     ).fetchone()
     return float(row["loss"] if hasattr(row, "keys") else row[0])
 
 
-def _minutes_since_last_loss_for_instance(
+def _minutes_since_last_loss_for_risk_scope(
     conn: sqlite3.Connection,
     ts_ms: int,
     *,
     pair: str,
     strategy_instance_id: str,
+    risk_scope_id: str,
 ) -> tuple[float | None, str]:
     if not _table_exists(conn, "trade_lifecycles"):
         return None, "source_table_missing"
     columns = _table_columns(conn, "trade_lifecycles")
-    if not {"exit_ts", "pair", "strategy_instance_id", "net_pnl"}.issubset(columns):
+    if not {"exit_ts", "pair", "net_pnl"}.issubset(columns):
+        return None, "source_columns_missing"
+    scope_predicate, scope_column = _lifecycle_scope_predicate(columns)
+    if scope_column == "legacy_strategy_instance_id" and "strategy_instance_id" not in columns:
         return None, "source_columns_missing"
     row = conn.execute(
-        """
+        f"""
         SELECT MAX(exit_ts) AS last_loss_ts
         FROM trade_lifecycles
         WHERE exit_ts <= ?
           AND pair=?
-          AND strategy_instance_id=?
+{scope_predicate}
           AND net_pnl < 0
         """,
-        (int(ts_ms), str(pair), str(strategy_instance_id)),
+        (
+            int(ts_ms),
+            str(pair),
+            *_scope_params(
+                scope_column,
+                risk_scope_id=str(risk_scope_id),
+                strategy_instance_id=str(strategy_instance_id),
+            ),
+        ),
     ).fetchone()
     last_loss_ts = row["last_loss_ts"] if hasattr(row, "keys") else row[0]
     if last_loss_ts is None:
@@ -480,6 +559,10 @@ class StrategyRiskStateProvider:
         mark_price_source: str = "market_price",
         enforced: bool = False,
         risk_scope_id: str | None = None,
+        experiment_envelope_hash: str | None = None,
+        risk_baseline_certificate_hash: str | None = None,
+        included_history_policy: str | None = None,
+        db_snapshot_hash: str | None = None,
     ) -> RiskSnapshot:
         effective_risk_scope_id = str(risk_scope_id or strategy_instance_id)
         daily = evaluate_daily_loss_state(
@@ -493,9 +576,10 @@ class StrategyRiskStateProvider:
         mismatch = daily.reason_code == "RISK_STATE_MISMATCH" or daily_loss_reason_code_from_reason(
             daily.reason
         ) == "RISK_STATE_MISMATCH"
-        strategy_decision_ids = _strategy_decision_ids_for_instance(
+        strategy_decision_ids = _strategy_decision_ids_for_risk_scope(
             self.conn,
             strategy_instance_id=strategy_instance_id,
+            risk_scope_id=effective_risk_scope_id,
             pair=pair,
             interval=interval,
             as_of_ts_ms=int(as_of_ts_ms),
@@ -516,11 +600,12 @@ class StrategyRiskStateProvider:
             pair=pair,
             strategy_decision_ids=strategy_decision_ids,
         )
-        loss_today = _loss_today_for_instance(
+        loss_today = _loss_today_for_risk_scope(
             self.conn,
             int(as_of_ts_ms),
             pair=pair,
             strategy_instance_id=strategy_instance_id,
+            risk_scope_id=effective_risk_scope_id,
         )
         daily_order_count = _count_orders_today(
             self.conn,
@@ -537,11 +622,12 @@ class StrategyRiskStateProvider:
         (
             minutes_since_last_loss,
             minutes_since_last_loss_source_state,
-        ) = _minutes_since_last_loss_for_instance(
+        ) = _minutes_since_last_loss_for_risk_scope(
             self.conn,
             int(as_of_ts_ms),
             pair=pair,
             strategy_instance_id=strategy_instance_id,
+            risk_scope_id=effective_risk_scope_id,
         )
         position_entry_price = _position_entry_price_for_instance(
             self.conn,
@@ -567,9 +653,33 @@ class StrategyRiskStateProvider:
             declared_capital_krw=declared_capital_krw,
             declared_capital_basis=declared_capital_basis,
         )
+        included_tables_hashes = {
+            table: _table_content_hash(self.conn, table)
+            for table in (
+                "trade_lifecycles",
+                "orders",
+                "trades",
+                "open_position_lots",
+                "strategy_decisions",
+            )
+        }
+        effective_db_snapshot_hash = str(db_snapshot_hash or "").strip() or canonical_payload_hash(
+            {
+                "snapshot_source": "runtime_db_current",
+                "included_tables_hashes": included_tables_hashes,
+            }
+        )
         evidence = {
             "strategy_instance_id": str(strategy_instance_id),
             "risk_scope_id": effective_risk_scope_id,
+            "experiment_envelope_hash": str(experiment_envelope_hash or ""),
+            "risk_baseline_certificate_hash": str(risk_baseline_certificate_hash or ""),
+            "included_history_policy": str(included_history_policy or ""),
+            "db_snapshot_hash": effective_db_snapshot_hash,
+            "env_hash": "",
+            "runtime_scope_id": str(strategy_instance_id),
+            "candle_ts": int(as_of_ts_ms),
+            "included_tables_hashes": included_tables_hashes,
             "strategy_name": str(strategy_name),
             "pair": str(pair),
             "interval": str(interval),
@@ -581,7 +691,8 @@ class StrategyRiskStateProvider:
                 "source_table": "strategy_decisions",
                 "source_columns": ["id", "context_json", "decision_ts"],
                 "filters": {
-                    "strategy_instance_id": str(strategy_instance_id),
+                    "risk_scope_id": effective_risk_scope_id,
+                    "legacy_strategy_instance_id_fallback": str(strategy_instance_id),
                     "pair": str(pair),
                     "interval": str(interval),
                     "decision_ts_lte": int(as_of_ts_ms),
@@ -601,11 +712,12 @@ class StrategyRiskStateProvider:
             },
             "state_derivation": {
                 "loss_today": {
-                    "scope": "strategy_instance",
+                    "scope": "risk_scope",
                     "table": "trade_lifecycles",
-                    "columns": ["exit_ts", "pair", "strategy_instance_id", "net_pnl"],
+                    "columns": ["exit_ts", "pair", "owner_risk_scope_id|risk_scope_id|strategy_instance_id", "net_pnl"],
                     "filters": {
-                        "strategy_instance_id": str(strategy_instance_id),
+                        "risk_scope_id": effective_risk_scope_id,
+                        "legacy_strategy_instance_id_fallback": str(strategy_instance_id),
                         "pair": str(pair),
                         "day_start_lte_exit_ts_lte_as_of": True,
                     },
@@ -668,11 +780,12 @@ class StrategyRiskStateProvider:
                     "metric": current_drawdown_metric.as_dict(),
                 },
                 "minutes_since_last_loss": {
-                    "scope": "strategy_instance",
+                    "scope": "risk_scope",
                     "table": "trade_lifecycles",
-                    "columns": ["exit_ts", "pair", "strategy_instance_id", "net_pnl"],
+                    "columns": ["exit_ts", "pair", "owner_risk_scope_id|risk_scope_id|strategy_instance_id", "net_pnl"],
                     "filters": {
-                        "strategy_instance_id": str(strategy_instance_id),
+                        "risk_scope_id": effective_risk_scope_id,
+                        "legacy_strategy_instance_id_fallback": str(strategy_instance_id),
                         "pair": str(pair),
                         "net_pnl_lt_zero": True,
                         "exit_ts_lte_as_of": True,

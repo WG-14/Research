@@ -439,6 +439,24 @@ class DecisionPersistenceUnitOfWork:
         for payload in context.get("virtual_target_state_update_intents") or []:
             if not isinstance(payload, Mapping):
                 continue
+            risk_status = str(
+                payload.get("strategy_risk_status")
+                or payload.get("risk_status")
+                or ""
+            ).strip().upper()
+            submit_expected = payload.get("submit_expected")
+            lifecycle_state = str(payload.get("lifecycle_state") or "").strip()
+            last_signal = str(payload.get("last_signal") or "").strip().upper()
+            if (
+                risk_status == "BLOCK"
+                and submit_expected is False
+                and last_signal == "BUY"
+                and lifecycle_state == "virtual_open"
+            ):
+                RUN_LOG.warning(
+                    "event=virtual_target_state_suppressed reason=risk_blocked_buy_virtual_open"
+                )
+                continue
             state = StrategyVirtualTargetState(
                 strategy_instance_id=str(payload["strategy_instance_id"]),
                 strategy_name=str(payload.get("strategy_name") or ""),
