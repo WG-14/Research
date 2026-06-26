@@ -328,6 +328,10 @@ def h74_cycle_health_invariant_reasons(conn: sqlite3.Connection) -> tuple[str, .
         WHERE side='BUY'
           AND strategy_name='daily_participation_sma'
           AND status IN ('FILLED','PARTIALLY_FILLED')
+          AND (
+              strategy_instance_id='h74-source-observation'
+              OR cycle_id LIKE 'h74-%'
+          )
         """
     ).fetchall()
     for row in buy_rows:
@@ -365,6 +369,10 @@ def h74_cycle_health_invariant_reasons(conn: sqlite3.Connection) -> tuple[str, .
         WHERE side='SELL'
           AND strategy_name='daily_participation_sma'
           AND status IN ('FILLED','PARTIALLY_FILLED')
+          AND (
+              strategy_instance_id='h74-source-observation'
+              OR cycle_id LIKE 'h74-%'
+          )
         """
     ).fetchall()
     sell_fills_by_cycle: dict[str, float] = {}
