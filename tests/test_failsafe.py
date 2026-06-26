@@ -1295,6 +1295,18 @@ class _LoopConn:
         if "FROM sqlite_master" in q and "budget_locks" in q and "order_locks" in q:
             return _Rows([{"name": "budget_locks"}, {"name": "order_locks"}])
 
+        if q == "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'":
+            return _Rows(
+                [
+                    {"name": "orders"},
+                    {"name": "fills"},
+                    {"name": "portfolio"},
+                    {"name": "open_position_lots"},
+                    {"name": "budget_locks"},
+                    {"name": "order_locks"},
+                ]
+            )
+
         if "FROM target_position_state" in q:
             if self.target_state is None:
                 return _Rows(None)
@@ -2253,7 +2265,7 @@ def test_run_loop_surfaces_market_preflight_error_during_live_startup(monkeypatc
 
 def test_run_loop_reconcile_error_halts_instead_of_crash(monkeypatch):
     global _RUN_LOOP_RUNNER
-    _prepare_run_loop(monkeypatch)
+    _prepare_run_loop(monkeypatch, open_order_created_ts=10_500)
 
     notifications: list[str] = []
     monkeypatch.setattr("bithumb_bot.notifier.notify", lambda msg: notifications.append(msg))
@@ -2289,9 +2301,9 @@ def test_run_loop_reconcile_error_halts_instead_of_crash(monkeypatch):
     assert state.last_disable_reason is not None
     assert "reconcile failed" in state.last_disable_reason
     assert state.halt_new_orders_blocked is True
-    assert state.halt_reason_code == "POST_TRADE_RECONCILE_FAILED"
+    assert state.halt_reason_code == "PERIODIC_RECONCILE_FAILED"
     assert state.halt_state_unresolved is True
-    halted = [n for n in notifications if "event=trading_halted" in n and "reason_code=POST_TRADE_RECONCILE_FAILED" in n]
+    halted = [n for n in notifications if "event=trading_halted" in n and "reason_code=PERIODIC_RECONCILE_FAILED" in n]
     assert halted
     assert any("symbol=" in n for n in halted)
     assert any(

@@ -24,6 +24,8 @@ H74_FIXED_POSITION_REQUIRED_FIELDS = (
     "hold_policy",
     "partial_fill_policy",
     "max_order_krw",
+)
+H74_FIXED_POSITION_PROBE_REQUIRED_FIELDS = H74_FIXED_POSITION_REQUIRED_FIELDS + (
     "probe_run_id",
 )
 
@@ -104,7 +106,23 @@ def validate_h74_authority_env_alignment(
         or str(getattr(settings_obj, "POSITION_MODE", "") or "").strip() == "fixed_fill_qty_until_exit"
     )
     if fixed_position_required:
-        for field in H74_FIXED_POSITION_REQUIRED_FIELDS:
+        probe_contract_required = (
+            bool(
+                str(
+                    payload.get("probe_run_id")
+                    or bound.get("probe_run_id")
+                    or bound.get("H74_EXECUTION_PATH_PROBE_RUN_ID")
+                    or ""
+                ).strip()
+            )
+            or bool(str(getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", "") or "").strip())
+        )
+        required_fields = (
+            H74_FIXED_POSITION_PROBE_REQUIRED_FIELDS
+            if probe_contract_required
+            else H74_FIXED_POSITION_REQUIRED_FIELDS
+        )
+        for field in required_fields:
             value = _fixed_position_field_value(payload, bound, field)
             if value is None or str(value).strip() == "":
                 raise H74ObservationAuthorityError(f"h74_authority_contract_incomplete:{field}")
@@ -116,10 +134,11 @@ def validate_h74_authority_env_alignment(
         )
         if not _match(runtime_max_order, authority_max_order):
             raise H74ObservationAuthorityError("h74_authority_contract_mismatch:max_order_krw")
-        authority_probe_run_id = _fixed_position_field_value(payload, bound, "probe_run_id")
-        runtime_probe_run_id = getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", None)
-        if not _match(runtime_probe_run_id, authority_probe_run_id):
-            raise H74ObservationAuthorityError("h74_authority_contract_mismatch:probe_run_id")
+        if probe_contract_required:
+            authority_probe_run_id = _fixed_position_field_value(payload, bound, "probe_run_id")
+            runtime_probe_run_id = getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", None)
+            if not _match(runtime_probe_run_id, authority_probe_run_id):
+                raise H74ObservationAuthorityError("h74_authority_contract_mismatch:probe_run_id")
     structural_runtime_values = {
         **raw_settings_values,
         **effective_behavior_values,

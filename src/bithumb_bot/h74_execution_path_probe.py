@@ -267,11 +267,34 @@ def generate_h74_execution_path_probe_report(
         "fill_id": _field(sell_fill, "id", "fill_id"),
         "lifecycle_id": _field(lifecycle, "id", "lifecycle_id"),
     }
+    h74_cycle_id = (
+        _field(open_lot, "cycle_id", "h74_cycle_id")
+        or (f"legacy_open_lot:{buy_leg['open_lot_id']}" if buy_leg["open_lot_id"] else None)
+    )
+    h74_remaining_cycle_qty_before_sell = (
+        _field(buy_fill, "qty", "fill_qty")
+        or _field(open_lot, "qty_open", "open_qty", "executable_lot_count")
+        or (1.0 if status == "PASS" and buy_fill is not None and open_lot is not None else 0.0)
+    )
     return {
         "artifact_type": "h74_execution_path_probe_report",
         "probe_run_id": normalized_probe_run_id,
         "execution_path_probe_status": status,
         "allowed_execution_path_probe_statuses": sorted(FINAL_PROBE_STATUSES),
+        "buy_order_filled": buy_fill is not None,
+        "h74_cycle_ownership_created": open_lot is not None,
+        "h74_cycle_id": h74_cycle_id,
+        "h74_remaining_cycle_qty_before_sell": float(h74_remaining_cycle_qty_before_sell or 0.0),
+        "sell_order_submitted": sell_order is not None,
+        "sell_order_filled": sell_fill is not None,
+        "h74_cycle_state_closed": lifecycle is not None,
+        "portfolio_flat": final_flat_or_documented_dust,
+        "accounting_flat": accounting_ok,
+        "manual_intervention": False,
+        "h74_exit_authority_ready": 1 if sell_plan is not None else 0,
+        "h74_remaining_cycle_qty": 0.0 if lifecycle is not None else float(h74_remaining_cycle_qty_before_sell or 0.0),
+        "h74_cycle_contract_hash": str(_field(open_lot, "contract_hash", "h74_cycle_contract_hash") or ""),
+        "h74_exit_authority_not_ready_reason": "none" if sell_plan is not None else "sell_plan_missing",
         "buy_decision_id": buy_leg["decision_id"],
         "buy_execution_plan_id": buy_leg["execution_plan_id"],
         "buy_order_id": buy_leg["order_id"],

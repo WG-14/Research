@@ -7,6 +7,7 @@ import pytest
 from bithumb_bot.db_core import ensure_schema, record_execution_plan, record_strategy_decision
 from bithumb_bot.execution import apply_fill_and_trade, record_order_if_missing
 from bithumb_bot.h74_execution_path_probe import generate_h74_execution_path_probe_report
+from bithumb_bot.h74_position_ownership import h74_position_ownership_contract_from_payload
 from bithumb_bot.research.hashing import sha256_prefixed
 
 
@@ -138,6 +139,23 @@ def test_probe_submit_path_persists_queryable_evidence_and_reports_pass() -> Non
 
     buy_plan_id = _record_plan(conn, side="BUY", run_id=run_id)
     sell_plan_id = _record_plan(conn, side="SELL", run_id=run_id)
+    cycle_id = "probe-integrated-cycle-1"
+    authority_hash = "sha256:" + "a" * 64
+    strategy_instance_id = "h74-source-observation"
+    ownership_contract_hash = h74_position_ownership_contract_from_payload(
+        {
+            "cycle_id": cycle_id,
+            "h74_cycle_id": cycle_id,
+            "authority_hash": authority_hash,
+            "strategy_instance_id": strategy_instance_id,
+            "probe_run_id": run_id,
+            "pair": "KRW-BTC",
+            "entry_side": "BUY",
+            "entry_plan_id": "probe-buy",
+            "position_mode": "fixed_fill_qty_until_exit",
+            "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
+        }
+    ).contract_hash
     buy_decision_id = record_strategy_decision(
         conn,
         decision_ts=base_ts,
@@ -168,6 +186,11 @@ def test_probe_submit_path_persists_queryable_evidence_and_reports_pass() -> Non
         qty_req=0.001,
         price=None,
         symbol="KRW-BTC",
+        strategy_name="daily_participation_sma",
+        strategy_instance_id=strategy_instance_id,
+        cycle_id=cycle_id,
+        authority_hash=authority_hash,
+        h74_position_ownership_contract_hash=ownership_contract_hash,
         entry_decision_id=buy_decision_id,
         probe_run_id=run_id,
         ts_ms=base_ts,
@@ -201,6 +224,11 @@ def test_probe_submit_path_persists_queryable_evidence_and_reports_pass() -> Non
         qty_req=0.001,
         price=None,
         symbol="KRW-BTC",
+        strategy_name="daily_participation_sma",
+        strategy_instance_id=strategy_instance_id,
+        cycle_id=cycle_id,
+        authority_hash=authority_hash,
+        h74_position_ownership_contract_hash=ownership_contract_hash,
         exit_decision_id=sell_decision_id,
         probe_run_id=run_id,
         ts_ms=base_ts + 60_000,

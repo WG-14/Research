@@ -181,6 +181,10 @@ def _h74_authority_planning_fields(settings_obj: object) -> dict[str, object]:
         settings_probe_run_id = str(
             getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", "") or ""
         ).strip()
+        probe_contract_required = (
+            bool(authority_probe_run_id)
+            or bool(settings_probe_run_id)
+        )
         required_values = {
             "strategy_instance_id": authority.get("strategy_instance_id") or bound.get("strategy_instance_id"),
             "position_mode": position_mode,
@@ -192,12 +196,13 @@ def _h74_authority_planning_fields(settings_obj: object) -> dict[str, object]:
                 or bound.get("max_order_krw")
                 or bound.get("DAILY_PARTICIPATION_MAX_ORDER_KRW")
             ),
-            "probe_run_id": authority_probe_run_id,
         }
+        if probe_contract_required:
+            required_values["probe_run_id"] = authority_probe_run_id
         for field, value in required_values.items():
             if value is None or str(value).strip() == "":
                 raise ValueError(f"h74_authority_contract_incomplete:{field}")
-        if authority_probe_run_id != settings_probe_run_id:
+        if probe_contract_required and authority_probe_run_id != settings_probe_run_id:
             raise ValueError("h74_authority_contract_mismatch:probe_run_id")
     return {
         "position_mode": str(authority.get("position_mode") or bound.get("position_mode") or ""),
