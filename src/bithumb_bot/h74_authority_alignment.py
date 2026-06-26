@@ -24,6 +24,7 @@ H74_FIXED_POSITION_REQUIRED_FIELDS = (
     "hold_policy",
     "partial_fill_policy",
     "max_order_krw",
+    "probe_run_id",
 )
 
 
@@ -115,11 +116,18 @@ def validate_h74_authority_env_alignment(
         )
         if not _match(runtime_max_order, authority_max_order):
             raise H74ObservationAuthorityError("h74_authority_contract_mismatch:max_order_krw")
+        authority_probe_run_id = _fixed_position_field_value(payload, bound, "probe_run_id")
+        runtime_probe_run_id = getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", None)
+        if not _match(runtime_probe_run_id, authority_probe_run_id):
+            raise H74ObservationAuthorityError("h74_authority_contract_mismatch:probe_run_id")
     structural_runtime_values = {
         **raw_settings_values,
         **effective_behavior_values,
         **{key: value for key, value in bound.items() if key in raw_settings_values or key in effective_behavior_values},
     }
+    structural_runtime_values["H74_EXECUTION_PATH_PROBE_RUN_ID"] = str(
+        getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", "") or ""
+    )
     if authority_type == H74_SOURCE_OBSERVATION_AUTHORITY_ARTIFACT_TYPE:
         verify_h74_source_observation_authority(payload, runtime_values=structural_runtime_values)
     elif authority_type == H74_SOURCE_VARIANT_OBSERVATION_AUTHORITY_ARTIFACT_TYPE:

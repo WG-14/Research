@@ -52,7 +52,7 @@ def _source_authority() -> dict[str, object]:
 
 
 def _variant_authority() -> dict[str, object]:
-    return build_h74_source_variant_observation_authority_payload(
+    payload = build_h74_source_variant_observation_authority_payload(
         base_authority=_source_authority(),
         variant_overrides={
             "DAILY_PARTICIPATION_WINDOW_START_HOUR_KST": 0,
@@ -60,6 +60,14 @@ def _variant_authority() -> dict[str, object]:
         },
         experiment_envelope_payload=_envelope(),
     )
+    bound = dict(payload["hash_bound_parameters"])
+    bound["H74_EXECUTION_PATH_PROBE_RUN_ID"] = "probe-run-1"
+    payload["hash_bound_parameters"] = bound
+    payload["probe_run_id"] = "probe-run-1"
+    payload["authority_content_hash"] = sha256_prefixed(
+        {key: value for key, value in payload.items() if key != "authority_content_hash"}
+    )
+    return payload
 
 
 def _write_authority(tmp_path, payload: dict[str, object]) -> str:
@@ -209,6 +217,22 @@ def test_h74_probe_authority_requires_payload_probe_run_id(tmp_path) -> None:
         )
         is False
     )
+
+
+def test_h74_probe_authority_requires_authority_probe_run_id(tmp_path) -> None:
+    authority = _variant_authority()
+    authority.pop("probe_run_id", None)
+    bound = dict(authority["hash_bound_parameters"])
+    bound.pop("H74_EXECUTION_PATH_PROBE_RUN_ID", None)
+    bound.pop("probe_run_id", None)
+    authority["hash_bound_parameters"] = bound
+    authority["authority_content_hash"] = sha256_prefixed(
+        {key: value for key, value in authority.items() if key != "authority_content_hash"}
+    )
+    authority_path = _write_authority(tmp_path, authority)
+    cfg = _settings(authority_path)
+
+    assert _h74_execution_path_probe_authority_allows_submit(_payload(), cfg) is False
 
 
 def test_h74_probe_authority_rejects_mismatched_payload_probe_run_id(tmp_path) -> None:

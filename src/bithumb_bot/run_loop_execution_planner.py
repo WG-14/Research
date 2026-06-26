@@ -172,6 +172,15 @@ def _h74_authority_planning_fields(settings_obj: object) -> dict[str, object]:
         or str(getattr(settings_obj, "POSITION_MODE", "") or "").strip()
         == POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
     ):
+        authority_probe_run_id = str(
+            authority.get("probe_run_id")
+            or bound.get("probe_run_id")
+            or bound.get("H74_EXECUTION_PATH_PROBE_RUN_ID")
+            or ""
+        ).strip()
+        settings_probe_run_id = str(
+            getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", "") or ""
+        ).strip()
         required_values = {
             "strategy_instance_id": authority.get("strategy_instance_id") or bound.get("strategy_instance_id"),
             "position_mode": position_mode,
@@ -183,16 +192,13 @@ def _h74_authority_planning_fields(settings_obj: object) -> dict[str, object]:
                 or bound.get("max_order_krw")
                 or bound.get("DAILY_PARTICIPATION_MAX_ORDER_KRW")
             ),
-            "probe_run_id": (
-                authority.get("probe_run_id")
-                or bound.get("probe_run_id")
-                or bound.get("H74_EXECUTION_PATH_PROBE_RUN_ID")
-                or getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", "")
-            ),
+            "probe_run_id": authority_probe_run_id,
         }
         for field, value in required_values.items():
             if value is None or str(value).strip() == "":
                 raise ValueError(f"h74_authority_contract_incomplete:{field}")
+        if authority_probe_run_id != settings_probe_run_id:
+            raise ValueError("h74_authority_contract_mismatch:probe_run_id")
     return {
         "position_mode": str(authority.get("position_mode") or bound.get("position_mode") or ""),
         "hold_policy": str(authority.get("hold_policy") or bound.get("hold_policy") or ""),
@@ -263,7 +269,10 @@ def _h74_authority_planning_fields(settings_obj: object) -> dict[str, object]:
             == POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
         ),
         "h74_execution_path_probe_run_id": str(
-            getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", "") or ""
+            authority.get("probe_run_id")
+            or bound.get("probe_run_id")
+            or bound.get("H74_EXECUTION_PATH_PROBE_RUN_ID")
+            or ""
         ),
     }
 

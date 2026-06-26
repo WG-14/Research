@@ -168,3 +168,22 @@ def test_h74_order_event_submit_evidence_contains_ownership_contract_hash(tmp_pa
     assert order_row["authority_hash"] == "sha256:a"
     assert order_row["probe_run_id"] == "probe-run-1"
     assert evidence["h74_position_ownership_contract_hash"].startswith("sha256:")
+
+
+def test_h74_order_row_persists_ownership_contract_hash(tmp_path) -> None:
+    conn = ensure_db(str(tmp_path / "live-submit.sqlite"))
+    request = _request(conn)
+
+    context = _build_context(request=request, submit_plan=_validate_explicit_submit_plan(request=request))
+    _plan_submit_attempt(context=context)
+
+    order_row = conn.execute(
+        """
+        SELECT h74_position_ownership_contract_hash
+        FROM orders
+        WHERE client_order_id=?
+        """,
+        ("h74-live-buy",),
+    ).fetchone()
+
+    assert order_row["h74_position_ownership_contract_hash"] == request.h74_position_ownership_contract_hash

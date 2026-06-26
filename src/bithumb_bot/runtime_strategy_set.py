@@ -276,6 +276,8 @@ def _settings_for_authority_context(
         )
     if authority_context.h74_source_observation_authority_path:
         updates["H74_SOURCE_OBSERVATION_AUTHORITY_PATH"] = authority_context.h74_source_observation_authority_path
+        if authority_context.h74_execution_path_probe_run_id:
+            updates["H74_EXECUTION_PATH_PROBE_RUN_ID"] = authority_context.h74_execution_path_probe_run_id
         from .h74_observation import H74_SOURCE_OBSERVATION_PARAMETERS, H74_STRATEGY_NAME
 
         updates["STRATEGY_NAME"] = H74_STRATEGY_NAME
@@ -848,6 +850,7 @@ class ProfileAuthorityContext:
     live_real_order_armed: bool | None = None
     authority_scope: RuntimeAuthorityScope = "paper_legacy"
     h74_source_observation_authority_path: str | None = None
+    h74_execution_path_probe_run_id: str | None = None
     h74_live_rehearsal_no_submit_boundary: bool | None = None
 
     def __post_init__(self) -> None:
@@ -872,6 +875,12 @@ class ProfileAuthorityContext:
                 self,
                 "h74_source_observation_authority_path",
                 str(self.h74_source_observation_authority_path).strip() or None,
+            )
+        if self.h74_execution_path_probe_run_id is not None:
+            object.__setattr__(
+                self,
+                "h74_execution_path_probe_run_id",
+                str(self.h74_execution_path_probe_run_id).strip() or None,
             )
         object.__setattr__(self, "authority_scope", normalize_runtime_authority_scope(self.authority_scope))
 
@@ -901,6 +910,10 @@ class ProfileAuthorityContext:
             authority_scope=runtime_authority_scope_from_settings(settings_obj),
             h74_source_observation_authority_path=(
                 str(getattr(settings_obj, "H74_SOURCE_OBSERVATION_AUTHORITY_PATH", "") or "").strip()
+                or None
+            ),
+            h74_execution_path_probe_run_id=(
+                str(getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", "") or "").strip()
                 or None
             ),
             h74_live_rehearsal_no_submit_boundary=bool(
@@ -935,6 +948,9 @@ class ProfileAuthorityContext:
             h74_source_observation_authority_path=(
                 str(payload.get("h74_source_observation_authority_path") or "").strip() or None
             ),
+            h74_execution_path_probe_run_id=(
+                str(payload.get("h74_execution_path_probe_run_id") or "").strip() or None
+            ),
             h74_live_rehearsal_no_submit_boundary=(
                 bool(payload["h74_live_rehearsal_no_submit_boundary"])
                 if "h74_live_rehearsal_no_submit_boundary" in payload
@@ -957,6 +973,10 @@ class ProfileAuthorityContext:
                 str(getattr(settings, "H74_SOURCE_OBSERVATION_AUTHORITY_PATH", "") or "").strip()
                 or None
             ),
+            h74_execution_path_probe_run_id=(
+                str(getattr(settings, "H74_EXECUTION_PATH_PROBE_RUN_ID", "") or "").strip()
+                or None
+            ),
             h74_live_rehearsal_no_submit_boundary=bool(
                 getattr(settings, "H74_LIVE_REHEARSAL_NO_SUBMIT_BOUNDARY", False)
             ),
@@ -977,6 +997,7 @@ class ProfileAuthorityContext:
             "live_real_order_armed": self.live_real_order_armed,
             "authority_scope": self.authority_scope,
             "h74_source_observation_authority_path": self.h74_source_observation_authority_path,
+            "h74_execution_path_probe_run_id": self.h74_execution_path_probe_run_id,
             "h74_live_rehearsal_no_submit_boundary": self.h74_live_rehearsal_no_submit_boundary,
             "profile_binding_kind": (
                 "spec_bound_approved_profiles"

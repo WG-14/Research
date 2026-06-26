@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.test_h74_execution_path_probe_submit_authority import _settings, _variant_authority, _write_authority
+from tests.test_h74_execution_path_probe_submit_authority import _rehash, _settings, _variant_authority, _write_authority
 
 from bithumb_bot.h74_authority_alignment import validate_h74_authority_env_alignment
 from bithumb_bot.h74_observation import H74ObservationAuthorityError
@@ -69,6 +69,33 @@ def test_h74_authority_contract_max_order_mismatch_blocks_live_probe(tmp_path) -
         validate_h74_authority_env_alignment(authority, settings_obj=cfg)
 
 
+def test_h74_authority_contract_missing_probe_run_id_blocks_live_probe(tmp_path) -> None:
+    authority = _variant_authority()
+    authority.pop("probe_run_id", None)
+    bound = dict(authority["hash_bound_parameters"])
+    bound.pop("probe_run_id", None)
+    bound.pop("H74_EXECUTION_PATH_PROBE_RUN_ID", None)
+    authority["hash_bound_parameters"] = bound
+    authority = _rehash(authority)
+    cfg = _settings(_write_authority(tmp_path, authority))
+
+    with pytest.raises(H74ObservationAuthorityError, match="h74_authority_contract_incomplete:probe_run_id"):
+        validate_h74_authority_env_alignment(authority, settings_obj=cfg)
+
+
+def test_h74_authority_contract_probe_run_id_mismatch_blocks_live_probe(tmp_path) -> None:
+    authority = _variant_authority()
+    authority["probe_run_id"] = "probe-a"
+    bound = dict(authority["hash_bound_parameters"])
+    bound["H74_EXECUTION_PATH_PROBE_RUN_ID"] = "probe-a"
+    authority["hash_bound_parameters"] = bound
+    authority = _rehash(authority)
+    cfg = _settings(_write_authority(tmp_path, authority), H74_EXECUTION_PATH_PROBE_RUN_ID="probe-b")
+
+    with pytest.raises(H74ObservationAuthorityError, match="h74_authority_contract_mismatch:probe_run_id"):
+        validate_h74_authority_env_alignment(authority, settings_obj=cfg)
+
+
 def test_h74_authority_contract_contains_required_fixed_position_fields(tmp_path) -> None:
     authority = _variant_authority()
     cfg = _settings(_write_authority(tmp_path, authority))
@@ -76,7 +103,8 @@ def test_h74_authority_contract_contains_required_fixed_position_fields(tmp_path
     result = validate_h74_authority_env_alignment(authority, settings_obj=cfg)
 
     assert result.ok is True
-    for field in ("strategy_instance_id", "position_mode", "hold_policy", "partial_fill_policy", "authority_content_hash"):
+    for field in ("strategy_instance_id", "position_mode", "hold_policy", "partial_fill_policy", "authority_content_hash", "probe_run_id"):
         assert authority[field]
     assert authority["hash_bound_parameters"]["DAILY_PARTICIPATION_MAX_ORDER_KRW"] == pytest.approx(100_000.0)
+    assert authority["hash_bound_parameters"]["H74_EXECUTION_PATH_PROBE_RUN_ID"] == "probe-run-1"
     assert cfg.H74_EXECUTION_PATH_PROBE_RUN_ID == "probe-run-1"

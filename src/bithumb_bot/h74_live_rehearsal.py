@@ -135,6 +135,7 @@ def _write_h74_source_authority_file(
     tmp_dir: str,
     *,
     equivalence_manifest: Mapping[str, object],
+    probe_run_id: str,
 ) -> str:
     source_hash = str(equivalence_manifest.get("source_artifact_hash") or "").strip()
     if not source_hash:
@@ -166,6 +167,14 @@ def _write_h74_source_authority_file(
         backtest_report_hash=str(equivalence_manifest.get("source_backtest_report_hash") or "").strip() or None,
         experiment_envelope_payload=envelope,
         experiment_envelope_locator=str(envelope_path),
+    )
+    bound = dict(payload.get("hash_bound_parameters") or {})
+    bound["H74_EXECUTION_PATH_PROBE_RUN_ID"] = str(probe_run_id)
+    payload["hash_bound_parameters"] = bound
+    payload["probe_run_id"] = str(probe_run_id)
+    payload["authority_parameter_hash"] = sha256_prefixed(bound)
+    payload["authority_content_hash"] = sha256_prefixed(
+        {key: value for key, value in payload.items() if key != "authority_content_hash"}
     )
     authority_path = Path(tmp_dir) / "h74-source-observation-authority.json"
     write_json_atomic(authority_path, payload)
@@ -750,16 +759,20 @@ def run_h74_live_rehearsal(
     execution_result_status = "submit_blocked"
     with tempfile.TemporaryDirectory(prefix="h74-live-rehearsal-") as tmp_dir:
         if True:
+            initial_settings_obj = ctx.settings_snapshot
+            probe_run_id = str(getattr(initial_settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", "") or "").strip()
+            if not probe_run_id:
+                probe_run_id = "h74-live-rehearsal-probe"
             authority_path = _write_h74_source_authority_file(
                 tmp_dir,
                 equivalence_manifest=equivalence_manifest,
+                probe_run_id=probe_run_id,
             )
             run_context = with_h74_source_authority_path(ctx, authority_path)
             settings_obj = run_context.settings_snapshot
-            if not str(getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", "") or "").strip():
-                settings_values = vars(settings_obj).copy()
-                settings_values["H74_EXECUTION_PATH_PROBE_RUN_ID"] = "h74-live-rehearsal-probe"
-                settings_obj = SimpleNamespace(**settings_values)
+            settings_values = vars(settings_obj).copy()
+            settings_values["H74_EXECUTION_PATH_PROBE_RUN_ID"] = probe_run_id
+            settings_obj = SimpleNamespace(**settings_values)
             db_path = f"{tmp_dir}/h74-rehearsal.sqlite"
             _seed_rehearsal_db(
                 db_path,

@@ -7,6 +7,7 @@ import pytest
 from bithumb_bot.db_core import ensure_schema, init_portfolio
 from bithumb_bot.execution import apply_fill_and_trade, record_order_if_missing
 from bithumb_bot.h74_cycle_state import ensure_h74_cycle_schema, load_h74_cycle_inventory
+from bithumb_bot.h74_position_ownership import h74_position_ownership_contract_from_payload
 
 
 def _conn() -> sqlite3.Connection:
@@ -19,6 +20,22 @@ def _conn() -> sqlite3.Connection:
 
 
 def _order(conn: sqlite3.Connection, *, cycle_id: str | None = "cycle-1") -> None:
+    contract_hash = None
+    if cycle_id:
+        contract_hash = h74_position_ownership_contract_from_payload(
+            {
+                "cycle_id": cycle_id,
+                "h74_cycle_id": cycle_id,
+                "authority_hash": "sha256:a",
+                "strategy_instance_id": "h74-source-observation",
+                "probe_run_id": "probe-run-1",
+                "pair": "KRW-BTC",
+                "entry_side": "BUY",
+                "entry_plan_id": "h74-buy",
+                "position_mode": "fixed_fill_qty_until_exit",
+                "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
+            }
+        ).contract_hash
     record_order_if_missing(
         conn,
         client_order_id="h74-buy",
@@ -29,6 +46,7 @@ def _order(conn: sqlite3.Connection, *, cycle_id: str | None = "cycle-1") -> Non
         strategy_instance_id="h74-source-observation",
         cycle_id=cycle_id,
         authority_hash="sha256:a",
+        h74_position_ownership_contract_hash=contract_hash,
         probe_run_id="probe-run-1",
         status="NEW",
     )
@@ -106,3 +124,69 @@ def test_h74_buy_fill_without_cycle_id_fails_closed() -> None:
 
     assert conn.execute("SELECT COUNT(*) AS n FROM fills").fetchone()["n"] == 0
     assert conn.execute("SELECT COUNT(*) AS n FROM h74_cycle_state").fetchone()["n"] == 0
+
+
+def test_h74_buy_fill_rejects_order_contract_hash_mismatch() -> None:
+    conn = _conn()
+    _order(conn)
+    conn.execute(
+        """
+        UPDATE orders
+        SET h74_position_ownership_contract_hash=?
+        WHERE client_order_id=?
+        """,
+        ("sha256:mismatch", "h74-buy"),
+    )
+
+    with pytest.raises(RuntimeError, match="h74_cycle_ownership_contract_hash_mismatch"):
+        apply_fill_and_trade(
+            conn,
+            client_order_id="h74-buy",
+            side="BUY",
+            fill_id="fill-1",
+            fill_ts=1,
+            price=100_000_000.0,
+            qty=0.0008,
+            fee=32.0,
+            strategy_name="daily_participation_sma",
+            pair="KRW-BTC",
+        )
+
+    assert conn.execute("SELECT COUNT(*) AS n FROM fills").fetchone()["n"] == 0
+    assert conn.execute("SELECT COUNT(*) AS n FROM trades").fetchone()["n"] == 0
+    assert conn.execute("SELECT COUNT(*) AS n FROM h74_cycle_state").fetchone()["n"] == 0
+
+
+def test_h74_cycle_persistence_failure_rolls_back_fill_trade_and_portfolio(monkeypatch) -> None:
+    conn = _conn()
+    _order(conn)
+    before = conn.execute(
+        "SELECT asset_available + asset_locked AS asset_qty FROM portfolio WHERE id=1"
+    ).fetchone()["asset_qty"]
+
+    def _fail_upsert(*_args, **_kwargs):
+        raise RuntimeError("forced_cycle_persistence_failure")
+
+    monkeypatch.setattr("bithumb_bot.h74_cycle_state.upsert_h74_cycle_fill", _fail_upsert)
+
+    with pytest.raises(RuntimeError, match="forced_cycle_persistence_failure"):
+        apply_fill_and_trade(
+            conn,
+            client_order_id="h74-buy",
+            side="BUY",
+            fill_id="fill-1",
+            fill_ts=1,
+            price=100_000_000.0,
+            qty=0.0008,
+            fee=32.0,
+            strategy_name="daily_participation_sma",
+            pair="KRW-BTC",
+        )
+
+    after = conn.execute(
+        "SELECT asset_available + asset_locked AS asset_qty FROM portfolio WHERE id=1"
+    ).fetchone()["asset_qty"]
+    assert conn.execute("SELECT COUNT(*) AS n FROM fills").fetchone()["n"] == 0
+    assert conn.execute("SELECT COUNT(*) AS n FROM trades").fetchone()["n"] == 0
+    assert conn.execute("SELECT COUNT(*) AS n FROM h74_cycle_state").fetchone()["n"] == 0
+    assert after == pytest.approx(before)

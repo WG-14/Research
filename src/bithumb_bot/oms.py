@@ -719,6 +719,7 @@ def create_order(
     strategy_instance_id: str | None = None,
     cycle_id: str | None = None,
     authority_hash: str | None = None,
+    h74_position_ownership_contract_hash: str | None = None,
     entry_decision_id: int | None = None,
     exit_decision_id: int | None = None,
     decision_reason: str | None = None,
@@ -751,6 +752,7 @@ def create_order(
 ) -> None:
     ts = int(ts_ms if ts_ms is not None else time.time() * 1000)
     normalized_probe_run_id = str(probe_run_id or "").strip() or None
+    normalized_h74_contract_hash = str(h74_position_ownership_contract_hash or "").strip() or None
     own_conn = conn is None
     conn = conn or ensure_db()
     try:
@@ -758,7 +760,7 @@ def create_order(
             """
             INSERT INTO orders(
                 probe_run_id, client_order_id, submit_attempt_id, exchange_order_id, status, side, order_type, price, qty_req, qty_filled,
-                pair, strategy_name, strategy_instance_id, cycle_id, authority_hash, entry_decision_id, exit_decision_id, decision_reason, exit_rule_name,
+                pair, strategy_name, strategy_instance_id, cycle_id, authority_hash, h74_position_ownership_contract_hash, entry_decision_id, exit_decision_id, decision_reason, exit_rule_name,
                 internal_lot_size, effective_min_trade_qty, qty_step, min_notional_krw, intended_lot_count,
                 executable_lot_count, final_intended_qty, final_submitted_qty, decision_reason_code,
                 intent_type, authority_source, entry_authority_source, entry_authority_status, decision_kst_hour,
@@ -767,7 +769,7 @@ def create_order(
                 daily_participation_kst_day, daily_participation_fallback_mode,
                 created_ts, updated_ts, last_error
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 normalized_probe_run_id,
@@ -785,6 +787,7 @@ def create_order(
                 strategy_instance_id,
                 cycle_id,
                 authority_hash,
+                normalized_h74_contract_hash,
                 (int(entry_decision_id) if entry_decision_id is not None else None),
                 (int(exit_decision_id) if exit_decision_id is not None else None),
                 decision_reason,

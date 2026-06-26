@@ -6,6 +6,7 @@ from bithumb_bot import runtime_state
 from bithumb_bot.config import settings
 from bithumb_bot.db_core import ensure_db, init_portfolio, record_broker_fill_observation
 from bithumb_bot.execution import record_order_if_missing
+from bithumb_bot.h74_cycle_state import upsert_h74_cycle_fill
 from bithumb_bot.live_pipeline_smoke_preflight import (
     readiness_from_snapshot,
     validate_live_pipeline_smoke_step_readiness,
@@ -129,6 +130,48 @@ def test_active_fee_accounting_blocker_reasons_identify_source(readiness_db):
     assert data["new_entry_fee_blocker"] is True
     assert "unapplied_principal_pending_count" in data["active_fill_accounting_blocker_reasons"]
     assert smoke_readiness.new_entry_fee_blocker is True
+
+
+def test_h74_cross_table_invariant_blocks_resume(readiness_db):
+    record_order_if_missing(
+        readiness_db,
+        client_order_id="h74-buy",
+        side="BUY",
+        qty_req=0.0008,
+        price=100_000_000.0,
+        strategy_name="daily_participation_sma",
+        strategy_instance_id="h74-source-observation",
+        cycle_id="cycle-1",
+        authority_hash="sha256:a",
+        probe_run_id="probe-run-1",
+        ts_ms=1,
+        status="FILLED",
+    )
+    readiness_db.execute(
+        """
+        INSERT INTO fills(client_order_id, fill_id, fill_ts, price, qty, fee)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("h74-buy", "fill-1", 1, 100_000_000.0, 0.0008, 32.0),
+    )
+    upsert_h74_cycle_fill(
+        readiness_db,
+        cycle_id="cycle-1",
+        authority_hash="sha256:a",
+        strategy_instance_id="h74-source-observation",
+        pair="KRW-BTC",
+        side="BUY",
+        qty=0.0008,
+        client_order_id="h74-buy",
+        fill_ts=1,
+    )
+
+    snapshot = compute_runtime_readiness_snapshot(readiness_db)
+    data = snapshot.as_dict()
+
+    assert "h74_trade_missing" in data["resume_blockers"]
+    assert data["resume_ready"] is False
+    assert data["new_entry_allowed"] is False
 
 
 def test_health_reports_h74_cycle_schema_present(readiness_db):

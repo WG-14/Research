@@ -2582,6 +2582,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             strategy_instance_id TEXT,
             cycle_id TEXT,
             authority_hash TEXT,
+            h74_position_ownership_contract_hash TEXT,
             entry_decision_id INTEGER,
             exit_decision_id INTEGER,
             decision_reason TEXT,
@@ -2621,6 +2622,12 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "orders", "strategy_instance_id", "strategy_instance_id TEXT")
     _ensure_column(conn, "orders", "cycle_id", "cycle_id TEXT")
     _ensure_column(conn, "orders", "authority_hash", "authority_hash TEXT")
+    _ensure_column(
+        conn,
+        "orders",
+        "h74_position_ownership_contract_hash",
+        "h74_position_ownership_contract_hash TEXT",
+    )
     _ensure_column(conn, "orders", "entry_decision_id", "entry_decision_id INTEGER")
     _ensure_column(conn, "orders", "exit_decision_id", "exit_decision_id INTEGER")
     _ensure_column(conn, "orders", "decision_reason", "decision_reason TEXT")

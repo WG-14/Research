@@ -59,6 +59,7 @@ def record_order_if_missing(
     strategy_instance_id: str | None = None,
     cycle_id: str | None = None,
     authority_hash: str | None = None,
+    h74_position_ownership_contract_hash: str | None = None,
     entry_decision_id: int | None = None,
     exit_decision_id: int | None = None,
     decision_reason: str | None = None,
@@ -83,11 +84,30 @@ def record_order_if_missing(
     ts_ms: int | None = None,
     status: str = "NEW",
 ) -> None:
+    normalized_h74_contract_hash = str(h74_position_ownership_contract_hash or "").strip()
     exists = conn.execute(
-        "SELECT 1 FROM orders WHERE client_order_id=?",
+        "SELECT h74_position_ownership_contract_hash FROM orders WHERE client_order_id=?",
         (client_order_id,),
     ).fetchone()
     if exists:
+        if normalized_h74_contract_hash:
+            existing_value = (
+                exists["h74_position_ownership_contract_hash"]
+                if hasattr(exists, "keys")
+                else exists[0]
+            )
+            existing_hash = str(existing_value or "").strip()
+            if existing_hash and existing_hash != normalized_h74_contract_hash:
+                raise RuntimeError("h74_cycle_ownership_contract_hash_mismatch")
+            if not existing_hash:
+                conn.execute(
+                    """
+                    UPDATE orders
+                    SET h74_position_ownership_contract_hash=?
+                    WHERE client_order_id=?
+                    """,
+                    (normalized_h74_contract_hash, client_order_id),
+                )
         return
     create_order(
         client_order_id=client_order_id,
@@ -100,6 +120,7 @@ def record_order_if_missing(
         strategy_instance_id=strategy_instance_id,
         cycle_id=cycle_id,
         authority_hash=authority_hash,
+        h74_position_ownership_contract_hash=normalized_h74_contract_hash or None,
         entry_decision_id=entry_decision_id,
         exit_decision_id=exit_decision_id,
         decision_reason=decision_reason,
@@ -407,6 +428,7 @@ def _apply_fill_and_trade_core(
             strategy_instance_id,
             cycle_id,
             authority_hash,
+            h74_position_ownership_contract_hash,
             entry_decision_id,
             exit_decision_id,
             decision_reason,
@@ -421,6 +443,7 @@ def _apply_fill_and_trade_core(
     order_strategy_instance_id: str | None = None
     order_cycle_id: str | None = None
     order_authority_hash: str | None = None
+    order_h74_contract_hash: str | None = None
     order_exchange_order_id: str | None = None
     order_entry_decision_id: int | None = None
     order_exit_decision_id: int | None = None
@@ -437,6 +460,7 @@ def _apply_fill_and_trade_core(
         order_strategy_instance_id = str(order["strategy_instance_id"]) if order["strategy_instance_id"] is not None else None
         order_cycle_id = str(order["cycle_id"]) if order["cycle_id"] is not None else None
         order_authority_hash = str(order["authority_hash"]) if order["authority_hash"] is not None else None
+        order_h74_contract_hash = str(order["h74_position_ownership_contract_hash"] or "").strip() or None
         order_entry_decision_id = int(order["entry_decision_id"]) if order["entry_decision_id"] is not None else None
         order_exit_decision_id = int(order["exit_decision_id"]) if order["exit_decision_id"] is not None else None
         order_decision_reason = str(order["decision_reason"]) if order["decision_reason"] is not None else None
@@ -502,32 +526,6 @@ def _apply_fill_and_trade_core(
         fee=fee_value,
     )
 
-    add_fill(
-        client_order_id=client_order_id,
-        fill_id=fill_id,
-        fill_ts=fill_ts,
-        price=price,
-        qty=qty,
-        fee=fee_value,
-        fee_accounting_status=fee_accounting_status,
-        observed_fee_status=observed_fee_status,
-        observed_fee_source=observed_fee_source,
-        observed_fee_confidence=observed_fee_confidence,
-        observed_fee_provenance=observed_fee_provenance,
-        observed_fee_validation_reason=observed_fee_validation_reason,
-        observed_fee_validation_checks=observed_fee_validation_checks,
-        conn=conn,
-        probe_run_id=order_probe_run_id,
-    )
-
-    set_portfolio_breakdown(
-        conn,
-        cash_available=max(cash_available_after, 0.0),
-        cash_locked=max(cash_locked_after, 0.0),
-        asset_available=max(asset_available_after, 0.0),
-        asset_locked=max(asset_locked_after, 0.0),
-        probe_run_id=order_probe_run_id,
-    )
     effective_strategy_name = strategy_name or order_strategy_name
     effective_strategy_instance_id = order_strategy_instance_id
     effective_entry_decision_id = entry_decision_id if entry_decision_id is not None else order_entry_decision_id
@@ -536,6 +534,7 @@ def _apply_fill_and_trade_core(
     effective_exit_rule_name = exit_rule_name or order_exit_rule_name
 
     trade_pair = pair or settings.PAIR
+    h74_fill_apply = effective_strategy_name == "daily_participation_sma"
     effective_note = note
     if fee_accounting_status != FILL_FEE_ACCOUNTING_STATUS_FINALIZED:
         suffix = (
@@ -544,7 +543,36 @@ def _apply_fill_and_trade_core(
             f"observed_fee_source={observed_fee_source}"
         )
         effective_note = f"{note}; {suffix}" if note else suffix
-    trade_row = conn.execute(
+    if h74_fill_apply:
+        conn.execute("SAVEPOINT h74_fill_apply")
+    try:
+        add_fill(
+            client_order_id=client_order_id,
+            fill_id=fill_id,
+            fill_ts=fill_ts,
+            price=price,
+            qty=qty,
+            fee=fee_value,
+            fee_accounting_status=fee_accounting_status,
+            observed_fee_status=observed_fee_status,
+            observed_fee_source=observed_fee_source,
+            observed_fee_confidence=observed_fee_confidence,
+            observed_fee_provenance=observed_fee_provenance,
+            observed_fee_validation_reason=observed_fee_validation_reason,
+            observed_fee_validation_checks=observed_fee_validation_checks,
+            conn=conn,
+            probe_run_id=order_probe_run_id,
+        )
+
+        set_portfolio_breakdown(
+            conn,
+            cash_available=max(cash_available_after, 0.0),
+            cash_locked=max(cash_locked_after, 0.0),
+            asset_available=max(asset_available_after, 0.0),
+            asset_locked=max(asset_locked_after, 0.0),
+            probe_run_id=order_probe_run_id,
+        )
+        trade_row = conn.execute(
         """
         INSERT INTO trades(
             probe_run_id, ts, pair, interval, side, price, qty, fee, cash_after, asset_after,
@@ -571,88 +599,116 @@ def _apply_fill_and_trade_core(
             effective_exit_rule_name if side == "SELL" else None,
             effective_note,
         ),
-    )
-    trade_id = int(trade_row.lastrowid)
-    _assign_fill_trade_id(
-        conn,
-        client_order_id=client_order_id,
-        fill_id=fill_id,
-        fill_ts=int(fill_ts),
-        price=price_value,
-        qty=qty_value,
-        trade_id=trade_id,
-    )
-    apply_fill_lifecycle(
-        conn,
-        side=side,
-        pair=trade_pair,
-        trade_id=trade_id,
-        client_order_id=client_order_id,
-        fill_id=fill_id,
-        fill_ts=int(fill_ts),
-        price=float(price),
-        qty=float(qty),
-        fee=float(fee_value),
-        strategy_name=effective_strategy_name,
-        entry_decision_id=effective_entry_decision_id,
-        exit_decision_id=effective_exit_decision_id,
-        exit_reason=(effective_exit_reason if side == "SELL" else None),
-        exit_rule_name=(effective_exit_rule_name if side == "SELL" else None),
-        allow_entry_decision_fallback=allow_entry_decision_fallback,
-        probe_run_id=order_probe_run_id,
-    )
-    h74_cycle_readiness: dict[str, object] = {}
-    if effective_strategy_name == "daily_participation_sma":
-        from .h74_cycle_state import upsert_h74_cycle_fill
-
-        try:
-            ownership_contract = h74_position_ownership_contract_from_payload(
-                {
-                    "cycle_id": order_cycle_id,
-                    "h74_cycle_id": order_cycle_id,
-                    "authority_hash": order_authority_hash,
-                    "strategy_instance_id": effective_strategy_instance_id,
-                    "probe_run_id": order_probe_run_id,
-                    "pair": trade_pair,
-                    "entry_side": "BUY",
-                    "entry_plan_id": client_order_id,
-                    "position_mode": "fixed_fill_qty_until_exit",
-                    "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
-                }
-            )
-        except H74PositionOwnershipError as exc:
-            raise RuntimeError(f"h74_cycle_ownership_incomplete:{exc}") from exc
-
-        upsert_h74_cycle_fill(
+        )
+        trade_id = int(trade_row.lastrowid)
+        _assign_fill_trade_id(
             conn,
-            cycle_id=order_cycle_id,
-            authority_hash=order_authority_hash or "",
-            strategy_instance_id=effective_strategy_instance_id or "",
-            pair=trade_pair,
-            side=side,
-            qty=float(qty),
             client_order_id=client_order_id,
+            fill_id=fill_id,
             fill_ts=int(fill_ts),
-            contract_hash=ownership_contract.contract_hash,
+            price=price_value,
+            qty=qty_value,
+            trade_id=trade_id,
         )
-        from .h74_cycle_state import load_h74_cycle_inventory
+        apply_fill_lifecycle(
+            conn,
+            side=side,
+            pair=trade_pair,
+            trade_id=trade_id,
+            client_order_id=client_order_id,
+            fill_id=fill_id,
+            fill_ts=int(fill_ts),
+            price=float(price),
+            qty=float(qty),
+            fee=float(fee_value),
+            strategy_name=effective_strategy_name,
+            entry_decision_id=effective_entry_decision_id,
+            exit_decision_id=effective_exit_decision_id,
+            exit_reason=(effective_exit_reason if side == "SELL" else None),
+            exit_rule_name=(effective_exit_rule_name if side == "SELL" else None),
+            allow_entry_decision_fallback=allow_entry_decision_fallback,
+            probe_run_id=order_probe_run_id,
+        )
+        h74_cycle_readiness: dict[str, object] = {}
+        if h74_fill_apply:
+            from .h74_cycle_state import ensure_h74_cycle_schema, upsert_h74_cycle_fill
 
-        inventory = load_h74_cycle_inventory(conn, cycle_id=order_cycle_id)
-        ready = bool(
-            inventory is not None
-            and inventory.cycle_id
-            and inventory.acquired_qty > 0.0
-            and inventory.remaining_cycle_qty > 0.0
-        )
-        h74_cycle_readiness = {
-            "h74_cycle_ownership_created": 1 if inventory is not None else 0,
-            "h74_exit_authority_ready": 1 if ready else 0,
-            "h74_exit_authority_not_ready_reason": "none" if ready else "h74_cycle_state_missing_or_empty",
-            "h74_cycle_id": order_cycle_id,
-            "h74_cycle_acquired_qty": 0.0 if inventory is None else inventory.acquired_qty,
-            "h74_remaining_cycle_qty": 0.0 if inventory is None else inventory.remaining_cycle_qty,
-            "h74_cycle_contract_hash": ownership_contract.contract_hash,
-        }
+            try:
+                ownership_entry_plan_id = client_order_id
+                if side == "SELL":
+                    ensure_h74_cycle_schema(conn)
+                    cycle_order = conn.execute(
+                        """
+                        SELECT entry_client_order_id
+                        FROM h74_cycle_state
+                        WHERE cycle_id=?
+                        """,
+                        (order_cycle_id,),
+                    ).fetchone()
+                    if cycle_order is not None:
+                        ownership_entry_plan_id = str(
+                            cycle_order["entry_client_order_id"]
+                            if hasattr(cycle_order, "keys")
+                            else cycle_order[0]
+                        )
+                ownership_contract = h74_position_ownership_contract_from_payload(
+                    {
+                        "cycle_id": order_cycle_id,
+                        "h74_cycle_id": order_cycle_id,
+                        "authority_hash": order_authority_hash,
+                        "strategy_instance_id": effective_strategy_instance_id,
+                        "probe_run_id": order_probe_run_id,
+                        "pair": trade_pair,
+                        "entry_side": "BUY",
+                        "entry_plan_id": ownership_entry_plan_id,
+                        "position_mode": "fixed_fill_qty_until_exit",
+                        "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
+                    }
+                )
+            except H74PositionOwnershipError as exc:
+                raise RuntimeError(f"h74_cycle_ownership_incomplete:{exc}") from exc
+            if not order_h74_contract_hash:
+                raise RuntimeError("h74_cycle_ownership_contract_hash_mismatch")
+            if order_h74_contract_hash != ownership_contract.contract_hash:
+                raise RuntimeError("h74_cycle_ownership_contract_hash_mismatch")
+
+            upsert_h74_cycle_fill(
+                conn,
+                cycle_id=order_cycle_id,
+                authority_hash=order_authority_hash or "",
+                strategy_instance_id=effective_strategy_instance_id or "",
+                pair=trade_pair,
+                side=side,
+                qty=float(qty),
+                client_order_id=client_order_id,
+                fill_ts=int(fill_ts),
+                contract_hash=order_h74_contract_hash,
+            )
+            from .h74_cycle_state import load_h74_cycle_inventory
+
+            inventory = load_h74_cycle_inventory(conn, cycle_id=order_cycle_id)
+            ready = bool(
+                inventory is not None
+                and inventory.cycle_id
+                and inventory.acquired_qty > 0.0
+                and inventory.remaining_cycle_qty > 0.0
+            )
+            h74_cycle_readiness = {
+                "h74_cycle_ownership_created": 1 if inventory is not None else 0,
+                "h74_exit_authority_ready": 1 if ready else 0,
+                "h74_exit_authority_not_ready_reason": "none" if ready else "h74_cycle_state_missing_or_empty",
+                "h74_cycle_id": order_cycle_id,
+                "h74_cycle_acquired_qty": 0.0 if inventory is None else inventory.acquired_qty,
+                "h74_remaining_cycle_qty": 0.0 if inventory is None else inventory.remaining_cycle_qty,
+                "h74_cycle_contract_hash": order_h74_contract_hash,
+            }
+        if h74_fill_apply:
+            conn.execute("RELEASE SAVEPOINT h74_fill_apply")
+    except Exception:
+        if h74_fill_apply:
+            conn.execute("ROLLBACK TO SAVEPOINT h74_fill_apply")
+            conn.execute("RELEASE SAVEPOINT h74_fill_apply")
+        raise
     fill_signal_ts = int(signal_ts if signal_ts is not None else fill_ts)
     filled_qty = float(qty)
     _LOG.info(

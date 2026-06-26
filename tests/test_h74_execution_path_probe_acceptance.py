@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import sqlite3
+
+from bithumb_bot.db_core import ensure_schema, init_portfolio
+from bithumb_bot.h74_cycle_state import ensure_h74_cycle_schema
 from bithumb_bot.h74_probe_acceptance import evaluate_h74_execution_path_probe_acceptance
+from bithumb_bot.h74_probe_report import build_h74_execution_path_probe_report
 
 
 def _pass_report() -> dict[str, object]:
@@ -107,3 +112,167 @@ def test_h74_manual_sell_does_not_count_as_automated_sell_success() -> None:
 
     assert result["execution_path_probe_status"] != "PASS"
     assert "automated_sell_required" in result["missing_evidence"]
+
+
+def test_acceptance_uses_runtime_built_probe_report() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    ensure_h74_cycle_schema(conn)
+    init_portfolio(conn)
+    conn.execute(
+        """
+        INSERT INTO orders(
+            probe_run_id, client_order_id, status, side, pair, price, qty_req,
+            qty_filled, strategy_name, strategy_instance_id, cycle_id, authority_hash,
+            h74_position_ownership_contract_hash, entry_decision_id, created_ts, updated_ts
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "probe-1",
+            "buy-1",
+            "FILLED",
+            "BUY",
+            "KRW-BTC",
+            100_000_000.0,
+            0.0008,
+            0.0008,
+            "daily_participation_sma",
+            "h74-source-observation",
+            "cycle-1",
+            "sha256:a",
+            "sha256:contract",
+            1,
+            1,
+            1,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO orders(
+            probe_run_id, client_order_id, status, side, pair, price, qty_req,
+            qty_filled, strategy_name, strategy_instance_id, cycle_id, authority_hash,
+            h74_position_ownership_contract_hash, exit_decision_id, decision_reason,
+            created_ts, updated_ts
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "probe-1",
+            "sell-1",
+            "FILLED",
+            "SELL",
+            "KRW-BTC",
+            100_000_000.0,
+            0.0008,
+            0.0008,
+            "daily_participation_sma",
+            "h74-source-observation",
+            "cycle-1",
+            "sha256:a",
+            "sha256:contract",
+            2,
+            "max_holding_time",
+            2,
+            2,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO fills(client_order_id, fill_id, fill_ts, price, qty, fee)
+        VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "buy-1",
+            "buy-fill",
+            1,
+            100_000_000.0,
+            0.0008,
+            32.0,
+            "sell-1",
+            "sell-fill",
+            2,
+            100_000_000.0,
+            0.0008,
+            32.0,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO trades(ts, pair, interval, side, price, qty, fee, cash_after, asset_after, client_order_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            1,
+            "KRW-BTC",
+            "1m",
+            "BUY",
+            100_000_000.0,
+            0.0008,
+            32.0,
+            920_000.0,
+            0.0008,
+            "buy-1",
+            2,
+            "KRW-BTC",
+            "1m",
+            "SELL",
+            100_000_000.0,
+            0.0008,
+            32.0,
+            999_936.0,
+            0.0,
+            "sell-1",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO h74_cycle_state(
+            cycle_id, authority_hash, strategy_instance_id, pair, state,
+            entry_client_order_id, exit_client_order_id, acquired_qty, sold_qty,
+            locked_exit_qty, contract_hash
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "cycle-1",
+            "sha256:a",
+            "h74-source-observation",
+            "KRW-BTC",
+            "CLOSED",
+            "buy-1",
+            "sell-1",
+            0.0008,
+            0.0008,
+            0.0,
+            "sha256:contract",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO open_position_lots(
+            pair, entry_trade_id, entry_client_order_id, entry_ts, entry_price,
+            qty_open, executable_lot_count, position_semantic_basis, position_state
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("KRW-BTC", 1, "buy-1", 1, 100_000_000.0, 0.0, 0, "lot-native", "open_exposure"),
+    )
+    conn.execute(
+        """
+        INSERT INTO trade_lifecycles(
+            pair, entry_trade_id, exit_trade_id, entry_client_order_id,
+            exit_client_order_id, entry_ts, exit_ts, matched_qty, entry_price,
+            exit_price, gross_pnl, fee_total, net_pnl, holding_time_sec
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("KRW-BTC", 1, 2, "buy-1", "sell-1", 1, 2, 0.0008, 100_000_000.0, 100_000_000.0, 0.0, 64.0, -64.0, 1.0),
+    )
+
+    report = build_h74_execution_path_probe_report(conn, "probe-1")
+    result = evaluate_h74_execution_path_probe_acceptance(report)
+
+    assert report["execution_path_probe_status"] == "PASS"
+    assert result["execution_path_probe_status"] == "PASS"

@@ -15,7 +15,9 @@ from bithumb_bot.execution_service import ExecutionSubmitPlan
 from bithumb_bot.execution import apply_fill_and_trade, apply_fill_principal_with_pending_fee, record_order_if_missing
 from bithumb_bot.h74_cycle_state import build_h74_cycle_id, load_h74_cycle_inventory
 from bithumb_bot.h74_live_rehearsal import H74LiveRehearsalConfig, run_h74_live_rehearsal
+from bithumb_bot.h74_position_ownership import h74_position_ownership_contract_from_payload
 from bithumb_bot.h74_probe_acceptance import evaluate_h74_execution_path_probe_acceptance
+from bithumb_bot.h74_probe_report import build_h74_execution_path_probe_report
 from bithumb_bot.run_loop_execution_planner import _inject_h74_cycle_inventory
 from bithumb_bot.oms import set_status
 from bithumb_bot.order_settlement import OrderSettlementCoordinator, SettlementBarrierConfig
@@ -244,6 +246,20 @@ def _record_h74_buy_intent(
         entry_client_order_id=order.client_order_id,
         authority_hash=authority_hash,
     )
+    contract_hash = h74_position_ownership_contract_from_payload(
+        {
+            "cycle_id": cycle_id,
+            "h74_cycle_id": cycle_id,
+            "authority_hash": authority_hash,
+            "strategy_instance_id": key.strategy_instance_id,
+            "probe_run_id": "probe-run-1",
+            "pair": key.pair,
+            "entry_side": "BUY",
+            "entry_plan_id": order.client_order_id,
+            "position_mode": "fixed_fill_qty_until_exit",
+            "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
+        }
+    ).contract_hash
     record_order_if_missing(
         conn,
         client_order_id=order.client_order_id,
@@ -255,6 +271,8 @@ def _record_h74_buy_intent(
         strategy_instance_id=key.strategy_instance_id,
         cycle_id=cycle_id,
         authority_hash=authority_hash,
+        entry_decision_id=1,
+        h74_position_ownership_contract_hash=contract_hash,
         daily_participation_policy_hash=key.participation_policy_hash,
         daily_count_snapshot_hash=sha256_prefixed({"h74": "daily-count"}),
         participation_decision_hash=sha256_prefixed({"h74": "participation-decision"}),
@@ -272,6 +290,36 @@ def _record_h74_buy_intent(
         decision_reason_code="daily_participation_fallback_allowed",
         local_intent_state="submitted",
         ts_ms=int(fill.fill_ts),
+        status="NEW",
+    )
+
+
+def _record_h74_sell_intent(conn: sqlite3.Connection, *, cycle_id: str, contract_hash: str) -> None:
+    record_order_if_missing(
+        conn,
+        client_order_id="h74-sell",
+        side="SELL",
+        qty_req=0.0008,
+        price=100_000_000.0,
+        symbol="KRW-BTC",
+        strategy_name="daily_participation_sma",
+        strategy_instance_id="h74-source-observation",
+        cycle_id=cycle_id,
+        authority_hash="sha256:h74-roundtrip-authority",
+        h74_position_ownership_contract_hash=contract_hash,
+        exit_decision_id=2,
+        decision_reason="max_holding_time",
+        exit_rule_name="max_holding_time",
+        probe_run_id="probe-run-1",
+        internal_lot_size=0.0001,
+        effective_min_trade_qty=0.0001,
+        qty_step=0.0001,
+        min_notional_krw=5_000.0,
+        intended_lot_count=8,
+        executable_lot_count=8,
+        final_intended_qty=0.0008,
+        final_submitted_qty=0.0008,
+        ts_ms=2,
         status="NEW",
     )
 
@@ -359,7 +407,8 @@ def test_h74_buy_order_persists_cycle_metadata(roundtrip_db) -> None:
         _record_h74_buy_intent(conn, order, fills[0])
         row = conn.execute(
             """
-            SELECT cycle_id, strategy_instance_id, authority_hash, probe_run_id
+            SELECT cycle_id, strategy_instance_id, authority_hash, probe_run_id,
+                   h74_position_ownership_contract_hash
             FROM orders
             WHERE client_order_id=?
             """,
@@ -372,6 +421,7 @@ def test_h74_buy_order_persists_cycle_metadata(roundtrip_db) -> None:
     assert row["strategy_instance_id"] == "h74-source-observation"
     assert row["authority_hash"] == "sha256:h74-roundtrip-authority"
     assert row["probe_run_id"] == "probe-run-1"
+    assert row["h74_position_ownership_contract_hash"].startswith("sha256:")
 
 
 def test_h74_ownership_metadata_survives_plan_to_order(roundtrip_db) -> None:
@@ -424,12 +474,14 @@ def test_h74_ownership_metadata_survives_plan_to_order(roundtrip_db) -> None:
             strategy_instance_id=request.strategy_instance_id,
             cycle_id=request.cycle_id,
             authority_hash=request.authority_hash,
+            h74_position_ownership_contract_hash=request.h74_position_ownership_contract_hash,
             probe_run_id=request.probe_run_id,
             status="PENDING_SUBMIT",
         )
         row = conn.execute(
             """
-            SELECT cycle_id, strategy_instance_id, authority_hash, probe_run_id
+            SELECT cycle_id, strategy_instance_id, authority_hash, probe_run_id,
+                   h74_position_ownership_contract_hash
             FROM orders
             WHERE client_order_id=?
             """,
@@ -442,6 +494,7 @@ def test_h74_ownership_metadata_survives_plan_to_order(roundtrip_db) -> None:
     assert row["strategy_instance_id"] == plan_payload["strategy_instance_id"]
     assert row["authority_hash"] == plan_payload["authority_hash"]
     assert row["probe_run_id"] == plan_payload["h74_execution_path_probe_run_id"]
+    assert row["h74_position_ownership_contract_hash"] == plan_payload["h74_position_ownership_contract_hash"]
 
 
 def test_h74_order_event_submit_evidence_contains_ownership_contract_hash(roundtrip_db) -> None:
@@ -573,6 +626,101 @@ def test_h74_roundtrip_artifact_contains_exit_authority_fields() -> None:
     assert result["h74_cycle_id"] == "cycle-1"
     assert result["h74_remaining_cycle_qty"] == pytest.approx(0.0008)
     assert result["h74_cycle_contract_hash"] == "sha256:contract"
+
+
+def test_h74_probe_report_builder_requires_buy_cycle_sell_and_flat(roundtrip_db) -> None:
+    order, fills = _recorded_broker_roundtrip()
+    conn = _conn(roundtrip_db)
+    try:
+        _apply_recorded_buy_fill(conn, order, fills[0])
+        cycle = conn.execute(
+            "SELECT cycle_id, contract_hash FROM h74_cycle_state WHERE entry_client_order_id=?",
+            (order.client_order_id,),
+        ).fetchone()
+        _record_h74_sell_intent(
+            conn,
+            cycle_id=str(cycle["cycle_id"]),
+            contract_hash=str(cycle["contract_hash"]),
+        )
+        apply_fill_and_trade(
+            conn,
+            client_order_id="h74-sell",
+            side="SELL",
+            fill_id="sell-fill",
+            fill_ts=int(fills[0].fill_ts) + 1,
+            price=float(fills[0].price),
+            qty=float(fills[0].qty),
+            fee=float(fills[0].fee),
+            strategy_name="daily_participation_sma",
+            pair="KRW-BTC",
+            signal_ts=int(fills[0].fill_ts) + 1,
+            exit_reason="max_holding_time",
+            exit_rule_name="max_holding_time",
+        )
+        set_status("h74-sell", "FILLED", conn=conn)
+        report = build_h74_execution_path_probe_report(conn, "probe-run-1")
+    finally:
+        conn.close()
+
+    assert report["execution_path_probe_status"] == "PASS"
+    assert report["sell_order_filled"] is True
+    assert report["h74_cycle_state_closed"] is True
+    assert report["portfolio_flat"] is True
+    assert report["accounting_flat"] is True
+    assert evaluate_h74_execution_path_probe_acceptance(report)["execution_path_probe_status"] == "PASS"
+
+
+def test_h74_probe_report_builder_buy_only_is_partial_pass(roundtrip_db) -> None:
+    order, fills = _recorded_broker_roundtrip()
+    conn = _conn(roundtrip_db)
+    try:
+        _apply_recorded_buy_fill(conn, order, fills[0])
+        report = build_h74_execution_path_probe_report(conn, "probe-run-1")
+        acceptance = evaluate_h74_execution_path_probe_acceptance(report)
+    finally:
+        conn.close()
+
+    assert report["execution_path_probe_status"] != "PASS"
+    assert report["buy_order_filled"] is True
+    assert report["sell_order_submitted"] is False
+    assert acceptance["execution_path_probe_status"] != "PASS"
+    assert "sell_order_submitted" in acceptance["missing_evidence"]
+
+
+def test_h74_probe_report_builder_manual_sell_is_not_automated_success(roundtrip_db) -> None:
+    order, fills = _recorded_broker_roundtrip()
+    conn = _conn(roundtrip_db)
+    try:
+        _apply_recorded_buy_fill(conn, order, fills[0])
+        cycle = conn.execute(
+            "SELECT cycle_id, contract_hash FROM h74_cycle_state WHERE entry_client_order_id=?",
+            (order.client_order_id,),
+        ).fetchone()
+        record_order_if_missing(
+            conn,
+            client_order_id="h74-manual-sell",
+            side="SELL",
+            qty_req=float(fills[0].qty),
+            price=float(fills[0].price),
+            symbol="KRW-BTC",
+            strategy_name="daily_participation_sma",
+            strategy_instance_id="h74-source-observation",
+            cycle_id=str(cycle["cycle_id"]),
+            authority_hash="sha256:h74-roundtrip-authority",
+            h74_position_ownership_contract_hash=str(cycle["contract_hash"]),
+            decision_reason="operator_closeout",
+            probe_run_id="probe-run-1",
+            status="FILLED",
+        )
+        report = build_h74_execution_path_probe_report(conn, "probe-run-1")
+        acceptance = evaluate_h74_execution_path_probe_acceptance(report)
+    finally:
+        conn.close()
+
+    assert report["manual_intervention"] is True
+    assert report["execution_path_probe_status"] != "PASS"
+    assert acceptance["execution_path_probe_status"] != "PASS"
+    assert "automated_sell_required" in acceptance["missing_evidence"]
 
 
 def test_h74_buy_quote_notional_records_acquired_qty_from_broker_fill(roundtrip_db) -> None:
