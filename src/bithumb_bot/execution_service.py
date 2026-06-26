@@ -45,6 +45,13 @@ from .experiment_execution_contract import (
     current_h74_experiment_execution_contract_from_payload,
 )
 from .h74_readiness_certificate import _file_hash, validate_h74_readiness_certificate
+from .h74_position_ownership import (
+    H74PositionOwnershipError,
+    h74_fixed_position_ownership_missing_fields,
+    h74_position_ownership_contract_from_payload,
+    ownership_payload_fields,
+)
+from .h74_cycle_state import build_h74_cycle_id
 from .h74_submit_semantics import (
     H74_ENTRY_SUBMIT_SEMANTICS,
     H74_ENTRY_SUBMIT_SEMANTICS_AUTHORITY,
@@ -138,6 +145,11 @@ EXECUTION_PLANNING_READINESS_KEYS = frozenset(
         "startup_gate_hash",
         "startup_gate",
         "contract_hash",
+        "h74_position_ownership_contract_hash",
+        "h74_position_ownership_contract",
+        "h74_cycle_ownership_error",
+        "h74_entry_plan_client_order_id",
+        "entry_plan_id",
         "experiment_execution_contract",
         "authority_source",
         "h74_source_authority_hash",
@@ -446,8 +458,15 @@ class TypedExecutionPlanningInput:
             "startup_gate_hash",
             "startup_gate",
             "contract_hash",
+            "h74_position_ownership_contract_hash",
+            "h74_position_ownership_contract",
+            "h74_cycle_ownership_error",
+            "h74_entry_plan_client_order_id",
+            "entry_plan_id",
             "experiment_execution_contract",
             "h74_source_authority",
+            "h74_execution_path_probe_run_id",
+            "h74_fixed_position_contract_active",
         ):
             if h74_key in observability:
                 payload[h74_key] = observability[h74_key]
@@ -2386,6 +2405,41 @@ def _build_execution_decision_summary_from_authority_payload(
             h74_quote_notional_krw = (
                 float(H74_SOURCE_MAX_ORDER_KRW) if is_h74_fixed_buy else None
             )
+            if is_h74_fixed_buy and not str(payload.get("cycle_id") or payload.get("h74_cycle_id") or "").strip():
+                authority_hash_for_cycle = str(payload.get("authority_hash") or payload.get("h74_source_authority_hash") or "").strip()
+                strategy_instance_for_cycle = str(payload.get("strategy_instance_id") or "").strip()
+                entry_plan_id_for_cycle = str(
+                    payload.get("h74_entry_plan_client_order_id")
+                    or payload.get("entry_plan_id")
+                    or f"h74_entry_plan_{int(payload.get('ts') or payload.get('candle_ts') or 0)}"
+                ).strip()
+                if authority_hash_for_cycle and strategy_instance_for_cycle and entry_plan_id_for_cycle:
+                    cycle_id_for_entry = build_h74_cycle_id(
+                        strategy_instance_id=strategy_instance_for_cycle,
+                        entry_client_order_id=entry_plan_id_for_cycle,
+                        authority_hash=authority_hash_for_cycle,
+                    )
+                    payload["cycle_id"] = cycle_id_for_entry
+                    payload["h74_cycle_id"] = cycle_id_for_entry
+                    payload["h74_entry_plan_client_order_id"] = entry_plan_id_for_cycle
+            if is_h74_fixed_buy:
+                if not str(payload.get("runtime_pair") or "").strip():
+                    payload["runtime_pair"] = str(getattr(settings_obj, "PAIR", "") or "")
+                if not str(payload.get("h74_execution_path_probe_run_id") or "").strip():
+                    payload["h74_execution_path_probe_run_id"] = str(
+                        getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", "") or ""
+                    )
+            h74_ownership_contract = None
+            h74_ownership_error = str(payload.get("h74_cycle_ownership_error") or "").strip()
+            if is_h74_fixed_buy:
+                try:
+                    h74_ownership_contract = h74_position_ownership_contract_from_payload(payload)
+                except H74PositionOwnershipError as exc:
+                    missing = h74_fixed_position_ownership_missing_fields(payload)
+                    h74_ownership_error = (
+                        "h74_cycle_ownership_required_for_entry"
+                        + (":" + ",".join(sorted(missing)) if missing else "")
+                    )
             target_idempotency_key = None
             if target_sizing is not None and target_sizing.allowed:
                 target_idempotency_key = build_order_intent_key(
@@ -2403,6 +2457,8 @@ def _build_execution_decision_summary_from_authority_payload(
             )
             submit_allowed = bool(target_decision.would_submit and target_sizing is not None and target_sizing.allowed)
             if target_authority_error is not None:
+                submit_allowed = False
+            if h74_ownership_error:
                 submit_allowed = False
             if entry_authority.status == ENTRY_AUTHORITY_BLOCK:
                 submit_allowed = False
@@ -2424,32 +2480,20 @@ def _build_execution_decision_summary_from_authority_payload(
             strategy_risk_status = str(payload.get("strategy_risk_status") or "").strip().upper()
             strategy_risk_reason_code = str(payload.get("strategy_risk_reason_code") or "").strip()
             strategy_risk_policy_blocked = strategy_risk_status == "BLOCK"
-            primary_block_gate = (
-                "strategy_risk"
-                if strategy_risk_policy_blocked
-                else (
-                    "target_authority"
-                    if target_authority_error is not None
-                    else (
-                        "entry_authority"
-                        if entry_authority.status == ENTRY_AUTHORITY_BLOCK
-                        else "none"
-                    )
-                )
-            )
-            primary_block_reason = (
-                strategy_risk_reason_code
-                if strategy_risk_policy_blocked
-                else (
-                    str(target_authority_error)
-                    if target_authority_error is not None
-                    else (
-                        str(entry_authority.reason_code)
-                        if entry_authority.status == ENTRY_AUTHORITY_BLOCK
-                        else "none"
-                    )
-                )
-            )
+            primary_block_gate = "none"
+            primary_block_reason = "none"
+            if strategy_risk_policy_blocked:
+                primary_block_gate = "strategy_risk"
+                primary_block_reason = strategy_risk_reason_code
+            elif target_authority_error is not None:
+                primary_block_gate = "target_authority"
+                primary_block_reason = str(target_authority_error)
+            elif h74_ownership_error:
+                primary_block_gate = "h74_cycle_ownership"
+                primary_block_reason = h74_ownership_error
+            elif entry_authority.status == ENTRY_AUTHORITY_BLOCK:
+                primary_block_gate = "entry_authority"
+                primary_block_reason = str(entry_authority.reason_code)
             target_final_action = (
                 "REBALANCE_TO_TARGET"
                 if submit_allowed
@@ -2458,7 +2502,7 @@ def _build_execution_decision_summary_from_authority_payload(
                     if strategy_risk_policy_blocked
                     else (
                     "BLOCK_PORTFOLIO_TARGET_AUTHORITY"
-                    if target_authority_error is not None
+                    if target_authority_error is not None or h74_ownership_error
                     else (
                     "BLOCK_ENTRY_AUTHORITY"
                     if entry_authority.status == ENTRY_AUTHORITY_BLOCK
@@ -2731,6 +2775,10 @@ def _build_execution_decision_summary_from_authority_payload(
                 ),
                 "pre_submit_risk_decision_authority": "RuntimeRiskEngineAdapter.evaluate_pre_submit",
             }
+            if h74_ownership_contract is not None:
+                target_plan_extra.update(ownership_payload_fields(h74_ownership_contract))
+            elif h74_ownership_error:
+                target_plan_extra["h74_cycle_ownership_error"] = h74_ownership_error
             for h74_key in (
                 "position_mode",
                 "hold_policy",
@@ -2754,6 +2802,11 @@ def _build_execution_decision_summary_from_authority_payload(
                 "startup_gate_hash",
                 "startup_gate",
                 "contract_hash",
+                "h74_position_ownership_contract_hash",
+                "h74_position_ownership_contract",
+                "h74_cycle_ownership_error",
+                "h74_entry_plan_client_order_id",
+                "entry_plan_id",
                 "experiment_execution_contract",
                 "h74_fixed_position_contract_active",
                 "h74_execution_path_probe_run_id",

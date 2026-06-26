@@ -756,6 +756,10 @@ def run_h74_live_rehearsal(
             )
             run_context = with_h74_source_authority_path(ctx, authority_path)
             settings_obj = run_context.settings_snapshot
+            if not str(getattr(settings_obj, "H74_EXECUTION_PATH_PROBE_RUN_ID", "") or "").strip():
+                settings_values = vars(settings_obj).copy()
+                settings_values["H74_EXECUTION_PATH_PROBE_RUN_ID"] = "h74-live-rehearsal-probe"
+                settings_obj = SimpleNamespace(**settings_values)
             db_path = f"{tmp_dir}/h74-rehearsal.sqlite"
             _seed_rehearsal_db(
                 db_path,

@@ -555,6 +555,9 @@ def ensure_db(db_path: str | None = None, *, ensure_schema_ready: bool = True) -
 
     if ensure_schema_ready:
         ensure_schema(conn)
+        from .h74_cycle_state import ensure_h74_cycle_schema
+
+        ensure_h74_cycle_schema(conn)
     return conn
 
 

@@ -256,6 +256,7 @@ def _record_h74_buy_intent(
         participation_decision_hash=sha256_prefixed({"h74": "participation-decision"}),
         daily_participation_kst_day=key.kst_day,
         daily_participation_fallback_mode="unconditional_participation",
+        probe_run_id="probe-run-1",
         internal_lot_size=0.0001,
         effective_min_trade_qty=0.0001,
         qty_step=0.0001,
@@ -345,6 +346,28 @@ def test_h74_buy_fill_marks_daily_claim_fulfilled(tmp_path, roundtrip_db) -> Non
     assert settlement.broker_local_converged is True
     assert rehearsal["would_submit_plan"]["side"] == "BUY"
     assert rehearsal["would_submit_plan"]["source"] == "h74_source_observation"
+
+
+def test_h74_buy_order_persists_cycle_metadata(roundtrip_db) -> None:
+    order, fills = _recorded_broker_roundtrip()
+    conn = _conn(roundtrip_db)
+    try:
+        _record_h74_buy_intent(conn, order, fills[0])
+        row = conn.execute(
+            """
+            SELECT cycle_id, strategy_instance_id, authority_hash, probe_run_id
+            FROM orders
+            WHERE client_order_id=?
+            """,
+            (order.client_order_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row["cycle_id"]
+    assert row["strategy_instance_id"] == "h74-source-observation"
+    assert row["authority_hash"] == "sha256:h74-roundtrip-authority"
+    assert row["probe_run_id"] == "probe-run-1"
 
 
 def test_h74_buy_quote_notional_records_acquired_qty_from_broker_fill(roundtrip_db) -> None:

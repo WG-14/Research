@@ -17,6 +17,13 @@ from .runtime_strategy_set import h74_runtime_adapter_materialized_values_from_s
 
 
 H74_AUTHORITY_ENV_BEHAVIOR_MISMATCH = "H74_AUTHORITY_ENV_BEHAVIOR_MISMATCH"
+H74_FIXED_POSITION_REQUIRED_FIELDS = (
+    "strategy_instance_id",
+    "authority_content_hash",
+    "position_mode",
+    "hold_policy",
+    "partial_fill_policy",
+)
 
 
 @dataclass(frozen=True)
@@ -73,6 +80,14 @@ def validate_h74_authority_env_alignment(
     raw_settings_values = h74_source_runtime_values_from_settings(settings_obj)
     effective_behavior_values = h74_runtime_adapter_materialized_values_from_settings(settings_obj)
     bound = dict(payload.get("hash_bound_parameters") or {})
+    position_mode = str(payload.get("position_mode") or bound.get("position_mode") or "").strip()
+    if position_mode == "fixed_fill_qty_until_exit":
+        for field in H74_FIXED_POSITION_REQUIRED_FIELDS:
+            value = payload.get(field)
+            if value is None or str(value).strip() == "":
+                value = bound.get(field)
+            if value is None or str(value).strip() == "":
+                raise H74ObservationAuthorityError(f"h74_authority_contract_incomplete:{field}")
     structural_runtime_values = {
         **raw_settings_values,
         **effective_behavior_values,

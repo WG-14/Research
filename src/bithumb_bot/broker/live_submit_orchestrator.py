@@ -30,6 +30,10 @@ from ..reason_codes import (
     classify_sell_failure_category,
     sell_failure_detail_from_category,
 )
+from ..h74_position_ownership import (
+    H74PositionOwnershipError,
+    h74_position_ownership_contract_from_payload,
+)
 from .base import Broker, BrokerOrder, BrokerRejectError, BrokerSubmissionUnknownError, BrokerTemporaryError
 from .order_rules import BuyPriceNoneSubmitContract, serialize_buy_price_none_submit_contract
 RUN_LOG = logging.getLogger("bithumb_bot.run")
@@ -772,6 +776,27 @@ def _validate_explicit_submit_plan(*, request: StandardSubmitPipelineRequest) ->
             "live submit_plan qty mismatch before dispatch: "
             f"request={float(request.qty):.12f} planned={float(submit_plan.submitted_qty):.12f}"
         )
+    h74_fixed_buy = (
+        str(request.side or "").strip().upper() == "BUY"
+        and bool(request.submit_observability_fields.get("h74_fixed_position_contract_active"))
+    )
+    if h74_fixed_buy:
+        try:
+            h74_position_ownership_contract_from_payload(
+                {
+                    **request.submit_observability_fields,
+                    "cycle_id": request.cycle_id,
+                    "h74_cycle_id": request.cycle_id,
+                    "strategy_instance_id": request.strategy_instance_id,
+                    "authority_hash": request.authority_hash,
+                    "probe_run_id": request.probe_run_id,
+                    "pair": settings.PAIR,
+                    "entry_side": "BUY",
+                    "entry_plan_id": request.client_order_id,
+                }
+            )
+        except H74PositionOwnershipError as exc:
+            raise BrokerRejectError(f"h74_cycle_ownership_required_for_entry:{exc}") from exc
     if submit_plan.intent.price is not None:
         raise BrokerRejectError(
             "live submit_plan price mismatch before dispatch: "

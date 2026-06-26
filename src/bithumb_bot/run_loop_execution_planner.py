@@ -55,6 +55,11 @@ from .h74_cycle_state import (
     load_h74_cycle_inventory,
     load_open_h74_cycle_inventories,
 )
+from .h74_position_ownership import (
+    H74PositionOwnershipError,
+    h74_position_ownership_contract_from_payload,
+    ownership_payload_fields,
+)
 from .h74_observation import H74_SOURCE_OBSERVATION_AUTHORITY_ENV
 from .h74_submit_semantics import (
     H74_ENTRY_SUBMIT_SEMANTICS_AUTHORITY,
@@ -123,6 +128,11 @@ READINESS_CONTEXT_KEYS = (
     "startup_gate_hash",
     "startup_gate",
     "contract_hash",
+    "h74_position_ownership_contract_hash",
+    "h74_position_ownership_contract",
+    "h74_cycle_ownership_error",
+    "h74_entry_plan_client_order_id",
+    "entry_plan_id",
     "experiment_execution_contract",
     "h74_execution_path_probe_run_id",
     "h74_fixed_position_contract_active",
@@ -234,18 +244,35 @@ def _h74_authority_planning_fields(settings_obj: object) -> dict[str, object]:
 def _h74_entry_cycle_fields(*, planning_context: Mapping[str, object], updated_ts: int) -> dict[str, object]:
     authority_hash = str(planning_context.get("authority_hash") or "").strip()
     strategy_instance_id = str(planning_context.get("strategy_instance_id") or "").strip()
-    if not authority_hash or not strategy_instance_id:
-        return {}
+    probe_run_id = str(planning_context.get("h74_execution_path_probe_run_id") or "").strip()
+    pair = str(planning_context.get("runtime_pair") or planning_context.get("pair") or "").strip()
+    position_mode = str(planning_context.get("position_mode") or "").strip()
+    hold_policy = str(planning_context.get("hold_policy") or "").strip()
     entry_client_order_id = f"h74_entry_plan_{int(updated_ts)}"
     cycle_id = build_h74_cycle_id(
         strategy_instance_id=strategy_instance_id,
         entry_client_order_id=entry_client_order_id,
         authority_hash=authority_hash,
     )
+    contract = h74_position_ownership_contract_from_payload(
+        {
+            "cycle_id": cycle_id,
+            "h74_cycle_id": cycle_id,
+            "strategy_instance_id": strategy_instance_id,
+            "authority_hash": authority_hash,
+            "h74_execution_path_probe_run_id": probe_run_id,
+            "pair": pair,
+            "entry_side": "BUY",
+            "h74_entry_plan_client_order_id": entry_client_order_id,
+            "position_mode": position_mode,
+            "hold_policy": hold_policy,
+        }
+    )
     return {
         "cycle_id": cycle_id,
         "h74_cycle_id": cycle_id,
         "h74_entry_plan_client_order_id": entry_client_order_id,
+        **ownership_payload_fields(contract),
     }
 
 
@@ -2099,12 +2126,16 @@ class ExecutionPlanner:
                     },
                     authority_fields=h74_authority_fields,
                 )
-                readiness_payload.update(
-                    _h74_entry_cycle_fields(
-                        planning_context={**context, **readiness_payload},
-                        updated_ts=updated_ts,
+                try:
+                    readiness_payload.update(
+                        _h74_entry_cycle_fields(
+                            planning_context={**context, **readiness_payload},
+                            updated_ts=updated_ts,
+                        )
                     )
-                )
+                except H74PositionOwnershipError as exc:
+                    readiness_payload["h74_cycle_ownership_error"] = str(exc)
+                    context["h74_cycle_ownership_error"] = str(exc)
             if h74_authority_fields and authoritative_signal == "SELL":
                 readiness_payload = _inject_h74_cycle_inventory(
                     conn,
@@ -2133,6 +2164,9 @@ class ExecutionPlanner:
                         "h74_startup_gate_reason_code",
                         "startup_gate_hash",
                         "contract_hash",
+                        "h74_position_ownership_contract_hash",
+                        "h74_position_ownership_contract",
+                        "h74_cycle_ownership_error",
                     )
                     if key in readiness_payload
                 }

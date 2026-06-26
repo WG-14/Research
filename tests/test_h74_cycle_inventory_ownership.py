@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 
 from bithumb_bot.db_core import ensure_schema
+from bithumb_bot.execution import apply_fill_and_trade, record_order_if_missing
 from bithumb_bot.h74_cycle_state import (
     ensure_h74_cycle_schema,
     load_h74_cycle_inventory,
@@ -226,6 +227,102 @@ def test_h74_sell_planner_blocks_when_multiple_open_cycles_are_ambiguous() -> No
     assert "h74_cycle_id" not in loaded
     assert decision.would_submit is False
     assert decision.block_reason == "multiple_open_h74_cycles"
+
+
+def test_h74_sell_planner_blocks_when_no_open_cycle_inventory() -> None:
+    conn = _conn()
+
+    loaded = _inject_h74_cycle_inventory(
+        conn,
+        readiness_payload={"authority_hash": "sha256:a", "strategy_instance_id": "h74"},
+        planning_context={"runtime_pair": "KRW-BTC"},
+    )
+    decision = build_target_position_decision(
+        raw_signal="SELL",
+        previous_target_exposure_krw=100_000.0,
+        current_position_snapshot=None,
+        readiness_payload=loaded,
+        order_rules={"min_qty": 0.0001, "qty_step": 0.0001, "min_notional_krw": 5000.0},
+        reference_price=100_000_000.0,
+        settings=TargetPositionSettings(
+            execution_engine="target_delta",
+            position_mode=POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT,
+        ),
+    )
+
+    assert decision.would_submit is False
+    assert decision.block_reason == "h74_cycle_id_required_for_exit"
+
+
+def test_h74_sell_uses_remaining_cycle_qty_not_broker_total_qty() -> None:
+    conn = _conn()
+    upsert_h74_cycle_fill(
+        conn,
+        cycle_id="cycle-1",
+        authority_hash="sha256:a",
+        strategy_instance_id="h74",
+        pair="KRW-BTC",
+        side="BUY",
+        qty=0.0008,
+        client_order_id="entry",
+        fill_ts=1,
+    )
+    loaded = _inject_h74_cycle_inventory(
+        conn,
+        readiness_payload={
+            "broker_position_evidence": {"broker_qty_known": True, "broker_qty": 0.0028},
+            "authority_hash": "sha256:a",
+            "strategy_instance_id": "h74",
+        },
+        planning_context={"runtime_pair": "KRW-BTC"},
+    )
+    decision = build_target_position_decision(
+        raw_signal="SELL",
+        previous_target_exposure_krw=100_000.0,
+        current_position_snapshot=None,
+        readiness_payload=loaded,
+        order_rules={"min_qty": 0.0001, "qty_step": 0.0001, "min_notional_krw": 5000.0},
+        reference_price=100_000_000.0,
+        settings=TargetPositionSettings(
+            execution_engine="target_delta",
+            position_mode=POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT,
+        ),
+    )
+
+    assert decision.submit_qty == pytest.approx(0.0008)
+    assert decision.submit_qty != pytest.approx(0.0028)
+
+
+def test_h74_fixed_buy_without_cycle_id_is_blocked_before_order_submit() -> None:
+    conn = _conn()
+    record_order_if_missing(
+        conn,
+        client_order_id="buy-missing-cycle",
+        side="BUY",
+        qty_req=0.0008,
+        price=100_000_000.0,
+        strategy_name="daily_participation_sma",
+        strategy_instance_id="h74-source-observation",
+        cycle_id=None,
+        authority_hash="sha256:a",
+        status="NEW",
+    )
+
+    with pytest.raises(RuntimeError, match="h74_cycle_ownership_incomplete"):
+        apply_fill_and_trade(
+            conn,
+            client_order_id="buy-missing-cycle",
+            side="BUY",
+            fill_id="fill-1",
+            fill_ts=1,
+            price=100_000_000.0,
+            qty=0.0008,
+            fee=32.0,
+            strategy_name="daily_participation_sma",
+            pair="KRW-BTC",
+        )
+
+    assert conn.execute("SELECT COUNT(*) AS n FROM fills").fetchone()["n"] == 0
 
 
 def test_h74_exit_submit_locks_pending_exit_qty() -> None:

@@ -24,6 +24,7 @@ from .lifecycle import apply_fill_lifecycle
 from .notifier import format_event, notify
 from .observability import format_log_kv, record_fill_fee_anomaly
 from .oms import add_fill, create_order, set_exchange_order_id, set_status
+from .h74_position_ownership import H74PositionOwnershipError, h74_position_ownership_contract_from_payload
 
 _LOG = logging.getLogger(__name__)
 
@@ -464,6 +465,23 @@ def _apply_fill_and_trade_core(
             raise RuntimeError(
                 f"overfill detected for {client_order_id}: existing={qty_filled}, fill={qty}, requested={qty_req}, tolerance={fill_tol}"
             )
+    effective_strategy_name_for_guard = strategy_name or order_strategy_name
+    if effective_strategy_name_for_guard == "daily_participation_sma":
+        missing = [
+            field
+            for field, value in (
+                ("cycle_id", order_cycle_id),
+                ("authority_hash", order_authority_hash),
+                ("strategy_instance_id", order_strategy_instance_id),
+            )
+            if not str(value or "").strip()
+        ]
+        if missing:
+            raise RuntimeError(
+                "h74_cycle_ownership_incomplete:"
+                + ",".join(missing)
+                + f":client_order_id={client_order_id}"
+            )
 
     cash_available, cash_locked, asset_available, asset_locked = get_portfolio_breakdown(conn)
     (
@@ -583,8 +601,27 @@ def _apply_fill_and_trade_core(
         allow_entry_decision_fallback=allow_entry_decision_fallback,
         probe_run_id=order_probe_run_id,
     )
-    if effective_strategy_name == "daily_participation_sma" and order_cycle_id:
+    h74_cycle_readiness: dict[str, object] = {}
+    if effective_strategy_name == "daily_participation_sma":
         from .h74_cycle_state import upsert_h74_cycle_fill
+
+        try:
+            ownership_contract = h74_position_ownership_contract_from_payload(
+                {
+                    "cycle_id": order_cycle_id,
+                    "h74_cycle_id": order_cycle_id,
+                    "authority_hash": order_authority_hash,
+                    "strategy_instance_id": effective_strategy_instance_id,
+                    "probe_run_id": order_probe_run_id,
+                    "pair": trade_pair,
+                    "entry_side": "BUY",
+                    "entry_plan_id": client_order_id,
+                    "position_mode": "fixed_fill_qty_until_exit",
+                    "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
+                }
+            )
+        except H74PositionOwnershipError as exc:
+            raise RuntimeError(f"h74_cycle_ownership_incomplete:{exc}") from exc
 
         upsert_h74_cycle_fill(
             conn,
@@ -596,7 +633,26 @@ def _apply_fill_and_trade_core(
             qty=float(qty),
             client_order_id=client_order_id,
             fill_ts=int(fill_ts),
+            contract_hash=ownership_contract.contract_hash,
         )
+        from .h74_cycle_state import load_h74_cycle_inventory
+
+        inventory = load_h74_cycle_inventory(conn, cycle_id=order_cycle_id)
+        ready = bool(
+            inventory is not None
+            and inventory.cycle_id
+            and inventory.acquired_qty > 0.0
+            and inventory.remaining_cycle_qty > 0.0
+        )
+        h74_cycle_readiness = {
+            "h74_cycle_ownership_created": 1 if inventory is not None else 0,
+            "h74_exit_authority_ready": 1 if ready else 0,
+            "h74_exit_authority_not_ready_reason": "none" if ready else "h74_cycle_state_missing_or_empty",
+            "h74_cycle_id": order_cycle_id,
+            "h74_cycle_acquired_qty": 0.0 if inventory is None else inventory.acquired_qty,
+            "h74_remaining_cycle_qty": 0.0 if inventory is None else inventory.remaining_cycle_qty,
+            "h74_cycle_contract_hash": ownership_contract.contract_hash,
+        }
     fill_signal_ts = int(signal_ts if signal_ts is not None else fill_ts)
     filled_qty = float(qty)
     _LOG.info(
@@ -614,6 +670,7 @@ def _apply_fill_and_trade_core(
             post_trade_asset=float(asset_after),
             fill_id=fill_id or "-",
             trade_id=trade_id,
+            **h74_cycle_readiness,
         )
     )
     notify(
@@ -652,6 +709,7 @@ def _apply_fill_and_trade_core(
         "exchange_order_id": order_exchange_order_id,
         "fee_accounting_status": fee_accounting_status,
         "principal_applied": True,
+        **h74_cycle_readiness,
     }
 
 

@@ -106,6 +106,14 @@ def _payload(**overrides: object) -> dict[str, object]:
         "strategy": "daily_participation_sma",
         "h74_fixed_position_contract_active": True,
         "h74_execution_path_probe_run_id": "probe-run-1",
+        "cycle_id": "h74-cycle-1",
+        "h74_cycle_id": "h74-cycle-1",
+        "strategy_instance_id": "h74-source-observation",
+        "authority_hash": "sha256:authority",
+        "runtime_pair": "KRW-BTC",
+        "h74_entry_plan_client_order_id": "h74-entry-plan-1",
+        "position_mode": POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT,
+        "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
     }
     payload.update(overrides)
     return payload
@@ -175,6 +183,18 @@ def test_h74_no_window_variant_probe_authority_allows_settings_without_daily_max
 def test_h74_probe_authority_requires_probe_run_id(tmp_path) -> None:
     authority_path = _write_authority(tmp_path, _variant_authority())
     cfg = _settings(authority_path, H74_EXECUTION_PATH_PROBE_RUN_ID="")
+
+    assert _h74_execution_path_probe_authority_allows_submit(_payload(), cfg) is False
+
+
+def test_h74_authority_alignment_requires_strategy_instance_id_for_fixed_position(tmp_path) -> None:
+    authority = _variant_authority()
+    authority.pop("strategy_instance_id", None)
+    bound = dict(authority["hash_bound_parameters"])
+    bound.pop("strategy_instance_id", None)
+    authority["hash_bound_parameters"] = bound
+    authority_path = _write_authority(tmp_path, authority)
+    cfg = _settings(authority_path)
 
     assert _h74_execution_path_probe_authority_allows_submit(_payload(), cfg) is False
 
@@ -413,3 +433,98 @@ def test_h74_no_window_probe_full_execution_summary_allows_target_submit_without
     assert plan["exchange_submit_field"] == "price"
     assert plan["quote_notional_krw"] == 100_000.0
     assert plan["h74_execution_path_probe_run_id"] == "probe-run-1"
+    assert plan["h74_position_ownership_contract_hash"].startswith("sha256:")
+
+
+@pytest.mark.parametrize(
+    ("field", "reason_field"),
+    (
+        ("strategy_instance_id", "strategy_instance_id"),
+        ("authority_hash", "authority_hash"),
+    ),
+)
+def test_h74_fixed_buy_requires_ownership_before_submit(tmp_path, field, reason_field) -> None:
+    cfg = _valid_cfg(tmp_path)
+    payload = _payload(**{field: "", "h74_cycle_id": "" if field == "cycle_id" else "h74-cycle-1"})
+
+    summary = build_execution_decision_summary(
+        decision_context={
+            **payload,
+            "runtime_pair": "KRW-BTC",
+            "market_price": 100_000_000.0,
+            "residual_proof_min_qty": 0.00001,
+            "residual_proof_min_notional_krw": 5_000.0,
+            "min_qty": 0.00001,
+            "qty_step": 0.00000001,
+            "min_notional_krw": 5_000.0,
+            "bid_min_total_krw": 5_000.0,
+            "strategy_risk_status": "ALLOW",
+            "strategy_risk_reason_code": "none",
+        },
+        readiness_payload={
+            "broker_position_evidence": {"broker_qty_known": True, "broker_qty": 0.0},
+            "projection_converged": True,
+            "projection_convergence": {"converged": True},
+            "broker_portfolio_converged": True,
+            "open_order_count": 0,
+            "unresolved_open_order_count": 0,
+            "recovery_required_count": 0,
+            "submit_unknown_count": 0,
+            "accounting_projection_ok": True,
+            "active_fee_accounting_blocker": False,
+        },
+        raw_signal="BUY",
+        final_signal="BUY",
+        previous_target_exposure_krw=0.0,
+        settings_obj=cfg,
+    )
+
+    assert summary.target_submit_plan is not None
+    plan = summary.target_submit_plan.as_dict()
+    assert plan["submit_expected"] is False
+    assert plan["final_action"] == "BLOCK_PORTFOLIO_TARGET_AUTHORITY"
+    assert plan["block_reason"].startswith("h74_cycle_ownership_required_for_entry")
+    assert reason_field in plan["block_reason"]
+
+
+def test_h74_fixed_buy_requires_cycle_id_before_submit(tmp_path) -> None:
+    cfg = _valid_cfg(tmp_path)
+    payload = _payload(cycle_id="", h74_cycle_id="")
+
+    summary = build_execution_decision_summary(
+        decision_context={
+            **payload,
+            "runtime_pair": "KRW-BTC",
+            "market_price": 100_000_000.0,
+            "residual_proof_min_qty": 0.00001,
+            "residual_proof_min_notional_krw": 5_000.0,
+            "min_qty": 0.00001,
+            "qty_step": 0.00000001,
+            "min_notional_krw": 5_000.0,
+            "bid_min_total_krw": 5_000.0,
+            "strategy_risk_status": "ALLOW",
+            "strategy_risk_reason_code": "none",
+        },
+        readiness_payload={
+            "broker_position_evidence": {"broker_qty_known": True, "broker_qty": 0.0},
+            "projection_converged": True,
+            "projection_convergence": {"converged": True},
+            "broker_portfolio_converged": True,
+            "open_order_count": 0,
+            "unresolved_open_order_count": 0,
+            "recovery_required_count": 0,
+            "submit_unknown_count": 0,
+            "accounting_projection_ok": True,
+            "active_fee_accounting_blocker": False,
+        },
+        raw_signal="BUY",
+        final_signal="BUY",
+        previous_target_exposure_krw=0.0,
+        settings_obj=cfg,
+    )
+
+    assert summary.target_submit_plan is not None
+    plan = summary.target_submit_plan.as_dict()
+    assert plan["submit_expected"] is True
+    assert plan["cycle_id"]
+    assert plan["h74_cycle_id"] == plan["cycle_id"]

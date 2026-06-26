@@ -4,6 +4,15 @@ from collections.abc import Mapping
 
 
 REQUIRED_REPORT_FIELDS = (
+    "buy_order_filled",
+    "h74_cycle_ownership_created",
+    "h74_cycle_id",
+    "h74_remaining_cycle_qty_before_sell",
+    "sell_order_submitted",
+    "sell_order_filled",
+    "h74_cycle_state_closed",
+    "portfolio_flat",
+    "accounting_flat",
     "buy_decision_id",
     "buy_execution_plan_id",
     "buy_order_id",
@@ -63,11 +72,13 @@ def evaluate_h74_execution_path_probe_acceptance(report: Mapping[str, object]) -
         missing.append("accounting.validated")
     if not bool(report.get("final_flat_or_documented_dust")):
         missing.append("final_flat_or_documented_dust")
+    if bool(report.get("manual_sell")) or bool(report.get("operator_closeout")):
+        missing.append("automated_sell_required")
     report_status = str(report.get("execution_path_probe_status") or "")
     if report_status != "PASS":
         missing.append("execution_path_probe_status")
 
-    status = "PASS" if not missing else "INCOMPLETE"
+    status = "PASS" if not missing else ("PARTIAL_PASS" if bool(report.get("buy_order_filled")) else "INCOMPLETE")
     return {
         "artifact_type": "h74_execution_path_probe_acceptance",
         "acceptance_track": "execution_path_probe",

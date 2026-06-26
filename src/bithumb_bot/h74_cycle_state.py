@@ -65,11 +65,18 @@ def ensure_h74_cycle_schema(conn: sqlite3.Connection) -> None:
             acquired_qty REAL NOT NULL DEFAULT 0,
             sold_qty REAL NOT NULL DEFAULT 0,
             locked_exit_qty REAL NOT NULL DEFAULT 0,
+            contract_hash TEXT,
             unauthorized_intermediate_order_count INTEGER NOT NULL DEFAULT 0,
             updated_ts INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
         )
         """
     )
+    columns = {
+        str(row["name"] if hasattr(row, "keys") else row[1])
+        for row in conn.execute("PRAGMA table_info(h74_cycle_state)").fetchall()
+    }
+    if "contract_hash" not in columns:
+        conn.execute("ALTER TABLE h74_cycle_state ADD COLUMN contract_hash TEXT")
 
 
 def upsert_h74_cycle_fill(
@@ -83,6 +90,7 @@ def upsert_h74_cycle_fill(
     qty: float,
     client_order_id: str,
     fill_ts: int,
+    contract_hash: str | None = None,
     max_holding_minutes: int = 74,
 ) -> None:
     ensure_h74_cycle_schema(conn)
@@ -97,13 +105,14 @@ def upsert_h74_cycle_fill(
         INSERT INTO h74_cycle_state(
             cycle_id, authority_hash, strategy_instance_id, pair, state,
             entry_client_order_id, exit_client_order_id, entry_filled_ts,
-            scheduled_exit_ts, acquired_qty, sold_qty, updated_ts
+            scheduled_exit_ts, acquired_qty, sold_qty, contract_hash, updated_ts
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(cycle_id) DO UPDATE SET
             authority_hash=excluded.authority_hash,
             strategy_instance_id=excluded.strategy_instance_id,
             pair=excluded.pair,
+            contract_hash=COALESCE(excluded.contract_hash, h74_cycle_state.contract_hash),
             entry_client_order_id=COALESCE(h74_cycle_state.entry_client_order_id, excluded.entry_client_order_id),
             exit_client_order_id=COALESCE(excluded.exit_client_order_id, h74_cycle_state.exit_client_order_id),
             entry_filled_ts=COALESCE(h74_cycle_state.entry_filled_ts, excluded.entry_filled_ts),
@@ -130,6 +139,7 @@ def upsert_h74_cycle_fill(
             scheduled_exit_ts,
             acquired_delta,
             sold_delta,
+            str(contract_hash or "").strip() or None,
             int(fill_ts),
         ),
     )
@@ -246,6 +256,55 @@ def h74_cycle_inventory_from_payload(payload: Mapping[str, Any]) -> H74CycleInve
     )
 
 
+def h74_cycle_health_invariant_reasons(conn: sqlite3.Connection) -> tuple[str, ...]:
+    tables = {
+        str(row["name"] if hasattr(row, "keys") else row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    }
+    if "h74_cycle_state" not in tables:
+        return ("h74_cycle_schema_missing",)
+    reasons: list[str] = []
+    buy_rows = conn.execute(
+        """
+        SELECT client_order_id, cycle_id, strategy_instance_id, authority_hash
+        FROM orders
+        WHERE side='BUY'
+          AND strategy_name='daily_participation_sma'
+          AND status IN ('FILLED','PARTIALLY_FILLED')
+        """
+    ).fetchall()
+    for row in buy_rows:
+        client_order_id = str(row["client_order_id"] if hasattr(row, "keys") else row[0])
+        cycle_id = str((row["cycle_id"] if hasattr(row, "keys") else row[1]) or "").strip()
+        strategy_instance_id = str((row["strategy_instance_id"] if hasattr(row, "keys") else row[2]) or "").strip()
+        authority_hash = str((row["authority_hash"] if hasattr(row, "keys") else row[3]) or "").strip()
+        if not cycle_id or not strategy_instance_id or not authority_hash:
+            reasons.append("h74_cycle_ownership_incomplete")
+            continue
+        cycle = conn.execute(
+            "SELECT acquired_qty, sold_qty, locked_exit_qty FROM h74_cycle_state WHERE cycle_id=?",
+            (cycle_id,),
+        ).fetchone()
+        if cycle is None:
+            reasons.append("h74_cycle_ownership_incomplete")
+            continue
+        fill_qty = conn.execute(
+            "SELECT COALESCE(SUM(qty),0) AS qty FROM fills WHERE client_order_id=?",
+            (client_order_id,),
+        ).fetchone()
+        summed = float(fill_qty["qty"] if hasattr(fill_qty, "keys") else fill_qty[0])
+        acquired = float(cycle["acquired_qty"] if hasattr(cycle, "keys") else cycle[0])
+        sold = float(cycle["sold_qty"] if hasattr(cycle, "keys") else cycle[1])
+        locked = float(cycle["locked_exit_qty"] if hasattr(cycle, "keys") else cycle[2])
+        if acquired + 1e-12 < summed:
+            reasons.append("h74_cycle_qty_mismatch")
+        if acquired - sold - locked < -1e-12:
+            reasons.append("h74_cycle_negative_remaining_qty")
+    return tuple(dict.fromkeys(reasons))
+
+
 __all__ = [
     "H74_CYCLE_STATE_HOLDING",
     "H74_CYCLE_STATE_CLOSED",
@@ -253,6 +312,7 @@ __all__ = [
     "build_h74_cycle_id",
     "ensure_h74_cycle_schema",
     "h74_cycle_inventory_from_payload",
+    "h74_cycle_health_invariant_reasons",
     "load_h74_cycle_inventory",
     "load_open_h74_cycle_inventories",
     "load_open_h74_cycle_inventory",

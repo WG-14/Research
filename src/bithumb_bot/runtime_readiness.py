@@ -20,6 +20,7 @@ from .db_core import (
 from .dust import build_dust_display_context, build_position_state_model
 from .external_position_repair import build_external_position_accounting_repair_preview
 from .fee_gap_policy import classify_fee_gap_incident_verdict, matching_fee_gap_repair_present
+from .h74_cycle_state import h74_cycle_health_invariant_reasons
 from .lifecycle import (
     ResidualInventorySnapshot,
     summarize_non_executable_residuals,
@@ -1033,11 +1034,31 @@ def compute_runtime_readiness_snapshot(conn=None) -> RuntimeReadinessSnapshot:
         blockers: list[str] = []
         categories: list[str] = []
         structured_blockers: list[dict[str, object]] = []
+        h74_invariant_reasons = h74_cycle_health_invariant_reasons(conn)
         stage = "RESUME_READY"
         operator_next_action = "resume_now"
         recommended_command = "uv run python bot.py resume"
 
-        if broker_position_evidence.get("balance_authority_violation") == LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION:
+        if h74_invariant_reasons:
+            stage = "H74_CYCLE_OWNERSHIP_BLOCKED"
+            blockers.extend(h74_invariant_reasons)
+            categories.append("h74_cycle_ownership")
+            operator_next_action = "review_h74_cycle_ownership"
+            recommended_command = "uv run python bot.py recovery-report"
+            structured_blockers.append(
+                _make_structured_blocker(
+                    code=str(h74_invariant_reasons[0]),
+                    category="h74_cycle_ownership",
+                    stage=stage,
+                    detail=";".join(h74_invariant_reasons),
+                    operator_next_action=operator_next_action,
+                    recommended_command=recommended_command,
+                    projection_convergence=projection_convergence,
+                    authority_truth_model=authority_truth_model,
+                    authority_assessment=authority_assessment,
+                )
+            )
+        elif broker_position_evidence.get("balance_authority_violation") == LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION:
             stage = "BROKER_TRUTH_SOURCE_VIOLATION"
             blockers.append(LIVE_DRY_RUN_BROKER_TRUTH_SOURCE_VIOLATION)
             categories.append("broker_truth_authority")

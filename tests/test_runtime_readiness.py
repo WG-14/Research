@@ -129,3 +129,21 @@ def test_active_fee_accounting_blocker_reasons_identify_source(readiness_db):
     assert data["new_entry_fee_blocker"] is True
     assert "unapplied_principal_pending_count" in data["active_fill_accounting_blocker_reasons"]
     assert smoke_readiness.new_entry_fee_blocker is True
+
+
+def test_health_reports_h74_cycle_schema_present(readiness_db):
+    snapshot = compute_runtime_readiness_snapshot(readiness_db)
+    data = snapshot.as_dict()
+
+    assert "h74_cycle_schema_missing" not in data["resume_blockers"]
+
+
+def test_health_reports_h74_cycle_schema_missing(readiness_db):
+    readiness_db.execute("DROP TABLE h74_cycle_state")
+    readiness_db.commit()
+
+    snapshot = compute_runtime_readiness_snapshot(readiness_db)
+    data = snapshot.as_dict()
+
+    assert "h74_cycle_schema_missing" in data["resume_blockers"]
+    assert data["run_loop_can_resume"] is False
