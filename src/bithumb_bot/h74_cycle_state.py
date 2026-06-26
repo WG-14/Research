@@ -347,7 +347,6 @@ def h74_cycle_health_invariant_reasons(conn: sqlite3.Connection) -> tuple[str, .
         ).strip()
         if not h74_entry_plan_id:
             reasons.append("h74_cycle_entry_plan_identity_missing")
-            continue
         summed = _fill_sum(client_order_id)
         trade_summed = _trade_sum(client_order_id, "BUY")
         if summed > 1e-12 and abs(summed - trade_summed) > 1e-12:
@@ -410,7 +409,6 @@ def h74_cycle_health_invariant_reasons(conn: sqlite3.Connection) -> tuple[str, .
         ).strip()
         if not h74_entry_plan_id:
             reasons.append("h74_cycle_entry_plan_identity_missing")
-            continue
         acquired = float(cycle["acquired_qty"] if hasattr(cycle, "keys") else cycle[0])
         sold = float(cycle["sold_qty"] if hasattr(cycle, "keys") else cycle[1])
         locked = float(cycle["locked_exit_qty"] if hasattr(cycle, "keys") else cycle[2])
