@@ -165,6 +165,13 @@ def test_h74_no_window_variant_probe_authority_allows_missing_certificate_branch
     assert _h74_execution_path_probe_authority_allows_submit(_payload(), cfg) is True
 
 
+def test_h74_no_window_variant_probe_authority_allows_settings_without_daily_max_order_attr(tmp_path) -> None:
+    cfg = _valid_cfg(tmp_path)
+    delattr(cfg, "DAILY_PARTICIPATION_MAX_ORDER_KRW")
+
+    assert _h74_execution_path_probe_authority_allows_submit(_payload(), cfg) is True
+
+
 def test_h74_probe_authority_requires_probe_run_id(tmp_path) -> None:
     authority_path = _write_authority(tmp_path, _variant_authority())
     cfg = _settings(authority_path, H74_EXECUTION_PATH_PROBE_RUN_ID="")

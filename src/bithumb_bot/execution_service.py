@@ -1861,10 +1861,8 @@ def _h74_execution_path_probe_authority_allows_submit(
         return False
     if not _exact_number(getattr(settings_obj, "MAX_ORDER_KRW", None), H74_SOURCE_MAX_ORDER_KRW):
         return False
-    if not _exact_number(
-        getattr(settings_obj, "DAILY_PARTICIPATION_MAX_ORDER_KRW", None),
-        H74_SOURCE_MAX_ORDER_KRW,
-    ):
+    daily_max_order = getattr(settings_obj, "DAILY_PARTICIPATION_MAX_ORDER_KRW", None)
+    if daily_max_order is not None and not _exact_number(daily_max_order, H74_SOURCE_MAX_ORDER_KRW):
         return False
     bound = dict(authority_payload.get("hash_bound_parameters") or {})
     expected_bound = {
