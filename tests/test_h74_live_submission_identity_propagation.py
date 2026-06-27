@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from bithumb_bot.h74_live_rehearsal import H74LiveRehearsalConfig, run_h74_live_rehearsal
 from bithumb_bot.broker.live_submission_execution import _merge_h74_submit_identity
 from bithumb_bot.broker.live_submit_orchestrator import (
     _build_context,
@@ -14,6 +15,7 @@ from bithumb_bot.broker.live_submit_orchestrator import (
 from bithumb_bot.db_core import ensure_db
 from bithumb_bot.h74_submit_identity import H74SubmitIdentityError
 from tests.test_h74_live_submit_ownership import _ownership, _request
+from tests.test_h74_live_rehearsal import _source_artifact
 
 
 class _DispatchForbiddenBroker:
@@ -177,3 +179,69 @@ def test_h74_identity_propagates_to_failed_order_row_before_dispatch(tmp_path) -
     assert evidence["cycle_id"] == "cycle-1"
     assert evidence["h74_cycle_id"] == "cycle-1"
     assert evidence["h74_position_ownership_contract"]["entry_plan_id"] == "h74_entry_plan_123"
+
+
+def test_h74_sell_plan_carries_entry_plan_id_and_contract_hash(tmp_path) -> None:
+    payload = run_h74_live_rehearsal(
+        H74LiveRehearsalConfig(
+            source_artifact_path=_source_artifact(tmp_path),
+            closeout_existing_qty=0.002,
+            order_rules={"min_qty": 0.001, "qty_step": 0.0, "max_qty_decimals": 8, "min_notional_krw": 5000.0},
+        )
+    )
+    plan = payload["would_submit_plan"]
+
+    assert plan["side"] == "SELL"
+    assert plan["cycle_id"]
+    assert plan["h74_cycle_id"] == plan["cycle_id"]
+    assert plan["h74_entry_plan_client_order_id"]
+    assert plan["h74_position_ownership_contract_hash"]
+    assert plan["h74_closeout_contract"]["h74_entry_plan_client_order_id"] == plan["h74_entry_plan_client_order_id"]
+    assert plan["h74_closeout_contract"]["h74_position_ownership_contract_hash"] == plan[
+        "h74_position_ownership_contract_hash"
+    ]
+
+
+def test_h74_sell_plan_rejects_missing_entry_plan_id() -> None:
+    from bithumb_bot.h74_cycle_state import build_h74_cycle_closeout_plan_from_payload
+
+    with pytest.raises(ValueError, match="h74_entry_plan_client_order_id"):
+        build_h74_cycle_closeout_plan_from_payload(
+            {
+                "cycle_id": "h74-cycle",
+                "h74_cycle_id": "h74-cycle",
+                "authority_hash": "sha256:a",
+                "strategy_instance_id": "h74-source-observation",
+                "contract_hash": "sha256:b",
+                "remaining_cycle_qty": 0.001,
+                "broker_available_qty": 0.001,
+            },
+            target_delta_side="SELL",
+            target_qty=0.0,
+        )
+
+
+def test_h74_sell_plan_rejects_contract_hash_mismatch() -> None:
+    from bithumb_bot.h74_submit_identity import H74SubmitIdentity
+
+    decision = _decision_observability()
+    decision["h74_position_ownership_contract_hash"] = "sha256:" + "0" * 64
+
+    with pytest.raises(H74SubmitIdentityError, match="contract_hash_mismatch"):
+        H74SubmitIdentity.from_mapping(decision)
+
+
+def test_h74_sell_plan_identity_matches_cycle_state_and_entry_order(tmp_path) -> None:
+    payload = run_h74_live_rehearsal(
+        H74LiveRehearsalConfig(
+            source_artifact_path=_source_artifact(tmp_path),
+            closeout_existing_qty=0.002,
+            order_rules={"min_qty": 0.001, "qty_step": 0.0, "max_qty_decimals": 8, "min_notional_krw": 5000.0},
+        )
+    )
+    plan = payload["would_submit_plan"]
+    closeout = plan["h74_closeout_contract"]
+
+    assert closeout["cycle_id"] == plan["cycle_id"]
+    assert closeout["h74_cycle_id"] == plan["h74_cycle_id"]
+    assert closeout["contract_hash"] == plan["h74_position_ownership_contract_hash"]

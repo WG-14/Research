@@ -99,6 +99,15 @@ class SubmitAuthorityPolicyDecision:
         }
 
 
+@dataclass(frozen=True)
+class PreSubmitRiskApproval:
+    approved: bool
+    reason: str
+    integrity_valid: bool
+    action_authorized: bool
+    status: str
+
+
 def submit_authority_policy_hash(policy_payload: Mapping[str, object]) -> str:
     encoded = json.dumps(policy_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
         "utf-8"
@@ -388,9 +397,18 @@ def operational_pre_submit_risk_approval_error(
     *,
     expected_submit_plan_hash: str,
 ) -> str | None:
-    status = str(payload.get("pre_submit_risk_status") or "").strip().upper()
-    if status != "ALLOW":
-        return "live_real_order_pre_submit_risk_not_allow"
+    approval = is_pre_submit_risk_approved_for_plan(
+        payload,
+        expected_submit_plan_hash=expected_submit_plan_hash,
+    )
+    return None if approval.approved else approval.reason
+
+
+def validate_pre_submit_risk_proof_integrity(
+    payload: Mapping[str, object],
+    *,
+    expected_submit_plan_hash: str,
+) -> str | None:
     for field in (
         "pre_submit_risk_decision_hash",
         "pre_submit_risk_policy_hash",
@@ -429,3 +447,99 @@ def operational_pre_submit_risk_approval_error(
     if actual_plan_hash != str(expected_submit_plan_hash):
         return "live_real_order_pre_submit_risk_plan_hash_mismatch"
     return None
+
+
+def _pre_submit_allowed_actions(payload: Mapping[str, object]) -> set[str]:
+    decision = payload.get("pre_submit_risk_decision")
+    raw_actions: object = None
+    if isinstance(decision, Mapping):
+        raw_actions = decision.get("allowed_actions")
+    if raw_actions is None:
+        raw_actions = payload.get("pre_submit_risk_allowed_actions")
+    if isinstance(raw_actions, str):
+        actions = [raw_actions]
+    elif isinstance(raw_actions, (list, tuple, set)):
+        actions = list(raw_actions)
+    else:
+        actions = []
+    return {str(action or "").strip().upper() for action in actions if str(action or "").strip()}
+
+
+def evaluate_pre_submit_risk_action_authorization(payload: Mapping[str, object]) -> str | None:
+    status = str(payload.get("pre_submit_risk_status") or "").strip().upper()
+    if status == "ALLOW":
+        return None
+    if status == "REDUCE_ONLY":
+        side = str(payload.get("side") or "").strip().upper()
+        source = str(payload.get("source") or "").strip()
+        authority = str(payload.get("authority") or "").strip()
+        reason_code = str(payload.get("pre_submit_risk_reason_code") or "").strip().upper()
+        try:
+            target_delta_qty = float(payload.get("target_delta_qty") or 0.0)
+        except (TypeError, ValueError):
+            target_delta_qty = 0.0
+        if (
+            source == TARGET_DELTA_SUBMIT_SOURCE
+            and authority == "canonical_target_delta_sizing"
+            and side == "SELL"
+            and bool(payload.get("submit_expected"))
+            and target_delta_qty < 0.0
+            and reason_code == "POSITION_LOSS_LIMIT"
+            and "SELL" in _pre_submit_allowed_actions(payload)
+        ):
+            return None
+        return "live_real_order_pre_submit_risk_reduce_only_not_authorized_for_plan"
+    if status == "REQUIRE_RECONCILE":
+        return "live_real_order_pre_submit_risk_requires_reconcile"
+    if status == "BLOCK":
+        return "live_real_order_pre_submit_risk_block"
+    return "live_real_order_pre_submit_risk_not_allow"
+
+
+def is_pre_submit_risk_approved_for_plan(
+    payload: Mapping[str, object],
+    *,
+    expected_submit_plan_hash: str,
+) -> PreSubmitRiskApproval:
+    status = str(payload.get("pre_submit_risk_status") or "").strip().upper()
+    integrity_error = validate_pre_submit_risk_proof_integrity(
+        payload,
+        expected_submit_plan_hash=expected_submit_plan_hash,
+    )
+    if integrity_error is not None:
+        return PreSubmitRiskApproval(
+            approved=False,
+            reason=integrity_error,
+            integrity_valid=False,
+            action_authorized=False,
+            status=status,
+        )
+    action_error = evaluate_pre_submit_risk_action_authorization(payload)
+    if action_error is not None:
+        return PreSubmitRiskApproval(
+            approved=False,
+            reason=action_error,
+            integrity_valid=True,
+            action_authorized=False,
+            status=status,
+        )
+    return PreSubmitRiskApproval(
+        approved=True,
+        reason="approved",
+        integrity_valid=True,
+        action_authorized=True,
+        status=status,
+    )
+
+
+__all__ = [
+    "PreSubmitRiskApproval",
+    "SubmitAuthorityPolicy",
+    "SubmitAuthorityPolicyDecision",
+    "evaluate_pre_submit_risk_action_authorization",
+    "evaluate_submit_authority_policy",
+    "is_pre_submit_risk_approved_for_plan",
+    "operational_pre_submit_risk_approval_error",
+    "submit_authority_policy_from_settings",
+    "validate_pre_submit_risk_proof_integrity",
+]

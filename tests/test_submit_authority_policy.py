@@ -13,6 +13,10 @@ from bithumb_bot.execution_service import (
     TypedExecutionRequest,
 )
 from bithumb_bot.submit_authority_policy import evaluate_submit_authority_policy
+from bithumb_bot.submit_authority_policy import (
+    is_pre_submit_risk_approved_for_plan,
+    validate_pre_submit_risk_proof_integrity,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -74,20 +78,32 @@ def _plan(
     )
 
 
-def _approved(plan: ExecutionSubmitPlan) -> ExecutionSubmitPlan:
+def _approved(
+    plan: ExecutionSubmitPlan,
+    *,
+    status: str = "ALLOW",
+    reason_code: str = "OK",
+    allowed_actions: list[str] | None = None,
+    plan_hash_override: str | None = None,
+) -> ExecutionSubmitPlan:
     plan_hash = plan.content_hash()
     extra = dict(plan.extra_payload)
     extra.update(
         {
             "submit_plan_hash": plan_hash,
-            "pre_submit_risk_status": "ALLOW",
+            "pre_submit_risk_status": status,
+            "pre_submit_risk_decision": {
+                "status": status,
+                "reason_code": reason_code,
+                "allowed_actions": list(allowed_actions or ["BUY", "SELL", "HOLD"]),
+            },
             "pre_submit_risk_decision_hash": "sha256:" + "1" * 64,
             "pre_submit_risk_policy_hash": "sha256:" + "2" * 64,
             "effective_pre_submit_risk_policy_hash": "sha256:" + "2" * 64,
             "pre_submit_risk_input_hash": "sha256:" + "3" * 64,
             "pre_submit_risk_evidence_hash": "sha256:" + "4" * 64,
-            "pre_submit_risk_plan_hash": plan_hash,
-            "pre_submit_risk_reason_code": "OK",
+            "pre_submit_risk_plan_hash": plan_hash_override or plan_hash,
+            "pre_submit_risk_reason_code": reason_code,
             "pre_submit_risk_state_source": "unit",
             "risk_policy_source": "strategy_risk_profiles",
             "pre_submit_risk_policy_composition_rule": "most_restrictive_selected_strategy_policy",
@@ -167,7 +183,7 @@ def test_live_real_order_requires_operational_pre_submit_risk_proof() -> None:
         plan_kind="target",
     )
     assert missing.allowed is False
-    assert missing.reason == "live_real_order_pre_submit_risk_not_allow"
+    assert missing.reason == "live_real_order_pre_submit_risk_decision_hash_missing"
     assert missing.as_dict()["pre_submit_risk_approval_status"] == "blocked"
 
     approved = evaluate_submit_authority_policy(
@@ -177,6 +193,163 @@ def test_live_real_order_requires_operational_pre_submit_risk_proof() -> None:
     )
     assert approved.allowed is True
     assert approved.as_dict()["pre_submit_risk_approval_status"] == "approved"
+
+
+def test_reduce_only_target_delta_sell_is_allowed_when_it_reduces_position() -> None:
+    plan = _plan(
+        side="SELL",
+        extra={"target_delta_qty": -0.00109271},
+    )
+    payload = _approved(
+        plan,
+        status="REDUCE_ONLY",
+        reason_code="POSITION_LOSS_LIMIT",
+        allowed_actions=["SELL", "HOLD"],
+    ).as_dict()
+
+    decision = evaluate_submit_authority_policy(
+        payload,
+        settings_obj=_settings(mode="live", dry_run=False, armed=True),
+        plan_kind="target",
+    )
+
+    assert decision.allowed is True
+    assert decision.as_dict()["pre_submit_risk_approval_status"] == "approved"
+
+
+def test_reduce_only_buy_is_rejected_even_when_allowed_actions_contains_sell() -> None:
+    plan = _plan(side="BUY", extra={"target_delta_qty": 0.001})
+    payload = _approved(
+        plan,
+        status="REDUCE_ONLY",
+        reason_code="POSITION_LOSS_LIMIT",
+        allowed_actions=["SELL", "HOLD"],
+    ).as_dict()
+
+    decision = evaluate_submit_authority_policy(
+        payload,
+        settings_obj=_settings(mode="live", dry_run=False, armed=True),
+        plan_kind="target",
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "live_real_order_pre_submit_risk_reduce_only_not_authorized_for_plan"
+
+
+def test_reduce_only_sell_with_positive_target_delta_is_rejected() -> None:
+    plan = _plan(side="SELL", extra={"target_delta_qty": 0.001})
+    payload = _approved(
+        plan,
+        status="REDUCE_ONLY",
+        reason_code="POSITION_LOSS_LIMIT",
+        allowed_actions=["SELL", "HOLD"],
+    ).as_final_payload()
+
+    decision = evaluate_submit_authority_policy(
+        payload,
+        settings_obj=_settings(mode="live", dry_run=False, armed=True),
+        plan_kind="target",
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "live_real_order_pre_submit_risk_reduce_only_not_authorized_for_plan"
+
+
+def test_reduce_only_sell_without_allowed_actions_sell_is_rejected() -> None:
+    plan = _plan(side="SELL", extra={"target_delta_qty": -0.00109271})
+    payload = _approved(
+        plan,
+        status="REDUCE_ONLY",
+        reason_code="POSITION_LOSS_LIMIT",
+        allowed_actions=["HOLD"],
+    ).as_dict()
+
+    decision = evaluate_submit_authority_policy(
+        payload,
+        settings_obj=_settings(mode="live", dry_run=False, armed=True),
+        plan_kind="target",
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "live_real_order_pre_submit_risk_reduce_only_not_authorized_for_plan"
+
+
+def test_reduce_only_sell_with_plan_hash_mismatch_is_rejected() -> None:
+    plan = _plan(side="SELL", extra={"target_delta_qty": -0.00109271})
+    payload = _approved(
+        plan,
+        status="REDUCE_ONLY",
+        reason_code="POSITION_LOSS_LIMIT",
+        allowed_actions=["SELL", "HOLD"],
+        plan_hash_override="sha256:" + "9" * 64,
+    ).as_dict()
+    payload["submit_plan_hash"] = plan.content_hash()
+
+    approval = is_pre_submit_risk_approved_for_plan(
+        payload,
+        expected_submit_plan_hash=str(payload["submit_plan_hash"]),
+    )
+
+    assert approval.approved is False
+    assert approval.reason == "live_real_order_pre_submit_risk_plan_hash_mismatch"
+
+
+def test_pre_submit_risk_integrity_passes_for_reduce_only_sell() -> None:
+    plan = _plan(side="SELL", extra={"target_delta_qty": -0.00109271})
+    payload = _approved(
+        plan,
+        status="REDUCE_ONLY",
+        reason_code="POSITION_LOSS_LIMIT",
+        allowed_actions=["SELL", "HOLD"],
+    ).as_dict()
+
+    assert validate_pre_submit_risk_proof_integrity(
+        payload,
+        expected_submit_plan_hash=plan.content_hash(),
+    ) is None
+    assert is_pre_submit_risk_approved_for_plan(
+        payload,
+        expected_submit_plan_hash=plan.content_hash(),
+    ).approved is True
+
+
+def test_pre_submit_risk_action_authorization_rejects_reduce_only_buy() -> None:
+    plan = _plan(side="BUY", extra={"target_delta_qty": 0.001})
+    payload = _approved(
+        plan,
+        status="REDUCE_ONLY",
+        reason_code="POSITION_LOSS_LIMIT",
+        allowed_actions=["SELL", "HOLD"],
+    ).as_dict()
+
+    approval = is_pre_submit_risk_approved_for_plan(
+        payload,
+        expected_submit_plan_hash=plan.content_hash(),
+    )
+
+    assert approval.integrity_valid is True
+    assert approval.action_authorized is False
+    assert approval.reason == "live_real_order_pre_submit_risk_reduce_only_not_authorized_for_plan"
+
+
+def test_pre_submit_risk_plan_hash_mismatch_blocks_before_action_authorization() -> None:
+    plan = _plan(side="SELL", extra={"target_delta_qty": -0.00109271})
+    payload = _approved(
+        plan,
+        status="REDUCE_ONLY",
+        reason_code="POSITION_LOSS_LIMIT",
+        allowed_actions=["SELL", "HOLD"],
+        plan_hash_override="sha256:" + "7" * 64,
+    ).as_dict()
+
+    approval = is_pre_submit_risk_approved_for_plan(
+        payload,
+        expected_submit_plan_hash=plan.content_hash(),
+    )
+
+    assert approval.integrity_valid is False
+    assert approval.action_authorized is False
+    assert approval.reason == "live_real_order_pre_submit_risk_plan_hash_mismatch"
 
 
 def test_live_real_order_schema_valid_plan_still_requires_final_submit_payload() -> None:

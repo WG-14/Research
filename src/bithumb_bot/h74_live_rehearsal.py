@@ -557,7 +557,8 @@ def _readiness_snapshot_payload(
         "cash_available": float(getattr(settings_obj, "START_CASH_KRW")),
         "runtime_pair": str(getattr(settings_obj, "PAIR")),
         "min_qty": float(order_rules.get("min_qty") or 0.0001),
-        "qty_step": float(order_rules.get("qty_step") or order_rules.get("min_qty") or 0.0001),
+        "qty_step": float(order_rules.get("qty_step") or 0.0),
+        "qty_step_authority": "exchange" if float(order_rules.get("qty_step") or 0.0) > 0.0 else "local_fallback_min_qty",
         "min_notional_krw": float(order_rules.get("min_notional_krw") or 5000.0),
         "max_qty_decimals": int(order_rules.get("max_qty_decimals") or 8),
         "order_types": ["bid", "ask"],
@@ -567,6 +568,18 @@ def _readiness_snapshot_payload(
     if float(closeout_existing_qty or 0.0) > 0.0:
         payload["h74_cycle_id"] = "h74-rehearsal-closeout-cycle"
         payload["cycle_id"] = "h74-rehearsal-closeout-cycle"
+        payload["authority_hash"] = "sha256:h74-rehearsal-authority"
+        payload["strategy_instance_id"] = "h74-source-observation"
+        payload["entry_client_order_id"] = "h74-rehearsal-entry"
+        payload["h74_entry_plan_client_order_id"] = "h74-rehearsal-entry-plan"
+        payload["contract_hash"] = "sha256:h74_rehearsal_contract_hash"
+        payload["h74_position_ownership_contract_hash"] = "sha256:h74_rehearsal_contract_hash"
+        payload["acquired_qty"] = float(closeout_existing_qty)
+        payload["sold_qty"] = 0.0
+        payload["locked_exit_qty"] = 0.0
+        payload["remaining_cycle_qty"] = float(closeout_existing_qty)
+        payload["h74_remaining_cycle_qty"] = float(closeout_existing_qty)
+        payload["broker_available_qty"] = float(closeout_existing_qty)
     return payload
 
 
@@ -595,6 +608,8 @@ def _target_delta_planning_bundle(
             qty=float(closeout_existing_qty),
             client_order_id="h74-rehearsal-entry",
             fill_ts=int(ts_ms) - (74 * 60_000),
+            contract_hash="sha256:h74_rehearsal_contract_hash",
+            h74_entry_plan_client_order_id="h74-rehearsal-entry-plan",
         )
     readiness_payload = _readiness_snapshot_payload(
         order_rules=order_rules,
@@ -945,6 +960,56 @@ def run_h74_live_rehearsal(
             if submit_authority_allowed
             else str(getattr(submit_authority, "reason", "submit_authority_not_evaluated"))
         )
+        closeout_contract = (
+            would_submit_plan.get("h74_closeout_contract")
+            if isinstance(would_submit_plan.get("h74_closeout_contract"), Mapping)
+            else {}
+        )
+        h74_closeout_preview = None
+        if str(would_submit_plan.get("side") or "").upper() == "SELL" and closeout_contract:
+            remaining_cycle_qty = float(
+                closeout_contract.get("remaining_cycle_qty")
+                or would_submit_plan.get("remaining_cycle_qty")
+                or 0.0
+            )
+            planned_sell_qty = float(would_submit_plan.get("qty") or 0.0)
+            residual_policy = str(
+                closeout_contract.get("residual_policy")
+                or would_submit_plan.get("residual_policy")
+                or "none"
+            )
+            qty_matches_remaining = abs(remaining_cycle_qty - planned_sell_qty) <= 1e-12
+            h74_closeout_preview = {
+                "h74_closeout_preview_present": True,
+                "cycle_id": str(would_submit_plan.get("cycle_id") or ""),
+                "remaining_cycle_qty": remaining_cycle_qty,
+                "planned_sell_qty": planned_sell_qty,
+                "qty_matches_remaining": qty_matches_remaining,
+                "residual_qty": float(
+                    closeout_contract.get("residual_qty")
+                    or would_submit_plan.get("residual_qty")
+                    or 0.0
+                ),
+                "residual_policy": residual_policy,
+                "residual_reason": str(
+                    closeout_contract.get("residual_reason")
+                    or would_submit_plan.get("residual_reason")
+                    or "none"
+                ),
+                "risk_status": pre_submit_status,
+                "risk_reason_code": pre_submit_reason,
+                "submit_authority_would_allow": bool(getattr(submit_authority, "allowed", False)),
+                "submit_authority_reason": submit_authority_reason,
+                "h74_entry_plan_client_order_id_present": bool(
+                    str(would_submit_plan.get("h74_entry_plan_client_order_id") or "").strip()
+                ),
+                "contract_hash_present": bool(
+                    str(would_submit_plan.get("h74_position_ownership_contract_hash") or "").strip()
+                ),
+            }
+            if not qty_matches_remaining and residual_policy == "none":
+                submit_authority_allowed = False
+                submit_authority_reason = "h74_closeout_preview_qty_mismatch_without_residual_policy"
         readiness_blocks = not bool(cfg.projection_converged)
         planning_path_mode = str(getattr(settings_obj, "MODE", ""))
         planning_path_live_dry_run = bool(getattr(settings_obj, "LIVE_DRY_RUN", True))
@@ -1139,6 +1204,8 @@ def run_h74_live_rehearsal(
         "actual_submit": False,
         "would_submit": bool(equivalence_allows and captured and not submit_semantics_blocking),
         "would_submit_plan": would_submit_plan,
+        "h74_closeout_preview": h74_closeout_preview,
+        "h74_closeout_preview_present": bool(h74_closeout_preview),
         "would_submit_plan_hash": sha256_prefixed(would_submit_plan),
         "broker_payload_preview": payload_preview,
         "submit_semantics_hash": str(equivalence_manifest.get("submit_semantics_hash") or ""),

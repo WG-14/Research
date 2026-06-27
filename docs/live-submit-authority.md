@@ -198,9 +198,12 @@ submittable target-delta planning.
 
 Immediately before live broker submission,
 `RuntimeRiskEngineAdapter.evaluate_pre_submit()` evaluates the stable
-`ExecutionSubmitPlan` hash. Live-real-order submission requires:
+`ExecutionSubmitPlan` hash. Live-real-order submission requires hash-bound
+proof integrity plus one action authorization outcome:
 
-- `pre_submit_risk_status=ALLOW`
+- `pre_submit_risk_status=ALLOW`, or
+- `pre_submit_risk_status=REDUCE_ONLY` only for a position-reducing
+  target-delta SELL with `SELL` in `pre_submit_risk_decision.allowed_actions`
 - `pre_submit_risk_decision_hash`
 - `pre_submit_risk_policy_hash`
 - `pre_submit_risk_input_hash`

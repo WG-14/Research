@@ -54,6 +54,133 @@ class H74CycleInventory:
         return payload
 
 
+@dataclass(frozen=True)
+class H74CycleCloseoutPlan:
+    cycle_id: str
+    h74_cycle_id: str
+    entry_client_order_id: str
+    h74_entry_plan_client_order_id: str
+    contract_hash: str
+    acquired_qty: float
+    sold_qty: float
+    locked_exit_qty: float
+    remaining_qty: float
+    closeout_qty: float
+    broker_available_qty: float
+    qty_authority: str
+    risk_approval_status: str
+    risk_approval_reason_code: str
+    residual_qty: float = 0.0
+    residual_policy: str = "none"
+    residual_reason: str = "none"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "cycle_id": self.cycle_id,
+            "h74_cycle_id": self.h74_cycle_id,
+            "entry_client_order_id": self.entry_client_order_id,
+            "h74_entry_plan_client_order_id": self.h74_entry_plan_client_order_id,
+            "contract_hash": self.contract_hash,
+            "h74_position_ownership_contract_hash": self.contract_hash,
+            "acquired_qty": float(self.acquired_qty),
+            "sold_qty": float(self.sold_qty),
+            "locked_exit_qty": float(self.locked_exit_qty),
+            "remaining_qty": float(self.remaining_qty),
+            "remaining_cycle_qty": float(self.remaining_qty),
+            "h74_remaining_cycle_qty": float(self.remaining_qty),
+            "closeout_qty": float(self.closeout_qty),
+            "broker_available_qty": float(self.broker_available_qty),
+            "qty_authority": self.qty_authority,
+            "risk_approval_status": self.risk_approval_status,
+            "risk_approval_reason_code": self.risk_approval_reason_code,
+            "residual_qty": float(self.residual_qty),
+            "residual_policy": self.residual_policy,
+            "residual_reason": self.residual_reason,
+        }
+
+
+def build_h74_cycle_closeout_plan_from_payload(
+    payload: Mapping[str, Any],
+    *,
+    target_delta_side: str,
+    target_qty: float | None,
+    risk_approval_status: str = "",
+    risk_approval_reason_code: str = "",
+) -> H74CycleCloseoutPlan:
+    cycle_id = str(payload.get("cycle_id") or payload.get("h74_cycle_id") or "").strip()
+    h74_cycle_id = str(payload.get("h74_cycle_id") or payload.get("cycle_id") or "").strip()
+    entry_client_order_id = str(payload.get("entry_client_order_id") or "").strip()
+    h74_entry_plan_id = str(
+        payload.get("h74_entry_plan_client_order_id")
+        or payload.get("entry_plan_id")
+        or entry_client_order_id
+        or ""
+    ).strip()
+    contract_hash = str(
+        payload.get("h74_position_ownership_contract_hash")
+        or payload.get("contract_hash")
+        or payload.get("h74_cycle_contract_hash")
+        or ""
+    ).strip()
+    strategy_instance_id = str(payload.get("strategy_instance_id") or "").strip()
+    authority_hash = str(payload.get("authority_hash") or payload.get("h74_source_authority_hash") or "").strip()
+    missing = [
+        name
+        for name, value in (
+            ("cycle_id", cycle_id),
+            ("h74_cycle_id", h74_cycle_id),
+            ("h74_entry_plan_client_order_id", h74_entry_plan_id),
+            ("h74_position_ownership_contract_hash", contract_hash),
+            ("strategy_instance_id", strategy_instance_id),
+            ("authority_hash", authority_hash),
+        )
+        if not value
+    ]
+    if missing:
+        raise ValueError("h74_closeout_identity_missing:" + ",".join(missing))
+    if cycle_id != h74_cycle_id:
+        raise ValueError("h74_closeout_identity_mismatch:cycle_id")
+    if str(target_delta_side or "").strip().upper() != "SELL":
+        raise ValueError("h74_closeout_requires_sell_target_delta")
+    if target_qty is None or abs(float(target_qty)) > 1e-12:
+        raise ValueError("h74_closeout_requires_zero_target_qty")
+    acquired_qty = float(payload.get("acquired_qty") or payload.get("h74_acquired_qty") or 0.0)
+    sold_qty = float(payload.get("sold_qty") or payload.get("h74_sold_qty") or 0.0)
+    locked_exit_qty = float(payload.get("locked_exit_qty") or payload.get("h74_locked_exit_qty") or 0.0)
+    remaining_qty = float(
+        payload.get("remaining_cycle_qty")
+        or payload.get("h74_remaining_cycle_qty")
+        or max(0.0, acquired_qty - sold_qty - locked_exit_qty)
+    )
+    broker_available = float(
+        payload.get("broker_available_qty")
+        or payload.get("broker_asset_available")
+        or dict(payload.get("broker_position_evidence") or {}).get("broker_available_qty")
+        or dict(payload.get("broker_position_evidence") or {}).get("broker_qty")
+        or remaining_qty
+    )
+    if remaining_qty <= 0.0:
+        raise ValueError("h74_closeout_requires_positive_remaining_qty")
+    if broker_available + 1e-12 < remaining_qty:
+        raise ValueError("h74_closeout_broker_available_below_remaining")
+    return H74CycleCloseoutPlan(
+        cycle_id=cycle_id,
+        h74_cycle_id=h74_cycle_id,
+        entry_client_order_id=entry_client_order_id or h74_entry_plan_id,
+        h74_entry_plan_client_order_id=h74_entry_plan_id,
+        contract_hash=contract_hash,
+        acquired_qty=acquired_qty,
+        sold_qty=sold_qty,
+        locked_exit_qty=locked_exit_qty,
+        remaining_qty=remaining_qty,
+        closeout_qty=remaining_qty,
+        broker_available_qty=broker_available,
+        qty_authority="h74_cycle_remaining",
+        risk_approval_status=str(risk_approval_status or ""),
+        risk_approval_reason_code=str(risk_approval_reason_code or ""),
+    )
+
+
 def ensure_h74_cycle_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -194,7 +321,8 @@ def load_open_h74_cycle_inventories(
     ensure_h74_cycle_schema(conn)
     rows = conn.execute(
         """
-        SELECT cycle_id, authority_hash, strategy_instance_id, acquired_qty, sold_qty, locked_exit_qty, contract_hash
+        SELECT cycle_id, authority_hash, strategy_instance_id, acquired_qty, sold_qty, locked_exit_qty, contract_hash,
+               h74_entry_plan_client_order_id
         FROM h74_cycle_state
         WHERE strategy_instance_id=?
           AND authority_hash=?
@@ -218,6 +346,9 @@ def load_open_h74_cycle_inventories(
             sold_qty=float(row["sold_qty"] if hasattr(row, "keys") else row[4]),
             locked_exit_qty=float(row["locked_exit_qty"] if hasattr(row, "keys") else row[5]),
             contract_hash=str((row["contract_hash"] if hasattr(row, "keys") else row[6]) or ""),
+            h74_entry_plan_client_order_id=str(
+                (row["h74_entry_plan_client_order_id"] if hasattr(row, "keys") else row[7]) or ""
+            ),
         )
         for row in rows
     )
@@ -277,6 +408,7 @@ def h74_cycle_inventory_from_payload(payload: Mapping[str, Any]) -> H74CycleInve
             or payload.get("h74_cycle_contract_hash")
             or ""
         ),
+        h74_entry_plan_client_order_id=str(payload.get("h74_entry_plan_client_order_id") or ""),
     )
 
 

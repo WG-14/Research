@@ -387,3 +387,54 @@ def test_h74_would_submit_plan_contains_authority_hash_and_position_mode(tmp_pat
 
     assert plan["position_mode"] == "fixed_fill_qty_until_exit"
     assert str(plan["authority_hash"]).startswith("sha256:")
+
+
+def test_h74_plan_only_reports_closeout_qty_and_risk_authority(tmp_path) -> None:
+    payload = run_h74_live_rehearsal(
+        H74LiveRehearsalConfig(
+            source_artifact_path=_source_artifact(tmp_path),
+            closeout_existing_qty=0.002,
+            order_rules={"min_qty": 0.001, "qty_step": 0.0, "max_qty_decimals": 8, "min_notional_krw": 5000.0},
+        )
+    )
+    preview = payload["h74_closeout_preview"]
+
+    assert payload["h74_closeout_preview_present"] is True
+    assert preview["remaining_cycle_qty"] == pytest.approx(0.002)
+    assert preview["planned_sell_qty"] == pytest.approx(0.002)
+    assert preview["qty_matches_remaining"] is True
+    assert "risk_status" in preview
+    assert "submit_authority_would_allow" in preview
+
+
+def test_h74_plan_only_fails_when_closeout_qty_would_floor_remaining(tmp_path, monkeypatch) -> None:
+    from bithumb_bot import h74_live_rehearsal as rehearsal_module
+
+    original = rehearsal_module.run_h74_live_rehearsal
+    payload = original(
+        H74LiveRehearsalConfig(
+            source_artifact_path=_source_artifact(tmp_path),
+            closeout_existing_qty=0.00209271,
+            order_rules={"min_qty": 0.001, "qty_step": 0.001, "max_qty_decimals": 8, "min_notional_krw": 5000.0},
+        )
+    )
+    preview = payload["h74_closeout_preview"]
+
+    assert preview["planned_sell_qty"] == pytest.approx(0.002)
+    assert preview["qty_matches_remaining"] is False
+    assert preview["residual_policy"] != "none"
+
+
+def test_h74_plan_only_fails_when_reduce_only_sell_would_be_rejected(tmp_path) -> None:
+    payload = run_h74_live_rehearsal(
+        H74LiveRehearsalConfig(
+            source_artifact_path=_source_artifact(tmp_path),
+            closeout_existing_qty=0.002,
+            order_rules={"min_qty": 0.001, "qty_step": 0.0, "max_qty_decimals": 8, "min_notional_krw": 5000.0},
+        )
+    )
+    preview = payload["h74_closeout_preview"]
+
+    if preview["submit_authority_would_allow"] is False:
+        assert payload["primary_block_gate"] in {"pre_submit_risk", "submit_authority"}
+        assert preview["submit_authority_reason"]

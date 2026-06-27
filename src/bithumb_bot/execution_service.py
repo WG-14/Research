@@ -36,7 +36,7 @@ from .strategy_plugins.daily_participation_contract import (
 )
 from .submit_authority_policy import (
     evaluate_submit_authority_policy,
-    operational_pre_submit_risk_approval_error,
+    is_pre_submit_risk_approved_for_plan,
     submit_authority_policy_from_settings,
 )
 from .target_position import TargetPositionSettings, build_target_position_decision
@@ -51,7 +51,7 @@ from .h74_position_ownership import (
     h74_position_ownership_contract_from_payload,
     ownership_payload_fields,
 )
-from .h74_cycle_state import build_h74_cycle_id
+from .h74_cycle_state import build_h74_cycle_id, build_h74_cycle_closeout_plan_from_payload
 from .h74_submit_semantics import (
     H74_ENTRY_SUBMIT_SEMANTICS,
     H74_ENTRY_SUBMIT_SEMANTICS_AUTHORITY,
@@ -619,12 +619,12 @@ class ExecutionSubmitPlan:
         if _pre_submit_risk_required_for_live_real(payload) and str(
             payload.get("pre_submit_risk_decision_hash") or ""
         ).strip():
-            approval_error = operational_pre_submit_risk_approval_error(
+            approval = is_pre_submit_risk_approved_for_plan(
                 payload,
                 expected_submit_plan_hash=str(payload.get("submit_plan_hash") or ""),
             )
-            if approval_error is not None:
-                raise ValueError(f"execution_submit_plan_pre_submit_risk_invalid:{approval_error}")
+            if not approval.approved:
+                raise ValueError(f"execution_submit_plan_pre_submit_risk_invalid:{approval.reason}")
         payload["schema_version"] = EXECUTION_SUBMIT_PLAN_SCHEMA_VERSION
         payload["authority_label"] = EXECUTION_SUBMIT_PLAN_AUTHORITY_LABEL
         payload["content_hash"] = execution_submit_plan_payload_hash(payload)
@@ -811,10 +811,11 @@ def _pre_submit_risk_approval_error_for_payload(payload: Mapping[str, object]) -
     expected_hash = str(payload.get("submit_plan_hash") or "").strip()
     if not expected_hash:
         expected_hash = execution_submit_plan_payload_hash(payload)
-    return operational_pre_submit_risk_approval_error(
+    approval = is_pre_submit_risk_approved_for_plan(
         payload,
         expected_submit_plan_hash=expected_hash,
     )
+    return None if approval.approved else approval.reason
 
 
 def _attach_live_real_pre_submit_risk_proof(
@@ -2402,6 +2403,54 @@ def _build_execution_decision_summary_from_authority_payload(
                 configured_position_mode == POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
                 and str(target_decision.delta_side) == "BUY"
             )
+            h74_closeout_plan = None
+            h74_closeout_error = ""
+            is_h74_fixed_sell = (
+                configured_position_mode == POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
+                and str(target_decision.delta_side) == "SELL"
+            )
+            if is_h74_fixed_sell:
+                try:
+                    h74_closeout_plan = build_h74_cycle_closeout_plan_from_payload(
+                        payload,
+                        target_delta_side=str(target_decision.delta_side),
+                        target_qty=0.0,
+                        risk_approval_status=str(payload.get("pre_submit_risk_status") or ""),
+                        risk_approval_reason_code=str(payload.get("pre_submit_risk_reason_code") or ""),
+                    )
+                    target_sizing = build_target_delta_execution_sizing(
+                        pair=authoritative_pair,
+                        side="SELL",
+                        desired_qty=h74_closeout_plan.closeout_qty,
+                        market_price=float(target_decision.reference_price or 0.0),
+                        min_qty=target_decision.order_rule_min_qty,
+                        qty_step=target_decision.order_rule_qty_step,
+                        min_notional_krw=target_decision.order_rule_min_notional_krw,
+                        max_qty_decimals=getattr(settings_obj, "LIVE_ORDER_MAX_QTY_DECIMALS", 0),
+                        authority_source="h74_cycle_remaining",
+                        h74_closeout=True,
+                        qty_step_authority=(
+                            "exchange"
+                            if float(target_decision.order_rule_qty_step or 0.0) > 0.0
+                            else "local_fallback_min_qty"
+                        ),
+                    )
+                    target_sizing_dict = target_sizing.as_dict()
+                    h74_closeout_plan = replace(
+                        h74_closeout_plan,
+                        closeout_qty=float(target_sizing.final_submitted_qty),
+                        residual_qty=float(target_sizing.residual_qty),
+                        residual_policy=str(target_sizing.residual_policy),
+                        residual_reason=str(target_sizing.residual_reason),
+                    )
+                    if (
+                        float(target_sizing.final_submitted_qty) + 1e-12
+                        < float(h74_closeout_plan.remaining_qty)
+                        and str(target_sizing.residual_policy or "none") == "none"
+                    ):
+                        h74_closeout_error = "h74_closeout_qty_below_remaining_without_residual_policy"
+                except (TypeError, ValueError) as exc:
+                    h74_closeout_error = str(exc)
             h74_quote_notional_krw = (
                 float(H74_SOURCE_MAX_ORDER_KRW) if is_h74_fixed_buy else None
             )
@@ -2460,6 +2509,8 @@ def _build_execution_decision_summary_from_authority_payload(
                 submit_allowed = False
             if h74_ownership_error:
                 submit_allowed = False
+            if h74_closeout_error:
+                submit_allowed = False
             if entry_authority.status == ENTRY_AUTHORITY_BLOCK:
                 submit_allowed = False
                 sizing_block_reason = ENTRY_AUTHORITY_REASON_BLOCKED
@@ -2491,6 +2542,9 @@ def _build_execution_decision_summary_from_authority_payload(
             elif h74_ownership_error:
                 primary_block_gate = "h74_cycle_ownership"
                 primary_block_reason = h74_ownership_error
+            elif h74_closeout_error:
+                primary_block_gate = "h74_closeout"
+                primary_block_reason = h74_closeout_error
             elif entry_authority.status == ENTRY_AUTHORITY_BLOCK:
                 primary_block_gate = "entry_authority"
                 primary_block_reason = str(entry_authority.reason_code)
@@ -2502,7 +2556,7 @@ def _build_execution_decision_summary_from_authority_payload(
                     if strategy_risk_policy_blocked
                     else (
                     "BLOCK_PORTFOLIO_TARGET_AUTHORITY"
-                    if target_authority_error is not None or h74_ownership_error
+                    if target_authority_error is not None or h74_ownership_error or h74_closeout_error
                     else (
                     "BLOCK_ENTRY_AUTHORITY"
                     if entry_authority.status == ENTRY_AUTHORITY_BLOCK
@@ -2775,6 +2829,30 @@ def _build_execution_decision_summary_from_authority_payload(
                 ),
                 "pre_submit_risk_decision_authority": "RuntimeRiskEngineAdapter.evaluate_pre_submit",
             }
+            if h74_closeout_plan is not None:
+                target_plan_extra.update(
+                    {
+                        "h74_closeout_contract": h74_closeout_plan.as_dict(),
+                        "h74_closeout_contract_hash": sha256_prefixed(h74_closeout_plan.as_dict()),
+                        "qty_authority": h74_closeout_plan.qty_authority,
+                        "submit_qty_authority": h74_closeout_plan.qty_authority,
+                        "cycle_id": h74_closeout_plan.cycle_id,
+                        "h74_cycle_id": h74_closeout_plan.h74_cycle_id,
+                        "h74_entry_plan_client_order_id": h74_closeout_plan.h74_entry_plan_client_order_id,
+                        "h74_position_ownership_contract_hash": h74_closeout_plan.contract_hash,
+                        "contract_hash": h74_closeout_plan.contract_hash,
+                        "remaining_cycle_qty": h74_closeout_plan.remaining_qty,
+                        "h74_remaining_cycle_qty": h74_closeout_plan.remaining_qty,
+                        "target_qty": 0.0,
+                        "target_closeout_requested": True,
+                        "closeout_qty": h74_closeout_plan.closeout_qty,
+                        "residual_qty": h74_closeout_plan.residual_qty,
+                        "residual_policy": h74_closeout_plan.residual_policy,
+                        "residual_reason": h74_closeout_plan.residual_reason,
+                    }
+                )
+            elif h74_closeout_error:
+                target_plan_extra["h74_closeout_error"] = h74_closeout_error
             if h74_ownership_contract is not None:
                 target_plan_extra.update(ownership_payload_fields(h74_ownership_contract))
             elif h74_ownership_error:

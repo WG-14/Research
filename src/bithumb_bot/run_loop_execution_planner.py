@@ -373,6 +373,9 @@ def _inject_h74_cycle_inventory(
         "locked_exit_qty": inventory.locked_exit_qty,
         "remaining_cycle_qty": inventory.remaining_cycle_qty,
         "h74_remaining_cycle_qty": inventory.remaining_cycle_qty,
+        "contract_hash": inventory.contract_hash,
+        "h74_position_ownership_contract_hash": inventory.contract_hash,
+        "h74_entry_plan_client_order_id": inventory.h74_entry_plan_client_order_id,
         "h74_cycle_inventory": inventory_payload,
     }
 

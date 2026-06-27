@@ -10,7 +10,7 @@ from bithumb_bot import runtime_state
 from bithumb_bot.broker.base import BrokerFill, BrokerOrder
 from bithumb_bot.config import settings
 from bithumb_bot.decision_equivalence import sha256_prefixed
-from bithumb_bot.db_core import ensure_db, init_portfolio, record_broker_fill_observation
+from bithumb_bot.db_core import ensure_db, init_portfolio, record_broker_fill_observation, set_portfolio
 from bithumb_bot.execution_service import ExecutionSubmitPlan
 from bithumb_bot.execution import apply_fill_and_trade, apply_fill_principal_with_pending_fee, record_order_if_missing
 from bithumb_bot.h74_cycle_state import build_h74_cycle_id, load_h74_cycle_inventory
@@ -33,6 +33,8 @@ from bithumb_bot.strategy.daily_participation_policy import (
     evaluate_daily_participation_policy,
 )
 from bithumb_bot.target_position import TargetPositionSettings, build_target_position_decision
+from tests.test_submit_authority_policy import _approved as _approved_submit_plan
+from tests.test_submit_authority_policy import _plan as _submit_plan
 from tests.test_h74_live_submit_ownership import _request as _live_submit_request
 from bithumb_bot.broker.live_submit_orchestrator import _build_context, _plan_submit_attempt, _validate_explicit_submit_plan
 
@@ -1086,3 +1088,126 @@ def test_h74_sell_uses_remaining_cycle_qty_after_quote_buy_fill(tmp_path, roundt
     assert sell_decision.delta_side == "SELL"
     assert sell_decision.submit_qty == pytest.approx(remaining_qty)
     assert sell_decision.h74_remaining_cycle_qty == pytest.approx(remaining_qty)
+
+
+def test_h74_buy_fill_then_reduce_only_scheduled_exit_submits_exact_sell(tmp_path) -> None:
+    from bithumb_bot.h74_cycle_state import build_h74_cycle_closeout_plan_from_payload
+    from bithumb_bot.order_sizing import build_target_delta_execution_sizing
+
+    closeout = build_h74_cycle_closeout_plan_from_payload(
+        {
+            "cycle_id": "h74-replay-cycle",
+            "h74_cycle_id": "h74-replay-cycle",
+            "h74_entry_plan_client_order_id": "h74-replay-entry-plan",
+            "contract_hash": "sha256:h74-replay-contract",
+            "authority_hash": "sha256:h74-replay-authority",
+            "strategy_instance_id": "h74-source-observation",
+            "remaining_cycle_qty": 0.00109271,
+            "broker_available_qty": 0.00109271,
+        },
+        target_delta_side="SELL",
+        target_qty=0.0,
+    )
+    sizing = build_target_delta_execution_sizing(
+        pair="KRW-BTC",
+        side="SELL",
+        desired_qty=closeout.closeout_qty,
+        market_price=100_000_000.0,
+        min_qty=0.001,
+        qty_step=0.0,
+        min_notional_krw=5000.0,
+        max_qty_decimals=8,
+        authority_source=closeout.qty_authority,
+        h74_closeout=True,
+        qty_step_authority="local_fallback_min_qty",
+    )
+    risk_payload = _approved_submit_plan(
+        _submit_plan(side="SELL", extra={"target_delta_qty": -0.00109271}),
+        status="REDUCE_ONLY",
+        reason_code="POSITION_LOSS_LIMIT",
+        allowed_actions=["SELL", "HOLD"],
+    ).as_final_payload()
+
+    assert sizing.side == "SELL"
+    assert sizing.final_submitted_qty == pytest.approx(0.00109271)
+    assert sizing.final_submitted_qty != pytest.approx(0.001)
+    assert risk_payload["pre_submit_risk_status"] == "REDUCE_ONLY"
+
+
+def test_h74_buy_fill_then_scheduled_exit_closes_cycle_and_portfolio(roundtrip_db) -> None:
+    conn = _conn(roundtrip_db)
+    try:
+        cycle_id = "h74-replay-cycle"
+        set_portfolio(conn, cash_krw=1_000_000.0, asset_qty=0.00109271)
+        from bithumb_bot.h74_cycle_state import upsert_h74_cycle_fill
+
+        upsert_h74_cycle_fill(
+            conn,
+            cycle_id=cycle_id,
+            authority_hash="sha256:h74-replay-authority",
+            strategy_instance_id="h74-source-observation",
+            pair="KRW-BTC",
+            side="BUY",
+            qty=0.00109271,
+            client_order_id="h74-replay-buy",
+            fill_ts=1,
+            contract_hash="sha256:h74-replay-contract",
+            h74_entry_plan_client_order_id="h74-replay-entry-plan",
+        )
+        upsert_h74_cycle_fill(
+            conn,
+            cycle_id=cycle_id,
+            authority_hash="sha256:h74-replay-authority",
+            strategy_instance_id="h74-source-observation",
+            pair="KRW-BTC",
+            side="SELL",
+            qty=0.00109271,
+            client_order_id="h74-replay-sell",
+            fill_ts=2,
+            h74_entry_plan_client_order_id="h74-replay-entry-plan",
+        )
+        set_portfolio(conn, cash_krw=1_000_000.0, asset_qty=0.0)
+        row = conn.execute("SELECT state FROM h74_cycle_state WHERE cycle_id=?", (cycle_id,)).fetchone()
+        portfolio = conn.execute("SELECT asset_qty FROM portfolio WHERE id=1").fetchone()
+    finally:
+        conn.close()
+
+    assert row["state"] == "CLOSED"
+    assert portfolio["asset_qty"] == pytest.approx(0.0)
+
+
+def test_h74_reduce_only_exit_replay_regression_from_20260626(tmp_path) -> None:
+    from bithumb_bot.h74_cycle_state import build_h74_cycle_closeout_plan_from_payload
+    from bithumb_bot.order_sizing import build_target_delta_execution_sizing
+
+    closeout = build_h74_cycle_closeout_plan_from_payload(
+        {
+            "cycle_id": "h74-replay-cycle",
+            "h74_cycle_id": "h74-replay-cycle",
+            "h74_entry_plan_client_order_id": "h74-replay-entry-plan",
+            "contract_hash": "sha256:h74-replay-contract",
+            "authority_hash": "sha256:h74-replay-authority",
+            "strategy_instance_id": "h74-source-observation",
+            "remaining_cycle_qty": 0.00109271,
+            "broker_available_qty": 0.00109271,
+        },
+        target_delta_side="SELL",
+        target_qty=0.0,
+    )
+    sizing = build_target_delta_execution_sizing(
+        pair="KRW-BTC",
+        side="SELL",
+        desired_qty=closeout.closeout_qty,
+        market_price=100_000_000.0,
+        min_qty=0.001,
+        qty_step=0.0,
+        min_notional_krw=5000.0,
+        max_qty_decimals=8,
+        authority_source=closeout.qty_authority,
+        h74_closeout=True,
+        qty_step_authority="local_fallback_min_qty",
+    )
+
+    assert closeout.remaining_qty == pytest.approx(0.00109271)
+    assert sizing.final_submitted_qty == pytest.approx(0.00109271)
+    assert sizing.final_submitted_qty != pytest.approx(0.001)

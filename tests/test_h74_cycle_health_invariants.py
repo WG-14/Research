@@ -99,6 +99,55 @@ def test_h74_buy_filled_order_without_cycle_state_is_health_blocker() -> None:
     assert "h74_cycle_ownership_incomplete" in data["resume_blockers"]
 
 
+def test_h74_cycle_invariants_ignore_legacy_daily_participation_rows() -> None:
+    conn = _conn()
+    record_order_if_missing(
+        conn,
+        client_order_id="legacy-buy",
+        side="BUY",
+        qty_req=0.001,
+        price=100_000_000.0,
+        strategy_name="daily_participation_sma",
+        strategy_instance_id=None,
+        cycle_id=None,
+        status="FILLED",
+    )
+    record_order_if_missing(
+        conn,
+        client_order_id="legacy-sell",
+        side="SELL",
+        qty_req=0.001,
+        price=100_000_000.0,
+        strategy_name="daily_participation_sma",
+        strategy_instance_id=None,
+        cycle_id=None,
+        status="FILLED",
+    )
+
+    data = compute_runtime_readiness_snapshot(conn).as_dict()
+
+    assert "h74_cycle_ownership_incomplete" not in data["resume_blockers"]
+
+
+def test_h74_cycle_invariants_still_block_broken_h74_owned_rows() -> None:
+    conn = _conn()
+    record_order_if_missing(
+        conn,
+        client_order_id="h74-broken-buy",
+        side="BUY",
+        qty_req=0.001,
+        price=100_000_000.0,
+        strategy_name="daily_participation_sma",
+        strategy_instance_id="h74-source-observation",
+        cycle_id=None,
+        status="FILLED",
+    )
+
+    data = compute_runtime_readiness_snapshot(conn).as_dict()
+
+    assert "h74_cycle_ownership_incomplete" in data["resume_blockers"]
+
+
 def test_h74_cycle_state_qty_mismatch_is_health_blocker() -> None:
     conn = _conn()
     _h74_order(conn)

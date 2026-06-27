@@ -8,7 +8,7 @@ from .db_core import update_execution_plan_final_submit_payload
 from .execution_plan_batch import build_pre_submit_risk_finalization_artifact
 from .risk_contract import SubmitPlan
 from .runtime_risk_engine import RuntimeRiskEngineAdapter, resolve_effective_pre_submit_risk_policy
-from .submit_authority_policy import operational_pre_submit_risk_approval_error
+from .submit_authority_policy import is_pre_submit_risk_approved_for_plan
 
 
 @dataclass(frozen=True)
@@ -55,11 +55,11 @@ class PreSubmitRiskCoordinator:
             expected_hash = execution_submit_plan_payload_hash(final_payload)
             final_payload["submit_plan_hash"] = expected_hash
 
-        existing_approval_error = operational_pre_submit_risk_approval_error(
+        existing_approval = is_pre_submit_risk_approved_for_plan(
             final_payload,
             expected_submit_plan_hash=expected_hash,
         )
-        if existing_approval_error is None:
+        if existing_approval.approved:
             return PreSubmitRiskResult(
                 payload=final_payload,
                 allowed=True,
@@ -118,11 +118,11 @@ class PreSubmitRiskCoordinator:
             "pre_submit_risk_evidence": dict(decision.evidence),
         }
         final_payload.update(proof_fields)
-        approval_error = operational_pre_submit_risk_approval_error(
-            proof_fields,
+        approval = is_pre_submit_risk_approved_for_plan(
+            final_payload,
             expected_submit_plan_hash=expected_hash,
         )
-        allowed = approval_error is None
+        allowed = approval.approved
         persistence_status = (
             "final_broker_bound_payload" if allowed else "post_proof_submit_skipped"
         )
@@ -130,7 +130,7 @@ class PreSubmitRiskCoordinator:
             final_payload.update(
                 {
                     "final_submit_payload_persistence_status": persistence_status,
-                    "final_submit_payload_skip_reason": str(approval_error),
+                    "final_submit_payload_skip_reason": str(approval.reason),
                 }
             )
         final_payload["content_hash"] = execution_submit_plan_payload_hash(final_payload)
@@ -152,5 +152,5 @@ class PreSubmitRiskCoordinator:
             payload=final_payload,
             allowed=allowed,
             persistence_status=persistence_status,
-            reason="allowed" if allowed else str(approval_error),
+            reason="allowed" if allowed else str(approval.reason),
         )

@@ -455,7 +455,7 @@ def test_operational_pre_submit_risk_approval_requires_allow_and_matching_plan_h
     assert operational_pre_submit_risk_approval_error(
         {**payload, "pre_submit_risk_status": "BLOCK"},
         expected_submit_plan_hash="sha256:plan",
-    ) == "live_real_order_pre_submit_risk_not_allow"
+    ) == "live_real_order_pre_submit_risk_block"
     assert operational_pre_submit_risk_approval_error(
         payload,
         expected_submit_plan_hash="sha256:other",

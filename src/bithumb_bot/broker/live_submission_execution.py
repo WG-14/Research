@@ -40,7 +40,7 @@ from ..reason_codes import (
 )
 from ..risk_contract import SubmitPlan
 from ..runtime_risk_engine import RuntimeRiskEngineAdapter
-from ..submit_authority_policy import operational_pre_submit_risk_approval_error
+from ..submit_authority_policy import is_pre_submit_risk_approved_for_plan
 from .live_submit_planning import build_live_submit_plan
 from .live_submit_orchestrator import (
     StandardSubmitPlanningFailureRequest,
@@ -802,16 +802,16 @@ def execute_live_submission_and_application(
                 )
             )
             return None
-        approval_error = operational_pre_submit_risk_approval_error(
+        approval = is_pre_submit_risk_approved_for_plan(
             pre_submit_risk_fields,
             expected_submit_plan_hash=expected_plan_hash,
         )
-        if approval_error is not None:
+        if not approval.approved:
             live_module.RUN_LOG.warning(
                 format_log_kv(
                     "[ORDER_SKIP] pre-submit risk approval blocked",
                     side=feasibility.side,
-                    reason=approval_error,
+                    reason=approval.reason,
                     pre_submit_risk_decision_hash=risk_decision.risk_decision_hash,
                 )
             )

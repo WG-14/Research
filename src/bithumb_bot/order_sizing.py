@@ -16,7 +16,7 @@ from .fee_authority import (
 from .broker.order_rules import get_effective_order_rules
 from .lifecycle import LotDefinitionSnapshot
 from .lot_model import build_market_lot_rules, lot_count_to_qty
-from .quantity_kernel import OrderRuleSnapshot, plan_buy_notional, plan_sell_qty
+from .quantity_kernel import OrderRuleSnapshot, plan_buy_notional, plan_h74_closeout_qty, plan_sell_qty
 
 _DECIMAL_ZERO = Decimal("0")
 
@@ -113,6 +113,10 @@ class TargetDeltaExecutionSizingPlan:
     slippage_bps: float
     price_protection_basis: str
     quantity_contract_hash: str = ""
+    qty_step_authority: str = "exchange"
+    residual_qty: float = 0.0
+    residual_policy: str = "none"
+    residual_reason: str = "none"
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -139,6 +143,10 @@ class TargetDeltaExecutionSizingPlan:
             "slippage_bps": self.slippage_bps,
             "price_protection_basis": self.price_protection_basis,
             "quantity_contract_hash": self.quantity_contract_hash,
+            "qty_step_authority": self.qty_step_authority,
+            "residual_qty": self.residual_qty,
+            "residual_policy": self.residual_policy,
+            "residual_reason": self.residual_reason,
         }
 
 
@@ -633,6 +641,8 @@ def build_target_delta_execution_sizing(
     min_notional_krw: float | None,
     max_qty_decimals: int | None = None,
     authority_source: str = "target_delta",
+    h74_closeout: bool = False,
+    qty_step_authority: str = "exchange",
 ) -> TargetDeltaExecutionSizingPlan:
     normalized_side = str(side or "NONE").upper()
     price = float(market_price)
@@ -673,6 +683,7 @@ def build_target_delta_execution_sizing(
             slippage_bps=float(settings.STRATEGY_ENTRY_SLIPPAGE_BPS),
             price_protection_basis="live_price_protection_pretrade",
             quantity_contract_hash="",
+            qty_step_authority=str(qty_step_authority or "exchange"),
         )
 
     if normalized_side not in {"BUY", "SELL"}:
@@ -686,6 +697,7 @@ def build_target_delta_execution_sizing(
     if resolved_min_notional <= 0.0:
         return _blocked("missing_order_rule_min_notional_krw")
 
+    is_h74_closeout = bool(h74_closeout and normalized_side == "SELL")
     effective_qty_step = _exchange_qty_step(
         qty_step=float(resolved_qty_step),
         min_qty=float(resolved_min_qty),
@@ -693,9 +705,10 @@ def build_target_delta_execution_sizing(
     )
     kernel_rules = OrderRuleSnapshot(
         min_qty=float(resolved_min_qty),
-        qty_step=float(effective_qty_step),
+        qty_step=float(resolved_qty_step if is_h74_closeout else effective_qty_step),
         max_qty_decimals=int(resolved_decimals),
         min_notional_krw=float(resolved_min_notional),
+        qty_step_authority=str(qty_step_authority or ("exchange" if resolved_qty_step > 0 else "local_fallback_min_qty")),
     )
     kernel_result = (
         plan_buy_notional(
@@ -704,6 +717,12 @@ def build_target_delta_execution_sizing(
             rules=kernel_rules,
         )
         if normalized_side == "BUY"
+        else plan_h74_closeout_qty(
+            remaining_qty=float(raw_desired_qty),
+            reference_price=float(price),
+            rules=kernel_rules,
+        )
+        if is_h74_closeout
         else plan_sell_qty(
             requested_qty=float(raw_desired_qty),
             reference_price=float(price),
@@ -755,4 +774,8 @@ def build_target_delta_execution_sizing(
         slippage_bps=float(settings.STRATEGY_ENTRY_SLIPPAGE_BPS),
         price_protection_basis="live_price_protection_pretrade",
         quantity_contract_hash=kernel_result.quantity_contract_hash,
+        qty_step_authority=kernel_result.qty_step_authority,
+        residual_qty=float(kernel_result.residual_qty),
+        residual_policy=str(kernel_result.residual_policy),
+        residual_reason=str(kernel_result.residual_reason),
     )
