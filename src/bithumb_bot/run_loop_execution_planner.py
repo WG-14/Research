@@ -365,6 +365,7 @@ def _inject_h74_cycle_inventory(
         return readiness_payload
     inventory_payload = inventory.as_dict()
     identity_payload: dict[str, object] = {}
+    ownership_error = ""
     try:
         identity = resolve_h74_sell_identity(
             conn,
@@ -378,11 +379,10 @@ def _inject_h74_cycle_inventory(
         )
         identity_payload = identity.as_evidence_dict()
     except H74SubmitIdentityError as exc:
-        return {
-            **readiness_payload,
-            "h74_cycle_inventory_error": str(exc),
-            "h74_cycle_ownership_error": str(exc),
-        }
+        ownership_error = str(exc)
+    ownership_error_payload = (
+        {"h74_cycle_ownership_error": ownership_error} if ownership_error else {}
+    )
     return {
         **readiness_payload,
         "cycle_id": inventory.cycle_id,
@@ -396,6 +396,7 @@ def _inject_h74_cycle_inventory(
         "h74_position_ownership_contract_hash": inventory.contract_hash,
         "h74_entry_plan_client_order_id": inventory.h74_entry_plan_client_order_id,
         "h74_cycle_inventory": inventory_payload,
+        **ownership_error_payload,
         **identity_payload,
     }
 
