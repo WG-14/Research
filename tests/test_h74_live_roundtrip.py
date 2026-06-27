@@ -13,7 +13,14 @@ from bithumb_bot.broker.base import BrokerFill, BrokerOrder
 from bithumb_bot.config import settings
 from bithumb_bot.decision_equivalence import sha256_prefixed
 from bithumb_bot.db_core import ensure_db, init_portfolio, record_broker_fill_observation, set_portfolio
-from bithumb_bot.execution_service import ExecutionSubmitPlan
+from bithumb_bot.execution_models import OrderIntent, SubmitPlan, SubmitPriceTickPolicy
+from bithumb_bot.execution_service import (
+    ExecutionReadinessPlanningInput,
+    ExecutionSubmitPlan,
+    ExecutionTargetPlanningInput,
+    TypedExecutionPlanningInput,
+    build_typed_execution_decision_summary,
+)
 from bithumb_bot.execution import apply_fill_and_trade, apply_fill_principal_with_pending_fee, record_order_if_missing
 from bithumb_bot.h74_cycle_state import build_h74_cycle_id, load_h74_cycle_inventory
 from bithumb_bot.h74_live_rehearsal import H74LiveRehearsalConfig, run_h74_live_rehearsal
@@ -34,12 +41,24 @@ from bithumb_bot.strategy.daily_participation_policy import (
     DailyParticipationStateSnapshot,
     evaluate_daily_participation_policy,
 )
+from bithumb_bot.portfolio_target import PortfolioTarget
+from bithumb_bot.pre_submit_risk_coordinator import PreSubmitRiskCoordinator
+from bithumb_bot.risk_contract import RiskPolicy
+from bithumb_bot.runtime_risk_engine import RuntimeRiskEngineAdapter
+from bithumb_bot.strategy_policy_contract import ExitExecutionIntent, PositionSnapshot, StrategyDecisionV2
 from bithumb_bot.target_position import TargetPositionSettings, build_target_position_decision
+from bithumb_bot.submit_authority_policy import evaluate_submit_authority_policy
 from tests.test_submit_authority_policy import _approved as _approved_submit_plan
 from tests.test_submit_authority_policy import _plan as _submit_plan
-from bithumb_bot.submit_authority_policy import evaluate_submit_authority_policy
 from tests.test_h74_live_submit_ownership import _request as _live_submit_request
-from bithumb_bot.broker.live_submit_orchestrator import _build_context, _plan_submit_attempt, _validate_explicit_submit_plan
+from bithumb_bot.broker.live_submit_orchestrator import (
+    LIVE_STANDARD_SUBMIT_CONTRACT_PROFILE,
+    StandardSubmitPipelineRequest,
+    _build_context,
+    _plan_submit_attempt,
+    _validate_explicit_submit_plan,
+    run_standard_submit_pipeline_with_evidence,
+)
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "bithumb" / "live_paid_fee_single_fill_buy_2026_04_24.json"
@@ -1179,8 +1198,271 @@ def test_h74_buy_fill_then_scheduled_exit_closes_cycle_and_portfolio(roundtrip_d
     assert portfolio["asset_qty"] == pytest.approx(0.0)
 
 
-def test_h74_reduce_only_exit_replay_regression_from_20260626(tmp_path) -> None:
-    conn = ensure_db(str(tmp_path / "h74-reduce-only-replay.sqlite"))
+def _h74_replay_sell_decision(qty: float) -> StrategyDecisionV2:
+    return StrategyDecisionV2(
+        strategy_name="daily_participation_sma",
+        raw_signal="SELL",
+        raw_reason="max_holding_time",
+        entry_signal="HOLD",
+        entry_reason="in_position",
+        exit_signal="SELL",
+        exit_reason="max_holding_time",
+        final_signal="SELL",
+        final_reason="max_holding_time",
+        blocked_filters=(),
+        entry_blocked=True,
+        entry_block_reason="in_position",
+        exit_rule="max_holding_time",
+        exit_evaluations=({"rule": "max_holding_time", "passed": True},),
+        protective_exit_overrode_entry=False,
+        exit_filter_suppression_prevented=False,
+        position_snapshot=PositionSnapshot(
+            in_position=True,
+            entry_allowed=False,
+            exit_allowed=True,
+            terminal_state="open_exposure",
+            qty_open=float(qty),
+            raw_qty_open=float(qty),
+            raw_total_asset_qty=float(qty),
+            open_lot_count=1,
+            sellable_executable_lot_count=1,
+            dust_state="none",
+            effective_flat=False,
+            has_executable_exposure=True,
+            has_any_position_residue=True,
+        ),
+        execution_intent=ExitExecutionIntent(
+            side="SELL",
+            intent="exit",
+            pair="KRW-BTC",
+            requires_execution_sizing=True,
+        ),
+        entry_decision=None,
+        trace={"exit_signal_source": "max_holding_time"},
+        policy_hash="sha256:h74-replay-policy",
+        policy_contract_hash="sha256:h74-replay-contract",
+        policy_input_hash="sha256:h74-replay-input",
+        policy_decision_hash="sha256:h74-replay-decision",
+    )
+
+
+def _h74_replay_target() -> PortfolioTarget:
+    risk_policy = RiskPolicy(max_position_loss_pct=0.01, source="h74_replay_fixture").as_dict()
+    return PortfolioTarget(
+        pair="KRW-BTC",
+        target_exposure_krw=0.0,
+        target_qty=0.0,
+        allocator_policy_name="h74_replay_allocator",
+        allocator_policy_version="1",
+        allocator_config_hash="sha256:h74-replay-allocator",
+        strategy_contribution_hash="sha256:h74-replay-contribution",
+        allocation_input_hash="sha256:h74-replay-allocation-input",
+        reason="scheduled_exit",
+        conflict_resolution={
+            "selected_signal": "SELL",
+            "selected_strategy_instance_ids": ["h74-source-observation"],
+            "selected_strategy_risk_profiles": [
+                {
+                    "strategy_instance_id": "h74-source-observation",
+                    "strategy_risk_profile_hash": "sha256:" + "8" * 64,
+                    "risk_policy": risk_policy,
+                }
+            ],
+            "selected_strategy_risk_profile_hashes": ["sha256:" + "8" * 64],
+            "target_exposure_source": "scheduled_exit",
+            "allocation_target_source": "scheduled_exit",
+            "strict_target_exposure_required": True,
+        },
+        authoritative=True,
+        fail_closed_reason="none",
+    )
+
+
+def _generate_h74_reduce_only_target_plan(
+    *,
+    db_path: Path,
+    cycle_id: str,
+    entry_plan_id: str,
+    contract_hash: str,
+    contract: dict[str, object],
+    qty: float,
+) -> ExecutionSubmitPlan:
+    object.__setattr__(settings, "DB_PATH", str(db_path))
+    object.__setattr__(settings, "MODE", "live")
+    object.__setattr__(settings, "LIVE_DRY_RUN", False)
+    object.__setattr__(settings, "LIVE_REAL_ORDER_ARMED", True)
+    object.__setattr__(settings, "EXECUTION_ENGINE", "target_delta")
+    object.__setattr__(settings, "PAIR", "KRW-BTC")
+    object.__setattr__(settings, "H74_LIVE_REHEARSAL_NO_SUBMIT_BOUNDARY", False)
+    object.__setattr__(settings, "LIVE_ORDER_MAX_QTY_DECIMALS", 8)
+    target = _h74_replay_target()
+    summary = build_typed_execution_decision_summary(
+        typed_input=TypedExecutionPlanningInput(
+            strategy_decision=_h74_replay_sell_decision(qty),
+            candle_ts=2,
+            market_price=100_000_000.0,
+            readiness=ExecutionReadinessPlanningInput.from_payload(
+                {
+                    "cash_available": 1_000_000.0,
+                    "min_qty": 0.0001,
+                    "qty_step": 0.0,
+                    "min_notional_krw": 5_000.0,
+                    "broker_position_evidence": {
+                        "broker_qty_known": True,
+                        "broker_qty": float(qty),
+                        "broker_asset_qty": float(qty),
+                        "balance_source_stale": False,
+                    },
+                    "total_effective_exposure_notional_krw": float(qty) * 100_000_000.0,
+                    "position_mode": "fixed_fill_qty_until_exit",
+                    "hold_policy": "hold_acquired_fill_qty_until_max_holding_exit",
+                    "h74_fixed_position_contract_active": True,
+                    "strategy_instance_id": "h74-source-observation",
+                    "authority_hash": "sha256:h74-replay-authority",
+                    "cycle_id": cycle_id,
+                    "h74_cycle_id": cycle_id,
+                    "remaining_cycle_qty": float(qty),
+                    "h74_remaining_cycle_qty": float(qty),
+                    "h74_entry_plan_client_order_id": entry_plan_id,
+                    "h74_position_ownership_contract_hash": contract_hash,
+                    "h74_position_ownership_contract": contract,
+                }
+            ),
+            target=ExecutionTargetPlanningInput(
+                previous_target_exposure_krw=float(qty) * 100_000_000.0,
+                portfolio_target=target,
+                portfolio_target_hash=target.content_hash(),
+                allocation_decision_hash="sha256:h74-replay-allocation",
+                allocator_config_hash="sha256:h74-replay-allocator",
+                strategy_contribution_hash="sha256:h74-replay-contribution",
+            ),
+        )
+    )
+    plan = summary.typed_target_submit_plan()
+    assert plan is not None
+    return plan
+
+
+def _persist_replay_execution_plan_anchor(conn: sqlite3.Connection, payload: dict[str, object]) -> None:
+    conn.execute(
+        """
+        INSERT INTO runtime_strategy_decision_bundle(
+            id, candle_ts, pair, interval, strategy_set_manifest_hash,
+            bundle_hash, result_count, created_ts
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            1,
+            2,
+            "KRW-BTC",
+            "1m",
+            "sha256:h74-replay-manifest",
+            "sha256:h74-replay-decision-bundle",
+            1,
+            2,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO portfolio_allocation_decision(
+            id, bundle_id, allocation_decision_hash, allocation_input_hash,
+            allocator_config_hash, strategy_contribution_hash, selected_signal,
+            authoritative, primary_block_reason, reason, conflict_resolution_json,
+            allocation_decision_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            1,
+            1,
+            str(payload.get("allocation_decision_hash") or "sha256:h74-replay-allocation"),
+            "sha256:h74-replay-allocation-input",
+            str(payload.get("allocator_config_hash") or "sha256:h74-replay-allocator"),
+            str(payload.get("strategy_contribution_hash") or "sha256:h74-replay-contribution"),
+            "SELL",
+            1,
+            "none",
+            "scheduled_exit",
+            "{}",
+            json.dumps({"allocation_decision_hash": payload.get("allocation_decision_hash")}, sort_keys=True),
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO execution_plan(
+            allocation_id, portfolio_target_hash, execution_plan_bundle_hash,
+            execution_submit_plan_hash, submit_plan_side, submit_plan_qty,
+            submit_plan_notional_krw, submit_plan_idempotency_key, submit_plan_source,
+            submit_plan_authority, submit_expected, final_action, block_reason,
+            status, execution_plan_bundle_json, execution_submit_plan_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            1,
+            str(payload.get("portfolio_target_hash") or ""),
+            "sha256:h74-replay-plan-bundle",
+            str(payload["submit_plan_hash"]),
+            str(payload["side"]),
+            float(payload["qty"]),
+            float(payload["notional_krw"]),
+            str(payload.get("idempotency_key") or ""),
+            str(payload["source"]),
+            str(payload["authority"]),
+            1,
+            str(payload["final_action"]),
+            str(payload["block_reason"]),
+            "planned",
+            "{}",
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        ),
+    )
+
+
+def _submit_model_from_execution_plan(plan: ExecutionSubmitPlan, client_order_id: str) -> SubmitPlan:
+    qty = float(plan.qty or 0.0)
+    intent = OrderIntent(
+        client_order_id=client_order_id,
+        market="KRW-BTC",
+        side="SELL",
+        normalized_side="ask",
+        qty=qty,
+        price=None,
+        created_ts=2,
+    )
+    return SubmitPlan(
+        intent=intent,
+        rules=SimpleNamespace(),
+        requested_qty=qty,
+        exchange_constrained_qty=qty,
+        lifecycle_executable_qty=qty,
+        submitted_qty=qty,
+        rejected_qty_remainder=0.0,
+        unused_budget_krw=0.0,
+        submit_qty_authority=str(plan.as_dict().get("submit_qty_authority") or "h74_cycle_remaining"),
+        lifecycle_non_executable_reason=None,
+        chance_validation_order_type="market",
+        chance_supported_order_types=("market",),
+        exchange_submit_field="volume",
+        exchange_order_type="market",
+        exchange_submit_price=None,
+        exchange_submit_volume=qty,
+        exchange_submit_notional_krw=None,
+        submit_contract_context={"exchange_submit_field": "volume", "exchange_submit_qty": qty},
+        submit_price_tick_policy=SubmitPriceTickPolicy(False, 0.0, "not_applicable"),
+        effective_market_price=100_000_000.0,
+        lot_rules=SimpleNamespace(),
+        qty_split=SimpleNamespace(),
+        internal_lot_qty=0.0001,
+        exchange_submit_qty=qty,
+        plan_id=f"{client_order_id}:plan",
+    )
+
+
+def test_h74_reduce_only_exit_replay_regression_from_20260626(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "h74-reduce-only-replay.sqlite"
+    conn = ensure_db(str(db_path))
     init_portfolio(conn)
     set_portfolio(conn, cash_krw=1_000_000.0, asset_qty=0.0)
     cycle_id = "h74-replay-cycle"
@@ -1235,21 +1517,86 @@ def test_h74_reduce_only_exit_replay_regression_from_20260626(tmp_path) -> None:
     cycle = conn.execute("SELECT state FROM h74_cycle_state WHERE cycle_id=?", (cycle_id,)).fetchone()
     assert cycle["state"] == "HOLDING"
 
-    sell_plan = replace(
-        _submit_plan(side="SELL", extra={"target_delta_qty": -0.00109271}),
+    conn.commit()
+    target_plan = _generate_h74_reduce_only_target_plan(
+        db_path=db_path,
+        cycle_id=cycle_id,
+        entry_plan_id=entry_plan_id,
+        contract_hash=contract.contract_hash,
+        contract=contract.as_dict(),
         qty=0.00109271,
-        notional_krw=109_271.0,
-        target_exposure_krw=0.0,
-        current_effective_exposure_krw=109_271.0,
-        delta_krw=-109_271.0,
     )
-    approved_plan = _approved_submit_plan(
-        sell_plan,
-        status="REDUCE_ONLY",
-        reason_code="POSITION_LOSS_LIMIT",
-        allowed_actions=["SELL", "HOLD"],
+    target_payload = target_plan.as_dict()
+    assert target_payload["source"] == "target_delta"
+    assert target_payload["authority"] == "canonical_target_delta_sizing"
+    assert target_payload["side"] == "SELL"
+    assert target_payload["target_delta_qty"] == pytest.approx(-0.00109271)
+    assert target_plan.qty == pytest.approx(0.00109271)
+    assert target_plan.qty != pytest.approx(0.001)
+
+    pre_submit_called = {"count": 0}
+
+    class _ReduceOnlyRiskDecision:
+        status = "REDUCE_ONLY"
+        reason_code = "POSITION_LOSS_LIMIT"
+        risk_decision_hash = "sha256:" + "1" * 64
+        risk_policy_hash = "sha256:" + "2" * 64
+        risk_input_hash = "sha256:" + "3" * 64
+        risk_evidence_hash = "sha256:" + "4" * 64
+        state_source = "h74_reduce_only_replay_fixture"
+        evidence = {"fixture": "20260626_reduce_only_replay"}
+
+        def as_dict(self) -> dict[str, object]:
+            return {
+                "status": self.status,
+                "reason_code": self.reason_code,
+                "allowed_actions": ["SELL", "HOLD"],
+                "risk_decision_hash": self.risk_decision_hash,
+                "risk_policy_hash": self.risk_policy_hash,
+                "risk_input_hash": self.risk_input_hash,
+                "risk_evidence_hash": self.risk_evidence_hash,
+                "state_source": self.state_source,
+                "evidence": dict(self.evidence),
+            }
+
+    def _fake_evaluate_pre_submit(self, **kwargs):
+        pre_submit_called["count"] += 1
+        assert kwargs["plan"].side == "SELL"
+        assert kwargs["submit_qty"] == pytest.approx(0.00109271)
+        return _ReduceOnlyRiskDecision()
+
+    monkeypatch.setattr(RuntimeRiskEngineAdapter, "evaluate_pre_submit", _fake_evaluate_pre_submit)
+    monkeypatch.setattr(
+        "bithumb_bot.broker.live_submit_orchestrator._runtime_identity_fields",
+        lambda: {
+            "live_execution_contract_fingerprint": "sha256:h74-replay-contract",
+            "code_commit_sha": "h74-replay",
+            "code_working_tree_dirty": False,
+            "code_provenance_source": "h74_reduce_only_replay_fixture",
+        },
     )
-    sell_payload = approved_plan.as_final_payload()
+
+    sell_payload = target_plan.as_final_payload()
+    _persist_replay_execution_plan_anchor(conn, sell_payload)
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    risk_result = PreSubmitRiskCoordinator().evaluate_and_persist(
+        conn,
+        payload=sell_payload,
+        broker=None,
+        ts_ms=2,
+        market_price=100_000_000.0,
+        field_name="target_submit_plan",
+    )
+    conn.commit()
+    assert pre_submit_called["count"] == 1
+    assert risk_result.allowed is True
+    assert risk_result.persistence_status == "final_broker_bound_payload"
+    sell_payload = risk_result.payload
+    assert sell_payload["pre_submit_risk_status"] == "REDUCE_ONLY"
+    assert sell_payload["pre_submit_risk_reason_code"] == "POSITION_LOSS_LIMIT"
+    assert sell_payload["target_delta_qty"] == pytest.approx(-0.00109271)
+
     authority = evaluate_submit_authority_policy(
         sell_payload,
         settings_obj=SimpleNamespace(
@@ -1269,37 +1616,79 @@ def test_h74_reduce_only_exit_replay_regression_from_20260626(tmp_path) -> None:
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
 
-        def sell(self, *, qty: float) -> None:
-            self.calls.append({"side": "SELL", "qty": float(qty)})
+        def place_order(self, **kwargs) -> BrokerOrder:
+            self.calls.append(dict(kwargs))
+            return BrokerOrder(
+                client_order_id=str(kwargs["client_order_id"]),
+                exchange_order_id="h74-replay-sell-exchange",
+                side=str(kwargs["side"]),
+                status="NEW",
+                price=None,
+                qty_req=float(kwargs["qty"]),
+                qty_filled=0.0,
+                created_ts=2,
+                updated_ts=2,
+                raw={"fixture": "20260626_reduce_only_replay"},
+            )
 
     broker = _FakeBroker()
-    broker.sell(qty=float(sell_payload["qty"]))
+    submit_request = StandardSubmitPipelineRequest(
+        conn=conn,
+        submit_plan=_submit_model_from_execution_plan(target_plan, "h74-replay-sell"),
+        signal="SELL",
+        client_order_id="h74-replay-sell",
+        submit_attempt_id="h74-replay-sell-attempt",
+        side="SELL",
+        order_qty=float(sell_payload["qty"]),
+        position_qty=float(sell_payload["qty"]),
+        qty=float(sell_payload["qty"]),
+        ts=2,
+        intent_key=str(sell_payload["idempotency_key"]),
+        market_price=100_000_000.0,
+        raw_total_asset_qty=0.00109271,
+        open_exposure_qty=0.00109271,
+        dust_tracking_qty=0.0,
+        effective_rules=SimpleNamespace(),
+        submit_qty_source=str(sell_payload["submit_qty_authority"]),
+        position_state_source="h74_cycle_state",
+        reference_price=100_000_000.0,
+        top_of_book_summary=None,
+        strategy_name="daily_participation_sma",
+        decision_id=2,
+        decision_reason="max_holding_time",
+        exit_rule_name="max_holding_time",
+        order_type="market",
+        contract_profile=LIVE_STANDARD_SUBMIT_CONTRACT_PROFILE,
+        payload_hash=str(sell_payload["content_hash"]),
+        internal_lot_size=0.0001,
+        effective_min_trade_qty=0.0001,
+        qty_step=0.0,
+        min_notional_krw=5_000.0,
+        intended_lot_count=1,
+        executable_lot_count=1,
+        final_intended_qty=float(sell_payload["qty"]),
+        final_submitted_qty=float(sell_payload["qty"]),
+        decision_reason_code="max_holding_time",
+        submit_truth_source_fields={"pre_submit_risk_status": "REDUCE_ONLY"},
+        submit_observability_fields=dict(sell_payload),
+        sell_observability={},
+        strategy_instance_id="h74-source-observation",
+        cycle_id=cycle_id,
+        authority_hash="sha256:h74-replay-authority",
+        probe_run_id="probe-run-20260626",
+        h74_cycle_id=cycle_id,
+        h74_entry_plan_client_order_id=entry_plan_id,
+        h74_position_ownership_contract_hash=contract.contract_hash,
+        h74_position_ownership_contract=contract.as_dict(),
+    )
+    submit_result = run_standard_submit_pipeline_with_evidence(broker=broker, request=submit_request)
+
+    assert submit_result is not None
     assert len(broker.calls) == 1
     assert broker.calls[0]["side"] == "SELL"
     assert broker.calls[0]["qty"] == pytest.approx(0.00109271)
     assert broker.calls[0]["qty"] != pytest.approx(0.001)
 
-    record_order_if_missing(
-        conn,
-        client_order_id="h74-replay-sell",
-        side="SELL",
-        qty_req=0.00109271,
-        price=100_000_000.0,
-        symbol="KRW-BTC",
-        strategy_name="daily_participation_sma",
-        strategy_instance_id="h74-source-observation",
-        cycle_id=cycle_id,
-        authority_hash="sha256:h74-replay-authority",
-        h74_entry_plan_client_order_id=entry_plan_id,
-        h74_position_ownership_contract_hash=contract.contract_hash,
-        h74_position_ownership_contract=contract.as_dict(),
-        exit_decision_id=2,
-        decision_reason="max_holding_time",
-        exit_rule_name="max_holding_time",
-        probe_run_id="probe-run-20260626",
-        ts_ms=2,
-        status="NEW",
-    )
     apply_fill_and_trade(
         conn,
         client_order_id="h74-replay-sell",
@@ -1308,7 +1697,7 @@ def test_h74_reduce_only_exit_replay_regression_from_20260626(tmp_path) -> None:
         fill_ts=2,
         price=100_000_000.0,
         qty=0.00109271,
-        fee=0.0,
+        fee=40.0,
         strategy_name="daily_participation_sma",
         pair="KRW-BTC",
         signal_ts=2,

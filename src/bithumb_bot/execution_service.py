@@ -52,6 +52,7 @@ from .h74_position_ownership import (
     ownership_payload_fields,
 )
 from .h74_cycle_state import build_h74_cycle_id, build_h74_cycle_closeout_plan_from_payload
+from .h74_submit_identity import H74SubmitIdentityError, resolve_h74_sell_identity
 from .h74_submit_semantics import (
     H74_ENTRY_SUBMIT_SEMANTICS,
     H74_ENTRY_SUBMIT_SEMANTICS_AUTHORITY,
@@ -2409,8 +2410,28 @@ def _build_execution_decision_summary_from_authority_payload(
                 configured_position_mode == POSITION_MODE_FIXED_FILL_QTY_UNTIL_EXIT
                 and str(target_decision.delta_side) == "SELL"
             )
+            h74_sell_identity = None
             if is_h74_fixed_sell:
                 try:
+                    h74_live_real_submit_path = bool(
+                        str(getattr(settings_obj, "MODE", "") or "").strip().lower() == "live"
+                        and bool(getattr(settings_obj, "LIVE_REAL_ORDER_ARMED", False))
+                        and not bool(getattr(settings_obj, "LIVE_DRY_RUN", True))
+                        and not bool(getattr(settings_obj, "H74_LIVE_REHEARSAL_NO_SUBMIT_BOUNDARY", False))
+                        and str(os.environ.get("H74_LIVE_REHEARSAL_NO_SUBMIT_BOUNDARY") or "").strip().lower()
+                        not in {"1", "true", "yes", "on"}
+                    )
+                    if h74_live_real_submit_path:
+                        identity_conn = ensure_db(str(getattr(settings_obj, "DB_PATH", settings.DB_PATH)))
+                        try:
+                            h74_sell_identity = resolve_h74_sell_identity(
+                                identity_conn,
+                                payload,
+                                pair=authoritative_pair,
+                            )
+                        finally:
+                            identity_conn.close()
+                        payload.update(h74_sell_identity.as_evidence_dict())
                     h74_closeout_plan = build_h74_cycle_closeout_plan_from_payload(
                         payload,
                         target_delta_side=str(target_decision.delta_side),
@@ -2449,7 +2470,7 @@ def _build_execution_decision_summary_from_authority_payload(
                         and str(target_sizing.residual_policy or "none") == "none"
                     ):
                         h74_closeout_error = "h74_closeout_qty_below_remaining_without_residual_policy"
-                except (TypeError, ValueError) as exc:
+                except (TypeError, ValueError, H74SubmitIdentityError) as exc:
                     h74_closeout_error = str(exc)
             h74_quote_notional_krw = (
                 float(H74_SOURCE_MAX_ORDER_KRW) if is_h74_fixed_buy else None
@@ -2830,8 +2851,12 @@ def _build_execution_decision_summary_from_authority_payload(
                 "pre_submit_risk_decision_authority": "RuntimeRiskEngineAdapter.evaluate_pre_submit",
             }
             if h74_closeout_plan is not None:
+                resolved_identity_fields = (
+                    h74_sell_identity.as_evidence_dict() if h74_sell_identity is not None else {}
+                )
                 target_plan_extra.update(
                     {
+                        **resolved_identity_fields,
                         "h74_closeout_contract": h74_closeout_plan.as_dict(),
                         "h74_closeout_contract_hash": sha256_prefixed(h74_closeout_plan.as_dict()),
                         "qty_authority": h74_closeout_plan.qty_authority,
@@ -2857,6 +2882,19 @@ def _build_execution_decision_summary_from_authority_payload(
                 target_plan_extra.update(ownership_payload_fields(h74_ownership_contract))
             elif h74_ownership_error:
                 target_plan_extra["h74_cycle_ownership_error"] = h74_ownership_error
+            h74_required_sell_identity_keys = {
+                "cycle_id",
+                "h74_cycle_id",
+                "authority_hash",
+                "strategy_instance_id",
+                "contract_hash",
+                "h74_position_ownership_contract_hash",
+                "h74_position_ownership_contract",
+                "h74_entry_plan_client_order_id",
+                "entry_plan_id",
+                "remaining_cycle_qty",
+                "h74_remaining_cycle_qty",
+            }
             for h74_key in (
                 "position_mode",
                 "hold_policy",
@@ -2889,6 +2927,8 @@ def _build_execution_decision_summary_from_authority_payload(
                 "h74_fixed_position_contract_active",
                 "h74_execution_path_probe_run_id",
             ):
+                if is_h74_fixed_sell and h74_key in h74_required_sell_identity_keys:
+                    continue
                 if h74_closeout_plan is not None and h74_key in {
                     "cycle_id",
                     "h74_cycle_id",
