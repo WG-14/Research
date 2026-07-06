@@ -891,7 +891,37 @@ def build_legacy_operator_closeout_evidence_enrichment_preview(
         blockers.append("executable_lot_rows_present")
     if abs(stale_lot_qty_total - projected_total_qty) > _EPS:
         blockers.append("stale_lot_total_projection_mismatch")
-    if abs(stale_lot_qty_total - order_qty) > _EPS:
+    base_evidence = dict(last_evidence or first_evidence)
+    planned_qty = order_qty or trade_qty
+
+    def _evidence_float_or_none(key: str) -> float | None:
+        value = base_evidence.get(key)
+        if value is None:
+            return None
+        try:
+            return normalize_asset_qty(float(value))
+        except (TypeError, ValueError):
+            return None
+
+    evidence_covered_dust_qty = _evidence_float_or_none("covered_dust_tracking_qty")
+    if evidence_covered_dust_qty is None:
+        evidence_covered_dust_qty = _evidence_float_or_none("tracked_dust_qty")
+    evidence_covered_open_qty = _evidence_float_or_none("covered_open_exposure_qty")
+
+    covered_dust_tracking_qty = stale_lot_qty_total
+    covered_open_exposure_qty = 0.0
+
+    if evidence_covered_dust_qty is not None and abs(evidence_covered_dust_qty - stale_lot_qty_total) > _EPS:
+        blockers.append("covered_dust_tracking_qty_mismatch")
+
+    if evidence_covered_open_qty is not None:
+        covered_open_exposure_qty = max(0.0, evidence_covered_open_qty)
+        expected_covered_qty = normalize_asset_qty(covered_open_exposure_qty + covered_dust_tracking_qty)
+        if planned_qty + _EPS < expected_covered_qty:
+            blockers.append("covered_qty_exceeds_order_qty")
+    elif abs(stale_lot_qty_total - order_qty) > _EPS:
+        # Strict legacy fallback: when the old submit evidence has no explicit
+        # open/dust decomposition, only allow dust-only closeout enrichment.
         blockers.append("stale_lot_total_qty_mismatch_order_qty")
     if int(gate_counts["unresolved_open_order_count"]) > 0:
         blockers.append("open_orders_present")
@@ -909,8 +939,6 @@ def build_legacy_operator_closeout_evidence_enrichment_preview(
         blockers.append("active_fee_accounting_issues_present")
     blockers = list(dict.fromkeys(blockers))
 
-    base_evidence = dict(last_evidence or first_evidence)
-    planned_qty = order_qty or trade_qty
     enriched = {
         **base_evidence,
         "authority_type": "operator_clean_account_closeout",
@@ -927,9 +955,10 @@ def build_legacy_operator_closeout_evidence_enrichment_preview(
         "filled_qty": order_qty,
         "payload_volume": planned_qty,
         "raw_total_asset_qty": planned_qty,
-        "tracked_dust_qty": stale_lot_qty_total,
-        "covered_dust_tracking_qty": stale_lot_qty_total,
-        "covered_open_exposure_qty": 0.0,
+        "tracked_dust_qty": covered_dust_tracking_qty,
+        "covered_dust_tracking_qty": covered_dust_tracking_qty,
+        "covered_open_exposure_qty": covered_open_exposure_qty,
+        "terminal_asset_after": trade_asset_after,
         "clean_account_after_sell": True,
         "estimated_residual_qty": 0.0,
         "broker_qty_after": broker_qty if broker_qty_known else None,
