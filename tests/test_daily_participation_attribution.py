@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
@@ -80,7 +81,11 @@ def test_buy_report_requires_authority_source() -> None:
         conn=conn,
     )
 
-    report = build_h74_observation_report(conn=conn, days=7)
+    report = build_h74_observation_report(
+        conn=conn,
+        days=7,
+        now=datetime(2026, 6, 23, tzinfo=timezone.utc),
+    )
 
     row = report["h74_live_trade_classifications"][0]
     assert row["h74_backtest_validation_sample"] is False
