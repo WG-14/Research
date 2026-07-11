@@ -51,6 +51,17 @@ class ExitPolicyMaterialization:
     exit_policy_source: str
     exit_policy_materialization_mode: str
 
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "exit_policy": dict(self.exit_policy),
+            "exit_policy_hash": self.exit_policy_hash,
+            "exit_policy_contract_hash": self.exit_policy_contract_hash,
+            "exit_policy_config": dict(self.exit_policy_config),
+            "exit_policy_config_hash": self.exit_policy_config_hash,
+            "exit_policy_source": self.exit_policy_source,
+            "exit_policy_materialization_mode": self.exit_policy_materialization_mode,
+        }
+
 
 def normalize_exit_policy_materialization(
     result: Any,

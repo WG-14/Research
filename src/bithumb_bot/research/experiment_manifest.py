@@ -12,7 +12,7 @@ from bithumb_bot.execution_reality_contract import (
     unsupported_capability_reasons,
 )
 from bithumb_bot.market_regime import RegimeAcceptanceGate
-from bithumb_bot.risk_contract import RiskPolicy
+from .risk_contract import ResearchRiskPolicy
 
 from .deployment_policy import DEPLOYMENT_TIERS, is_production_bound_target, normalize_deployment_tier
 from .hashing import sha256_prefixed
@@ -816,7 +816,7 @@ class ExperimentManifest:
     execution_model: ExecutionModelConfig
     execution_timing: ExecutionTimingPolicy
     portfolio_policy: PortfolioPolicy
-    risk_policy: RiskPolicy
+    risk_policy: ResearchRiskPolicy
     deployment_tier: str
     acceptance_gate: AcceptanceGate
     statistical_validation: StatisticalSelectionContract | None
@@ -1323,12 +1323,12 @@ def _parse_portfolio_policy(value: Any, *, deployment_tier: str) -> PortfolioPol
     )
 
 
-def _parse_risk_policy(value: Any, *, deployment_tier: str) -> RiskPolicy:
+def _parse_risk_policy(value: Any, *, deployment_tier: str) -> ResearchRiskPolicy:
     production_bound = is_production_bound_target(deployment_tier)
     if value is None:
         if production_bound:
             raise ManifestValidationError("risk_policy is required for production-bound manifests")
-        return RiskPolicy(
+        return ResearchRiskPolicy(
             schema_version=1,
             policy_status="disabled_explicit",
             source="research_default_disabled_explicit",
@@ -1371,7 +1371,7 @@ def _parse_risk_policy(value: Any, *, deployment_tier: str) -> RiskPolicy:
     missing_policy = str(value.get("missing_policy", "fail_closed_for_promotion"))
     if missing_policy != "fail_closed_for_promotion":
         raise ManifestValidationError("risk_policy.missing_policy currently supports only fail_closed_for_promotion")
-    return RiskPolicy(
+    return ResearchRiskPolicy(
         schema_version=schema_version,
         max_daily_loss_krw=_finite_non_negative_float(
             value.get("max_daily_loss_krw", 0.0),

@@ -675,9 +675,9 @@ def run_stage_owned_decision_event_backtest(
     policy = portfolio_policy or legacy_research_portfolio_policy()
     effective_risk_policy = risk_policy or getattr(run_context, "risk_policy", None)
     if effective_risk_policy is None:
-        from bithumb_bot.risk_contract import RiskPolicy
+        from .risk_contract import ResearchRiskPolicy
 
-        effective_risk_policy = RiskPolicy(policy_status="disabled_explicit", source="research_default_disabled_explicit")
+        effective_risk_policy = ResearchRiskPolicy(policy_status="disabled_explicit", source="research_default_disabled_explicit")
     model = execution_model or FixedBpsExecutionModel(fee_rate=fee_rate, slippage_bps=slippage_bps)
     starting_cash = float(policy.starting_cash_krw)
     ledger = prepared_ledger or PortfolioLedger.create(
