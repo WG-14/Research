@@ -1,18 +1,56 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from bithumb_bot.cli.registry import CommandSpec
 
 from ._helpers import make_spec
 
 
-def _backtest(args: argparse.Namespace, _context) -> int:
+def _research_context(context):
+    """Build an explicit compatibility context for the retained bithumb-bot CLI."""
+    from bithumb_bot.research_cli.context import ResearchAppContext
+    from bithumb_bot.research_cli.environment import ResearchEnvironmentSummary
+    from bithumb_bot.research_cli.notifier import OperationalCompatibilityResearchNotifier
+    from bithumb_bot.research_cli.paths import ResearchPathManager
+    from bithumb_bot.research_cli.settings import ResearchSettings
+
+    if context.settings is None or context.path_manager is None:
+        raise RuntimeError("operational research command requires configured settings and paths")
+    manager = context.path_manager
+    settings = context.settings
+    data_dir = manager.data_dir().resolve()
+    research_settings = ResearchSettings(
+        data_root=data_dir,
+        artifact_root=data_dir,
+        report_root=(data_dir / "reports").resolve(),
+        cache_root=(data_dir / "derived").resolve(),
+        db_path=Path(settings.DB_PATH).expanduser().resolve(),
+        max_workers=1,
+        random_seed=0,
+        notification_policy="best_effort",
+    )
+    return ResearchAppContext(
+        settings=research_settings,
+        paths=ResearchPathManager(settings=research_settings, project_root=manager.project_root.resolve()),
+        printer=context.printer,
+        notifier=OperationalCompatibilityResearchNotifier(),
+        environment=ResearchEnvironmentSummary(
+            db_path_configured=True,
+            data_root=str(data_dir),
+            artifact_root=str(data_dir),
+            settings_source="operational_compatibility",
+        ),
+    )
+
+
+def _backtest(args: argparse.Namespace, context) -> int:
     from bithumb_bot.research.cli import cmd_research_backtest
 
     return int(
         cmd_research_backtest(
-            manifest_path=str(args.manifest),
+            context=_research_context(context), manifest_path=str(args.manifest),
             execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None,
             diagnostic_mode=str(args.diagnostic_mode) if args.diagnostic_mode else None,
             notification_policy=str(args.notification_policy) if args.notification_policy else None,
@@ -26,10 +64,10 @@ def _verify_audit(args: argparse.Namespace, _context) -> int:
     return int(cmd_research_verify_audit(experiment_id=str(args.experiment_id)))
 
 
-def _validate(args: argparse.Namespace, _context) -> int:
+def _validate(args: argparse.Namespace, context) -> int:
     from bithumb_bot.research.cli import cmd_research_validate
 
-    return int(cmd_research_validate(manifest_path=str(args.manifest), execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None, candidate_id=str(args.candidate_id) if args.candidate_id else None, out_path=str(args.out) if args.out else None, mode=str(args.mode), notification_policy=str(args.notification_policy) if args.notification_policy else None))
+    return int(cmd_research_validate(context=_research_context(context), manifest_path=str(args.manifest), execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None, candidate_id=str(args.candidate_id) if args.candidate_id else None, out_path=str(args.out) if args.out else None, mode=str(args.mode), notification_policy=str(args.notification_policy) if args.notification_policy else None))
 
 
 def _freeze_dataset(args: argparse.Namespace, _context) -> int:
@@ -47,18 +85,18 @@ def _freeze_dataset(args: argparse.Namespace, _context) -> int:
     )
 
 
-def _readiness(args: argparse.Namespace, _context) -> int:
+def _readiness(args: argparse.Namespace, context) -> int:
     from bithumb_bot.research.readiness import cmd_research_readiness
 
-    return int(cmd_research_readiness(manifest_path=str(args.manifest), execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None, missing_classification_path=str(args.missing_classification) if args.missing_classification else None, as_json=bool(args.json)))
+    return int(cmd_research_readiness(context=_research_context(context), manifest_path=str(args.manifest), execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None, missing_classification_path=str(args.missing_classification) if args.missing_classification else None, as_json=bool(args.json)))
 
 
-def _research_forward_diagnostics(args: argparse.Namespace, _context) -> int:
+def _research_forward_diagnostics(args: argparse.Namespace, context) -> int:
     from bithumb_bot.research.cli import cmd_research_forward_diagnostics
 
     return int(
         cmd_research_forward_diagnostics(
-            manifest_path=str(args.manifest),
+            context=_research_context(context), manifest_path=str(args.manifest),
             split_name=str(args.split),
             features=tuple(args.features),
             horizons=tuple(args.horizons),
@@ -73,24 +111,24 @@ def _research_forward_diagnostics(args: argparse.Namespace, _context) -> int:
     )
 
 
-def _walk_forward(args: argparse.Namespace, _context) -> int:
+def _walk_forward(args: argparse.Namespace, context) -> int:
     from bithumb_bot.research.cli import cmd_research_walk_forward
 
-    return int(cmd_research_walk_forward(manifest_path=str(args.manifest), execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None, notification_policy=str(args.notification_policy) if args.notification_policy else None))
+    return int(cmd_research_walk_forward(context=_research_context(context), manifest_path=str(args.manifest), execution_calibration_path=str(args.execution_calibration) if args.execution_calibration else None, notification_policy=str(args.notification_policy) if args.notification_policy else None))
 
 
-def _workload_estimate(args: argparse.Namespace, _context) -> int:
+def _workload_estimate(args: argparse.Namespace, context) -> int:
     from bithumb_bot.research.cli import cmd_research_workload_estimate
 
-    return int(cmd_research_workload_estimate(manifest_path=str(args.manifest), as_json=bool(args.json)))
+    return int(cmd_research_workload_estimate(context=_research_context(context), manifest_path=str(args.manifest), as_json=bool(args.json)))
 
 
-def _batch(args: argparse.Namespace, _context) -> int:
+def _batch(args: argparse.Namespace, context) -> int:
     from bithumb_bot.research.cli import cmd_research_batch
 
     return int(
         cmd_research_batch(
-            manifest_glob=str(args.manifest_glob),
+            context=_research_context(context), manifest_glob=str(args.manifest_glob),
             max_concurrent_manifests=int(args.max_concurrent_manifests),
             command=str(args.command),
             fail_fast=bool(args.fail_fast),

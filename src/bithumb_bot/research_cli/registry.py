@@ -112,16 +112,11 @@ def _mark_aborted(parser: argparse.ArgumentParser) -> None:
 
 
 def _call_existing(command: str, args: argparse.Namespace, context: ResearchAppContext) -> int:
-    """Delay old research implementation imports until a command is executed.
+    """Delay research implementation imports until a command is executed."""
 
-    This is an intentionally narrow compatibility adapter for the first split
-    stage. Parser construction and ``--help`` stay outside the operational
-    CLI/config import graph while existing research behaviour remains intact.
-    """
+    from .commands import execute_research_command
 
-    from .commands import execute_existing_research_command
-
-    return execute_existing_research_command(command, args, context)
+    return execute_research_command(command, args, context)
 
 
 def _handler(command: str) -> CommandHandler:

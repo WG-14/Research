@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from bithumb_bot.bootstrap import get_last_explicit_env_load_summary
 from bithumb_bot.execution_quality import ExecutionQualityThresholds
 from bithumb_bot.execution_reality_contract import build_execution_capability_contract
 
@@ -22,25 +21,28 @@ from .datasets.registry import default_dataset_adapter_registry
 from .dataset_snapshot import load_dataset_range
 from .execution_calibration import compare_calibration_to_scenario, load_calibration_artifact
 from .experiment_manifest import ExperimentManifest, load_manifest
-from .legacy_config import LazyOperationalConfigValue
 
-
-settings = LazyOperationalConfigValue("settings")
+if TYPE_CHECKING:
+    from bithumb_bot.research_cli.context import ResearchAppContext
 
 
 def build_research_readiness_report(
     *,
     manifest_path: str | Path,
-    db_path: str | Path | None = None,
+    db_path: str | Path,
     execution_calibration_path: str | Path | None = None,
     missing_classification_path: str | Path | None = None,
     progress_callback: Any | None = None,
-    mode: str | None = None,
+    mode: str = "research",
+    environment_summary: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     resolved_manifest_path = Path(manifest_path).expanduser().resolve()
     manifest = load_manifest(resolved_manifest_path)
-    resolved_db_path = Path(db_path or settings.DB_PATH).expanduser().resolve()
-    env_summary = get_last_explicit_env_load_summary().as_dict()
+    resolved_db_path = Path(db_path).expanduser().resolve()
+    env_summary = environment_summary or {
+        "settings_source": "RESEARCH_*",
+        "db_path_configured": True,
+    }
 
     split_reports: dict[str, dict[str, Any]] = {}
     failed = False
@@ -95,7 +97,7 @@ def build_research_readiness_report(
         "status": "FAIL" if failed else "PASS",
         "manifest_path": str(resolved_manifest_path),
         "manifest_hash": manifest.manifest_hash(),
-        "mode": mode or settings.MODE,
+        "mode": mode,
         "db_path": str(resolved_db_path),
         "dataset_adapter": {
             "dataset_source": manifest.dataset.source,
@@ -107,9 +109,7 @@ def build_research_readiness_report(
                 else "adapter_snapshot"
             ),
         },
-        "env_file": env_summary.get("env_file"),
-        "env_loaded": bool(env_summary.get("loaded")),
-        "env_exists": bool(env_summary.get("exists")),
+        "environment": env_summary,
         "market": manifest.market,
         "interval": manifest.interval,
         "readiness_mode": readiness_mode_payload(manifest),
@@ -134,33 +134,32 @@ def build_research_readiness_report(
 
 def cmd_research_readiness(
     *,
+    context: "ResearchAppContext",
     manifest_path: str,
     execution_calibration_path: str | None = None,
     missing_classification_path: str | None = None,
     as_json: bool = False,
-    db_path: str | Path | None = None,
-    mode: str | None = None,
 ) -> int:
     try:
         report = build_research_readiness_report(
             manifest_path=manifest_path,
-            db_path=db_path,
+            db_path=context.paths.require_database_path(),
             execution_calibration_path=execution_calibration_path,
             missing_classification_path=missing_classification_path,
-            mode=mode,
+            environment_summary=(context.environment.as_dict() if context.environment is not None else None),
             progress_callback=(
                 None
                 if as_json
-                else lambda split_name, method: print(f"[RESEARCH-READINESS] scanning split={split_name} method={method}")
+                else lambda split_name, method: context.printer(f"[RESEARCH-READINESS] scanning split={split_name} method={method}")
             ),
         )
     except Exception as exc:
-        print(f"[RESEARCH-READINESS] error={exc}")
+        context.printer(f"[RESEARCH-READINESS] error={exc}")
         return 1
     if as_json:
-        print(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2))
+        context.printer(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2))
     else:
-        _print_readiness(report)
+        _print_readiness(report, printer=context.printer)
     return 0 if report["status"] == "PASS" else 1
 
 
@@ -660,23 +659,23 @@ def _next_actions(
     return actions or ["none"]
 
 
-def _print_readiness(report: dict[str, Any]) -> None:
-    print("[RESEARCH-READINESS]")
-    print(f"  status={report['status']}")
-    print(f"  manifest_path={report['manifest_path']}")
-    print(f"  manifest_hash={report['manifest_hash']}")
-    print(f"  MODE={report['mode']}")
-    print(f"  DB_PATH={report['db_path']}")
-    print(f"  env_file={report['env_file']} env_loaded={1 if report['env_loaded'] else 0} env_exists={1 if report['env_exists'] else 0}")
-    print(f"  market={report['market']} interval={report['interval']}")
+def _print_readiness(report: dict[str, Any], *, printer: Any = print) -> None:
+    printer("[RESEARCH-READINESS]")
+    printer(f"  status={report['status']}")
+    printer(f"  manifest_path={report['manifest_path']}")
+    printer(f"  manifest_hash={report['manifest_hash']}")
+    printer(f"  mode={report['mode']}")
+    printer(f"  db_path={report['db_path']}")
+    printer(f"  environment={json.dumps(report.get('environment') or {}, sort_keys=True)}")
+    printer(f"  market={report['market']} interval={report['interval']}")
     readiness_mode = report["readiness_mode"]
-    print(
+    printer(
         "  readiness_mode="
         f"type={readiness_mode['readiness_type']} production_bound={1 if readiness_mode['production_bound'] else 0} "
         f"candle_only_diagnostic={1 if readiness_mode['candle_only_diagnostic'] else 0}"
     )
     for split_name, split in report["splits"].items():
-        print(
+        printer(
             f"  split={split_name} expected_candles={split['expected_candle_buckets']} "
             f"present_candles={split['present_candle_buckets']} missing={split['missing_count']} "
             f"coverage_pct={split['coverage_pct']} first_ts={split['first_ts']} last_ts={split['last_ts']} "
@@ -684,15 +683,15 @@ def _print_readiness(report: dict[str, Any]) -> None:
             f"quality_status={split['quality_status']} reasons={','.join(split['quality_reasons']) if split['quality_reasons'] else 'none'}"
         )
     tob = report["top_of_book"]
-    print(
+    printer(
         "  top_of_book="
         f"required={1 if tob['required'] else 0} missing_policy={tob['missing_policy']} "
         f"min_coverage_pct={tob['min_coverage_pct']} observed_coverage_pct={tob['observed_coverage_pct']} "
         f"status={tob['status']} reasons={','.join(tob['reasons']) if tob['reasons'] else 'none'}"
     )
-    print(f"  top_of_book_next_action={tob['next_action']}")
+    printer(f"  top_of_book_next_action={tob['next_action']}")
     cap = report["execution_capability"]
-    print(
+    printer(
         "  execution_capability="
         f"hash={cap['contract_hash']} evidence_tier={cap['evidence_tier']} "
         f"unavailable_required={','.join(cap['unavailable_required_capabilities']) if cap['unavailable_required_capabilities'] else 'none'} "
@@ -701,23 +700,23 @@ def _print_readiness(report: dict[str, Any]) -> None:
         f"top_of_book_is_full_depth={1 if cap['top_of_book_is_full_depth'] else 0} "
         f"status={cap['status']}"
     )
-    print(f"  execution_capability_next_action={cap['next_action']}")
+    printer(f"  execution_capability_next_action={cap['next_action']}")
     cal = report["execution_calibration"]
-    print(
+    printer(
         "  execution_calibration="
         f"required={1 if cal['required'] else 0} artifact_path={cal['artifact_path']} "
         f"artifact_hash={cal['artifact_hash']} status={cal['status']} "
         f"reasons={','.join(cal['reasons']) if cal['reasons'] else 'none'}"
     )
     wf = report["walk_forward"]
-    print(
+    printer(
         "  walk_forward="
         f"required={1 if wf['required'] else 0} available_windows={wf['available_windows']} "
         f"expected_min_windows={wf['expected_min_windows']} status={wf['status']} "
         f"reasons={','.join(wf['reasons']) if wf['reasons'] else 'none'}"
     )
     pmc = report["persistent_missing_classification"]
-    print(
+    printer(
         "  persistent_missing_classification="
         f"provided={1 if pmc['provided'] else 0} status={pmc['status']} "
         f"artifact_hash={pmc['artifact_hash']} production_gate_effect={pmc['production_gate_effect']} "
@@ -726,7 +725,7 @@ def _print_readiness(report: dict[str, Any]) -> None:
     )
     if pmc["provided"]:
         summary = pmc.get("summary") or {}
-        print(
+        printer(
             "  persistent_missing_classification_summary="
             f"exchange_gap_candidate={summary.get('exchange_gap_candidate', 0)} "
             f"api_unavailable_candidate={summary.get('api_unavailable_candidate', 0)} "
@@ -734,4 +733,4 @@ def _print_readiness(report: dict[str, Any]) -> None:
             f"unclassified_missing={summary.get('unclassified_missing', 0)}"
         )
     for action in report["next_actions"]:
-        print(f"  next_action={action}")
+        printer(f"  next_action={action}")

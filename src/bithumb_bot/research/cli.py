@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import replace
 from pathlib import Path
 from time import monotonic
+from typing import TYPE_CHECKING, Any
 
-from bithumb_bot.notification_outbox import append_notification_result
-from bithumb_bot.notifier import AlertSeverity, NotificationResult, format_event, is_configured, notify
-from bithumb_bot.paths import PathManager
 from bithumb_bot.storage_io import write_json_atomic
 
 from .artifact_store import ArtifactBudgetExceeded
@@ -33,21 +30,20 @@ from .validation_pipeline import ValidationRunError, run_research_validation, va
 from .validation_protocol import ResearchValidationError, run_research_backtest, run_research_walk_forward
 from .forward_diagnostics_cli import cmd_research_forward_diagnostics
 from .batch_runner import run_research_batch
-from .legacy_config import LazyOperationalConfigValue
+
+if TYPE_CHECKING:
+    from bithumb_bot.research_cli.context import ResearchAppContext
 
 
 RESEARCH_NOTIFICATION_POLICIES = {"best_effort", "require_delivery", "disabled"}
 
 
-# The integrated ``bithumb-bot`` route still resolves these objects on demand.
-# The research-only route replaces them with its injected context before a
-# command runs, so importing this module does not import ``bithumb_bot.config``.
-PATH_MANAGER = LazyOperationalConfigValue("PATH_MANAGER")
-settings = LazyOperationalConfigValue("settings")
-
-
-def resolve_research_notification_policy(policy: str | None = None) -> str:
-    raw = policy if policy is not None else os.getenv("RESEARCH_NOTIFICATION_POLICY", "best_effort")
+def resolve_research_notification_policy(
+    policy: str | None = None,
+    *,
+    default: str = "disabled",
+) -> str:
+    raw = policy if policy is not None else default
     normalized = str(raw or "best_effort").strip().lower()
     if normalized not in RESEARCH_NOTIFICATION_POLICIES:
         allowed = ", ".join(sorted(RESEARCH_NOTIFICATION_POLICIES))
@@ -55,94 +51,64 @@ def resolve_research_notification_policy(policy: str | None = None) -> str:
     return normalized
 
 
-def _disabled_notification_result(
-    message: str,
-    *,
-    severity: AlertSeverity,
-    command: str,
-    policy: str,
-) -> NotificationResult:
-    return NotificationResult(
-        message=message,
-        severity=severity,
-        enabled=False,
-        configured=False,
-        fallback_printed=False,
-        final_status="skipped_disabled",
-        event_name="research_command_finished",
-        policy=policy,
-        source_command=command,
-    )
-
-
-def _record_notification_result(result: NotificationResult, *, command: str, policy: str) -> None:
-    append_notification_result(
-        result,
-        manager=PATH_MANAGER,
-        event_name="research_command_finished",
-        policy=policy,
-        source_command=command,
-    )
-
-
 def _notify_research_command_finished(
+    context: "ResearchAppContext",
     command: str,
     started_at: float,
     rc: int,
     *,
     notification_policy: str | None = None,
     **fields: object,
-) -> NotificationResult:
-    policy = resolve_research_notification_policy(notification_policy)
-    status = "success" if rc == 0 else "failure"
-    severity = AlertSeverity.INFO if rc == 0 else AlertSeverity.WARN
-    message = format_event(
-        "research_command_finished",
-        command=command,
-        status=status,
-        exit_code=rc,
-        elapsed_sec=f"{monotonic() - started_at:.1f}",
-        **fields,
+) -> bool:
+    policy = resolve_research_notification_policy(
+        notification_policy,
+        default=context.settings.notification_policy,
     )
+    status = "success" if rc == 0 else "failure"
+    payload: dict[str, object] = {
+        "command": command,
+        "status": status,
+        "exit_code": rc,
+        "elapsed_sec": round(monotonic() - started_at, 3),
+        "notification_policy": policy,
+        **fields,
+    }
+    context.printer(f"[RESEARCH-COMMAND-FINISHED] {json.dumps(payload, sort_keys=True, default=str)}")
     if policy == "disabled":
-        result = _disabled_notification_result(message, severity=severity, command=command, policy=policy)
-    else:
-        result = notify(
-            message,
-            severity=severity,
-            event_name="research_command_finished",
-            policy=policy,
-            source_command=command,
-        )
+        return True
     try:
-        _record_notification_result(result, command=command, policy=policy)
+        context.notifier.notify(
+            event="research_command_finished",
+            status=status,
+            fields=payload,
+        )
     except Exception as exc:
-        print(f"[RESEARCH-NOTIFICATION] outbox_write_failed={exc.__class__.__name__}")
-    return result
+        context.printer(f"[RESEARCH-NOTIFICATION] delivery_failed={exc.__class__.__name__}")
+        return False
+    return True
 
 
-def _require_delivery_preflight(policy: str, *, command: str) -> bool:
-    if policy != "require_delivery":
+def _require_delivery_preflight(context: "ResearchAppContext", policy: str, *, command: str) -> bool:
+    if policy != "require_delivery" or context.notifier.__class__.__name__ != "DisabledResearchNotifier":
         return True
-    if is_configured():
-        return True
-    print(f"[{command.upper()}] notification_policy=require_delivery notifier_unconfigured")
+    context.printer(f"[{command.upper()}] notification_policy=require_delivery notifier_unconfigured")
     return False
 
 
 def cmd_research_backtest(
     *,
+    context: "ResearchAppContext",
     manifest_path: str,
     execution_calibration_path: str | None = None,
     diagnostic_mode: str | None = None,
     notification_policy: str | None = None,
 ) -> int:
-    policy = resolve_research_notification_policy(notification_policy)
-    if not _require_delivery_preflight(policy, command="research-backtest"):
+    policy = resolve_research_notification_policy(notification_policy, default=context.settings.notification_policy)
+    if not _require_delivery_preflight(context, policy, command="research-backtest"):
         return 1
     started_at = monotonic()
     rc = 1
-    notification_result: NotificationResult | None = None
+    notification_delivered = True
     try:
         try:
             manifest = load_manifest(manifest_path)
@@ -154,8 +120,8 @@ def cmd_research_backtest(
             calibration = load_calibration_artifact(execution_calibration_path) if execution_calibration_path else None
             report = run_research_backtest(
                 manifest=manifest,
-                db_path=settings.DB_PATH,
-                manager=PATH_MANAGER,
+                db_path=context.paths.require_database_path(),
+                manager=context.paths,
                 execution_calibration=calibration,
                 manifest_path=manifest_path,
                 command_args={
@@ -167,14 +133,14 @@ def cmd_research_backtest(
             )
         except ArtifactBudgetExceeded as exc:
             payload = _write_artifact_budget_failure_payload(
-                manager=PATH_MANAGER,
+                manager=context.paths,
                 manifest_path=manifest_path,
                 exc=exc,
             )
-            print(f"[RESEARCH-BACKTEST] artifact_budget_failure={json.dumps(payload, sort_keys=True)}")
+            context.printer(f"[RESEARCH-BACKTEST] artifact_budget_failure={json.dumps(payload, sort_keys=True)}")
             rc = 1
         except (ManifestValidationError, ExecutionCalibrationError, ResearchValidationError, OSError, ValueError) as exc:
-            print(f"[RESEARCH-BACKTEST] error={exc}")
+            context.printer(f"[RESEARCH-BACKTEST] error={exc}")
             rc = 1
         else:
             _print_report_summary("RESEARCH-BACKTEST", report)
@@ -183,7 +149,8 @@ def cmd_research_backtest(
             else:
                 rc = 0
     finally:
-        notification_result = _notify_research_command_finished(
+        notification_delivered = _notify_research_command_finished(
+            context,
             "research-backtest",
             started_at,
             rc,
@@ -192,31 +159,32 @@ def cmd_research_backtest(
             execution_calibration=execution_calibration_path,
             diagnostic_mode=diagnostic_mode,
         )
-    if policy == "require_delivery" and notification_result.final_status != "delivered":
+    if policy == "require_delivery" and not notification_delivered:
         rc = 1
     return rc
 
 
 def cmd_research_walk_forward(
     *,
+    context: "ResearchAppContext",
     manifest_path: str,
     execution_calibration_path: str | None = None,
     notification_policy: str | None = None,
 ) -> int:
-    policy = resolve_research_notification_policy(notification_policy)
-    if not _require_delivery_preflight(policy, command="research-walk-forward"):
+    policy = resolve_research_notification_policy(notification_policy, default=context.settings.notification_policy)
+    if not _require_delivery_preflight(context, policy, command="research-walk-forward"):
         return 1
     started_at = monotonic()
     rc = 1
-    notification_result: NotificationResult | None = None
+    notification_delivered = True
     try:
         try:
             manifest = load_manifest(manifest_path)
             calibration = load_calibration_artifact(execution_calibration_path) if execution_calibration_path else None
             report = run_research_walk_forward(
                 manifest=manifest,
-                db_path=settings.DB_PATH,
-                manager=PATH_MANAGER,
+                db_path=context.paths.require_database_path(),
+                manager=context.paths,
                 execution_calibration=calibration,
                 manifest_path=manifest_path,
                 command_args={
@@ -227,14 +195,14 @@ def cmd_research_walk_forward(
             )
         except ArtifactBudgetExceeded as exc:
             payload = _write_artifact_budget_failure_payload(
-                manager=PATH_MANAGER,
+                manager=context.paths,
                 manifest_path=manifest_path,
                 exc=exc,
             )
-            print(f"[RESEARCH-WALK-FORWARD] artifact_budget_failure={json.dumps(payload, sort_keys=True)}")
+            context.printer(f"[RESEARCH-WALK-FORWARD] artifact_budget_failure={json.dumps(payload, sort_keys=True)}")
             rc = 1
         except (ManifestValidationError, ExecutionCalibrationError, ResearchValidationError, OSError, ValueError) as exc:
-            print(f"[RESEARCH-WALK-FORWARD] error={exc}")
+            context.printer(f"[RESEARCH-WALK-FORWARD] error={exc}")
             rc = 1
         else:
             _print_report_summary("RESEARCH-WALK-FORWARD", report)
@@ -243,7 +211,8 @@ def cmd_research_walk_forward(
             else:
                 rc = 0
     finally:
-        notification_result = _notify_research_command_finished(
+        notification_delivered = _notify_research_command_finished(
+            context,
             "research-walk-forward",
             started_at,
             rc,
@@ -251,23 +220,23 @@ def cmd_research_walk_forward(
             manifest=manifest_path,
             execution_calibration=execution_calibration_path,
         )
-    if policy == "require_delivery" and notification_result.final_status != "delivered":
+    if policy == "require_delivery" and not notification_delivered:
         rc = 1
     return rc
 
 
-def cmd_research_workload_estimate(*, manifest_path: str, as_json: bool = False) -> int:
+def cmd_research_workload_estimate(*, context: "ResearchAppContext", manifest_path: str, as_json: bool = False) -> int:
     try:
         from .workload_estimate import build_manifest_workload_estimate_from_path
 
         payload = build_manifest_workload_estimate_from_path(manifest_path)
     except (ManifestValidationError, OSError, ValueError) as exc:
-        print(f"[RESEARCH-WORKLOAD-ESTIMATE] error={exc}")
+        context.printer(f"[RESEARCH-WORKLOAD-ESTIMATE] error={exc}")
         return 1
     if as_json:
-        print(json.dumps(payload, sort_keys=True, indent=2))
+        context.printer(json.dumps(payload, sort_keys=True, indent=2))
         return 0
-    print(
+    context.printer(
         "[RESEARCH-WORKLOAD-ESTIMATE] "
         f"experiment_id={payload['experiment_id']} "
         f"candidate_count={payload['candidate_count']} "
@@ -282,6 +251,7 @@ def cmd_research_workload_estimate(*, manifest_path: str, as_json: bool = False)
 
 def cmd_research_batch(
     *,
+    context: "ResearchAppContext",
     manifest_glob: str,
     max_concurrent_manifests: int,
     command: str = "research-backtest",
@@ -295,19 +265,19 @@ def cmd_research_batch(
             command=command,
             fail_fast=fail_fast,
             out_path=out_path,
-            manager=PATH_MANAGER,
-            project_root=Path.cwd(),
+            manager=context.paths,
+            project_root=context.paths.project_root,
         )
     except (OSError, ValueError) as exc:
-        print(f"[RESEARCH-BATCH] error={exc}")
+        context.printer(f"[RESEARCH-BATCH] error={exc}")
         return 1
-    print(f"[RESEARCH-BATCH] summary={result.summary_path} status={result.payload['status']}")
+    context.printer(f"[RESEARCH-BATCH] summary={result.summary_path} status={result.payload['status']}")
     return 0 if result.payload["status"] == "succeeded" or not fail_fast else 1
 
 
 def _write_artifact_budget_failure_payload(
     *,
-    manager: PathManager,
+    manager: Any,
     manifest_path: str,
     exc: ArtifactBudgetExceeded,
 ) -> dict[str, object]:
@@ -330,6 +300,7 @@ def _write_artifact_budget_failure_payload(
 
 def cmd_research_validate(
     *,
+    context: "ResearchAppContext",
     manifest_path: str,
     execution_calibration_path: str | None = None,
     candidate_id: str | None = None,
@@ -337,20 +308,20 @@ def cmd_research_validate(
     mode: str = "strict",
     notification_policy: str | None = None,
 ) -> int:
-    policy = resolve_research_notification_policy(notification_policy)
-    if not _require_delivery_preflight(policy, command="research-validate"):
+    policy = resolve_research_notification_policy(notification_policy, default=context.settings.notification_policy)
+    if not _require_delivery_preflight(context, policy, command="research-validate"):
         return 1
     started_at = monotonic()
     rc = 1
-    notification_result: NotificationResult | None = None
+    notification_delivered = True
     try:
         try:
             manifest = load_manifest(manifest_path)
             calibration = load_calibration_artifact(execution_calibration_path) if execution_calibration_path else None
             validation_run = run_research_validation(
                 manifest=manifest,
-                db_path=settings.DB_PATH,
-                manager=PATH_MANAGER,
+                db_path=context.paths.require_database_path(),
+                manager=context.paths,
                 manifest_path=manifest_path,
                 mode=mode,
                 execution_calibration=calibration,
@@ -367,13 +338,14 @@ def cmd_research_validate(
             OSError,
             ValueError,
         ) as exc:
-            print(f"[RESEARCH-VALIDATE] error={exc}")
+            context.printer(f"[RESEARCH-VALIDATE] error={exc}")
             rc = 1
         else:
             _print_validation_run_summary(validation_run)
             rc = 0 if validation_run.get("end_to_end_validation_result") == "PASS" else 1
     finally:
-        notification_result = _notify_research_command_finished(
+        notification_delivered = _notify_research_command_finished(
+            context,
             "research-validate",
             started_at,
             rc,
@@ -384,23 +356,23 @@ def cmd_research_validate(
             out=out_path,
             mode=mode,
         )
-    if policy == "require_delivery" and notification_result.final_status != "delivered":
+    if policy == "require_delivery" and not notification_delivered:
         rc = 1
     return rc
 
 
-def cmd_research_reproduce(*, promotion_path: str) -> int:
-    result = reproduce_promotion(promotion_path, manager=PATH_MANAGER)
-    print(json.dumps(result.summary, ensure_ascii=False, sort_keys=True, indent=2))
+def cmd_research_reproduce(*, context: "ResearchAppContext", promotion_path: str) -> int:
+    result = reproduce_promotion(promotion_path, manager=context.paths)
+    context.printer(json.dumps(result.summary, ensure_ascii=False, sort_keys=True, indent=2))
     return 0 if result.ok else 1
 
 
-def cmd_research_registry_inspect(*, row_hash: str) -> int:
-    path = experiment_registry_path(manager=PATH_MANAGER)
+def cmd_research_registry_inspect(*, context: "ResearchAppContext", row_hash: str) -> int:
+    path = experiment_registry_path(manager=context.paths)
     rows = load_experiment_registry_rows(path)
     row = next((item for item in rows if item.get("row_hash") == row_hash), None)
     if not isinstance(row, dict):
-        print(json.dumps({"ok": False, "reason": "experiment_registry_row_hash_mismatch", "row_hash": row_hash}, sort_keys=True, indent=2))
+        context.printer(json.dumps({"ok": False, "reason": "experiment_registry_row_hash_mismatch", "row_hash": row_hash}, sort_keys=True, indent=2))
         return 1
     completion = next(
         (
@@ -419,12 +391,12 @@ def cmd_research_registry_inspect(*, row_hash: str) -> int:
         "attempt_status": completion.get("result_status") if isinstance(completion, dict) else row.get("result_status"),
         "incomplete": completion is None and row.get("event_type") == "research_attempt_reserved",
     }
-    print(json.dumps(summary, sort_keys=True, indent=2))
+    context.printer(json.dumps(summary, sort_keys=True, indent=2))
     return 0
 
 
-def cmd_research_registry_validate(*, experiment_id: str) -> int:
-    path = experiment_registry_path(manager=PATH_MANAGER)
+def cmd_research_registry_validate(*, context: "ResearchAppContext", experiment_id: str) -> int:
+    path = experiment_registry_path(manager=context.paths)
     rows = load_experiment_registry_rows(path)
     reservations = [
         item
@@ -432,7 +404,7 @@ def cmd_research_registry_validate(*, experiment_id: str) -> int:
         if item.get("event_type") == "research_attempt_reserved" and item.get("experiment_id") == experiment_id
     ]
     if not reservations:
-        print(json.dumps({
+        context.printer(json.dumps({
             "ok": False,
             "validation_scope": "registry_only",
             "reason": "experiment_registry_row_hash_mismatch",
@@ -445,9 +417,9 @@ def cmd_research_registry_validate(*, experiment_id: str) -> int:
         }, sort_keys=True, indent=2))
         return 1
     ok = True
-    report_path = PATH_MANAGER.data_dir() / "reports" / "research" / experiment_id / "backtest_report.json"
-    evidence_path = PATH_MANAGER.data_dir() / "reports" / "research" / experiment_id / "statistical_selection_evidence.json"
-    panel_path = PATH_MANAGER.data_dir() / "reports" / "research" / experiment_id / "candidate_return_panel.json"
+    report_path = context.paths.data_dir() / "reports" / "research" / experiment_id / "backtest_report.json"
+    evidence_path = context.paths.data_dir() / "reports" / "research" / experiment_id / "statistical_selection_evidence.json"
+    panel_path = context.paths.data_dir() / "reports" / "research" / experiment_id / "candidate_return_panel.json"
     report = _load_json_if_exists(report_path)
     evidence = _load_json_if_exists(evidence_path)
     panel = _load_json_if_exists(panel_path)
@@ -476,7 +448,7 @@ def cmd_research_registry_validate(*, experiment_id: str) -> int:
         if evidence_loaded:
             artifact_reasons.extend(_content_hash_reasons(evidence, report_hash=False, label="statistical_evidence"))
             artifact_reasons.extend(validate_return_panel_binding(report=report, evidence=evidence, panel=panel))
-        artifact_reasons.extend(validate_audit_trail_binding(report=report, manager=PATH_MANAGER))
+        artifact_reasons.extend(validate_audit_trail_binding(report=report, manager=context.paths))
     else:
         artifact_reasons.append("artifact_binding_not_checked")
     if validation_scope == "registry_and_artifacts" and artifact_bound_row_hash and "experiment_registry_artifact_bound_row_missing" not in artifact_reasons:
@@ -525,13 +497,13 @@ def cmd_research_registry_validate(*, experiment_id: str) -> int:
         "registry_lifecycle_summary": lifecycle_summary,
         "results": lifecycle_summary,
     }
-    print(json.dumps(payload, sort_keys=True, indent=2))
+    context.printer(json.dumps(payload, sort_keys=True, indent=2))
     return 0 if ok else 1
 
 
-def cmd_research_verify_audit(*, experiment_id: str) -> int:
-    result = verify_audit_trail(manager=PATH_MANAGER, experiment_id=experiment_id)
-    print(json.dumps(result, sort_keys=True, indent=2))
+def cmd_research_verify_audit(*, context: "ResearchAppContext", experiment_id: str) -> int:
+    result = verify_audit_trail(manager=context.paths, experiment_id=experiment_id)
+    context.printer(json.dumps(result, sort_keys=True, indent=2))
     return 0 if result.get("ok") is True else 1
 
 
@@ -608,17 +580,18 @@ def _content_hash_reasons(payload: dict[str, object], *, report_hash: bool, labe
     return [] if actual == expected else [f"{label}_content_hash_mismatch"]
 
 
-def cmd_research_mark_attempt_aborted(*, row_hash: str, reason: str) -> int:
-    result = append_attempt_aborted(manager=PATH_MANAGER, reservation_row_hash=row_hash, reason=reason)
+def cmd_research_mark_attempt_aborted(*, context: "ResearchAppContext", row_hash: str, reason: str) -> int:
+    result = append_attempt_aborted(manager=context.paths, reservation_row_hash=row_hash, reason=reason)
     if result is None:
-        print(json.dumps({"ok": False, "reason": "experiment_registry_row_hash_mismatch", "row_hash": row_hash}, sort_keys=True, indent=2))
+        context.printer(json.dumps({"ok": False, "reason": "experiment_registry_row_hash_mismatch", "row_hash": row_hash}, sort_keys=True, indent=2))
         return 1
-    print(json.dumps({"ok": True, **result}, sort_keys=True, indent=2))
+    context.printer(json.dumps({"ok": True, **result}, sort_keys=True, indent=2))
     return 0
 
 
 def cmd_research_promote_candidate(
     *,
+    context: "ResearchAppContext",
     experiment_id: str,
     candidate_id: str,
     allow_legacy_lineage: bool = False,
@@ -628,7 +601,7 @@ def cmd_research_promote_candidate(
         result = promote_candidate(
             experiment_id=experiment_id,
             candidate_id=candidate_id,
-            manager=PATH_MANAGER,
+            manager=context.paths,
             allow_legacy_lineage=allow_legacy_lineage,
             validation_run_path=validation_run_path,
         )

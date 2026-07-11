@@ -42,6 +42,7 @@ def test_batch_runner_passes_child_worker_budget_env(tmp_path: Path, monkeypatch
     seen: dict[str, object] = {}
 
     def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
         seen["env"] = kwargs["env"]
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
@@ -76,6 +77,7 @@ def test_batch_runner_passes_child_worker_budget_env(tmp_path: Path, monkeypatch
     assert env["BITHUMB_TOTAL_PROCESS_BUDGET"] == "8"
     assert env["BITHUMB_RESEARCH_MAX_WORKERS"] == "4"
     assert env["BITHUMB_BATCH_CHILD_WORKER_BUDGET"] == "4"
+    assert seen["cmd"][:2] == ["bithumb-research", "research-backtest"]
 
 
 def test_batch_summary_records_child_process_budget(monkeypatch) -> None:

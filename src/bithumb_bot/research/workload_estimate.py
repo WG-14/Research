@@ -6,8 +6,6 @@ from .data_plane import split_names
 from .data_plane import build_data_plane_policy
 from .dataset_snapshot import _expected_bucket_count, _interval_ms, _split_range
 from .execution_plan import (
-    _plugin_complexity_metadata,
-    _plugin_expected_us_per_candle,
     estimate_canonical_observability_cost,
     parallel_efficiency_payload,
     parallel_work_task_count,
@@ -43,20 +41,19 @@ def build_manifest_workload_estimate(manifest: ExperimentManifest) -> dict[str, 
         work_unit=resource_plan.work_unit_type,
     )
     expected_candles = sum(int(item["expected_candle_count"]) for item in split_ranges)
-    plugin_complexity = _plugin_complexity_metadata(
-        manifest.strategy_name,
-        parameter_space=manifest.parameter_space,
-        report_detail=manifest.research_run.report_detail,
-        diagnostic_mode=manifest.research_run.diagnostic_mode,
-        audit_trail=manifest.research_run.audit_trail,
-        expected_candle_count=expected_candles,
-    )
-    estimated_plugin_runtime_us = (
-        expected_candles
-        * candidate_count
-        * scenario_count
-        * _plugin_expected_us_per_candle(plugin_complexity)
-    )
+    # Workload estimation must remain manifest-only. Resolving the strategy
+    # plugin here would import runtime capability adapters and operational
+    # configuration even though this command neither runs a strategy nor opens
+    # a dataset.
+    plugin_complexity = {
+        "schema_version": 1,
+        "complexity_class": "unknown",
+        "expected_us_per_candle": None,
+        "precompute_required": None,
+        "strategy_name": manifest.strategy_name,
+        "source": "manifest_only_no_runtime_plugin_resolution",
+    }
+    estimated_plugin_runtime_us = 0
     pre_parallel_dataset_hash_payload_bytes = expected_candles * 128 + split_count * 2048
     max_workers = int(resource_plan.effective_max_workers)
     snapshot_bytes_per_worker = expected_candles * 160

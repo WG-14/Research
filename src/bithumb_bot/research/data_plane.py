@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -11,11 +12,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from bithumb_bot.bootstrap import get_last_explicit_env_load_summary
-from bithumb_bot.marketdata import BASE_URL
-from bithumb_bot.historical_backfill import backfill_candles
 from bithumb_bot.orderbook_depth_store import summarize_orderbook_depth_evidence
-from bithumb_bot.paths import PathManager
 from bithumb_bot.public_api import decode_json_response, extract_api_error
 from bithumb_bot.public_api_minute_candles import interval_to_minute_unit, parse_minute_candles
 from bithumb_bot.storage_io import write_json_atomic
@@ -29,14 +26,24 @@ from .dataset_snapshot import (
     _split_range,
 )
 from .datasets.registry import default_dataset_adapter_registry
-from .experiment_manifest import ExperimentManifest, load_manifest
+from .experiment_manifest import DateRange, ExperimentManifest, load_manifest
 from .hashing import sha256_prefixed
-from .validation_protocol import _rolling_walk_forward_windows
-from .legacy_config import LazyOperationalConfigValue
+PUBLIC_MARKETDATA_BASE_URL = "https://api.bithumb.com"
 
 
-PROJECT_ROOT = LazyOperationalConfigValue("PROJECT_ROOT")
-settings = LazyOperationalConfigValue("settings")
+def _configured_db_path(db_path: str | Path | None) -> Path:
+    raw = db_path or os.getenv("RESEARCH_DB_PATH") or os.getenv("DB_PATH")
+    if raw is None or not str(raw).strip():
+        raise ValueError("db_path is required; set RESEARCH_DB_PATH for research commands")
+    return Path(raw).expanduser().resolve()
+
+
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return False
+    return True
 
 KST = ZoneInfo("Asia/Seoul")
 PERSISTENT_MISSING_CLASSIFICATIONS = {
@@ -327,7 +334,7 @@ def build_missing_candle_ranges_artifact(
 ) -> dict[str, Any]:
     resolved_manifest_path = Path(manifest_path).expanduser().resolve()
     manifest = load_manifest(resolved_manifest_path)
-    resolved_db_path = Path(db_path or settings.DB_PATH).expanduser().resolve()
+    resolved_db_path = _configured_db_path(db_path)
     now = generated_at or datetime.now(UTC).isoformat()
     splits: dict[str, Any] = {}
     for split_name in split_names(manifest):
@@ -378,8 +385,9 @@ def write_missing_candle_ranges_artifact(
     *,
     manifest_path: str | Path,
     out_path: str | Path,
+    db_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    payload = build_missing_candle_ranges_artifact(manifest_path=manifest_path)
+    payload = build_missing_candle_ranges_artifact(manifest_path=manifest_path, db_path=db_path)
     resolved_out = _validate_report_artifact_out_path(out_path)
     write_json_atomic(resolved_out, payload)
     return payload
@@ -396,20 +404,24 @@ def retry_missing_candles_from_artifact(
     limit: int | None = None,
     request_interval_ms: int = 0,
     max_retries: int = 3,
-    backfill_func: Callable[..., Any] = backfill_candles,
+    backfill_func: Callable[..., Any] | None = None,
+    db_path: str | Path | None = None,
 ) -> dict[str, Any]:
     if max_attempts < 1:
         raise ValueError("--max-attempts must be >= 1")
     resolved_manifest_path = Path(manifest_path).expanduser().resolve()
     manifest = load_manifest(resolved_manifest_path)
     artifact = json.loads(Path(missing_ranges_path).expanduser().read_text(encoding="utf-8"))
-    _validate_missing_artifact(artifact=artifact, manifest=manifest, db_path=Path(settings.DB_PATH).expanduser().resolve())
+    resolved_db_path = _configured_db_path(db_path)
+    _validate_missing_artifact(artifact=artifact, manifest=manifest, db_path=resolved_db_path)
+    if backfill_func is None:
+        raise ValueError("backfill_func is required; inject a public-marketdata backfill implementation")
 
     attempts: list[dict[str, Any]] = []
     selected = _select_missing_ranges(artifact=artifact, min_buckets=min_buckets, split=split, limit=limit)
     for item in selected:
         before = _range_coverage(
-            db_path=settings.DB_PATH,
+            db_path=resolved_db_path,
             market=manifest.market,
             interval=manifest.interval,
             start_ts=int(item["start_ts"]),
@@ -455,7 +467,7 @@ def retry_missing_candles_from_artifact(
                     }
                 )
         after = _range_coverage(
-            db_path=settings.DB_PATH,
+            db_path=resolved_db_path,
             market=manifest.market,
             interval=manifest.interval,
             start_ts=int(item["start_ts"]),
@@ -489,7 +501,7 @@ def retry_missing_candles_from_artifact(
         "manifest_hash": manifest.manifest_hash(),
         "missing_ranges_path": str(Path(missing_ranges_path).expanduser().resolve()),
         "missing_ranges_hash": artifact.get("content_hash"),
-        "db_path": str(Path(settings.DB_PATH).expanduser().resolve()),
+        "db_path": str(resolved_db_path),
         "market": manifest.market,
         "interval": manifest.interval,
         "generated_at": datetime.now(UTC).isoformat(),
@@ -522,18 +534,19 @@ def build_missing_candle_source_probe_artifact(
     limit: int | None = None,
     count: int = 3,
     client_factory: Callable[[], Any] | None = None,
+    db_path: str | Path | None = None,
 ) -> dict[str, Any]:
     resolved_manifest_path = Path(manifest_path).expanduser().resolve()
     resolved_missing_path = Path(missing_ranges_path).expanduser().resolve()
     manifest = load_manifest(resolved_manifest_path)
-    resolved_db_path = Path(settings.DB_PATH).expanduser().resolve()
+    resolved_db_path = _configured_db_path(db_path)
     missing_artifact = json.loads(resolved_missing_path.read_text(encoding="utf-8"))
     _validate_missing_artifact(artifact=missing_artifact, manifest=manifest, db_path=resolved_db_path)
     minute_unit = interval_to_minute_unit(manifest.interval)
     interval_ms = minute_unit * 60_000
     selected = _select_missing_ranges(artifact=missing_artifact, min_buckets=1, split=split, limit=limit)
     probe_records: list[dict[str, Any]] = []
-    factory = client_factory or (lambda: httpx.Client(base_url=BASE_URL, timeout=15.0))
+    factory = client_factory or (lambda: httpx.Client(base_url=PUBLIC_MARKETDATA_BASE_URL, timeout=15.0))
     with factory() as client:
         for item in selected:
             for label, target_ts in _probe_targets_for_range(item, interval_ms=interval_ms):
@@ -590,6 +603,7 @@ def write_missing_candle_source_probe_artifact(
     split: str | None = None,
     limit: int | None = None,
     count: int = 3,
+    db_path: str | Path | None = None,
 ) -> dict[str, Any]:
     payload = build_missing_candle_source_probe_artifact(
         manifest_path=manifest_path,
@@ -597,6 +611,7 @@ def write_missing_candle_source_probe_artifact(
         split=split,
         limit=limit,
         count=count,
+        db_path=db_path,
     )
     write_json_atomic(_validate_report_artifact_out_path(out_path), payload)
     return payload
@@ -610,7 +625,7 @@ def build_clean_candle_segments_artifact(
     min_days: int,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
-    resolved_db_path = Path(db_path or settings.DB_PATH).expanduser().resolve()
+    resolved_db_path = _configured_db_path(db_path)
     minute_unit = interval_to_minute_unit(interval)
     interval_ms = minute_unit * 60_000
     min_segment_minutes = max(1, int(min_days)) * 24 * 60
@@ -687,11 +702,13 @@ def write_clean_candle_segments_artifact(
     interval: str,
     min_days: int,
     out_path: str | Path,
+    db_path: str | Path | None = None,
 ) -> dict[str, Any]:
     payload = build_clean_candle_segments_artifact(
         market=market,
         interval=interval,
         min_days=min_days,
+        db_path=db_path,
     )
     write_json_atomic(_validate_report_artifact_out_path(out_path), payload)
     return payload
@@ -710,7 +727,7 @@ def build_persistent_missing_candle_classification_artifact(
     resolved_missing_path = Path(missing_ranges_path).expanduser().resolve()
     resolved_retry_path = Path(retry_attempts_path).expanduser().resolve()
     manifest = load_manifest(resolved_manifest_path)
-    resolved_db_path = Path(db_path or settings.DB_PATH).expanduser().resolve()
+    resolved_db_path = _configured_db_path(db_path)
     missing_artifact = json.loads(resolved_missing_path.read_text(encoding="utf-8"))
     retry_artifact = json.loads(resolved_retry_path.read_text(encoding="utf-8"))
     source_probe_artifact: dict[str, Any] | None = None
@@ -879,6 +896,33 @@ def walk_forward_payload(manifest: ExperimentManifest) -> dict[str, Any]:
         "reasons": [] if status == "PASS" else ["walk_forward_insufficient_windows"],
         "next_action": "none" if status == "PASS" else "adjust manifest walk_forward dates only with reviewed research intent",
     }
+
+
+def _rolling_walk_forward_windows(manifest: ExperimentManifest) -> list[dict[str, DateRange]]:
+    config = manifest.walk_forward
+    if config is None:
+        return []
+    start = datetime.strptime(manifest.dataset.split.train.start, "%Y-%m-%d")
+    end = datetime.strptime(
+        manifest.dataset.split.final_holdout.end
+        if manifest.dataset.split.final_holdout is not None
+        else manifest.dataset.split.validation.end,
+        "%Y-%m-%d",
+    )
+    windows: list[dict[str, DateRange]] = []
+    cursor = start
+    while True:
+        train_start = cursor
+        train_end = train_start + timedelta(days=config.train_window_days - 1)
+        test_start = train_end + timedelta(days=1)
+        test_end = test_start + timedelta(days=config.test_window_days - 1)
+        if test_end > end:
+            return windows
+        windows.append({
+            "train": DateRange(start=train_start.strftime("%Y-%m-%d"), end=train_end.strftime("%Y-%m-%d")),
+            "test": DateRange(start=test_start.strftime("%Y-%m-%d"), end=test_end.strftime("%Y-%m-%d")),
+        })
+        cursor = cursor + timedelta(days=config.step_days)
 
 
 def _scan_candles_sql(
@@ -1486,7 +1530,7 @@ def _validate_report_artifact_out_path(path: str | Path) -> Path:
     if not resolved.is_absolute():
         raise ValueError(f"research report artifact --out must be an absolute path: {path!r}")
     resolved = resolved.resolve()
-    if PathManager._is_within(resolved, PROJECT_ROOT.resolve()):
+    if _is_within(resolved, Path(__file__).resolve().parents[3]):
         raise ValueError(f"research report artifact --out must be outside repository: {resolved}")
     return resolved
 
@@ -1876,4 +1920,7 @@ def _range_coverage(
 
 
 def env_payload() -> dict[str, object]:
-    return get_last_explicit_env_load_summary().as_dict()
+    return {
+        "settings_source": "RESEARCH_*",
+        "db_path_configured": bool(os.getenv("RESEARCH_DB_PATH")),
+    }

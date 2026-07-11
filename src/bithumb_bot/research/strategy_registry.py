@@ -1226,12 +1226,28 @@ def research_strategy_data_requirements(
 
 
 def resolve_research_strategy_plugin(strategy_name: str) -> ResearchStrategyPlugin:
-    _ensure_discovered_strategy_plugins_loaded()
     key = str(strategy_name or "").strip().lower()
+    if key not in _RESEARCH_STRATEGY_PLUGINS:
+        _load_research_plugin_for_command(key)
     try:
         return _RESEARCH_STRATEGY_PLUGINS[key]
     except KeyError as exc:
         raise ResearchStrategyRegistryError(f"unsupported research strategy: {key}") from exc
+
+
+def _load_research_plugin_for_command(key: str) -> None:
+    """Load only the selected research plugin for command execution.
+
+    Full plugin discovery remains available for inventory commands, but loading
+    every live-capable plugin makes a research backtest import unrelated broker
+    and runtime modules before it has selected a strategy.
+    """
+    if key == "sma_with_filter":
+        from bithumb_bot.strategy_plugins.sma_with_filter_plugin import SMA_WITH_FILTER_PLUGIN
+
+        register_research_strategy_plugin(SMA_WITH_FILTER_PLUGIN)
+        return
+    _ensure_discovered_strategy_plugins_loaded()
 
 
 def resolve_research_strategy(strategy_name: str) -> ResearchStrategyRunner:

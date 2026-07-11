@@ -4,14 +4,12 @@ import glob
 import inspect
 import os
 import subprocess
-import sys
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from bithumb_bot.paths import PathManager, PathPolicyError
 from bithumb_bot.storage_io import write_json_atomic, write_text_atomic
 
 from .experiment_manifest import load_manifest
@@ -32,7 +30,7 @@ def run_research_batch(
     command: str,
     fail_fast: bool,
     out_path: str | Path | None,
-    manager: PathManager,
+    manager: Any,
     project_root: Path,
 ) -> ResearchBatchResult:
     if command != "research-backtest":
@@ -117,7 +115,7 @@ def _call_run_one_manifest(
     path: Path,
     manifest: Any,
     command: str,
-    manager: PathManager,
+    manager: Any,
     project_root: Path,
     log_dir: Path,
     child_env: dict[str, str],
@@ -144,7 +142,7 @@ def _run_one_manifest(
     path: Path,
     manifest: Any,
     command: str,
-    manager: PathManager,
+    manager: Any,
     project_root: Path,
     log_dir: Path,
     child_env: dict[str, str] | None = None,
@@ -154,9 +152,7 @@ def _run_one_manifest(
     log_path = log_dir / f"{_safe_name(manifest.experiment_id)}.log"
     _ensure_allowed(manager, log_path)
     cmd = [
-        sys.executable,
-        "-m",
-        "bithumb_bot",
+        "bithumb-research",
         command,
         "--manifest",
         str(path),
@@ -166,7 +162,7 @@ def _run_one_manifest(
     completed = subprocess.run(
         cmd,
         cwd=str(project_root),
-        env={**os.environ, **(child_env or {})},
+        env={**os.environ, **_research_cli_environment(manager), **(child_env or {})},
         text=True,
         capture_output=True,
         check=False,
@@ -213,7 +209,7 @@ def allocate_batch_child_process_budget(*, max_concurrent_manifests: int) -> dic
     }
 
 
-def _batch_summary_path(*, manager: PathManager, out_path: str | Path | None) -> Path:
+def _batch_summary_path(*, manager: Any, out_path: str | Path | None) -> Path:
     if out_path is None:
         path = manager.data_dir() / "reports" / "research" / "batch" / "research_batch_summary.json"
     else:
@@ -225,12 +221,34 @@ def _batch_summary_path(*, manager: PathManager, out_path: str | Path | None) ->
     return resolved
 
 
-def _ensure_allowed(manager: PathManager, path: Path) -> None:
+def _ensure_allowed(manager: Any, path: Path) -> None:
     resolved = path.resolve()
-    if PathManager._is_within(resolved, manager.project_root.resolve()):
-        raise PathPolicyError(f"research batch artifact must be outside repository: {resolved}")
-    if not PathManager._is_within(resolved, manager.data_dir().resolve()):
-        raise PathPolicyError(f"research batch artifact must be under DATA_ROOT: {resolved}")
+    if _is_within(resolved, manager.project_root.resolve()):
+        raise ValueError(f"research batch artifact must be outside repository: {resolved}")
+    if not _is_within(resolved, manager.data_dir().resolve()):
+        raise ValueError(f"research batch artifact must be under research artifact root: {resolved}")
+
+
+def _research_cli_environment(manager: Any) -> dict[str, str]:
+    settings = getattr(manager, "settings", None)
+    if settings is None:
+        return {}
+    values = {
+        "RESEARCH_DATA_ROOT": getattr(settings, "data_root", None),
+        "RESEARCH_ARTIFACT_ROOT": getattr(settings, "artifact_root", None),
+        "RESEARCH_REPORT_ROOT": getattr(settings, "report_root", None),
+        "RESEARCH_CACHE_ROOT": getattr(settings, "cache_root", None),
+        "RESEARCH_DB_PATH": getattr(settings, "db_path", None),
+    }
+    return {key: str(value) for key, value in values.items() if value is not None}
+
+
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def _safe_name(value: str) -> str:

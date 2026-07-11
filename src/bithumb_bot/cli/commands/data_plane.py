@@ -7,11 +7,11 @@ from bithumb_bot.cli.registry import CommandSpec
 from ._helpers import make_spec
 
 
-def _missing(args: argparse.Namespace, _context) -> int:
+def _missing(args: argparse.Namespace, context) -> int:
     from bithumb_bot.research.data_plane import write_missing_candle_ranges_artifact
 
     try:
-        payload = write_missing_candle_ranges_artifact(manifest_path=str(args.manifest), out_path=str(args.out))
+        payload = write_missing_candle_ranges_artifact(manifest_path=str(args.manifest), out_path=str(args.out), db_path=context.settings.DB_PATH)
     except Exception as exc:
         print(f"[RESEARCH-MISSING-CANDLES] error={exc}")
         return 1
@@ -25,8 +25,9 @@ def _missing(args: argparse.Namespace, _context) -> int:
     return 0
 
 
-def _retry(args: argparse.Namespace, _context) -> int:
+def _retry(args: argparse.Namespace, context) -> int:
     from bithumb_bot.research.data_plane import retry_missing_candles_from_artifact
+    from bithumb_bot.historical_backfill import backfill_candles
 
     try:
         payload = retry_missing_candles_from_artifact(
@@ -39,6 +40,8 @@ def _retry(args: argparse.Namespace, _context) -> int:
             request_interval_ms=int(args.request_interval_ms),
             max_retries=int(args.max_retries),
             out_path=str(args.out),
+            db_path=context.settings.DB_PATH,
+            backfill_func=backfill_candles,
         )
     except Exception as exc:
         print(f"[RETRY-MISSING-CANDLES] error={exc}")
@@ -55,7 +58,7 @@ def _retry(args: argparse.Namespace, _context) -> int:
     return 0
 
 
-def _probe(args: argparse.Namespace, _context) -> int:
+def _probe(args: argparse.Namespace, context) -> int:
     from bithumb_bot.research.data_plane import write_missing_candle_source_probe_artifact
 
     try:
@@ -66,6 +69,7 @@ def _probe(args: argparse.Namespace, _context) -> int:
             limit=int(args.limit) if args.limit is not None else None,
             count=int(args.count),
             out_path=str(args.out),
+            db_path=context.settings.DB_PATH,
         )
     except Exception as exc:
         print(f"[PROBE-MISSING-CANDLES] error={exc}")
@@ -81,7 +85,7 @@ def _probe(args: argparse.Namespace, _context) -> int:
     return 0
 
 
-def _classify(args: argparse.Namespace, _context) -> int:
+def _classify(args: argparse.Namespace, context) -> int:
     from bithumb_bot.research.data_plane import (
         persistent_missing_overall_next_action,
         write_persistent_missing_candle_classification_artifact,
@@ -94,6 +98,7 @@ def _classify(args: argparse.Namespace, _context) -> int:
             retry_attempts_path=str(args.retry_attempts),
             source_probe_path=str(args.source_probe) if args.source_probe else None,
             out_path=str(args.out),
+            db_path=context.settings.DB_PATH,
         )
     except Exception as exc:
         print(f"[CLASSIFY-PERSISTENT-MISSING-CANDLES] error={exc}")
@@ -114,7 +119,7 @@ def _classify(args: argparse.Namespace, _context) -> int:
     return 0
 
 
-def _clean_segments(args: argparse.Namespace, _context) -> int:
+def _clean_segments(args: argparse.Namespace, context) -> int:
     from bithumb_bot.research.data_plane import write_clean_candle_segments_artifact
 
     try:
@@ -123,6 +128,7 @@ def _clean_segments(args: argparse.Namespace, _context) -> int:
             interval=str(args.interval),
             min_days=int(args.min_days),
             out_path=str(args.out),
+            db_path=context.settings.DB_PATH,
         )
     except Exception as exc:
         print(f"[FIND-CLEAN-CANDLE-SEGMENTS] error={exc}")
