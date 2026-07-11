@@ -19,6 +19,7 @@ from bithumb_bot.research.execution_model import ExecutionFill, ExecutionRequest
 from bithumb_bot.research.experiment_manifest import DateRange, parse_manifest
 from bithumb_bot.research.strategy_registry import resolve_research_strategy, resolve_research_strategy_plugin
 from bithumb_bot.research.strategy_registry import list_research_strategy_plugins
+from bithumb_bot.research.strategy_catalog import resolve_research_strategy as resolve_catalog_strategy
 from bithumb_bot.research.strategy_spec import StrategySpecError, validate_parameter_space_against_strategy_spec
 from bithumb_bot.research.validation_protocol import run_research_backtest
 
@@ -137,8 +138,8 @@ def test_builtin_research_plugins_expose_minimum_diagnostics_contract() -> None:
         assert required <= set(contract["minimum_fields"])
 
 
-def test_buy_and_hold_baseline_uses_common_execution_kernel() -> None:
-    runner = resolve_research_strategy("buy_and_hold_baseline")
+def test_buy_and_hold_baseline_uses_research_only_kernel() -> None:
+    runner = resolve_catalog_strategy("buy_and_hold_baseline").runner
     model = _TrackingExecutionModel()
 
     result = runner(
@@ -153,7 +154,7 @@ def test_buy_and_hold_baseline_uses_common_execution_kernel() -> None:
         BacktestRunContext(report_detail="full"),
     )
 
-    assert model.simulate_count == 1
+    assert model.simulate_count == 0
     assert result.trades
     assert result.execution_event_summary is not None
     assert result.execution_event_summary["execution_attempt_count"] == 1
@@ -166,31 +167,24 @@ def test_buy_and_hold_baseline_uses_common_execution_kernel() -> None:
     assert result.trades[0]["side"] == "BUY"
     assert result.trades[0]["asset_qty"] > 0.0
     assert result.resource_usage is not None
-    assert result.resource_usage["common_decision_behavior_hash"].startswith("sha256:")
-    assert result.resource_usage["strategy_behavior_hash"].startswith("sha256:")
-    assert result.resource_usage["composite_behavior_hash_v2"].startswith("sha256:")
+    assert result.resource_usage["buy_and_hold_research_kernel"] == "research_only_v1"
+    assert result.resource_usage["exit_policy"] == "no_explicit_exit"
     assert result.strategy_diagnostics is not None
     assert result.strategy_diagnostics["strategy_diagnostics_namespace"] == "buy_and_hold_baseline"
     assert set(result.strategy_diagnostics["strategy_specific_diagnostics"]) == {"buy_and_hold_baseline"}
     buy_decisions = [item for item in result.decisions if item["final_signal"] == "BUY"]
     assert len(buy_decisions) == 1
-    assert buy_decisions[0]["execution_intent"] == "buy"
-    assert buy_decisions[0]["strategy_plugin_contract"]["name"] == "buy_and_hold_baseline"
-    assert buy_decisions[0]["strategy_decision_contract_version"] == (
-        "research_buy_and_hold_baseline_decision_contract.v1"
+    assert buy_decisions[0]["exit_policy"] == "no_explicit_exit"
+    assert buy_decisions[0]["final_position_marked_to_market"] is True
+
+
+def test_buy_and_hold_baseline_does_not_enter_common_kernel(monkeypatch) -> None:
+    runner = resolve_catalog_strategy("buy_and_hold_baseline").runner
+    monkeypatch.setattr(
+        backtest_kernel,
+        "run_decision_event_backtest",
+        lambda **kwargs: pytest.fail("buy_and_hold_baseline_must_not_use_common_kernel"),
     )
-
-
-def test_buy_and_hold_baseline_enters_common_kernel_through_public_boundary(monkeypatch) -> None:
-    runner = resolve_research_strategy("buy_and_hold_baseline")
-    calls: list[str] = []
-    original = backtest_kernel.run_decision_event_backtest
-
-    def counting_kernel(**kwargs):
-        calls.append(str(kwargs["strategy_name"]))
-        return original(**kwargs)
-
-    monkeypatch.setattr(backtest_kernel, "run_decision_event_backtest", counting_kernel)
 
     result = runner(
         _dataset(),
@@ -204,7 +198,6 @@ def test_buy_and_hold_baseline_enters_common_kernel_through_public_boundary(monk
         BacktestRunContext(report_detail="full"),
     )
 
-    assert calls == ["buy_and_hold_baseline"]
     assert result.execution_event_summary["execution_attempt_count"] == 1
     assert result.strategy_diagnostics["strategy_diagnostics_namespace"] == "buy_and_hold_baseline"
 
@@ -333,7 +326,7 @@ def test_validation_protocol_has_no_buy_and_hold_specific_branch() -> None:
 
 
 @pytest.mark.research_e2e
-def test_buy_and_hold_full_research_backtest_report_contains_common_kernel_fields(tmp_path, monkeypatch) -> None:
+def test_buy_and_hold_full_research_backtest_report_contains_research_kernel_fields(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "candles.sqlite"
     _create_db(db_path)
     for key in ("ENV_ROOT", "RUN_ROOT", "DATA_ROOT", "LOG_ROOT", "BACKUP_ROOT", "ARCHIVE_ROOT"):
@@ -365,14 +358,10 @@ def test_buy_and_hold_full_research_backtest_report_contains_common_kernel_field
     assert candidate["validation_execution_event_summary"]["execution_attempt_count"] == 1
     assert candidate["validation_execution_event_summary"]["filled_execution_count"] == 1
     resource_usage = candidate["validation_resource_usage"]
-    assert resource_usage["common_decision_behavior_hash"].startswith("sha256:")
-    assert resource_usage["strategy_behavior_hash"].startswith("sha256:")
-    assert resource_usage["composite_behavior_hash_v2"].startswith("sha256:")
-    assert candidate["common_decision_behavior_hash"] == resource_usage["common_decision_behavior_hash"]
-    assert candidate["strategy_behavior_hash"] == resource_usage["strategy_behavior_hash"]
-    assert candidate["composite_behavior_hash_v2"] == resource_usage["composite_behavior_hash_v2"]
-    assert resource_usage["applied_resource_limits"]["max_rss_mb_semantics"] == "candidate_local_rss_delta_mb"
-    assert resource_usage["memory_sampling_policy"]["cadence"] == "per_resource_limit_check_event"
+    assert resource_usage["buy_and_hold_research_kernel"] == "research_only_v1"
+    assert resource_usage["exit_policy"] == "no_explicit_exit"
+    assert resource_usage["open_position_at_end"] is True
+    assert resource_usage["final_position_marked_to_market"] is True
     assert candidate["strategy_diagnostics"]["strategy_diagnostics_namespace"] == "buy_and_hold_baseline"
     assert set(candidate["strategy_diagnostics"]["strategy_specific_diagnostics"]) == {"buy_and_hold_baseline"}
     assert candidate["validation_audit_trace_index"] is None
