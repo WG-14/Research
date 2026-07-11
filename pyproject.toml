@@ -29,6 +29,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 [project.scripts]
 bithumb-bot = "bithumb_bot.bootstrap:run_cli"
+bithumb-research = "bithumb_bot.research_bootstrap:run_cli"
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"

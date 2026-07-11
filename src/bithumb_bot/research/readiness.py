@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 from bithumb_bot.bootstrap import get_last_explicit_env_load_summary
-from bithumb_bot.config import settings
 from bithumb_bot.execution_quality import ExecutionQualityThresholds
 from bithumb_bot.execution_reality_contract import build_execution_capability_contract
 
@@ -23,6 +22,10 @@ from .datasets.registry import default_dataset_adapter_registry
 from .dataset_snapshot import load_dataset_range
 from .execution_calibration import compare_calibration_to_scenario, load_calibration_artifact
 from .experiment_manifest import ExperimentManifest, load_manifest
+from .legacy_config import LazyOperationalConfigValue
+
+
+settings = LazyOperationalConfigValue("settings")
 
 
 def build_research_readiness_report(
@@ -32,6 +35,7 @@ def build_research_readiness_report(
     execution_calibration_path: str | Path | None = None,
     missing_classification_path: str | Path | None = None,
     progress_callback: Any | None = None,
+    mode: str | None = None,
 ) -> dict[str, Any]:
     resolved_manifest_path = Path(manifest_path).expanduser().resolve()
     manifest = load_manifest(resolved_manifest_path)
@@ -91,7 +95,7 @@ def build_research_readiness_report(
         "status": "FAIL" if failed else "PASS",
         "manifest_path": str(resolved_manifest_path),
         "manifest_hash": manifest.manifest_hash(),
-        "mode": settings.MODE,
+        "mode": mode or settings.MODE,
         "db_path": str(resolved_db_path),
         "dataset_adapter": {
             "dataset_source": manifest.dataset.source,
@@ -134,12 +138,16 @@ def cmd_research_readiness(
     execution_calibration_path: str | None = None,
     missing_classification_path: str | None = None,
     as_json: bool = False,
+    db_path: str | Path | None = None,
+    mode: str | None = None,
 ) -> int:
     try:
         report = build_research_readiness_report(
             manifest_path=manifest_path,
+            db_path=db_path,
             execution_calibration_path=execution_calibration_path,
             missing_classification_path=missing_classification_path,
+            mode=mode,
             progress_callback=(
                 None
                 if as_json

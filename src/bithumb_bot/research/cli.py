@@ -6,7 +6,6 @@ from dataclasses import replace
 from pathlib import Path
 from time import monotonic
 
-from bithumb_bot.config import PATH_MANAGER, settings
 from bithumb_bot.notification_outbox import append_notification_result
 from bithumb_bot.notifier import AlertSeverity, NotificationResult, format_event, is_configured, notify
 from bithumb_bot.paths import PathManager
@@ -34,9 +33,17 @@ from .validation_pipeline import ValidationRunError, run_research_validation, va
 from .validation_protocol import ResearchValidationError, run_research_backtest, run_research_walk_forward
 from .forward_diagnostics_cli import cmd_research_forward_diagnostics
 from .batch_runner import run_research_batch
+from .legacy_config import LazyOperationalConfigValue
 
 
 RESEARCH_NOTIFICATION_POLICIES = {"best_effort", "require_delivery", "disabled"}
+
+
+# The integrated ``bithumb-bot`` route still resolves these objects on demand.
+# The research-only route replaces them with its injected context before a
+# command runs, so importing this module does not import ``bithumb_bot.config``.
+PATH_MANAGER = LazyOperationalConfigValue("PATH_MANAGER")
+settings = LazyOperationalConfigValue("settings")
 
 
 def resolve_research_notification_policy(policy: str | None = None) -> str:

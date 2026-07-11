@@ -12,7 +12,6 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from bithumb_bot.bootstrap import get_last_explicit_env_load_summary
-from bithumb_bot.config import PROJECT_ROOT, settings
 from bithumb_bot.marketdata import BASE_URL
 from bithumb_bot.historical_backfill import backfill_candles
 from bithumb_bot.orderbook_depth_store import summarize_orderbook_depth_evidence
@@ -33,6 +32,11 @@ from .datasets.registry import default_dataset_adapter_registry
 from .experiment_manifest import ExperimentManifest, load_manifest
 from .hashing import sha256_prefixed
 from .validation_protocol import _rolling_walk_forward_windows
+from .legacy_config import LazyOperationalConfigValue
+
+
+PROJECT_ROOT = LazyOperationalConfigValue("PROJECT_ROOT")
+settings = LazyOperationalConfigValue("settings")
 
 KST = ZoneInfo("Asia/Seoul")
 PERSISTENT_MISSING_CLASSIFICATIONS = {
