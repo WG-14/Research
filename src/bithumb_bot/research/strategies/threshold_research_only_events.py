@@ -1,0 +1,71 @@
+"""Research-native decision events for ``threshold_research_only``."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from ..dataset_snapshot import DatasetSnapshot
+from ..decision_event import ResearchDecisionEvent
+from ..execution_timing import candle_close_ts
+from ..experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
+from ..strategy_spec import THRESHOLD_RESEARCH_ONLY_SPEC
+
+
+def build_threshold_research_only_events(
+    *,
+    dataset: DatasetSnapshot,
+    parameter_values: dict[str, Any],
+    fee_rate: float,
+    slippage_bps: float,
+    execution_timing_policy: ExecutionTimingPolicy,
+    portfolio_policy: PortfolioPolicy,
+    context: Any | None = None,
+) -> tuple[ResearchDecisionEvent, ...]:
+    """Evaluate the strict close-above threshold on every candle."""
+    del fee_rate, slippage_bps, context
+    threshold = float(parameter_values["THRESHOLD_CLOSE_ABOVE"])
+    events: list[ResearchDecisionEvent] = []
+    for index, candle in enumerate(dataset.candles):
+        close = float(candle.close)
+        is_buy = close > threshold
+        signal = "BUY" if is_buy else "HOLD"
+        events.append(
+            ResearchDecisionEvent(
+                candle_ts=int(candle.ts),
+                decision_ts=candle_close_ts(candle, interval=dataset.interval)
+                + int(execution_timing_policy.decision_guard_ms),
+                strategy_name=THRESHOLD_RESEARCH_ONLY_SPEC.strategy_name,
+                strategy_version=THRESHOLD_RESEARCH_ONLY_SPEC.strategy_version,
+                raw_signal=signal,
+                entry_signal=signal,
+                exit_signal="HOLD",
+                final_signal=signal,
+                reason="threshold_close_above" if is_buy else "threshold_not_met",
+                feature_snapshot={
+                    "candle_index": int(index),
+                    "close": close,
+                    "threshold_close_above": threshold,
+                },
+                strategy_diagnostics={
+                    "schema_version": 1,
+                    "threshold_close_above": threshold,
+                    "close_above_threshold": is_buy,
+                },
+                order_intent=(
+                    {
+                        "side": "BUY",
+                        "sizing": "portfolio_policy_fractional_cash",
+                        "buy_fraction": float(
+                            portfolio_policy.position_sizing.buy_fraction
+                        ),
+                    }
+                    if is_buy
+                    else None
+                ),
+                extra_payload={
+                    "exit_policy": "no_explicit_exit",
+                    "final_position_marked_to_market": True,
+                },
+            )
+        )
+    return tuple(events)

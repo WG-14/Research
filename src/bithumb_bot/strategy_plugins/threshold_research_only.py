@@ -2,28 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from bithumb_bot.research.strategy_spec import StrategySpec
+from bithumb_bot.research.strategy_spec import THRESHOLD_RESEARCH_ONLY_SPEC
 from bithumb_bot.strategy_authoring import research_plugin_from_decide_snapshot
-
-
-THRESHOLD_RESEARCH_ONLY_SPEC = StrategySpec(
-    strategy_name="threshold_research_only",
-    strategy_version="threshold_research_only.research_contract.v1",
-    accepted_parameter_names=("THRESHOLD_CLOSE_ABOVE",),
-    required_parameter_names=("THRESHOLD_CLOSE_ABOVE",),
-    behavior_affecting_parameter_names=("THRESHOLD_CLOSE_ABOVE",),
-    metadata_only_parameter_names=(),
-    research_only_parameter_names=(),
-    default_parameters={},
-    decision_contract_version="research_threshold_research_only_decision_contract.v1",
-    required_data=("candles",),
-    optional_data=(),
-    exit_policy_schema={
-        "schema_version": 1,
-        "rules": (),
-        "description": "Research-only threshold template; not promotion-grade without an extension.",
-    },
-)
 
 
 def decide_threshold_snapshot(

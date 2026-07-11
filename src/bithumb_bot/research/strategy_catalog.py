@@ -76,15 +76,16 @@ def _legacy_factory(name: str) -> Callable[[], ResearchStrategyPlugin]:
 from .strategies.sma_with_filter import build_sma_with_filter_plugin
 from .strategies.buy_and_hold_baseline import build_buy_and_hold_baseline_plugin
 from .strategies.noop_baseline import build_noop_baseline_plugin
+from .strategies.threshold_research_only import build_threshold_research_only_plugin
 
 _register_builtin("sma_with_filter", build_sma_with_filter_plugin)
 _register_builtin("buy_and_hold_baseline", build_buy_and_hold_baseline_plugin)
 _register_builtin("noop_baseline", build_noop_baseline_plugin)
+_register_builtin("threshold_research_only", build_threshold_research_only_plugin)
 for _name in (
     "daily_participation_sma",
     "canary_non_sma",
     "replay_threshold",
-    "threshold_research_only",
     "channel_breakout_with_regime_filter",
 ):
     _register_builtin(_name, _legacy_factory(_name))

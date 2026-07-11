@@ -305,6 +305,26 @@ BUY_AND_HOLD_BASELINE_SPEC = StrategySpec(
 )
 
 
+THRESHOLD_RESEARCH_ONLY_SPEC = StrategySpec(
+    strategy_name="threshold_research_only",
+    strategy_version="threshold_research_only.research_contract.v1",
+    accepted_parameter_names=("THRESHOLD_CLOSE_ABOVE",),
+    required_parameter_names=("THRESHOLD_CLOSE_ABOVE",),
+    behavior_affecting_parameter_names=("THRESHOLD_CLOSE_ABOVE",),
+    metadata_only_parameter_names=(),
+    research_only_parameter_names=(),
+    default_parameters={},
+    decision_contract_version="research_threshold_research_only_decision_contract.v1",
+    required_data=("candles",),
+    optional_data=(),
+    exit_policy_schema={
+        "schema_version": 1,
+        "rules": (),
+        "description": "Research-only threshold strategy with no explicit exit.",
+    },
+)
+
+
 def strategy_spec_for_name(strategy_name: str) -> StrategySpec:
     # The built-in research manifest contracts are self-contained. Keep their
     # validation independent from runtime plugin discovery so manifest-only
