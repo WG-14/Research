@@ -4,12 +4,12 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-# Runtime/test artifacts must stay outside repository. JSONL under fixtures or
-# examples is allowed only as source-controlled static fixture material; known
-# generated stream names stay forbidden everywhere.
+# Research datasets, reports, caches, SQLite files, and artifacts must stay at
+# ResearchPathManager-managed repository-external roots. JSONL under fixtures
+# or examples is allowed only as source-controlled static fixture material.
 static_fixture_jsonl_regex='^(tests/fixtures/[^/]+\.jsonl|examples/[^/]+\.jsonl|examples/research/[^/]+\.jsonl)$'
 generated_jsonl_regex='(^|/)(decisions|equity|executions|candidate_events)\.jsonl$'
-large_jsonl_bytes="${BITHUMB_REPO_ARTIFACT_JSONL_BYTES:-1048576}"
+large_jsonl_bytes="${RESEARCH_REPO_ARTIFACT_JSONL_BYTES:-1048576}"
 
 candidates="$({
   git ls-files --cached -- '*.db' '*.sqlite' '*.sqlite3'
@@ -19,15 +19,18 @@ candidates="$({
   find . -path ./.git -prune -o \( \
     -path './.tmp/pytest' -o \
     -path './pytest-debug' -o \
-    -path './bithumb-pytest-workspace' -o \
+    -path './bithumb-research-pytest-workspace' -o \
     -path './derived/research' -o \
+    -path './reports' -o \
     -path './reports/research' -o \
-    -path './data/paper/derived/research' -o \
-    -path './data/live/derived/research' -o \
-    -path './data/paper/reports/research' -o \
-    -path './data/live/reports/research' -o \
     -path './*/derived/research' -o \
     -path './*/reports/research' -o \
+    -path './datasets' -o \
+    -path './artifacts' -o \
+    -path './research-cache' -o \
+    -path './cache' -o \
+    -path './cache/research' -o \
+    -path './reproduction_outputs' -o \
     -path './traces' -o \
     -path './candidate_results' -o \
     -path './candidate_failures' \
@@ -58,10 +61,10 @@ if [[ -n "$candidates" ]]; then
 fi
 
 if [[ -n "$violations" ]]; then
-  echo "[RUNTIME-ARTIFACT-CHECK] repo-local runtime/test artifacts detected:" >&2
+  echo "[RUNTIME-ARTIFACT-CHECK] repo-local generated research artifacts detected:" >&2
   printf '%s' "$violations" >&2
-  echo "[RUNTIME-ARTIFACT-CHECK] Move runtime/test artifacts outside repo (PathManager roots or external pytest workspace)." >&2
+  echo "[RUNTIME-ARTIFACT-CHECK] Move generated research data and artifacts to ResearchPathManager-managed repository-external roots." >&2
   exit 1
 fi
 
-echo "[RUNTIME-ARTIFACT-CHECK] OK: no repo-local runtime/test artifacts detected."
+echo "[RUNTIME-ARTIFACT-CHECK] OK: no repo-local generated research artifacts detected."

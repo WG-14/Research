@@ -1,14 +1,24 @@
 # Codex request template
 
-You are Codex working directly in the GitHub repository `WG-14/bithumb-bot`.
+You are Codex working directly in the GitHub repository `WG-14/Research`.
 
 Task:
 - ...
 
+Constraints:
+- Read AGENTS.md before editing.
+- Preserve the research-only repository boundary.
+- Do not add account-connected, deployment, EC2, service-management or operational trading functionality.
+- Make the smallest safe patch.
+
 Validation:
-- uv run pytest -q
+- Run only focused tests directly related to the requested change.
+- Do not run selector-less full pytest.
+- Do not run broad tests or tests/ targets.
+- Leave repository-wide validation to CI, the wrapper, or the human operator.
 
 Final report:
 - Summary
 - Files changed
-- Tests run
+- Focused tests run
+- Residual risks or required wrapper validation
