@@ -10,11 +10,13 @@ import pytest
 from bithumb_research.paths import ResearchPathManager
 from bithumb_research.research.experiment_manifest import load_manifest
 from bithumb_research.research.reproduction import (
+    REPRODUCTION_FINGERPRINT_SCHEMA_VERSION,
     ReproductionContractError,
     build_reproduction_fingerprint,
     compare_reproduction_fingerprints,
     load_reproduction_receipt,
 )
+from bithumb_research.research.hashing import sha256_prefixed
 from bithumb_research.research.validation_protocol import run_research_backtest
 from bithumb_research.settings import ResearchSettings
 from tests.research_sma_success_fixture import create_success_fixture
@@ -73,42 +75,42 @@ def test_fingerprint_ignores_nondeterministic_fields_and_collection_order(tmp_pa
 
 
 def test_comparator_reports_exact_result_hash_path_and_is_order_independent() -> None:
+    digest = lambda value: sha256_prefixed({"value": value})
     fingerprint = {
-        "schema_version": 1,
-        "manifest_hash": "sha256:manifest",
+        "schema_version": REPRODUCTION_FINGERPRINT_SCHEMA_VERSION,
+        "manifest_hash": digest("manifest"),
         "research_classification": "research_only",
-        "dataset_fingerprint": "sha256:data",
-        "dataset_split_hashes": [{"split_name": "train", "content_hash": "sha256:train", "quality_hash": "sha256:quality"}],
-        "strategy_contract_hashes": ["sha256:strategy"],
-        "execution_assumption_hashes": [{"name": "cost_model", "hash": "sha256:cost"}],
+        "dataset_fingerprint": digest("dataset"),
+        "dataset_split_hashes": [{"split_name": "train", "content_hash": digest("train"), "quality_hash": digest("quality")}],
+        "strategy_contract_hashes": [digest("plugin")],
+        "execution_assumption_hashes": [{"name": "cost_model", "hash": digest("cost")}],
         "candidate_fingerprints": [{
             "candidate_id": "candidate_a",
-            "effective_strategy_parameters_hash": "sha256:params",
+            "effective_strategy_parameters_hash": digest("params"),
+            "strategy_spec_hash": digest("spec"),
+            "strategy_plugin_contract_hash": digest("plugin"),
             "acceptance_gate_status": "PASS",
             "gate_fail_reasons": [],
             "primary_scenario_id": "base",
-            "strategy_contract_hash": "sha256:strategy",
             "scenarios": [{
                 "scenario_index": 0,
                 "scenario_id": "base",
                 "scenario_role": "base",
-                "behavior_hash": "sha256:behavior",
-                "strategy_behavior_hash": "sha256:strategy-behavior",
-                "trade_ledger_hash": "sha256:ledger",
-                "equity_curve_hash": "sha256:equity",
-                "metrics_hash": "sha256:metrics",
-                "composite_behavior_hash": "sha256:composite",
-                "execution_model_hash": "sha256:execution",
-                "portfolio_policy_hash": "sha256:portfolio",
+                "behavior_hash": digest("behavior"),
+                "strategy_behavior_hash": digest("strategy-behavior"),
+                "trade_ledger_hash": digest("ledger"),
+                "equity_curve_hash": digest("equity"),
+                "metrics_hash": digest("metrics"),
+                "composite_behavior_hash": digest("composite"),
+                "execution_model_hash": digest("execution"),
+                "portfolio_policy_hash": digest("portfolio"),
             }],
         }],
         "final_selection": {"best_candidate_id": "candidate_a", "selected_candidate_id": "candidate_a", "validation_eligibility_status": "PASS", "statistical_gate_result": "PASS", "final_selection_gate_result": "PASS"},
     }
-    from bithumb_research.research.hashing import sha256_prefixed
-
     fingerprint["stable_fingerprint_hash"] = sha256_prefixed(fingerprint)
     actual = copy.deepcopy(fingerprint)
-    actual["candidate_fingerprints"][0]["scenarios"][0]["trade_ledger_hash"] = "sha256:changed"
+    actual["candidate_fingerprints"][0]["scenarios"][0]["trade_ledger_hash"] = digest("changed")
     actual_without_hash = {key: value for key, value in actual.items() if key != "stable_fingerprint_hash"}
     actual["stable_fingerprint_hash"] = sha256_prefixed(actual_without_hash)
 
@@ -132,4 +134,72 @@ def test_receipt_validation_fails_closed_when_tampered(tmp_path: Path, mutation:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ReproductionContractError):
+        load_reproduction_receipt(path)
+
+
+def test_fingerprint_rejects_classification_mismatch_and_invalid_hashes(tmp_path: Path) -> None:
+    _, manifest_path, _, report = _run_report(tmp_path)
+    manifest = load_manifest(manifest_path)
+
+    changed = copy.deepcopy(report)
+    changed["research_classification"] = "validated_candidate"
+    with pytest.raises(ReproductionContractError, match="report.research_classification does not match manifest"):
+        build_reproduction_fingerprint(changed, manifest=manifest)
+
+    mutations = (
+        (changed, "manifest_hash"),
+        (changed, "dataset_content_hash"),
+        (changed["candidates"][0], "strategy_plugin_contract_hash"),
+        (changed["candidates"][0]["scenario_results"][0], "trade_ledger_hash"),
+        (changed["candidates"][0]["scenario_results"][0], "metrics_hash"),
+    )
+    for target, key in mutations:
+        invalid = copy.deepcopy(report)
+        if target is changed:
+            invalid[key] = "sha256:UPPERCASE"
+        elif target is changed["candidates"][0]:
+            invalid["candidates"][0][key] = "sha256:UPPERCASE"
+        else:
+            invalid["candidates"][0]["scenario_results"][0][key] = "sha256:UPPERCASE"
+        with pytest.raises(ReproductionContractError, match="must be a sha256 hash"):
+            build_reproduction_fingerprint(invalid, manifest=manifest)
+
+
+@pytest.mark.parametrize(
+    "key",
+    (
+        "strategy_plugin_contract_hash",
+        "behavior_hash",
+        "strategy_behavior_hash",
+        "trade_ledger_hash",
+        "equity_curve_hash",
+        "metrics_hash",
+        "composite_behavior_hash",
+    ),
+)
+def test_fingerprint_requires_recorded_candidate_and_result_hashes(tmp_path: Path, key: str) -> None:
+    _, manifest_path, _, report = _run_report(tmp_path)
+    changed = copy.deepcopy(report)
+    if key == "strategy_plugin_contract_hash":
+        changed["candidates"][0].pop(key)
+    else:
+        changed["candidates"][0]["scenario_results"][0].pop(key)
+
+    with pytest.raises(ReproductionContractError, match=rf"{key} is required"):
+        build_reproduction_fingerprint(changed, manifest=load_manifest(manifest_path))
+
+
+def test_receipt_rejects_invalid_stable_fingerprint_hash_format(tmp_path: Path) -> None:
+    _, _, _, report = _run_report(tmp_path)
+    path = Path(str(report["reproduction_receipt_path"]))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["stable_fingerprint_hash"] = "sha256:uppercase"
+    payload["stable_fingerprint"]["stable_fingerprint_hash"] = "sha256:uppercase"
+    payload["receipt_content_hash"] = sha256_prefixed(
+        {key: value for key, value in payload.items() if key != "receipt_content_hash"},
+        label="reproduction_receipt_content",
+    )
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ReproductionContractError, match="stable_fingerprint_hash must be a sha256 hash"):
         load_reproduction_receipt(path)

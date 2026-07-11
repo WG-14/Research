@@ -24,15 +24,24 @@ jobs:
       - run: uv run pytest -q tests/test_repository_research_only_boundary.py tests/test_research_namespace_boundary.py
       - run: uv run pytest -q
       - run: uv build
-      - name: Inspect wheel boundary
+      - name: Inspect wheel and sdist boundaries
         run: |
+          set -euo pipefail
+          wheel="dist/bithumb_research-0.1.0-py3-none-any.whl"
+          sdist="dist/bithumb_research-0.1.0.tar.gz"
+          wheels=(dist/*.whl)
+          sdists=(dist/*.tar.gz)
+          test "${#wheels[@]}" -eq 1
+          test "${#sdists[@]}" -eq 1
+          test "${wheels[0]}" = "$wheel"
+          test "${sdists[0]}" = "$sdist"
           python - <<'PY'
-          from pathlib import Path
+          from tarfile import open as open_tar
           from zipfile import ZipFile
 
-          wheels = list(Path("dist").glob("*.whl"))
-          assert len(wheels) == 1, wheels
-          with ZipFile(wheels[0]) as wheel:
+          wheel_path = "dist/bithumb_research-0.1.0-py3-none-any.whl"
+          sdist_path = "dist/bithumb_research-0.1.0.tar.gz"
+          with ZipFile(wheel_path) as wheel:
               names = set(wheel.namelist())
           required = {
               "bithumb_research/__init__.py",
@@ -45,13 +54,54 @@ jobs:
           assert any(".dist-info/" in name for name in names)
           forbidden = ("bithumb_" + "bot/", "tests/", "scr" + "ipts/", "to" + "ols/", ".env.example", ".github/")
           assert not [name for name in names if name.startswith(forbidden) or name.endswith("/.env.example")]
+
+          with open_tar(sdist_path, "r:gz") as sdist:
+              names = set(sdist.getnames())
+          root = "bithumb_research-0.1.0/"
+          required = {
+              root + "pyproject.toml", root + "README.md", root + "CHANGELOG.md",
+              root + "src/bithumb_research/__init__.py",
+          }
+          assert required <= names, required - names
+          forbidden_parts = ("bithumb_" + "bot/", "/dist/", "/.venv/", "/.git/", "/tests/", "/docs/", "/.github/")
+          forbidden_suffixes = (".sqlite", ".sqlite3", ".db", "/.env", "/.env.example")
+          assert not [name for name in names if any(part in name for part in forbidden_parts) or name.endswith(forbidden_suffixes)]
           PY
-      - name: Install and run wheel in an isolated environment
+      - name: Install wheel and sdist in separate isolated environments
         run: |
-          uv venv /tmp/bithumb-research-release-venv
-          uv pip install --python /tmp/bithumb-research-release-venv/bin/python dist/*.whl
-          cd /tmp
-          /tmp/bithumb-research-release-venv/bin/python -c "import bithumb_research; import importlib.metadata; assert importlib.metadata.version('bithumb-research') == '0.1.0'; import importlib.util; assert importlib.util.find_spec('bithumb_research') is not None; assert importlib.util.find_spec('bithumb_' + 'bot') is None"
-          /tmp/bithumb-research-release-venv/bin/bithumb-research --help > /tmp/console-help.txt
-          /tmp/bithumb-research-release-venv/bin/python -m bithumb_research --help > /tmp/module-help.txt
-          diff -u /tmp/console-help.txt /tmp/module-help.txt
+          set -euo pipefail
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          wheel="${GITHUB_WORKSPACE}/dist/bithumb_research-0.1.0-py3-none-any.whl"
+          sdist="${GITHUB_WORKSPACE}/dist/bithumb_research-0.1.0.tar.gz"
+          uv venv "$tmpdir/wheel-venv"
+          uv venv "$tmpdir/sdist-venv"
+          env -u PYTHONPATH uv pip install --python "$tmpdir/wheel-venv/bin/python" "$wheel"
+          env -u PYTHONPATH uv pip install --python "$tmpdir/sdist-venv/bin/python" "$sdist"
+          cd "$tmpdir"
+          for environment in wheel sdist; do
+            env -u PYTHONPATH "./$environment-venv/bin/python" -c "import bithumb_research; import importlib.metadata; import importlib.util; assert importlib.metadata.version('bithumb-research') == '0.1.0'; assert bithumb_research.__name__ == 'bithumb_research'; assert importlib.util.find_spec('bithumb_' + 'bot') is None"
+            env -u PYTHONPATH "./$environment-venv/bin/bithumb-research" --help > "$environment-console-help.txt"
+            env -u PYTHONPATH "./$environment-venv/bin/python" -m bithumb_research --help > "$environment-module-help.txt"
+            diff -u "$environment-console-help.txt" "$environment-module-help.txt"
+            env -u PYTHONPATH "./$environment-venv/bin/python" -c "import importlib.metadata, json; from bithumb_research.research.strategy_catalog import list_research_strategies; print(json.dumps({'version': importlib.metadata.version('bithumb-research'), 'namespace': 'bithumb_research', 'strategies': [item.name for item in list_research_strategies()]}))" > "$environment-probe.json"
+          done
+          diff -u wheel-console-help.txt sdist-console-help.txt
+          diff -u wheel-probe.json sdist-probe.json
+      - name: Create distribution checksums
+        run: |
+          set -euo pipefail
+          (
+            cd dist
+            sha256sum bithumb_research-0.1.0-py3-none-any.whl bithumb_research-0.1.0.tar.gz | sort -k2 > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+      - name: Upload distribution artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bithumb-research-0.1.0-dist
+          path: |
+            dist/bithumb_research-0.1.0-py3-none-any.whl
+            dist/bithumb_research-0.1.0.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error

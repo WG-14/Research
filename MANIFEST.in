@@ -1,0 +1,13 @@
+include pyproject.toml
+include README.md
+include CHANGELOG.md
+graft src/bithumb_research
+global-exclude *.py[cod]
+global-exclude *.sqlite *.sqlite3 *.db
+global-exclude .env .env.* *secret* *apikey* *api_key*
+prune tests
+prune docs
+prune .github
+prune dist
+prune .venv
+prune bithumb_bot

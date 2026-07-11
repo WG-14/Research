@@ -4,6 +4,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from bithumb_research.paths import ResearchPathManager
 from bithumb_research.research.cli import cmd_research_backtest, cmd_research_reproduce_run
 from bithumb_research.research_cli.context import ResearchAppContext
@@ -46,6 +48,7 @@ def test_reproduce_run_passes_in_isolated_roots(tmp_path: Path) -> None:
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert rc == 0
     assert payload["status"] == "PASS"
+    assert payload["phase"] == "fingerprint_comparison"
     assert payload["mismatches"] == []
     assert "/reproductions/" in payload["reproduced_report_path"]
     assert receipt.exists()
@@ -65,7 +68,9 @@ def test_reproduce_run_rejects_changed_manifest_before_backtest(tmp_path: Path) 
     )
 
     assert rc == 1
-    assert json.loads(out.read_text(encoding="utf-8"))["status"] == "INVALID_BASELINE"
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["status"] == "INVALID_BASELINE"
+    assert payload["phase"] == "baseline_preflight"
     assert not (context.settings.artifact_root / "reproductions").exists()
 
 
@@ -84,4 +89,28 @@ def test_reproduce_run_reports_dataset_drift(tmp_path: Path) -> None:
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert rc == 1
     assert payload["status"] == "DRIFT"
+    assert payload["phase"] == "fingerprint_comparison"
     assert any(item["path"] == "dataset_fingerprint" for item in payload["mismatches"])
+
+
+def test_reproduce_run_classifies_reproduced_receipt_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context, _, manifest_path = _context(tmp_path)
+    assert cmd_research_backtest(context=context, manifest_path=str(manifest_path)) == 0
+    receipt = context.settings.artifact_root / "reports" / "research" / "sma_success_import_boundary" / "reproduction_receipt.json"
+    out = tmp_path / "failed.json"
+
+    import bithumb_research.research.cli as cli
+
+    def fail_reproduction(**_: object) -> dict[str, object]:
+        return {"reproduction_receipt_path": str(tmp_path / "missing-receipt.json")}
+
+    monkeypatch.setattr(cli, "run_research_backtest", fail_reproduction)
+    rc = cmd_research_reproduce_run(
+        context=context, manifest_path=str(manifest_path), receipt_path=str(receipt), out_path=str(out)
+    )
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert rc == 1
+    assert payload["status"] == "REPRODUCTION_FAILED"
+    assert payload["phase"] == "reproduction_execution"
+    assert payload["error_code"] == "reproduced_receipt_invalid"

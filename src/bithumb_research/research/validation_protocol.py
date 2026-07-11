@@ -2785,15 +2785,15 @@ def _evaluate_candidates(
                 "final_holdout_strategy_diagnostics": base.get("final_holdout_strategy_diagnostics"),
                 "strategy_diagnostics": base.get("validation_strategy_diagnostics") or {},
                 "execution_event_summary": base.get("validation_execution_event_summary") or {},
-                "behavior_hash": (base.get("validation_resource_usage") or {}).get("behavior_hash"),
-                "decision_behavior_hash": (base.get("validation_resource_usage") or {}).get("decision_behavior_hash"),
-                "trade_ledger_hash": (base.get("validation_resource_usage") or {}).get("trade_ledger_hash"),
-                "equity_curve_hash": (base.get("validation_resource_usage") or {}).get("equity_curve_hash"),
-                "composite_behavior_hash": (base.get("validation_resource_usage") or {}).get("composite_behavior_hash"),
+                "behavior_hash": (base.get("validation_reproduction_hashes") or {}).get("behavior_hash"),
+                "decision_behavior_hash": (base.get("validation_reproduction_hashes") or {}).get("behavior_hash"),
+                "trade_ledger_hash": (base.get("validation_reproduction_hashes") or {}).get("trade_ledger_hash"),
+                "equity_curve_hash": (base.get("validation_reproduction_hashes") or {}).get("equity_curve_hash"),
+                "composite_behavior_hash": (base.get("validation_reproduction_hashes") or {}).get("composite_behavior_hash"),
                 "common_decision_behavior_hash": (
-                    (base.get("validation_resource_usage") or {}).get("common_decision_behavior_hash")
+                    (base.get("validation_reproduction_hashes") or {}).get("strategy_behavior_hash")
                 ),
-                "strategy_behavior_hash": (base.get("validation_resource_usage") or {}).get("strategy_behavior_hash"),
+                "strategy_behavior_hash": (base.get("validation_reproduction_hashes") or {}).get("strategy_behavior_hash"),
                 "composite_behavior_hash_v2": (
                     (base.get("validation_resource_usage") or {}).get("composite_behavior_hash_v2")
                 ),
@@ -2842,6 +2842,9 @@ def _evaluate_candidates(
                 "train_metrics": train_metrics,
                 "validation_metrics": validation_metrics,
                 "final_holdout_metrics": final_holdout_metrics,
+                # Produced while the complete validation result is available;
+                # receipt construction consumes this field directly.
+                "metrics_hash": (base.get("validation_reproduction_hashes") or {}).get("metrics_hash"),
                 "metrics_schema_version": METRICS_SCHEMA_VERSION,
                 "metrics_gate_policy": metrics_gate_policy,
                 "metrics_gate_policy_hash": metrics_gate_policy_digest,
@@ -3987,6 +3990,11 @@ def _evaluate_candidate_base_result(
         "warnings": sorted(set(train.warnings + validation.warnings + ((final_holdout.warnings if final_holdout else ())))),
         "train_resource_usage": train.resource_usage,
         "validation_resource_usage": validation.resource_usage,
+        "train_reproduction_hashes": _reproduction_result_hashes(train),
+        "validation_reproduction_hashes": _reproduction_result_hashes(validation),
+        "final_holdout_reproduction_hashes": (
+            _reproduction_result_hashes(final_holdout) if final_holdout is not None else None
+        ),
         "final_holdout_resource_usage": final_holdout.resource_usage if final_holdout else None,
         "train_audit_trace_index": train.audit_trace_index,
         "validation_audit_trace_index": validation.audit_trace_index,
@@ -4120,6 +4128,45 @@ def _candidate_executed_portfolio_policy_evidence(
         "position_sizing_policy": primary.get("position_sizing_policy"),
     }
     return payload
+
+
+def _reproduction_result_hashes(run: BacktestRun) -> dict[str, str]:
+    """Record deterministic result evidence while the complete result is present.
+
+    Report detail reduction may discard ledgers and curves later, so these are
+    produced here once from the completed run and carried as explicit report
+    fields.  Receipt construction only validates these recorded values.
+    """
+
+    strategy_behavior_hash = sha256_prefixed(list(run.decisions), label="reproduction_strategy_behavior")
+    trade_ledger_hash = sha256_prefixed(_execution_metadata(run.trades), label="reproduction_trade_ledger")
+    equity_curve_hash = sha256_prefixed(
+        [point.as_dict() for point in run.equity_curve], label="reproduction_equity_curve"
+    )
+    metrics_hash = sha256_prefixed(
+        {"metrics": run.metrics.as_dict(), "metrics_v2": _metrics_v2_payload(run)},
+        label="reproduction_metrics",
+    )
+    behavior_hash = sha256_prefixed(
+        {
+            "strategy_behavior_hash": strategy_behavior_hash,
+            "trade_ledger_hash": trade_ledger_hash,
+            "equity_curve_hash": equity_curve_hash,
+        },
+        label="reproduction_behavior",
+    )
+    composite_behavior_hash = sha256_prefixed(
+        {"behavior_hash": behavior_hash, "metrics_hash": metrics_hash},
+        label="reproduction_composite_behavior",
+    )
+    return {
+        "behavior_hash": behavior_hash,
+        "strategy_behavior_hash": strategy_behavior_hash,
+        "trade_ledger_hash": trade_ledger_hash,
+        "equity_curve_hash": equity_curve_hash,
+        "metrics_hash": metrics_hash,
+        "composite_behavior_hash": composite_behavior_hash,
+    }
 
 
 def _candidate_split_executed_portfolio_policy_evidence(

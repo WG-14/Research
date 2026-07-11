@@ -9,5 +9,7 @@
 - four supported strategies
 - deterministic backtest and walk-forward
 - artifact-backed research validation
-- reproduction receipt and drift verification
+- strict fail-closed reproduction fingerprint and drift verification
+- wheel and sdist isolated-install validation
+- distribution checksums
 - `bithumb_research` package and CLI

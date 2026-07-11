@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 import json
+import re
 
 from bithumb_research.storage_io import write_json_atomic
 
@@ -19,8 +20,10 @@ from .experiment_manifest import ExperimentManifest
 from .hashing import content_hash_payload, sha256_prefixed
 
 
-REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 1
-REPRODUCTION_RECEIPT_SCHEMA_VERSION = 1
+REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 2
+REPRODUCTION_RECEIPT_SCHEMA_VERSION = 2
+
+_SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
 class ReproductionContractError(ValueError):
@@ -84,11 +87,13 @@ def build_reproduction_fingerprint(
     completion order can influence the result.
     """
 
-    manifest_hash = _required_string(report, "manifest_hash", "report")
+    manifest_hash = _required_sha256(report, "manifest_hash", "report")
     if manifest_hash != manifest.manifest_hash():
         raise ReproductionContractError("report.manifest_hash does not match manifest")
     research_classification = _required_string(report, "research_classification", "report")
-    dataset_fingerprint = _required_string(report, "dataset_content_hash", "report")
+    if research_classification != manifest.research_classification:
+        raise ReproductionContractError("report.research_classification does not match manifest")
+    dataset_fingerprint = _required_sha256(report, "dataset_content_hash", "report")
     strategy_name = _required_string(report, "strategy_name", "report")
     if strategy_name != manifest.strategy_name:
         raise ReproductionContractError("report.strategy_name does not match manifest")
@@ -98,7 +103,7 @@ def build_reproduction_fingerprint(
     if not isinstance(candidates_value, list) or not candidates_value:
         raise ReproductionContractError("report.candidates is required and must be non-empty")
     candidates = tuple(sorted((_candidate_fingerprint(candidate) for candidate in candidates_value), key=_candidate_sort_key))
-    strategy_contract_hashes = tuple(sorted({str(item["strategy_contract_hash"]) for item in candidates}))
+    strategy_contract_hashes = tuple(sorted({str(item["strategy_plugin_contract_hash"]) for item in candidates}))
 
     execution_assumptions = (
         {"name": "cost_model", "hash": sha256_prefixed(manifest.cost_model.as_dict())},
@@ -141,7 +146,7 @@ def create_reproduction_receipt(
     receipt_path: str | Path,
 ) -> dict[str, object]:
     fingerprint = build_reproduction_fingerprint(report, manifest=manifest)
-    source_report_hash = _required_string(report, "content_hash", "report")
+    source_report_hash = _required_sha256(report, "content_hash", "report")
     payload: dict[str, object] = {
         "schema_version": REPRODUCTION_RECEIPT_SCHEMA_VERSION,
         "receipt_type": "research_run_reproduction_receipt",
@@ -170,7 +175,7 @@ def load_reproduction_receipt(path: str | Path) -> dict[str, object]:
         raise ReproductionContractError("unsupported reproduction receipt schema_version")
     if payload.get("receipt_type") != "research_run_reproduction_receipt":
         raise ReproductionContractError("unsupported reproduction receipt type")
-    expected_hash = _required_string(payload, "receipt_content_hash", "receipt")
+    expected_hash = _required_sha256(payload, "receipt_content_hash", "receipt")
     actual_hash = sha256_prefixed(
         content_hash_payload({key: value for key, value in payload.items() if key != "receipt_content_hash"}),
         label="reproduction_receipt_content",
@@ -180,13 +185,15 @@ def load_reproduction_receipt(path: str | Path) -> dict[str, object]:
     stable = payload.get("stable_fingerprint")
     if not isinstance(stable, dict):
         raise ReproductionContractError("receipt.stable_fingerprint is required")
-    stable_hash = _required_string(payload, "stable_fingerprint_hash", "receipt")
+    stable_hash = _required_sha256(payload, "stable_fingerprint_hash", "receipt")
     stable_without_hash = {key: value for key, value in stable.items() if key != "stable_fingerprint_hash"}
     actual_stable_hash = sha256_prefixed(stable_without_hash, label="reproduction_stable_fingerprint")
     if stable_hash != actual_stable_hash or stable.get("stable_fingerprint_hash") != stable_hash:
         raise ReproductionContractError("receipt stable fingerprint hash mismatch")
-    for key in ("experiment_id", "manifest_hash", "source_report_hash"):
-        _required_string(payload, key, "receipt")
+    _required_string(payload, "experiment_id", "receipt")
+    _required_sha256(payload, "manifest_hash", "receipt")
+    _required_sha256(payload, "source_report_hash", "receipt")
+    _validate_fingerprint_payload(stable, context="receipt.stable_fingerprint")
     return payload
 
 
@@ -196,8 +203,10 @@ def compare_reproduction_fingerprints(
 ) -> ResearchReproductionComparison:
     expected_payload = _fingerprint_payload(expected)
     actual_payload = actual.as_dict() if isinstance(actual, ResearchReproductionFingerprint) else _fingerprint_payload(actual)
-    expected_hash = _required_string(expected_payload, "stable_fingerprint_hash", "expected fingerprint")
-    actual_hash = _required_string(actual_payload, "stable_fingerprint_hash", "actual fingerprint")
+    _validate_fingerprint_payload(expected_payload, context="expected fingerprint")
+    _validate_fingerprint_payload(actual_payload, context="actual fingerprint")
+    expected_hash = _required_sha256(expected_payload, "stable_fingerprint_hash", "expected fingerprint")
+    actual_hash = _required_sha256(actual_payload, "stable_fingerprint_hash", "actual fingerprint")
     mismatches: list[dict[str, object]] = []
     _compare_value(expected_payload, actual_payload, "", mismatches)
     # The hashes summarize the same material and make a compact outcome useful,
@@ -228,8 +237,8 @@ def _dataset_split_hashes(report: Mapping[str, Any]) -> tuple[dict[str, object],
             raise ReproductionContractError(f"report.dataset_splits.{split_name} must be an object")
         rows.append({
             "split_name": str(split_name),
-            "content_hash": _required_string(split, "content_hash", f"dataset_splits.{split_name}"),
-            "quality_hash": _required_string(split, "quality_hash", f"dataset_splits.{split_name}"),
+            "content_hash": _required_sha256(split, "content_hash", f"dataset_splits.{split_name}"),
+            "quality_hash": _required_sha256(split, "quality_hash", f"dataset_splits.{split_name}"),
         })
     return tuple(sorted(rows, key=lambda item: str(item["split_name"])))
 
@@ -245,13 +254,16 @@ def _candidate_fingerprint(candidate: Any) -> dict[str, object]:
     primary_scenario_id = _required_string(candidate, "primary_scenario_id", f"candidate {candidate_id}")
     return {
         "candidate_id": candidate_id,
-        "effective_strategy_parameters_hash": _required_string(
+        "effective_strategy_parameters_hash": _required_sha256(
             candidate, "effective_strategy_parameters_hash", f"candidate {candidate_id}"
+        ),
+        "strategy_spec_hash": _required_sha256(candidate, "strategy_spec_hash", f"candidate {candidate_id}"),
+        "strategy_plugin_contract_hash": _required_sha256(
+            candidate, "strategy_plugin_contract_hash", f"candidate {candidate_id}"
         ),
         "acceptance_gate_status": _required_string(candidate, "acceptance_gate_result", f"candidate {candidate_id}"),
         "gate_fail_reasons": sorted(str(item) for item in _string_list(candidate.get("gate_fail_reasons"), "gate_fail_reasons")),
         "primary_scenario_id": primary_scenario_id,
-        "strategy_contract_hash": _candidate_strategy_contract_hash(candidate, candidate_id),
         "scenarios": list(scenarios),
     }
 
@@ -259,27 +271,17 @@ def _candidate_fingerprint(candidate: Any) -> dict[str, object]:
 def _scenario_fingerprint(scenario: Any, candidate_id: str) -> dict[str, object]:
     if not isinstance(scenario, dict):
         raise ReproductionContractError(f"candidate {candidate_id} scenario must be an object")
-    context = f"candidate {candidate_id} scenario"
-    metrics_hash = _scenario_metrics_hash(scenario, context)
-    behavior_hash = _scenario_result_hash(scenario, "behavior_hash", context)
-    strategy_behavior_hash = _scenario_result_hash(scenario, "strategy_behavior_hash", context)
-    trade_ledger_hash = _scenario_result_hash(scenario, "trade_ledger_hash", context)
-    equity_curve_hash = _scenario_result_hash(scenario, "equity_curve_hash", context)
-    composite_behavior_hash = _scenario_result_hash(
-        scenario,
-        "composite_behavior_hash",
-        context,
-        components={
-            "behavior_hash": behavior_hash,
-            "strategy_behavior_hash": strategy_behavior_hash,
-            "trade_ledger_hash": trade_ledger_hash,
-            "equity_curve_hash": equity_curve_hash,
-            "metrics_hash": metrics_hash,
-        },
-    )
+    scenario_id = _required_string(scenario, "scenario_id", f"candidate {candidate_id} scenario")
+    context = f"candidate {candidate_id} scenario {scenario_id}"
+    metrics_hash = _required_sha256(scenario, "metrics_hash", context)
+    behavior_hash = _required_sha256(scenario, "behavior_hash", context)
+    strategy_behavior_hash = _required_sha256(scenario, "strategy_behavior_hash", context)
+    trade_ledger_hash = _required_sha256(scenario, "trade_ledger_hash", context)
+    equity_curve_hash = _required_sha256(scenario, "equity_curve_hash", context)
+    composite_behavior_hash = _required_sha256(scenario, "composite_behavior_hash", context)
     return {
         "scenario_index": _required_int(scenario, "scenario_index", context),
-        "scenario_id": _required_string(scenario, "scenario_id", context),
+        "scenario_id": scenario_id,
         "scenario_role": _required_string(scenario, "scenario_role", context),
         "behavior_hash": behavior_hash,
         "strategy_behavior_hash": strategy_behavior_hash,
@@ -287,91 +289,20 @@ def _scenario_fingerprint(scenario: Any, candidate_id: str) -> dict[str, object]
         "equity_curve_hash": equity_curve_hash,
         "metrics_hash": metrics_hash,
         "composite_behavior_hash": composite_behavior_hash,
-        "execution_model_hash": _required_string(scenario, "execution_model_hash", context),
-        "portfolio_policy_hash": _required_string(scenario, "portfolio_policy_hash", context),
+        "execution_model_hash": _required_sha256(scenario, "execution_model_hash", context),
+        "portfolio_policy_hash": _required_sha256(scenario, "portfolio_policy_hash", context),
     }
-
-
-def _scenario_metrics_hash(scenario: Mapping[str, Any], context: str) -> str:
-    value = scenario.get("metrics_hash")
-    if isinstance(value, str) and value:
-        return value
-    metric_payload = {
-        key: scenario.get(key)
-        for key in (
-            "train_metrics", "validation_metrics", "final_holdout_metrics",
-            "train_metrics_v2", "validation_metrics_v2", "final_holdout_metrics_v2",
-        )
-        if scenario.get(key) is not None
-    }
-    if not metric_payload:
-        raise ReproductionContractError(f"{context}.metrics_hash is missing and no metrics are available")
-    return sha256_prefixed(metric_payload, label="reproduction_scenario_metrics")
-
-
-def _scenario_result_hash(
-    scenario: Mapping[str, Any],
-    key: str,
-    context: str,
-    *,
-    components: Mapping[str, str] | None = None,
-) -> str:
-    """Use recorded evidence first, otherwise hash its retained result material.
-
-    Earlier bounded report variants retain ``research_behavior_hash`` rather
-    than every component hash.  The fallbacks below preserve result coverage
-    without admitting missing evidence: each fallback is a hash of the
-    retained ledger/event, curve/metric, or complete composite material.
-    """
-
-    direct = scenario.get(key)
-    if isinstance(direct, str) and direct:
-        return direct
-    usage = scenario.get("validation_resource_usage")
-    if isinstance(usage, dict):
-        nested = usage.get(key)
-        if isinstance(nested, str) and nested:
-            return nested
-        if key in {"behavior_hash", "strategy_behavior_hash"}:
-            nested = usage.get("research_behavior_hash")
-            if isinstance(nested, str) and nested:
-                return nested
-    if key == "trade_ledger_hash":
-        material = {
-            "validation_execution_event_summary": scenario.get("validation_execution_event_summary"),
-            "validation_closed_trades_hash": scenario.get("validation_closed_trades_hash"),
-            "validation_execution_metadata": scenario.get("validation_execution_metadata"),
-        }
-    elif key == "equity_curve_hash":
-        material = {
-            "validation_metrics": scenario.get("validation_metrics"),
-            "validation_metrics_v2": scenario.get("validation_metrics_v2"),
-            "validation_equity_curve_hash": scenario.get("validation_equity_curve_hash"),
-            "validation_equity_curve_count": scenario.get("validation_equity_curve_count"),
-        }
-    elif key == "composite_behavior_hash" and components is not None:
-        material = dict(components)
-    else:
-        raise ReproductionContractError(f"{context}.{key} is required")
-    if not any(value is not None for value in material.values()):
-        raise ReproductionContractError(f"{context}.{key} has no retained result evidence")
-    return sha256_prefixed(material, label=f"reproduction_{key}")
-
-
-def _candidate_strategy_contract_hash(candidate: Mapping[str, Any], candidate_id: str) -> str:
-    value = candidate.get("strategy_plugin_contract_hash") or candidate.get("strategy_spec_hash")
-    if not isinstance(value, str) or not value:
-        raise ReproductionContractError(f"candidate {candidate_id}.strategy contract hash is required")
-    return value
 
 
 def _assert_report_execution_bindings(
     report: Mapping[str, Any], assumptions: tuple[dict[str, str], ...]
 ) -> None:
     expected = {item["name"]: item["hash"] for item in assumptions}
-    if _required_string(report, "portfolio_policy_hash", "report") != expected["portfolio_policy"]:
+    for item in assumptions:
+        _required_sha256(item, "hash", f"execution assumption {item['name']}")
+    if _required_sha256(report, "portfolio_policy_hash", "report") != expected["portfolio_policy"]:
         raise ReproductionContractError("report.portfolio_policy_hash does not match manifest")
-    if _required_string(report, "simulation_policy_hash", "report") != expected["simulation_policy"]:
+    if _required_sha256(report, "simulation_policy_hash", "report") != expected["simulation_policy"]:
         raise ReproductionContractError("report.simulation_policy_hash does not match manifest")
     execution_model = report.get("execution_model")
     execution_timing = report.get("execution_timing_policy")
@@ -386,6 +317,70 @@ def _fingerprint_payload(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(payload.get("candidate_fingerprints"), list):
         raise ReproductionContractError("fingerprint.candidate_fingerprints is required")
     return payload
+
+
+def _validate_fingerprint_payload(payload: Mapping[str, Any], *, context: str) -> None:
+    if payload.get("schema_version") != REPRODUCTION_FINGERPRINT_SCHEMA_VERSION:
+        raise ReproductionContractError(f"{context}.schema_version is unsupported")
+    _required_sha256(payload, "manifest_hash", context)
+    _required_string(payload, "research_classification", context)
+    _required_sha256(payload, "dataset_fingerprint", context)
+    _required_sha256(payload, "stable_fingerprint_hash", context)
+    split_hashes = payload.get("dataset_split_hashes")
+    if not isinstance(split_hashes, list) or not split_hashes:
+        raise ReproductionContractError(f"{context}.dataset_split_hashes is required")
+    for index, split in enumerate(split_hashes):
+        if not isinstance(split, dict):
+            raise ReproductionContractError(f"{context}.dataset_split_hashes[{index}] must be an object")
+        _required_string(split, "split_name", f"{context}.dataset_split_hashes[{index}]")
+        _required_sha256(split, "content_hash", f"{context}.dataset_split_hashes[{index}]")
+        _required_sha256(split, "quality_hash", f"{context}.dataset_split_hashes[{index}]")
+    strategy_hashes = payload.get("strategy_contract_hashes")
+    if not isinstance(strategy_hashes, list) or not strategy_hashes:
+        raise ReproductionContractError(f"{context}.strategy_contract_hashes is required")
+    for index, value in enumerate(strategy_hashes):
+        _required_sha256({"hash": value}, "hash", f"{context}.strategy_contract_hashes[{index}]")
+    assumptions = payload.get("execution_assumption_hashes")
+    if not isinstance(assumptions, list) or not assumptions:
+        raise ReproductionContractError(f"{context}.execution_assumption_hashes is required")
+    for index, item in enumerate(assumptions):
+        if not isinstance(item, dict):
+            raise ReproductionContractError(f"{context}.execution_assumption_hashes[{index}] must be an object")
+        _required_string(item, "name", f"{context}.execution_assumption_hashes[{index}]")
+        _required_sha256(item, "hash", f"{context}.execution_assumption_hashes[{index}]")
+    candidates = payload.get("candidate_fingerprints")
+    if not isinstance(candidates, list) or not candidates:
+        raise ReproductionContractError(f"{context}.candidate_fingerprints is required")
+    for candidate in candidates:
+        _validate_candidate_fingerprint(candidate, context=context)
+
+
+def _validate_candidate_fingerprint(candidate: Any, *, context: str) -> None:
+    if not isinstance(candidate, dict):
+        raise ReproductionContractError(f"{context}.candidate_fingerprints entries must be objects")
+    candidate_context = f"{context}.candidate {candidate.get('candidate_id') or '<unknown>'}"
+    _required_string(candidate, "candidate_id", candidate_context)
+    _required_sha256(candidate, "effective_strategy_parameters_hash", candidate_context)
+    _required_sha256(candidate, "strategy_spec_hash", candidate_context)
+    _required_sha256(candidate, "strategy_plugin_contract_hash", candidate_context)
+    _required_string(candidate, "acceptance_gate_status", candidate_context)
+    _string_list(candidate.get("gate_fail_reasons"), f"{candidate_context}.gate_fail_reasons")
+    _required_string(candidate, "primary_scenario_id", candidate_context)
+    scenarios = candidate.get("scenarios")
+    if not isinstance(scenarios, list) or not scenarios:
+        raise ReproductionContractError(f"{candidate_context}.scenarios is required")
+    for scenario in scenarios:
+        if not isinstance(scenario, dict):
+            raise ReproductionContractError(f"{candidate_context}.scenarios entries must be objects")
+        scenario_context = f"{candidate_context} scenario {scenario.get('scenario_id') or '<unknown>'}"
+        _required_int(scenario, "scenario_index", scenario_context)
+        for key in ("scenario_id", "scenario_role"):
+            _required_string(scenario, key, scenario_context)
+        for key in (
+            "behavior_hash", "strategy_behavior_hash", "trade_ledger_hash", "equity_curve_hash",
+            "metrics_hash", "composite_behavior_hash", "execution_model_hash", "portfolio_policy_hash",
+        ):
+            _required_sha256(scenario, key, scenario_context)
 
 
 def _compare_value(expected: Any, actual: Any, path: str, mismatches: list[dict[str, object]]) -> None:
@@ -425,6 +420,15 @@ def _required_string(payload: Mapping[str, Any], key: str, context: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value:
         raise ReproductionContractError(f"{context}.{key} is required")
+    return value
+
+
+def _required_sha256(payload: Mapping[str, Any], key: str, context: str) -> str:
+    value = payload.get(key)
+    if value is None:
+        raise ReproductionContractError(f"{context}.{key} is required")
+    if not isinstance(value, str) or not _SHA256_PATTERN.fullmatch(value):
+        raise ReproductionContractError(f"{context}.{key} must be a sha256 hash")
     return value
 
 

@@ -305,13 +305,19 @@ def cmd_research_reproduce_run(
     receipt_path: str,
     out_path: str | None = None,
 ) -> int:
-    """Run in isolated output roots and compare stable evidence to a receipt."""
+    """Reproduce a run in three explicit, fail-closed phases."""
 
     started_at = monotonic()
-    status = "REPRODUCTION_FAILED"
     result_path: Path | None = None
-    payload: dict[str, object] = {}
+    status = "REPRODUCTION_FAILED"
+    payload: dict[str, object]
+    manifest = None
+    receipt: dict[str, object]
+    manifest_display_path = str(Path(manifest_path).expanduser())
+    baseline_display_path = str(Path(receipt_path).expanduser())
     try:
+        # A. Baseline preflight.  No dataset access or backtest work is allowed
+        # until the supplied receipt is itself a valid baseline.
         try:
             manifest = load_manifest(manifest_path)
             receipt = load_reproduction_receipt(receipt_path)
@@ -319,12 +325,31 @@ def cmd_research_reproduce_run(
                 raise ReproductionContractError("receipt manifest_hash does not match manifest")
             if receipt["experiment_id"] != manifest.experiment_id:
                 raise ReproductionContractError("receipt experiment_id does not match manifest")
+        except (ManifestValidationError, ReproductionContractError, OSError, ValueError) as exc:
+            status = "INVALID_BASELINE"
+            payload = _reproduction_error_payload(
+                status=status,
+                phase="baseline_preflight",
+                error_code=_baseline_preflight_error_code(exc),
+                error=exc,
+                manifest_path=manifest_display_path,
+                baseline_receipt_path=baseline_display_path,
+                experiment_id=manifest.experiment_id if manifest is not None else None,
+            )
+            result_path = _write_reproduction_result(
+                context=context, out_path=out_path, payload=payload, experiment_id="invalid", prefix="baseline"
+            )
+            context.printer(f"[RESEARCH-REPRODUCE-RUN] error={exc}")
+            return 1
+
+        # B. Isolated reproduction execution.  Contract failures here belong
+        # to the newly generated output, never to the already checked baseline.
+        receipt_hash = str(receipt["receipt_content_hash"])
+        prefix = receipt_hash.removeprefix("sha256:")[:12]
+        try:
             db_path = context.paths.require_database_path()
             if not db_path.is_file():
-                raise ReproductionContractError(f"dataset locator is not accessible: {db_path}")
-
-            receipt_hash = str(receipt["receipt_content_hash"])
-            prefix = receipt_hash.removeprefix("sha256:")[:12]
+                raise OSError(f"dataset locator is not accessible: {db_path}")
             isolated_settings = replace(
                 context.settings,
                 artifact_root=context.settings.artifact_root / "reproductions" / manifest.experiment_id / prefix,
@@ -339,71 +364,139 @@ def cmd_research_reproduce_run(
                 db_path=db_path,
                 manager=isolated_paths,
                 manifest_path=manifest_path,
-                command_args={
-                    "manifest": manifest_path,
-                    "receipt": receipt_path,
-                    "reproduction": True,
-                },
+                command_args={"manifest": manifest_path, "receipt": receipt_path, "reproduction": True},
                 progress_callback=_print_research_backtest_progress,
             )
             reproduced_receipt_path = Path(str(reproduced_report["reproduction_receipt_path"]))
-            reproduced_receipt = load_reproduction_receipt(reproduced_receipt_path)
-            comparison = compare_reproduction_fingerprints(
-                receipt["stable_fingerprint"], reproduced_receipt["stable_fingerprint"]
-            )
-            status = comparison.status
-            report_path = Path(str((reproduced_report.get("artifact_paths") or {}).get("report_path") or ""))
-            payload = {
-                "schema_version": 1,
-                "status": status,
-                "experiment_id": manifest.experiment_id,
-                "manifest_hash": manifest.manifest_hash(),
-                **comparison.as_dict(),
-                "baseline_receipt_path": str(Path(receipt_path).expanduser().resolve()),
-                "reproduced_report_path": str(report_path.resolve()),
-                "reproduced_receipt_path": str(reproduced_receipt_path.resolve()),
-            }
-            if out_path is None:
-                result_path = context.paths.report_path(
-                    "reproductions", manifest.experiment_id, prefix, "reproduction_report.json"
-                )
-            else:
-                result_path = _require_external_absolute_output_path(context, out_path)
-            write_json_atomic(result_path, payload)
-        except (ManifestValidationError, ResearchValidationError, ReproductionContractError, OSError, ValueError) as exc:
-            status = "INVALID_BASELINE" if isinstance(exc, ReproductionContractError) else "REPRODUCTION_FAILED"
-            payload = {
-                "schema_version": 1,
-                "status": status,
-                "manifest_path": str(Path(manifest_path).expanduser()),
-                "baseline_receipt_path": str(Path(receipt_path).expanduser()),
-                "error": str(exc),
-                "mismatches": [],
-            }
             try:
-                result_path = (
-                    _require_external_absolute_output_path(context, out_path)
-                    if out_path is not None
-                    else context.paths.report_path("reproductions", "invalid", "reproduction_report.json")
-                )
-                write_json_atomic(result_path, payload)
-            except (OSError, ValueError):
-                pass
+                reproduced_receipt = load_reproduction_receipt(reproduced_receipt_path)
+            except ReproductionContractError as exc:
+                raise _ReproductionExecutionError("reproduced_receipt_invalid", exc) from exc
+        except _ReproductionExecutionError as wrapped:
+            status = "REPRODUCTION_FAILED"
+            payload = _reproduction_error_payload(
+                status=status, phase="reproduction_execution", error_code=wrapped.error_code, error=wrapped.__cause__ or wrapped,
+                manifest_path=manifest_display_path, baseline_receipt_path=baseline_display_path,
+                experiment_id=manifest.experiment_id,
+            )
+            result_path = _write_reproduction_result(
+                context=context, out_path=out_path, payload=payload, experiment_id=manifest.experiment_id, prefix=prefix
+            )
+            context.printer(f"[RESEARCH-REPRODUCE-RUN] error={wrapped.__cause__ or wrapped}")
+            return 1
+        except (ResearchValidationError, ReproductionContractError, OSError, ValueError, KeyError) as exc:
+            status = "REPRODUCTION_FAILED"
+            payload = _reproduction_error_payload(
+                status=status, phase="reproduction_execution", error_code=_reproduction_execution_error_code(exc), error=exc,
+                manifest_path=manifest_display_path, baseline_receipt_path=baseline_display_path,
+                experiment_id=manifest.experiment_id,
+            )
+            result_path = _write_reproduction_result(
+                context=context, out_path=out_path, payload=payload, experiment_id=manifest.experiment_id, prefix=prefix
+            )
             context.printer(f"[RESEARCH-REPRODUCE-RUN] error={exc}")
+            return 1
+
+        # C. Fingerprint comparison is the only phase that can report DRIFT.
+        comparison = compare_reproduction_fingerprints(
+            receipt["stable_fingerprint"], reproduced_receipt["stable_fingerprint"]
+        )
+        status = comparison.status
+        report_path = Path(str((reproduced_report.get("artifact_paths") or {}).get("report_path") or ""))
+        payload = {
+            "schema_version": 1,
+            "status": status,
+            "experiment_id": manifest.experiment_id,
+            "manifest_path": manifest_display_path,
+            "manifest_hash": manifest.manifest_hash(),
+            "baseline_receipt_path": baseline_display_path,
+            "phase": "fingerprint_comparison",
+            "error_code": None,
+            "error": None,
+            **comparison.as_dict(),
+            "reproduced_report_path": str(report_path.resolve()),
+            "reproduced_receipt_path": str(reproduced_receipt_path.resolve()),
+        }
+        result_path = _write_reproduction_result(
+            context=context, out_path=out_path, payload=payload, experiment_id=manifest.experiment_id, prefix=prefix
+        )
+        if result_path is None:
+            status = "REPRODUCTION_FAILED"
+            payload = _reproduction_error_payload(
+                status=status,
+                phase="reproduction_execution",
+                error_code="isolated_artifact_write_failed",
+                error=OSError("unable to write reproduction report"),
+                manifest_path=manifest_display_path,
+                baseline_receipt_path=baseline_display_path,
+                experiment_id=manifest.experiment_id,
+            )
+            return 1
+        return 0 if status == "PASS" else 1
     finally:
         if result_path is not None:
             context.printer(json.dumps(payload, sort_keys=True))
         _print_research_command_finished(
-            context,
-            "research-reproduce-run",
-            started_at,
-            0 if status == "PASS" else 1,
-            manifest=manifest_path,
-            receipt=receipt_path,
-            out=str(result_path) if result_path else out_path,
-            status=status,
+            context, "research-reproduce-run", started_at, 0 if status == "PASS" else 1,
+            manifest=manifest_path, receipt=receipt_path, out=str(result_path) if result_path else out_path, status=status,
         )
-    return 0 if status == "PASS" else 1
+
+
+class _ReproductionExecutionError(Exception):
+    def __init__(self, error_code: str, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.error_code = error_code
+
+
+def _reproduction_error_payload(
+    *, status: str, phase: str, error_code: str, error: Exception,
+    manifest_path: str, baseline_receipt_path: str, experiment_id: str | None,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "status": status,
+        "experiment_id": experiment_id,
+        "manifest_path": manifest_path,
+        "baseline_receipt_path": baseline_receipt_path,
+        "phase": phase,
+        "error_code": error_code,
+        "error": str(error),
+        "mismatches": [],
+    }
+
+
+def _baseline_preflight_error_code(exc: Exception) -> str:
+    message = str(exc)
+    if "manifest_hash does not match" in message:
+        return "baseline_manifest_mismatch"
+    if "experiment_id does not match" in message:
+        return "baseline_experiment_mismatch"
+    if isinstance(exc, ManifestValidationError):
+        return "manifest_invalid"
+    return "baseline_receipt_invalid"
+
+
+def _reproduction_execution_error_code(exc: Exception) -> str:
+    if isinstance(exc, OSError) and "dataset locator" in str(exc):
+        return "dataset_access_failed"
+    if isinstance(exc, OSError):
+        return "isolated_artifact_write_failed"
+    return "backtest_failed"
+
+
+def _write_reproduction_result(
+    *, context: "ResearchAppContext", out_path: str | None, payload: dict[str, object], experiment_id: str, prefix: str,
+) -> Path | None:
+    try:
+        path = (
+            _require_external_absolute_output_path(context, out_path)
+            if out_path is not None
+            else context.paths.report_path("reproductions", experiment_id, prefix, "reproduction_report.json")
+        )
+        write_json_atomic(path, payload)
+        return path
+    except (OSError, ValueError):
+        return None
 
 
 def _require_external_absolute_output_path(context: "ResearchAppContext", out_path: str) -> Path:

@@ -73,7 +73,13 @@ execution contracts, seed scope, candidate parameters/gates, scenario behavior
 and result hashes, and final selection status. It deliberately excludes
 timestamps, wall time, process/memory observations, and absolute paths because
 those values are not deterministic research evidence. `PASS` means this stable
-evidence matches; `DRIFT` reports each differing evidence path.
+evidence matches; `DRIFT` reports each differing evidence path. Reproduction
+reports use these statuses (all non-`PASS` statuses exit with code `1`):
+
+- `PASS` (exit `0`): the stable evidence matches.
+- `DRIFT` (exit `1`): execution completed and stable evidence differs; the report lists each path.
+- `INVALID_BASELINE` (exit `1`): the supplied receipt or its manifest/experiment binding failed preflight, so no backtest ran.
+- `REPRODUCTION_FAILED` (exit `1`): the baseline was valid but isolated dataset access, execution, receipt creation, or artifact writing failed.
 
 ## Artifacts and reproducibility
 
