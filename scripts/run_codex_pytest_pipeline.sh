@@ -7,19 +7,14 @@ PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
 REQUEST_FILE="${CODEX_PYTEST_REQUEST_FILE:-${SCRIPT_DIR}/codex_pytest_repair_prompt.md}"
 FULL_SUITE_SCRIPT="${FULL_SUITE_SCRIPT:-${SCRIPT_DIR}/full_suite.sh}"
 PACKET_SCRIPT="${PACKET_SCRIPT:-${SCRIPT_DIR}/make_failure_packet.sh}"
-REMOTE_VERIFY_SCRIPT="${REMOTE_VERIFY_SCRIPT:-${SCRIPT_DIR}/remote_verify_live.sh}"
 NOTIFY_SCRIPT="${NOTIFY_SCRIPT:-${SCRIPT_DIR}/notify_ntfy.sh}"
 ARTIFACT_CHECK_SCRIPT="${ARTIFACT_CHECK_SCRIPT:-${SCRIPT_DIR}/check_repo_runtime_artifacts.sh}"
 CODEX_BIN="${CODEX_BIN:-codex}"
 CODEX_PYTEST_MAX_ITERATIONS="${CODEX_PYTEST_MAX_ITERATIONS:-10}"
-CODEX_PYTEST_WORK_DIR="${CODEX_PYTEST_WORK_DIR:-${TMPDIR:-/tmp}/bithumb-bot-codex-pytest}"
+CODEX_PYTEST_WORK_DIR="${CODEX_PYTEST_WORK_DIR:-${TMPDIR:-/tmp}/bithumb-research-codex-pytest}"
 CODEX_PYTEST_COMMIT_PUSH="${CODEX_PYTEST_COMMIT_PUSH:-1}"
-CODEX_PYTEST_REMOTE_VERIFY="${CODEX_PYTEST_REMOTE_VERIFY:-1}"
-REMOTE_VERIFY_MODE="${REMOTE_VERIFY_MODE:-smoke}"
 CODEX_PYTEST_ALLOW_DIRTY="${CODEX_PYTEST_ALLOW_DIRTY:-0}"
 CODEX_PYTEST_STRICT_MOCK_GUARD="${CODEX_PYTEST_STRICT_MOCK_GUARD:-0}"
-SSH_KEY="${BITHUMB_EC2_SSH_KEY:-${HOME}/.ssh/bithumb-bot-paper.pem}"
-EC2_TARGET="${BITHUMB_EC2_TARGET:-ec2-user@3.39.93.137}"
 
 stage="preflight"
 guard_dir=""
@@ -55,7 +50,7 @@ notify() {
 fail() {
   local message="$1"
   echo "[PYTEST-PIPELINE] ${message}" >&2
-  notify "bithumb-bot pytest pipeline failed" "high" "${message}"
+  notify "bithumb-research pytest pipeline failed" "high" "${message}"
   exit 1
 }
 
@@ -90,9 +85,9 @@ on_error() {
   local exit_code=$?
   trap - ERR
   cleanup_codex_pytest_guard
-  local message="bithumb-bot Codex pytest pipeline failed during stage: ${stage}"
+  local message="bithumb-research Codex pytest pipeline failed during stage: ${stage}"
   echo "[PYTEST-PIPELINE] ${message}" >&2
-  notify "bithumb-bot pytest pipeline failed" "high" "${message}"
+  notify "bithumb-research pytest pipeline failed" "high" "${message}"
   exit "${exit_code}"
 }
 trap on_error ERR
@@ -262,34 +257,10 @@ complete_success() {
     run_stage "git commit -m pytest-repair" git commit -m "pytest-repair"
     run_stage "git push" git push
 
-    if [[ "${CODEX_PYTEST_REMOTE_VERIFY}" == "1" ]]; then
-      if [[ "${REMOTE_VERIFY_MODE}" == "full" ]]; then
-        fail "REMOTE_VERIFY_MODE=full is out of scope for this pytest repair pipeline; use smoke or run remote full verification separately"
-      fi
-      if [[ ! -x "${REMOTE_VERIFY_SCRIPT}" ]]; then
-        fail "remote verify script is not executable: ${REMOTE_VERIFY_SCRIPT}"
-      fi
-      if [[ ! -f "${SSH_KEY}" ]]; then
-        fail "SSH key not found: ${SSH_KEY}"
-      fi
-
-      stage="EC2 smoke verification"
-      echo
-      echo "[PYTEST-PIPELINE] ${stage} (REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE})"
-      if ! ssh \
-          -i "${SSH_KEY}" \
-          -o BatchMode=yes \
-          -o StrictHostKeyChecking=accept-new \
-          "${EC2_TARGET}" \
-          "REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE} bash -s" < "${REMOTE_VERIFY_SCRIPT}"; then
-        fail "EC2 smoke verification failed with REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}"
-      fi
-    fi
-
-    notify "bithumb-bot pytest pipeline succeeded" "default" \
-      "WSL wrapper full-suite validation passed, changes were committed and pushed, and remote verification mode was ${REMOTE_VERIFY_MODE}."
+    notify "bithumb-research pytest pipeline succeeded" "default" \
+      "WSL wrapper full-suite validation passed, and changes were committed and pushed."
   else
-    notify "bithumb-bot pytest pipeline succeeded" "default" \
+    notify "bithumb-research pytest pipeline succeeded" "default" \
       "WSL wrapper full-suite validation passed. Commit/push was skipped or no repository changes existed."
   fi
 
@@ -313,17 +284,6 @@ if [[ -z "${NTFY_TOPIC:-}" ]]; then
 fi
 if ! command -v "${CODEX_BIN}" >/dev/null 2>&1; then
   fail "Codex binary not found: ${CODEX_BIN}"
-fi
-if [[ "${CODEX_PYTEST_COMMIT_PUSH}" == "1" && "${CODEX_PYTEST_REMOTE_VERIFY}" == "1" ]]; then
-  if [[ "${REMOTE_VERIFY_MODE}" == "full" ]]; then
-    fail "REMOTE_VERIFY_MODE=full is out of scope for this pytest repair pipeline; default smoke verification is required"
-  fi
-  if [[ ! -x "${REMOTE_VERIFY_SCRIPT}" ]]; then
-    fail "remote verify script is not executable: ${REMOTE_VERIFY_SCRIPT}"
-  fi
-  if [[ ! -f "${SSH_KEY}" ]]; then
-    fail "SSH key not found: ${SSH_KEY}"
-  fi
 fi
 if [[ "${CODEX_PYTEST_ALLOW_DIRTY}" != "1" && -n "$(git_status_porcelain)" ]]; then
   echo "[PYTEST-PIPELINE] refusing to run with pre-existing repository changes:" >&2
