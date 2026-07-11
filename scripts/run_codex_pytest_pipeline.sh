@@ -110,20 +110,16 @@ real_uv="${CODEX_PYTEST_REAL_UV:?}"
 guard_error() {
   echo "[CODEX-PYTEST-GUARD] Pytest Repair Mode blocks selector-less full pytest." >&2
   echo "[CODEX-PYTEST-GUARD] Full-suite validation belongs to the WSL wrapper." >&2
-  echo "[CODEX-PYTEST-GUARD] Do not run ./scripts/run_fast_pr_tests.sh inside Codex." >&2
-  echo "[CODEX-PYTEST-GUARD] Do not run ./scripts/run_full_pytest_tests.sh inside Codex." >&2
+  echo "[CODEX-PYTEST-GUARD] Use only focused validation derived from the failure packet." >&2
   echo "[CODEX-PYTEST-GUARD] $1" >&2
   exit 125
 }
 
 is_broad_test_runner_arg() {
   case "$1" in
-    ./scripts/run_fast_pr_tests.sh|scripts/run_fast_pr_tests.sh|*/scripts/run_fast_pr_tests.sh|\
     ./scripts/full_suite.sh|scripts/full_suite.sh|*/scripts/full_suite.sh|\
-    ./scripts/run_full_pytest_tests.sh|scripts/run_full_pytest_tests.sh|*/scripts/run_full_pytest_tests.sh|\
-    ./run_pytest_diagnostics.sh|run_pytest_diagnostics.sh|*/run_pytest_diagnostics.sh|\
-    ./run_remaining_test_results.sh|run_remaining_test_results.sh|*/run_remaining_test_results.sh|\
-    ./run_patch_diagnostics.sh|run_patch_diagnostics.sh|*/run_patch_diagnostics.sh)
+    ./scripts/run_codex_pytest_pipeline.sh|scripts/run_codex_pytest_pipeline.sh|*/scripts/run_codex_pytest_pipeline.sh|\
+    ./scripts/check_repo_runtime_artifacts.sh|scripts/check_repo_runtime_artifacts.sh|*/scripts/check_repo_runtime_artifacts.sh)
       return 0
       ;;
   esac
@@ -197,9 +193,6 @@ if [[ "${1:-}" == "run" ]]; then
     shift 3
     validate_pytest_args "$@"
     exec "${real_uv}" run python -m pytest "$@"
-  fi
-  if [[ "${1:-}" == "python" && ( "${2:-}" == "./scripts/run_full_pytest_tests.sh" || "${2:-}" == "scripts/run_full_pytest_tests.sh" ) ]]; then
-    guard_error "Full pytest runner is blocked inside Codex."
   fi
   exec "${real_uv}" run "$@"
 fi

@@ -14,8 +14,8 @@ REQUEST_FILE="${CODEX_REQUEST_FILE:-${SCRIPT_DIR}/codex_request.txt}"
 NOTIFY_SCRIPT="${NOTIFY_SCRIPT:-${SCRIPT_DIR}/notify_ntfy.sh}"
 CODEX_BIN="${CODEX_BIN:-codex}"
 
-# This script is Default Patch Mode only. Full pytest validation belongs to
-# scripts/run_codex_pytest_pipeline.sh.
+# This script is Default Patch Mode only. Full pytest validation belongs to the
+# dedicated pytest repair wrapper.
 CODEX_PYTEST_GUARD_DIR=""
 
 stage="preflight"
@@ -112,12 +112,8 @@ pytest_args=()
 
 is_broad_test_runner_arg() {
   case "$1" in
-    ./scripts/run_fast_pr_tests.sh|scripts/run_fast_pr_tests.sh|*/scripts/run_fast_pr_tests.sh|\
     ./scripts/full_suite.sh|scripts/full_suite.sh|*/scripts/full_suite.sh|\
-    ./scripts/run_full_pytest_tests.sh|scripts/run_full_pytest_tests.sh|*/scripts/run_full_pytest_tests.sh|\
-    ./run_pytest_diagnostics.sh|run_pytest_diagnostics.sh|*/run_pytest_diagnostics.sh|\
-    ./run_remaining_test_results.sh|run_remaining_test_results.sh|*/run_remaining_test_results.sh|\
-    ./run_patch_diagnostics.sh|run_patch_diagnostics.sh|*/run_patch_diagnostics.sh)
+    ./scripts/run_codex_pytest_pipeline.sh|scripts/run_codex_pytest_pipeline.sh|*/scripts/run_codex_pytest_pipeline.sh)
       return 0
       ;;
   esac
@@ -230,7 +226,7 @@ if is_guarded_pytest_invocation "$@"; then
       *)
         if is_broad_tests_selector "${arg}"; then
           echo "[CODEX-PYTEST-GUARD] Default Patch Mode blocks broad pytest target: ${arg}" >&2
-          echo "[CODEX-PYTEST-GUARD] Use scripts/run_codex_pytest_pipeline.sh for full pytest validation." >&2
+          echo "[CODEX-PYTEST-GUARD] Broad validation belongs to humans, CI, or the dedicated wrapper." >&2
           exit 126
         fi
         if is_narrow_pytest_selector "${arg}"; then
@@ -242,13 +238,13 @@ if is_guarded_pytest_invocation "$@"; then
 
   if [[ "${focused_expression_seen}" -eq 0 && "${narrow_path_selector_count}" -eq 0 ]]; then
     echo "[CODEX-PYTEST-GUARD] Default Patch Mode blocks selector-less full pytest." >&2
-    echo "[CODEX-PYTEST-GUARD] Use scripts/run_codex_pytest_pipeline.sh for uv run pytest -q." >&2
+    echo "[CODEX-PYTEST-GUARD] Broad validation belongs to humans, CI, or the dedicated wrapper." >&2
     exit 126
   fi
 
   if [[ "${focused_expression_seen}" -eq 0 && "${narrow_path_selector_count}" -gt 1 ]]; then
     echo "[CODEX-PYTEST-GUARD] Default Patch Mode blocks multiple pytest path selectors." >&2
-    echo "[CODEX-PYTEST-GUARD] Use one focused test file/function, -k, or -m; use scripts/run_codex_pytest_pipeline.sh for full pytest validation." >&2
+    echo "[CODEX-PYTEST-GUARD] Use one focused test file/function, -k, or -m." >&2
     exit 126
   fi
 
