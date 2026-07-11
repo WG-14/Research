@@ -10,7 +10,6 @@ import pytest
 from bithumb_bot.approved_profile import ApprovedProfileError, runtime_contract_from_env_values
 from bithumb_bot.paths import PathManager
 from bithumb_bot.research import backtest_kernel, validation_protocol
-from bithumb_bot.research import backtest_engine
 from bithumb_bot.research.backtest_engine import BacktestRunContext
 from bithumb_bot.research.backtest_kernel import run_decision_event_backtest
 from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
@@ -74,8 +73,8 @@ def test_research_decision_event_is_strategy_neutral() -> None:
     assert event.order_intent is None
 
 
-def test_noop_baseline_runs_through_backtest_result_contract() -> None:
-    runner = resolve_research_strategy("noop_baseline")
+def test_noop_baseline_runs_through_research_only_result_contract() -> None:
+    runner = resolve_catalog_strategy("noop_baseline").runner
 
     result = runner(
         _dataset(),
@@ -94,6 +93,7 @@ def test_noop_baseline_runs_through_backtest_result_contract() -> None:
     assert result.metrics_v2 is not None
     assert result.execution_event_summary is not None
     assert result.resource_usage is not None
+    assert result.resource_usage["noop_baseline_research_kernel"] == "research_only_v1"
     assert result.resource_usage["common_decision_behavior_hash"].startswith("sha256:")
     assert result.resource_usage["strategy_behavior_hash"].startswith("sha256:")
     assert result.resource_usage["composite_behavior_hash"] == result.resource_usage["behavior_hash"]
@@ -103,8 +103,6 @@ def test_noop_baseline_runs_through_backtest_result_contract() -> None:
     assert result.decisions
     first = result.decisions[0]
     assert first["strategy_name"] == "noop_baseline"
-    assert first["strategy_plugin_contract"]["name"] == "noop_baseline"
-    assert first["strategy_plugin_contract_hash"].startswith("sha256:")
     assert first["strategy_decision_contract_version"] == "research_noop_baseline_decision_contract.v1"
     assert first["execution_intent"] == "none"
     assert first["strategy_diagnostics_namespace"] == "noop_baseline"
@@ -202,16 +200,13 @@ def test_buy_and_hold_baseline_does_not_enter_common_kernel(monkeypatch) -> None
     assert result.strategy_diagnostics["strategy_diagnostics_namespace"] == "buy_and_hold_baseline"
 
 
-def test_noop_baseline_enters_common_kernel_through_public_boundary(monkeypatch) -> None:
-    runner = resolve_research_strategy("noop_baseline")
-    calls: list[str] = []
-    original = backtest_kernel.run_decision_event_backtest
-
-    def counting_kernel(**kwargs):
-        calls.append(str(kwargs["strategy_name"]))
-        return original(**kwargs)
-
-    monkeypatch.setattr(backtest_kernel, "run_decision_event_backtest", counting_kernel)
+def test_noop_baseline_uses_research_only_kernel(monkeypatch) -> None:
+    runner = resolve_catalog_strategy("noop_baseline").runner
+    monkeypatch.setattr(
+        backtest_kernel,
+        "run_decision_event_backtest",
+        lambda **kwargs: pytest.fail("noop_baseline_must_not_use_common_kernel"),
+    )
 
     result = runner(
         _dataset(),
@@ -225,16 +220,19 @@ def test_noop_baseline_enters_common_kernel_through_public_boundary(monkeypatch)
         BacktestRunContext(report_detail="full"),
     )
 
-    assert calls == ["noop_baseline"]
     assert result.trades == ()
+    assert result.execution_event_summary["execution_attempt_count"] == 0
+    assert result.resource_usage["noop_baseline_research_kernel"] == "research_only_v1"
     assert result.strategy_diagnostics["strategy_diagnostics_namespace"] == "noop_baseline"
 
 
-def test_noop_baseline_has_no_custom_decision_payload_loop() -> None:
-    source = inspect.getsource(backtest_engine.run_noop_baseline_backtest)
+def test_noop_baseline_kernel_is_not_a_common_kernel_wrapper() -> None:
+    from bithumb_bot.research.strategies import noop_baseline_kernel
 
-    assert "run_decision_event_backtest" in source
-    assert "_research_decision_payload(" not in source
+    source = inspect.getsource(noop_baseline_kernel.run_noop_baseline_backtest)
+
+    assert "run_decision_event_backtest" not in source
+    assert "strategy_plugins" not in source
 
 
 def test_decision_event_kernel_does_not_require_sma_features() -> None:
