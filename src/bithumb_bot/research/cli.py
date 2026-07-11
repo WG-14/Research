@@ -23,8 +23,6 @@ from .audit_trail import validate_audit_trail_binding, verify_audit_trail
 from .return_panel import validate_return_panel_binding
 from .execution_calibration import ExecutionCalibrationError, load_calibration_artifact
 from .deployment_policy import is_production_bound_target
-from .promotion_gate import PromotionGateError, promote_candidate
-from .lineage import reproduce_promotion
 from .run_summary import ResearchRunSummary, build_research_run_summary
 from .validation_pipeline import ValidationRunError, run_research_validation, validation_next_action_payload
 from .validation_protocol import ResearchValidationError, run_research_backtest, run_research_walk_forward
@@ -361,10 +359,13 @@ def cmd_research_validate(
     return rc
 
 
-def cmd_research_reproduce(*, context: "ResearchAppContext", promotion_path: str) -> int:
-    result = reproduce_promotion(promotion_path, manager=context.paths)
-    context.printer(json.dumps(result.summary, ensure_ascii=False, sort_keys=True, indent=2))
-    return 0 if result.ok else 1
+def cmd_research_reproduce_run(*, context: "ResearchAppContext", manifest_path: str) -> int:
+    """Re-run a manifest with the same research-only inputs and settings."""
+    return cmd_research_backtest(
+        context=context,
+        manifest_path=manifest_path,
+        notification_policy="disabled",
+    )
 
 
 def cmd_research_registry_inspect(*, context: "ResearchAppContext", row_hash: str) -> int:
@@ -586,109 +587,6 @@ def cmd_research_mark_attempt_aborted(*, context: "ResearchAppContext", row_hash
         context.printer(json.dumps({"ok": False, "reason": "experiment_registry_row_hash_mismatch", "row_hash": row_hash}, sort_keys=True, indent=2))
         return 1
     context.printer(json.dumps({"ok": True, **result}, sort_keys=True, indent=2))
-    return 0
-
-
-def cmd_research_promote_candidate(
-    *,
-    context: "ResearchAppContext",
-    experiment_id: str,
-    candidate_id: str,
-    allow_legacy_lineage: bool = False,
-    validation_run_path: str | None = None,
-) -> int:
-    try:
-        result = promote_candidate(
-            experiment_id=experiment_id,
-            candidate_id=candidate_id,
-            manager=context.paths,
-            allow_legacy_lineage=allow_legacy_lineage,
-            validation_run_path=validation_run_path,
-        )
-    except PromotionGateError as exc:
-        print(f"[RESEARCH-PROMOTE-CANDIDATE] error={exc}")
-        return 1
-    print("[RESEARCH-PROMOTE-CANDIDATE]")
-    print(f"  experiment_id={experiment_id}")
-    print(f"  candidate_id={candidate_id}")
-    print(f"  gate_result={result.artifact['gate_result']}")
-    print(f"  artifact_path={result.artifact_path}")
-    print(f"  content_hash={result.content_hash}")
-    print(f"  statistical_validation_required={1 if result.artifact.get('statistical_validation_required') else 0}")
-    print(f"  validation_policy_source={result.artifact.get('validation_policy_source') or 'none'}")
-    print(
-        "  validation_policy_required_stage_names="
-        f"{_format_items(tuple(str(item) for item in result.artifact.get('validation_policy_required_stage_names') or []))}"
-    )
-    print(f"  effective_walk_forward_required={1 if result.artifact.get('effective_walk_forward_required') else 0}")
-    print(f"  effective_final_holdout_required={1 if result.artifact.get('effective_final_holdout_required') else 0}")
-    print(f"  effective_stress_suite_required={1 if result.artifact.get('effective_stress_suite_required') else 0}")
-    print(
-        "  effective_statistical_validation_required="
-        f"{1 if result.artifact.get('effective_statistical_validation_required') else 0}"
-    )
-    print(f"  effective_final_selection_required={1 if result.artifact.get('effective_final_selection_required') else 0}")
-    print(f"  selection_universe_hash={result.artifact.get('selection_universe_hash') or 'none'}")
-    print(f"  statistical_evidence_hash={result.artifact.get('statistical_evidence_hash') or 'none'}")
-    print(f"  evidence_grade={result.artifact.get('evidence_grade') or 'none'}")
-    print(f"  statistical_method={result.artifact.get('statistical_method') or 'none'}")
-    print(
-        "  official_promotion_grade_wrc_generation_available="
-        f"{1 if result.artifact.get('official_promotion_grade_wrc_generation_available') else 0}"
-    )
-    print(
-        "  promotion_grade_limitations="
-        f"{_format_items(tuple(str(item) for item in result.artifact.get('promotion_grade_limitations') or []))}"
-    )
-    print(
-        "  promotion_blocking_reasons="
-        f"{_format_items(tuple(str(item) for item in result.artifact.get('promotion_blocking_reasons') or []))}"
-    )
-    print(f"  return_panel_hash={result.artifact.get('return_panel_hash') or 'none'}")
-    print(f"  return_unit={result.artifact.get('return_unit') or 'none'}")
-    print(f"  return_panel_observation_count={result.artifact.get('return_panel_observation_count')}")
-    print(f"  family_trial_registry_path={result.artifact.get('family_trial_registry_path') or 'none'}")
-    print(f"  family_trial_registry_prior_hash={result.artifact.get('family_trial_registry_prior_hash') or 'none'}")
-    print(f"  family_trial_registry_row_hash={result.artifact.get('family_trial_registry_row_hash') or 'none'}")
-    _print_experiment_registry_summary(result.artifact)
-    print(f"  white_reality_check_p_value={result.artifact.get('white_reality_check_p_value')}")
-    print(f"  white_reality_check_method={result.artifact.get('white_reality_check_method') or 'none'}")
-    print(f"  summary_metric_max_bootstrap_p_value={result.artifact.get('summary_metric_max_bootstrap_p_value')}")
-    print(f"  bootstrap_sampling_contract_hash={result.artifact.get('bootstrap_sampling_contract_hash') or 'none'}")
-    print(f"  statistical_gate_result={result.artifact.get('statistical_gate_result') or 'none'}")
-    print(
-        "  statistical_gate_fail_reasons="
-        f"{_format_items(tuple(str(item) for item in result.artifact.get('statistical_gate_fail_reasons') or []))}"
-    )
-    _print_execution_capability_summary(result.artifact)
-    _print_stress_suite_summary(result.artifact)
-    _print_execution_event_summary(result.artifact.get("execution_event_summary"))
-    print(
-        "  has_execution_calibration_warning="
-        f"{1 if result.artifact.get('has_execution_calibration_warning') else 0}"
-    )
-    print(
-        "  execution_calibration_warning_reasons="
-        f"{_format_items(tuple(str(item) for item in result.artifact.get('execution_calibration_warning_reasons') or []))}"
-    )
-    print(
-        "  promotion_warnings="
-        f"{_format_items(tuple(str(item) for item in result.artifact.get('promotion_warnings') or []))}"
-    )
-    print(f"  legacy_compatibility_used={1 if result.artifact.get('legacy_compatibility_used') else 0}")
-    print(f"  validation_run_required={1 if result.artifact.get('validation_run_required') else 0}")
-    print(f"  validation_run_binding_status={result.artifact.get('validation_run_binding_status') or 'none'}")
-    print(f"  validation_run_hash={result.artifact.get('validation_run_hash') or 'none'}")
-    print(f"  validation_run_binding_hash={result.artifact.get('validation_run_binding_hash') or 'none'}")
-    print(
-        "  validation_run_promotion_artifact_hash="
-        f"{result.artifact.get('validation_run_promotion_artifact_hash') or 'none'}"
-    )
-    print(
-        "  dataset_quality_legacy_bypass_used="
-        f"{1 if result.artifact.get('dataset_quality_legacy_bypass_used') else 0}"
-    )
-    print(f"  operator_next_step={result.artifact['operator_next_step']}")
     return 0
 
 

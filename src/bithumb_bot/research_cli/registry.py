@@ -31,7 +31,7 @@ def _manifest_calibration(parser: argparse.ArgumentParser) -> None:
 
 def _backtest(parser: argparse.ArgumentParser) -> None:
     _manifest_calibration(parser)
-    parser.add_argument("--diagnostic-mode", choices=("promotion_candidate", "exploratory", "profiling"))
+    parser.add_argument("--diagnostic-mode", choices=("exploratory", "profiling"))
 
 
 def _validate(parser: argparse.ArgumentParser) -> None:
@@ -133,7 +133,7 @@ _COMMANDS: tuple[tuple[str, ParserBuilder, str], ...] = (
     ("research-batch", _batch, "run multiple research manifests with bounded concurrency"),
     ("research-forward-diagnostics", _forward_diagnostics, "run diagnostic-only forward-return analysis"),
     ("research-verify-audit", lambda parser: parser.add_argument("--experiment-id", required=True), "verify research audit trace hash chains"),
-    ("research-reproduce", lambda parser: parser.add_argument("--promotion", required=True), "verify a research promotion artifact lineage"),
+    ("research-reproduce-run", lambda parser: parser.add_argument("--manifest", required=True), "reproduce a manifest-backed research run"),
     ("research-registry-inspect", _row_hash, "inspect one research registry row"),
     ("research-registry-validate", lambda parser: parser.add_argument("--experiment-id", required=True), "validate registry binding for an experiment"),
     ("research-mark-attempt-aborted", _mark_aborted, "append an aborted event for an incomplete research attempt"),

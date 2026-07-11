@@ -1,4 +1,0 @@
-from __future__ import annotations
-
-PORTFOLIO_ANCHORED_PROJECTION_REPAIR_REASON = "portfolio_anchored_authority_projection_repair"
-

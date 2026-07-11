@@ -303,12 +303,7 @@ class BacktestEventProcessor:
             promotion_grade_policy_required = bool(
                 strategy_envelope.provenance.get("promotion_grade_policy_required")
             )
-            daily_participation_buy = bool(
-                self.strategy_plugin.name == "daily_participation_sma"
-                and policy_decision is not None
-                and str(getattr(policy_decision, "final_signal", "") or "").upper() == "BUY"
-            )
-            policy_drives_execution = bool(promotion_grade_policy_required or daily_participation_buy)
+            policy_drives_execution = bool(promotion_grade_policy_required)
             try:
                 planning = self.execution_planner.plan(
                     ExecutionPlanningRequest(

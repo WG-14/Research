@@ -1,8 +1,4 @@
-"""Registry used exclusively by research commands.
-
-The legacy ``research.strategy_registry`` remains for the integrated
-operational CLI.  Nothing in the research execution path imports it.
-"""
+"""Direct catalog for the strategies supported by ``bithumb-research``."""
 
 from __future__ import annotations
 
@@ -60,19 +56,6 @@ def research_strategy_data_requirements(
     return resolve_research_strategy(strategy_name).data_requirements(strategy_spec)
 
 
-def _legacy_factory(name: str) -> Callable[[], ResearchStrategyPlugin]:
-    """Temporary isolated loader for non-SMA migrated implementations.
-
-    It is never reached by a SMA research command.  The compatibility code is
-    intentionally contained here so the research command's selected strategy
-    has a narrow import boundary while follow-up extraction proceeds.
-    """
-    def factory() -> ResearchStrategyPlugin:
-        from .strategies.legacy_compat import build_legacy_research_plugin
-        return build_legacy_research_plugin(name)
-    return factory
-
-
 from .strategies.sma_with_filter import build_sma_with_filter_plugin
 from .strategies.buy_and_hold_baseline import build_buy_and_hold_baseline_plugin
 from .strategies.noop_baseline import build_noop_baseline_plugin
@@ -82,10 +65,3 @@ _register_builtin("sma_with_filter", build_sma_with_filter_plugin)
 _register_builtin("buy_and_hold_baseline", build_buy_and_hold_baseline_plugin)
 _register_builtin("noop_baseline", build_noop_baseline_plugin)
 _register_builtin("threshold_research_only", build_threshold_research_only_plugin)
-for _name in (
-    "daily_participation_sma",
-    "canary_non_sma",
-    "replay_threshold",
-    "channel_breakout_with_regime_filter",
-):
-    _register_builtin(_name, _legacy_factory(_name))

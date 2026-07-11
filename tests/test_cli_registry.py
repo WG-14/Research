@@ -1,1 +1,0 @@
-from tests.test_cli_structure import test_command_registration_contains_expected_major_groups

@@ -683,38 +683,6 @@ def _attach_participation_summary(summary: dict[str, Any], candidate: dict[str, 
         "not_a_fill_guarantee": True,
         "count_basis": compact.get("count_basis"),
     }
-    event = operator_daily_participation_status_event(
-        market=str(candidate.get("market") or candidate.get("pair") or "UNKNOWN"),
-        participation_summary=compact,
-        target_status=str(
-            candidate.get("acceptance_gate_status")
-            or candidate.get("deployment_eligibility_status")
-            or "UNKNOWN"
-        ),
-    )
-    events = list(summary.get("operator_events") or ())
-    events.append(event)
-    summary["operator_events"] = events
-
-
-def operator_daily_participation_status_event(
-    *,
-    market: str,
-    participation_summary: dict[str, Any],
-    target_status: str = "UNKNOWN",
-) -> dict[str, Any]:
-    from bithumb_bot.runtime.operator_event_composer import RuntimeOperatorEventComposer
-
-    return RuntimeOperatorEventComposer(str(market or "UNKNOWN")).daily_participation_status_event(
-        count_basis=str(participation_summary.get("count_basis") or "filled"),
-        days_with_intent=int(participation_summary.get("days_with_intent") or 0),
-        days_with_filled_execution=int(participation_summary.get("days_with_filled_execution") or 0),
-        zero_filled_days=int(participation_summary.get("zero_filled_days") or 0),
-        max_consecutive_zero_filled_days=int(participation_summary.get("max_consecutive_zero_filled_days") or 0),
-        target_status=target_status,
-    )
-
-
 def summarize_derived_candidate(candidate: Any, report_detail: str) -> Any:
     report_detail = _normalize_report_detail(report_detail)
     if report_detail == "full":

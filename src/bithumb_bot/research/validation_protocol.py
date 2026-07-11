@@ -95,7 +95,7 @@ from .lineage import build_research_lineage, compute_lineage_hash
 from .metrics_gate_policy import metrics_gate_policy_from_acceptance_gate, metrics_gate_policy_hash
 from .metrics_contract import METRICS_SCHEMA_VERSION, ClosedTradeRecord
 from .parameter_space import candidate_id, iter_parameter_candidates
-from .promotion_gate import build_candidate_behavior_profile, build_candidate_profile
+from .candidate_profile import build_candidate_behavior_profile, build_candidate_profile
 from .profiling import run_with_cprofile
 from .report_writer import (
     summarize_candidate_result,

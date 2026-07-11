@@ -1,94 +1,27 @@
+"""Research-only generic event runner boundary.
+
+The supported strategies own their concrete backtest kernels.  This helper is
+kept for research callers that supply an explicit event stream, without any
+runtime planner, broker, or submit-plan dependency.
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Iterable
-
-from .backtest_pipeline import DefaultBacktestPipeline
-from .backtest_support import BacktestRun, BacktestRunContext
-from .dataset_snapshot import DatasetSnapshot
-from .decision_event import ResearchDecisionEvent
-from .execution_model import ExecutionModel
-from .experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
+from typing import Any
 
 
-@dataclass(frozen=True)
-class BacktestKernel:
-    """Stable public facade for decision-event backtests."""
+def run_decision_event_backtest(*, strategy_name: str, **kwargs: Any) -> Any:
+    from .strategy_catalog import resolve_research_strategy
 
-    pipeline: DefaultBacktestPipeline = field(default_factory=DefaultBacktestPipeline)
-
-    def run(
-        self,
-        *,
-        dataset: DatasetSnapshot,
-        strategy_name: str,
-        parameter_values: dict[str, Any],
-        fee_rate: float,
-        slippage_bps: float,
-        decision_events: Iterable[ResearchDecisionEvent],
-        parameter_stability_score: float | None = None,
-        execution_model: ExecutionModel | None = None,
-        execution_timing_policy: ExecutionTimingPolicy | None = None,
-        portfolio_policy: PortfolioPolicy | None = None,
-        context: BacktestRunContext | None = None,
-    ) -> BacktestRun:
-        return self.pipeline.run(
-            dataset=dataset,
-            strategy_name=strategy_name,
-            parameter_values=parameter_values,
-            fee_rate=fee_rate,
-            slippage_bps=slippage_bps,
-            decision_events=decision_events,
-            parameter_stability_score=parameter_stability_score,
-            execution_model=execution_model,
-            execution_timing_policy=execution_timing_policy,
-            portfolio_policy=portfolio_policy,
-            context=context,
-        )
-
-
-def run_decision_event_backtest(
-    *,
-    dataset: DatasetSnapshot,
-    strategy_name: str,
-    parameter_values: dict[str, Any],
-    fee_rate: float,
-    slippage_bps: float,
-    decision_events: Iterable[ResearchDecisionEvent],
-    parameter_stability_score: float | None = None,
-    execution_model: ExecutionModel | None = None,
-    execution_timing_policy: ExecutionTimingPolicy | None = None,
-    portfolio_policy: PortfolioPolicy | None = None,
-    context: BacktestRunContext | None = None,
-) -> BacktestRun:
-    return BacktestKernel().run(
-        dataset=dataset,
-        strategy_name=strategy_name,
-        parameter_values=parameter_values,
-        fee_rate=fee_rate,
-        slippage_bps=slippage_bps,
-        decision_events=decision_events,
-        parameter_stability_score=parameter_stability_score,
-        execution_model=execution_model,
-        execution_timing_policy=execution_timing_policy,
-        portfolio_policy=portfolio_policy,
-        context=context,
+    plugin = resolve_research_strategy(strategy_name)
+    return plugin.runner(
+        kwargs["dataset"],
+        dict(kwargs.get("parameter_values") or {}),
+        float(kwargs.get("fee_rate") or 0.0),
+        float(kwargs.get("slippage_bps") or 0.0),
+        kwargs.get("parameter_stability_score"),
+        kwargs.get("execution_model"),
+        kwargs.get("execution_timing_policy"),
+        kwargs.get("portfolio_policy"),
+        kwargs.get("context"),
     )
-
-
-# Compatibility re-exports for existing tests and downstream research tooling.
-# These names are not authority boundaries. New code should enter through
-# BacktestKernel.run() or DefaultBacktestPipeline and let the pipeline stages own
-# strategy, risk, execution, ledger, metrics, and experiment responsibilities.
-from .backtest_pipeline import (  # noqa: E402
-    ResearchExecutionPlanBundle,
-    _execution_plan_evidence,
-    _research_execution_plan_bundle,
-    _research_position_snapshot,
-    _run_decision_event_backtest_impl,
-)
-from .execution_simulator import (  # noqa: E402
-    ResearchExecutionContext,
-    ResearchVirtualExecutionService,
-    execution_submit_plan_to_research_request,
-)

@@ -1,346 +1,74 @@
-# bithumb-bot
+# bithumb-research
 
-Safety-first Bithumb trading bot.
+`bithumb-research` is an offline research repository for market-data
+preparation, reproducible backtests, walk-forward studies, statistical checks,
+and artifact-backed research reports. It does not connect to trading accounts,
+submit orders, or provide a runtime service.
 
-The repository is optimized for:
+## Supported strategies
 
-- Wrong-order prevention
-- Duplicate-order prevention
-- State integrity and restart recovery
-- Loss limits and emergency-stop behavior
-- Operational observability and recoverability
+- `sma_with_filter`
+- `buy_and_hold_baseline`
+- `noop_baseline`
+- `threshold_research_only`
 
-## Position State Model
-
-This bot uses lot-native executable position semantics.
-The notes in this section describe the current implementation and its compatibility/reporting surfaces; they should not be read as a claim that every conceptual authority layer is already fully unified in code and emitted context.
-
-- `open_exposure` is the canonical lot-native executable exposure.
-- `dust_tracking` is operator-tracking residue and is kept separate from executable exposure.
-- Dust operability is a projection on top of preserved evidence. A dust-only, sub-minimum, zero-executable state may be treated as flat for new-entry policy while still remaining accounting residue and excluded from SELL authority.
-- `reserved_exit` is executable exposure that is already reserved by open SELL lifecycle state.
-- `sellable_executable_lot_count` is the canonical SELL authority after subtracting reserved exit lots from open executable lots.
-- `effective_flat` and `entry_gate_effective_flat` are BUY entry-gate interpretations only. They are not proof of zero holdings and do not define SELL authority, recovery authority, executable-position authority, recovery completeness, literal flatness, or restart safety.
-- In the current implementation, SELL authority is grounded in `build_position_state_model()` outputs such as `normalized_exposure.sellable_executable_lot_count`, `normalized_exposure.exit_allowed`, `normalized_exposure.exit_block_reason`, `normalized_exposure.terminal_state`, and operator diagnostics. Legacy wording such as `holding_authority_state` should not be read as a current emitted/runtime authority field or canonical authority surface.
-- Resume/recovery authority is a separate safety layer. In the current implementation it is determined from reconcile outcomes, runtime health, unresolved or recovery-required order state, halt conditions, dust resume policy, and explicit resume-eligibility checks; SELL authority or harmless dust alone is not sufficient to resume trading.
-- Persisted lot-state row values remain `open_exposure` and `dust_tracking`.
-- Current terminal/operator-facing normalized holding states are computed on top of persisted lot rows plus reservation and dust logic, and include `open_exposure`, `reserved_exit_pending`, `dust_only`, `flat`, and `non_executable_position`.
-- `reserved_exit_pending` is a real normalized terminal state: executable exposure still exists, but normal SELL submission is blocked because the sellable lots are already reserved by open SELL orders.
-- `dust_only`, `flat`, and `non_executable_position` remain distinct normalized outcomes and should not be collapsed into qty-first state interpretation.
-- If no executable exit lot exists, SELL must be suppressed rather than submitted as a failed order. In the current implementation, that suppression is an observable/reportable outcome that can carry reason-coded telemetry and operator-facing reporting context; it is not just an invisible strategy no-op.
-- Lot counts are the canonical executable state meaning.
-- Qty remains non-authoritative, but it is still operationally required as a derived surface for broker payloads, sell-boundary handling, and reporting.
-- Alias qty fields such as `position_qty`, `submit_payload_qty`, and `normalized_exposure_qty` may still appear in emitted/reporting context, but they are derived or compatibility/reporting surfaces and are not canonical SELL authority inputs.
-- Current external/terminal SELL authority is lot-native, but current context materialization still passes through compatibility-aware fail-closed normalization for legacy or non-executable cases.
-
-## Quick Start
+## Install
 
 ```bash
 uv sync
-./scripts/run_fast_pr_tests.sh
-uv run bithumb-bot health
+uv run bithumb-research --help
 ```
 
-`./scripts/run_fast_pr_tests.sh` is the default PR validation command. A
-selector-less raw `uv run pytest -q` is long-running/full validation and is not
-the default local PR check. Use `./scripts/run_full_pytest_tests.sh` for the
-official full-suite entrypoint.
-
-Codex patch sessions are different from human/CI PR validation. Codex must not
-run `./scripts/run_fast_pr_tests.sh`, `./scripts/full_suite.sh`,
-`./scripts/run_full_pytest_tests.sh`, or selector-less pytest; it must run only
-focused validation directly related to the patch and hand broad validation back
-to the operator or wrapper pipeline.
-
-For Codex operator pipeline and ntfy notification behavior, see
-[`docs/pre-merge-checklist.md#codex-pipeline-notification-runbook`](/docs/pre-merge-checklist.md#codex-pipeline-notification-runbook).
-
-## Canonical CLI
-
-Use this command form as the canonical entrypoint:
+The canonical command is:
 
 ```bash
-uv run bithumb-bot <command>
+uv run bithumb-research <command>
 ```
 
-Equivalent forms:
+## Research settings
+
+All research inputs and outputs must be outside this Git repository.
+
+- `RESEARCH_DATA_ROOT`: immutable or prepared dataset root
+- `RESEARCH_ARTIFACT_ROOT`: derived traces and candidate artifacts
+- `RESEARCH_REPORT_ROOT`: operator-readable research reports
+- `RESEARCH_CACHE_ROOT`: disposable cache root
+- `RESEARCH_DB_PATH`: SQLite candle database for commands that require it
+- `RESEARCH_MAX_WORKERS`: bounded research worker count
+- `RESEARCH_RANDOM_SEED`: deterministic experiment seed
+
+Each configured path is absolute and repository-external. Research artifacts
+are either atomic JSON reports or append-only JSONL audit records.
+
+## Typical workflow
 
 ```bash
-uv run python -m bithumb_bot <command>
-uv run python bot.py <command>
+uv run bithumb-research research-freeze-dataset --db /abs/candles.sqlite \
+  --market KRW-BTC --interval 1m --start 2025-01-01 --end 2025-03-31 \
+  --out /abs/datasets/krw-btc-1m.json
+
+uv run bithumb-research research-readiness --manifest /abs/experiment.json --json
+uv run bithumb-research research-backtest --manifest /abs/experiment.json
+uv run bithumb-research research-walk-forward --manifest /abs/experiment.json
+uv run bithumb-research research-validate --manifest /abs/experiment.json
 ```
 
-The `project.scripts` entry in `pyproject.toml` defines the canonical CLI. Current operator-facing output and recovery guidance may still reference `uv run python bot.py <command>` as a compatibility surface.
+`research-validate` records research-only stages: readiness, dataset quality,
+backtest, final holdout, stress suite, statistical validation, walk-forward,
+final selection, and a research candidate report. Results are `PASS`, `FAIL`,
+or `INSUFFICIENT_EVIDENCE`.
 
-## Env Loading Rules
+`research-reproduce-run --manifest /abs/experiment.json` reruns the same
+manifest-backed experiment and compares the resulting artifact hashes.
 
-- Do not rely on implicit `.env` autoloading.
-- Use explicit env files for operator, live, and healthcheck operations.
-- `BITHUMB_ENV_FILE` takes priority when it is set.
-- `MODE=live` uses `BITHUMB_ENV_FILE_LIVE` when `BITHUMB_ENV_FILE` is not set.
-- The supported runtime modes are `paper` and `live`.
-- `MODE=paper` uses `BITHUMB_ENV_FILE_PAPER` when `BITHUMB_ENV_FILE` is not set.
-- `MODE=test` only appears here as an env-selection compatibility edge case in the helper logic; it is not a normal operator/runtime mode.
-- Explicit env files remain the operating standard for healthcheck and live-operation commands.
-- Bootstrap loads the selected explicit env file opportunistically; if the file is missing, later config validation still fails when required settings are absent.
+## Artifacts and reproducibility
 
-Example:
+Research outputs are classified under the configured roots as datasets,
+derived artifacts, reports, cache entries, and append-only audit records.
+The report records the manifest hash, dataset hash, parameter set, execution
+assumptions, seed, and result hashes needed to reproduce a study.
 
-```bash
-BITHUMB_ENV_FILE=.env uv run bithumb-bot health
-```
+## Tests
 
-Runtime artifacts must not be written into the repository. In `MODE=live`, every managed runtime root must be explicitly configured as an absolute repository-external path. In `MODE=paper`, `PathManager` falls back to the default runtime root under `XDG_STATE_HOME/bithumb-bot` or `~/.local/state/bithumb-bot` when a managed root is unset.
-
-## Common Commands
-
-```bash
-uv run bithumb-bot sync
-uv run bithumb-bot sync-orderbook-top
-uv run bithumb-bot ticker
-uv run bithumb-bot candles --limit 5
-uv run bithumb-bot signal --short 7 --long 30
-uv run bithumb-bot explain --short 7 --long 30
-uv run bithumb-bot status
-uv run bithumb-bot trades --limit 20
-uv run bithumb-bot ops-report --limit 20
-uv run bithumb-bot execution-quality-report --limit 200 --compare-manifest examples/research/sma_filter_manifest.example.json
-uv run bithumb-bot decision-telemetry --limit 200
-uv run bithumb-bot decision-attribution --limit 500
-uv run bithumb-bot strategy-report
-uv run bithumb-bot strategy-plugin-inventory --json
-uv run bithumb-bot strategy-plugin-validate --strategy <name> --target <research_backtest|runtime_replay|runtime_decision|live_dry_run|live_real_order> --json
-uv run bithumb-bot research-backtest --manifest examples/research/sma_filter_manifest.example.json
-uv run bithumb-bot research-walk-forward --manifest examples/research/sma_filter_manifest.example.json
-uv run bithumb-bot research-verify-audit --experiment-id <id>
-uv run bithumb-bot research-promote-candidate --experiment-id <id> --candidate-id <id>
-uv run bithumb-bot research-promote-candidate --experiment-id <id> --candidate-id <id> --allow-legacy-lineage
-uv run bithumb-bot research-reproduce --promotion <promotion.json>
-uv run bithumb-bot profile-generate --promotion <promotion.json> --mode paper --out <profile.json>
-uv run bithumb-bot research-export-decisions --manifest <manifest.json> --candidate-id <id> --split validation --profile <profile.json> --out <research_decisions.json>
-uv run bithumb-bot runtime-replay-decisions --profile <profile.json> --db <paper_or_runtime.sqlite> --through-ts-list <timestamps.json> --out <runtime_decisions.json>
-uv run bithumb-bot promotion-provenance-verify --artifact <canonical_or_promotion_artifact.json>
-uv run bithumb-bot replay-decision --db <paper_or_runtime.sqlite> --strategy sma_with_filter --candle-ts <closed_candle_ts_ms> --json
-uv run bithumb-bot decision-equivalence --research-decisions <research_decisions.json> --runtime-decisions <runtime_decisions.json> --profile-hash <profile_hash> --market <market> --interval <interval> --data-fingerprint <dataset_or_db_hash>
-uv run bithumb-bot candidate-regime-policy-equivalence-evidence --backtest-report <backtest_report.json> --candidate-id <id> --decision-equivalence-report <decision_equivalence.json> --bind
-uv run bithumb-bot profile-diff --profile <profile.json> --target-env <env-file> --json
-uv run bithumb-bot profile-verify --profile <profile.json> --env <env-file>
-uv run bithumb-bot config-dump --masked
-uv run bithumb-bot runtime-strategy-set-lint
-uv run bithumb-bot runtime-strategy-set-dump
-uv run bithumb-bot live-dry-run
-uv run bithumb-bot cash-drift-report --recent-limit 5
-uv run bithumb-bot experiment-report --sample-threshold 30 --top-n 3
-uv run bithumb-bot fee-pending-accounting-repair --client-order-id <id> --fill-id <fill_id> --fee <fee> --fee-provenance <evidence>
-uv run bithumb-bot run
-```
-
-Root `backtest.py` is a fail-closed compatibility wrapper for a smoke backtest only. It does not run unless invoked with `--diagnostic-smoke-only`, and its output must not be used as evidence for strategy promotion, approved profiles, live readiness, or capital allocation. The official validation path is `uv run bithumb-bot research-validate --manifest ...`; `uv run bithumb-bot research-backtest --manifest ...` remains diagnostic/development evidence unless it is part of the full validation lifecycle. Full validation then requires walk-forward validation, lineage-backed promotion artifact review, `research-reproduce`, approved-profile generation or transition, mandatory decision-equivalence evidence, and separate paper/live-readiness checks. `--allow-legacy-lineage` is only an explicit compatibility escape hatch for reviewed historical artifacts, not the normal promotion path.
-
-Command and evidence boundary:
-
-| Command or artifact | Boundary | Evidence status | Operator next action |
-| --- | --- | --- | --- |
-| `python backtest.py` | Fail-closed by default | No evidence | Use `uv run bithumb-bot research-validate --manifest <path>` |
-| `python backtest.py --diagnostic-smoke-only` | Diagnostic smoke only | Non-promotable; never approved-profile, live-readiness, or capital-allocation evidence | Use manifest-backed validation for any promotion path |
-| `tools/diagnostic_smoke_backtest.py` | Diagnostic implementation outside the package runtime namespace | Not a promotion-grade backtest engine | Keep smoke output out of promotion artifacts |
-| `uv run bithumb-bot research-backtest --manifest ...` | Research/development run unless bound inside full validation lifecycle | Diagnostic/development evidence by itself | Run `research-validate` for official validation lifecycle |
-| `uv run bithumb-bot research-validate --manifest ...` | Official validation lifecycle | Manifest-backed validation evidence when all required stages pass | Use resulting validation/promotion artifacts for profile workflow |
-| `decision-equivalence` | Submit-plan scoped unless explicit lifecycle evidence is present and verified | `SUBMIT_PLAN_EQUIVALENCE_ONLY`; not full lifecycle equivalence | Do not claim full lifecycle equivalence without fill, live-submit, broker response, accounting replay, and position lifecycle evidence |
-
-Typed evidence artifacts are not interchangeable. The validator enum names are
-`SyntheticGateEvidence`, `BrokerPipelineSmokeEvidence`, `DecisionParityEvidence`,
-`PlanningParityEvidence`, `PairedExperimentEvidence`, `LiveSubmitEvidence`, and
-`FullLifecycleComparison`. Synthetic gate and broker pipeline smoke artifacts
-must not be used as decision parity, live submit, or full lifecycle evidence.
-
-Promotion-grade decision-equivalence evidence must be generated through the repo-owned `research-export-decisions --profile` and `runtime-replay-decisions` commands, then compared as validated export wrappers. Manual JSON decision arrays are diagnostic only. Promotion-grade decision exports must include explicit `position_authority` with a state class and hashes matching the decision's `position_state_hash`, `order_rules_hash`, and `fee_authority_hash`. The repo-owned positive-supported classes are currently `flat_no_dust_no_position` and `open_exposure` when runtime replay emits complete lot-native authority fields. `reserved_exit_pending` has partial `lot_native_simulation_v1` and runtime-adapter scaffolding, and the runtime adapter may classify the state, but it remains fail-closed transition evidence and is not production-grade positive evidence until a repo-owned runtime-replay fixture passes. Runtime-only dust, residue, non-executable-position, recovery-blocked, or otherwise unsupported states fail closed unless explicitly modeled and proven through repo-owned export/replay evidence. A fail-closed unmodeled state is safe, but it is not transition evidence and is not evidence of full research/paper/runtime lifecycle equivalence.
-
-SMA decision exports carry `policy_contract_hash`, `policy_input_hash`, and `policy_decision_hash` as canonical diagnostics for the typed pure strategy decision contract. `policy_input_hash` identifies the authoritative decision inputs assembled by the plugin-owned SMA assembly boundary, including stable market, position, fee/order-rule, runtime-bound parameter, candidate-regime policy, exit-policy, and execution-sizing material. `policy_decision_hash` identifies the resulting signal, block reasons, exit result, and typed execution intent. Replay fingerprints bind both hashes plus replay timing/materialization metadata; result hashes alone must not be used to prove input equivalence. These hashes are replay and drift evidence for live/research comparison; they do not replace `strategy_behavior_hash`, approved-profile binding, runtime safety gates, or lot-native position authority.
-
-The canonical final strategy evaluation boundary is `StrategyDecisionService.evaluate()`. Promotion-grade research, runtime replay, paper, live dry-run, and live real-order decision paths must assemble snapshots and execution context through plugin-owned assembly contracts, then enter that service for the single final call into `StrategyPolicy.decide_snapshot()`. Runtime modes may differ in snapshot construction, position normalization, approved-profile checks, and execution readiness, but they must not implement separate final strategy decision authority. Legacy DB-bound strategy APIs are available only from `bithumb_bot.compat.strategy` for explicit smoke compatibility and are not production-facing strategy APIs.
-
-`safe_hold` is a typed runtime fail-safe strategy, not a research parity target.
-It intentionally has no research runner or event builder, rejects research
-execution explicitly, and is not live-eligible for real orders. Its purpose is
-to provide a no-order runtime fallback through the same typed decision envelope,
-not to produce promotion-grade backtest evidence.
-
-Decision-equivalence reports include `claims_scope`, `state_coverage_matrix`, and an `outcome` such as `PASS_POSITIVE_EQUIVALENCE`, `FAIL_CLOSED_UNMODELED_STATE`, `FAIL_ACTUAL_DRIFT`, `FAIL_INCOMPLETE_CANONICAL_PAYLOAD`, or `FAIL_EXPORT_BINDING`. Profile transitions require scope-aware reports with `outcome=PASS_POSITIVE_EQUIVALENCE`, `ok=true`, `promotion_grade_comparison=true`, no unsupported state classes, and no fail-closed unmodeled states. Operators must distinguish explicitly modeled submit-plan/state equivalence from full lifecycle equivalence; current reports must not be read as proving lot-native lifecycle equivalence unless `claims_scope.full_lifecycle_equivalence_supported=true` and the report also shows typed/hash-bound simulated fill, paper submit/fill, live submit response, accounting replay, and position lifecycle evidence. Fail-closed unmodeled states are safety behavior, not positive equivalence or lifecycle proof.
-
-The current execution-authority boundary is implemented in `src/bithumb_bot/decision_envelope.py`, `src/bithumb_bot/run_loop_execution_planner.py`, `src/bithumb_bot/execution_plan_batch.py`, and `src/bithumb_bot/execution_service.py`. `DecisionEnvelope.strategy_decision` is typed strategy authority; persistence and observability dictionaries emitted from the envelope are explicitly non-authoritative. `ExecutionPlanBatch` is the top-level runtime execution authority, with the current single-pair runtime represented as a batch-size-one `PairExecutionPlan`. `ExecutionPlanBundle.submit_plan` and primary-submit helpers remain compatibility projections derived from that pair plan. Live real-order execution rejects dict-only submit authority, validates batch/pair-plan evidence before submit, and paper typed/promotion execution consumes the same typed submit plan through `PaperSignalExecutionService` and `src/bithumb_bot/broker/paper.py`; paper broker logic may perform final cash/order-rule safety validation only as an execution-stage adjustment recorded against the typed plan. Research virtual execution also consumes typed `ExecutionSubmitPlan` authority through `SignalExecutionRequest`, with research-only timing/depth inputs carried in a typed non-authoritative research execution context.
-
-Live broker submission requires the final validated serialization from `ExecutionSubmitPlan.as_final_payload()`, including schema version, authority label, and content hash. The broker-facing architecture and forbidden live real-order bypass paths are documented in [`docs/live-submit-authority.md`](/docs/live-submit-authority.md).
-
-Typed operational risk decisions carry separate policy, input, evidence, and
-decision hashes. `strategy_risk_evidence_hash`,
-`portfolio_risk_evidence_hash`, and `pre_submit_risk_evidence_hash` identify
-the canonical evidence payload used by each layer; the layer decision hash binds
-that evidence hash together with policy/input hashes and the decision outcome.
-Exposure-boundary artifacts remain separate metadata for exposure caps such as
-`max_target_exposure_krw`; they are not operational risk approvals and
-`risk_budget_krw` remains deprecated non-authoritative compatibility metadata.
-
-Portfolio target authority is documented in [`docs/portfolio-allocation-authority.md`](/docs/portfolio-allocation-authority.md), and the runtime scope contract is documented in [`docs/runtime-scope.md`](/docs/runtime-scope.md). Strategy output becomes a typed non-authoritative `StrategyPreference`; `SignalAggregator` and `PortfolioAllocator` produce the authoritative `PortfolioTarget`; target-delta planning consumes that target before producing `ExecutionSubmitPlan`. Single-strategy runtime uses the same allocator path as the degenerate multi-strategy case. Missing or malformed portfolio target authority fails closed.
-
-The supported production boundary is a multi-strategy / single-pair / single-interval runtime. Multi-strategy runtime orchestration is configured with structured object-form `RUNTIME_STRATEGY_SET_JSON`, including `market_scope={mode:"single_pair", pair, interval}` and a `strategies` list. All active strategies must use the same `PAIR` and `INTERVAL` as the runtime. `ACTIVE_STRATEGIES` remains a compatibility/diagnostic name-list shortcut only; it does not carry per-instance parameter, approved-profile, priority, weight, or exposure-cap authority, and live mode rejects multiple `ACTIVE_STRATEGIES` unless a structured strategy-set contract is provided. Legacy list-form `RUNTIME_STRATEGY_SET_JSON` is paper/dev compatibility only; live-like modes require object form with `market_scope`. When neither is set, runtime resolves exactly one active strategy from `STRATEGY_NAME`. Active strategies are collected on the same closed candle, converted to typed `StrategyPreference`s, and allocated into one authoritative `PortfolioTarget` for the configured `settings.PAIR` before execution planning. The current run loop enforces single-pair and single-interval invariants at startup and enforces the single-target pair invariant again inside execution planning across paper, live dry-run, and live real-order paths; pair mismatches are reported as `multi_pair_runtime_unsupported`, interval mismatches as `single_interval_runtime_unsupported`, multi-target allocations fail closed as `single_pair_allocation_target_count_mismatch`, and target pair mismatches fail closed as `single_pair_allocation_target_pair_mismatch`. Operators can get a one-pass static target verdict with `strategy-plugin-validate`; the command is read-only and does not open the trading DB, call brokers, submit orders, or write artifacts.
-
-Multi-pair portfolio runtime is not enabled. The reserved future `market_scope.mode="multi_pair_portfolio"` fails closed with `multi_pair_runtime_unsupported` until pair-specific target state, pair-specific runtime data preflight, pair-scoped decision bundles or bundle partitioning, pair-specific allocation targets, pair-specific execution plans, pair-specific submit/reconcile loops, cross-pair risk budget semantics, and a currency-scoped portfolio/accounting ledger or equivalent multi-asset accounting model are implemented. Future multi-pair support requires pair-scoped runtime shards plus a portfolio-level orchestrator.
-
-Runtime strategy parameter authority is strict in live/live-like and profile-bound runs. The normalized request `parameter_source` is one of `approved_profile`, `runtime_strategy_spec`, or explicit `paper_legacy_compat`; global `STRATEGY_PARAMETERS_JSON` and plugin `runtime_parameter_adapter.from_settings()` are compatibility fallbacks only and are rejected as strict runtime authority. Live multi-strategy mode requires every active strategy instance to bind `approved_profile_path` and `approved_profile_hash`; a global approved-profile selector remains a single-strategy compatibility path only.
-
-Runtime strategy risk authority follows the same live fail-closed model. Live strategy instances must materialize a hash-bound `StrategyRiskProfile` from the approved runtime profile; inline `risk_policy` mappings and static `risk_snapshot` mappings in `RUNTIME_STRATEGY_SET_JSON` are not live authority. Strategy risk state is derived from runtime DB/ledger/order/position state at decision time, and allocator-selected BUY contributions require an operational `strategy_risk_decision` with `status=ALLOW`. Exposure-cap evidence is recorded separately as `exposure_boundary_artifact_hash`; operational risk decisions use `strategy_risk_*`, `portfolio_risk_*`, and `pre_submit_risk_*` fields including their evidence hashes.
-
-Live target-delta submission still requires typed `ExecutionSubmitPlan` authority. The live submit path additionally binds `RuntimeRiskEngineAdapter.evaluate_pre_submit()` output to the final submit-plan hash before broker submission; missing, malformed, non-ALLOW, evidence-hash-missing, or mismatched pre-submit risk approval fails closed.
-
-Operators can verify persisted runtime risk-layer hashes without broker access:
-
-```bash
-uv run bithumb-bot risk-layer-replay --db <paper_or_runtime.sqlite> --decision-id <id> --json
-uv run bithumb-bot risk-layer-replay --db <paper_or_runtime.sqlite> --execution-plan-id <id> --json
-```
-
-The verifier opens SQLite read-only, does not call live broker APIs, does not
-submit orders, and reports strategy, portfolio, and pre-submit replay status
-with expected and recomputed decision hashes plus policy/input/evidence hashes.
-
-For live real-order target-delta planning, the performance gate is scoped to allocator-selected BUY/SELL strategy contributions by `strategy_instance_id`, `strategy_name`, and `pair`, not to global `STRATEGY_NAME`. Allocator-unselected strategies do not block submit, HOLD-only selections are not blocked by unrelated BUY/SELL history, and selected contribution failures fail closed with `selected_strategy_performance_gate_blocked` plus per-contribution gate results in planning context.
-Closed lifecycle performance rows persist `strategy_instance_id` for this gate and use it as the primary query filter when available; older rows without instance identity can only participate through broad `strategy_name`/`pair` compatibility filtering.
-
-Runtime persistence records a materialized run-start strategy-set manifest before the decision/allocation/execution chain. The manifest includes active instance ids, raw/materialized parameters, parameter source/audit, approved profile bindings, strategy/runtime/plugin contract hashes, execution and risk config hashes, market scope, exposure-cap semantics, deterministic run-start request hashes, `single_pair_runtime_enforced=true`, and `single_interval_runtime_enforced=true`. Runtime data preflight is candle-specific decision-cycle evidence, linked from decision bundles through runtime-data and feature snapshot hashes rather than required on the run-start blueprint. Decision bundles, portfolio allocations, execution plans, and submit plans link to the same manifest id/hash. In multi-strategy mode any representative strategy decision persisted for compatibility remains explicitly non-authoritative; the replay authority chain is manifest -> decision bundle -> allocation -> portfolio target -> execution plan -> execution submit plan.
-
-Current equivalence evidence is submit-plan scoped by default. `src/bithumb_bot/decision_equivalence.py` emits `claim_scope=submit_plan_equivalence_only`, `submit_plan_equivalence_supported=true`, and `full_lifecycle_equivalence_supported=false` unless explicit typed/hash-bound lifecycle evidence is supplied and validated. Full lifecycle equivalence requires research simulated fill events, paper submit/fill events, live submit responses, accounting replay outputs, and position lifecycle snapshots. Promotion-grade gates fail closed if a report attempts to claim full lifecycle equivalence without that evidence. For submit-plan-only reports, the operator next action is to keep using manifest-backed validation and add lifecycle evidence fixtures before making any lifecycle-equivalence claim.
-
-When a production-bound `sma_with_filter` candidate requires live candidate-regime policy but research did not apply that policy directly, promotion requires a separate `candidate_regime_policy_equivalence` evidence artifact. Generate it from a promotion-grade decision-equivalence report with `candidate-regime-policy-equivalence-evidence --bind`; the command writes a reports artifact, records its path and `sha256:` hash on the research candidate, recomputes the candidate profile hash, and leaves promotion fail-closed if the artifact is missing or tampered.
-
-Use `config-dump --masked` for operator config inspection. Direct Python imports of
-`bithumb_bot.config.settings` do not run the CLI bootstrap path and are not the
-supported way to validate `BITHUMB_ENV_FILE`-loaded runtime configuration.
-
-Operator reporting reference:
-
-- [`docs/OPERATOR_REPORTING.md`](/docs/OPERATOR_REPORTING.md)
-
-Research validation reference:
-
-- [`docs/research-validation.md`](/docs/research-validation.md)
-- [`docs/runbooks/wsl-research-backtest.md`](/docs/runbooks/wsl-research-backtest.md)
-- [`docs/strategy-plugin-authoring.md`](/docs/strategy-plugin-authoring.md)
-
-## Smoke / Manual DB Validation
-
-- Smoke and manual validation must use absolute paths outside the repository.
-- Do not point smoke/manual DB validation at repo-relative paths such as `./tmp`, `./data`, or `./backups`.
-- Use an env-injected absolute runtime root and a repository-external temp directory instead.
-- `tools/oms_smoke.py` defaults to `DB_PATH`, and you can override it with `--db-path` when needed.
-
-Example:
-
-```bash
-tmp_dir="$(mktemp -d)"
-MODE=paper \
-RUN_ROOT="$tmp_dir/run" DATA_ROOT="$tmp_dir/data" LOG_ROOT="$tmp_dir/logs" BACKUP_ROOT="$tmp_dir/backup" ENV_ROOT="$tmp_dir/env" \
-DB_PATH="$tmp_dir/data/paper/trades/paper.sqlite" \
-uv run bithumb-bot sync
-MODE=paper DB_PATH="$tmp_dir/data/paper/trades/paper.sqlite" uv run python tools/oms_smoke.py
-```
-
-To check for forbidden repo-local runtime artifacts:
-
-```bash
-./scripts/check_repo_runtime_artifacts.sh
-```
-
-## Path Policy
-
-Authoritative references:
-
-- [`docs/storage-layout.md`](/docs/storage-layout.md)
-- [`docs/runtime-data-policy.md`](/docs/runtime-data-policy.md)
-
-Rules:
-
-- In `MODE=live`, `ENV_ROOT`, `RUN_ROOT`, `DATA_ROOT`, `LOG_ROOT`, and `BACKUP_ROOT` must be injected through env as absolute repository-external roots.
-- In `MODE=paper`, those managed roots default under `XDG_STATE_HOME/bithumb-bot` or `~/.local/state/bithumb-bot` when unset; explicit overrides may still be supplied.
-- `ARCHIVE_ROOT` defaults to the same runtime root's `archive/` subtree when unset in both modes, and in `MODE=live` an explicit `ARCHIVE_ROOT` must still be absolute and repository-external.
-- Managed subtrees such as `run/<mode>`, `data/<mode>/*`, `logs/<mode>/*`, and `backup/<mode>/*` must be resolved through `PathManager`.
-- `DB_PATH`, `RUN_LOCK_PATH`, `BACKUP_DIR`, and `SNAPSHOT_ROOT` are legacy compatibility override surfaces documented for the current storage contract; do not infer broader or newer override support from this list.
-- In `MODE=live`, these overrides must still be absolute, repository-external, and mode-correct.
-- Live helper scripts and deployment helpers should consult `PathManager` rather than inventing their own path scheme.
-- Runtime artifacts belong under the managed runtime roots, not in the repository.
-
-Expected artifact placement:
-
-- Run lock, PID, and runtime state: `RUN_ROOT/<mode>/`
-- DB: `DATA_ROOT/<mode>/trades/`
-- Ops, strategy, fee, and recovery reports: `DATA_ROOT/<mode>/reports/<topic>/`
-- Trade ledger artifacts: `DATA_ROOT/<mode>/trades/<topic>/`
-- Derived artifacts: `DATA_ROOT/<mode>/derived/<topic>/`
-- Raw artifacts: `DATA_ROOT/<mode>/raw/<topic>/`
-- Logs: `LOG_ROOT/<mode>/<kind>/`
-- Snapshot archives: `BACKUP_ROOT/<mode>/snapshots/`
-- DB backups: `BACKUP_ROOT/<mode>/db/`
-
-## Live Safety
-
-- Real-order flow requires explicit arming.
-- Live real-order flow requires `EXECUTION_ENGINE=target_delta`; `lot_native` is compatibility-only for paper, research, diagnostics, and non-submitting live dry-run paths.
-- Live real-order BUY submission must be backed by typed `PortfolioTarget` -> `target_delta` `ExecutionSubmitPlan` authority. `strategy_position`, `execution_intent`, and configured-size BUY compatibility plans are non-authoritative and fail closed before broker submission.
-- Live strategy selection is validated through the `ResearchStrategyPlugin` capability contract. `MODE=live` fails closed with `live_strategy_capability_validation_failed` unless the selected plugin declares promotion-grade runtime decisions, runtime replay, runtime decision adapter support, live eligibility for the requested arming mode, and the required approved-profile behavior. Legacy smoke-only selections such as `sma_cross` are rejected because they are not plugin-manifest promotion runtime strategies.
-- Set `APPROVED_STRATEGY_PROFILE_PATH` to a reviewed approved profile before paper, live-dry-run, or live armed validation. `STRATEGY_APPROVED_PROFILE_PATH` is an older alias used only when the canonical selector is unset; if both are set, the canonical selector wins. `profile-generate` creates paper profiles only; live-compatible profiles must be created through explicit `profile-promote` transitions. The CLI never mutates env files or arms live trading. `profile-diff` compares profile values to env/runtime values and does not verify the artifact chain; `profile-verify` is the full env selector, runtime contract, source promotion, and evidence chain check. Runtime audit fields use `approved_profile_contract_scope=full_approved_profile`, `approved_profile_verification_ok=true`, and `legacy_candidate_profile_path_used=false` only for that full selector path; approved-profile success paths do not emit a legacy contract scope. `STRATEGY_CANDIDATE_PROFILE_PATH` is reported as `approved_profile_contract_scope=legacy_regime_policy_only` / `legacy_profile_contract_scope=regime_policy_only` and does not claim source, evidence, or runtime verification. Source promotion and evidence artifacts are verified for repository-external path policy, existence, content hash, lineage hash when required, typed schema, decision-equivalence hash, and semantic paper/live readiness thresholds; managed `DATA_ROOT/<mode>/reports/...` paths are accepted, and other repository-external absolute paths remain operator-custodied. Live dry-run startup fails closed unless it points to a verified `live_dry_run` profile. Live armed execution fails closed unless it points to a `small_live` approved profile whose strategy, market, interval, parameter, cost, source promotion hash, lineage hash, candidate profile hash, manifest hash, dataset hash, decision-equivalence hash, semantic evidence hashes, and regime policy contract matches runtime settings. Legacy `STRATEGY_CANDIDATE_PROFILE_PATH` remains a regime-policy compatibility selector only; it is not sufficient for live approval.
-- `LIVE_DRY_RUN=true` is the safe starting point for live bring-up and post-change validation.
-- `LIVE_REAL_ORDER_ARMED=true` is required before real orders are allowed.
-- Live preflight must fail fast when required limits, notifier configuration, or safety inputs are missing.
-- Current implementation runtime order is safety-first: preflight and startup reconcile/gate checks run before the steady-state loop, and each live loop iteration passes through runtime health, unresolved-order, halt, and submission-gate checks before strategy decision and submit-or-suppress handling.
-- Current implementation strategy decisions are evaluated from guarded closed-candle input; incomplete, stale, or duplicate runtime candle input is skipped rather than treated as a fresh decision trigger.
-- Recovery remains an operator-mediated workflow: commands such as `reconcile`, `recover-order`, and `resume` are explicit safety-gated procedures, not automatic recovery purely from passive state inspection.
-- Current implementation risk handling is not limited to signal-time entry rejection; depending on runtime state it may also retain or trigger halt, cancel/reconcile, or flatten-position intervention paths.
-- Do not merge paper and live storage.
-- Do not weaken live preflight or emergency-stop behavior.
-
-## 24/7 Ops
-
-- Systemd units live under `deploy/systemd/`.
-- Operator runbook: [`docs/RUNBOOK.md`](/docs/RUNBOOK.md)
-- Limited unattended checklist: [`docs/LIMITED_UNATTENDED_CHECKLIST.md`](/docs/LIMITED_UNATTENDED_CHECKLIST.md)
-- Backup script: `scripts/backup_sqlite.sh`
-
-The rendered units use `BITHUMB_ENV_FILE=@BITHUMB_ENV_FILE_LIVE@` so the env file is injected explicitly.
-
-## Test Groups
-
-- Default PR fast suite:
-  - `./scripts/run_fast_pr_tests.sh`
-- Fast regression set:
-  - `uv run pytest -q -m fast_regression`
-- Slow integration/live-like set:
-  - `uv run pytest -q -m slow_integration`
-- Dedicated research/nightly workload checks:
-  - `./scripts/run_research_nightly_tests.sh`
-- Full validation:
-  - `./scripts/run_full_pytest_tests.sh`
-- Known research resource high-water RSS regression reproduction:
-  - `uv run pytest -q --tb=short --maxfail=1 tests/test_research_backtest_reproducibility.py::test_tiny_three_day_sma_backtest_completes_structurally tests/test_research_backtest_reproducibility.py::test_stress_report_is_candidate_order_independent tests/test_research_strategy_canary.py::test_buy_and_hold_full_research_backtest_report_contains_common_kernel_fields`
-
-Prefer the default PR fast suite first. It must not include unbounded real strategy/backtest kernel tick loops, full research matrices, complete-external audit research runs, walk-forward E2E, serial/parallel real comparisons, or memory-sensitive checks. Keep the dedicated research/nightly workload set separate unless you are validating restart, recovery, live-like execution paths, real strategy/backtest kernel behavior, walk-forward, complete-external audit binding, serial/parallel research execution, or research resource guard behavior. The dedicated research/nightly script checks every default-fast-excluded expensive research marker against the workload inventory in `tests/policy/research_e2e_inventory.json`, then runs the workload budget preflight before pytest. The three-test research command guards against process peak/high-water memory from earlier work affecting later candidate resource decisions.
-
-In Codex Default Patch Mode and Codex Pytest Repair Mode, do not use the
-default PR fast suite, full-suite wrapper, full pytest runner, or selector-less
-pytest. Codex validation remains focused; broad validation is operator,
-human/CI, or WSL wrapper responsibility.
-
-Official suite runners create pytest workspaces outside the repository. Override
-the root with `BITHUMB_PYTEST_WORKSPACE_ROOT`, set `BITHUMB_PYTEST_RUN_ID` for
-stable run IDs, and set `KEEP_BITHUMB_TEST_ARTIFACTS=1` to preserve failed or
-diagnostic artifacts. Successful official runner executions clean the run
-workspace by default.
-
-Research-run artifacts are budgeted through one run-wide artifact context for
-each experiment, covering `derived/research/<experiment_id>` and
-`reports/research/<experiment_id>` outputs such as reports, return panels,
-statistical evidence, candidate journals, candidate results/failures, audit
-streams, trace indexes, and trace manifests. Audit stream row/byte overages and
-overall artifact byte/file overages raise `ArtifactBudgetExceeded` as hard
-failures. Family and experiment registries are the narrow append-only
-cross-run exemptions; their rows are hash-bound registry evidence and carry a
-`budget_policy=registry_append_only_budget_exempt` marker.
+Run focused tests directly while editing a research boundary. Full-suite and
+broad wrapper execution belong to the dedicated CI or pytest pipeline.

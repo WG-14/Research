@@ -20,7 +20,7 @@ RESEARCH_COMMANDS = {
     "research-batch",
     "research-forward-diagnostics",
     "research-verify-audit",
-    "research-reproduce",
+    "research-reproduce-run",
     "research-registry-inspect",
     "research-registry-validate",
     "research-mark-attempt-aborted",
