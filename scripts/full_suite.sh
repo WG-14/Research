@@ -9,7 +9,7 @@ fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
-WORK_DIR="${CODEX_PYTEST_WORK_DIR:-${TMPDIR:-/tmp}/bithumb-bot-codex-pytest}"
+WORK_DIR="${CODEX_PYTEST_WORK_DIR:-${TMPDIR:-/tmp}/bithumb-research-codex-pytest}"
 LOG_DIR="${CODEX_PYTEST_LOG_DIR:-${WORK_DIR}/logs}"
 ITERATION="${CODEX_PYTEST_ITERATION:-manual}"
 

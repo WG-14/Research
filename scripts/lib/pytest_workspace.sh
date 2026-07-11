@@ -55,7 +55,7 @@ bithumb_pytest_setup_workspace() {
   local suite_name="${1:?suite name required}"
   local repo_root
   repo_root="$(bithumb_pytest_repo_root)"
-  local workspace_root="${BITHUMB_PYTEST_WORKSPACE_ROOT:-/tmp/bithumb-bot-pytest-${USER:-user}}"
+  local workspace_root="${BITHUMB_PYTEST_WORKSPACE_ROOT:-/tmp/bithumb-research-pytest-${USER:-user}}"
   workspace_root="$(bithumb_pytest_resolve_path "$workspace_root")"
   bithumb_pytest_refuse_unsafe_path "$workspace_root" "$repo_root"
 

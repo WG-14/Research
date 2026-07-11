@@ -10,7 +10,7 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from bithumb_bot.repair_zero_price_sell_ledger import run_repair
+from bithumb_research.repair_zero_price_sell_ledger import run_repair
 
 
 def _parse_args() -> argparse.Namespace:

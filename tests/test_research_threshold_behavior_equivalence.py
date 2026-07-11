@@ -3,17 +3,17 @@ from __future__ import annotations
 import inspect
 import math
 
-from bithumb_bot.research import backtest_kernel
-from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
-from bithumb_bot.research.experiment_manifest import (
+from bithumb_research.research import backtest_kernel
+from bithumb_research.research.dataset_snapshot import Candle, DatasetSnapshot
+from bithumb_research.research.experiment_manifest import (
     DateRange,
     ExecutionTimingPolicy,
     legacy_research_portfolio_policy,
 )
-from bithumb_bot.research.strategies.threshold_research_only_events import (
+from bithumb_research.research.strategies.threshold_research_only_events import (
     build_threshold_research_only_events,
 )
-from bithumb_bot.research.strategies.threshold_research_only_kernel import (
+from bithumb_research.research.strategies.threshold_research_only_kernel import (
     run_threshold_research_only_backtest,
 )
 

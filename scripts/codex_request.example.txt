@@ -1,6 +1,6 @@
 # Codex request template
 
-You are Codex working directly in the GitHub repository `WG-14/bithumb-bot`.
+You are Codex working directly in the GitHub repository `WG-14/Research`.
 
 Task:
 - ...

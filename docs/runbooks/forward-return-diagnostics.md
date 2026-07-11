@@ -4,7 +4,7 @@
 
 Use `research-forward-diagnostics` to inspect as-of feature buckets against
 future gross returns, MFE, and MAE for feature-mining diagnostics. The command is
-read-only with respect to trading state and is outside strategy promotion,
+read-only with respect to trading state and is outside strategy validation,
 approved profile, runtime replay, and live execution boundaries.
 
 ## Inputs
@@ -46,7 +46,7 @@ hypothesis.
 ## Command
 
 ```bash
-uv run bithumb-bot research-forward-diagnostics \
+uv run bithumb-research research-forward-diagnostics \
   --manifest <manifest.json> \
   --split train \
   --features sma_gap,range_ratio,volume_ratio,breakout_distance,rolling_return,zscore,regime \
@@ -70,7 +70,7 @@ Reports produced with that override record
 `final_holdout_diagnostic_contamination_risk`.
 
 Registry accounting is not used for this diagnostic override. The experiment
-registry is reserved for research-validation and promotion custody accounting;
+registry is reserved for research-validation and validation custody accounting;
 forward-return diagnostics remain report-only policy evidence through the
 override flag and contamination-risk warning.
 
@@ -85,10 +85,10 @@ DATA_ROOT/<mode>/derived/research/<experiment_id>/forward_diagnostics/warnings.j
 ```
 
 The report has `artifact_type=forward_return_diagnostic_report`,
-`diagnostic_only=true`, and false promotion/readiness/capital allocation
+`diagnostic_only=true`, and false validation/readiness/capital allocation
 evidence flags. It also records `evidence_scope=diagnostic_feature_mining`,
-`promotion_eligible=false`, `promotion_grade=false`, `non_promotable=true`,
-machine-readable `forbidden_uses`, and `operator_next_action`. It records a
+`validation_eligible=false`, `statistical_evidence=false`, `non_validation_eligible=true`,
+machine-readable `forbidden_uses`, and `researcher_next_action`. It records a
 `calculation_policy` block containing `entry_price_mode`, `path_start_policy`,
 `intrabar_included`, and `mfe_mae_basis`; the metrics CSV outputs include the
 same policy columns.
@@ -136,7 +136,7 @@ warnings such as `unknown_category_value`.
 
 ## Diagnostic-only policy
 
-forward-return diagnostics output must not be used as strategy promotion evidence
+forward-return diagnostics output must not be used as strategy validation evidence
 forward-return diagnostics output must not be used as approved profile evidence
 forward-return diagnostics output must not be used as live readiness evidence
 forward-return diagnostics output must not be used as capital allocation evidence
@@ -152,7 +152,7 @@ unqualified success from an operator-accepted degraded diagnostic. Unavailable
 diagnostics write a failure artifact and exit with code `1` regardless of the
 degraded override.
 
-## Not promotion evidence
+## Not validation evidence
 
 The output can suggest feature-mining hypotheses, but it does not validate a
 strategy, execution model, order lifecycle, costs, risk policy, walk-forward

@@ -8,7 +8,7 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from bithumb_bot.bootstrap import run_cli
+from bithumb_research.bootstrap import run_cli
 
 
 if __name__ == "__main__":

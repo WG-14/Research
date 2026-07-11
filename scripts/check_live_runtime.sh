@@ -34,7 +34,7 @@ validate_live_override_path() {
   PYTHONPATH="$REPO_ROOT/src:${PYTHONPATH:-}" python3 - "$REPO_ROOT" "$key" "$path" <<'PY'
 from pathlib import Path
 import sys
-from bithumb_bot.paths import PathManager, PathPolicyError
+from bithumb_research.paths import PathManager, PathPolicyError
 
 project_root = Path(sys.argv[1]).resolve()
 key = sys.argv[2]
@@ -57,24 +57,24 @@ validate_live_override_path "RUN_LOCK_PATH" "$RUN_LOCK_PATH"
 validate_live_override_path "DB_PATH" "$PRIMARY_DB_PATH"
 validate_live_override_path "BACKUP_DIR" "$BACKUP_DB_DIR"
 
-echo "== systemd: bithumb-bot.service =="
-sudo systemctl status bithumb-bot.service --no-pager || true
+echo "== systemd: bithumb-research.service =="
+sudo systemctl status bithumb-research.service --no-pager || true
 echo
 
 echo "== systemd: healthcheck timer =="
-sudo systemctl status bithumb-bot-healthcheck.timer --no-pager || true
+sudo systemctl status bithumb-research-healthcheck.timer --no-pager || true
 echo
 
 echo "== systemd: backup timer =="
-sudo systemctl status bithumb-bot-backup.timer --no-pager || true
+sudo systemctl status bithumb-research-backup.timer --no-pager || true
 echo
 
 echo "== recent journal (live) =="
-sudo journalctl -u bithumb-bot.service -n 50 --no-pager || true
+sudo journalctl -u bithumb-research.service -n 50 --no-pager || true
 echo
 
 echo "== recent journal (healthcheck) =="
-sudo journalctl -u bithumb-bot-healthcheck.service -n 30 --no-pager || true
+sudo journalctl -u bithumb-research-healthcheck.service -n 30 --no-pager || true
 echo
 
 echo "== managed runtime paths =="

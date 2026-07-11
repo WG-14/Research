@@ -83,7 +83,7 @@ run "fast tier guard tests" env BITHUMB_TEST_TIER=fast uv run pytest -q \
 run "formerly slow smoke tests" env BITHUMB_TEST_TIER=fast uv run pytest -q \
   tests/test_research_backtest_reproducibility.py::test_stress_report_is_candidate_order_independent \
   tests/test_research_backtest_reproducibility.py::test_different_stress_seed_changes_auditable_seed_hash \
-  tests/test_research_backtest_reproducibility.py::test_candidate_profile_hash_remains_promotion_bound_while_behavior_hash_is_logical \
+  tests/test_research_backtest_reproducibility.py::test_candidate_profile_hash_remains_validation_bound_while_behavior_hash_is_logical \
   tests/test_research_backtest_reproducibility.py::test_audit_trace_verification_detects_tamper_and_missing_stream \
   tests/test_research_walk_forward.py::test_walk_forward_report_persists_artifact_discovery_metadata \
   --durations=20 --durations-min=0

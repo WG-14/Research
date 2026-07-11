@@ -37,7 +37,7 @@ validate_live_override_path() {
   PYTHONPATH="$PROJECT_ROOT/src:${PYTHONPATH:-}" python3 - "$PROJECT_ROOT" "$key" "$path" <<'PY'
 from pathlib import Path
 import sys
-from bithumb_bot.paths import PathManager, PathPolicyError
+from bithumb_research.paths import PathManager, PathPolicyError
 
 project_root = Path(sys.argv[1]).resolve()
 key = sys.argv[2]

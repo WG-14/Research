@@ -4,7 +4,7 @@ set -uo pipefail
 # EC2-side verification for the deployed main branch.
 # This script does not create repository-local runtime artifacts.
 
-APP_DIR="${BITHUMB_REMOTE_APP_DIR:-${HOME}/apps/bithumb-bot}"
+APP_DIR="${BITHUMB_REMOTE_APP_DIR:-${HOME}/apps/bithumb-research}"
 PYTEST_TMPDIR="${BITHUMB_PYTEST_TMPDIR:-${HOME}/tmp/pytest-tmp}"
 
 # REMOTE_VERIFY_MODE controls which EC2-side checks run.

@@ -12,13 +12,13 @@ NOTIFY_SCRIPT="${NOTIFY_SCRIPT:-${SCRIPT_DIR}/notify_ntfy.sh}"
 ARTIFACT_CHECK_SCRIPT="${ARTIFACT_CHECK_SCRIPT:-${SCRIPT_DIR}/check_repo_runtime_artifacts.sh}"
 CODEX_BIN="${CODEX_BIN:-codex}"
 CODEX_PYTEST_MAX_ITERATIONS="${CODEX_PYTEST_MAX_ITERATIONS:-10}"
-CODEX_PYTEST_WORK_DIR="${CODEX_PYTEST_WORK_DIR:-${TMPDIR:-/tmp}/bithumb-bot-codex-pytest}"
+CODEX_PYTEST_WORK_DIR="${CODEX_PYTEST_WORK_DIR:-${TMPDIR:-/tmp}/bithumb-research-codex-pytest}"
 CODEX_PYTEST_COMMIT_PUSH="${CODEX_PYTEST_COMMIT_PUSH:-1}"
 CODEX_PYTEST_REMOTE_VERIFY="${CODEX_PYTEST_REMOTE_VERIFY:-1}"
 REMOTE_VERIFY_MODE="${REMOTE_VERIFY_MODE:-smoke}"
 CODEX_PYTEST_ALLOW_DIRTY="${CODEX_PYTEST_ALLOW_DIRTY:-0}"
 CODEX_PYTEST_STRICT_MOCK_GUARD="${CODEX_PYTEST_STRICT_MOCK_GUARD:-0}"
-SSH_KEY="${BITHUMB_EC2_SSH_KEY:-${HOME}/.ssh/bithumb-bot-paper.pem}"
+SSH_KEY="${BITHUMB_EC2_SSH_KEY:-${HOME}/.ssh/bithumb-research-paper.pem}"
 EC2_TARGET="${BITHUMB_EC2_TARGET:-ec2-user@3.39.93.137}"
 
 stage="preflight"
@@ -55,7 +55,7 @@ notify() {
 fail() {
   local message="$1"
   echo "[PYTEST-PIPELINE] ${message}" >&2
-  notify "bithumb-bot pytest pipeline failed" "high" "${message}"
+  notify "bithumb-research pytest pipeline failed" "high" "${message}"
   exit 1
 }
 
@@ -90,9 +90,9 @@ on_error() {
   local exit_code=$?
   trap - ERR
   cleanup_codex_pytest_guard
-  local message="bithumb-bot Codex pytest pipeline failed during stage: ${stage}"
+  local message="bithumb-research Codex pytest pipeline failed during stage: ${stage}"
   echo "[PYTEST-PIPELINE] ${message}" >&2
-  notify "bithumb-bot pytest pipeline failed" "high" "${message}"
+  notify "bithumb-research pytest pipeline failed" "high" "${message}"
   exit "${exit_code}"
 }
 trap on_error ERR
@@ -286,10 +286,10 @@ complete_success() {
       fi
     fi
 
-    notify "bithumb-bot pytest pipeline succeeded" "default" \
+    notify "bithumb-research pytest pipeline succeeded" "default" \
       "WSL wrapper full-suite validation passed, changes were committed and pushed, and remote verification mode was ${REMOTE_VERIFY_MODE}."
   else
-    notify "bithumb-bot pytest pipeline succeeded" "default" \
+    notify "bithumb-research pytest pipeline succeeded" "default" \
       "WSL wrapper full-suite validation passed. Commit/push was skipped or no repository changes existed."
   fi
 

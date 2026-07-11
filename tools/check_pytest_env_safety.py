@@ -9,7 +9,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from bithumb_bot.config_spec import PYTEST_INHERITANCE_UNSAFE_ENV_KEYS  # noqa: E402
+from bithumb_research.config_spec import PYTEST_INHERITANCE_UNSAFE_ENV_KEYS  # noqa: E402
 
 
 RUNNERS = (
@@ -158,9 +158,9 @@ def _failures() -> list[str]:
     if "PYTEST_INHERITANCE_UNSAFE_ENV_KEYS" not in conftest_text:
         failures.append("pytest conftest does not use the config-spec unsafe inheritance key set")
     try:
-        unsafe_import_index = conftest_text.index("from bithumb_bot.config_spec import PYTEST_INHERITANCE_UNSAFE_ENV_KEYS")
-        import_config_index = conftest_text.index("import bithumb_bot.config as _config_module")
-        import_settings_index = conftest_text.index("from bithumb_bot.config import settings")
+        unsafe_import_index = conftest_text.index("from bithumb_research.config_spec import PYTEST_INHERITANCE_UNSAFE_ENV_KEYS")
+        import_config_index = conftest_text.index("import bithumb_research.config as _config_module")
+        import_settings_index = conftest_text.index("from bithumb_research.config import settings")
         top_level_clear_index = conftest_text.index("os.environ.pop(_unsafe_env_key, None)")
         top_level_disable_index = conftest_text.index('os.environ["NOTIFIER_ENABLED"] = "false"')
     except ValueError as exc:
@@ -187,7 +187,7 @@ def _failures() -> list[str]:
     if missing_specs:
         failures.append("config spec does not classify required pytest-unsafe env: " + ", ".join(missing_specs))
 
-    notifier_text = (PROJECT_ROOT / "src" / "bithumb_bot" / "notifier.py").read_text(encoding="utf-8")
+    notifier_text = (PROJECT_ROOT / "src" / "bithumb_research" / "notifier.py").read_text(encoding="utf-8")
     if "class PytestNotificationSafetyViolation" not in notifier_text:
         failures.append("notifier lacks explicit pytest safety violation sentinel")
     if "except PytestNotificationSafetyViolation:" not in notifier_text:

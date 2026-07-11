@@ -10,14 +10,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DOC_PATH = PROJECT_ROOT / "docs" / "config-reference.md"
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from bithumb_bot.config_spec import CONFIG_SCHEMA_VERSION, ENV_SPECS, config_spec_hash  # noqa: E402
+from bithumb_research.config_spec import CONFIG_SCHEMA_VERSION, ENV_SPECS, config_spec_hash  # noqa: E402
 
 
 def render_config_reference() -> str:
     lines = [
         "# Configuration Reference",
         "",
-        "This file is generated from `src/bithumb_bot/config_spec.py`.",
+        "This file is generated from `src/bithumb_research/config_spec.py`.",
         f"Schema version: `{CONFIG_SCHEMA_VERSION}`",
         f"Spec hash: `{config_spec_hash()}`",
         "",

@@ -24,7 +24,7 @@ REQUIRED_PR_TEMPLATE_TOKENS = (
     "lower-level contract coverage",
     "no default-fast workload delta",
     "builtin_manifest.py",
-    "bithumb_bot.strategy_plugins",
+    "bithumb_research.strategy_plugins",
     "strategy-plugin-inventory --json",
     "registration path",
     "builtin_manifest",
@@ -43,7 +43,7 @@ REQUIRED_PR_TEMPLATE_TOKENS = (
     "strategy level",
     "level_1_research_only",
     "level_2_replay_compatible",
-    "level_3_promotion_grade",
+    "level_3_validation_grade",
     "not_strategy_related",
     "assert_research_only_contract",
     "assert_replay_compatible_contract",
@@ -83,7 +83,7 @@ REQUIRED_AUTHORING_DOC_TOKENS = (
     "resolve_research_strategy_plugin()",
     "level_1_research_only",
     "level_2_replay_compatible",
-    "level_3_promotion_grade",
+    "level_3_validation_grade",
     "assert_research_only_contract",
     "assert_replay_compatible_contract",
     "assert_live_eligible_contract",
@@ -97,7 +97,7 @@ REQUIRED_AUTHORING_DOC_TOKENS = (
 LEVEL_HELPERS = {
     "level_1_research_only": ("assert_research_only_contract",),
     "level_2_replay_compatible": ("assert_replay_compatible_contract",),
-    "level_3_promotion_grade": (
+    "level_3_validation_grade": (
         "assert_live_eligible_contract",
         "focused runtime/live gate coverage",
         "equivalent focused runtime/live gate coverage",
@@ -112,27 +112,27 @@ BUILTIN_REASON_TOKENS = (
     "approved_core_strategy",
 )
 CORE_PATH_PREFIXES = (
-    "src/bithumb_bot/runtime_",
-    "src/bithumb_bot/research/",
-    "src/bithumb_bot/risk",
-    "src/bithumb_bot/execution",
-    "src/bithumb_bot/run_loop",
-    "src/bithumb_bot/strategy_decision",
-    "src/bithumb_bot/runtime_data_provider.py",
+    "src/bithumb_research/runtime_",
+    "src/bithumb_research/research/",
+    "src/bithumb_research/risk",
+    "src/bithumb_research/execution",
+    "src/bithumb_research/run_loop",
+    "src/bithumb_research/strategy_decision",
+    "src/bithumb_research/runtime_data_provider.py",
 )
 STRATEGY_ADDITION_FORBIDDEN_CORE_FILES = (
-    "src/bithumb_bot/runtime/runner.py",
-    "src/bithumb_bot/runtime/decision_coordinator.py",
-    "src/bithumb_bot/runtime/execution_coordinator.py",
-    "src/bithumb_bot/run_loop_execution_planner.py",
-    "src/bithumb_bot/execution_service.py",
-    "src/bithumb_bot/runtime_strategy_set.py",
-    "src/bithumb_bot/research/backtest_kernel.py",
-    "src/bithumb_bot/research/backtest_pipeline.py",
-    "src/bithumb_bot/research/backtest_stage_runner.py",
+    "src/bithumb_research/runtime/runner.py",
+    "src/bithumb_research/runtime/decision_coordinator.py",
+    "src/bithumb_research/runtime/execution_coordinator.py",
+    "src/bithumb_research/run_loop_execution_planner.py",
+    "src/bithumb_research/execution_service.py",
+    "src/bithumb_research/runtime_strategy_set.py",
+    "src/bithumb_research/research/backtest_kernel.py",
+    "src/bithumb_research/research/backtest_pipeline.py",
+    "src/bithumb_research/research/backtest_stage_runner.py",
 )
-STRATEGY_PLUGIN_PREFIX = "src/bithumb_bot/strategy_plugins/"
-BUILTIN_MANIFEST = "src/bithumb_bot/strategy_plugins/builtin_manifest.py"
+STRATEGY_PLUGIN_PREFIX = "src/bithumb_research/strategy_plugins/"
+BUILTIN_MANIFEST = "src/bithumb_research/strategy_plugins/builtin_manifest.py"
 WORKLOAD_DELTA_FIELDS = (
     "expensive_test_count",
     "strategy_count",
@@ -192,7 +192,7 @@ def validate_strategy_pr_evidence(
         and not path.endswith("_test.py")
     ]
     has_builtin_manifest = BUILTIN_MANIFEST in normalized_files or "builtin_manifest.py" in text
-    has_entry_point = "bithumb_bot.strategy_plugins" in text
+    has_entry_point = "bithumb_research.strategy_plugins" in text
     declares_builtin_path = "registration path: builtin_manifest" in text or has_builtin_manifest
     declares_external_path = "registration path: external_entry_point" in text or has_entry_point
     if strategy_related:

@@ -1,6 +1,6 @@
-from bithumb_bot.strategy_contract_testing import assert_live_eligible_contract
-from bithumb_bot.strategy_contract_testing import assert_replay_compatible_contract
-from bithumb_bot.strategy_contract_testing import assert_research_only_contract
+from bithumb_research.strategy_contract_testing import assert_live_eligible_contract
+from bithumb_research.strategy_contract_testing import assert_replay_compatible_contract
+from bithumb_research.strategy_contract_testing import assert_research_only_contract
 
 
 __all__ = [

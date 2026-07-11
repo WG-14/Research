@@ -6,11 +6,11 @@ from math import isfinite
 from numbers import Real
 from typing import Any
 
-from bithumb_bot.market_regime import MARKET_REGIME_VERSION
-from bithumb_bot.research.executor import ResearchWorkResult
-from bithumb_bot.research.hashing import sha256_prefixed
-from bithumb_bot.research.metrics_contract import METRICS_SCHEMA_VERSION, ClosedTradeRecord
-from bithumb_bot.research.validation_protocol import EvaluationContext
+from bithumb_research.market_regime import MARKET_REGIME_VERSION
+from bithumb_research.research.executor import ResearchWorkResult
+from bithumb_research.research.hashing import sha256_prefixed
+from bithumb_research.research.metrics_contract import METRICS_SCHEMA_VERSION, ClosedTradeRecord
+from bithumb_research.research.validation_protocol import EvaluationContext
 
 
 def minimal_metrics(

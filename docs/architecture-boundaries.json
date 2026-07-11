@@ -1,24 +1,24 @@
 {
   "schema_version": 1,
   "strategy_neutral_core_paths": [
-    "src/bithumb_bot/config.py",
-    "src/bithumb_bot/strategy_decision_service.py",
-    "src/bithumb_bot/runtime_data_provider.py",
-    "src/bithumb_bot/strategy_decision_input.py",
-    "src/bithumb_bot/runtime_strategy_decision.py",
-    "src/bithumb_bot/runtime_strategy_set.py",
-    "src/bithumb_bot/execution_service.py",
-    "src/bithumb_bot/run_loop_execution_planner.py",
-    "src/bithumb_bot/runtime_risk_engine.py",
-    "src/bithumb_bot/decision_envelope.py"
+    "src/bithumb_research/config.py",
+    "src/bithumb_research/strategy_decision_service.py",
+    "src/bithumb_research/runtime_data_provider.py",
+    "src/bithumb_research/strategy_decision_input.py",
+    "src/bithumb_research/runtime_strategy_decision.py",
+    "src/bithumb_research/runtime_strategy_set.py",
+    "src/bithumb_research/execution_service.py",
+    "src/bithumb_research/run_loop_execution_planner.py",
+    "src/bithumb_research/runtime_risk_engine.py",
+    "src/bithumb_research/decision_envelope.py"
   ],
   "strategy_literal_exceptions": {},
   "strategy_literal_exception_policy": {
     "default": "deny",
     "allowed_only_with_reason": true,
     "broad_allowed_locations": [
-      "src/bithumb_bot/strategy_plugins",
-      "src/bithumb_bot/compat",
+      "src/bithumb_research/strategy_plugins",
+      "src/bithumb_research/compat",
       "tests"
     ],
     "reason": "Strategy-specific behavior belongs in plugin contracts, approved profiles, risk policies, and strategy-owned adapters/projectors; strategy-neutral runtime/execution/risk/config core must not branch on registered strategy names."

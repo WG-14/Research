@@ -26,14 +26,14 @@ Treat this file as a binding repository-level operating contract.
 Before making any patch, read and follow:
 
 - `docs/storage-layout.md`
-- `docs/runtime-data-policy.md`
+- `docs/research-data-policy.md`
 - `README.md`
 
 If the change touches path handling, runtime outputs, backups, logs, DB paths, or env loading, also inspect:
 
-- `src/bithumb_bot/paths.py`
-- `src/bithumb_bot/storage_io.py`
-- `src/bithumb_bot/run_lock.py`
+- `src/bithumb_research/paths.py`
+- `src/bithumb_research/storage_io.py`
+- `src/bithumb_research/run_lock.py`
 
 If the task touches WSL research/backtest execution, generated research artifacts,
 or local disk/workspace cleanup, also read:
@@ -125,7 +125,7 @@ All path creation and path resolution must go through the shared path layer:
 
 - `PathManager`
 - `PathConfig`
-- the path helpers in `src/bithumb_bot/paths.py`
+- the path helpers in `src/bithumb_research/paths.py`
 
 Do not:
 
@@ -624,4 +624,4 @@ Default preference order:
 5. preserve convenience
 6. improve profitability
 
-If a requested change appears to conflict with `docs/storage-layout.md` or `docs/runtime-data-policy.md`, follow the docs and keep the storage contract intact unless those docs are explicitly updated as part of the same task.
+If a requested change appears to conflict with `docs/storage-layout.md` or `docs/research-data-policy.md`, follow the docs and keep the storage contract intact unless those docs are explicitly updated as part of the same task.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from bithumb_bot.research.channel_breakout_reports import main_acceptance
+from bithumb_research.research.channel_breakout_reports import main_acceptance
 
 
 if __name__ == "__main__":

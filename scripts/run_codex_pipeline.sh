@@ -15,7 +15,7 @@ REQUEST_FILE="${CODEX_REQUEST_FILE:-${SCRIPT_DIR}/codex_request.txt}"
 REMOTE_VERIFY_SCRIPT="${REMOTE_VERIFY_SCRIPT:-${SCRIPT_DIR}/remote_verify_live.sh}"
 NOTIFY_SCRIPT="${NOTIFY_SCRIPT:-${SCRIPT_DIR}/notify_ntfy.sh}"
 CODEX_BIN="${CODEX_BIN:-codex}"
-SSH_KEY="${BITHUMB_EC2_SSH_KEY:-${HOME}/.ssh/bithumb-bot-paper.pem}"
+SSH_KEY="${BITHUMB_EC2_SSH_KEY:-${HOME}/.ssh/bithumb-research-paper.pem}"
 EC2_TARGET="${BITHUMB_EC2_TARGET:-ec2-user@3.39.93.137}"
 
 # This script is Default Patch Mode only. Full pytest validation belongs to
@@ -49,16 +49,16 @@ notify() {
 fail() {
   local message="$1"
   echo "[PIPELINE] ${message}" >&2
-  notify "bithumb-bot pipeline failed" "high" "${message}"
+  notify "bithumb-research pipeline failed" "high" "${message}"
   exit 1
 }
 
 on_error() {
   local exit_code=$?
   trap - ERR
-  local message="bithumb-bot Codex pipeline failed during stage: ${stage}"
+  local message="bithumb-research Codex pipeline failed during stage: ${stage}"
   echo "[PIPELINE] ${message}" >&2
-  notify "bithumb-bot pipeline failed" "high" "${message}"
+  notify "bithumb-research pipeline failed" "high" "${message}"
   exit "$exit_code"
 }
 trap on_error ERR
@@ -330,7 +330,7 @@ post_codex_non_request="$(dirty_paths_excluding_request_file "${request_rel}")"
 if [[ -z "${post_codex_non_request}" ]]; then
   stage="check Codex modifications"
   echo "[PIPELINE] Codex completed but did not modify any file other than the request file." >&2
-  notify "bithumb-bot pipeline failed" "high" \
+  notify "bithumb-research pipeline failed" "high" \
     "Codex did not modify any file other than ${request_rel}; no commit was created."
   exit 1
 fi
@@ -357,14 +357,14 @@ fi
 
 stage="complete"
 if [[ "${remote_verify_exit}" -eq 0 ]]; then
-  notify "bithumb-bot pipeline succeeded" "default" \
+  notify "bithumb-research pipeline succeeded" "default" \
     "Codex changes were committed, pushed, and verified on EC2 with REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}."
   echo
   echo "[PIPELINE] success"
   exit 0
 fi
 
-notify "bithumb-bot pipeline failed" "high" \
+notify "bithumb-research pipeline failed" "high" \
   "Codex changes were committed and pushed, but EC2 verification completed with one or more failed stages in REMOTE_VERIFY_MODE=${REMOTE_VERIFY_MODE}."
 echo
 echo "[PIPELINE] EC2 verification completed with failed stages" >&2

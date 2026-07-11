@@ -2,8 +2,8 @@ import argparse
 import sqlite3
 from pathlib import Path
 
-from bithumb_bot.broker.paper import paper_execute
-from bithumb_bot.config import PROJECT_ROOT, settings
+from bithumb_research.broker.paper import paper_execute
+from bithumb_research.config import PROJECT_ROOT, settings
 
 
 def _resolve_db_path(db_path_arg: str | None) -> Path:
@@ -57,7 +57,7 @@ def main() -> None:
         conn.close()
 
     if row is None:
-        raise SystemExit("No candles. Run `uv run bithumb-bot sync` before this smoke check.")
+        raise SystemExit("No candles. Run `uv run bithumb-research sync` before this smoke check.")
 
     ts = int(row["ts"])
     price = float(row["close"])

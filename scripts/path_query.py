@@ -31,7 +31,7 @@ def main() -> int:
         os.environ["MODE"] = args.mode
 
     sys.path.insert(0, str(project_root / "src"))
-    from bithumb_bot.paths import PathManager, resolve_managed_path  # noqa: PLC0415
+    from bithumb_research.paths import PathManager, resolve_managed_path  # noqa: PLC0415
 
     manager = PathManager.from_env(project_root)
     print(resolve_managed_path(args.kind, manager))

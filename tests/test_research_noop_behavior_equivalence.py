@@ -4,16 +4,16 @@ from dataclasses import replace
 
 import pytest
 
-from bithumb_bot.research.dataset_snapshot import Candle, DatasetSnapshot
-from bithumb_bot.research.experiment_manifest import (
+from bithumb_research.research.dataset_snapshot import Candle, DatasetSnapshot
+from bithumb_research.research.experiment_manifest import (
     DateRange,
     ExecutionTimingPolicy,
     legacy_research_portfolio_policy,
 )
-from bithumb_bot.research.strategies.noop_baseline_events import (
+from bithumb_research.research.strategies.noop_baseline_events import (
     build_noop_baseline_events,
 )
-from bithumb_bot.research.strategies.noop_baseline_kernel import (
+from bithumb_research.research.strategies.noop_baseline_kernel import (
     run_noop_baseline_backtest,
 )
 

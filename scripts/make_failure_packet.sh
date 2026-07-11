@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
-WORK_DIR="${CODEX_PYTEST_WORK_DIR:-${TMPDIR:-/tmp}/bithumb-bot-codex-pytest}"
+WORK_DIR="${CODEX_PYTEST_WORK_DIR:-${TMPDIR:-/tmp}/bithumb-research-codex-pytest}"
 ITERATION="${CODEX_PYTEST_ITERATION:-manual}"
 LATEST_LOG_FILE="${WORK_DIR}/latest_full_suite_log"
 PYTHON_BIN="${PYTHON:-python3}"

@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def _validate_healthcheck_env():
-    from bithumb_bot.bootstrap import describe_explicit_env_file, load_explicit_env_file
+    from bithumb_research.bootstrap import describe_explicit_env_file, load_explicit_env_file
 
     mode = (os.getenv("MODE") or "").strip().lower() or None
     summary = describe_explicit_env_file(mode)
@@ -40,13 +40,13 @@ def main() -> int:
         print(f"[HEALTHCHECK] FAIL {env_error}")
         return 1
 
-    from bithumb_bot.bootstrap import get_last_explicit_env_load_summary
-    from bithumb_bot.config import PROJECT_ROOT, settings
-    from bithumb_bot.notifier import notify
-    from bithumb_bot.broker.bithumb import BithumbBroker
-    from bithumb_bot.paths import PathManager
-    from bithumb_bot.run_lock import read_run_lock_status
-    from bithumb_bot.runtime_state import refresh_open_order_health, snapshot
+    from bithumb_research.bootstrap import get_last_explicit_env_load_summary
+    from bithumb_research.config import PROJECT_ROOT, settings
+    from bithumb_research.notifier import notify
+    from bithumb_research.broker.bithumb import BithumbBroker
+    from bithumb_research.paths import PathManager
+    from bithumb_research.run_lock import read_run_lock_status
+    from bithumb_research.runtime_state import refresh_open_order_health, snapshot
 
     stale_threshold_sec = float(os.getenv("HEALTH_MAX_CANDLE_AGE_SEC", "180"))
     error_threshold = int(os.getenv("HEALTH_MAX_ERROR_COUNT", "3"))

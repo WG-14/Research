@@ -9,7 +9,7 @@ from pathlib import Path
 from tests.research_sma_success_fixture import create_success_fixture
 
 
-FORBIDDEN = ("bithumb_bot.config", "bithumb_bot.approved_profile", "bithumb_bot.broker", "bithumb_bot.runtime_strategy_decision", "bithumb_bot.runtime_strategy_set", "bithumb_bot.runtime_adapter_bootstrap", "bithumb_bot.runtime_adapters", "bithumb_bot.strategy_authoring", "bithumb_bot.research.strategy_registry", "bithumb_bot.strategy_plugins")
+FORBIDDEN = ("bithumb_research.config", "bithumb_research.research_profile", "bithumb_research.broker", "bithumb_research.runtime_strategy_decision", "bithumb_research.runtime_strategy_set", "bithumb_research.runtime_adapter_bootstrap", "bithumb_research.runtime_adapters", "bithumb_research.strategy_authoring", "bithumb_research.research.strategy_registry", "bithumb_research.strategy_plugins")
 
 
 def test_successful_sma_backtest_does_not_load_operational_modules(tmp_path: Path) -> None:
@@ -17,8 +17,8 @@ def test_successful_sma_backtest_does_not_load_operational_modules(tmp_path: Pat
     root = tmp_path / "research-runtime"
     script = """
 import json, sys
-from bithumb_bot.research_cli.main import main
-rc = main(['research-backtest', '--manifest', sys.argv[1], '--notification-policy', 'disabled'])
+from bithumb_research.research_cli.main import main
+rc = main(['research-backtest', '--manifest', sys.argv[1]])
 print(json.dumps({'rc': rc, 'forbidden': [name for name in sys.argv[2:] if name in sys.modules]}))
 raise SystemExit(rc)
 """

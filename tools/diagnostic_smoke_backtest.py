@@ -11,23 +11,23 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from bithumb_bot.paths import PathManager
-from bithumb_bot.notifier import AlertSeverity, format_event, notify
+from bithumb_research.paths import PathManager
+from bithumb_research.notifier import AlertSeverity, format_event, notify
 
 SMOKE_BACKTEST_WARNING = (
-    "This is a smoke backtest only. It must not be used as evidence for strategy promotion, "
+    "This is a smoke backtest only. It must not be used as evidence for strategy validation, "
     "approved profiles, live readiness, or capital allocation."
 )
 SMOKE_BACKTEST_ACK_ENV = "SMOKE_BACKTEST_ACK"
 SMOKE_BACKTEST_ACK_VALUE = "diagnostic_only"
 SMOKE_BACKTEST_REFUSAL = {
     "diagnostic_only": True,
-    "non_promotable": True,
-    "promotion_grade": False,
+    "non_candidate_selection_eligible": True,
+    "validation_grade": False,
     "evidence_scope": "smoke_only_not_manifest_backed",
     "reason_code": "standalone_backtest_not_full_validation",
     "operator_next_action": "use_manifest_backed_research_validation",
-    "recommended_command": "uv run bithumb-bot research-validate --manifest <path>",
+    "recommended_command": "uv run bithumb-research research-validate --manifest <path>",
 }
 
 path_manager = PathManager.from_env(PROJECT_ROOT)
@@ -56,8 +56,8 @@ def smoke_backtest_refusal_lines() -> tuple[str, ...]:
         " ".join(
             (
                 f"diagnostic_only={str(payload['diagnostic_only']).lower()}",
-                f"non_promotable={str(payload['non_promotable']).lower()}",
-                f"promotion_grade={str(payload['promotion_grade']).lower()}",
+                f"non_candidate_selection_eligible={str(payload['non_candidate_selection_eligible']).lower()}",
+                f"validation_grade={str(payload['validation_grade']).lower()}",
                 f"evidence_scope={payload['evidence_scope']}",
             )
         ),
@@ -210,8 +210,8 @@ def backtest(short_n: int, long_n: int, entry: str):
     return {
         "scope_badge": "DIAGNOSTIC_ONLY",
         "diagnostic_only": True,
-        "non_promotable": True,
-        "promotion_grade": False,
+        "non_candidate_selection_eligible": True,
+        "validation_grade": False,
         "evidence_scope": "smoke_only_not_manifest_backed",
         "standalone_backtest_not_full_validation": True,
         "count_candles": len(candles),
@@ -236,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--diagnostic-smoke-only",
         action="store_true",
-        help="Acknowledge that this direct smoke backtest is diagnostic-only and non-promotable.",
+        help="Acknowledge that this direct smoke backtest is diagnostic-only and non-candidate_selection_eligible.",
     )
     ap.add_argument("--short", type=int, required=True)
     ap.add_argument("--long", type=int, required=True)
@@ -254,7 +254,7 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"[BACKTEST] PAIR={PAIR} INTERVAL={INTERVAL} entry={args.entry} short={args.short} long={args.long}")
         print(
-            "  diagnostic_only=true  non_promotable=true  promotion_grade=false  "
+            "  diagnostic_only=true  non_candidate_selection_eligible=true  validation_grade=false  "
             "evidence_scope=smoke_only_not_manifest_backed  "
             "standalone_backtest_not_full_validation=true"
         )

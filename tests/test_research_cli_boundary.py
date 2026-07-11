@@ -5,9 +5,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from bithumb_bot.research_cli.paths import ResearchPathManager
-from bithumb_bot.research_cli.registry import command_registry
-from bithumb_bot.research_cli.settings import ResearchSettings
+from bithumb_research.research_cli.paths import ResearchPathManager
+from bithumb_research.research_cli.registry import command_registry
+from bithumb_research.research_cli.settings import ResearchSettings
 
 
 RESEARCH_COMMANDS = {
@@ -47,12 +47,12 @@ FORBIDDEN_OPERATIONAL_COMMANDS = {
 }
 
 FORBIDDEN_MODULES = {
-    "bithumb_bot.config",
-    "bithumb_bot.broker",
-    "bithumb_bot.approved_profile",
-    "bithumb_bot.runtime_strategy_decision",
-    "bithumb_bot.runtime_strategy_set",
-    "bithumb_bot.recovery",
+    "bithumb_research.config",
+    "bithumb_research.broker",
+    "bithumb_research.research_profile",
+    "bithumb_research.runtime_strategy_decision",
+    "bithumb_research.runtime_strategy_set",
+    "bithumb_research.recovery",
 }
 
 
@@ -72,7 +72,6 @@ def test_research_settings_default_to_external_roots_without_creating_outputs(mo
         "RESEARCH_DB_PATH",
         "RESEARCH_MAX_WORKERS",
         "RESEARCH_RANDOM_SEED",
-        "RESEARCH_NOTIFICATION_POLICY",
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
@@ -80,7 +79,6 @@ def test_research_settings_default_to_external_roots_without_creating_outputs(mo
     settings = ResearchSettings.from_env()
     paths = ResearchPathManager.from_settings(settings, project_root=Path.cwd())
 
-    assert settings.notification_policy == "disabled"
     assert settings.db_path is None
     assert paths.data_root == tmp_path / "state" / "bithumb-research" / "datasets"
     assert paths.artifact_path("derived", "candidate.json") == settings.artifact_root / "derived" / "candidate.json"
@@ -91,18 +89,18 @@ def test_research_settings_default_to_external_roots_without_creating_outputs(mo
 def test_research_help_has_no_operational_import_or_environment_requirement() -> None:
     script = """
 import sys
-from bithumb_bot.research_cli.main import main
+from bithumb_research.research_cli.main import main
 try:
     main(['--help'])
 except SystemExit as exc:
     assert exc.code == 0
 for name in {
-    'bithumb_bot.config',
-    'bithumb_bot.broker',
-    'bithumb_bot.approved_profile',
-    'bithumb_bot.runtime_strategy_decision',
-    'bithumb_bot.runtime_strategy_set',
-    'bithumb_bot.recovery',
+    'bithumb_research.config',
+    'bithumb_research.broker',
+    'bithumb_research.research_profile',
+    'bithumb_research.runtime_strategy_decision',
+    'bithumb_research.runtime_strategy_set',
+    'bithumb_research.recovery',
 }:
     assert name not in sys.modules, name
 """

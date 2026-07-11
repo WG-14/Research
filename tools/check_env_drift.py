@@ -8,14 +8,14 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_ROOT = PROJECT_ROOT / "src" / "bithumb_bot"
+SRC_ROOT = PROJECT_ROOT / "src" / "bithumb_research"
 ENV_EXAMPLE = PROJECT_ROOT / ".env.example"
 CONFIG_REFERENCE = PROJECT_ROOT / "docs" / "config-reference.md"
 
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from bithumb_bot.config_spec import ENV_SPECS, SPEC_BY_NAME, settings_contract_failures  # noqa: E402
+from bithumb_research.config_spec import ENV_SPECS, SPEC_BY_NAME, settings_contract_failures  # noqa: E402
 from tools.generate_env_example import check_env_example  # noqa: E402
 
 

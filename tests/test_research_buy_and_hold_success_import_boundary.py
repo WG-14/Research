@@ -10,16 +10,16 @@ from tests.research_buy_and_hold_success_fixture import create_success_fixture
 
 
 FORBIDDEN = (
-    "bithumb_bot.config",
-    "bithumb_bot.approved_profile",
-    "bithumb_bot.broker",
-    "bithumb_bot.runtime_strategy_decision",
-    "bithumb_bot.runtime_strategy_set",
-    "bithumb_bot.runtime_adapter_bootstrap",
-    "bithumb_bot.runtime_adapters",
-    "bithumb_bot.strategy_authoring",
-    "bithumb_bot.research.strategy_registry",
-    "bithumb_bot.strategy_plugins",
+    "bithumb_research.config",
+    "bithumb_research.research_profile",
+    "bithumb_research.broker",
+    "bithumb_research.runtime_strategy_decision",
+    "bithumb_research.runtime_strategy_set",
+    "bithumb_research.runtime_adapter_bootstrap",
+    "bithumb_research.runtime_adapters",
+    "bithumb_research.strategy_authoring",
+    "bithumb_research.research.strategy_registry",
+    "bithumb_research.strategy_plugins",
 )
 
 
@@ -28,8 +28,8 @@ def test_successful_buy_and_hold_backtest_stays_within_research_import_boundary(
     root = tmp_path / "research-runtime"
     script = """
 import json, sys
-from bithumb_bot.research_cli.main import main
-rc = main(['research-backtest', '--manifest', sys.argv[1], '--notification-policy', 'disabled'])
+from bithumb_research.research_cli.main import main
+rc = main(['research-backtest', '--manifest', sys.argv[1]])
 print(json.dumps({'rc': rc, 'forbidden': [name for name in sys.argv[2:] if name in sys.modules]}))
 raise SystemExit(rc)
 """
@@ -67,7 +67,7 @@ raise SystemExit(rc)
 def test_catalog_resolves_buy_and_hold_without_loading_legacy_bridge() -> None:
     script = """
 import json, sys
-from bithumb_bot.research.strategy_catalog import resolve_research_strategy
+from bithumb_research.research.strategy_catalog import resolve_research_strategy
 plugin = resolve_research_strategy('buy_and_hold_baseline')
 print(json.dumps({
     'runner': plugin.runner.__module__,
@@ -83,6 +83,6 @@ print(json.dumps({
     )
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["runner"].startswith("bithumb_bot.research.strategies.")
-    assert payload["event_builder"].startswith("bithumb_bot.research.strategies.")
+    assert payload["runner"].startswith("bithumb_research.research.strategies.")
+    assert payload["event_builder"].startswith("bithumb_research.research.strategies.")
     assert payload["forbidden"] == []

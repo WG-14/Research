@@ -4,7 +4,7 @@ from dataclasses import fields
 
 import pytest
 
-from bithumb_bot.config import settings
+from bithumb_research.config import settings
 
 
 @pytest.fixture(autouse=True)
@@ -14,8 +14,8 @@ def _restore_operator_settings_state(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setenv("MODE", "paper")
     object.__setattr__(settings, "MODE", "paper")
-    monkeypatch.setattr("bithumb_bot.operator_commands.write_json_atomic", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("bithumb_bot.reporting.write_json_atomic", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bithumb_research.operator_commands.write_json_atomic", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("bithumb_research.reporting.write_json_atomic", lambda *_args, **_kwargs: None)
 
     try:
         yield

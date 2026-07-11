@@ -1,0 +1,263 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from bithumb_research.paths import PathManager
+from bithumb_research.storage_io import append_jsonl, write_json_atomic
+
+
+@dataclass(frozen=True)
+class ArtifactBudget:
+    max_artifact_bytes: int | None = None
+    max_audit_stream_rows: int | None = None
+    max_audit_stream_bytes: int | None = None
+    max_artifact_file_count: int | None = None
+
+    def as_dict(self) -> dict[str, int | None]:
+        return {
+            "max_artifact_bytes": self.max_artifact_bytes,
+            "max_audit_stream_rows": self.max_audit_stream_rows,
+            "max_audit_stream_bytes": self.max_audit_stream_bytes,
+            "max_artifact_file_count": self.max_artifact_file_count,
+        }
+
+
+@dataclass(frozen=True)
+class ArtifactWriteEvent:
+    path: str
+    bytes: int
+
+
+class ArtifactBudgetExceeded(RuntimeError):
+    def __init__(
+        self,
+        *,
+        reason: str,
+        observed: int | None = None,
+        limit: int,
+        path: Path | None = None,
+        attempted_write_bytes: int | None = None,
+        prior_total_bytes: int | None = None,
+        next_total_bytes: int | None = None,
+        overwrite_existing_path: bool = False,
+        known_file_count: int | None = None,
+    ) -> None:
+        self.reason = reason
+        self.attempted_write_bytes = int(attempted_write_bytes or 0)
+        self.prior_total_bytes = int(prior_total_bytes or 0)
+        self.next_total_bytes = int(
+            next_total_bytes
+            if next_total_bytes is not None
+            else observed
+            if observed is not None
+            else self.prior_total_bytes + self.attempted_write_bytes
+        )
+        self.observed = int(observed if observed is not None else self.next_total_bytes)
+        self.limit = int(limit)
+        self.path = str(path.resolve()) if path is not None else None
+        self.overwrite_existing_path = bool(overwrite_existing_path)
+        self.known_file_count = int(known_file_count) if known_file_count is not None else None
+        message = (
+            f"{reason}: observed={self.observed} attempted_write_bytes={self.attempted_write_bytes} "
+            f"prior_total_bytes={self.prior_total_bytes} next_total_bytes={self.next_total_bytes} "
+            f"limit={self.limit} overwrite_existing_path={self.overwrite_existing_path}"
+        )
+        if self.path:
+            message = f"{message} path={self.path}"
+        super().__init__(message)
+
+    def as_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "reason": self.reason,
+            "observed": self.observed,
+            "attempted_write_bytes": self.attempted_write_bytes,
+            "prior_total_bytes": self.prior_total_bytes,
+            "next_total_bytes": self.next_total_bytes,
+            "limit": self.limit,
+            "overwrite_existing_path": self.overwrite_existing_path,
+        }
+        if self.path:
+            payload["path"] = self.path
+        if self.known_file_count is not None:
+            payload["known_file_count"] = self.known_file_count
+        return payload
+
+
+class ArtifactStore:
+    def __init__(self, *, root: Path, budget: ArtifactBudget | None = None) -> None:
+        self.root = root.resolve()
+        self.budget = budget or ArtifactBudget()
+        self._known_files: set[Path] = set()
+        self._total_bytes = 0
+        self._audit_stream_rows = 0
+        self._audit_stream_bytes = 0
+
+    @property
+    def total_bytes(self) -> int:
+        return self._total_bytes
+
+    @property
+    def file_count(self) -> int:
+        return len(self._known_files)
+
+    @property
+    def audit_stream_rows(self) -> int:
+        return self._audit_stream_rows
+
+    @property
+    def audit_stream_bytes(self) -> int:
+        return self._audit_stream_bytes
+
+    def write_json_atomic(self, path: Path, payload: dict[str, Any]) -> ArtifactWriteEvent:
+        overwrite_existing_path = path.resolve() in self._known_files
+        self._reserve_file(path)
+        encoded = json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False).encode("utf-8") + b"\n"
+        self._observe_bytes(
+            path=path,
+            byte_count=len(encoded),
+            audit_stream=False,
+            overwrite_existing_path=overwrite_existing_path,
+        )
+        write_json_atomic(path, payload)
+        return ArtifactWriteEvent(path=str(path.resolve()), bytes=len(encoded))
+
+    def append_jsonl(self, path: Path, payload: dict[str, Any], *, audit_stream: bool = False) -> None:
+        self._reserve_file(path)
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8") + b"\n"
+        self._observe_bytes(path=path, byte_count=len(encoded), audit_stream=audit_stream)
+        if audit_stream:
+            next_rows = self._audit_stream_rows + 1
+            limit = self.budget.max_audit_stream_rows
+            if limit is not None and next_rows > limit:
+                raise ArtifactBudgetExceeded(
+                    reason="artifact_budget_max_audit_stream_rows_exceeded",
+                    observed=next_rows,
+                    limit=limit,
+                    path=path,
+                )
+            self._audit_stream_rows = next_rows
+        append_jsonl(path, payload)
+
+    def _reserve_file(self, path: Path) -> None:
+        resolved = path.resolve()
+        if self.root not in resolved.parents and resolved != self.root:
+            raise ValueError(f"artifact path outside store root: {resolved}")
+        if resolved not in self._known_files:
+            next_count = len(self._known_files) + 1
+            limit = self.budget.max_artifact_file_count
+            if limit is not None and next_count > limit:
+                raise ArtifactBudgetExceeded(
+                    reason="artifact_budget_max_artifact_file_count_exceeded",
+                    observed=next_count,
+                    limit=limit,
+                    path=path,
+                    known_file_count=len(self._known_files),
+                )
+            self._known_files.add(resolved)
+
+    def _observe_bytes(
+        self,
+        *,
+        path: Path,
+        byte_count: int,
+        audit_stream: bool,
+        overwrite_existing_path: bool = False,
+    ) -> None:
+        total_limit = self.budget.max_artifact_bytes
+        attempted = int(byte_count)
+        prior_total = self._total_bytes
+        next_total = prior_total + attempted
+        if total_limit is not None and next_total > total_limit:
+            raise ArtifactBudgetExceeded(
+                reason="artifact_budget_max_artifact_bytes_exceeded",
+                observed=next_total,
+                limit=total_limit,
+                path=path,
+                attempted_write_bytes=attempted,
+                prior_total_bytes=prior_total,
+                next_total_bytes=next_total,
+                overwrite_existing_path=overwrite_existing_path,
+                known_file_count=len(self._known_files),
+            )
+        if audit_stream:
+            stream_limit = self.budget.max_audit_stream_bytes
+            next_stream_bytes = self._audit_stream_bytes + attempted
+            if stream_limit is not None and next_stream_bytes > stream_limit:
+                raise ArtifactBudgetExceeded(
+                    reason="artifact_budget_max_audit_stream_bytes_exceeded",
+                    observed=next_stream_bytes,
+                    limit=stream_limit,
+                    path=path,
+                    attempted_write_bytes=attempted,
+                    prior_total_bytes=prior_total,
+                    next_total_bytes=next_total,
+                    overwrite_existing_path=overwrite_existing_path,
+                    known_file_count=len(self._known_files),
+                )
+            self._audit_stream_bytes = next_stream_bytes
+        self._total_bytes = next_total
+
+
+class ResearchArtifactContext:
+    """Run-wide accounting for one research experiment's generated artifacts.
+
+    The budget is intentionally run-wide, not per trace scope. It covers the
+    existing research output buckets for one experiment:
+    `data/<mode>/derived/research/<experiment_id>` and
+    `data/<mode>/reports/research/<experiment_id>`.
+    """
+
+    def __init__(
+        self,
+        *,
+        manager: PathManager,
+        experiment_id: str,
+        budget: ArtifactBudget | None = None,
+    ) -> None:
+        self.manager = manager
+        self.experiment_id = experiment_id
+        self.derived_root = (manager.data_dir() / "derived" / "research" / experiment_id).resolve()
+        self.report_root = (manager.data_dir() / "reports" / "research" / experiment_id).resolve()
+        self.store = ArtifactStore(root=manager.data_dir(), budget=budget)
+
+    @property
+    def budget(self) -> ArtifactBudget:
+        return self.store.budget
+
+    @property
+    def total_bytes(self) -> int:
+        return self.store.total_bytes
+
+    @property
+    def file_count(self) -> int:
+        return self.store.file_count
+
+    @property
+    def audit_stream_rows(self) -> int:
+        return self.store.audit_stream_rows
+
+    @property
+    def audit_stream_bytes(self) -> int:
+        return self.store.audit_stream_bytes
+
+    def write_json_atomic(self, path: Path, payload: dict[str, Any]) -> ArtifactWriteEvent:
+        self._ensure_in_research_run(path)
+        return self.store.write_json_atomic(path, payload)
+
+    def append_jsonl(self, path: Path, payload: dict[str, Any], *, audit_stream: bool = False) -> None:
+        self._ensure_in_research_run(path)
+        self.store.append_jsonl(path, payload, audit_stream=audit_stream)
+
+    def _ensure_in_research_run(self, path: Path) -> None:
+        resolved = path.resolve()
+        if (
+            resolved == self.derived_root
+            or self.derived_root in resolved.parents
+            or resolved == self.report_root
+            or self.report_root in resolved.parents
+        ):
+            return
+        raise ValueError(f"research artifact path outside experiment context: {resolved}")

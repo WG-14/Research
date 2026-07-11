@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_EXAMPLE = PROJECT_ROOT / ".env.example"
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from bithumb_bot.config_spec import ENV_SPECS, SECRET_KEYS, SPEC_BY_NAME  # noqa: E402
+from bithumb_research.config_spec import ENV_SPECS, SECRET_KEYS, SPEC_BY_NAME  # noqa: E402
 
 
 ASSIGNMENT_RE = re.compile(r"^\s*(#\s*)?([A-Z][A-Z0-9_]*)=(.*)$")

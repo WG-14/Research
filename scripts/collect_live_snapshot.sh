@@ -34,7 +34,7 @@ validate_live_override_path() {
   PYTHONPATH="$REPO_ROOT/src:${PYTHONPATH:-}" python3 - "$REPO_ROOT" "$key" "$path" <<'PY'
 from pathlib import Path
 import sys
-from bithumb_bot.paths import PathManager, PathPolicyError
+from bithumb_research.paths import PathManager, PathPolicyError
 
 project_root = Path(sys.argv[1]).resolve()
 key = sys.argv[2]
@@ -75,25 +75,25 @@ echo "Collecting snapshot into ${OUT_DIR}"
 } > "${OUT_DIR}/00_meta.txt"
 
 {
-  echo "== bithumb-bot.service =="
-  sudo systemctl status bithumb-bot.service --no-pager || true
+  echo "== bithumb-research.service =="
+  sudo systemctl status bithumb-research.service --no-pager || true
   echo
-  echo "== bithumb-bot-healthcheck.timer =="
-  sudo systemctl status bithumb-bot-healthcheck.timer --no-pager || true
+  echo "== bithumb-research-healthcheck.timer =="
+  sudo systemctl status bithumb-research-healthcheck.timer --no-pager || true
   echo
-  echo "== bithumb-bot-backup.timer =="
-  sudo systemctl status bithumb-bot-backup.timer --no-pager || true
+  echo "== bithumb-research-backup.timer =="
+  sudo systemctl status bithumb-research-backup.timer --no-pager || true
 } > "${OUT_DIR}/10_systemd_status.txt"
 
 {
-  echo "== journal: bithumb-bot.service =="
-  sudo journalctl -u bithumb-bot.service -n 200 --no-pager || true
+  echo "== journal: bithumb-research.service =="
+  sudo journalctl -u bithumb-research.service -n 200 --no-pager || true
   echo
-  echo "== journal: bithumb-bot-healthcheck.service =="
-  sudo journalctl -u bithumb-bot-healthcheck.service -n 100 --no-pager || true
+  echo "== journal: bithumb-research-healthcheck.service =="
+  sudo journalctl -u bithumb-research-healthcheck.service -n 100 --no-pager || true
   echo
-  echo "== journal: bithumb-bot-backup.service =="
-  sudo journalctl -u bithumb-bot-backup.service -n 100 --no-pager || true
+  echo "== journal: bithumb-research-backup.service =="
+  sudo journalctl -u bithumb-research-backup.service -n 100 --no-pager || true
 } > "${OUT_DIR}/20_journal.txt"
 
 {

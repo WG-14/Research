@@ -1,0 +1,378 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+from typing import Any
+
+from . import backtest_support as support
+from .execution_planning import ResearchExecutionPlanBundle, execute_research_signal_request
+from .execution_planning import _execution_plan_evidence as _default_execution_plan_evidence
+from .execution_planning import _research_execution_plan_bundle as _default_research_execution_plan_bundle
+from .execution_simulator import ResearchExecutionContext, ResearchVirtualExecutionService
+from .execution_timing import build_signal_event, resolve_execution_reference
+
+
+@dataclass(frozen=True)
+class ExecutionSimulationOutcome:
+    fill: Any | None
+    pending_fill: support.PendingFill | None = None
+    trade: dict[str, object] | None = None
+    warnings: tuple[str, ...] = ()
+    plan_bundle: Any | None = None
+    evidence: dict[str, object] = field(default_factory=dict)
+    mark_cash_delta: float = 0.0
+    mark_qty_delta: float = 0.0
+
+
+@dataclass(frozen=True)
+class ExecutionSimulationRequest:
+    dataset: Any
+    candle: Any
+    candle_index: int
+    event: Any
+    ledger: Any
+    timing_policy: Any
+    execution_model: Any
+    fee_rate: float
+    strategy_name: str
+    action: str
+    decision_reason: str
+    regime_snapshot: dict[str, object]
+    decision_hash: str
+    sellable_qty: float
+    buy_fraction: float
+    statistical_evidence_policy_required: bool
+    allow_execution_compatibility_fallback: bool
+    policy_drives_execution: bool
+    policy_decision: Any | None
+    plan_bundle: ResearchExecutionPlanBundle | None = None
+    execution_evidence: dict[str, object] | None = None
+    exit_rule: str = ""
+    exit_reason: str = ""
+
+    @classmethod
+    def from_kwargs(cls, payload: dict[str, Any]) -> ExecutionSimulationRequest:
+        return cls(
+            dataset=payload["dataset"],
+            candle=payload["candle"],
+            candle_index=int(payload["candle_index"]),
+            event=payload["event"],
+            ledger=payload["ledger"],
+            timing_policy=payload["timing_policy"],
+            execution_model=payload["execution_model"],
+            fee_rate=float(payload["fee_rate"]),
+            strategy_name=str(payload["strategy_name"]),
+            action=str(payload["action"]),
+            decision_reason=str(payload["decision_reason"]),
+            regime_snapshot=dict(payload["regime_snapshot"]),
+            decision_hash=str(payload.get("decision_hash") or ""),
+            sellable_qty=float(payload["sellable_qty"]),
+            buy_fraction=float(payload["buy_fraction"]),
+            statistical_evidence_policy_required=bool(payload["statistical_evidence_policy_required"]),
+            allow_execution_compatibility_fallback=bool(
+                payload["allow_execution_compatibility_fallback"]
+            ),
+            policy_drives_execution=bool(payload.get("policy_drives_execution", True)),
+            policy_decision=payload.get("policy_decision"),
+            plan_bundle=payload.get("plan_bundle"),
+            execution_evidence=payload.get("execution_evidence"),
+            exit_rule=str(payload.get("exit_rule") or ""),
+            exit_reason=str(payload.get("exit_reason") or ""),
+        )
+
+
+@dataclass(frozen=True)
+class DefaultExecutionSimulator:
+    """Typed execution planning and virtual fill authority boundary."""
+
+    def run(self, state: Any) -> Any:
+        return state
+
+    def execute(self, *args: Any, **kwargs: Any) -> ExecutionSimulationOutcome:
+        if args:
+            if len(args) != 1 or kwargs or not isinstance(args[0], ExecutionSimulationRequest):
+                raise TypeError("execution_simulator_requires_execution_simulation_request")
+            return self.execute_request(args[0])
+        return self.execute_request(ExecutionSimulationRequest.from_kwargs(kwargs))
+
+    def execute_request(self, request: ExecutionSimulationRequest) -> ExecutionSimulationOutcome:
+        action = str(request.action).upper()
+        if action not in {"BUY", "SELL"}:
+            return ExecutionSimulationOutcome(fill=None)
+        dataset = request.dataset
+        candle = request.candle
+        index = int(request.candle_index)
+        event = request.event
+        ledger = request.ledger
+        timing_policy = request.timing_policy
+        model = request.execution_model
+        fee_rate = float(request.fee_rate)
+        strategy_name = str(request.strategy_name)
+        decision_reason = str(request.decision_reason)
+        regime_snapshot = dict(request.regime_snapshot)
+        decision_hash = str(request.decision_hash or "")
+        sellable_qty = float(request.sellable_qty)
+        buy_fraction = float(request.buy_fraction)
+        statistical_evidence_policy_required = bool(request.statistical_evidence_policy_required)
+        allow_execution_compatibility_fallback = bool(request.allow_execution_compatibility_fallback)
+        policy_drives_execution = bool(request.policy_drives_execution)
+        policy_decision = request.policy_decision
+        plan_bundle = request.plan_bundle
+        override_used = False
+        override_source = ""
+        if plan_bundle is None:
+            plan_bundle_builder = _research_test_compat_attr(
+                "_research_execution_plan_bundle",
+                _default_research_execution_plan_bundle,
+            )
+            if statistical_evidence_policy_required and plan_bundle_builder is _default_research_execution_plan_bundle:
+                plan_bundle_builder = _default_research_execution_plan_bundle
+            override_used = plan_bundle_builder is not _default_research_execution_plan_bundle
+            override_source = (
+                "backtest_pipeline._research_execution_plan_bundle" if override_used else ""
+            )
+            plan_bundle = plan_bundle_builder(
+                side=action,
+                cash=float(ledger.cash),
+                buy_fraction=buy_fraction,
+                sellable_qty=sellable_qty,
+                reference_price=float(candle.close),
+                policy_decision=policy_decision if policy_drives_execution else None,
+                candle_ts=int(candle.ts),
+                allow_compatibility_fallback=(
+                    allow_execution_compatibility_fallback or not policy_drives_execution
+                ),
+                statistical_evidence_required=(
+                    policy_drives_execution
+                    and statistical_evidence_policy_required
+                    and not allow_execution_compatibility_fallback
+                ),
+                block_reason=decision_reason,
+            )
+        submit_plan = plan_bundle.submit_plan
+        evidence = dict(request.execution_evidence or {})
+        if not evidence:
+            evidence_builder = (
+                _default_execution_plan_evidence
+                if statistical_evidence_policy_required
+                else _research_test_compat_attr(
+                    "_execution_plan_evidence",
+                    _default_execution_plan_evidence,
+                )
+            )
+            override_used = override_used or evidence_builder is not _default_execution_plan_evidence
+            override_source = override_source or (
+                "backtest_pipeline._execution_plan_evidence"
+                if evidence_builder is not _default_execution_plan_evidence
+                else ""
+            )
+            evidence = evidence_builder(plan_bundle)
+        if override_used:
+            evidence["planner_override_used"] = True
+            evidence["override_source"] = override_source
+        if submit_plan is None:
+            if statistical_evidence_policy_required:
+                raise ValueError("research_submit_plan_missing")
+            return ExecutionSimulationOutcome(
+                fill=None,
+                plan_bundle=plan_bundle,
+                evidence=evidence,
+                warnings=("research_submit_plan_missing",),
+            )
+        signal = build_signal_event(
+            candle=candle,
+            interval=dataset.interval,
+            side=action,
+            policy=timing_policy,
+            feature_snapshot=dict(event.feature_snapshot),
+            regime_snapshot=regime_snapshot,
+        )
+        reference = resolve_execution_reference(
+            dataset=dataset,
+            signal=signal,
+            signal_index=index,
+            policy=timing_policy,
+            model_latency_ms=support.model_latency_ms(model),
+        )
+        timing_fields = support.timing_request_fields(signal, reference, timing_policy)
+        depth_fields = support.depth_request_fields(
+            dataset=dataset,
+            reference=reference,
+            model=model,
+            timing_policy=timing_policy,
+        )
+        research_execution_context = ResearchExecutionContext(
+            signal_ts=signal.signal_candle_start_ts,
+            decision_ts=signal.decision_ts,
+            timing_fields=timing_fields,
+            depth_fields=depth_fields,
+        )
+        if reference.fill_reference_price is None:
+            fill = support.failed_fill(
+                model=model,
+                signal=signal,
+                reference=reference,
+                timing_policy=timing_policy,
+                side=action,
+                fee_rate=fee_rate,
+                requested_qty=_positive_float_or_none(submit_plan.qty),
+                requested_notional=_positive_float_or_none(submit_plan.notional_krw),
+            )
+            fill = _fill_with_entry_source(fill, submit_plan=submit_plan)
+        else:
+            service_cls = _research_test_compat_attr("ResearchVirtualExecutionService", ResearchVirtualExecutionService)
+            fill = execute_research_signal_request(
+                service_cls=service_cls,
+                execution_model=model,
+                fee_rate=fee_rate,
+                signal=action,
+                signal_ts=signal.signal_candle_start_ts,
+                market_price=float(reference.fill_reference_price),
+                strategy_name=strategy_name,
+                decision_reason=decision_reason,
+                plan_bundle=plan_bundle,
+                research_execution_context=research_execution_context,
+            )
+            if fill is None:
+                return ExecutionSimulationOutcome(
+                    fill=None,
+                    plan_bundle=plan_bundle,
+                    evidence=evidence,
+                    warnings=(f"research_typed_execution_service_no_fill:{submit_plan.block_reason or 'none'}",),
+                )
+        warnings = tuple(support.execution_reference_warnings(fill))
+        if fill.fill_status == "failed" or fill.avg_fill_price is None or fill.filled_qty <= 0.0:
+            trade = support.trade_from_fill(fill, cash=ledger.cash, asset_qty=ledger.qty, pnl=None)
+            _annotate_entry_source(trade, fill)
+            return ExecutionSimulationOutcome(
+                fill=fill,
+                plan_bundle=plan_bundle,
+                evidence=evidence,
+                warnings=warnings,
+                trade=trade,
+            )
+        if action == "BUY":
+            exec_price = float(fill.avg_fill_price)
+            fee = float(fill.fee)
+            received_qty = float(fill.filled_qty)
+            actual_spend = (exec_price * received_qty) + fee
+            buy_slippage = max(0.0, (exec_price - float(fill.reference_price)) * received_qty)
+            pending = support.PendingFill(
+                fill=fill,
+                trade_index=len(ledger.trade_ledger),
+                side="BUY",
+                effective_ts=support.fill_effective_ts(fill),
+                qty=received_qty,
+                fee=fee,
+                slippage=buy_slippage,
+                cash_delta=-actual_spend,
+                entry_regime_snapshot=regime_snapshot,
+                entry_feature_snapshot=dict(event.feature_snapshot or {}),
+            )
+            trade = support.pending_trade_from_fill(fill, cash=ledger.cash, asset_qty=ledger.qty)
+            trade["entry_decision_hash"] = decision_hash
+            _annotate_entry_source(trade, fill)
+            return ExecutionSimulationOutcome(
+                fill=fill,
+                pending_fill=pending,
+                trade=trade,
+                warnings=warnings,
+                plan_bundle=plan_bundle,
+                evidence=evidence,
+                mark_cash_delta=pending.cash_delta,
+                mark_qty_delta=pending.qty,
+            )
+        exec_price = float(fill.avg_fill_price)
+        sell_qty = float(fill.filled_qty)
+        gross = sell_qty * exec_price
+        fee = float(fill.fee)
+        sell_slippage = max(0.0, (float(fill.reference_price) - exec_price) * sell_qty)
+        pending = support.PendingFill(
+            fill=fill,
+            trade_index=len(ledger.trade_ledger),
+            side="SELL",
+            effective_ts=support.fill_effective_ts(fill),
+            qty=sell_qty,
+            fee=fee,
+            slippage=sell_slippage,
+            cash_delta=gross - fee,
+            entry_regime_snapshot=ledger.entry_regime_snapshot,
+            exit_regime_snapshot=regime_snapshot,
+        )
+        trade = support.pending_trade_from_fill(fill, cash=ledger.cash, asset_qty=ledger.qty)
+        _annotate_entry_source(trade, fill)
+        trade.update(
+            support.closed_trade_diagnostics(
+                entry_ts=ledger.entry_ts,
+                exit_ts=int(candle.ts),
+                entry_price=ledger.entry_price,
+                exit_price=exec_price,
+                entry_regime_snapshot=ledger.entry_regime_snapshot,
+                exit_regime_snapshot=regime_snapshot,
+                exit_rule=str(request.exit_rule or ""),
+                exit_reason=str(request.exit_reason or ""),
+                path=ledger.open_trade_path,
+                entry_feature_snapshot=ledger.entry_feature_snapshot,
+                entry_decision_hash=ledger.entry_decision_hash,
+                exit_decision_hash=decision_hash,
+            )
+        )
+        return ExecutionSimulationOutcome(
+            fill=fill,
+            pending_fill=pending,
+            trade=trade,
+            warnings=warnings,
+            plan_bundle=plan_bundle,
+            evidence=evidence,
+            mark_cash_delta=pending.cash_delta,
+            mark_qty_delta=-pending.qty,
+        )
+
+
+def blocked_execution_evidence(reason_code: str) -> dict[str, object]:
+    return _default_execution_plan_evidence(
+        ResearchExecutionPlanBundle(
+            submit_plan=None,
+            summary=None,
+            source="research_backtest",
+            authority="research_virtual_execution_planner",
+            execution_engine="research_virtual",
+            status="BLOCKED",
+            reason_code=str(reason_code),
+        )
+    )
+
+
+def _positive_float_or_none(value: object) -> float | None:
+    try:
+        parsed = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0.0 else None
+
+
+def _fill_with_entry_source(fill: Any, *, submit_plan: Any) -> Any:
+    extra = getattr(submit_plan, "extra_payload", {}) if submit_plan is not None else {}
+    if not isinstance(extra, dict):
+        return fill
+    return replace(
+        fill,
+        entry_signal_source=str(extra.get("entry_signal_source") or "") or None,
+        entry_sizing_source=str(extra.get("entry_sizing_source") or "") or None,
+    )
+
+
+def _annotate_entry_source(trade: dict[str, object], fill: Any) -> None:
+    source = str(getattr(fill, "entry_signal_source", "") or "")
+    sizing_source = str(getattr(fill, "entry_sizing_source", "") or "")
+    if source:
+        trade["entry_signal_source"] = source
+    if sizing_source:
+        trade["entry_sizing_source"] = sizing_source
+
+
+def _research_test_compat_attr(name: str, default: Any) -> Any:
+    try:
+        from . import backtest_pipeline
+    except Exception:
+        return default
+    return getattr(backtest_pipeline, name, default)

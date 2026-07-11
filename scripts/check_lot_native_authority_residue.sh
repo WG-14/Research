@@ -4,11 +4,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 targets=(
-  "src/bithumb_bot/broker/live.py"
-  "src/bithumb_bot/flatten.py"
-  "src/bithumb_bot/decision_context.py"
-  "src/bithumb_bot/reporting.py"
-  "src/bithumb_bot/recovery.py"
+  "src/bithumb_research/broker/live.py"
+  "src/bithumb_research/flatten.py"
+  "src/bithumb_research/decision_context.py"
+  "src/bithumb_research/reporting.py"
+  "src/bithumb_research/recovery.py"
 )
 
 forbidden_submit_sources='submit_qty_source["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"'](observation\.sell_qty_preview|position_state\.raw_total_asset_qty|position_qty|submit_payload_qty)'
@@ -30,32 +30,32 @@ if rg -n --pcre2 "$forbidden_sell_basis_sources" "${targets[@]}"; then
   exit 1
 fi
 
-if rg -n --pcre2 "$forbidden_live_shadow_submit_source" "src/bithumb_bot/broker/live.py"; then
+if rg -n --pcre2 "$forbidden_live_shadow_submit_source" "src/bithumb_research/broker/live.py"; then
   echo "lot-native residue check failed: live SELL submit path must not trust exit_sizing.qty_source as canonical authority" >&2
   exit 1
 fi
 
-if rg -n --pcre2 "$forbidden_flatten_qty_authority" "src/bithumb_bot/flatten.py"; then
+if rg -n --pcre2 "$forbidden_flatten_qty_authority" "src/bithumb_research/flatten.py"; then
   echo "lot-native residue check failed: flatten SELL submit path must not size directly from normalized_exposure.open_exposure_qty" >&2
   exit 1
 fi
 
-if rg -nUP "$forbidden_live_boundary_authority_override" "src/bithumb_bot/broker/live.py"; then
+if rg -nUP "$forbidden_live_boundary_authority_override" "src/bithumb_research/broker/live.py"; then
   echo "lot-native residue check failed: live SELL boundary must not override canonical normalized_exposure authority fields" >&2
   exit 1
 fi
 
-if rg -nUP "$forbidden_flatten_reserved_exit_rebuild" "src/bithumb_bot/flatten.py"; then
+if rg -nUP "$forbidden_flatten_reserved_exit_rebuild" "src/bithumb_research/flatten.py"; then
   echo "lot-native residue check failed: flatten SELL boundary must not locally rebuild reserved-exit or sellable-lot authority" >&2
   exit 1
 fi
 
-if rg -nUP "$forbidden_mixed_sell_dust_boundary_definition" "src/bithumb_bot/broker/live.py"; then
+if rg -nUP "$forbidden_mixed_sell_dust_boundary_definition" "src/bithumb_research/broker/live.py"; then
   echo "lot-native residue check failed: sell dust suppression boundary must not reintroduce mixed position_qty authority inputs" >&2
   exit 1
 fi
 
-if rg -nUP "$forbidden_mixed_sell_dust_boundary_call" "src/bithumb_bot/broker/live.py"; then
+if rg -nUP "$forbidden_mixed_sell_dust_boundary_call" "src/bithumb_research/broker/live.py"; then
   echo "lot-native residue check failed: sell dust suppression call sites must pass separated canonical and diagnostic views" >&2
   exit 1
 fi

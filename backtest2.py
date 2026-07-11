@@ -15,13 +15,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Deprecated compatibility wrapper. Use "
-            "`uv run bithumb-bot research-backtest --manifest <path>`."
+            "`uv run bithumb-research research-backtest --manifest <path>`."
         )
     )
     parser.add_argument("--manifest", required=True)
     args = parser.parse_args(argv)
 
-    from bithumb_bot.bootstrap import run_cli
+    from bithumb_research.bootstrap import run_cli
 
     print(
         "[BACKTEST2-DEPRECATED] backtest2.py no longer loads repo-root .env or runs "

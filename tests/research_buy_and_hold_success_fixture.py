@@ -29,7 +29,7 @@ def create_success_fixture(root: Path) -> tuple[Path, Path]:
         "experiment_id": "buy_and_hold_success_import_boundary",
         "hypothesis": "deterministic research-native buy and hold fixture",
         "strategy_name": "buy_and_hold_baseline",
-        "deployment_tier": "research_only",
+        "research_classification": "research_only",
         "market": "KRW-BTC",
         "interval": "1m",
         "dataset": {
@@ -67,7 +67,7 @@ def create_success_fixture(root: Path) -> tuple[Path, Path]:
             "oos_return_must_be_positive": False,
             "parameter_stability_required": False,
             "walk_forward_required": False,
-            "final_holdout_required_for_promotion": False,
+            "final_holdout_required_for_validation": False,
             "reject_open_position_at_end": False,
             "metrics_contract_required": False,
         },
