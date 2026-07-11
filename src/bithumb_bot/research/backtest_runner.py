@@ -24,10 +24,12 @@ def run_plugin_backtest(
     portfolio_policy: PortfolioPolicy | None = None,
     context: BacktestRunContext | None = None,
 ) -> BacktestRun:
-    event_builder = getattr(plugin, "research_event_builder", None)
+    event_builder = getattr(plugin, "event_builder", None) or getattr(plugin, "research_event_builder", None)
     if event_builder is None:
         raise ValueError(f"research_event_builder_missing:{plugin.name}")
-    parameter_materializer = getattr(plugin, "research_parameter_materializer", None)
+    parameter_materializer = getattr(plugin, "parameter_materializer", None) or getattr(
+        plugin, "research_parameter_materializer", None
+    )
     if parameter_materializer is None:
         effective_parameters = materialize_strategy_parameters(
             plugin.name,

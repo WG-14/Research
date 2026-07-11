@@ -12,7 +12,9 @@ from .reason_codes import (
     RISK_METRIC_UNIT_MISMATCH,
 )
 
-from .canonical_decision import canonical_payload_hash
+# Hashing this pure policy contract must not initialize operational recovery or
+# broker authority.  The research hash uses the same canonical JSON encoding.
+from .research.hashing import canonical_payload_hash
 
 RiskEvaluationPoint = Literal["pre_decision", "pre_submit", "post_fill", "resume"]
 RiskDecisionStatus = Literal["ALLOW", "BLOCK", "REQUIRE_RECONCILE", "REDUCE_ONLY", "FORCE_EXIT"]

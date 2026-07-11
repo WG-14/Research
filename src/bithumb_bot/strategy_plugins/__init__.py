@@ -2,26 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from importlib import metadata
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from bithumb_bot.research.strategy_registry import ResearchStrategyPlugin
-from bithumb_bot.strategy_authoring import (
-    LiveEligibleStrategyPlugin,
-    ReplayCompatibleStrategyPlugin,
-    ResearchOnlyStrategyPlugin,
-)
+if TYPE_CHECKING:
+    from bithumb_bot.research.strategy_registry import ResearchStrategyPlugin
 from bithumb_bot.strategy_plugins.builtin_manifest import iter_builtin_strategy_plugins_from_manifest
 
 
 STRATEGY_PLUGIN_ENTRY_POINT_GROUP = "bithumb_bot.strategy_plugins"
 
 
-StrategyPluginRegistration = (
-    ResearchStrategyPlugin
-    | ResearchOnlyStrategyPlugin
-    | ReplayCompatibleStrategyPlugin
-    | LiveEligibleStrategyPlugin
-)
+StrategyPluginRegistration = Any
 
 
 def iter_builtin_strategy_plugins() -> Iterable[StrategyPluginRegistration]:
@@ -29,7 +20,7 @@ def iter_builtin_strategy_plugins() -> Iterable[StrategyPluginRegistration]:
         yield from _coerce_loaded_plugins(loaded)
 
 
-def iter_entry_point_strategy_plugins() -> Iterable[ResearchStrategyPlugin]:
+def iter_entry_point_strategy_plugins() -> Iterable["ResearchStrategyPlugin"]:
     entry_points = metadata.entry_points()
     if hasattr(entry_points, "select"):
         selected = entry_points.select(group=STRATEGY_PLUGIN_ENTRY_POINT_GROUP)
@@ -52,16 +43,22 @@ def iter_entry_point_strategy_plugins() -> Iterable[ResearchStrategyPlugin]:
         yield from coerce_loaded_strategy_plugins(entry_point.load())
 
 
-def iter_discovered_strategy_plugins() -> Iterable[ResearchStrategyPlugin]:
+def iter_discovered_strategy_plugins() -> Iterable["ResearchStrategyPlugin"]:
     yield from iter_builtin_strategy_plugins()
     yield from iter_entry_point_strategy_plugins()
 
 
-def _coerce_loaded_plugins(loaded: Any) -> Iterable[ResearchStrategyPlugin]:
+def _coerce_loaded_plugins(loaded: Any) -> Iterable["ResearchStrategyPlugin"]:
     yield from coerce_loaded_strategy_plugins(loaded)
 
 
-def coerce_loaded_strategy_plugins(loaded: Any) -> Iterable[ResearchStrategyPlugin]:
+def coerce_loaded_strategy_plugins(loaded: Any) -> Iterable["ResearchStrategyPlugin"]:
+    from bithumb_bot.research.strategy_registry import ResearchStrategyPlugin
+    from bithumb_bot.strategy_authoring import (
+        LiveEligibleStrategyPlugin,
+        ReplayCompatibleStrategyPlugin,
+        ResearchOnlyStrategyPlugin,
+    )
     if isinstance(loaded, ResearchStrategyPlugin):
         yield loaded
         return

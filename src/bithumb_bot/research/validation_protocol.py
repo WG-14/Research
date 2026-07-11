@@ -116,11 +116,7 @@ from .strategy_spec import (
     materialized_strategy_parameters_hash,
     strategy_parameter_source_map,
 )
-from .strategy_registry import (
-    research_strategy_data_requirements,
-    resolve_research_strategy,
-    resolve_research_strategy_plugin,
-)
+from .strategy_catalog import research_strategy_data_requirements, resolve_research_strategy
 from .strategy_spec import exit_policy_from_parameters, exit_policy_hash, materialize_strategy_parameters, strategy_spec_for_name
 
 
@@ -306,7 +302,7 @@ def _evaluate_candidate_scenario_task(
         base = _evaluate_candidate_base_result(
             manifest=manifest,
             manager=manager,
-            runner=resolve_research_strategy(manifest.strategy_name),
+            runner=resolve_research_strategy(manifest.strategy_name).runner,
             snapshots=snapshots,
             params=params,
             index=index,
@@ -2115,7 +2111,7 @@ def _evaluate_candidates(
     dataset_quality_status, dataset_quality_reasons = _combined_dataset_quality_gate(quality_reports)
     dataset_warning_codes = _dataset_quality_warning_codes(quality_reports)
     top_of_book_quality_summary = _top_of_book_quality_summary(quality_reports)
-    strategy_plugin = resolve_research_strategy_plugin(manifest.strategy_name)
+    strategy_plugin = resolve_research_strategy(manifest.strategy_name)
     strategy_spec = strategy_plugin.spec
     metrics_gate_policy = metrics_gate_policy_from_acceptance_gate(manifest.acceptance_gate)
     metrics_gate_policy_digest = metrics_gate_policy_hash(metrics_gate_policy)
@@ -4795,25 +4791,7 @@ def _attach_candidate_diagnostic_blocks(
     manifest: ExperimentManifest,
     strategy_plugin: Any,
 ) -> None:
-    capabilities = strategy_plugin.runtime_capabilities.as_dict()
-    candidate["strategy_runtime_capabilities"] = {
-        key: capabilities.get(key)
-        for key in (
-            "research_only",
-            "promotion_runtime_decisions_supported",
-            "runtime_replay_supported",
-            "live_dry_run_allowed",
-            "live_real_order_allowed",
-            "fail_closed_reason",
-        )
-    }
-    if bool(capabilities.get("research_only")):
-        candidate["promotion_interpretation"] = "research_only_not_live_eligible"
-        candidate["acceptance_gate_result"] = "FAIL"
-        candidate["aggregate_acceptance_gate_result"] = "FAIL"
-        candidate["gate_fail_reasons"] = sorted(
-            set(candidate.get("gate_fail_reasons") or []) | {"research_only_not_live_eligible"}
-        )
+    candidate["research_strategy_data_requirements"] = strategy_plugin.data_requirements().capability_contract_payload()
     candidate["cost_sensitivity"] = _cost_sensitivity_summary(candidate.get("scenario_results") or [])
     candidate["position_sizing_sensitivity"] = _position_sizing_sensitivity_summary(
         base_policy=manifest.portfolio_policy,
@@ -5463,7 +5441,7 @@ def _walk_forward_metrics(
             "failure_reason": "walk_forward_missing",
             "windows": [],
         }
-    runner = resolve_research_strategy(manifest.strategy_name)
+    runner = resolve_research_strategy(manifest.strategy_name).runner
     active_scenario = scenario or ExecutionScenario(
         type="fixed_bps",
         fee_rate=float(fee_rate),
@@ -6108,7 +6086,7 @@ def _report_payload(
         warnings.add(PROMOTION_GRADE_GENERATION_UNAVAILABLE_WARNING)
     warnings = sorted(warnings)
     signal_depth_summary = _report_signal_depth_summary(candidates)
-    strategy_plugin = resolve_research_strategy_plugin(manifest.strategy_name)
+    strategy_plugin = resolve_research_strategy(manifest.strategy_name)
     strategy_spec = strategy_plugin.spec
     depth_walk_used = bool(signal_depth_summary.get("depth_walk_execution_model_used"))
     depth_available_semantics = (

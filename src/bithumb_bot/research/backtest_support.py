@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from bithumb_bot.canonical_decision import canonical_payload_hash
+from .hashing import canonical_payload_hash
 from bithumb_bot.market_regime import RegimeCoverageRow
 
 from .backtest_types import (

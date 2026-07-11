@@ -106,9 +106,9 @@ class DefaultMarketReplayClock:
     """Convert decision events into deterministic replay ticks."""
 
     def run(self, state: BacktestPipelineState) -> BacktestPipelineState:
-        from .strategy_registry import resolve_research_strategy_plugin
+        from .strategy_catalog import resolve_research_strategy
 
-        plugin = resolve_research_strategy_plugin(state.strategy_name)
+        plugin = resolve_research_strategy(state.strategy_name)
         candles = state.dataset.candles
         candle_index_by_ts = {int(candle.ts): index for index, candle in enumerate(candles)}
 

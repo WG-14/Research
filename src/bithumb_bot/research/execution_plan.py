@@ -681,9 +681,9 @@ def _plugin_complexity_metadata(
     expected_candle_count: int | None = None,
 ) -> dict[str, Any]:
     try:
-        from .strategy_registry import resolve_research_strategy_plugin
+        from .strategy_catalog import resolve_research_strategy
 
-        plugin = resolve_research_strategy_plugin(strategy_name)
+        plugin = resolve_research_strategy(strategy_name)
     except Exception:
         return {
             "schema_version": 1,

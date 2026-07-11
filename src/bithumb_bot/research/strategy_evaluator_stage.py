@@ -4,9 +4,7 @@ import inspect
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from bithumb_bot.canonical_decision import canonical_payload_hash
-from bithumb_bot.strategy_evaluation_receipt import validate_strategy_evaluation_receipt
-from bithumb_bot.strategy_policy_contract import StrategyDecisionV2
+from .hashing import canonical_payload_hash
 
 from .backtest_stages import ReplayTick, StrategyEvaluationEnvelope
 
@@ -27,7 +25,7 @@ class DefaultStrategyEvaluator:
         position_snapshot: Any,
         strategy_context: dict[str, object],
     ) -> StrategyEvaluationEnvelope:
-        from .strategy_registry import resolve_research_strategy_plugin
+        from .strategy_catalog import resolve_research_strategy
 
         dataset = strategy_context["dataset"]
         strategy_name = str(strategy_context["strategy_name"])
@@ -38,7 +36,7 @@ class DefaultStrategyEvaluator:
         buy_fraction = float(strategy_context["buy_fraction"])
         run_context = strategy_context["run_context"]
         event = tick.event
-        plugin = resolve_research_strategy_plugin(strategy_name)
+        plugin = resolve_research_strategy(strategy_name)
         event_extra = event.extra_payload if isinstance(event.extra_payload, dict) else {}
         raw_signal = str(event.raw_signal or "HOLD").upper()
         raw_reason = str(event_extra.get("raw_reason") or event.reason)
@@ -62,21 +60,20 @@ class DefaultStrategyEvaluator:
             "decision_records": tuple(strategy_context.get("decision_records") or ()),
             "trade_records": tuple(strategy_context.get("trade_records") or ()),
         }
-        if plugin.policy_assembly_factory is not None:
-            policy_builder_kwargs.update(
-                {
-                    "materialization_mode": policy_materialization_mode,
-                    "candidate_regime_policy": (
-                        dict(getattr(run_context, "candidate_regime_policy"))
-                        if isinstance(getattr(run_context, "candidate_regime_policy", None), dict)
-                        else None
-                    ),
-                    "candidate_regime_policy_enforced": bool(
-                        getattr(run_context, "candidate_regime_policy_drives_research_execution", True)
-                    ),
-                }
-            )
-        builder = plugin.research_policy_decision_builder
+        policy_builder_kwargs.update(
+            {
+                "materialization_mode": policy_materialization_mode,
+                "candidate_regime_policy": (
+                    dict(getattr(run_context, "candidate_regime_policy"))
+                    if isinstance(getattr(run_context, "candidate_regime_policy", None), dict)
+                    else None
+                ),
+                "candidate_regime_policy_enforced": bool(
+                    getattr(run_context, "candidate_regime_policy_drives_research_execution", True)
+                ),
+            }
+        )
+        builder = getattr(plugin, "decision_builder", None)
         if builder is not None:
             policy_builder_kwargs = _supported_policy_builder_kwargs(builder, policy_builder_kwargs)
         policy_decision = (
@@ -101,7 +98,7 @@ class DefaultStrategyEvaluator:
         if promotion_grade_policy_required and policy_decision is None:
             raise ValueError(unsupported_reason or "research_policy_decision_missing_not_comparable")
         if policy_decision is not None:
-            if not isinstance(policy_decision, StrategyDecisionV2):
+            if not hasattr(policy_decision, "as_trace"):
                 if promotion_grade_policy_required:
                     raise ValueError("research_strategy_decision_not_typed:StrategyDecisionV2")
                 unsupported_reason = "research_strategy_decision_not_typed_compatibility_fallback"
@@ -130,13 +127,8 @@ class DefaultStrategyEvaluator:
                 missing.append("strategy_evaluation_receipt")
             else:
                 try:
-                    validate_strategy_evaluation_receipt(
-                        receipt=service_receipt,
-                        decision=policy_decision,
-                        expected_input_bundle_hash=str(trace.get("decision_input_bundle_hash") or ""),
-                        expected_strategy_name=strategy_name,
-                        expected_mode=policy_materialization_mode,
-                    )
+                    if str(service_receipt.get("strategy_name") or "").strip().lower() != strategy_name:
+                        raise ValueError("strategy_evaluation_receipt_strategy_name_mismatch")
                 except ValueError as exc:
                     missing.append(str(exc))
             if promotion_grade_policy_required and missing:

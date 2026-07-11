@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from bithumb_bot.canonical_decision import canonical_payload_hash
-from bithumb_bot.position_authority import research_position_authority_snapshot
+from .hashing import canonical_payload_hash
 
 from .dataset_snapshot import DatasetSnapshot
 from .execution_model import ExecutionFill, ExecutionModel, model_params_hash
@@ -21,6 +20,43 @@ from .metrics_contract import (
 from .backtest_types import BacktestRunContext
 from .backtest_support import BacktestAccumulator, PendingFill
 from .streaming_evidence import StreamingEvidenceDigest
+
+
+def _research_position_authority_snapshot(
+    *, qty: float, sellable_qty: float, order_rules_hash: str, fee_authority_hash: str, position_state_hash: str
+) -> object:
+    flat = float(qty) <= 0.0 and float(sellable_qty) <= 0.0
+    payload = {
+        "raw_total_asset_qty": max(0.0, float(qty)),
+        "open_lot_count": 0,
+        "dust_tracking_lot_count": 0,
+        "reserved_exit_lot_count": 0,
+        "sellable_executable_lot_count": 0,
+        "open_exposure_qty": max(0.0, float(qty)),
+        "dust_tracking_qty": 0.0,
+        "reserved_exit_qty": max(0.0, float(qty) - float(sellable_qty)),
+        "sellable_executable_qty": max(0.0, float(sellable_qty)),
+        "terminal_state": "flat" if flat else "research_not_modeled",
+        "entry_allowed": flat,
+        "exit_allowed": bool(float(sellable_qty) > 0.0),
+        "recovery_blocked": False,
+        "recovery_block_reason": "none",
+        "order_rules_hash": order_rules_hash,
+        "fee_authority_hash": fee_authority_hash,
+        "position_state_hash": position_state_hash,
+        "state_class": "flat_no_dust_no_position" if flat else "research_model_lacks_lot_native_authority",
+        "unsupported_reason": "" if flat else "research_model_lacks_lot_native_authority",
+        "research_position_model": "cash_qty_simulation_v1",
+    }
+
+    class Snapshot:
+        def __init__(self, value: dict[str, object]) -> None:
+            self.position_state_hash = str(value["position_state_hash"])
+            self._value = value
+        def as_dict(self) -> dict[str, object]:
+            return dict(self._value)
+
+    return Snapshot(payload)
 
 def _create_exit_rules(**kwargs: Any):
     # Keep this local to avoid config -> approved_profile -> research -> strategy -> config imports.
@@ -508,8 +544,6 @@ def _research_decision_payload(
     fee_authority_hash: str = "",
     order_rules_hash: str = "",
 ) -> dict[str, object]:
-    from bithumb_bot.research.lot_native_simulation import lot_native_model_from_quantities
-
     order_rules = research_order_rules_payload(
         fee_rate=fee_rate,
         slippage_bps=slippage_bps,
@@ -563,33 +597,22 @@ def _research_decision_payload(
             "exit_policy_hash": exit_policy_hash,
         }
     )
-    lot_native_authority = lot_native_model_from_quantities(
+    legacy_authority = _research_position_authority_snapshot(
         qty=float(qty),
         sellable_qty=float(sellable_qty),
-    ).authority_snapshot(
         order_rules_hash=order_rules_hash,
         fee_authority_hash=fee_authority_hash,
+        position_state_hash=canonical_payload_hash(
+            {
+                "research_position_model": "cash_qty_simulation_v1",
+                "unsupported_reason": "research_model_lacks_lot_native_authority",
+                "qty": float(qty),
+                "sellable_qty": float(sellable_qty),
+            }
+        ),
     )
-    flat_no_position = lot_native_authority.state_class == "flat_no_dust_no_position"
-    position_state_hash = lot_native_authority.position_state_hash
-    if lot_native_authority.unsupported_reason:
-        legacy_authority = research_position_authority_snapshot(
-            qty=float(qty),
-            sellable_qty=float(sellable_qty),
-            order_rules_hash=order_rules_hash,
-            fee_authority_hash=fee_authority_hash,
-            position_state_hash=canonical_payload_hash(
-                {
-                    "research_position_model": "cash_qty_simulation_v1",
-                    "unsupported_reason": "research_model_lacks_lot_native_authority",
-                    "qty": float(qty),
-                    "sellable_qty": float(sellable_qty),
-                }
-            ),
-        )
-        position_state_hash = legacy_authority.position_state_hash
-    else:
-        legacy_authority = None
+    flat_no_position = bool(float(qty) <= 0.0 and float(sellable_qty) <= 0.0)
+    position_state_hash = legacy_authority.position_state_hash
     payload = {
         "strategy_name": strategy_name,
         "strategy_spec": strategy_spec,
@@ -639,13 +662,11 @@ def _research_decision_payload(
         "market_regime_blocked": bool(market_regime_blocked),
         "candidate_regime_blocked": bool(candidate_regime_blocked),
         "position_state_hash": position_state_hash,
-        "entry_allowed": bool(lot_native_authority.entry_allowed),
-        "exit_allowed": bool(lot_native_authority.exit_allowed),
-        "dust_state": "flat" if flat_no_position else (
-            "research_not_modeled" if lot_native_authority.unsupported_reason else "no_dust"
-        ),
-        "effective_flat": bool(lot_native_authority.entry_allowed),
-        "normalized_exposure_active": bool(lot_native_authority.open_lot_count > 0),
+        "entry_allowed": flat_no_position,
+        "exit_allowed": bool(float(sellable_qty) > 0.0),
+        "dust_state": "flat" if flat_no_position else "research_not_modeled",
+        "effective_flat": flat_no_position,
+        "normalized_exposure_active": False,
         "exit_rule": str(exit_rule or ""),
         "exit_reason": str(exit_reason or ""),
         "exit_evaluations_hash": canonical_payload_hash(
@@ -665,9 +686,7 @@ def _research_decision_payload(
         "decision_contract_hash": decision_contract_hash,
         "replay_fingerprint_hash": decision_contract_hash,
     }
-    payload["position_authority"] = (
-        legacy_authority.as_dict() if legacy_authority is not None else lot_native_authority.as_dict()
-    )
+    payload["position_authority"] = legacy_authority.as_dict()
     return payload
 
 

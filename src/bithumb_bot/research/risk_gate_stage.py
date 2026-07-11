@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from bithumb_bot.canonical_decision import canonical_payload_hash
+from .hashing import canonical_payload_hash
 from bithumb_bot.risk import PureRiskInput
 from bithumb_bot.risk_contract import RiskDecision, RiskPolicy, RiskSnapshot, risk_identity_fields
 from bithumb_bot.risk_policy_engine import RiskPolicyEngine

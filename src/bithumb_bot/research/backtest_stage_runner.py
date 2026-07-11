@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
 from . import backtest_support as support
-from bithumb_bot.canonical_decision import canonical_payload_hash, observe_canonical_decisions
+from .hashing import canonical_payload_hash, observe_canonical_decisions
 
 from .artifact_store import ArtifactBudgetExceeded
 from .audit_trace_recorder import AuditTraceRecorder
@@ -656,9 +656,9 @@ def run_stage_owned_decision_event_backtest(
     experiment_recorder: Any | None = None,
 ) -> Any:
     from .backtest_pipeline import BacktestPipelineState, DefaultMarketReplayClock
-    from .strategy_registry import resolve_research_strategy_plugin
+    from .strategy_catalog import resolve_research_strategy
 
-    strategy_plugin = resolve_research_strategy_plugin(strategy_name)
+    strategy_plugin = resolve_research_strategy(strategy_name)
     strategy_spec = strategy_spec_for_name(strategy_name)
     active_exit_policy_materialization = exit_policy_materialization_from_parameters(strategy_name, parameter_values)
     active_exit_policy = dict(active_exit_policy_materialization.exit_policy)

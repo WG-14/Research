@@ -67,9 +67,9 @@ def _run_registered_strategy_backtest(
     portfolio_policy: PortfolioPolicy | None = None,
     context: BacktestRunContext | None = None,
 ) -> BacktestRun:
-    from .strategy_registry import resolve_research_strategy
+    from .strategy_catalog import resolve_research_strategy
 
-    runner = resolve_research_strategy(strategy_name)
+    runner = resolve_research_strategy(strategy_name).runner
     return runner(
         dataset,
         parameter_values,

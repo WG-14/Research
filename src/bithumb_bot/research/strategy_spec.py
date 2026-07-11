@@ -314,10 +314,10 @@ def strategy_spec_for_name(strategy_name: str) -> StrategySpec:
     if strategy_name == "buy_and_hold":
         return BUY_AND_HOLD_SPEC
     try:
-        from .strategy_registry import ResearchStrategyRegistryError, resolve_research_strategy_plugin
+        from .strategy_catalog import ResearchStrategyCatalogError, resolve_research_strategy
 
-        return resolve_research_strategy_plugin(strategy_name).spec
-    except ResearchStrategyRegistryError as exc:
+        return resolve_research_strategy(strategy_name).spec
+    except ResearchStrategyCatalogError as exc:
         raise StrategySpecError(f"unsupported research strategy: {strategy_name}") from exc
 
 
@@ -435,16 +435,18 @@ def exit_policy_materialization_from_parameters(
     *,
     materialization_mode: str = "research_promotion",
 ) -> Any:
-    from .strategy_registry import normalize_exit_policy_materialization, resolve_research_strategy_plugin
+    from .strategy_catalog import resolve_research_strategy
+    from .strategy_contract import normalize_exit_policy_materialization
 
     spec = strategy_spec_for_name(strategy_name)
-    plugin = resolve_research_strategy_plugin(strategy_name)
-    if plugin.exit_policy_materializer is not None:
-        result = plugin.exit_policy_materializer(strategy_name, dict(parameter_values))
+    plugin = resolve_research_strategy(strategy_name)
+    materializer = getattr(plugin, "exit_policy_materializer", None)
+    if materializer is not None:
+        result = materializer(strategy_name, dict(parameter_values))
         return normalize_exit_policy_materialization(
             result,
             strategy_name=strategy_name,
-            materializer=plugin.exit_policy_materializer,
+            materializer=materializer,
             default_source="plugin_exit_policy_materializer",
             default_mode=materialization_mode,
         )

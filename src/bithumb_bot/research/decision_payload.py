@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from bithumb_bot.canonical_decision import canonical_payload_hash
+from .hashing import canonical_payload_hash
 
 from . import backtest_support as support
 
@@ -358,18 +358,11 @@ class DecisionPayloadBuilder:
             exit_reason=risk_decision.exit_reason,
             exit_evaluations=[dict(item) for item in risk_decision.exit_evaluations],
         )
-        promotion_grade = bool(getattr(strategy_plugin, "is_promotion_grade", False))
-        if strategy_plugin.decision_payload_adapter is not None:
-            if promotion_grade:
-                if policy_decision is not None:
-                    payload = strategy_plugin.decision_payload_adapter(payload, policy_decision)
-            else:
-                payload = strategy_plugin.decision_payload_adapter(payload, event)
-        promotion_missing_reason = (
-            ""
-            if promotion_grade
-            else str(getattr(getattr(strategy_plugin, "runtime_capabilities", None), "fail_closed_reason", ""))
-        )
+        promotion_grade = False
+        payload_adapter = getattr(strategy_plugin, "payload_adapter", None)
+        if payload_adapter is not None:
+            payload = payload_adapter(payload, policy_decision if policy_decision is not None else event)
+        promotion_missing_reason = "research_strategy_catalog"
         payload.update(
             {
                 "decision_event_schema_version": 1,
@@ -417,11 +410,8 @@ class DecisionPayloadBuilder:
                 payload[key] = risk_payload[key]
         if "risk_decision" in risk_payload:
             payload["risk_decision"] = risk_payload["risk_decision"]
-        if (
-            getattr(strategy_plugin, "diagnostics_count_builder", None) is not None
-            and "strategy_diagnostic_counts" not in payload
-        ):
-            diagnostic_contract = strategy_plugin.diagnostics_count_builder(payload)
+        if strategy_plugin.diagnostics_builder is not None and "strategy_diagnostic_counts" not in payload:
+            diagnostic_contract = strategy_plugin.diagnostics_builder(payload)
             if not isinstance(diagnostic_contract, dict):
                 raise TypeError("strategy_diagnostics_count_builder_must_return_dict")
             defaults = diagnostic_contract.get("strategy_diagnostic_count_defaults")

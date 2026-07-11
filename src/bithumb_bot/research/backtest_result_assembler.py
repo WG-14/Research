@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
-from bithumb_bot.canonical_decision import canonical_payload_hash
+from .hashing import canonical_payload_hash
 from bithumb_bot.market_regime import aggregate_regime_coverage, aggregate_regime_performance
 
 from . import backtest_support as support

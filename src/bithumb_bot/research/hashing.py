@@ -134,6 +134,16 @@ def sha256_prefixed(payload: Any, *, label: str | None = None) -> str:
     return f"sha256:{sha256_hex(payload, label=label)}"
 
 
+# Kept as a research-local compatibility spelling for existing backtest evidence
+# fields.  The operational canonical-decision module imports recovery and
+# broker authority; research hashing must not do that.
+def canonical_payload_hash(payload: Any, *, label: str | None = None) -> str:
+    return sha256_prefixed(payload, label=label)
+
+
+observe_canonical_decisions = observe_hashing
+
+
 def content_hash_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if key not in {"generated_at", "created_at"}}
 
