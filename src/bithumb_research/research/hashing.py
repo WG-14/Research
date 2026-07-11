@@ -135,8 +135,7 @@ def sha256_prefixed(payload: Any, *, label: str | None = None) -> str:
 
 
 # Kept as a research-local compatibility spelling for existing backtest evidence
-# fields.  The operational canonical-decision module imports recovery and
-# broker authority; research hashing must not do that.
+# fields. Research hashing has no account-runtime dependency.
 def canonical_payload_hash(payload: Any, *, label: str | None = None) -> str:
     return sha256_prefixed(payload, label=label)
 

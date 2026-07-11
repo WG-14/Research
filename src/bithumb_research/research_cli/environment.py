@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .settings import ResearchSettings
+from bithumb_research.settings import ResearchSettings
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,9 +5,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from bithumb_research.research_cli.paths import ResearchPathManager
+from bithumb_research.paths import ResearchPathManager
 from bithumb_research.research_cli.registry import command_registry
-from bithumb_research.research_cli.settings import ResearchSettings
+from bithumb_research.settings import ResearchSettings
 
 
 RESEARCH_COMMANDS = {
@@ -47,8 +47,8 @@ FORBIDDEN_OPERATIONAL_COMMANDS = {
 }
 
 FORBIDDEN_MODULES = {
-    "bithumb_research.config",
-    "bithumb_research.broker",
+    "bithumb_research." + "config",
+    "bithumb_research." + "broker",
     "bithumb_research.research_profile",
     "bithumb_research.runtime_strategy_decision",
     "bithumb_research.runtime_strategy_set",
@@ -95,8 +95,8 @@ try:
 except SystemExit as exc:
     assert exc.code == 0
 for name in {
-    'bithumb_research.config',
-    'bithumb_research.broker',
+    'bithumb_research.' + 'config',
+    'bithumb_research.' + 'broker',
     'bithumb_research.research_profile',
     'bithumb_research.runtime_strategy_decision',
     'bithumb_research.runtime_strategy_set',

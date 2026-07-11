@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from bithumb_research.paths import PathManager, PathPolicyError
+from bithumb_research.paths import ResearchPathError, ResearchPathManager
 from bithumb_research.storage_io import write_json_atomic
 from bithumb_research.execution_reality_contract import execution_condition_contract_hash
 
@@ -61,15 +61,15 @@ def build_calibration_artifact(
 
 def write_calibration_artifact(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     artifact: dict[str, Any],
 ) -> Path:
     market = str(artifact.get("market") or "unknown").replace("/", "_").replace(":", "_")
     stamp = str(artifact.get("generated_at") or datetime.now(timezone.utc).isoformat())
     safe_stamp = "".join(ch if ch.isdigit() else "_" for ch in stamp)[:14]
     path = manager.data_dir() / "reports" / "execution_quality" / f"cost_model_calibration_{market}_{safe_stamp}.json"
-    if PathManager._is_within(path.resolve(), manager.project_root.resolve()):
-        raise PathPolicyError(f"execution calibration output path must be outside repository: {path.resolve()}")
+    if ResearchPathManager.is_within(path.resolve(), manager.project_root.resolve()):
+        raise ResearchPathError(f"execution calibration output path must be outside repository: {path.resolve()}")
     write_json_atomic(path, artifact)
     return path
 

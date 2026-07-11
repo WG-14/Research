@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from bithumb_research.paths import PathManager
+from bithumb_research.paths import ResearchPathManager
 from bithumb_research.storage_io import append_jsonl
 
 from .research_classification import requires_candidate_validation
@@ -28,7 +28,7 @@ PRE_CONTENT_COMPLETION_BOUND_FIELDS = {
 }
 
 
-def experiment_registry_path(*, manager: PathManager) -> Path:
+def experiment_registry_path(*, manager: ResearchPathManager) -> Path:
     """Return the managed append-only experiment registry path.
 
     The experiment registry is a cross-run final-holdout attempt ledger. It is
@@ -38,7 +38,7 @@ def experiment_registry_path(*, manager: PathManager) -> Path:
     """
     path = manager.data_dir() / "reports" / "research" / "_registry" / "experiment_registry.jsonl"
     project_root = manager.project_root.resolve()
-    if PathManager._is_within(path.resolve(), project_root):
+    if ResearchPathManager.is_within(path.resolve(), project_root):
         raise ValueError(f"experiment registry path must be outside repository: {path.resolve()}")
     return path
 
@@ -242,7 +242,7 @@ def load_experiment_registry_rows(path: Path) -> list[dict[str, Any]]:
 
 def compute_research_attempt_counters(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     base_payload: dict[str, Any],
 ) -> dict[str, int]:
     path = experiment_registry_path(manager=manager)
@@ -276,7 +276,7 @@ def compute_research_attempt_counters(
 
 def append_research_attempt_rejected(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     base_payload: dict[str, Any],
     reasons: list[str],
     computed_attempt_index: int,
@@ -307,7 +307,7 @@ def append_research_attempt_rejected(
 
 def reserve_research_attempt(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     base_payload: dict[str, Any],
     created_at: str | None = None,
 ) -> dict[str, Any]:
@@ -352,7 +352,7 @@ def reserve_research_attempt(
 
 def reserve_research_attempt_checked(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     base_payload: dict[str, Any],
     statistical_validation_contract: dict[str, Any] | None = None,
     created_at: str | None = None,
@@ -431,7 +431,7 @@ def reserve_research_attempt_checked(
 
 def append_attempt_aborted(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     reservation_row_hash: str,
     reason: str,
     created_at: str | None = None,
@@ -465,7 +465,7 @@ def append_attempt_aborted(
 
 def append_attempt_completion(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     reservation: dict[str, Any],
     updates: dict[str, Any],
     result_status: str = "COMPLETED",
@@ -494,7 +494,7 @@ def append_attempt_completion(
 
 def append_validation_registry_event(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     reservation_row_hash: str,
     validation_artifact_hash: str,
     promoted_candidate_id: str,

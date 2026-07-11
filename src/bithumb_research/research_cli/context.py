@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .environment import ResearchEnvironmentSummary
-from .paths import ResearchPathManager
-from .settings import ResearchSettings
+from bithumb_research.paths import ResearchPathManager
+from bithumb_research.settings import ResearchSettings
 
 
 @dataclass(slots=True)

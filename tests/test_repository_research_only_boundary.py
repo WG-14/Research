@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+import importlib
+import json
+import pkgutil
+from pathlib import Path
+
+import bithumb_research
+
+from bithumb_research.research.strategy_catalog import list_research_strategies
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_repository_has_only_research_entrypoints_and_environment_template() -> None:
+    assert not any((ROOT / name).exists() for name in ("main.py", "backtest.py", "backtest2.py"))
+    env_keys = {
+        line.split("=", 1)[0]
+        for line in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    }
+    assert env_keys == {
+        "RESEARCH_DATA_ROOT",
+        "RESEARCH_ARTIFACT_ROOT",
+        "RESEARCH_REPORT_ROOT",
+        "RESEARCH_CACHE_ROOT",
+        "RESEARCH_DB_PATH",
+        "RESEARCH_MAX_WORKERS",
+        "RESEARCH_RANDOM_SEED",
+    }
+
+
+def test_no_operational_files_or_legacy_path_manager_remain() -> None:
+    forbidden = (
+        "scripts/check_live_runtime.sh",
+        "scripts/collect_live_snapshot.sh",
+        "scripts/healthcheck.py",
+        "scripts/repair_zero_price_sell_ledger.py",
+        "scripts/backup_sqlite.sh",
+        "tools/cleanup_open_order.py",
+        "tools/make_open_order.py",
+        "tools/oms_smoke.py",
+        "tests/operator",
+    )
+    assert not any((ROOT / path).exists() for path in forbidden)
+    paths_source = (ROOT / "src/bithumb_research/paths.py").read_text(encoding="utf-8")
+    assert "class PathManager:" not in paths_source
+    assert "class Path" + "Config:" not in paths_source
+
+
+def test_architecture_paths_exist_and_strategy_catalog_is_exact() -> None:
+    boundaries = json.loads((ROOT / "docs/architecture-boundaries.json").read_text(encoding="utf-8"))
+    for section in ("entrypoints", "research_core", "public_data_helpers"):
+        assert all((ROOT / path).exists() for path in boundaries[section])
+    assert {plugin.name for plugin in list_research_strategies()} == {
+        "sma_with_filter",
+        "buy_and_hold_baseline",
+        "noop_baseline",
+        "threshold_research_only",
+    }
+
+
+def test_every_package_module_imports_without_side_effects() -> None:
+    for module in pkgutil.walk_packages(bithumb_research.__path__, bithumb_research.__name__ + "."):
+        importlib.import_module(module.name)

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from bithumb_research.paths import PathManager
+from bithumb_research.paths import ResearchPathManager
 from bithumb_research.storage_io import append_jsonl
 
 from .hashing import content_hash_payload, sha256_prefixed
@@ -16,7 +16,7 @@ EMPTY_REGISTRY_HASH = sha256_prefixed([])
 FAMILY_TRIAL_REGISTRY_BUDGET_POLICY = "registry_append_only_budget_exempt"
 
 
-def family_trial_registry_path(*, manager: PathManager, experiment_family_id: str) -> Path:
+def family_trial_registry_path(*, manager: ResearchPathManager, experiment_family_id: str) -> Path:
     """Return the managed append-only family registry path.
 
     Family registries are cross-experiment research audit ledgers under
@@ -27,7 +27,7 @@ def family_trial_registry_path(*, manager: PathManager, experiment_family_id: st
     safe_family_id = _safe_path_segment(experiment_family_id)
     path = manager.data_dir() / "reports" / "research" / "families" / safe_family_id / "trial_registry.jsonl"
     project_root = manager.project_root.resolve()
-    if PathManager._is_within(path.resolve(), project_root):
+    if ResearchPathManager.is_within(path.resolve(), project_root):
         raise ValueError(f"family trial registry path must be outside repository: {path.resolve()}")
     return path
 
@@ -49,7 +49,7 @@ def registry_content_hash(path: Path) -> str:
 
 def append_family_trial_registry_row(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     experiment_family_id: str,
     experiment_id: str,
     manifest_hash: str,

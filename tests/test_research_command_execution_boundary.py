@@ -7,8 +7,8 @@ from pathlib import Path
 
 
 FORBIDDEN_MODULES = (
-    "bithumb_research.config",
-    "bithumb_research.broker",
+    "bithumb_research." + "config",
+    "bithumb_research." + "broker",
     "bithumb_research.research_profile",
     "bithumb_research.notifier",
     "bithumb_research.notification_outbox",

@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from bithumb_research.paths import PathManager, PathPolicyError
+from bithumb_research.paths import ResearchPathError, ResearchPathManager
 from bithumb_research.storage_io import write_json_atomic
 
 
@@ -17,7 +17,7 @@ T = TypeVar("T")
 def run_with_cprofile(
     *,
     func: Callable[[], T],
-    manager: PathManager,
+    manager: ResearchPathManager,
     experiment_id: str,
     candidate_id: str,
     scenario_id: str,
@@ -65,7 +65,7 @@ def run_with_cprofile(
 
 def profile_artifact_path(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     experiment_id: str,
     candidate_id: str,
     scenario_id: str,
@@ -75,10 +75,10 @@ def profile_artifact_path(
     path = manager.data_dir() / "derived" / "research" / experiment_id / "profiles" / f"{safe_name}.json"
     resolved = path.resolve()
     data_dir = manager.data_dir().resolve()
-    if PathManager._is_within(resolved, manager.project_root.resolve()):
-        raise PathPolicyError(f"profile artifact must be outside repository: {resolved}")
-    if not PathManager._is_within(resolved, data_dir):
-        raise PathPolicyError(f"profile artifact must be inside DATA_ROOT derived bucket: {resolved}")
+    if ResearchPathManager.is_within(resolved, manager.project_root.resolve()):
+        raise ResearchPathError(f"profile artifact must be outside repository: {resolved}")
+    if not ResearchPathManager.is_within(resolved, data_dir):
+        raise ResearchPathError(f"profile artifact must be inside DATA_ROOT derived bucket: {resolved}")
     return resolved
 
 

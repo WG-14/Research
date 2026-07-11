@@ -4,7 +4,7 @@ import random
 from pathlib import Path
 from typing import Any
 
-from bithumb_research.paths import PathManager, PathPolicyError
+from bithumb_research.paths import ResearchPathError, ResearchPathManager
 from .artifact_store import ResearchArtifactContext
 from .research_classification import requires_candidate_validation
 from .experiment_manifest import ExperimentManifest, StatisticalSelectionContract
@@ -411,7 +411,7 @@ def build_statistical_selection_evidence(
 
 def write_statistical_selection_evidence(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     experiment_id: str,
     evidence: dict[str, Any],
     artifact_context: ResearchArtifactContext | None = None,
@@ -1054,8 +1054,8 @@ def _as_int(value: object) -> int | None:
         return None
 
 
-def _ensure_research_output_path_allowed(manager: PathManager, path: Path) -> None:
+def _ensure_research_output_path_allowed(manager: ResearchPathManager, path: Path) -> None:
     project_root = manager.project_root.resolve()
     resolved = path.resolve()
-    if PathManager._is_within(resolved, project_root):
-        raise PathPolicyError(f"research output path must be outside repository: {resolved}")
+    if ResearchPathManager.is_within(resolved, project_root):
+        raise ResearchPathError(f"research output path must be outside repository: {resolved}")

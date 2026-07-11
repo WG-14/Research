@@ -1,26 +1,23 @@
 {
-  "schema_version": 1,
-  "strategy_neutral_core_paths": [
-    "src/bithumb_research/config.py",
-    "src/bithumb_research/strategy_decision_service.py",
-    "src/bithumb_research/runtime_data_provider.py",
-    "src/bithumb_research/strategy_decision_input.py",
-    "src/bithumb_research/runtime_strategy_decision.py",
-    "src/bithumb_research/runtime_strategy_set.py",
-    "src/bithumb_research/execution_service.py",
-    "src/bithumb_research/run_loop_execution_planner.py",
-    "src/bithumb_research/runtime_risk_engine.py",
-    "src/bithumb_research/decision_envelope.py"
+  "schema_version": 2,
+  "entrypoints": [
+    "src/bithumb_research/research_bootstrap.py",
+    "src/bithumb_research/research_cli"
   ],
-  "strategy_literal_exceptions": {},
-  "strategy_literal_exception_policy": {
-    "default": "deny",
-    "allowed_only_with_reason": true,
-    "broad_allowed_locations": [
-      "src/bithumb_research/strategy_plugins",
-      "src/bithumb_research/compat",
-      "tests"
-    ],
-    "reason": "Strategy-specific behavior belongs in plugin contracts, approved profiles, risk policies, and strategy-owned adapters/projectors; strategy-neutral runtime/execution/risk/config core must not branch on registered strategy names."
-  }
+  "research_core": [
+    "src/bithumb_research/research"
+  ],
+  "public_data_helpers": [
+    "src/bithumb_research/public_api.py",
+    "src/bithumb_research/public_api_minute_candles.py",
+    "src/bithumb_research/public_api_orderbook.py"
+  ],
+  "forbidden_domains": [
+    "private_exchange_access",
+    "account_connected_runtime",
+    "order_submission",
+    "account_access",
+    "state_repair",
+    "reviewed_account_profile"
+  ]
 }

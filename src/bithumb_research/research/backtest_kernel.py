@@ -2,7 +2,7 @@
 
 The supported strategies own their concrete backtest kernels.  This helper is
 kept for research callers that supply an explicit event stream, without any
-runtime planner, broker, or submit-plan dependency.
+runtime planner, account adapter, or submit-plan dependency.
 """
 
 from __future__ import annotations

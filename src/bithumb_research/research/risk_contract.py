@@ -17,7 +17,6 @@ class ResearchRiskPolicy:
     max_daily_order_count: int = 0
     max_trade_count_per_day: int = 0
     cooldown_after_loss_min: int = 0
-    kill_switch: bool = False
     max_open_positions: int = 1
     unresolved_order_policy: str = "block"
     policy_status: str = "enabled"
@@ -33,7 +32,6 @@ class ResearchRiskPolicy:
             "max_daily_order_count": int(self.max_daily_order_count),
             "max_trade_count_per_day": int(self.max_trade_count_per_day),
             "cooldown_after_loss_min": int(self.cooldown_after_loss_min),
-            "kill_switch": bool(self.kill_switch),
             "max_open_positions": int(self.max_open_positions),
             "unresolved_order_policy": self.unresolved_order_policy,
             "policy_status": self.policy_status,

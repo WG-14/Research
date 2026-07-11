@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from bithumb_research.paths import PathManager, PathPolicyError
+from bithumb_research.paths import ResearchPathError, ResearchPathManager
 from bithumb_research.storage_io import write_json_atomic as write_json_atomic_untracked
 from .artifact_store import ArtifactBudget, ArtifactStore, ResearchArtifactContext
 from .hashing import observe_hashing, report_content_hash_payload, sha256_prefixed
@@ -67,7 +67,7 @@ class ReportFinalizationState:
         return payload
 
 
-def research_paths(manager: PathManager, experiment_id: str, report_name: str) -> ResearchReportPaths:
+def research_paths(manager: ResearchPathManager, experiment_id: str, report_name: str) -> ResearchReportPaths:
     research_derived_root = manager.data_dir() / "derived" / "research" / experiment_id
     derived_path = research_derived_root / f"{report_name}_candidates.json"
     report_path = manager.data_dir() / "reports" / "research" / experiment_id / f"{report_name}_report.json"
@@ -91,7 +91,7 @@ def research_paths(manager: PathManager, experiment_id: str, report_name: str) -
     )
 
 
-def research_artifact_refs(paths: ResearchReportPaths, *, manager: PathManager) -> dict[str, str]:
+def research_artifact_refs(paths: ResearchReportPaths, *, manager: ResearchPathManager) -> dict[str, str]:
     data_dir = manager.data_dir().resolve()
     return {
         "derived_candidates": _relative_artifact_ref(paths.derived_path, data_dir),
@@ -116,7 +116,7 @@ def research_artifact_paths(paths: ResearchReportPaths) -> dict[str, str]:
 
 def finalize_research_report_payload(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     experiment_id: str,
     report_name: str,
     payload: dict[str, Any],
@@ -144,7 +144,7 @@ def finalize_research_report_payload(
 
 def write_research_report(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     experiment_id: str,
     report_name: str,
     payload: dict[str, Any],
@@ -218,7 +218,7 @@ def write_research_report(
 
 def build_report_artifacts(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     paths: ResearchReportPaths,
     payload: dict[str, Any],
     store: ArtifactStore | ResearchArtifactContext,
@@ -537,7 +537,7 @@ def _reference_first_report_payload(
     payload: dict[str, Any],
     *,
     paths: ResearchReportPaths,
-    manager: PathManager,
+    manager: ResearchPathManager,
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     report_payload = dict(payload)
     candidates = list(report_payload.get("candidates", []))
@@ -1993,11 +1993,11 @@ def _optional_int(value: Any) -> int | None:
     return None
 
 
-def _ensure_research_output_path_allowed(manager: PathManager, path: Path) -> None:
+def _ensure_research_output_path_allowed(manager: ResearchPathManager, path: Path) -> None:
     project_root = manager.project_root.resolve()
     resolved = path.resolve()
-    if PathManager._is_within(resolved, project_root):
-        raise PathPolicyError(f"research output path must be outside repository: {resolved}")
+    if ResearchPathManager.is_within(resolved, project_root):
+        raise ResearchPathError(f"research output path must be outside repository: {resolved}")
 
 
 def _relative_artifact_ref(path: Path, data_dir: Path) -> str:

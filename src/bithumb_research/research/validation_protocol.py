@@ -17,7 +17,7 @@ from bithumb_research.execution_reality_contract import (
     unsupported_capability_reasons,
 )
 from bithumb_research.execution_quality import ExecutionQualityThresholds
-from bithumb_research.paths import PathManager
+from bithumb_research.paths import ResearchPathManager
 from bithumb_research.market_regime import MARKET_REGIME_VERSION, evaluate_regime_acceptance_gate
 
 from .dataset_snapshot import (
@@ -150,7 +150,7 @@ _WORKER_LOCAL_SNAPSHOT_CACHE: dict[str, dict[str, DatasetSnapshot]] = {}
 @dataclass(frozen=True)
 class EvaluationContext:
     manifest: ExperimentManifest
-    manager: PathManager | None
+    manager: ResearchPathManager | None
     snapshots: dict[str, DatasetSnapshot]
     manifest_hash: str
     simulation_seed_scope_hash: str
@@ -277,7 +277,7 @@ def _execute_parallel_candidate_work_units(
 def _evaluate_candidate_scenario_task(
     *,
     task: dict[str, Any],
-    manager: PathManager | None,
+    manager: ResearchPathManager | None,
     progress_callback: ProgressCallback | None,
     worker_pid: int | None,
 ) -> ResearchWorkResult:
@@ -726,24 +726,24 @@ def _validation_registry_required(manifest: ExperimentManifest) -> bool:
     return manifest.research_classification in {"exploratory", "validated_candidate", "validated_candidate"}
 
 
-def _research_artifact_root(manager: PathManager, experiment_id: str) -> Path:
+def _research_artifact_root(manager: ResearchPathManager, experiment_id: str) -> Path:
     root = manager.data_dir() / "derived" / "research" / experiment_id
     project_root = manager.project_root.resolve()
-    if PathManager._is_within(root.resolve(), project_root):
+    if ResearchPathManager.is_within(root.resolve(), project_root):
         raise ResearchValidationError(f"research derived artifact path must be outside repository: {root.resolve()}")
     return root
 
 
-def _candidate_events_path(manager: PathManager, experiment_id: str) -> Path:
+def _candidate_events_path(manager: ResearchPathManager, experiment_id: str) -> Path:
     return _research_artifact_root(manager, experiment_id) / "candidate_events.jsonl"
 
 
-def _candidate_result_path(manager: PathManager, experiment_id: str, candidate_id: str) -> Path:
+def _candidate_result_path(manager: ResearchPathManager, experiment_id: str, candidate_id: str) -> Path:
     return _research_artifact_root(manager, experiment_id) / "candidate_results" / f"{candidate_id}.json"
 
 
 def _candidate_detail_result_path(
-    manager: PathManager,
+    manager: ResearchPathManager,
     experiment_id: str,
     *,
     candidate_id: str,
@@ -759,14 +759,14 @@ def _candidate_detail_result_path(
     )
 
 
-def _candidate_failure_path(manager: PathManager, experiment_id: str, candidate_id: str) -> Path:
+def _candidate_failure_path(manager: ResearchPathManager, experiment_id: str, candidate_id: str) -> Path:
     return _research_artifact_root(manager, experiment_id) / "candidate_failures" / f"{candidate_id}.json"
 
 
 def _reserve_experiment_attempt(
     *,
     manifest: ExperimentManifest,
-    manager: PathManager,
+    manager: ResearchPathManager,
     snapshots: dict[str, DatasetSnapshot],
     quality_reports: dict[str, DatasetQualityReport],
     manifest_path: str | None,
@@ -896,13 +896,13 @@ def _reserve_experiment_attempt(
     return reservation
 
 
-def _data_dir_relative_ref(manager: PathManager, path: Path) -> str:
+def _data_dir_relative_ref(manager: ResearchPathManager, path: Path) -> str:
     return path.resolve().relative_to(manager.data_dir().resolve()).as_posix()
 
 
 def _closed_trades_for_stress_suite(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     base: dict[str, Any],
     split_name: str,
 ) -> tuple[ClosedTradeRecord, ...]:
@@ -926,7 +926,7 @@ def _closed_trades_for_stress_suite(
     return records
 
 
-def _load_candidate_detail_base_result(*, manager: PathManager, compact: dict[str, Any]) -> dict[str, Any]:
+def _load_candidate_detail_base_result(*, manager: ResearchPathManager, compact: dict[str, Any]) -> dict[str, Any]:
     detail_ref = str(compact.get("detail_artifact_ref") or "").strip()
     detail_path_value = str(compact.get("detail_artifact_path") or "").strip()
     if detail_ref:
@@ -938,7 +938,7 @@ def _load_candidate_detail_base_result(*, manager: PathManager, compact: dict[st
 
     resolved = detail_path.resolve()
     data_dir = manager.data_dir().resolve()
-    if not PathManager._is_within(resolved, data_dir):
+    if not ResearchPathManager.is_within(resolved, data_dir):
         raise ResearchValidationError(f"candidate_detail_artifact_outside_data_dir: {resolved}")
     if not resolved.is_file():
         raise ResearchValidationError(f"candidate_detail_artifact_not_found: {resolved}")
@@ -977,7 +977,7 @@ def _closed_trade_records_from_payload(payload: Any, *, source: str) -> tuple[Cl
 
 def _append_candidate_event(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     manifest: ExperimentManifest,
     event: dict[str, Any],
     artifact_context: ResearchArtifactContext | None = None,
@@ -998,7 +998,7 @@ def _append_candidate_event(
 def _backtest_context(
     *,
     manifest: ExperimentManifest,
-    manager: PathManager | None,
+    manager: ResearchPathManager | None,
     candidate_id: str,
     scenario_id: str,
     scenario_index: int,
@@ -1094,7 +1094,7 @@ def _validate_run_purpose_dataset_scope(
 def _progress_and_journal(
     *,
     callback: ProgressCallback | None,
-    manager: PathManager | None,
+    manager: ResearchPathManager | None,
     manifest: ExperimentManifest | None,
     event: dict[str, Any],
     artifact_context: ResearchArtifactContext | None = None,
@@ -1499,7 +1499,7 @@ def build_research_work_tasks_stage(
 
 def append_candidate_start_events_stage(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     manifest: ExperimentManifest,
     work_tasks: list[dict[str, Any]],
     candidate_count: int,
@@ -1570,7 +1570,7 @@ def run_research_backtest(
     *,
     manifest: ExperimentManifest,
     db_path: str | Path,
-    manager: PathManager,
+    manager: ResearchPathManager,
     generated_at: str | None = None,
     execution_calibration: dict[str, Any] | None = None,
     manifest_path: str | None = None,
@@ -1814,7 +1814,7 @@ def run_research_walk_forward(
     *,
     manifest: ExperimentManifest,
     db_path: str | Path,
-    manager: PathManager,
+    manager: ResearchPathManager,
     generated_at: str | None = None,
     execution_calibration: dict[str, Any] | None = None,
     manifest_path: str | None = None,
@@ -2064,7 +2064,7 @@ def run_research_walk_forward(
 def _evaluate_candidates(
     *,
     manifest: ExperimentManifest,
-    manager: PathManager,
+    manager: ResearchPathManager,
     snapshots: dict[str, DatasetSnapshot],
     db_path: str | Path | None = None,
     quality_reports: dict[str, DatasetQualityReport],
@@ -3510,7 +3510,7 @@ _DETAIL_ONLY_RESULT_KEYS = frozenset(
 
 def _compact_work_result_with_detail_artifact(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     manifest: ExperimentManifest,
     result: ResearchWorkResult,
     artifact_context: ResearchArtifactContext | None,
@@ -3669,7 +3669,7 @@ def _mark_noop_behavior_hash_groups(
 def _evaluate_candidate_base_result(
     *,
     manifest: ExperimentManifest,
-    manager: PathManager | None,
+    manager: ResearchPathManager | None,
     runner: Any,
     snapshots: dict[str, DatasetSnapshot],
     params: dict[str, Any],
@@ -4613,7 +4613,7 @@ def _failed_metrics_v2_payload(*, evaluation_status: str = "evaluation_failed") 
 
 def _write_failed_candidate_evidence(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     manifest: ExperimentManifest,
     candidate: dict[str, Any],
     artifact_context: ResearchArtifactContext | None = None,
@@ -5424,7 +5424,7 @@ def _walk_forward_metrics(
     scenario: ExecutionScenario | None = None,
     scenario_id: str | None = None,
     scenario_index: int = 0,
-    manager: PathManager | None = None,
+    manager: ResearchPathManager | None = None,
     slippage_bps: float | None = None,
     parameter_candidate_id: str | None = None,
     parameter_stability_score: float | None = None,
@@ -5621,7 +5621,7 @@ def _report_payload(
     command_name: str | None = None,
     command_args: dict[str, Any] | None = None,
     execution_calibration: dict[str, Any] | None = None,
-    manager: PathManager | None = None,
+    manager: ResearchPathManager | None = None,
     experiment_registry_reservation: dict[str, Any] | None = None,
     execution_plan: ResearchExecutionPlan | None = None,
     execution_observability: dict[str, Any] | None = None,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from bithumb_research.paths import PathManager
+from bithumb_research.paths import ResearchPathManager
 from bithumb_research.research.diagnostic_availability import DiagnosticAvailability
 from bithumb_research.research.experiment_manifest import ExperimentManifest
 from bithumb_research.research.artifact_contract import apply_artifact_contract, validate_artifact_contract
@@ -14,7 +14,7 @@ from bithumb_research.storage_io import write_json_atomic
 FAILURE_ARTIFACT_TYPE = "forward_return_diagnostic_failure"
 
 
-def forward_diagnostics_failure_path(*, manager: PathManager, experiment_id: str) -> Path:
+def forward_diagnostics_failure_path(*, manager: ResearchPathManager, experiment_id: str) -> Path:
     return manager.data_dir() / "reports" / "research" / experiment_id / "forward_diagnostics_failure.json"
 
 
@@ -46,7 +46,7 @@ def build_forward_diagnostics_failure_payload(
 
 def write_forward_diagnostics_failure_artifact(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     manifest: ExperimentManifest,
     split_name: str,
     feature_names: tuple[str, ...],

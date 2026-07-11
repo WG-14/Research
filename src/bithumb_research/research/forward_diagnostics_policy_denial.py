@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from bithumb_research.paths import PathManager
+from bithumb_research.paths import ResearchPathManager
 from bithumb_research.research.experiment_manifest import ExperimentManifest
 from bithumb_research.research.artifact_contract import apply_artifact_contract, validate_artifact_contract
 from bithumb_research.research.hashing import report_content_hash_payload, sha256_prefixed
@@ -15,7 +15,7 @@ POLICY_DENIAL_STATUS = "policy_denied"
 POLICY_DENIAL_NEXT_ACTION = "rerun_with_explicit_override_or_use_train_validation"
 
 
-def forward_diagnostics_policy_denial_path(*, manager: PathManager, experiment_id: str) -> Path:
+def forward_diagnostics_policy_denial_path(*, manager: ResearchPathManager, experiment_id: str) -> Path:
     return manager.data_dir() / "reports" / "research" / experiment_id / "forward_diagnostics_policy_denial.json"
 
 
@@ -47,7 +47,7 @@ def build_forward_diagnostics_policy_denial_payload(
 
 def write_forward_diagnostics_policy_denial_artifact(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     manifest: ExperimentManifest,
     reason: str,
     split_name: str,

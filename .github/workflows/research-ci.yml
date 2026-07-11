@@ -1,0 +1,25 @@
+name: research-ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      RESEARCH_DATA_ROOT: /tmp/bithumb-research/datasets
+      RESEARCH_ARTIFACT_ROOT: /tmp/bithumb-research/artifacts
+      RESEARCH_REPORT_ROOT: /tmp/bithumb-research/reports
+      RESEARCH_CACHE_ROOT: /tmp/bithumb-research/cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --dev
+      - run: uv run python -m compileall -q src/bithumb_research tools
+      - run: uv run pytest -q tests/test_repository_research_only_boundary.py tests/test_research_namespace_boundary.py
+      - run: uv run pytest -q

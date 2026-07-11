@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from bithumb_research.paths import PathManager
+from bithumb_research.paths import ResearchPathManager
 from bithumb_research.storage_io import append_jsonl, write_json_atomic
 
 
@@ -213,7 +213,7 @@ class ResearchArtifactContext:
     def __init__(
         self,
         *,
-        manager: PathManager,
+        manager: ResearchPathManager,
         experiment_id: str,
         budget: ArtifactBudget | None = None,
     ) -> None:

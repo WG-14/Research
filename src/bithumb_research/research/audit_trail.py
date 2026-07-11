@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from bithumb_research.paths import PathManager, PathPolicyError
+from bithumb_research.paths import ResearchPathError, ResearchPathManager
 
 from .artifact_store import ArtifactBudget, ArtifactStore, ResearchArtifactContext
 from .hashing import content_hash_payload, sha256_prefixed
@@ -100,7 +100,7 @@ class AuditTraceScope:
     def __init__(
         self,
         *,
-        manager: PathManager,
+        manager: ResearchPathManager,
         experiment_id: str,
         manifest_hash: str,
         dataset_content_hash: str,
@@ -218,7 +218,7 @@ class AuditTraceScope:
         stream.observe(ts=ts, event_hash=event_hash)
 
 
-def trace_root(*, manager: PathManager, experiment_id: str) -> Path:
+def trace_root(*, manager: ResearchPathManager, experiment_id: str) -> Path:
     root = manager.data_dir() / "derived" / "research" / experiment_id
     _ensure_allowed(manager, root)
     return root
@@ -226,7 +226,7 @@ def trace_root(*, manager: PathManager, experiment_id: str) -> Path:
 
 def trace_scope_dir(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     experiment_id: str,
     candidate_id: str,
     scenario_id: str,
@@ -235,13 +235,13 @@ def trace_scope_dir(
     return trace_root(manager=manager, experiment_id=experiment_id) / "traces" / candidate_id / scenario_id / split
 
 
-def trace_manifest_path(*, manager: PathManager, experiment_id: str) -> Path:
+def trace_manifest_path(*, manager: ResearchPathManager, experiment_id: str) -> Path:
     return trace_root(manager=manager, experiment_id=experiment_id) / "trace_manifest.json"
 
 
 def write_trace_manifest(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     experiment_id: str,
     manifest_hash: str,
     dataset_content_hash: str,
@@ -275,7 +275,7 @@ def write_trace_manifest(
 
 def verify_audit_trail(
     *,
-    manager: PathManager | None = None,
+    manager: ResearchPathManager | None = None,
     experiment_id: str | None = None,
     trace_manifest_path_value: str | Path | None = None,
     expected_manifest_hash: str | None = None,
@@ -412,7 +412,7 @@ def _verify_stream(*, stream: dict[str, Any], data_dir: Path, missing_reason: st
     return sorted(set(reasons))
 
 
-def validate_audit_trail_binding(*, report: dict[str, Any], manager: PathManager) -> list[str]:
+def validate_audit_trail_binding(*, report: dict[str, Any], manager: ResearchPathManager) -> list[str]:
     reasons: list[str] = []
     policy = report.get("audit_trail_policy")
     policy_required = bool(isinstance(policy, dict) and policy.get("required_for_validation"))
@@ -438,7 +438,7 @@ def validate_audit_trail_binding(*, report: dict[str, Any], manager: PathManager
         return ["audit_trail_trace_manifest_missing"]
     try:
         _ensure_allowed(manager, manifest_path)
-    except PathPolicyError:
+    except ResearchPathError:
         return ["audit_trail_trace_manifest_missing"]
     if not manifest_path.exists():
         return ["audit_trail_trace_manifest_missing"]
@@ -472,11 +472,11 @@ def _event_ts(payload: dict[str, Any]) -> int | None:
     return None
 
 
-def _data_ref(manager: PathManager, path: Path) -> str:
+def _data_ref(manager: ResearchPathManager, path: Path) -> str:
     return path.resolve().relative_to(manager.data_dir().resolve()).as_posix()
 
 
-def _ensure_allowed(manager: PathManager, path: Path) -> None:
+def _ensure_allowed(manager: ResearchPathManager, path: Path) -> None:
     project_root = manager.project_root.resolve()
-    if PathManager._is_within(path.resolve(), project_root):
-        raise PathPolicyError(f"research audit trace path must be outside repository: {path.resolve()}")
+    if ResearchPathManager.is_within(path.resolve(), project_root):
+        raise ResearchPathError(f"research audit trace path must be outside repository: {path.resolve()}")

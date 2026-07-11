@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from bithumb_research.paths import PathManager
+from bithumb_research.paths import ResearchPathManager
 from bithumb_research.research.experiment_manifest import ExperimentManifest
 from bithumb_research.research.forward_diagnostics import FINAL_HOLDOUT_WARNING_REASON, ForwardDiagnosticsResult
 from bithumb_research.research.hashing import report_content_hash_payload, sha256_prefixed
@@ -24,7 +24,7 @@ class ForwardDiagnosticsReportPaths:
 
 def forward_diagnostics_report_paths(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     experiment_id: str,
 ) -> ForwardDiagnosticsReportPaths:
     base_data_dir = manager.data_dir()
@@ -48,7 +48,7 @@ def forward_diagnostics_report_paths(
 
 def write_forward_diagnostics_report(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     manifest: ExperimentManifest,
     result: ForwardDiagnosticsResult,
 ) -> dict[str, Any]:

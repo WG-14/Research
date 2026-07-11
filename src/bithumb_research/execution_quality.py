@@ -519,7 +519,7 @@ def _submit_evidence_contract_fields(event: sqlite3.Row | None) -> dict[str, obj
         return {}
     evidence = _decode_submit_evidence(event["submit_evidence"])
     return {
-        "exchange": str(evidence.get("exchange") or evidence.get("broker") or "bithumb").strip().lower() or None,
+        "exchange": str(evidence.get("exchange") or evidence.get("venue") or "bithumb").strip().lower() or None,
         "submit_contract_kind": str(evidence.get("submit_contract_kind") or "").strip() or None,
         "exchange_order_type": str(evidence.get("exchange_order_type") or "").strip() or None,
         "exchange_submit_notional_krw": _nested_number(

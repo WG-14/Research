@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from bithumb_research.paths import PathManager
+from bithumb_research.paths import ResearchPathManager
+from bithumb_research.settings import ResearchSettings
 
 from .audit_trail import validate_audit_trail_binding
 from .research_classification import requires_candidate_validation
@@ -301,9 +302,9 @@ def _normalized_sha256(value: object) -> str | None:
     return None
 
 
-def reproduce_validation(validation_path: str | Path, *, manager: PathManager | None = None) -> ReproducibilityResult:
+def reproduce_validation(validation_path: str | Path, *, manager: ResearchPathManager | None = None) -> ReproducibilityResult:
     path = Path(validation_path).expanduser()
-    active_manager = manager or PathManager.from_env(Path.cwd())
+    active_manager = manager or ResearchPathManager.from_settings(ResearchSettings.from_env(), project_root=Path.cwd())
     summary: dict[str, Any] = {
         "ok": False,
         "reason": "unknown",
@@ -634,7 +635,7 @@ def reproduce_validation(validation_path: str | Path, *, manager: PathManager | 
 def _verify_backtest_audit_trail_binding(
     summary: dict[str, Any],
     lineage: dict[str, Any],
-    manager: PathManager,
+    manager: ResearchPathManager,
 ) -> None:
     report = _load_optional_artifact(lineage.get("backtest_report_path"))
     if not isinstance(report, dict):

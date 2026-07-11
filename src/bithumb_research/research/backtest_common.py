@@ -39,8 +39,6 @@ def _research_position_authority_snapshot(
         "terminal_state": "flat" if flat else "research_not_modeled",
         "entry_allowed": flat,
         "exit_allowed": bool(float(sellable_qty) > 0.0),
-        "recovery_blocked": False,
-        "recovery_block_reason": "none",
         "order_rules_hash": order_rules_hash,
         "fee_authority_hash": fee_authority_hash,
         "position_state_hash": position_state_hash,

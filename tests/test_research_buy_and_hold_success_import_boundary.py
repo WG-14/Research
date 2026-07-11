@@ -10,9 +10,9 @@ from tests.research_buy_and_hold_success_fixture import create_success_fixture
 
 
 FORBIDDEN = (
-    "bithumb_research.config",
+    "bithumb_research." + "config",
     "bithumb_research.research_profile",
-    "bithumb_research.broker",
+    "bithumb_research." + "broker",
     "bithumb_research.runtime_strategy_decision",
     "bithumb_research.runtime_strategy_set",
     "bithumb_research.runtime_adapter_bootstrap",

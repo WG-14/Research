@@ -1,4 +1,4 @@
-"""Small, broker-free position model used by research backtests."""
+"""Small venue-neutral position model used by research backtests."""
 
 from __future__ import annotations
 

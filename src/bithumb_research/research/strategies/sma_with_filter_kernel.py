@@ -1,6 +1,6 @@
 """Vertical, research-only SMA backtest kernel.
 
-This intentionally does not use the operational execution-plan, broker, or
+This intentionally does not use the operational execution-plan, account adapter, or
 runtime-decision stacks.  It models only research cash/quantity state.
 """
 

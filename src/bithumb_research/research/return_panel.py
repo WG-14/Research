@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from bithumb_research.paths import PathManager
+from bithumb_research.paths import ResearchPathManager
 
 from .artifact_store import ResearchArtifactContext
 from .hashing import content_hash_payload, sha256_prefixed
@@ -27,7 +27,7 @@ def build_candidate_return_panel(
     split: str,
     benchmark: str,
     candidates: list[dict[str, Any]],
-    manager: PathManager | None = None,
+    manager: ResearchPathManager | None = None,
 ) -> dict[str, Any]:
     aligned = _build_aligned_portfolio_return_panel(
         experiment_id=experiment_id,
@@ -151,7 +151,7 @@ def _build_aligned_portfolio_return_panel(
     split: str,
     benchmark: str,
     candidates: list[dict[str, Any]],
-    manager: PathManager | None = None,
+    manager: ResearchPathManager | None = None,
 ) -> dict[str, Any] | None:
     if benchmark != "cash":
         return None
@@ -242,14 +242,14 @@ def _build_aligned_portfolio_return_panel(
 
 def write_candidate_return_panel(
     *,
-    manager: PathManager,
+    manager: ResearchPathManager,
     experiment_id: str,
     panel: dict[str, Any],
     artifact_context: ResearchArtifactContext | None = None,
 ) -> Path:
     path = manager.data_dir() / "reports" / "research" / experiment_id / "candidate_return_panel.json"
     project_root = manager.project_root.resolve()
-    if PathManager._is_within(path.resolve(), project_root):
+    if ResearchPathManager.is_within(path.resolve(), project_root):
         raise ValueError(f"candidate return panel path must be outside repository: {path.resolve()}")
     store = artifact_context or ResearchArtifactContext(manager=manager, experiment_id=experiment_id)
     store.write_json_atomic(path, panel)
@@ -483,7 +483,7 @@ def _candidate_portfolio_bar_return_series(
     candidate: dict[str, Any],
     *,
     split: str,
-    manager: PathManager | None = None,
+    manager: ResearchPathManager | None = None,
 ) -> list[dict[str, Any]]:
     curve = _candidate_equity_curve(candidate, split=split, manager=manager)
     if len(curve) < 2:
@@ -509,7 +509,7 @@ def _candidate_equity_curve(
     candidate: dict[str, Any],
     *,
     split: str,
-    manager: PathManager | None = None,
+    manager: ResearchPathManager | None = None,
 ) -> list[dict[str, Any]]:
     key = f"{split}_equity_curve"
     curve = candidate.get(key)
@@ -559,7 +559,7 @@ def _candidate_equity_curve_from_audit_trace(
     candidate: dict[str, Any],
     *,
     split: str,
-    manager: PathManager,
+    manager: ResearchPathManager,
 ) -> list[dict[str, Any]]:
     scenario_results = candidate.get("scenario_results")
     if not isinstance(scenario_results, list):
