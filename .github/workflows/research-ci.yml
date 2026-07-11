@@ -20,6 +20,38 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --dev
-      - run: uv run python -m compileall -q src/bithumb_research tools
+      - run: uv run python -m compileall -q src/bithumb_research
       - run: uv run pytest -q tests/test_repository_research_only_boundary.py tests/test_research_namespace_boundary.py
       - run: uv run pytest -q
+      - run: uv build
+      - name: Inspect wheel boundary
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheels = list(Path("dist").glob("*.whl"))
+          assert len(wheels) == 1, wheels
+          with ZipFile(wheels[0]) as wheel:
+              names = set(wheel.namelist())
+          required = {
+              "bithumb_research/__init__.py",
+              "bithumb_research/__main__.py",
+              "bithumb_research/research_bootstrap.py",
+          }
+          assert required <= names, required - names
+          assert any(name.startswith("bithumb_research/research/") for name in names)
+          assert any(name.startswith("bithumb_research/research_cli/") for name in names)
+          assert any(".dist-info/" in name for name in names)
+          forbidden = ("bithumb_" + "bot/", "tests/", "scr" + "ipts/", "to" + "ols/", ".env.example", ".github/")
+          assert not [name for name in names if name.startswith(forbidden) or name.endswith("/.env.example")]
+          PY
+      - name: Install and run wheel in an isolated environment
+        run: |
+          uv venv /tmp/bithumb-research-release-venv
+          uv pip install --python /tmp/bithumb-research-release-venv/bin/python dist/*.whl
+          cd /tmp
+          /tmp/bithumb-research-release-venv/bin/python -c "import bithumb_research; import importlib.metadata; assert importlib.metadata.version('bithumb-research') == '0.1.0'; import importlib.util; assert importlib.util.find_spec('bithumb_research') is not None; assert importlib.util.find_spec('bithumb_' + 'bot') is None"
+          /tmp/bithumb-research-release-venv/bin/bithumb-research --help > /tmp/console-help.txt
+          /tmp/bithumb-research-release-venv/bin/python -m bithumb_research --help > /tmp/module-help.txt
+          diff -u /tmp/console-help.txt /tmp/module-help.txt

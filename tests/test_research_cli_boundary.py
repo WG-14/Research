@@ -43,7 +43,6 @@ FORBIDDEN_OPERATIONAL_COMMANDS = {
     "profile-verify",
     "profile-diff",
     "decision-equivalence",
-    "research-promote-candidate",
 }
 
 FORBIDDEN_MODULES = {

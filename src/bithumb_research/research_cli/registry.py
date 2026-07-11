@@ -70,6 +70,12 @@ def _batch(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--out")
 
 
+def _reproduce_run(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--receipt", required=True)
+    parser.add_argument("--out")
+
+
 def _csv_strings(value: str) -> tuple[str, ...]:
     values = tuple(item.strip() for item in value.split(",") if item.strip())
     if not values:
@@ -132,7 +138,7 @@ _COMMANDS: tuple[tuple[str, ParserBuilder, str], ...] = (
     ("research-batch", _batch, "run multiple research manifests with bounded concurrency"),
     ("research-forward-diagnostics", _forward_diagnostics, "run diagnostic-only forward-return analysis"),
     ("research-verify-audit", lambda parser: parser.add_argument("--experiment-id", required=True), "verify research audit trace hash chains"),
-    ("research-reproduce-run", lambda parser: parser.add_argument("--manifest", required=True), "reproduce a manifest-backed research run"),
+    ("research-reproduce-run", _reproduce_run, "reproduce and compare a receipt-backed research run"),
     ("research-registry-inspect", _row_hash, "inspect one research registry row"),
     ("research-registry-validate", lambda parser: parser.add_argument("--experiment-id", required=True), "validate registry binding for an experiment"),
     ("research-mark-attempt-aborted", _mark_aborted, "append an aborted event for an incomplete research attempt"),

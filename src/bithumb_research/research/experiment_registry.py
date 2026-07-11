@@ -492,40 +492,6 @@ def append_attempt_completion(
     return {"path": str(path.resolve()), "prior_hash": prior_hash, "row_hash": str(row["row_hash"]), "row": dict(row)}
 
 
-def append_validation_registry_event(
-    *,
-    manager: ResearchPathManager,
-    reservation_row_hash: str,
-    validation_artifact_hash: str,
-    promoted_candidate_id: str,
-    created_at: str | None = None,
-) -> dict[str, Any] | None:
-    path = experiment_registry_path(manager=manager)
-    with _locked_registry(path):
-        rows = load_experiment_registry_rows(path)
-        reservation = next((row for row in rows if row.get("row_hash") == reservation_row_hash), None)
-        if not isinstance(reservation, dict):
-            return None
-        prior_hash = sha256_prefixed(rows) if rows else EMPTY_EXPERIMENT_REGISTRY_HASH
-        row = {
-            "schema_version": EXPERIMENT_REGISTRY_SCHEMA_VERSION,
-            "budget_policy": EXPERIMENT_REGISTRY_BUDGET_POLICY,
-            "event_type": "research_attempt_promoted",
-            "reservation_row_hash": reservation_row_hash,
-            "experiment_id": reservation.get("experiment_id"),
-            "experiment_family_id": reservation.get("experiment_family_id"),
-            "hypothesis_id": reservation.get("hypothesis_id"),
-            "validation_artifact_hash": validation_artifact_hash,
-            "promoted_candidate_id": promoted_candidate_id,
-            "result_status": "PROMOTED",
-            "prior_registry_hash": prior_hash,
-            "created_at": created_at or datetime.now(timezone.utc).isoformat(),
-        }
-        row["row_hash"] = compute_row_hash(row)
-        append_jsonl(path, row)
-    return {"path": str(path.resolve()), "prior_hash": prior_hash, "row_hash": str(row["row_hash"]), "row": dict(row)}
-
-
 def validate_experiment_registry_binding(
     *,
     report: dict[str, Any],

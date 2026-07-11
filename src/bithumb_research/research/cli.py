@@ -19,6 +19,11 @@ from .experiment_registry import (
     validate_experiment_registry_binding,
 )
 from .hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
+from .reproduction import (
+    ReproductionContractError,
+    compare_reproduction_fingerprints,
+    load_reproduction_receipt,
+)
 from .audit_trail import validate_audit_trail_binding, verify_audit_trail
 from .return_panel import validate_return_panel_binding
 from .execution_calibration import ExecutionCalibrationError, load_calibration_artifact
@@ -293,12 +298,122 @@ def cmd_research_validate(
     return rc
 
 
-def cmd_research_reproduce_run(*, context: "ResearchAppContext", manifest_path: str) -> int:
-    """Re-run a manifest with the same research-only inputs and settings."""
-    return cmd_research_backtest(
-        context=context,
-        manifest_path=manifest_path,
-    )
+def cmd_research_reproduce_run(
+    *,
+    context: "ResearchAppContext",
+    manifest_path: str,
+    receipt_path: str,
+    out_path: str | None = None,
+) -> int:
+    """Run in isolated output roots and compare stable evidence to a receipt."""
+
+    started_at = monotonic()
+    status = "REPRODUCTION_FAILED"
+    result_path: Path | None = None
+    payload: dict[str, object] = {}
+    try:
+        try:
+            manifest = load_manifest(manifest_path)
+            receipt = load_reproduction_receipt(receipt_path)
+            if receipt["manifest_hash"] != manifest.manifest_hash():
+                raise ReproductionContractError("receipt manifest_hash does not match manifest")
+            if receipt["experiment_id"] != manifest.experiment_id:
+                raise ReproductionContractError("receipt experiment_id does not match manifest")
+            db_path = context.paths.require_database_path()
+            if not db_path.is_file():
+                raise ReproductionContractError(f"dataset locator is not accessible: {db_path}")
+
+            receipt_hash = str(receipt["receipt_content_hash"])
+            prefix = receipt_hash.removeprefix("sha256:")[:12]
+            isolated_settings = replace(
+                context.settings,
+                artifact_root=context.settings.artifact_root / "reproductions" / manifest.experiment_id / prefix,
+                report_root=context.settings.report_root / "reproductions" / manifest.experiment_id / prefix,
+                cache_root=context.settings.cache_root / "reproductions" / manifest.experiment_id / prefix,
+            )
+            isolated_paths = type(context.paths).from_settings(
+                isolated_settings, project_root=context.paths.project_root
+            )
+            reproduced_report = run_research_backtest(
+                manifest=manifest,
+                db_path=db_path,
+                manager=isolated_paths,
+                manifest_path=manifest_path,
+                command_args={
+                    "manifest": manifest_path,
+                    "receipt": receipt_path,
+                    "reproduction": True,
+                },
+                progress_callback=_print_research_backtest_progress,
+            )
+            reproduced_receipt_path = Path(str(reproduced_report["reproduction_receipt_path"]))
+            reproduced_receipt = load_reproduction_receipt(reproduced_receipt_path)
+            comparison = compare_reproduction_fingerprints(
+                receipt["stable_fingerprint"], reproduced_receipt["stable_fingerprint"]
+            )
+            status = comparison.status
+            report_path = Path(str((reproduced_report.get("artifact_paths") or {}).get("report_path") or ""))
+            payload = {
+                "schema_version": 1,
+                "status": status,
+                "experiment_id": manifest.experiment_id,
+                "manifest_hash": manifest.manifest_hash(),
+                **comparison.as_dict(),
+                "baseline_receipt_path": str(Path(receipt_path).expanduser().resolve()),
+                "reproduced_report_path": str(report_path.resolve()),
+                "reproduced_receipt_path": str(reproduced_receipt_path.resolve()),
+            }
+            if out_path is None:
+                result_path = context.paths.report_path(
+                    "reproductions", manifest.experiment_id, prefix, "reproduction_report.json"
+                )
+            else:
+                result_path = _require_external_absolute_output_path(context, out_path)
+            write_json_atomic(result_path, payload)
+        except (ManifestValidationError, ResearchValidationError, ReproductionContractError, OSError, ValueError) as exc:
+            status = "INVALID_BASELINE" if isinstance(exc, ReproductionContractError) else "REPRODUCTION_FAILED"
+            payload = {
+                "schema_version": 1,
+                "status": status,
+                "manifest_path": str(Path(manifest_path).expanduser()),
+                "baseline_receipt_path": str(Path(receipt_path).expanduser()),
+                "error": str(exc),
+                "mismatches": [],
+            }
+            try:
+                result_path = (
+                    _require_external_absolute_output_path(context, out_path)
+                    if out_path is not None
+                    else context.paths.report_path("reproductions", "invalid", "reproduction_report.json")
+                )
+                write_json_atomic(result_path, payload)
+            except (OSError, ValueError):
+                pass
+            context.printer(f"[RESEARCH-REPRODUCE-RUN] error={exc}")
+    finally:
+        if result_path is not None:
+            context.printer(json.dumps(payload, sort_keys=True))
+        _print_research_command_finished(
+            context,
+            "research-reproduce-run",
+            started_at,
+            0 if status == "PASS" else 1,
+            manifest=manifest_path,
+            receipt=receipt_path,
+            out=str(result_path) if result_path else out_path,
+            status=status,
+        )
+    return 0 if status == "PASS" else 1
+
+
+def _require_external_absolute_output_path(context: "ResearchAppContext", out_path: str) -> Path:
+    path = Path(out_path).expanduser()
+    if not path.is_absolute():
+        raise ValueError("--out must be an absolute repository-external path")
+    resolved = path.resolve()
+    if context.paths.is_within(resolved, context.paths.project_root):
+        raise ValueError("--out must be outside the repository")
+    return resolved
 
 
 def cmd_research_registry_inspect(*, context: "ResearchAppContext", row_hash: str) -> int:

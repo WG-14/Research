@@ -306,23 +306,23 @@ def _next_action(
     if gate_result == "EXPLORATORY" or gate_result == "DIAGNOSTIC_ONLY":
         return "revise_hypothesis_from_exploratory_diagnostics"
     if final_selection_gate_failed:
-        return "do_not_promote_review_final_selection_contract"
+        return "candidate_not_selected_review_final_selection_contract"
     if statistical_gate_failed:
-        return "do_not_promote_review_statistical_selection"
+        return "candidate_not_selected_review_statistical_selection"
     if registry_gate_failed:
-        return "do_not_promote_review_experiment_registry"
+        return "candidate_not_selected_review_experiment_registry"
     if validation_eligibility_failed:
-        return "do_not_promote_review_blocking_reasons"
+        return "candidate_ineligible_review_blocking_reasons"
     if not has_candidates:
         return "inspect_dataset_or_manifest"
     if "walk_forward_missing" in top_fail_reasons:
         return "run_walk_forward_before_validation"
     if "walk_forward_failed" in top_fail_reasons:
-        return "do_not_promote_review_walk_forward_windows"
+        return "candidate_not_selected_review_walk_forward_windows"
     if "profit_factor_failed" in top_fail_reasons or "min_trade_count_failed" in top_fail_reasons:
-        return "do_not_promote_revise_strategy_hypothesis"
+        return "candidate_not_selected_revise_strategy_hypothesis"
     if has_entry_exit_diagnostics:
         return "review_entry_exit_channel_diagnostics"
     if gate_result == "FAIL":
-        return "inspect_report_or_adjust_hypothesis_not_promote"
-    return "inspect_report_or_adjust_hypothesis_not_promote"
+        return "inspect_report_or_adjust_hypothesis"
+    return "inspect_report_or_adjust_hypothesis"

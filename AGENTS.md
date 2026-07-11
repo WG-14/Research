@@ -11,7 +11,7 @@ reports and audit evidence. It is not a trading bot.
 
 The repository contains research code, tests, documentation, examples, and
 development validation scripts. It must not contain account access, private
-private account APIs, order submission, account-connected runtime, state
+account APIs, order submission, account-connected runtime, state
 repair, single-instance coordination, service management, deployment, or
 operator tooling.
 

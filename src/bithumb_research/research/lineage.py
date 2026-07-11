@@ -918,9 +918,9 @@ def _verify_stress_suite_bindings(
                 candidate.get("stress_suite_contract_hash"),
                 "stress_suite_contract_mismatch",
             )
-        )
+    )
     for field, required in fields:
-        promoted = validation.get(field)
+        validated = validation.get(field)
         reported = candidate.get(field)
         if required and not isinstance(reported, dict):
             summary["mismatches"].append(
@@ -935,11 +935,11 @@ def _verify_stress_suite_bindings(
                     ),
                 )
             )
-        if isinstance(promoted, dict) and isinstance(reported, dict):
+        if isinstance(validated, dict) and isinstance(reported, dict):
             _compare(
                 summary,
                 f"backtest_report.{field}.stress_suite_hash",
-                promoted.get("stress_suite_hash"),
+                validated.get("stress_suite_hash"),
                 reported.get("stress_suite_hash"),
                 (
                     "final_holdout_stress_suite_hash_mismatch"

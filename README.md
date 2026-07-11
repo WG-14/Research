@@ -58,8 +58,22 @@ backtest, final holdout, stress suite, statistical validation, walk-forward,
 final selection, and a research candidate report. Results are `PASS`, `FAIL`,
 or `INSUFFICIENT_EVIDENCE`.
 
-`research-reproduce-run --manifest /abs/experiment.json` reruns the same
-manifest-backed experiment and compares the resulting artifact hashes.
+`research-backtest` writes `reproduction_receipt.json` beside its experiment
+report. Verify that result later with an isolated rerun:
+
+```bash
+uv run bithumb-research research-reproduce-run \
+  --manifest /abs/experiment.json \
+  --receipt /abs/reproduction_receipt.json \
+  --out /abs/reproduction_report.json
+```
+
+The receipt binds the manifest, dataset snapshot/split hashes, strategy and
+execution contracts, seed scope, candidate parameters/gates, scenario behavior
+and result hashes, and final selection status. It deliberately excludes
+timestamps, wall time, process/memory observations, and absolute paths because
+those values are not deterministic research evidence. `PASS` means this stable
+evidence matches; `DRIFT` reports each differing evidence path.
 
 ## Artifacts and reproducibility
 

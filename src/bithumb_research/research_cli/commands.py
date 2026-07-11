@@ -75,7 +75,9 @@ def execute_research_command(
     if command == "research-verify-audit":
         return int(cli.cmd_research_verify_audit(context=context, experiment_id=args.experiment_id))
     if command == "research-reproduce-run":
-        return int(cli.cmd_research_reproduce_run(context=context, manifest_path=args.manifest))
+        return int(cli.cmd_research_reproduce_run(
+            context=context, manifest_path=args.manifest, receipt_path=args.receipt, out_path=args.out,
+        ))
     if command == "research-registry-inspect":
         return int(cli.cmd_research_registry_inspect(context=context, row_hash=args.row_hash))
     if command == "research-registry-validate":

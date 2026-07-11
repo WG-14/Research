@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import copy
+from collections import Counter
 
 import pytest
 
 from bithumb_research.research.artifact_contract import apply_artifact_contract, validate_artifact_contract
 from bithumb_research.research.experiment_manifest import ManifestValidationError, parse_manifest
+from bithumb_research.research.run_summary import _next_action
 
 
 def _manifest_payload() -> dict[str, object]:
@@ -69,3 +71,27 @@ def test_diagnostic_artifact_contract_is_research_schema_v2() -> None:
         "researcher_next_action": "run_research_validate_from_fixed_manifest",
     }
     validate_artifact_contract(payload)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    (
+        ({"final_selection_gate_failed": True}, "candidate_not_selected_review_final_selection_contract"),
+        ({"statistical_gate_failed": True}, "candidate_not_selected_review_statistical_selection"),
+        ({"registry_gate_failed": True}, "candidate_not_selected_review_experiment_registry"),
+        ({"validation_eligibility_failed": True}, "candidate_ineligible_review_blocking_reasons"),
+        ({"top_fail_reasons": Counter({"walk_forward_failed": 1})}, "candidate_not_selected_review_walk_forward_windows"),
+        ({"top_fail_reasons": Counter({"profit_factor_failed": 1})}, "candidate_not_selected_revise_strategy_hypothesis"),
+        ({"gate_result": "FAIL"}, "inspect_report_or_adjust_hypothesis"),
+    ),
+)
+def test_run_summary_uses_research_candidate_next_actions(kwargs: dict[str, object], expected: str) -> None:
+    arguments: dict[str, object] = {
+        "validation_allowed": False,
+        "has_candidates": True,
+        "top_fail_reasons": Counter(),
+        "gate_result": "UNKNOWN",
+    }
+    arguments.update(kwargs)
+
+    assert _next_action(**arguments) == expected  # type: ignore[arg-type]

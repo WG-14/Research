@@ -101,6 +101,7 @@ from .report_writer import (
     summarize_candidate_result,
     write_research_report,
 )
+from .reproduction import create_reproduction_receipt
 from .statistical_selection import (
     STATISTICAL_EVIDENCE_GENERATION_UNAVAILABLE_WARNING,
     build_statistical_selection_evidence,
@@ -858,7 +859,7 @@ def _reserve_experiment_attempt(
         "statistical_evidence_hash": None,
         "return_panel_hash": None,
         "validation_artifact_hash": None,
-        "promoted_candidate_id": None,
+        "selected_candidate_id": None,
         "repository_version": repository_version,
         "manifest_path": manifest_path,
         "command_name": command_name,
@@ -1800,6 +1801,18 @@ def run_research_backtest(
     report.update(write_result.report_payload or {})
     if manifest.research_run.report_detail == "summary":
         report["candidates"] = full_candidates
+    receipt_path = paths.report_path.with_name("reproduction_receipt.json")
+    # The report writer may retain a bounded candidate index in the persisted
+    # report.  Receipt evidence must bind the complete in-memory results.
+    receipt_report = dict(report)
+    receipt_report["candidates"] = full_candidates or []
+    receipt = create_reproduction_receipt(
+        report=receipt_report,
+        manifest=manifest,
+        receipt_path=receipt_path,
+    )
+    report["reproduction_receipt_path"] = str(receipt_path.resolve())
+    report["reproduction_receipt_hash"] = receipt["receipt_content_hash"]
     _emit_progress(
         progress_callback,
         stage="complete",

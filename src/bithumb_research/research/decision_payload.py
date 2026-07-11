@@ -214,7 +214,7 @@ class DecisionPayloadBuilder:
             if statistical_evidence
             else str(getattr(getattr(strategy_plugin, "research_contract", None), "fail_closed_reason", ""))
         )
-        payload["recommended_next_action"] = "none" if statistical_evidence else "promote_strategy_contract"
+        payload["recommended_next_action"] = "none" if statistical_evidence else "review_strategy_contract"
         _attach_common_exit_diagnostic_counts(payload)
         return payload
 
@@ -369,7 +369,7 @@ class DecisionPayloadBuilder:
                 "strategy_decision_contract_version": strategy_plugin.decision_contract_version,
                 "statistical_evidence": statistical_evidence,
                 "validation_extension_missing_reason": validation_missing_reason,
-                "recommended_next_action": "none" if statistical_evidence else "promote_strategy_contract",
+                "recommended_next_action": "none" if statistical_evidence else "review_strategy_contract",
                 "raw_reason": raw_reason,
                 "feature_snapshot": dict(event.feature_snapshot),
                 "strategy_diagnostics_namespace": strategy_plugin.diagnostics_namespace,
