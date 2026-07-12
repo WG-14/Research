@@ -1,6 +1,35 @@
 # Dataset artifact legacy inventory and policy
 
-Inventory performed against repository commit `d5fd34c4e860c736ae8e9ea27c669d716fb8fed3` before this patch:
+## Current external inventory
+
+Read-only inventory performed on 2026-07-12 against repository commit
+`488b597dcf808fbbb81d9b01df063bf194cd1fa8`:
+
+| Root | Current status | Artifact-manifest schemas | Receipt schemas | Registry-row schemas | Reuse-key schemas | Legacy authority fields |
+| --- | --- | --- | --- | --- | --- | --- |
+| `RESEARCH_DATA_ROOT` | unset | not observable | not observable | not observable | not observable | not observable |
+| `RESEARCH_ARTIFACT_ROOT` | unset | not observable | not observable | not observable | not observable | not observable |
+| `RESEARCH_REPORT_ROOT` | unset | not observable | not observable | not observable | not observable | not observable |
+
+No root was passed to `find` or `rg`; the inventory made no external writes and
+did not inspect, modify, or infer the contents of an unavailable path. In
+particular, the legacy-field counts for `source_uri`, `source_content_hash`,
+`source_schema_hash`, and raw locator authority are **not observable**, not
+zero. The same is true of first/latest external timestamps.
+
+Because deployment of registry schema 2 and reuse-key schema 3 cannot be
+proved absent, their meanings remain read-only legacy semantics. New rows use
+experiment-registry schema 3 and completed final-holdout reuse-key schema 4.
+In code these are `EXPERIMENT_REGISTRY_SCHEMA_VERSION = 3` and
+`FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION = 4`.
+Schema 4 is written only on completion with materialized artifact, query,
+data, fingerprint, and quality evidence. Pre-exposure reservations use the
+separate `pre_exposure_reservation_key_v1`; it is not an authoritative reuse
+key. Unknown and legacy registry schemas fail closed.
+
+Historical repository-only observations (not current external deployment
+evidence) were previously recorded against commit
+`d5fd34c4e860c736ae8e9ea27c669d716fb8fed3`:
 
 - Example manifests: `examples/research/sma_filter_manifest.example.json` uses
   the legacy `snapshot_id` dataset field, but no legacy artifact hashes.
@@ -44,8 +73,11 @@ Selected related policies:
   are file-fsynced then atomically renamed as one directory. Parent-directory
   fsync/power-loss durability is deliberately not claimed. The tested
   concurrency scope is same-filesystem multi-process publication; a winning
-  bundle is fully verified before it is reused. Distributed publication safety
-  is not claimed.
+  bundle is fully verified before it is reused. This is exercised by the
+  deterministic two-process publication race in
+  `test_concurrent_identical_publication_reuses_verified_bundle`; conflicting
+  and tampered-winner paths are separately covered. Distributed publication
+  safety is not claimed.
 - Verification caches are owned by a single run context. Each new run and each
   worker may independently verify the artifact.
 - Mutable `sqlite_candles` evidence is `DECLARED_ONLY` and therefore rejected
