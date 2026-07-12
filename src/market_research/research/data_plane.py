@@ -26,7 +26,7 @@ from .intervals import interval_to_milliseconds
 
 
 def _configured_db_path(db_path: str | Path | None) -> Path:
-    raw = db_path or os.getenv("RESEARCH_DB_PATH") or os.getenv("DB_PATH")
+    raw = db_path or os.getenv("RESEARCH_DB_PATH")
     if raw is None or not str(raw).strip():
         raise ValueError("db_path is required; set RESEARCH_DB_PATH for research commands")
     return Path(raw).expanduser().resolve()

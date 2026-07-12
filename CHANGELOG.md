@@ -11,6 +11,7 @@
 - Removed the no-op diagnostic-only missing-candle policy.
 - Aligned readiness guidance with external-only datasets and calibration artifacts.
 - Hardened offline-boundary checks against network submodule import bypasses.
+- Removed the unused market-warning provider-schema contract.
 
 ### 0.1.0
 

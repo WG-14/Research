@@ -20,6 +20,10 @@ exchange raw order-semantics inference, and retry/backfill/source-probe
 workflows are forbidden. Inputs are externally prepared immutable datasets and
 canonical research artifacts only.
 
+These boundaries correspond to the architecture domains
+`network_market_data_collection`, `operational_order_fill_database_ingestion`,
+`exchange_raw_order_semantics_inference`, and `retry_backfill_source_probe`.
+
 ## Supported strategies
 
 The supported strategy set is exactly:

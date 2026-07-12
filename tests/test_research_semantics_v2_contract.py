@@ -100,6 +100,17 @@ def test_dataset_quality_policy_rejects_non_strict_contract(
         parse_manifest(payload)
 
 
+def test_dataset_quality_policy_rejects_explicit_top_level_null() -> None:
+    payload = _manifest_payload()
+    payload["dataset_quality_policy"] = None
+
+    with pytest.raises(
+        ManifestValidationError,
+        match="dataset_quality_policy must be an object when supplied",
+    ):
+        parse_manifest(payload)
+
+
 @pytest.mark.parametrize("legacy_key", ("deployment_tier", "promotion_target"))
 def test_legacy_manifest_classification_keys_are_unknown(legacy_key: str) -> None:
     payload = copy.deepcopy(_manifest_payload())

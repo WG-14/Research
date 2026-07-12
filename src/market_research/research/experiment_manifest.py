@@ -946,6 +946,8 @@ def parse_manifest(payload: dict[str, Any]) -> ExperimentManifest:
         execution_model=execution_model,
         execution_timing=execution_timing,
     )
+    if "dataset_quality_policy" in payload and payload["dataset_quality_policy"] is None:
+        raise ManifestValidationError("dataset_quality_policy must be an object when supplied")
     _parse_dataset_quality_policy(payload.get("dataset_quality_policy"))
     portfolio_policy = _parse_portfolio_policy(payload.get("portfolio_policy"), research_classification=research_classification)
     risk_policy = _parse_risk_policy(payload.get("risk_policy"), research_classification=research_classification)

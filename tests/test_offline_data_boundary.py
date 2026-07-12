@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from market_research.market_ids import MarketCodeError, parse_market_id
+from market_research.research.data_plane import _configured_db_path
 from market_research.research.execution_calibration_contract import ExecutionCalibrationThresholds
 from market_research.research.intervals import interval_to_milliseconds, interval_to_minutes
 
@@ -25,6 +26,10 @@ FORBIDDEN_NETWORK_ROOTS = {
     "socket",
     "httpcore",
     "ccxt",
+}
+FORBIDDEN_STDLIB_NETWORK_MODULES = {
+    "urllib.request",
+    "http.client",
 }
 FORBIDDEN_URL_PREFIXES = ("http://", "https://", "ws://", "wss://")
 FORBIDDEN_REMOTE_NAMES = {
@@ -64,9 +69,19 @@ def _source_violations(package: Path) -> list[str]:
                 for alias in node.names:
                     if _module_root(alias.name) in FORBIDDEN_NETWORK_ROOTS:
                         violations.append(f"forbidden import {alias.name!r} in {path}")
+                    if any(
+                        _matches_module_or_submodule(alias.name, forbidden)
+                        for forbidden in FORBIDDEN_STDLIB_NETWORK_MODULES
+                    ):
+                        violations.append(f"forbidden import {alias.name!r} in {path}")
             elif isinstance(node, ast.ImportFrom):
                 module = node.module or ""
                 if _module_root(module) in FORBIDDEN_NETWORK_ROOTS:
+                    violations.append(f"forbidden import {module!r} in {path}")
+                if any(
+                    _matches_module_or_submodule(module, forbidden)
+                    for forbidden in FORBIDDEN_STDLIB_NETWORK_MODULES
+                ):
                     violations.append(f"forbidden import {module!r} in {path}")
                 if module == "urllib" and any(alias.name == "request" for alias in node.names):
                     violations.append(f"forbidden import 'urllib.request' in {path}")
@@ -74,7 +89,10 @@ def _source_violations(package: Path) -> list[str]:
                     violations.append(f"forbidden import 'http.client' in {path}")
             elif isinstance(node, ast.Attribute):
                 dotted_name = _dotted_name(node)
-                if dotted_name in {"urllib.request", "http.client"}:
+                if any(
+                    _matches_module_or_submodule(dotted_name, forbidden)
+                    for forbidden in FORBIDDEN_STDLIB_NETWORK_MODULES
+                ):
                     violations.append(f"forbidden network module reference {dotted_name!r} in {path}")
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 if node.name in FORBIDDEN_REMOTE_NAMES:
@@ -90,6 +108,10 @@ def _source_violations(package: Path) -> list[str]:
 
 def _module_root(module: str) -> str:
     return module.split(".", 1)[0]
+
+
+def _matches_module_or_submodule(module: str, forbidden: str) -> bool:
+    return module == forbidden or module.startswith(forbidden + ".")
 
 
 def _contains_sql_identifier(value: str, identifier: str) -> bool:
@@ -134,6 +156,9 @@ def test_offline_boundary_rejects_network_and_operational_reentry(tmp_path: Path
         "import requests.sessions\nfrom aiohttp.client import ClientSession\n"
         "from websockets.client import connect\nimport httpx._client\n"
         "from urllib.parse import urlparse\nimport urllib\n"
+        "import urllib.request as request\nrequest.urlopen('file-or-url')\n"
+        "import http.client as client\nclient.HTTPConnection('example.test')\n"
+        "from urllib.request import urlopen\nfrom http.client import HTTPConnection\n"
         "TEXT = 'remote endpoint: https://example.test/path'\n"
         "probe = urllib.request\ndef fetch_remote(): pass\n",
         encoding="utf-8",
@@ -145,6 +170,8 @@ def test_offline_boundary_rejects_network_and_operational_reentry(tmp_path: Path
     assert any("websockets.client" in item for item in violations)
     assert any("httpx._client" in item for item in violations)
     assert not any("urllib.parse" in item for item in violations)
+    assert any("urllib.request" in item for item in violations)
+    assert any("http.client" in item for item in violations)
     assert any("URL literal" in item for item in violations)
     assert any("network module reference" in item for item in violations)
     assert any("remote symbol" in item for item in violations)
@@ -162,6 +189,24 @@ def test_offline_boundary_rejects_network_and_operational_reentry(tmp_path: Path
     )
     dependencies = _runtime_dependencies(fake_pyproject)
     assert {"requests", "aiohttp", "httpx"} <= dependencies
+
+
+def test_configured_db_path_accepts_only_explicit_path_or_research_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    explicit_path = tmp_path / "explicit.sqlite"
+    research_path = tmp_path / "research.sqlite"
+    legacy_path = tmp_path / "legacy.sqlite"
+    monkeypatch.setenv("RESEARCH_DB_PATH", str(research_path))
+    monkeypatch.setenv("DB_PATH", str(legacy_path))
+
+    assert _configured_db_path(explicit_path) == explicit_path.resolve()
+    assert _configured_db_path(None) == research_path.resolve()
+
+    monkeypatch.delenv("RESEARCH_DB_PATH")
+    with pytest.raises(ValueError, match="RESEARCH_DB_PATH") as error:
+        _configured_db_path(None)
+    assert str(error.value) == "db_path is required; set RESEARCH_DB_PATH for research commands"
 
 
 def test_market_id_and_interval_helpers_are_local_and_deterministic() -> None:

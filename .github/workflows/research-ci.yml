@@ -21,7 +21,7 @@ jobs:
           python-version: "3.12"
       - run: uv sync --dev
       - run: uv run python -m compileall -q src/market_research
-      - run: uv run pytest -q tests/test_repository_research_only_boundary.py tests/test_market_research_namespace_boundary.py
+      - run: uv run pytest -q tests/test_repository_research_only_boundary.py tests/test_market_research_namespace_boundary.py tests/test_offline_data_boundary.py tests/test_execution_calibration_boundary.py tests/test_research_semantics_v2_contract.py
       - run: uv run pytest -q
       - run: uv build
       - name: Inspect wheel and sdist boundaries

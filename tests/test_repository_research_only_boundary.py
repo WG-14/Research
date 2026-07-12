@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib
 import json
 import pkgutil
@@ -53,12 +54,57 @@ def test_architecture_paths_exist_and_strategy_catalog_is_exact() -> None:
     boundaries = json.loads((ROOT / "docs/architecture-boundaries.json").read_text(encoding="utf-8"))
     for section in ("entrypoints", "research_core", "offline_data_helpers"):
         assert all((ROOT / path).exists() for path in boundaries[section])
+    required_forbidden_domains = {
+        "private_exchange_access",
+        "account_connected_runtime",
+        "order_submission",
+        "account_access",
+        "state_repair",
+        "reviewed_account_profile",
+        "network_market_data_collection",
+        "operational_order_fill_database_ingestion",
+        "exchange_raw_order_semantics_inference",
+        "retry_backfill_source_probe",
+    }
+    assert required_forbidden_domains <= set(boundaries["forbidden_domains"])
     assert {plugin.name for plugin in list_research_strategies()} == {
         "sma_with_filter",
         "buy_and_hold_baseline",
         "noop_baseline",
         "threshold_research_only",
     }
+
+
+def test_package_source_does_not_read_legacy_db_path_environment_variable() -> None:
+    package = ROOT / "src" / "market_research"
+    legacy_reads: list[Path] = []
+    for path in package.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            function = node.func
+            is_getenv = (
+                isinstance(function, ast.Attribute)
+                and function.attr == "getenv"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "os"
+            )
+            is_environ_get = (
+                isinstance(function, ast.Attribute)
+                and function.attr == "get"
+                and isinstance(function.value, ast.Attribute)
+                and function.value.attr == "environ"
+                and isinstance(function.value.value, ast.Name)
+                and function.value.value.id == "os"
+            )
+            if (
+                (is_getenv or is_environ_get)
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "DB_PATH"
+            ):
+                legacy_reads.append(path)
+    assert legacy_reads == []
 
 
 def test_every_package_module_imports_without_side_effects() -> None:
