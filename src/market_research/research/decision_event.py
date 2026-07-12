@@ -3,6 +3,48 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .hashing import sha256_prefixed
+
+
+@dataclass(frozen=True)
+class OrderIntent:
+    """Versioned, immutable instruction emitted by a research decision.
+
+    This is deliberately not an order.  It has no fill price or portfolio
+    effect; the common simulation engine resolves both after timing and risk
+    policy have been applied.
+    """
+
+    decision_id: str
+    intent_id: str
+    side: str
+    sizing: str = "portfolio_policy_fractional_cash"
+    buy_fraction: float | None = None
+    requested_qty: float | None = None
+    reason: str = ""
+    schema_version: int = 1
+
+    @classmethod
+    def from_decision(cls, *, decision_id: str, side: str, **values: Any) -> "OrderIntent":
+        payload = {"schema_version": 1, "decision_id": decision_id, "side": str(side).upper(), **values}
+        return cls(
+            decision_id=decision_id,
+            intent_id=sha256_prefixed(payload),
+            side=str(side).upper(),
+            sizing=str(values.get("sizing") or "portfolio_policy_fractional_cash"),
+            buy_fraction=(float(values["buy_fraction"]) if values.get("buy_fraction") is not None else None),
+            requested_qty=(float(values["requested_qty"]) if values.get("requested_qty") is not None else None),
+            reason=str(values.get("reason") or ""),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version, "decision_id": self.decision_id,
+            "intent_id": self.intent_id, "side": self.side, "sizing": self.sizing,
+            "buy_fraction": self.buy_fraction, "requested_qty": self.requested_qty,
+            "reason": self.reason,
+        }
+
 
 @dataclass(frozen=True)
 class ResearchDecisionEvent:
@@ -18,6 +60,14 @@ class ResearchDecisionEvent:
     entry_signal: str | None = None
     exit_signal: str | None = None
     blocked_filters: tuple[str, ...] = ()
-    order_intent: dict[str, object] | None = None
-    exit_intent: dict[str, object] | None = None
+    order_intent: OrderIntent | None = None
+    exit_intent: OrderIntent | None = None
     extra_payload: dict[str, Any] = field(default_factory=dict)
+
+    def decision_id(self) -> str:
+        return sha256_prefixed({
+            "strategy_name": self.strategy_name, "strategy_version": self.strategy_version,
+            "candle_ts": self.candle_ts, "decision_ts": self.decision_ts,
+            "raw_signal": self.raw_signal, "final_signal": self.final_signal,
+            "reason": self.reason, "feature_snapshot": self.feature_snapshot,
+        })

@@ -8,6 +8,12 @@ from market_research.research.hashing import sha256_prefixed
 
 @dataclass(frozen=True)
 class ExecutionRequest:
+    """Authoritative request after timing resolution; timestamps are causal.
+
+    ``signal_candle_*`` describe the observed candle, ``decision_ts`` the
+    decision, ``submit_ts_assumption`` the simulated submission, and
+    ``fill_reference_ts`` the market data reference used by the model.
+    """
     signal_ts: int
     decision_ts: int
     side: str
@@ -61,10 +67,19 @@ class ExecutionRequest:
     entry_signal_source: str | None = None
     entry_sizing_source: str | None = None
     intra_candle_policy: str = "close_price_only_no_intracandle_path"
+    run_id: str = ""
+    decision_id: str = ""
+    intent_id: str = ""
+    request_id: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        """Canonical evidence representation; excludes no authoritative field."""
+        return self.__dict__.copy()
 
 
 @dataclass(frozen=True)
 class ExecutionFill:
+    """Model result.  Portfolio application is a separate ledger operation."""
     signal_ts: int
     decision_ts: int
     submit_ts_assumption: int
@@ -130,9 +145,14 @@ class ExecutionFill:
     base_seed: int | None = None
     derived_seed_hash: str | None = None
     seed_derivation_inputs: dict[str, Any] | None = None
+    request_id: str = ""
+    fill_id: str = ""
+    portfolio_effective_ts: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "request_id": self.request_id,
+            "fill_id": self.fill_id,
             "signal_ts": self.signal_ts,
             "decision_ts": self.decision_ts,
             "submit_ts_assumption": self.submit_ts_assumption,
@@ -194,6 +214,7 @@ class ExecutionFill:
             "base_seed": self.base_seed,
             "derived_seed_hash": self.derived_seed_hash,
             "seed_derivation_inputs": self.seed_derivation_inputs,
+            "portfolio_effective_ts": self.portfolio_effective_ts,
         }
 
 

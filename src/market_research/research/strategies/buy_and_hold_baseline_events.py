@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from ..dataset_snapshot import DatasetSnapshot
-from ..decision_event import ResearchDecisionEvent
+from ..decision_event import OrderIntent, ResearchDecisionEvent
+from ..hashing import sha256_prefixed
 from ..execution_timing import candle_close_ts
 from ..experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
 from ..strategy_spec import BUY_AND_HOLD_BASELINE_SPEC
@@ -32,11 +33,18 @@ def build_buy_and_hold_baseline_events(
     for index, candle in enumerate(dataset.candles):
         is_buy = index == buy_index
         action = "BUY" if is_buy else "HOLD"
+        decision_ts = candle_close_ts(candle, interval=dataset.interval) + int(execution_timing_policy.decision_guard_ms)
+        features = {
+            "candle_index": int(index), "buy_index": int(buy_index), "close": float(candle.close),
+        }
+        decision_id = sha256_prefixed({"strategy_name": BUY_AND_HOLD_BASELINE_SPEC.strategy_name,
+            "strategy_version": BUY_AND_HOLD_BASELINE_SPEC.strategy_version, "candle_ts": int(candle.ts),
+            "decision_ts": decision_ts, "raw_signal": action, "final_signal": action,
+            "reason": decision_reason if is_buy else "buy_and_hold_after_entry_hold", "feature_snapshot": features})
         events.append(
             ResearchDecisionEvent(
                 candle_ts=int(candle.ts),
-                decision_ts=candle_close_ts(candle, interval=dataset.interval)
-                + int(execution_timing_policy.decision_guard_ms),
+                decision_ts=decision_ts,
                 strategy_name=BUY_AND_HOLD_BASELINE_SPEC.strategy_name,
                 strategy_version=BUY_AND_HOLD_BASELINE_SPEC.strategy_version,
                 raw_signal=action,
@@ -46,11 +54,7 @@ def build_buy_and_hold_baseline_events(
                 reason=(
                     decision_reason if is_buy else "buy_and_hold_after_entry_hold"
                 ),
-                feature_snapshot={
-                    "candle_index": int(index),
-                    "buy_index": int(buy_index),
-                    "close": float(candle.close),
-                },
+                feature_snapshot=features,
                 strategy_diagnostics={
                     "schema_version": 1,
                     "buy_index": int(buy_index),
@@ -58,13 +62,9 @@ def build_buy_and_hold_baseline_events(
                     "emitted_buy_intent": is_buy,
                 },
                 order_intent=(
-                    {
-                        "side": "BUY",
-                        "sizing": "portfolio_policy_fractional_cash",
-                        "buy_fraction": float(
-                            portfolio_policy.position_sizing.buy_fraction
-                        ),
-                    }
+                    OrderIntent.from_decision(decision_id=decision_id, side="BUY",
+                        sizing="portfolio_policy_fractional_cash",
+                        buy_fraction=float(portfolio_policy.position_sizing.buy_fraction), reason=decision_reason)
                     if is_buy
                     else None
                 ),

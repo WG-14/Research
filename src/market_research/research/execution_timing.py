@@ -132,7 +132,9 @@ def resolve_execution_reference(
         quote = dataset.top_of_book_for_ts(signal.signal_candle_start_ts)
         return ExecutionReferenceEvent(
             submit_ts_assumption=submit_ts,
-            fill_reference_ts=signal.signal_candle_start_ts,
+            # Legacy pricing remains explicitly classified, but its timestamp
+            # is the observed close, never the candle start.
+            fill_reference_ts=signal.signal_candle_close_ts,
             fill_reference_price=float(signal.signal_reference_price),
             fill_reference_source="candle_close",
             quote_ts=int(quote.ts) if quote is not None else None,

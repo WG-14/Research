@@ -69,17 +69,12 @@ def _run_registered_strategy_backtest(
 ) -> BacktestRun:
     from .strategy_catalog import resolve_research_strategy
 
-    runner = resolve_research_strategy(strategy_name).runner
-    return runner(
-        dataset,
-        parameter_values,
-        fee_rate,
-        slippage_bps,
-        parameter_stability_score,
-        execution_model,
-        execution_timing_policy,
-        portfolio_policy,
-        context,
+    from .simulation_engine import run_common_simulation_backtest
+    return run_common_simulation_backtest(
+        plugin=resolve_research_strategy(strategy_name), dataset=dataset,
+        parameter_values=parameter_values, fee_rate=fee_rate, slippage_bps=slippage_bps,
+        parameter_stability_score=parameter_stability_score, execution_model=execution_model,
+        execution_timing_policy=execution_timing_policy, portfolio_policy=portfolio_policy, context=context,
     )
 
 

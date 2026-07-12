@@ -8,7 +8,6 @@ from ..backtest_types import BacktestRunContext
 from ..strategy_contract import ResearchStrategyPlugin
 from ..strategy_spec import BUY_AND_HOLD_BASELINE_SPEC, materialize_strategy_parameters
 from .buy_and_hold_baseline_events import build_buy_and_hold_baseline_events
-from .buy_and_hold_baseline_kernel import run_buy_and_hold_baseline_backtest
 
 
 def _materialize(
@@ -35,7 +34,6 @@ def build_buy_and_hold_baseline_plugin() -> ResearchStrategyPlugin:
         spec=BUY_AND_HOLD_BASELINE_SPEC,
         required_data=BUY_AND_HOLD_BASELINE_SPEC.required_data,
         optional_data=BUY_AND_HOLD_BASELINE_SPEC.optional_data,
-        runner=run_buy_and_hold_baseline_backtest,
         event_builder=build_buy_and_hold_baseline_events,
         parameter_materializer=_materialize,
         decision_contract_version=BUY_AND_HOLD_BASELINE_SPEC.decision_contract_version,

@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..backtest_types import BacktestRun, BacktestRunContext
-from ..dataset_snapshot import DatasetSnapshot
-from ..execution_model import ExecutionModel
-from ..experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
+from ..backtest_types import BacktestRunContext
 from ..strategy_contract import (
     ResearchDataRequirement,
     ResearchStrategyDataRequirements,
@@ -13,7 +10,6 @@ from ..strategy_contract import (
 )
 from ..strategy_spec import SMA_WITH_FILTER_SPEC, materialize_strategy_parameters
 from .sma_with_filter_events import build_sma_with_filter_research_events
-from .sma_with_filter_kernel import run_sma_with_filter_backtest
 from ..exit_rules import materialize_sma_exit_policy
 
 
@@ -49,12 +45,6 @@ def _exit_policy_materializer(strategy_name: str, parameter_values: dict[str, An
     return materialize_sma_exit_policy(strategy_name, parameter_values)
 
 
-def _run(dataset: DatasetSnapshot, parameter_values: dict[str, Any], fee_rate: float, slippage_bps: float, parameter_stability_score: float | None = None, execution_model: ExecutionModel | None = None, execution_timing_policy: ExecutionTimingPolicy | None = None, portfolio_policy: PortfolioPolicy | None = None, risk_policy: Any | None = None, context: BacktestRunContext | None = None) -> BacktestRun:
-    if "SMA_SHORT" not in parameter_values or "SMA_LONG" not in parameter_values:
-        raise ValueError("sma_with_filter_required_parameters_missing")
-    return run_sma_with_filter_backtest(dataset=dataset, parameter_values=parameter_values, fee_rate=fee_rate, slippage_bps=slippage_bps, parameter_stability_score=parameter_stability_score, execution_model=execution_model, execution_timing_policy=execution_timing_policy, portfolio_policy=portfolio_policy, risk_policy=risk_policy, context=context)
-
-
 def build_sma_with_filter_plugin() -> ResearchStrategyPlugin:
     plugin = ResearchStrategyPlugin(
         name=SMA_WITH_FILTER_SPEC.strategy_name,
@@ -62,7 +52,6 @@ def build_sma_with_filter_plugin() -> ResearchStrategyPlugin:
         spec=SMA_WITH_FILTER_SPEC,
         required_data=SMA_WITH_FILTER_SPEC.required_data,
         optional_data=SMA_WITH_FILTER_SPEC.optional_data,
-        runner=_run,
         event_builder=build_sma_with_filter_research_events,
         parameter_materializer=_materialize,
         decision_contract_version=SMA_WITH_FILTER_SPEC.decision_contract_version,

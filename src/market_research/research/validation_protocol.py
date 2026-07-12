@@ -35,6 +35,8 @@ from .datasets.locators import LocatorValidationError, parse_immutable_locator
 from .datasets.artifact_manifest import ArtifactManifestError, load_artifact_manifest
 from .datasets.verification import DatasetVerificationResult, VerificationStatus, verification_allowed
 from .backtest_common import execution_event_summary
+from .simulation_engine import run_common_simulation_backtest
+from .execution_evidence import validate_execution_evidence
 from .backtest_types import (
     BacktestHeartbeatPolicy,
     BacktestResourceLimitExceeded,
@@ -307,7 +309,7 @@ def _evaluate_candidate_scenario_task(
         base = _evaluate_candidate_base_result(
             manifest=manifest,
             manager=manager,
-            runner=resolve_research_strategy(manifest.strategy_name).runner,
+            plugin=resolve_research_strategy(manifest.strategy_name),
             snapshots=snapshots,
             params=params,
             index=index,
@@ -3788,7 +3790,7 @@ def _evaluate_candidate_base_result(
     *,
     manifest: ExperimentManifest,
     manager: ResearchPathManager | None,
-    runner: Any,
+    plugin: Any,
     snapshots: dict[str, DatasetSnapshot],
     params: dict[str, Any],
     index: int,
@@ -3854,23 +3856,24 @@ def _evaluate_candidate_base_result(
         try:
             split_started = time.perf_counter()
             split_cpu_started = time.process_time()
-            runner_call = lambda: _invoke_strategy_runner(
-                    runner=runner,
+            execution_model = _execution_model_from_scenario(
+                scenario,
+                seed_context=_seed_context(
+                    simulation_seed_scope_hash=simulation_seed_scope_hash,
+                    scenario=scenario,
+                    scenario_id=scenario_id,
+                    parameter_candidate_id=param_candidate_id,
+                    split_name=split_name,
+                ),
+            )
+            runner_call = lambda: run_common_simulation_backtest(
+                    plugin=plugin,
                     dataset=snapshots[split_name],
                     parameter_values=params,
                     fee_rate=scenario.fee_rate,
                     slippage_bps=float(scenario.slippage_bps),
                     parameter_stability_score=None,
-                    execution_model=_execution_model_from_scenario(
-                        scenario,
-                        seed_context=_seed_context(
-                            simulation_seed_scope_hash=simulation_seed_scope_hash,
-                            scenario=scenario,
-                            scenario_id=scenario_id,
-                            parameter_candidate_id=param_candidate_id,
-                            split_name=split_name,
-                        ),
-                    ),
+                    execution_model=execution_model,
                     execution_timing_policy=manifest.execution_timing,
                     portfolio_policy=manifest.portfolio_policy,
                     risk_policy=manifest.risk_policy,
@@ -3891,6 +3894,10 @@ def _evaluate_candidate_base_result(
                 )
             else:
                 result = runner_call()
+            validate_execution_evidence(
+                run=result, timing=manifest.execution_timing, model=execution_model,
+                validation_bound=requires_candidate_validation(manifest.research_classification),
+            )
             wall_seconds = time.perf_counter() - split_started
             cpu_seconds = time.process_time() - split_cpu_started
             candles = len(snapshots[split_name].candles)
@@ -4138,55 +4145,6 @@ def _record_failed_work_unit(
             ),
         }
     )
-
-
-def _invoke_strategy_runner(
-    *,
-    runner: Any,
-    dataset: DatasetSnapshot,
-    parameter_values: dict[str, Any],
-    fee_rate: float,
-    slippage_bps: float,
-    parameter_stability_score: float | None,
-    execution_model: Any,
-    execution_timing_policy: Any,
-    portfolio_policy: Any,
-    risk_policy: Any,
-    context: BacktestRunContext | None,
-) -> BacktestRun:
-    signature = inspect.signature(runner)
-    parameters = signature.parameters
-    accepts_var_keyword = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
-
-    def supports_keyword(name: str) -> bool:
-        if accepts_var_keyword:
-            return True
-        parameter = parameters.get(name)
-        return parameter is not None and parameter.kind in {
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            inspect.Parameter.KEYWORD_ONLY,
-        }
-
-    runner_kwargs = {
-        "dataset": dataset,
-        "parameter_values": parameter_values,
-        "fee_rate": fee_rate,
-        "slippage_bps": slippage_bps,
-        "parameter_stability_score": parameter_stability_score,
-        "execution_model": execution_model,
-        "execution_timing_policy": execution_timing_policy,
-        "portfolio_policy": portfolio_policy,
-        "risk_policy": risk_policy,
-        "context": context,
-    }
-    if not supports_keyword("portfolio_policy") and getattr(portfolio_policy, "source", None) == "manifest":
-        raise ResearchValidationError("strategy_runner_portfolio_policy_unsupported")
-    supported_kwargs = {
-        key: value
-        for key, value in runner_kwargs.items()
-        if supports_keyword(key)
-    }
-    return runner(**supported_kwargs)
 
 
 def _candidate_executed_portfolio_policy_evidence(
@@ -5603,7 +5561,7 @@ def _walk_forward_metrics(
             "failure_reason": "walk_forward_missing",
             "windows": [],
         }
-    runner = resolve_research_strategy(manifest.strategy_name).runner
+    plugin = resolve_research_strategy(manifest.strategy_name)
     active_scenario = scenario or ExecutionScenario(
         type="fixed_bps",
         fee_rate=float(fee_rate),
@@ -5625,8 +5583,8 @@ def _walk_forward_metrics(
             ),
         )
         if context is None:
-            return _invoke_strategy_runner(
-                runner=runner,
+            return run_common_simulation_backtest(
+                plugin=plugin,
                 dataset=snapshot,
                 parameter_values=parameter_values,
                 fee_rate=active_scenario.fee_rate,
@@ -5638,8 +5596,8 @@ def _walk_forward_metrics(
                 risk_policy=manifest.risk_policy,
                 context=None,
             )
-        return _invoke_strategy_runner(
-            runner=runner,
+        return run_common_simulation_backtest(
+            plugin=plugin,
             dataset=snapshot,
             parameter_values=parameter_values,
             fee_rate=active_scenario.fee_rate,

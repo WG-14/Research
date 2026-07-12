@@ -8,7 +8,6 @@ from ..backtest_types import BacktestRunContext
 from ..strategy_contract import ResearchStrategyPlugin
 from ..strategy_spec import NOOP_BASELINE_SPEC, materialize_strategy_parameters
 from .noop_baseline_events import build_noop_baseline_events
-from .noop_baseline_kernel import run_noop_baseline_backtest
 
 
 def _materialize(
@@ -35,7 +34,6 @@ def build_noop_baseline_plugin() -> ResearchStrategyPlugin:
         spec=NOOP_BASELINE_SPEC,
         required_data=NOOP_BASELINE_SPEC.required_data,
         optional_data=NOOP_BASELINE_SPEC.optional_data,
-        runner=run_noop_baseline_backtest,
         event_builder=build_noop_baseline_events,
         parameter_materializer=_materialize,
         decision_contract_version=NOOP_BASELINE_SPEC.decision_contract_version,

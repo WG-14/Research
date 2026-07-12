@@ -869,7 +869,8 @@ def _trade_from_fill(
     trade["submit_ts_assumption"] = fill.submit_ts_assumption
     trade["fill_ts"] = fill.fill_reference_ts
     trade["fill_reference_ts"] = fill.fill_reference_ts
-    trade["event_ts_role"] = "signal_ts_legacy"
+    # Compatibility only: consumers must use the explicit timing fields.
+    trade["event_ts_role"] = "signal_ts_legacy_non_authoritative"
     trade["execution"] = fill.as_dict()
     _annotate_execution_record_type(trade, fill)
     trade["portfolio_effective_ts"] = fill.fill_reference_ts

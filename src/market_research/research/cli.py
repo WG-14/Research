@@ -34,6 +34,7 @@ from .validation_protocol import ResearchValidationError, run_research_backtest,
 from .forward_diagnostics_cli import cmd_research_forward_diagnostics
 from .batch_runner import run_research_batch
 from .datasets.registry import default_dataset_adapter_registry
+from .strategy_package import StrategyPackageError, build_strategy_research_package
 
 
 def _required_runtime_db_path(context: "ResearchAppContext", manifest: Any, *, registry: Any | None = None) -> Path | None:
@@ -93,6 +94,19 @@ def _print_research_command_finished(
         **fields,
     }
     context.printer(f"[RESEARCH-COMMAND-FINISHED] {json.dumps(payload, sort_keys=True, default=str)}")
+
+
+def cmd_research_export_strategy_package(*, context: "ResearchAppContext", result_path: str, out_path: str) -> int:
+    """Export an offline immutable review package from a selected result JSON."""
+    try:
+        result = json.loads(Path(result_path).read_text(encoding="utf-8"))
+        package = build_strategy_research_package(result)
+        write_json_atomic(Path(out_path), package)
+    except (OSError, ValueError, StrategyPackageError) as exc:
+        context.printer(f"[RESEARCH-EXPORT-STRATEGY-PACKAGE] error={exc}")
+        return 1
+    context.printer(f"[RESEARCH-EXPORT-STRATEGY-PACKAGE] content_hash={package['content_hash']}")
+    return 0
 
 
 def cmd_research_backtest(

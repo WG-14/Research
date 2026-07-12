@@ -8,7 +8,6 @@ from ..backtest_types import BacktestRunContext
 from ..strategy_contract import ResearchStrategyPlugin
 from ..strategy_spec import THRESHOLD_RESEARCH_ONLY_SPEC, materialize_strategy_parameters
 from .threshold_research_only_events import build_threshold_research_only_events
-from .threshold_research_only_kernel import run_threshold_research_only_backtest
 
 
 def _materialize(
@@ -35,7 +34,6 @@ def build_threshold_research_only_plugin() -> ResearchStrategyPlugin:
         spec=THRESHOLD_RESEARCH_ONLY_SPEC,
         required_data=THRESHOLD_RESEARCH_ONLY_SPEC.required_data,
         optional_data=THRESHOLD_RESEARCH_ONLY_SPEC.optional_data,
-        runner=run_threshold_research_only_backtest,
         event_builder=build_threshold_research_only_events,
         parameter_materializer=_materialize,
         decision_contract_version=(

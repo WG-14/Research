@@ -283,3 +283,8 @@ class BacktestRun:
     strategy_diagnostics: dict[str, object] | None = None
     retained_detail_summary: dict[str, object] | None = None
     audit_trace_index: dict[str, object] | None = None
+    # Authoritative, independently hashable execution lineage streams.
+    order_intents: tuple[object, ...] = ()
+    execution_requests: tuple[object, ...] = ()
+    fills: tuple[object, ...] = ()
+    ledger_entries: tuple[object, ...] = ()

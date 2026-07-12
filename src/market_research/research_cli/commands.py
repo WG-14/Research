@@ -83,4 +83,6 @@ def execute_research_command(
         return int(cli.cmd_research_registry_validate(context=context, experiment_id=args.experiment_id))
     if command == "research-mark-attempt-aborted":
         return int(cli.cmd_research_mark_attempt_aborted(context=context, row_hash=args.row_hash, reason=args.reason))
+    if command == "research-export-strategy-package":
+        return int(cli.cmd_research_export_strategy_package(context=context, result_path=args.result, out_path=args.out))
     raise ValueError(f"unsupported research command: {command}")

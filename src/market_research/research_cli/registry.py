@@ -115,6 +115,11 @@ def _mark_aborted(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--reason", required=True)
 
 
+def _export_strategy_package(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--result", required=True)
+    parser.add_argument("--out", required=True)
+
+
 def _call_existing(command: str, args: argparse.Namespace, context: ResearchAppContext) -> int:
     """Delay research implementation imports until a command is executed."""
 
@@ -141,6 +146,7 @@ _COMMANDS: tuple[tuple[str, ParserBuilder, str], ...] = (
     ("research-registry-inspect", _row_hash, "inspect one research registry row"),
     ("research-registry-validate", lambda parser: parser.add_argument("--experiment-id", required=True), "validate registry binding for an experiment"),
     ("research-mark-attempt-aborted", _mark_aborted, "append an aborted event for an incomplete research attempt"),
+    ("research-export-strategy-package", _export_strategy_package, "export a deterministic offline Strategy Research Package"),
 )
 
 

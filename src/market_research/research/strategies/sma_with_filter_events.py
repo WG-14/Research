@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..dataset_snapshot import DatasetSnapshot
-from ..decision_event import ResearchDecisionEvent
+from ..decision_event import OrderIntent, ResearchDecisionEvent
 from ..execution_timing import candle_close_ts
 from ..experiment_manifest import ExecutionTimingPolicy
 from ..hashing import sha256_prefixed
@@ -50,5 +50,9 @@ def build_sma_with_filter_research_events(*, dataset: DatasetSnapshot, parameter
         candle = dataset.candles[index]
         features = {"schema_version": 1, "candle_index": index, "close": closes[index], "short_sma": curr_s, "long_sma": curr_l, "prev_short_sma": prev_s, "prev_long_sma": prev_l, "gap_ratio": gap, "volatility_ratio": volatility, "overextended_ratio": overextended}
         features["feature_snapshot_hash"] = sha256_prefixed(features)
-        events.append(ResearchDecisionEvent(candle_ts=int(candle.ts), decision_ts=candle_close_ts(candle, interval=dataset.interval) + int(execution_timing_policy.decision_guard_ms), strategy_name="sma_with_filter", strategy_version=SMA_WITH_FILTER_SPEC.strategy_version, raw_signal=raw, final_signal=entry, reason=reason, feature_snapshot=features, strategy_diagnostics={"schema_version": 1, "raw_signal": raw, "entry_signal": entry, "blocked_filters": list(blocked)}, entry_signal=entry, exit_signal=raw, blocked_filters=tuple(blocked), order_intent={"side": "BUY"} if entry == "BUY" else None, exit_intent={"mode": "research_exit_policy", "base_signal": raw}))
+        decision_ts = candle_close_ts(candle, interval=dataset.interval) + int(execution_timing_policy.decision_guard_ms)
+        decision_id = sha256_prefixed({"strategy_name": "sma_with_filter", "strategy_version": SMA_WITH_FILTER_SPEC.strategy_version,
+            "candle_ts": int(candle.ts), "decision_ts": decision_ts, "raw_signal": raw, "final_signal": entry,
+            "reason": reason, "feature_snapshot": features})
+        events.append(ResearchDecisionEvent(candle_ts=int(candle.ts), decision_ts=decision_ts, strategy_name="sma_with_filter", strategy_version=SMA_WITH_FILTER_SPEC.strategy_version, raw_signal=raw, final_signal=entry, reason=reason, feature_snapshot=features, strategy_diagnostics={"schema_version": 1, "raw_signal": raw, "entry_signal": entry, "blocked_filters": list(blocked)}, entry_signal=entry, exit_signal=raw, blocked_filters=tuple(blocked), order_intent=OrderIntent.from_decision(decision_id=decision_id, side="BUY", reason=reason) if entry == "BUY" else None, exit_intent=OrderIntent.from_decision(decision_id=decision_id, side="SELL", sizing="full_position", reason=reason) if raw == "SELL" else None))
     return tuple(events)

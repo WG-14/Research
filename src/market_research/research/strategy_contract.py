@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
-from .backtest_types import BacktestRun, BacktestRunContext
+from .backtest_types import BacktestRunContext
 from .dataset_snapshot import DatasetSnapshot
 from .decision_event import ResearchDecisionEvent
 from .execution_model import ExecutionModel
@@ -20,20 +20,6 @@ from .strategy_spec import StrategySpec
 
 ResearchEventBuilder = Callable[..., Iterable[ResearchDecisionEvent]]
 ResearchParameterMaterializer = Callable[..., dict[str, Any]]
-ResearchStrategyRunner = Callable[
-    [
-        DatasetSnapshot,
-        dict[str, Any],
-        float,
-        float,
-        float | None,
-        ExecutionModel | None,
-        ExecutionTimingPolicy | None,
-        PortfolioPolicy | None,
-        BacktestRunContext | None,
-    ],
-    BacktestRun,
-]
 DiagnosticCountBuilder = Callable[[dict[str, object]], dict[str, Any]]
 ResearchDataRequirementBuilder = Callable[[object | None], "ResearchStrategyDataRequirements"]
 ResearchDecisionBuilder = Callable[..., Any]
@@ -190,7 +176,6 @@ class ResearchStrategyPlugin:
     spec: StrategySpec
     required_data: tuple[str, ...]
     optional_data: tuple[str, ...]
-    runner: ResearchStrategyRunner
     event_builder: ResearchEventBuilder
     decision_contract_version: str
     diagnostics_namespace: str
@@ -200,6 +185,7 @@ class ResearchStrategyPlugin:
     decision_builder: ResearchDecisionBuilder | None = None
     payload_adapter: ResearchPayloadAdapter | None = None
     exit_policy_materializer: ExitPolicyMaterializer | None = None
+    execution_authority: str = "common_simulation_engine"
 
     def __post_init__(self) -> None:
         name = str(self.name or "").strip().lower()
@@ -209,10 +195,10 @@ class ResearchStrategyPlugin:
             raise ValueError(f"research_strategy_version_missing:{name}")
         if not str(self.decision_contract_version or "").strip():
             raise ValueError(f"research_strategy_decision_contract_version_missing:{name}")
-        if self.runner is None:
-            raise ValueError(f"research_strategy_runner_missing:{name}")
         if self.event_builder is None:
             raise ValueError(f"research_strategy_event_builder_missing:{name}")
+        if self.execution_authority != "common_simulation_engine":
+            raise ValueError(f"research_strategy_custom_execution_authority_rejected:{name}")
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "required_data", tuple(sorted({str(x).strip().lower() for x in self.required_data if str(x).strip()})))
         object.__setattr__(self, "optional_data", tuple(sorted({str(x).strip().lower() for x in self.optional_data if str(x).strip()})))
@@ -235,8 +221,9 @@ class ResearchStrategyPlugin:
             "research_data_requirements": self.data_requirements().capability_contract_payload(),
             "decision_contract_version": self.decision_contract_version,
             "diagnostics_namespace": self.diagnostics_namespace,
-            "runner_module": self.runner.__module__,
+            "execution_authority": self.execution_authority,
             "event_builder_module": self.event_builder.__module__,
+            "event_builder_qualname": self.event_builder.__qualname__,
             "parameter_materializer_module": (
                 self.parameter_materializer.__module__ if self.parameter_materializer is not None else None
             ),

@@ -1,9 +1,4 @@
-"""Research-only generic event runner boundary.
-
-The supported strategies own their concrete backtest kernels.  This helper is
-kept for research callers that supply an explicit event stream, without any
-runtime planner, account adapter, or submit-plan dependency.
-"""
+"""Compatibility entry point delegating to the common simulation engine."""
 
 from __future__ import annotations
 
@@ -14,14 +9,9 @@ def run_decision_event_backtest(*, strategy_name: str, **kwargs: Any) -> Any:
     from .strategy_catalog import resolve_research_strategy
 
     plugin = resolve_research_strategy(strategy_name)
-    return plugin.runner(
-        kwargs["dataset"],
-        dict(kwargs.get("parameter_values") or {}),
-        float(kwargs.get("fee_rate") or 0.0),
-        float(kwargs.get("slippage_bps") or 0.0),
-        kwargs.get("parameter_stability_score"),
-        kwargs.get("execution_model"),
-        kwargs.get("execution_timing_policy"),
-        kwargs.get("portfolio_policy"),
-        kwargs.get("context"),
-    )
+    from .simulation_engine import run_common_simulation_backtest
+    return run_common_simulation_backtest(plugin=plugin, dataset=kwargs["dataset"],
+        parameter_values=dict(kwargs.get("parameter_values") or {}), fee_rate=float(kwargs.get("fee_rate") or 0.0),
+        slippage_bps=float(kwargs.get("slippage_bps") or 0.0), parameter_stability_score=kwargs.get("parameter_stability_score"),
+        execution_model=kwargs.get("execution_model"), execution_timing_policy=kwargs.get("execution_timing_policy"),
+        portfolio_policy=kwargs.get("portfolio_policy"), risk_policy=kwargs.get("risk_policy"), context=kwargs.get("context"))

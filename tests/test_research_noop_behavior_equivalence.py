@@ -13,9 +13,7 @@ from market_research.research.experiment_manifest import (
 from market_research.research.strategies.noop_baseline_events import (
     build_noop_baseline_events,
 )
-from market_research.research.strategies.noop_baseline_kernel import (
-    run_noop_baseline_backtest,
-)
+from market_research.research.backtest_engine import run_noop_baseline_backtest
 
 from tests.research_noop_success_fixture import PRICES
 
@@ -67,10 +65,10 @@ def test_noop_research_kernel_matches_fixed_legacy_behavior_golden() -> None:
     ]
 
     result = run_noop_baseline_backtest(
-        dataset,
-        params,
-        0.001,
-        10.0,
+        dataset=dataset,
+        parameter_values=params,
+        fee_rate=0.001,
+        slippage_bps=10.0,
         portfolio_policy=policy,
     )
 
@@ -82,17 +80,12 @@ def test_noop_research_kernel_matches_fixed_legacy_behavior_golden() -> None:
         assert [item[key] for item in result.decisions] == ["HOLD"] * 4
     assert [item["strategy_diagnostics"]["hold_decision_count"] for item in result.decisions] == [1, 2, 3, 4]
     assert result.trades == ()
-    assert result.execution_event_summary == {
-        "execution_attempt_count": 0,
-        "filled_execution_count": 0,
-        "portfolio_applied_trade_count": 0,
-    }
+    assert {key: result.execution_event_summary[key] for key in ("execution_attempt_count", "filled_execution_count", "portfolio_applied_trade_count")} == {"execution_attempt_count": 0, "filled_execution_count": 0, "portfolio_applied_trade_count": 0}
     assert result.metrics_v2 is not None
     assert result.metrics_v2.return_risk.total_return_pct == 0.0
     assert result.metrics_v2.return_risk.max_drawdown_pct == 0.0
     assert result.metrics_v2.trade_quality.execution_count == 0
-    assert result.resource_usage["strategy_behavior_hash"].startswith("sha256:")
-    assert result.resource_usage["behavior_hash"] == result.resource_usage["composite_behavior_hash"]
+    assert result.execution_event_summary["execution_request_stream_hash"].startswith("sha256:")
 
 
 def test_noop_event_defaults_and_negative_start_index_preserve_legacy_semantics() -> None:
@@ -113,10 +106,10 @@ def test_noop_event_defaults_and_negative_start_index_preserve_legacy_semantics(
 def test_noop_marks_an_initial_position_without_changing_it() -> None:
     policy = replace(legacy_research_portfolio_policy(), initial_position_qty=10.0)
     result = run_noop_baseline_backtest(
-        _dataset(),
-        {"NOOP_DECISION_START_INDEX": 1, "NOOP_DECISION_REASON": "initial_position"},
-        0.001,
-        10.0,
+        dataset=_dataset(),
+        parameter_values={"NOOP_DECISION_START_INDEX": 1, "NOOP_DECISION_REASON": "initial_position"},
+        fee_rate=0.001,
+        slippage_bps=10.0,
         portfolio_policy=policy,
     )
 

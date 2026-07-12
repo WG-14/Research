@@ -59,7 +59,7 @@ raise SystemExit(rc)
     assert candidate["strategy_name"] == "buy_and_hold_baseline"
     validation = candidate["scenario_results"][0]
     assert validation["validation_metrics"]["trade_count"] == 0
-    assert validation["validation_resource_usage"]["buy_and_hold_research_kernel"] == "research_only_v1"
+    assert validation["validation_resource_usage"]["common_execution_authority"] == "common_simulation_engine"
     assert validation["validation_resource_usage"]["open_position_at_end"] is True
     assert validation["validation_resource_usage"]["final_position_marked_to_market"] is True
 
@@ -70,7 +70,7 @@ import json, sys
 from market_research.research.strategy_catalog import resolve_research_strategy
 plugin = resolve_research_strategy('buy_and_hold_baseline')
 print(json.dumps({
-    'runner': plugin.runner.__module__,
+    'execution_authority': plugin.execution_authority,
     'event_builder': plugin.event_builder.__module__,
     'forbidden': [name for name in sys.argv[1:] if name in sys.modules],
 }))
@@ -83,6 +83,6 @@ print(json.dumps({
     )
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["runner"].startswith("market_research.research.strategies.")
+    assert payload["execution_authority"] == "common_simulation_engine"
     assert payload["event_builder"].startswith("market_research.research.strategies.")
     assert payload["forbidden"] == []

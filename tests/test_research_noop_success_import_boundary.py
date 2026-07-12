@@ -78,10 +78,10 @@ raise SystemExit(rc)
     assert summary["execution_attempt_count"] == 0
     assert summary["filled_execution_count"] == 0
     assert summary["portfolio_applied_trade_count"] == 0
-    assert validation["validation_resource_usage"]["noop_baseline_research_kernel"] == "research_only_v1"
+    assert validation["validation_resource_usage"]["common_execution_authority"] == "common_simulation_engine"
     diagnostics = validation["validation_strategy_diagnostics"]["strategy_specific_diagnostics"]["noop_baseline"]
     assert diagnostics["hold_decision_count"] == 3
-    assert all(diagnostics[f"{signal}_signal_count"] == 0 for signal in ("raw", "entry", "exit", "final"))
+    assert diagnostics["decision_count"] == 3
 
 
 def test_catalog_resolves_noop_without_loading_legacy_bridge() -> None:
@@ -90,7 +90,7 @@ import json, sys
 from market_research.research.strategy_catalog import resolve_research_strategy
 plugin = resolve_research_strategy('noop_baseline')
 print(json.dumps({
-    'runner': plugin.runner.__module__,
+    'execution_authority': plugin.execution_authority,
     'event_builder': plugin.event_builder.__module__,
     'forbidden': [name for name in sys.argv[1:] if name in sys.modules],
 }))
@@ -103,6 +103,6 @@ print(json.dumps({
     )
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["runner"].startswith("market_research.research.strategies.")
+    assert payload["execution_authority"] == "common_simulation_engine"
     assert payload["event_builder"].startswith("market_research.research.strategies.")
     assert payload["forbidden"] == []
