@@ -33,16 +33,26 @@ from .validation_pipeline import ValidationRunError, run_research_validation, va
 from .validation_protocol import ResearchValidationError, run_research_backtest, run_research_walk_forward
 from .forward_diagnostics_cli import cmd_research_forward_diagnostics
 from .batch_runner import run_research_batch
+from .datasets.registry import default_dataset_adapter_registry
 
 
 def _required_runtime_db_path(context: "ResearchAppContext", manifest: Any) -> Path | None:
     """Resolve only capabilities selected by the data sources."""
-    sources = [manifest.dataset.source]
+    registry = default_dataset_adapter_registry()
+    adapters = [registry.resolve(manifest.dataset.source)]
     if manifest.dataset.top_of_book is not None:
-        sources.append(manifest.dataset.top_of_book.source)
-    if manifest.dataset.depth is not None:
-        sources.append(manifest.dataset.depth.source)
-    if any(source in {"sqlite_candles", "sqlite_orderbook_top_snapshots", "orderbook_depth_levels"} for source in sources):
+        adapters.append(registry.resolve_top_of_book(manifest.dataset.top_of_book.source))
+    timing = getattr(manifest, "execution_timing", None)
+    execution_model = getattr(manifest, "execution_model", None)
+    depth_needed = (
+        manifest.dataset.depth is not None
+        or bool(getattr(timing, "depth_required", False))
+        or getattr(timing, "min_execution_reality_level_for_validation", None) == "l2_depth_walk_no_queue"
+        or any(getattr(item, "type", None) == "depth_walk" for item in getattr(execution_model, "scenarios", ()))
+    )
+    if depth_needed:
+        adapters.append(registry.resolve_depth(manifest.dataset.depth.source if manifest.dataset.depth else "orderbook_depth_levels"))
+    if any(bool(getattr(adapter, "requires_runtime_db", False)) for adapter in adapters):
         try:
             return context.paths.require_database_path()
         except (OSError, ValueError) as exc:

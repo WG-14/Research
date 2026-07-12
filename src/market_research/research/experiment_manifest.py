@@ -1099,6 +1099,11 @@ def _parse_dataset(payload: dict[str, Any]) -> DatasetSpec:
     artifact_hash = _optional_hash(payload.get("artifact_manifest_hash"), "dataset.artifact_manifest_hash")
     if (artifact_uri is None) != (artifact_hash is None):
         raise ManifestValidationError("dataset.artifact_manifest_uri_and_hash_required_together")
+    if artifact_uri is not None and any(
+        payload.get(key) is not None
+        for key in ("source_uri", "source_content_hash", "source_schema_hash", "locator")
+    ):
+        raise ManifestValidationError("dataset.artifact_ref_conflicts_with_legacy_artifact_authority")
     if source == "frozen_sqlite_candles" and artifact_uri is None:
         # Schema-v1 manifests are intentionally read-only research-only legacy
         # compatibility. They cannot become validated candidates.

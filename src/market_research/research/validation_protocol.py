@@ -30,6 +30,10 @@ from .dataset_snapshot import (
     load_dataset_split,
 )
 from .datasets.registry import default_dataset_adapter_registry
+from .datasets.contracts import DatasetRunContext
+from .datasets.locators import LocatorValidationError, parse_immutable_locator
+from .datasets.artifact_manifest import ArtifactManifestError, load_artifact_manifest
+from .datasets.verification import DatasetVerificationResult, VerificationStatus, verification_allowed
 from .backtest_common import execution_event_summary
 from .backtest_types import (
     BacktestHeartbeatPolicy,
@@ -425,8 +429,9 @@ def _evaluate_candidate_scenario_task(
 
 def _load_worker_task_snapshots(*, task: dict[str, Any], manifest: ExperimentManifest) -> dict[str, DatasetSnapshot]:
     db_path = task.get("db_path")
-    if db_path is None:
-        raise ResearchValidationError("parallel_worker_db_path_missing")
+    adapter = default_dataset_adapter_registry().resolve(manifest.dataset.source)
+    if db_path is None and bool(getattr(adapter, "requires_runtime_db", False)):
+        raise ResearchValidationError(f"runtime_context_missing:{manifest.dataset.source}:requires_runtime_db")
     split_names = tuple(str(name) for name in task.get("split_names") or ("train", "validation"))
     data_plane_policy = task.get("data_plane_policy") if isinstance(task.get("data_plane_policy"), dict) else {}
     requested_policy = str(data_plane_policy.get("worker_snapshot_load_policy") or "db_reload")
@@ -437,6 +442,7 @@ def _load_worker_task_snapshots(*, task: dict[str, Any], manifest: ExperimentMan
             data_plane_policy=data_plane_policy,
             db_path=db_path,
             split_names=split_names,
+            manifest=manifest,
         )
         cached = _WORKER_LOCAL_SNAPSHOT_CACHE.get(cache_key)
         if cached is not None:
@@ -472,6 +478,7 @@ def _worker_local_snapshot_cache_key(
     data_plane_policy: dict[str, Any],
     db_path: object,
     split_names: tuple[str, ...],
+    manifest: ExperimentManifest,
 ) -> str:
     material = data_plane_policy.get("cache_key_material")
     if not isinstance(material, dict):
@@ -495,7 +502,12 @@ def _worker_local_snapshot_cache_key(
             "dataset_hashes": requested_dataset_hashes,
             "policy_split_names": [str(name) for name in policy_split_names],
             "requested_split_names": list(requested_split_names),
-            "db_path": str(db_path),
+            "db_path": str(db_path) if db_path is not None else None,
+            "artifact_ref": (
+                {"uri": manifest.dataset.artifact_ref.artifact_manifest_uri,
+                 "hash": manifest.dataset.artifact_ref.artifact_manifest_hash}
+                if manifest.dataset.artifact_ref is not None else None
+            ),
         }
     )
 
@@ -506,6 +518,7 @@ def _load_worker_task_snapshots_from_db(
     manifest: ExperimentManifest,
     split_names: tuple[str, ...],
 ) -> dict[str, DatasetSnapshot]:
+    run_context = DatasetRunContext()
     if any(name.startswith("window_") for name in split_names):
         if manifest.walk_forward is None:
             raise ResearchValidationError("parallel_worker_walk_forward_manifest_missing")
@@ -513,9 +526,11 @@ def _load_worker_task_snapshots_from_db(
             db_path=db_path,
             manifest=manifest,
             windows=_rolling_walk_forward_windows(manifest),
+            run_context=run_context,
         )
     return {
-        split_name: load_dataset_split(db_path=db_path, manifest=manifest, split_name=split_name)
+        split_name: load_dataset_split(db_path=db_path, manifest=manifest, split_name=split_name,
+                                       run_context=run_context)
         for split_name in split_names
     }
 
@@ -846,6 +861,22 @@ def _reserve_experiment_attempt(
         "dataset_snapshot_id": manifest.dataset.snapshot_id,
         "dataset_content_hash": combined_dataset_fingerprint(tuple(snapshots.values())) if final_holdout_loaded else None,
         "dataset_quality_hash": dataset_quality_hash,
+        "dataset_artifact": {
+            "artifact_id": next((item.artifact_id for item in snapshots.values() if item.artifact_id), None),
+            "artifact_manifest_hash": next((item.artifact_manifest_hash for item in snapshots.values() if item.artifact_manifest_hash), None),
+            "artifact_content_hash": next((item.artifact_content_hash for item in snapshots.values() if item.artifact_content_hash), None),
+            "artifact_schema_hash": next((item.artifact_schema_hash for item in snapshots.values() if item.artifact_schema_hash), None),
+        },
+        "dataset_split_evidence": {
+            name: {
+                "requested_range": snapshot.date_range.as_dict(),
+                "snapshot_data_hash": snapshot.snapshot_data_hash(),
+                "snapshot_query_hash": snapshot.snapshot_query_hash(),
+                "snapshot_fingerprint_hash": snapshot.snapshot_fingerprint_hash(),
+                "verification_status": snapshot.verification.overall_status.value if snapshot.verification else "UNAVAILABLE",
+            }
+            for name, snapshot in snapshots.items()
+        },
         "train_split_hash": split_hashes.get("train"),
         "validation_split_hash": split_hashes.get("validation"),
         "final_holdout_split_hash": split_hashes.get("final_holdout"),
@@ -1570,7 +1601,7 @@ def collect_parent_serial_stage_summary(stage_timings: list[dict[str, Any]]) -> 
 def run_research_backtest(
     *,
     manifest: ExperimentManifest,
-    db_path: str | Path,
+    db_path: str | Path | None,
     manager: ResearchPathManager,
     generated_at: str | None = None,
     execution_calibration: dict[str, Any] | None = None,
@@ -1601,10 +1632,12 @@ def run_research_backtest(
         experiment_id=manifest.experiment_id,
         budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
     )
+    run_context = DatasetRunContext()
     snapshots = {}
     for split_name in ("train", "validation"):
         stage_started = time.perf_counter()
-        snapshot = load_dataset_split(db_path=db_path, manifest=manifest, split_name=split_name)
+        snapshot = load_dataset_split(db_path=db_path, manifest=manifest, split_name=split_name,
+                                      run_context=run_context)
         snapshots[split_name] = snapshot
         stage_timings.append(
             _stage_timing("load_split", stage_started, split=split_name, candles=len(snapshot.candles))
@@ -1640,6 +1673,7 @@ def run_research_backtest(
             db_path=db_path,
             manifest=manifest,
             split_name="final_holdout",
+            run_context=run_context,
         )
         stage_timings.append(
             _stage_timing(
@@ -1826,7 +1860,7 @@ def run_research_backtest(
 def run_research_walk_forward(
     *,
     manifest: ExperimentManifest,
-    db_path: str | Path,
+    db_path: str | Path | None,
     manager: ResearchPathManager,
     generated_at: str | None = None,
     execution_calibration: dict[str, Any] | None = None,
@@ -1864,7 +1898,9 @@ def run_research_walk_forward(
             f"walk_forward_insufficient_windows: available={len(windows)} min_windows={manifest.walk_forward.min_windows}"
         )
     stage_started = time.perf_counter()
-    snapshots = _load_walk_forward_snapshots(db_path=db_path, manifest=manifest, windows=windows)
+    run_context = DatasetRunContext()
+    snapshots = _load_walk_forward_snapshots(db_path=db_path, manifest=manifest, windows=windows,
+                                              run_context=run_context)
     stage_timings.append(
         _stage_timing(
             "load_split",
@@ -1904,6 +1940,7 @@ def run_research_walk_forward(
             db_path=db_path,
             manifest=manifest,
             split_name="final_holdout",
+            run_context=run_context,
         )
         stage_timings.append(
             _stage_timing(
@@ -5731,6 +5768,12 @@ def _report_payload(
     ):
         values = dataset_artifact[plural]
         dataset_artifact[singular] = values[0] if len(values) == 1 else None
+    verification_evidence = [snapshot.verification.as_dict() for snapshot in snapshots if snapshot.verification]
+    dataset_artifact["verification_statuses"] = sorted({item["overall_status"] for item in verification_evidence})
+    dataset_artifact["verification_status"] = (
+        dataset_artifact["verification_statuses"][0] if len(dataset_artifact["verification_statuses"]) == 1 else None
+    )
+    dataset_artifact["verification"] = verification_evidence[0] if len(verification_evidence) == 1 else verification_evidence
     top_of_book_quality_summary = _top_of_book_quality_summary(
         {str(report.payload["split_name"]): report for report in quality_reports}
     )
@@ -5854,6 +5897,18 @@ def _report_payload(
             "adapter_provenance_hash": dataset_adapter_provenance_hash,
         }),
         dataset_adapter_provenance_hash=dataset_adapter_provenance_hash,
+        dataset_artifact=dataset_artifact,
+        dataset_split_evidence={
+            snapshot.split_name: {
+                "requested_range": snapshot.date_range.as_dict(),
+                "snapshot_data_hash": snapshot.snapshot_data_hash(),
+                "snapshot_query_hash": snapshot.snapshot_query_hash(),
+                "snapshot_fingerprint_hash": snapshot.snapshot_fingerprint_hash(),
+                "quality_hash": next(report.content_hash for report in quality_reports if report.payload["split_name"] == snapshot.split_name),
+                "verification_status": snapshot.verification.overall_status.value if snapshot.verification else "UNAVAILABLE",
+            }
+            for snapshot in snapshots
+        },
         repository_version=repository_version,
         command_name=command_name or f"research-{report_kind}",
         command_args=command_args or {},
@@ -6209,11 +6264,14 @@ def _report_payload(
         "dataset_splits": {
             snapshot.split_name: {
                 "date_range": snapshot.date_range.as_dict(),
+                "requested_range": snapshot.date_range.as_dict(),
                 "candle_count": len(snapshot.candles),
                 "artifact_id": snapshot.artifact_id,
                 "artifact_content_hash": snapshot.artifact_content_hash,
                 "artifact_schema_hash": snapshot.artifact_schema_hash,
                 "artifact_manifest_hash": snapshot.artifact_manifest_hash,
+                "verification_status": snapshot.verification.overall_status.value if snapshot.verification else "UNAVAILABLE",
+                "verification": snapshot.verification.as_dict() if snapshot.verification else None,
                 "content_hash": snapshot.snapshot_fingerprint_hash(),
                 "snapshot_data_hash": snapshot.snapshot_data_hash(),
                 "snapshot_query_hash": snapshot.snapshot_query_hash(),
@@ -7636,7 +7694,7 @@ def _require_enough_candles(snapshots: Any) -> None:
 
 def _quality_reports(
     *,
-    db_path: str | Path,
+    db_path: str | Path | None,
     snapshots: dict[str, DatasetSnapshot],
 ) -> dict[str, DatasetQualityReport]:
     return {
@@ -7743,8 +7801,10 @@ def _validate_dataset_adapter_provenance(
             reasons.append(f"{split_name}:dataset_source_missing")
         if not canonical_hash.startswith("sha256:"):
             reasons.append(f"{split_name}:canonical_snapshot_hash_missing")
-        verification_status = str(payload.get("verification_status") or "UNAVAILABLE")
-        if verification_status != "VERIFIED":
+        verification = _verification_from_quality_payload(payload)
+        if verification is None or not verification_allowed(
+            classification=manifest.research_classification, result=verification
+        ):
             reasons.append(f"{split_name}:dataset_verification_not_verified")
         if not source_content_hash.startswith("sha256:"):
             reasons.append(
@@ -7760,11 +7820,32 @@ def _validate_dataset_adapter_provenance(
             reasons.append(f"{split_name}:adapter_provenance_hash_missing")
         elif adapter_provenance_hash != sha256_prefixed(adapter_provenance or {}):
             reasons.append(f"{split_name}:adapter_provenance_hash_mismatch")
-        reasons.extend(f"{split_name}:{reason}" for reason in _validation_evidence_locator_reasons(manifest, "dataset"))
+        reasons.extend(f"{split_name}:{reason}" for reason in _locator_contract_reasons(manifest, "dataset"))
         reasons.extend(_top_of_book_provenance_reasons(manifest=manifest, split_name=split_name, payload=payload))
         reasons.extend(_depth_provenance_reasons(manifest=manifest, split_name=split_name, payload=payload))
     if reasons:
         raise ResearchValidationError("dataset_adapter_provenance_failed:" + ",".join(reasons))
+
+
+def _verification_from_quality_payload(payload: dict[str, Any]) -> DatasetVerificationResult | None:
+    value = payload.get("verification")
+    if not isinstance(value, dict):
+        return None
+    try:
+        return DatasetVerificationResult(
+            overall_status=VerificationStatus(value["overall_status"]),
+            content_status=VerificationStatus(value["content_status"]),
+            expected_content_hash=value.get("expected_content_hash"), actual_content_hash=value.get("actual_content_hash"),
+            content_method=str(value.get("content_method") or ""),
+            schema_status=VerificationStatus(value["schema_status"]),
+            expected_schema_hash=value.get("expected_schema_hash"), actual_schema_hash=value.get("actual_schema_hash"),
+            locator_status=VerificationStatus(value["locator_status"]), locator_type=value.get("locator_type"),
+            scope_status=VerificationStatus(value["scope_status"]), declared_scope=value.get("declared_scope"),
+            actual_scope=value.get("actual_scope"), adapter_name=str(value.get("adapter_name") or ""),
+            adapter_version=str(value.get("adapter_version") or ""),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _top_of_book_provenance_reasons(
@@ -7799,7 +7880,7 @@ def _top_of_book_provenance_reasons(
         reasons.append(f"{split_name}:top_of_book_adapter_provenance_hash_missing")
     elif provenance_hash != sha256_prefixed(provenance or {}):
         reasons.append(f"{split_name}:top_of_book_adapter_provenance_hash_mismatch")
-    reasons.extend(f"{split_name}:{reason}" for reason in _validation_evidence_locator_reasons(manifest, "top_of_book"))
+    reasons.extend(f"{split_name}:{reason}" for reason in _locator_contract_reasons(manifest, "top_of_book"))
     return reasons
 
 
@@ -7838,7 +7919,7 @@ def _depth_provenance_reasons(
         reasons.append(f"{split_name}:depth_adapter_provenance_hash_missing")
     elif provenance_hash != sha256_prefixed(provenance or {}):
         reasons.append(f"{split_name}:depth_adapter_provenance_hash_mismatch")
-    reasons.extend(f"{split_name}:{reason}" for reason in _validation_evidence_locator_reasons(manifest, "depth"))
+    reasons.extend(f"{split_name}:{reason}" for reason in _locator_contract_reasons(manifest, "depth"))
     return reasons
 
 
@@ -7851,59 +7932,23 @@ def _depth_requested_for_manifest(manifest: ExperimentManifest) -> bool:
     )
 
 
-def _validation_evidence_locator_reasons(manifest: ExperimentManifest, evidence: str) -> list[str]:
-    values: list[object] = []
-    locator: dict[str, object] | None = None
-    source_uri: str | None = None
-    if evidence == "dataset":
-        source_uri = manifest.dataset.source_uri
-        locator = manifest.dataset.locator
-    elif evidence == "top_of_book" and manifest.dataset.top_of_book is not None:
-        source_uri = manifest.dataset.top_of_book.source_uri
-        locator = manifest.dataset.top_of_book.locator
-    elif evidence == "depth" and manifest.dataset.depth is not None:
-        source_uri = manifest.dataset.depth.source_uri
-        locator = manifest.dataset.depth.locator
-    values.append(source_uri)
-    values.extend((locator or {}).values())
-    reasons: list[str] = []
-    if requires_candidate_validation(manifest.research_classification):
-        if not source_uri and not locator:
-            reasons.append(f"missing_immutable_{evidence}_locator")
-        elif not _has_immutable_locator_material(source_uri=source_uri, locator=locator):
-            reasons.append(f"mutable_{evidence}_locator")
-    for value in values:
-        text = str(value or "").strip().lower()
-        if not text:
-            continue
-        if text in {"latest", "current"} or text.endswith("/latest") or "/latest/" in text:
-            reasons.append(f"mutable_{evidence}_locator")
-            continue
-        if requires_candidate_validation(manifest.research_classification) and "/paper/" in text:
-            reasons.append(f"wrong_mode_{evidence}_locator")
-            continue
-        if "://" not in text and not text.startswith(("managed-db:", "s3://")):
-            if "/" in text or text.startswith("."):
-                reasons.append(f"repo_relative_{evidence}_locator")
-                continue
-            if text not in {"immutable", "content_addressed"} and "." in text:
-                reasons.append(f"mutable_{evidence}_locator")
-                continue
-        if "/" in text and "://" not in text and not text.startswith(("/", "managed-db:")):
-            reasons.append(f"repo_relative_{evidence}_locator")
-    if "mutable_dataset_locator" not in reasons and evidence == "dataset" and reasons:
-        reasons.append("mutable_dataset_locator")
-    return sorted(set(reasons))
-
-
-def _has_immutable_locator_material(*, source_uri: str | None, locator: dict[str, object] | None) -> bool:
-    from .datasets.locators import LocatorValidationError, parse_immutable_locator
-    del source_uri
+def _locator_contract_reasons(manifest: ExperimentManifest, evidence: str) -> list[str]:
+    """Use the typed locator contract for both producers and consumers."""
+    if not requires_candidate_validation(manifest.research_classification):
+        return []
     try:
-        parse_immutable_locator(locator)
-    except LocatorValidationError:
-        return False
-    return True
+        if evidence == "dataset" and manifest.dataset.artifact_ref is not None:
+            load_artifact_manifest(manifest.dataset.artifact_ref.artifact_manifest_uri,
+                                   manifest.dataset.artifact_ref.artifact_manifest_hash)
+            return []
+        spec = (manifest.dataset if evidence == "dataset" else
+                manifest.dataset.top_of_book if evidence == "top_of_book" else manifest.dataset.depth)
+        if spec is None:
+            return [f"missing_immutable_{evidence}_locator"]
+        parse_immutable_locator(getattr(spec, "locator", None))
+        return []
+    except (ArtifactManifestError, LocatorValidationError):
+        return [f"invalid_immutable_{evidence}_locator"]
 
 
 def _validate_strategy_data_requirements(manifest: ExperimentManifest) -> None:
@@ -8156,13 +8201,14 @@ def _rolling_walk_forward_windows(manifest: ExperimentManifest) -> list[dict[str
 
 def _load_walk_forward_snapshots(
     *,
-    db_path: str | Path,
+    db_path: str | Path | None,
     manifest: ExperimentManifest,
     windows: list[dict[str, DateRange]],
+    run_context: DatasetRunContext | None = None,
 ) -> dict[str, DatasetSnapshot]:
     snapshots = {
-        "train": load_dataset_split(db_path=db_path, manifest=manifest, split_name="train"),
-        "validation": load_dataset_split(db_path=db_path, manifest=manifest, split_name="validation"),
+        "train": load_dataset_split(db_path=db_path, manifest=manifest, split_name="train", run_context=run_context),
+        "validation": load_dataset_split(db_path=db_path, manifest=manifest, split_name="validation", run_context=run_context),
     }
     for index, window in enumerate(windows, start=1):
         window_id = f"window_{index:03d}"
@@ -8171,12 +8217,14 @@ def _load_walk_forward_snapshots(
             manifest=manifest,
             split_name=f"{window_id}_train",
             date_range=window["train"],
+            run_context=run_context,
         )
         snapshots[f"{window_id}_test"] = load_dataset_range(
             db_path=db_path,
             manifest=manifest,
             split_name=f"{window_id}_test",
             date_range=window["test"],
+            run_context=run_context,
         )
     return snapshots
 

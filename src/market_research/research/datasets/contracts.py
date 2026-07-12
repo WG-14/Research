@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, TYPE_CHECKING
 
@@ -43,6 +43,26 @@ class VerifiedDatasetArtifact:
     verification: Any
 
 
+@dataclass
+class DatasetRunContext:
+    """Verification state owned by exactly one orchestration run.
+
+    The cache is deliberately neither class- nor process-global: a second run
+    must rescan the artifact, while all splits in this run share one verified
+    handle.  Worker processes construct their own context by design.
+    """
+    verified_artifacts: dict[tuple[str, str], VerifiedDatasetArtifact] = field(default_factory=dict)
+
+    def resolve_verified(self, adapter: "DatasetArtifactAdapter", reference: DatasetArtifactRef,
+                         context: DatasetResolutionContext) -> VerifiedDatasetArtifact:
+        key = (reference.artifact_manifest_uri, reference.artifact_manifest_hash)
+        verified = self.verified_artifacts.get(key)
+        if verified is None:
+            verified = adapter.verify(adapter.resolve(reference, context))
+            self.verified_artifacts[key] = verified
+        return verified
+
+
 @dataclass(frozen=True)
 class DatasetSliceQuery:
     market: str
@@ -79,6 +99,11 @@ class DatasetAdapter(Protocol):
     supported_top_of_book_sources: frozenset[str]
     supported_depth_sources: frozenset[str]
     supports_sqlite_streaming_quality_scan: bool
+    requires_runtime_db: bool
+    requires_artifact_manifest: bool
+
+    def verify_snapshot(self, *, snapshot: DatasetSnapshot, context: DatasetLoadContext) -> Any:
+        ...
 
     def load_range(
         self,

@@ -31,6 +31,30 @@ class DatasetVerificationResult:
     adapter_name: str
     adapter_version: str
 
+    def __post_init__(self) -> None:
+        statuses = (self.overall_status, self.content_status, self.schema_status,
+                    self.locator_status, self.scope_status)
+        if not all(isinstance(value, VerificationStatus) for value in statuses):
+            raise ValueError("dataset_verification_unknown_status")
+        for status, expected, actual, label in (
+            (self.content_status, self.expected_content_hash, self.actual_content_hash, "content"),
+            (self.schema_status, self.expected_schema_hash, self.actual_schema_hash, "schema"),
+        ):
+            if status in {VerificationStatus.VERIFIED, VerificationStatus.MISMATCH}:
+                if not expected or not actual:
+                    raise ValueError(f"dataset_verification_{label}_hashes_required")
+                if not self.content_method:
+                    raise ValueError("dataset_verification_method_required")
+        components = (self.content_status, self.schema_status, self.locator_status, self.scope_status)
+        if self.overall_status is VerificationStatus.VERIFIED and any(
+            value is not VerificationStatus.VERIFIED for value in components
+        ):
+            raise ValueError("dataset_verification_verified_components_required")
+        if self.overall_status is VerificationStatus.MISMATCH and not any(
+            value is VerificationStatus.MISMATCH for value in components
+        ):
+            raise ValueError("dataset_verification_mismatch_component_required")
+
     def as_dict(self) -> dict[str, Any]:
         return {key: (value.value if isinstance(value, VerificationStatus) else value)
                 for key, value in self.__dict__.items()}

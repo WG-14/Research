@@ -19,7 +19,7 @@ from .family_registry import validate_family_registry_binding
 from .experiment_registry import validate_experiment_registry_binding
 
 
-LINEAGE_SCHEMA_VERSION = 1
+LINEAGE_SCHEMA_VERSION = 2
 LINEAGE_HASH_FIELD = "lineage_hash"
 LINEAGE_HASH_EXCLUDED_FIELDS = frozenset({LINEAGE_HASH_FIELD, "created_at"})
 SECRET_KEY_FRAGMENTS = ("secret", "api_key", "apikey", "token", "password", "webhook")
@@ -84,6 +84,8 @@ def build_research_lineage(
     dataset_split_hash: str | None = None,
     data_source_fingerprint: str | None = None,
     dataset_adapter_provenance_hash: str | None = None,
+    dataset_artifact: dict[str, Any] | None = None,
+    dataset_split_evidence: dict[str, Any] | None = None,
     repository_version: str | None = None,
     command_name: str | None = None,
     command_args: dict[str, Any] | None = None,
@@ -142,6 +144,8 @@ def build_research_lineage(
         "dataset_split_hash": dataset_split_hash or dataset_content_hash,
         "data_source_fingerprint": data_source_fingerprint,
         "dataset_adapter_provenance_hash": dataset_adapter_provenance_hash,
+        "dataset_artifact": dict(dataset_artifact or {}),
+        "dataset_split_evidence": dict(dataset_split_evidence or {}),
         "repository_version": repository_version,
         "command_name": command_name,
         "normalized_command_args": _redacted_mapping(command_args or {}),

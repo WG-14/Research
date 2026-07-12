@@ -11,7 +11,7 @@ from market_research.orderbook_depth_store import summarize_orderbook_depth_evid
 from market_research.orderbook_depth_store import build_orderbook_depth_snapshot, OrderbookDepthSnapshot
 
 from .datasets.contracts import (DatasetArtifactHandle, DatasetArtifactRef, DatasetLoadContext,
-    DatasetResolutionContext, DatasetSliceQuery, VerifiedDatasetArtifact)
+    DatasetResolutionContext, DatasetRunContext, DatasetSliceQuery, VerifiedDatasetArtifact)
 from .datasets.artifact_manifest import load_artifact_manifest
 from .datasets.locators import parse_immutable_locator
 from .datasets.verification import DatasetVerificationResult, VerificationStatus
@@ -98,6 +98,7 @@ class DatasetSnapshot:
     locator: dict[str, Any] | None = None
     options: dict[str, Any] | None = None
     adapter_provenance: dict[str, Any] | None = None
+    verification: DatasetVerificationResult | None = None
     top_of_book_quotes: tuple[TopOfBookQuote | None, ...] = ()
     top_of_book_event_quotes: tuple[TopOfBookQuote, ...] = ()
     top_of_book_requested: bool = False
@@ -287,20 +288,23 @@ class DatasetQualityReport:
 
 def load_dataset_split(
     *,
-    db_path: str | Path,
+    db_path: str | Path | None,
     manifest: ExperimentManifest,
     split_name: str,
+    run_context: DatasetRunContext | None = None,
 ) -> DatasetSnapshot:
     date_range = _split_range(manifest, split_name)
-    return load_dataset_range(db_path=db_path, manifest=manifest, split_name=split_name, date_range=date_range)
+    return load_dataset_range(db_path=db_path, manifest=manifest, split_name=split_name, date_range=date_range,
+                              run_context=run_context)
 
 
 def load_dataset_range(
     *,
-    db_path: str | Path,
+    db_path: str | Path | None,
     manifest: ExperimentManifest,
     split_name: str,
     date_range: DateRange,
+    run_context: DatasetRunContext | None = None,
 ) -> DatasetSnapshot:
     registry = default_dataset_adapter_registry()
     adapter = registry.resolve(manifest.dataset.source)
@@ -313,12 +317,14 @@ def load_dataset_range(
     depth_source = depth_spec.source if depth_spec is not None else "orderbook_depth_levels"
     depth_adapter = registry.resolve_depth(depth_source) if depth_requested else None
     context = DatasetLoadContext(db_path=db_path)
-    if isinstance(adapter, FrozenSQLiteCandleAdapter):
+    if bool(getattr(adapter, "requires_artifact_manifest", False)):
         if manifest.dataset.artifact_ref is None:
             raise ValueError("legacy_frozen_manifest_requires_explicit_migration")
-        handle = adapter.resolve(manifest.dataset.artifact_ref, DatasetResolutionContext(db_path=None))
-        verified = adapter.verify(handle)
-        snapshot = adapter.materialize(verified, DatasetSliceQuery(market=manifest.market, interval=manifest.interval,
+        artifact_adapter = registry.resolve_artifact(manifest.dataset.source)
+        verified = (run_context or DatasetRunContext()).resolve_verified(
+            artifact_adapter, manifest.dataset.artifact_ref, DatasetResolutionContext(db_path=None)
+        )
+        snapshot = artifact_adapter.materialize(verified, DatasetSliceQuery(market=manifest.market, interval=manifest.interval,
             start_ts=date_range.start_ts_ms(), end_ts=date_range.end_ts_ms(), split_role=split_name,
             snapshot_id=manifest.dataset.snapshot_id, dataset_options=dict(manifest.dataset.options)))
     else:
@@ -366,7 +372,7 @@ def load_dataset_range(
         if depth_adapter is not None
         else None
     )
-    return DatasetSnapshot(
+    snapshot = DatasetSnapshot(
         snapshot_id=snapshot.snapshot_id,
         source=snapshot.source,
         market=snapshot.market,
@@ -385,6 +391,7 @@ def load_dataset_range(
         locator=snapshot.locator,
         options=_snapshot_materialization_contract(manifest),
         adapter_provenance=snapshot.adapter_provenance,
+        verification=snapshot.verification,
         top_of_book_quotes=top_of_book_quotes,
         top_of_book_event_quotes=top_of_book_event_quotes,
         top_of_book_requested=top_of_book_spec is not None,
@@ -404,6 +411,7 @@ def load_dataset_range(
         orderbook_depth_source_schema_hash=depth_spec.source_schema_hash if depth_spec is not None else None,
         orderbook_depth_adapter_provenance=depth_provenance,
     )
+    return snapshot
 
 
 def _depth_requested(manifest: ExperimentManifest) -> bool:
@@ -471,7 +479,7 @@ def _load_sqlite_dataset_range(
         for row in rows
     )
     top_of_book_spec = manifest.dataset.top_of_book
-    return DatasetSnapshot(
+    snapshot = DatasetSnapshot(
         snapshot_id=manifest.dataset.snapshot_id,
         source=manifest.dataset.source,
         market=manifest.market,
@@ -492,11 +500,14 @@ def _load_sqlite_dataset_range(
         top_of_book_join_tolerance_ms=top_of_book_spec.join_tolerance_ms if top_of_book_spec is not None else None,
         top_of_book_min_coverage_pct=top_of_book_spec.min_coverage_pct if top_of_book_spec is not None else 100.0,
     )
+    verification = SQLiteCandleAdapter().verify_snapshot(snapshot=snapshot, context=DatasetLoadContext(db_path=db_path))
+    return DatasetSnapshot(**{**snapshot.__dict__, "verification": verification,
+                              "adapter_provenance": {"verification": verification.as_dict()}})
 
 
 def build_dataset_quality_report(
     *,
-    db_path: str | Path,
+    db_path: str | Path | None,
     snapshot: DatasetSnapshot,
 ) -> DatasetQualityReport:
     adapter = default_dataset_adapter_registry().resolve(snapshot.source)
@@ -635,7 +646,8 @@ def _build_source_agnostic_dataset_quality_report(
         "artifact_content_hash": snapshot.artifact_content_hash,
         "artifact_schema_hash": snapshot.artifact_schema_hash,
         "artifact_manifest_hash": snapshot.artifact_manifest_hash,
-        "verification_status": ((snapshot.adapter_provenance or {}).get("verification") or {}).get("overall_status", "UNAVAILABLE"),
+        "verification_status": (snapshot.verification.overall_status.value if snapshot.verification else "UNAVAILABLE"),
+        "verification": snapshot.verification.as_dict() if snapshot.verification else None,
         "source_content_hash": snapshot.source_content_hash,
         "source_content_hash_status": "DECLARED_ONLY" if snapshot.source_content_hash else "UNAVAILABLE",
         "source_schema_hash": snapshot.source_schema_hash,
@@ -1167,6 +1179,19 @@ class SQLiteCandleAdapter:
     supported_top_of_book_sources = frozenset()
     supported_depth_sources = frozenset()
     supports_sqlite_streaming_quality_scan = True
+    requires_runtime_db = True
+    requires_artifact_manifest = False
+
+    def verify_snapshot(self, *, snapshot: DatasetSnapshot, context: DatasetLoadContext) -> DatasetVerificationResult:
+        del snapshot, context
+        return DatasetVerificationResult(
+            overall_status=VerificationStatus.DECLARED_ONLY,
+            content_status=VerificationStatus.DECLARED_ONLY, expected_content_hash=None, actual_content_hash=None,
+            content_method="declared_sqlite_compatibility_source", schema_status=VerificationStatus.DECLARED_ONLY,
+            expected_schema_hash=None, actual_schema_hash=None, locator_status=VerificationStatus.UNAVAILABLE,
+            locator_type=None, scope_status=VerificationStatus.DERIVED_FROM_SNAPSHOT,
+            declared_scope=None, actual_scope=None, adapter_name=self.adapter_name, adapter_version=self.adapter_version,
+        )
 
     def load_range(
         self,
@@ -1305,18 +1330,12 @@ class FrozenSQLiteCandleAdapter:
     supported_depth_sources = frozenset()
     supports_sqlite_streaming_quality_scan = True
 
-    _verified_cache: dict[tuple[str, str], VerifiedDatasetArtifact] = {}
-
     def resolve(self, reference: DatasetArtifactRef, context: DatasetResolutionContext) -> DatasetArtifactHandle:
         del context
         manifest = load_artifact_manifest(reference.artifact_manifest_uri, reference.artifact_manifest_hash)
         return DatasetArtifactHandle(reference=reference, manifest=manifest)
 
     def verify(self, handle: DatasetArtifactHandle) -> VerifiedDatasetArtifact:
-        cache_key = (handle.reference.artifact_manifest_uri, handle.reference.artifact_manifest_hash)
-        cached = self._verified_cache.get(cache_key)
-        if cached is not None:
-            return cached
         manifest = handle.manifest
         locator = parse_immutable_locator(manifest.locator.as_dict())
         path = Path(locator.path)
@@ -1338,20 +1357,34 @@ class FrozenSQLiteCandleAdapter:
             schema_status=VerificationStatus.VERIFIED if actual_schema == manifest.schema_hash else VerificationStatus.MISMATCH,
             expected_schema_hash=manifest.schema_hash, actual_schema_hash=actual_schema,
             locator_status=VerificationStatus.VERIFIED, locator_type=manifest.locator.type,
-            scope_status=VerificationStatus.VERIFIED if status is VerificationStatus.VERIFIED else VerificationStatus.MISMATCH,
+            scope_status=(VerificationStatus.VERIFIED if actual_scope == {"market": manifest.market, "interval": manifest.interval,
+                                 "start_ts": manifest.start_ts, "end_ts": manifest.end_ts}
+                          and len(rows) == manifest.row_count and actual_pairs == {(manifest.market, manifest.interval)}
+                          else VerificationStatus.MISMATCH),
             declared_scope={"market": manifest.market, "interval": manifest.interval, "start_ts": manifest.start_ts, "end_ts": manifest.end_ts},
             actual_scope=actual_scope, adapter_name=self.adapter_name, adapter_version=self.adapter_version)
         verification.require_verified()
-        result = VerifiedDatasetArtifact(handle=handle, verification=verification)
-        self._verified_cache[cache_key] = result
-        return result
+        return VerifiedDatasetArtifact(handle=handle, verification=verification)
+
+    def verify_snapshot(self, *, snapshot: DatasetSnapshot, context: DatasetLoadContext) -> DatasetVerificationResult:
+        del context
+        if snapshot.verification is None:
+            raise ValueError("frozen_snapshot_verification_missing")
+        return snapshot.verification
 
     def materialize(self, artifact: VerifiedDatasetArtifact, query: DatasetSliceQuery) -> DatasetSnapshot:
         if not isinstance(artifact, VerifiedDatasetArtifact):
             raise TypeError("materialize_requires_verified_dataset_artifact")
         artifact.verification.require_verified()
         manifest = artifact.handle.manifest
-        if query.market != manifest.market or query.interval != manifest.interval or query.start_ts < manifest.start_ts or query.end_ts > manifest.end_ts:
+        # DateRange contracts are inclusive civil days whereas a candle scope
+        # records the final observed bucket.  Permit the remainder of that
+        # final UTC day; materialization still returns only verified rows.
+        from datetime import datetime, timezone
+        end_day = datetime.fromtimestamp(manifest.end_ts / 1000, tz=timezone.utc).date().isoformat()
+        scope_end_within_last_bucket = DateRange(end_day, end_day).end_ts_ms()
+        if (query.market != manifest.market or query.interval != manifest.interval or query.start_ts < manifest.start_ts
+                or query.end_ts > scope_end_within_last_bucket):
             raise ValueError("dataset_slice_query_outside_verified_artifact_scope")
         rows = _load_frozen_rows(Path(manifest.locator.path), market=query.market, interval=query.interval,
             start_ts=query.start_ts, end_ts=query.end_ts)
@@ -1362,7 +1395,7 @@ class FrozenSQLiteCandleAdapter:
             artifact_content_hash=manifest.content_hash, artifact_schema_hash=manifest.schema_hash,
             artifact_manifest_hash=manifest.artifact_manifest_hash, adapter_version=self.adapter_version,
             locator=manifest.locator.as_dict(), options=dict(query.dataset_options),
-            adapter_provenance={"verification": artifact.verification.as_dict()})
+            adapter_provenance={"verification": artifact.verification.as_dict()}, verification=artifact.verification)
 
     def load_range(
         self,
@@ -1465,6 +1498,7 @@ class SQLiteTopOfBookAdapter:
     source = "sqlite_orderbook_top_snapshots"
     adapter_name = "sqlite_top_of_book_adapter"
     adapter_version = "1"
+    requires_runtime_db = True
 
     def load_candle_quotes(
         self,
@@ -1527,6 +1561,7 @@ class SQLiteOrderbookDepthAdapter:
     source = "orderbook_depth_levels"
     adapter_name = "sqlite_orderbook_depth_adapter"
     adapter_version = "1"
+    requires_runtime_db = True
 
     def load_event_snapshots(
         self,

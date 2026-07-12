@@ -81,7 +81,7 @@ def test_comparator_reports_exact_result_hash_path_and_is_order_independent() ->
         "manifest_hash": digest("manifest"),
         "research_classification": "research_only",
         "dataset_fingerprint": digest("dataset"),
-        "dataset_split_hashes": [{"split_name": "train", "content_hash": digest("train"), "quality_hash": digest("quality"), "snapshot_data_hash": digest("data"), "snapshot_query_hash": digest("query"), "snapshot_fingerprint_hash": digest("fingerprint"), "artifact_id": None, "artifact_manifest_hash": None, "artifact_content_hash": None, "artifact_schema_hash": None}],
+        "dataset_split_hashes": [{"split_name": "train", "content_hash": digest("train"), "quality_hash": digest("quality"), "snapshot_data_hash": digest("data"), "snapshot_query_hash": digest("query"), "snapshot_fingerprint_hash": digest("fingerprint"), "artifact_id": "artifact", "artifact_manifest_hash": digest("manifest-artifact"), "artifact_content_hash": digest("content-artifact"), "artifact_schema_hash": digest("schema-artifact"), "verification_status": "VERIFIED", "verification": {"overall_status": "VERIFIED"}, "requested_range": {"start": "2026-01-01", "end": "2026-01-01"}}],
         "strategy_contract_hashes": [digest("plugin")],
         "execution_assumption_hashes": [{"name": "cost_model", "hash": digest("cost")}],
         "candidate_fingerprints": [{

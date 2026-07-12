@@ -4,7 +4,7 @@ from market_research.research.datasets.locators import LocatorValidationError, p
 
 
 def _locator(path: str = "/tmp/content/candles.sqlite") -> dict[str, str]:
-    return {"type":"content_addressed_local", "path":path, "artifact_manifest_hash":"sha256:" + "a" * 64, "artifact_content_hash":"sha256:" + "b" * 64}
+    return {"type":"content_addressed_local", "path":path, "artifact_content_hash":"sha256:" + "b" * 64}
 
 
 @pytest.mark.parametrize("path", ["datasets/latest.sqlite", "/datasets/current/c.sqlite", "relative.sqlite"])
@@ -20,3 +20,10 @@ def test_unknown_locator_and_identity_less_locator_fail_closed() -> None:
 
 def test_content_addressed_local_locator_round_trips() -> None:
     assert parse_immutable_locator(_locator()).as_dict() == _locator()
+
+
+def test_parent_symlink_locator_is_rejected(tmp_path) -> None:
+    target = tmp_path / "target"; target.mkdir()
+    link = tmp_path / "link"; link.symlink_to(target, target_is_directory=True)
+    with pytest.raises(LocatorValidationError, match="symlink"):
+        parse_immutable_locator(_locator(str(link / "candles.sqlite")))

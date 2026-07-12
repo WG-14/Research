@@ -45,7 +45,15 @@ def sqlite_candles_schema_hash(db_path: str | Path) -> str:
 
 
 def freeze_sqlite_candles_dataset(*, source_db: str | Path, market: str, interval: str,
-                                  start_ts: int, end_ts: int, out_dir: str | Path) -> dict[str, Any]:
+                                  start_ts: int, end_ts: int, out_dir: str | Path,
+                                  failure_stage: str | None = None) -> dict[str, Any]:
+    """Publish a verified directory bundle using atomicity-only durability.
+
+    The policy intentionally promises atomic visibility, not power-loss
+    durability.  Both files are fsynced before the same-filesystem directory
+    rename; parent-directory fsync is not part of this contract.
+    ``failure_stage`` is a deterministic test hook and is not exposed by CLI.
+    """
     source = Path(source_db).expanduser().resolve()
     out_root = Path(out_dir).expanduser()
     if not out_root.is_absolute():
@@ -68,23 +76,29 @@ def freeze_sqlite_candles_dataset(*, source_db: str | Path, market: str, interva
     staging_manifest = staging / "artifact.manifest.json"
     try:
         _write_sqlite(staging_db, rows=rows, market=market, interval=interval)
+        _fail_if_requested(failure_stage, "during_db_creation")
         schema_hash = sqlite_candles_schema_hash(staging_db)
         artifact_id = f"immutable-candle:{content_hash}"
         final_manifest = build_artifact_manifest(artifact_id=artifact_id, path=str(artifact_path), content_hash=content_hash,
             schema_hash=schema_hash, row_count=len(rows), market=market, interval=interval,
             start_ts=int(start_ts), end_ts=int(end_ts))
         write_json_atomic(staging_manifest, final_manifest.as_dict())
+        _fail_if_requested(failure_stage, "during_manifest_creation")
         _verify_bundle(staging_db, staging_manifest, market=market, interval=interval, start_ts=start_ts,
-            end_ts=end_ts, expected_content=content_hash)
+            end_ts=end_ts, expected_content=content_hash, committed=False)
         # ensure file contents are flushed before publishing the directory
         _fsync_file(staging_db); _fsync_file(staging_manifest)
+        _fail_if_requested(failure_stage, "after_verification_before_rename")
         try:
+            _fail_if_requested(failure_stage, "during_final_publication")
             os.replace(staging, artifact_dir)
         except FileExistsError:
             shutil.rmtree(staging, ignore_errors=True)
             return _reuse_existing(artifact_dir=artifact_dir, artifact_path=artifact_path, manifest_path=manifest_path,
                 market=market, interval=interval, start_ts=start_ts, end_ts=end_ts, expected_content=content_hash)
-        return _result(load_artifact_manifest(manifest_path), artifact_path, manifest_path, reused_existing=False)
+        manifest = _verify_bundle(artifact_path, manifest_path, market=market, interval=interval,
+            start_ts=start_ts, end_ts=end_ts, expected_content=content_hash, committed=True)
+        return _result(manifest, artifact_path, manifest_path, reused_existing=False)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
@@ -108,15 +122,23 @@ def _reuse_existing(*, artifact_dir: Path, artifact_path: Path, manifest_path: P
         raise DatasetFreezeError("existing_artifact_path_conflict")
     try:
         manifest = _verify_bundle(artifact_path, manifest_path, market=market, interval=interval, start_ts=start_ts,
-            end_ts=end_ts, expected_content=expected_content)
+            end_ts=end_ts, expected_content=expected_content, committed=True)
     except (ArtifactManifestError, OSError, sqlite3.Error, ValueError) as exc:
         raise DatasetFreezeError("existing_artifact_invalid_or_tampered") from exc
     return _result(manifest, artifact_path, manifest_path, reused_existing=True)
 
 
 def _verify_bundle(db_path: Path, manifest_path: Path, *, market: str, interval: str, start_ts: int, end_ts: int,
-                   expected_content: str):
-    manifest = load_artifact_manifest(manifest_path)
+                   expected_content: str, committed: bool):
+    if not db_path.is_file() or not manifest_path.is_file():
+        raise DatasetFreezeError("artifact_bundle_incomplete")
+    if committed:
+        manifest = load_artifact_manifest(manifest_path)
+    else:
+        # The staged sidecar already names its eventual committed DB path, so
+        # only parse it here.  Binding is enforced after the atomic rename.
+        from .datasets.artifact_manifest import parse_artifact_manifest
+        manifest = parse_artifact_manifest(json.loads(manifest_path.read_text(encoding="utf-8")))
     rows = _read_all_artifact_rows(db_path)
     actual = artifact_content_hash(rows)
     if actual != expected_content or actual != manifest.content_hash:
@@ -132,6 +154,11 @@ def _verify_bundle(db_path: Path, manifest_path: Path, *, market: str, interval:
     if actual_scope != (int(start_ts), int(end_ts)) or (manifest.start_ts, manifest.end_ts) != actual_scope:
         raise DatasetFreezeError("artifact_scope_verification_failed")
     return manifest
+
+
+def _fail_if_requested(requested: str | None, stage: str) -> None:
+    if requested == stage:
+        raise DatasetFreezeError(f"freeze_failure_injected:{stage}")
 
 
 def _result(manifest, artifact_path: Path, manifest_path: Path, *, reused_existing: bool) -> dict[str, Any]:

@@ -613,6 +613,8 @@ def _extend_registry_field_mismatch_reasons(
         "final_holdout_reuse_key_hash_v2",
         "objective_metric",
         "parameter_space_hash",
+        "dataset_artifact",
+        "dataset_split_evidence",
     ):
         expected = evidence.get(field)
         if expected is None:
