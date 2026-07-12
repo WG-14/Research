@@ -15,6 +15,11 @@ account APIs, order submission, account-connected runtime, state
 repair, single-instance coordination, service management, deployment, or
 operator tooling.
 
+Network market-data collection, operational order/fill database ingestion,
+exchange raw order-semantics inference, and retry/backfill/source-probe
+workflows are forbidden. Inputs are externally prepared immutable datasets and
+canonical research artifacts only.
+
 ## Supported strategies
 
 The supported strategy set is exactly:

@@ -4,7 +4,7 @@ import math
 import sqlite3
 from dataclasses import dataclass
 
-from .market_ids import parse_user_market_input
+from .market_ids import parse_market_id
 
 
 ORDERBOOK_TOP_SOURCE = "external_dataset_orderbook"
@@ -65,7 +65,7 @@ def build_orderbook_top_snapshot(
 ) -> OrderbookTopSnapshot:
     if not str(source or "").strip():
         raise ValueError("orderbook top source is required")
-    market = parse_user_market_input(pair)
+    market = parse_market_id(pair)
     bid = float(bid_price)
     ask = float(ask_price)
     spread_bps = compute_spread_bps(bid_price=bid, ask_price=ask)
@@ -84,8 +84,8 @@ def build_orderbook_top_snapshot(
 
 
 def snapshot_from_best_quote(*, ts: int, quote: BestQuote, requested_pair: str) -> OrderbookTopSnapshot:
-    requested_market = parse_user_market_input(requested_pair)
-    quote_market = parse_user_market_input(quote.market)
+    requested_market = parse_market_id(requested_pair)
+    quote_market = parse_market_id(quote.market)
     if quote_market != requested_market:
         raise ValueError(
             "orderbook top market mismatch "

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 from dataclasses import dataclass
@@ -41,22 +40,6 @@ def _is_within(path: Path, parent: Path) -> bool:
     return True
 
 KST = ZoneInfo("Asia/Seoul")
-PERSISTENT_MISSING_CLASSIFICATIONS = {
-    "exchange_gap_candidate",
-    "api_unavailable_candidate",
-    "no_trade_missing_candidate",
-    "unclassified_missing",
-}
-MISSING_CLASSIFICATIONS = {
-    "untried_missing",
-    "retried_recovered",
-    "retry_persistent_missing",
-    "exchange_gap_candidate",
-    "api_unavailable_candidate",
-    "no_trade_missing_candidate",
-    "unclassified_missing",
-}
-
 
 DATA_PLANE_POLICY_SCHEMA_VERSION = 1
 
@@ -350,7 +333,7 @@ def build_missing_candle_ranges_artifact(
         "timezone_contract": {
             "canonical_ts": "utc_epoch_ms",
             "display_timezones": ["UTC", "Asia/Seoul"],
-            "retry_plan_basis": "utc_days_derived_from_exact_missing_epoch_ms_ranges",
+            "missing_range_basis": "exact_missing_epoch_ms_ranges",
         },
         "splits": splits,
     }
@@ -466,100 +449,6 @@ def write_clean_candle_segments_artifact(
     return payload
 
 
-def build_persistent_missing_candle_classification_artifact(
-    *,
-    manifest_path: str | Path,
-    missing_ranges_path: str | Path,
-    retry_attempts_path: str | Path,
-    generated_at: str | None = None,
-    db_path: str | Path | None = None,
-) -> dict[str, Any]:
-    resolved_manifest_path = Path(manifest_path).expanduser().resolve()
-    resolved_missing_path = Path(missing_ranges_path).expanduser().resolve()
-    resolved_retry_path = Path(retry_attempts_path).expanduser().resolve()
-    manifest = load_manifest(resolved_manifest_path)
-    resolved_db_path = _configured_db_path(db_path)
-    missing_artifact = json.loads(resolved_missing_path.read_text(encoding="utf-8"))
-    retry_artifact = json.loads(resolved_retry_path.read_text(encoding="utf-8"))
-
-    _validate_missing_artifact(artifact=missing_artifact, manifest=manifest, db_path=resolved_db_path)
-    _validate_retry_attempts_artifact(
-        artifact=retry_artifact,
-        manifest=manifest,
-        db_path=resolved_db_path,
-        missing_ranges_path=resolved_missing_path,
-        missing_ranges_hash=str(missing_artifact.get("content_hash") or ""),
-    )
-    ranges = [
-        _classify_persistent_missing_attempt(
-            attempt=attempt,
-            retry_artifact_hash=str(retry_artifact["content_hash"]),
-            db_path=resolved_db_path,
-            market=manifest.market,
-            interval=manifest.interval,
-        )
-        for attempt in retry_artifact.get("attempts") or []
-        if attempt.get("classification") == "retry_persistent_missing"
-    ]
-    summary = {
-        classification: sum(1 for item in ranges if item["classification"] == classification)
-        for classification in sorted(PERSISTENT_MISSING_CLASSIFICATIONS)
-    }
-    summary["classified_range_count"] = len(ranges)
-    summary["persistent_range_count"] = len(ranges)
-    summary["validation_gate_effect"] = "none"
-
-    payload: dict[str, Any] = {
-        "schema_version": 1,
-        "artifact_type": "persistent_missing_candle_classification",
-        "manifest_path": str(resolved_manifest_path),
-        "manifest_hash": manifest.manifest_hash(),
-        "missing_ranges_path": str(resolved_missing_path),
-        "missing_ranges_hash": missing_artifact["content_hash"],
-        "retry_attempts_path": str(resolved_retry_path),
-        "retry_attempts_hash": retry_artifact["content_hash"],
-        "db_path": str(resolved_db_path),
-        "db_schema_fingerprint": _safe_db_schema_fingerprint(resolved_db_path),
-        "market": manifest.market,
-        "interval": manifest.interval,
-        "generated_at": generated_at or datetime.now(UTC).isoformat(),
-        "classifier_version": "persistent_missing_classifier_v1",
-        "policy_effect": "diagnostic_only_no_gate_relaxation",
-        "source_gap_policy": "diagnostic_only",
-        "synthetic_candle_authority": "not_allowed",
-        "ranges": ranges,
-        "summary": summary,
-        "limitations": {
-            "classification_is_candidate_evidence_only": True,
-            "synthetic_ohlcv_authorized": False,
-            "synthetic_candle_authority": "not_allowed",
-            "validation_gate_relaxed": False,
-            "top_of_book_satisfied": False,
-            "execution_calibration_satisfied": False,
-        },
-    }
-    payload["content_hash"] = sha256_prefixed(payload)
-    return payload
-
-
-def write_persistent_missing_candle_classification_artifact(
-    *,
-    manifest_path: str | Path,
-    missing_ranges_path: str | Path,
-    retry_attempts_path: str | Path,
-    out_path: str | Path,
-    generated_at: str | None = None,
-) -> dict[str, Any]:
-    payload = build_persistent_missing_candle_classification_artifact(
-        manifest_path=manifest_path,
-        missing_ranges_path=missing_ranges_path,
-        retry_attempts_path=retry_attempts_path,
-        generated_at=generated_at,
-    )
-    write_json_atomic(_validate_report_artifact_out_path(out_path), payload)
-    return payload
-
-
 def dataset_quality_policy_payload(manifest: ExperimentManifest) -> dict[str, Any]:
     raw = manifest.raw.get("dataset_quality_policy")
     if not isinstance(raw, dict):
@@ -567,9 +456,6 @@ def dataset_quality_policy_payload(manifest: ExperimentManifest) -> dict[str, An
             "source": "default_strict",
             "dense_candles_required": True,
             "missing_candle_policy": "fail",
-            "allow_classified_no_trade_missing": False,
-            "require_retry_attempts_for_missing_ranges": True,
-            "max_unclassified_missing_buckets": 0,
             "readiness_gate_effect": "strict_fail_closed",
             "validation_readiness_effect": "missing candles fail validation readiness",
             "synthetic_candle_authority": "not_allowed",
@@ -578,9 +464,6 @@ def dataset_quality_policy_payload(manifest: ExperimentManifest) -> dict[str, An
         "source": "manifest",
         "dense_candles_required": bool(raw.get("dense_candles_required", True)),
         "missing_candle_policy": str(raw.get("missing_candle_policy") or "fail"),
-        "allow_classified_no_trade_missing": bool(raw.get("allow_classified_no_trade_missing", False)),
-        "require_retry_attempts_for_missing_ranges": bool(raw.get("require_retry_attempts_for_missing_ranges", True)),
-        "max_unclassified_missing_buckets": int(raw.get("max_unclassified_missing_buckets", 0) or 0),
         "readiness_gate_effect": (
             "metadata_only_no_gate_relaxation"
             if str(raw.get("missing_candle_policy") or "fail").strip().lower() == "diagnostic_only"
@@ -1040,8 +923,6 @@ def _artifact_range(*, split_name: str, start_ts: int, end_ts: int, bucket_count
         "start_kst": _format_kst(start_ts),
         "end_kst": _format_kst(end_ts),
         "bucket_count": bucket_count,
-        "retry_utc_days": _retry_utc_days(start_ts=start_ts, end_ts=end_ts),
-        "classification": "untried_missing",
     }
 
 
@@ -1053,76 +934,6 @@ def _format_kst(ts_ms: int) -> str:
     return datetime.fromtimestamp(ts_ms / 1000, tz=UTC).astimezone(KST).isoformat()
 
 
-def _retry_utc_days(*, start_ts: int, end_ts: int) -> list[str]:
-    start_day = datetime.fromtimestamp(start_ts / 1000, tz=UTC).date()
-    end_day = datetime.fromtimestamp(end_ts / 1000, tz=UTC).date()
-    days = []
-    day = start_day
-    while day <= end_day:
-        days.append(day.isoformat())
-        day += timedelta(days=1)
-    return days
-
-
-def _validate_missing_artifact(*, artifact: dict[str, Any], manifest: ExperimentManifest, db_path: Path) -> None:
-    if artifact.get("artifact_type") != "missing_candle_ranges":
-        raise ValueError("missing ranges artifact_type must be missing_candle_ranges")
-    if artifact.get("schema_version") != 1:
-        raise ValueError("unsupported missing ranges schema_version")
-    embedded_hash = artifact.get("content_hash")
-    if not isinstance(embedded_hash, str) or not embedded_hash.startswith("sha256:"):
-        raise ValueError("missing ranges content_hash is required")
-    recomputed_payload = {key: value for key, value in artifact.items() if key != "content_hash"}
-    if sha256_prefixed(recomputed_payload) != embedded_hash:
-        raise ValueError("missing ranges content_hash does not match artifact body")
-    if artifact.get("manifest_hash") != manifest.manifest_hash():
-        raise ValueError("missing ranges manifest_hash does not match manifest")
-    if artifact.get("market") != manifest.market or artifact.get("interval") != manifest.interval:
-        raise ValueError("missing ranges market/interval does not match manifest")
-    artifact_db = Path(str(artifact.get("db_path") or "")).expanduser().resolve()
-    if artifact_db != db_path:
-        raise ValueError("missing ranges db_path does not match configured DB_PATH")
-    for split_payload in (artifact.get("splits") or {}).values():
-        for item in split_payload.get("ranges") or []:
-            if item.get("classification") not in MISSING_CLASSIFICATIONS:
-                raise ValueError("missing ranges artifact has unsupported classification")
-
-
-def _validate_retry_attempts_artifact(
-    *,
-    artifact: dict[str, Any],
-    manifest: ExperimentManifest,
-    db_path: Path,
-    missing_ranges_path: Path,
-    missing_ranges_hash: str,
-) -> None:
-    if artifact.get("artifact_type") != "missing_candle_retry_attempts":
-        raise ValueError("retry attempts artifact_type must be missing_candle_retry_attempts")
-    if artifact.get("schema_version") != 1:
-        raise ValueError("unsupported retry attempts schema_version")
-    embedded_hash = artifact.get("content_hash")
-    if not isinstance(embedded_hash, str) or not embedded_hash.startswith("sha256:"):
-        raise ValueError("retry attempts content_hash is required")
-    recomputed_payload = {key: value for key, value in artifact.items() if key != "content_hash"}
-    if sha256_prefixed(recomputed_payload) != embedded_hash:
-        raise ValueError("retry attempts content_hash does not match artifact body")
-    if artifact.get("manifest_hash") != manifest.manifest_hash():
-        raise ValueError("retry attempts manifest_hash does not match manifest")
-    if artifact.get("market") != manifest.market or artifact.get("interval") != manifest.interval:
-        raise ValueError("retry attempts market/interval does not match manifest")
-    artifact_db = Path(str(artifact.get("db_path") or "")).expanduser().resolve()
-    if artifact_db != db_path:
-        raise ValueError("retry attempts db_path does not match configured DB_PATH")
-    artifact_missing_path = Path(str(artifact.get("missing_ranges_path") or "")).expanduser().resolve()
-    if artifact_missing_path != missing_ranges_path:
-        raise ValueError("retry attempts missing_ranges_path does not match input")
-    if not missing_ranges_hash or artifact.get("missing_ranges_hash") != missing_ranges_hash:
-        raise ValueError("retry attempts missing_ranges_hash does not match missing ranges artifact")
-    for item in artifact.get("attempts") or []:
-        if item.get("classification") not in MISSING_CLASSIFICATIONS:
-            raise ValueError("retry attempts artifact has unsupported classification")
-
-
 def _validate_report_artifact_out_path(path: str | Path) -> Path:
     resolved = Path(path).expanduser()
     if not resolved.is_absolute():
@@ -1131,204 +942,6 @@ def _validate_report_artifact_out_path(path: str | Path) -> Path:
     if _is_within(resolved, Path(__file__).resolve().parents[3]):
         raise ValueError(f"research report artifact --out must be outside repository: {resolved}")
     return resolved
-
-
-def _classify_persistent_missing_attempt(
-    *,
-    attempt: dict[str, Any],
-    retry_artifact_hash: str,
-    db_path: Path,
-    market: str,
-    interval: str,
-) -> dict[str, Any]:
-    no_trade_supported = _has_no_trade_evidence(attempt)
-    surrounding_present = _surrounding_candles_present(
-        db_path=db_path,
-        market=market,
-        interval=interval,
-        start_ts=int(attempt["start_ts"]),
-        end_ts=int(attempt["end_ts"]),
-    )
-    if no_trade_supported:
-        classification = "no_trade_missing_candidate"
-    else:
-        classification = "unclassified_missing"
-
-    evidence = _classification_evidence(
-        attempt=attempt,
-        retry_artifact_hash=retry_artifact_hash,
-        surrounding_present=surrounding_present,
-    )
-    return {
-        "split": attempt["split"],
-        "start_ts": int(attempt["start_ts"]),
-        "end_ts": int(attempt["end_ts"]),
-        "start_utc": attempt["start_utc"],
-        "end_utc": attempt["end_utc"],
-        "start_kst": attempt["start_kst"],
-        "end_kst": attempt["end_kst"],
-        "bucket_count": int(attempt["bucket_count"]),
-        "classification": classification,
-        "confidence": "candidate",
-        "gate_effect": "none",
-        "hypotheses": _classification_hypotheses(
-            classification=classification,
-            no_trade_supported=no_trade_supported,
-            surrounding_present=surrounding_present,
-        ),
-        "evidence": evidence,
-        "next_action": _persistent_missing_next_action(classification),
-    }
-
-
-def _classification_evidence(
-    *,
-    attempt: dict[str, Any],
-    retry_artifact_hash: str,
-    surrounding_present: bool,
-) -> list[dict[str, Any]]:
-    before = attempt.get("before") if isinstance(attempt.get("before"), dict) else {}
-    after = attempt.get("after") if isinstance(attempt.get("after"), dict) else {}
-    backfill_attempts = [
-        item for item in attempt.get("backfill_attempts") or [] if isinstance(item, dict)
-    ]
-    evidence: list[dict[str, Any]] = [
-        {
-            "type": "retry_attempt_summary",
-            "artifact_hash": retry_artifact_hash,
-            "before_missing_buckets": int(before.get("missing_buckets") or 0),
-            "after_missing_buckets": int(after.get("missing_buckets") or 0),
-            "recovered_buckets": int(attempt.get("recovered_buckets") or 0),
-            "backfill_progress_statuses": sorted(
-                {str(item.get("progress_status")) for item in backfill_attempts if item.get("progress_status") is not None}
-            ),
-            "backfill_progress_reasons": sorted(
-                {str(item.get("progress_reason")) for item in backfill_attempts if item.get("progress_reason") is not None}
-            ),
-        },
-        {
-            "type": "db_surrounding_bucket_check",
-            "surrounding_buckets_present": surrounding_present,
-        },
-    ]
-    if _has_no_trade_evidence(attempt):
-        evidence.append(
-            {
-                "type": "no_trade_signal",
-                "evidence_refs": _no_trade_evidence_refs(attempt),
-            }
-        )
-    return evidence
-
-
-def _classification_hypotheses(
-    *,
-    classification: str,
-    no_trade_supported: bool,
-    surrounding_present: bool,
-) -> list[dict[str, Any]]:
-    return [
-        {
-            "name": "external_dataset_gap",
-            "status": "unknown",
-            "evidence_refs": ["retry_attempt_summary"],
-        },
-        {
-            "name": "no_trade_interval",
-            "status": "supported" if classification == "no_trade_missing_candidate" else "unknown",
-            "evidence_refs": ["retry_attempt_summary", "db_surrounding_bucket_check"],
-        },
-        {
-            "name": "no_trade_candle_omission",
-            "status": "supported" if no_trade_supported else "unknown",
-            "evidence_refs": ["no_trade_signal"] if no_trade_supported else [],
-        },
-        {
-            "name": "db_env_or_writer_mismatch",
-            "status": "weakened" if surrounding_present else "unknown",
-            "evidence_refs": ["manifest_hash", "db_schema_fingerprint", "missing_ranges_hash", "retry_attempts_hash"],
-        },
-    ]
-
-
-def _persistent_missing_next_action(classification: str) -> str:
-    if classification == "api_unavailable_candidate":
-        return "review immutable dataset provenance and regenerate a complete external dataset before validation research"
-    if classification == "unclassified_missing":
-        return "collect external dataset provenance and regenerate a complete dataset before validation-bound research"
-    return "review candidate evidence; this classification does not relax validation readiness without a reviewed exception policy"
-
-
-def persistent_missing_overall_next_action(summary: dict[str, Any]) -> str:
-    if int(summary.get("unclassified_missing") or 0):
-        return "collect external dataset evidence and resolve unclassified persistent missing ranges before validation research"
-    if int(summary.get("persistent_range_count") or 0):
-        return "review classified candidate evidence; validation readiness remains fail-closed while missing candles remain unresolved"
-    return "none"
-
-
-def _has_no_trade_evidence(payload: Any) -> bool:
-    for key, value in _walk_key_values(payload):
-        lowered_key = key.lower()
-        lowered_value = str(value).lower()
-        if lowered_key in {"exchange_contract", "source_signal", "probe_interpretation", "reason"} and any(
-            token in lowered_value
-            for token in ("no_trade_candle_omission", "zero_volume_no_trade", "no_trade_interval")
-        ):
-            return True
-    return False
-
-
-def _no_trade_evidence_refs(payload: Any) -> list[str]:
-    refs: list[str] = []
-    for key, value in _walk_key_values(payload):
-        if _has_no_trade_evidence({key: value}):
-            refs.append(f"{key}={value}")
-    return refs[:20]
-
-
-def _walk_key_values(payload: Any) -> list[tuple[str, Any]]:
-    values: list[tuple[str, Any]] = []
-    if isinstance(payload, dict):
-        for key, value in payload.items():
-            if isinstance(value, (dict, list)):
-                values.extend(_walk_key_values(value))
-            else:
-                values.append((str(key), value))
-    elif isinstance(payload, list):
-        for item in payload:
-            values.extend(_walk_key_values(item))
-    return values
-
-
-def _surrounding_candles_present(
-    *,
-    db_path: Path,
-    market: str,
-    interval: str,
-    start_ts: int,
-    end_ts: int,
-) -> bool:
-    resolved_db = db_path.expanduser().resolve()
-    if not resolved_db.exists():
-        return False
-    interval_ms = _interval_ms(interval)
-    before_ts = start_ts - interval_ms
-    after_ts = end_ts + interval_ms
-    conn = sqlite3.connect(f"file:{resolved_db}?mode=ro", uri=True)
-    try:
-        before = conn.execute(
-            "SELECT 1 FROM candles WHERE pair=? AND interval=? AND ts=? LIMIT 1",
-            (market, interval, before_ts),
-        ).fetchone()
-        after = conn.execute(
-            "SELECT 1 FROM candles WHERE pair=? AND interval=? AND ts=? LIMIT 1",
-            (market, interval, after_ts),
-        ).fetchone()
-    finally:
-        conn.close()
-    return before is not None and after is not None
-
 
 
 def env_payload() -> dict[str, object]:

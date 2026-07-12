@@ -67,7 +67,7 @@ def write_calibration_artifact(
     market = str(artifact.get("market") or "unknown").replace("/", "_").replace(":", "_")
     stamp = str(artifact.get("generated_at") or datetime.now(timezone.utc).isoformat())
     safe_stamp = "".join(ch if ch.isdigit() else "_" for ch in stamp)[:14]
-    path = manager.data_dir() / "reports" / "execution_quality" / f"cost_model_calibration_{market}_{safe_stamp}.json"
+    path = manager.data_dir() / "reports" / "execution_calibration" / f"cost_model_calibration_{market}_{safe_stamp}.json"
     if ResearchPathManager.is_within(path.resolve(), manager.project_root.resolve()):
         raise ResearchPathError(f"execution calibration output path must be outside repository: {path.resolve()}")
     write_json_atomic(path, artifact)

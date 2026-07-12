@@ -7,7 +7,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
-from .market_ids import parse_user_market_input
+from .market_ids import parse_market_id
 from .orderbook_top_store import ORDERBOOK_TOP_SOURCE
 
 
@@ -70,7 +70,7 @@ def build_orderbook_depth_snapshot(
 ) -> OrderbookDepthSnapshot:
     if not str(source or "").strip():
         raise ValueError("orderbook depth source is required")
-    market = parse_user_market_input(pair)
+    market = parse_market_id(pair)
     observed = None if observed_at_epoch_sec is None else float(observed_at_epoch_sec)
     if observed is not None and not math.isfinite(observed):
         raise ValueError(f"invalid orderbook depth observed_at_epoch_sec: {observed!r}")
@@ -143,7 +143,7 @@ def load_orderbook_depth_snapshot_after_or_equal(
     max_wait_ms: int,
     source: str | None = None,
 ) -> OrderbookDepthSnapshot | None:
-    market = parse_user_market_input(pair)
+    market = parse_market_id(pair)
     params: list[object] = [market, int(target_ts), int(target_ts) + int(max_wait_ms)]
     source_predicate = ""
     if source is not None:
@@ -198,7 +198,7 @@ def has_orderbook_depth_evidence(
     ).fetchone()
     if table is None:
         return False
-    market = parse_user_market_input(pair)
+    market = parse_market_id(pair)
     clauses = ["pair=?"]
     params: list[object] = [market]
     if start_ts is not None:
@@ -260,7 +260,7 @@ def summarize_orderbook_depth_evidence(
         base_payload["l2_depth_content_hash"] = _depth_evidence_hash([])
         return base_payload
 
-    market = parse_user_market_input(pair)
+    market = parse_market_id(pair)
     clauses = ["pair=?"]
     params: list[object] = [market]
     if start_ts is not None:

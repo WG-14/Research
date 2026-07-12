@@ -16,7 +16,7 @@ from market_research.execution_reality_contract import (
     build_execution_capability_contract,
     unsupported_capability_reasons,
 )
-from market_research.execution_quality import ExecutionQualityThresholds
+from .execution_calibration_contract import ExecutionCalibrationThresholds
 from market_research.paths import ResearchPathManager
 from market_research.market_regime import MARKET_REGIME_VERSION, evaluate_regime_acceptance_gate
 
@@ -2540,7 +2540,7 @@ def _evaluate_candidates(
             expected_execution_reality_contract=expected_execution_contract,
             expected_calibration_artifact_hash=expected_calibration_hash,
             require_content_hash=manifest.execution_model.calibration_required,
-            min_sample_count=ExecutionQualityThresholds().min_sample,
+            min_sample_count=ExecutionCalibrationThresholds().min_sample,
             require_quality_gate_pass=(
                 manifest.execution_model.calibration_required
                 or manifest.execution_model.calibration_strictness == "fail"

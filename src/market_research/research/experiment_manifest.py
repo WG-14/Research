@@ -1119,9 +1119,6 @@ def _parse_dataset_quality_policy(value: Any) -> None:
     allowed_fields = {
         "dense_candles_required",
         "missing_candle_policy",
-        "allow_classified_no_trade_missing",
-        "require_retry_attempts_for_missing_ranges",
-        "max_unclassified_missing_buckets",
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
@@ -1129,14 +1126,8 @@ def _parse_dataset_quality_policy(value: Any) -> None:
     missing_policy = str(value.get("missing_candle_policy") or "fail").strip().lower()
     if missing_policy not in {"fail", "diagnostic_only"}:
         raise ManifestValidationError("dataset_quality_policy.missing_candle_policy must be fail or diagnostic_only")
-    max_unclassified = _positive_or_zero_int(
-        value.get("max_unclassified_missing_buckets", 0),
-        "dataset_quality_policy.max_unclassified_missing_buckets",
-    )
     if bool(value.get("dense_candles_required", True)) and missing_policy != "fail":
         raise ManifestValidationError("dataset_quality_policy dense_candles_required=true requires missing_candle_policy=fail")
-    if max_unclassified != 0 and missing_policy == "fail":
-        raise ManifestValidationError("dataset_quality_policy fail mode requires max_unclassified_missing_buckets=0")
 
 
 def _canonical_dataset_quality_policy(value: Any) -> dict[str, object]:
@@ -1144,16 +1135,10 @@ def _canonical_dataset_quality_policy(value: Any) -> dict[str, object]:
         return {
             "dense_candles_required": True,
             "missing_candle_policy": "fail",
-            "allow_classified_no_trade_missing": False,
-            "require_retry_attempts_for_missing_ranges": True,
-            "max_unclassified_missing_buckets": 0,
         }
     return {
         "dense_candles_required": bool(value.get("dense_candles_required", True)),
         "missing_candle_policy": str(value.get("missing_candle_policy") or "fail").strip().lower(),
-        "allow_classified_no_trade_missing": bool(value.get("allow_classified_no_trade_missing", False)),
-        "require_retry_attempts_for_missing_ranges": bool(value.get("require_retry_attempts_for_missing_ranges", True)),
-        "max_unclassified_missing_buckets": int(value.get("max_unclassified_missing_buckets", 0) or 0),
     }
 
 

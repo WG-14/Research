@@ -51,7 +51,6 @@ def _freeze_dataset(parser: argparse.ArgumentParser) -> None:
 
 def _readiness(parser: argparse.ArgumentParser) -> None:
     _manifest_calibration(parser)
-    parser.add_argument("--missing-classification")
     parser.add_argument("--json", action="store_true")
 
 

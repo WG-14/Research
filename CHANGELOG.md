@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Removed the legacy exchange package/API surface and completed the breaking
+  rename to `market-research` / `market_research`.
+- Removed operational execution-log analysis and raw exchange order semantics.
+- Removed retry, source-probe, and persistent-missing-candle artifact contracts.
+- Enforced the offline boundary against network code, remote-data names,
+  operational database tables, and network runtime dependencies.
+
 ### 0.1.0
 
 - research-only repository boundary

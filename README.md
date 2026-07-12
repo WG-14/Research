@@ -6,6 +6,13 @@ backtests, walk-forward studies, statistical validation, and artifact-backed
 reports. It does not provide exchange API collection, account connections,
 order submission, or a runtime service.
 
+The repository never collects market data from a network source, reads an
+operational order/fill database, or performs data recovery. Supply externally
+prepared immutable datasets instead. Execution calibration is an external
+canonical artifact: this repository validates and consumes it, but does not
+collect exchange logs or generate it from live operations. Missing candles fail
+readiness; correct or replace the external dataset or SQLite input and rerun.
+
 ## Supported strategies
 
 - `sma_with_filter`

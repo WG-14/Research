@@ -50,8 +50,7 @@ def execute_research_command(
 
         return int(cmd_research_readiness(
             context=context, manifest_path=args.manifest,
-            execution_calibration_path=args.execution_calibration,
-            missing_classification_path=args.missing_classification, as_json=args.json,
+            execution_calibration_path=args.execution_calibration, as_json=args.json,
         ))
     if command == "research-workload-estimate":
         return int(cli.cmd_research_workload_estimate(context=context, manifest_path=args.manifest, as_json=args.json))
