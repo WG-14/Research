@@ -10,11 +10,16 @@ from market_research.research.intervals import interval_to_milliseconds
 from market_research.orderbook_depth_store import summarize_orderbook_depth_evidence
 from market_research.orderbook_depth_store import build_orderbook_depth_snapshot, OrderbookDepthSnapshot
 
-from .datasets.contracts import DatasetLoadContext
+from .datasets.contracts import (DatasetArtifactHandle, DatasetArtifactRef, DatasetLoadContext,
+    DatasetResolutionContext, DatasetSliceQuery, VerifiedDatasetArtifact)
+from .datasets.artifact_manifest import load_artifact_manifest
+from .datasets.locators import parse_immutable_locator
+from .datasets.verification import DatasetVerificationResult, VerificationStatus
 from .datasets.registry import default_dataset_adapter_registry
 from .experiment_manifest import DateRange, ExperimentManifest, ManifestValidationError
 from .hashing import sha256_prefixed
-from .dataset_freeze import canonical_candle_rows_hash, sqlite_candles_schema_hash
+from .dataset_freeze import sqlite_candles_schema_hash
+from .datasets.hashing_contract import artifact_content_hash
 from .datasets.hashing_contract import (
     snapshot_data_hash as calculate_snapshot_data_hash,
     snapshot_fingerprint_hash as calculate_snapshot_fingerprint_hash,
@@ -140,7 +145,10 @@ class DatasetSnapshot:
                 interval=self.interval,
                 start_ts=self.date_range.start_ts_ms(),
                 end_ts=self.date_range.end_ts_ms(),
-                filters=self.options,
+                dataset_options=(self.options or {}).get("dataset_options", self.options or {}),
+                top_of_book=(self.options or {}).get("top_of_book", {}),
+                depth=(self.options or {}).get("depth", {}),
+                execution=(self.options or {}).get("execution", {}),
             )
             object.__setattr__(self, "_snapshot_query_hash_cache", cached)
         return str(cached)
@@ -304,12 +312,17 @@ def load_dataset_range(
     depth_spec = manifest.dataset.depth
     depth_source = depth_spec.source if depth_spec is not None else "orderbook_depth_levels"
     depth_adapter = registry.resolve_depth(depth_source) if depth_requested else None
-    snapshot = adapter.load_range(
-        manifest=manifest,
-        split_name=split_name,
-        date_range=date_range,
-        context=DatasetLoadContext(db_path=db_path),
-    )
+    context = DatasetLoadContext(db_path=db_path)
+    if isinstance(adapter, FrozenSQLiteCandleAdapter):
+        if manifest.dataset.artifact_ref is None:
+            raise ValueError("legacy_frozen_manifest_requires_explicit_migration")
+        handle = adapter.resolve(manifest.dataset.artifact_ref, DatasetResolutionContext(db_path=None))
+        verified = adapter.verify(handle)
+        snapshot = adapter.materialize(verified, DatasetSliceQuery(market=manifest.market, interval=manifest.interval,
+            start_ts=date_range.start_ts_ms(), end_ts=date_range.end_ts_ms(), split_role=split_name,
+            snapshot_id=manifest.dataset.snapshot_id, dataset_options=dict(manifest.dataset.options)))
+    else:
+        snapshot = adapter.load_range(manifest=manifest, split_name=split_name, date_range=date_range, context=context)
     execution_lookahead_ms = (
         int(manifest.execution_timing.decision_guard_ms)
         + int(max((scenario.latency_ms for scenario in manifest.execution_model.scenarios), default=0))
@@ -322,7 +335,7 @@ def load_dataset_range(
             top_of_book_adapter.load_candle_quotes(
                 manifest=manifest,
                 candles=snapshot.candles,
-                context=DatasetLoadContext(db_path=db_path),
+                context=context,
             )
         )
         top_of_book_event_quotes = tuple(
@@ -330,7 +343,7 @@ def load_dataset_range(
                 manifest=manifest,
                 candles=snapshot.candles,
                 execution_quote_lookahead_ms=execution_lookahead_ms,
-                context=DatasetLoadContext(db_path=db_path),
+                context=context,
             )
         )
     orderbook_depth_snapshots: tuple[OrderbookDepthSnapshot, ...] = ()
@@ -340,16 +353,16 @@ def load_dataset_range(
                 manifest=manifest,
                 candles=snapshot.candles,
                 execution_depth_lookahead_ms=execution_lookahead_ms,
-                context=DatasetLoadContext(db_path=db_path),
+                context=context,
             )
         )
     top_of_book_provenance = (
-        top_of_book_adapter.provenance(manifest=manifest, context=DatasetLoadContext(db_path=db_path))
+        top_of_book_adapter.provenance(manifest=manifest, context=context)
         if top_of_book_adapter is not None
         else None
     )
     depth_provenance = (
-        depth_adapter.provenance(manifest=manifest, context=DatasetLoadContext(db_path=db_path))
+        depth_adapter.provenance(manifest=manifest, context=context)
         if depth_adapter is not None
         else None
     )
@@ -370,7 +383,7 @@ def load_dataset_range(
         artifact_manifest_hash=snapshot.artifact_manifest_hash,
         adapter_version=snapshot.adapter_version,
         locator=snapshot.locator,
-        options=snapshot.options,
+        options=_snapshot_materialization_contract(manifest),
         adapter_provenance=snapshot.adapter_provenance,
         top_of_book_quotes=top_of_book_quotes,
         top_of_book_event_quotes=top_of_book_event_quotes,
@@ -400,6 +413,25 @@ def _depth_requested(manifest: ExperimentManifest) -> bool:
         or manifest.execution_timing.min_execution_reality_level_for_validation == "l2_depth_walk_no_queue"
         or any(scenario.type == "depth_walk" for scenario in manifest.execution_model.scenarios)
     )
+
+
+def _snapshot_materialization_contract(manifest: ExperimentManifest) -> dict[str, object]:
+    """Every setting capable of changing materialized evidence is hash-bound."""
+    top = manifest.dataset.top_of_book
+    depth = manifest.dataset.depth
+    maximum_latency = max((int(s.latency_ms) for s in manifest.execution_model.scenarios), default=0)
+    return {
+        "dataset_options": dict(manifest.dataset.options),
+        "top_of_book": ({"source": top.source, "quote_source": top.quote_source,
+            "join_tolerance_ms": top.join_tolerance_ms, "missing_policy": top.missing_policy,
+            "minimum_coverage_pct": top.min_coverage_pct, "options": dict(top.options)} if top else {}),
+        "depth": ({"source": depth.source, "required": depth.required, "options": dict(depth.options)} if depth else {}),
+        "execution": {"execution_quote_lookahead_ms": int(manifest.execution_timing.decision_guard_ms) + maximum_latency + int(manifest.execution_timing.max_quote_wait_ms),
+            "execution_depth_lookahead_ms": int(manifest.execution_timing.decision_guard_ms) + maximum_latency + int(manifest.execution_timing.max_quote_wait_ms),
+            "decision_guard_ms": int(manifest.execution_timing.decision_guard_ms),
+            "maximum_scenario_latency_ms": maximum_latency,
+            "maximum_quote_wait_ms": int(manifest.execution_timing.max_quote_wait_ms)},
+    }
 
 
 def _load_sqlite_dataset_range(
@@ -594,7 +626,7 @@ def _build_source_agnostic_dataset_quality_report(
         "last_ts": actual_ts[-1] if actual_ts else None,
         "db_schema_fingerprint": _db_schema_fingerprint(db_path) if db_path is not None and snapshot.source == "sqlite_candles" else None,
         "dataset_content_hash": snapshot.snapshot_fingerprint_hash(),
-        "dataset_content_hash_semantics": "combined_run_dataset_fingerprint",
+        "dataset_content_hash_semantics": "snapshot_fingerprint_compatibility_alias",
         "canonical_snapshot_hash": snapshot.snapshot_fingerprint_hash(),
         "snapshot_data_hash": snapshot.snapshot_data_hash(),
         "snapshot_query_hash": snapshot.snapshot_query_hash(),
@@ -603,12 +635,13 @@ def _build_source_agnostic_dataset_quality_report(
         "artifact_content_hash": snapshot.artifact_content_hash,
         "artifact_schema_hash": snapshot.artifact_schema_hash,
         "artifact_manifest_hash": snapshot.artifact_manifest_hash,
+        "verification_status": ((snapshot.adapter_provenance or {}).get("verification") or {}).get("overall_status", "UNAVAILABLE"),
         "source_content_hash": snapshot.source_content_hash,
-        "source_content_hash_status": "compatibility_declared" if snapshot.source_content_hash else "unavailable",
+        "source_content_hash_status": "DECLARED_ONLY" if snapshot.source_content_hash else "UNAVAILABLE",
         "source_schema_hash": snapshot.source_schema_hash,
-        "source_hash_status": "compatibility_declared" if snapshot.source_content_hash else "unavailable",
+        "source_hash_status": "DECLARED_ONLY" if snapshot.source_content_hash else "UNAVAILABLE",
         "source_schema_hash_status": (
-            "compatibility_declared" if snapshot.source_schema_hash else "unavailable"
+            "DECLARED_ONLY" if snapshot.source_schema_hash else "UNAVAILABLE"
         ),
         "source_locator_policy": (
             "runtime_db_path_excluded_from_dataset_hash"
@@ -1264,11 +1297,72 @@ def _manifest_locator_path(manifest: ExperimentManifest) -> Path:
 class FrozenSQLiteCandleAdapter:
     source = "frozen_sqlite_candles"
     adapter_name = "frozen_sqlite_candle_adapter"
-    adapter_version = "2"
+    adapter_version = "3"
+    requires_runtime_db = False
+    requires_artifact_manifest = True
     supported_capabilities = frozenset({"candles"})
     supported_top_of_book_sources = frozenset()
     supported_depth_sources = frozenset()
     supports_sqlite_streaming_quality_scan = True
+
+    _verified_cache: dict[tuple[str, str], VerifiedDatasetArtifact] = {}
+
+    def resolve(self, reference: DatasetArtifactRef, context: DatasetResolutionContext) -> DatasetArtifactHandle:
+        del context
+        manifest = load_artifact_manifest(reference.artifact_manifest_uri, reference.artifact_manifest_hash)
+        return DatasetArtifactHandle(reference=reference, manifest=manifest)
+
+    def verify(self, handle: DatasetArtifactHandle) -> VerifiedDatasetArtifact:
+        cache_key = (handle.reference.artifact_manifest_uri, handle.reference.artifact_manifest_hash)
+        cached = self._verified_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        manifest = handle.manifest
+        locator = parse_immutable_locator(manifest.locator.as_dict())
+        path = Path(locator.path)
+        rows = _load_frozen_artifact_rows(path)
+        actual_content = artifact_content_hash(rows)
+        actual_schema = sqlite_candles_schema_hash(path)
+        actual_scope = _artifact_scope(rows)
+        actual_pairs = {(str(row[0]), str(row[1])) for row in rows}
+        status = VerificationStatus.VERIFIED
+        if (actual_content != manifest.content_hash or actual_schema != manifest.schema_hash or
+                len(rows) != manifest.row_count or actual_pairs != {(manifest.market, manifest.interval)} or
+                actual_scope != {"market": manifest.market, "interval": manifest.interval,
+                                 "start_ts": manifest.start_ts, "end_ts": manifest.end_ts}):
+            status = VerificationStatus.MISMATCH
+        verification = DatasetVerificationResult(overall_status=status,
+            content_status=VerificationStatus.VERIFIED if actual_content == manifest.content_hash else VerificationStatus.MISMATCH,
+            expected_content_hash=manifest.content_hash, actual_content_hash=actual_content,
+            content_method="complete_artifact_pair_interval_ohlcv_scan",
+            schema_status=VerificationStatus.VERIFIED if actual_schema == manifest.schema_hash else VerificationStatus.MISMATCH,
+            expected_schema_hash=manifest.schema_hash, actual_schema_hash=actual_schema,
+            locator_status=VerificationStatus.VERIFIED, locator_type=manifest.locator.type,
+            scope_status=VerificationStatus.VERIFIED if status is VerificationStatus.VERIFIED else VerificationStatus.MISMATCH,
+            declared_scope={"market": manifest.market, "interval": manifest.interval, "start_ts": manifest.start_ts, "end_ts": manifest.end_ts},
+            actual_scope=actual_scope, adapter_name=self.adapter_name, adapter_version=self.adapter_version)
+        verification.require_verified()
+        result = VerifiedDatasetArtifact(handle=handle, verification=verification)
+        self._verified_cache[cache_key] = result
+        return result
+
+    def materialize(self, artifact: VerifiedDatasetArtifact, query: DatasetSliceQuery) -> DatasetSnapshot:
+        if not isinstance(artifact, VerifiedDatasetArtifact):
+            raise TypeError("materialize_requires_verified_dataset_artifact")
+        artifact.verification.require_verified()
+        manifest = artifact.handle.manifest
+        if query.market != manifest.market or query.interval != manifest.interval or query.start_ts < manifest.start_ts or query.end_ts > manifest.end_ts:
+            raise ValueError("dataset_slice_query_outside_verified_artifact_scope")
+        rows = _load_frozen_rows(Path(manifest.locator.path), market=query.market, interval=query.interval,
+            start_ts=query.start_ts, end_ts=query.end_ts)
+        return DatasetSnapshot(snapshot_id=query.snapshot_id, source=self.source, market=query.market,
+            interval=query.interval, split_name=query.split_role,
+            date_range=DateRange(_ts_to_date(query.start_ts), _ts_to_date(query.end_ts)), candles=tuple(Candle(int(row[0]), float(row[1]), float(row[2]), float(row[3]), float(row[4]), float(row[5] or 0.0)) for row in rows),
+            source_uri=manifest.locator.path, artifact_id=manifest.artifact_id,
+            artifact_content_hash=manifest.content_hash, artifact_schema_hash=manifest.schema_hash,
+            artifact_manifest_hash=manifest.artifact_manifest_hash, adapter_version=self.adapter_version,
+            locator=manifest.locator.as_dict(), options=dict(query.dataset_options),
+            adapter_provenance={"verification": artifact.verification.as_dict()})
 
     def load_range(
         self,
@@ -1279,54 +1373,11 @@ class FrozenSQLiteCandleAdapter:
         context: DatasetLoadContext,
     ) -> DatasetSnapshot:
         del context
-        path = _manifest_locator_path(manifest)
-        artifact_schema = sqlite_candles_schema_hash(path)
-        if manifest.dataset.source_schema_hash and artifact_schema != manifest.dataset.source_schema_hash:
-            raise ValueError("source_schema_hash_mismatch")
-        # Verify the complete artifact before materializing a requested split.
-        # Its hash is never compared to the current range's rows.
-        artifact_rows = _load_frozen_artifact_rows(path)
-        artifact_content = canonical_candle_rows_hash(artifact_rows)
-        if manifest.dataset.source_content_hash and artifact_content != manifest.dataset.source_content_hash:
-            raise ValueError("source_content_hash_mismatch")
-        rows = _load_frozen_rows(
-            path,
-            market=manifest.market,
-            interval=manifest.interval,
-            start_ts=date_range.start_ts_ms(),
-            end_ts=date_range.end_ts_ms(),
-        )
-        candles = tuple(
-            Candle(
-                ts=int(row[0]),
-                open=float(row[1]),
-                high=float(row[2]),
-                low=float(row[3]),
-                close=float(row[4]),
-                volume=float(row[5] or 0.0),
-            )
-            for row in rows
-        )
-        return DatasetSnapshot(
-            snapshot_id=manifest.dataset.snapshot_id,
-            source=manifest.dataset.source,
-            market=manifest.market,
-            interval=manifest.interval,
-            split_name=split_name,
-            date_range=date_range,
-            candles=candles,
-            source_uri=str(path),
-            # source_* remains a legacy manifest compatibility input.  The
-            # actual evidence is carried by the artifact_* fields below.
-            source_content_hash=manifest.dataset.source_content_hash,
-            source_schema_hash=manifest.dataset.source_schema_hash,
-            artifact_id=f"frozen_sqlite:{artifact_content}",
-            artifact_content_hash=artifact_content,
-            artifact_schema_hash=artifact_schema,
-            adapter_version=self.adapter_version,
-            locator=manifest.dataset.locator,
-            options=manifest.dataset.options,
-        )
+        if manifest.dataset.artifact_ref is None:
+            raise ValueError("legacy_frozen_manifest_requires_explicit_migration")
+        return self.materialize(self.verify(self.resolve(manifest.dataset.artifact_ref, DatasetResolutionContext())),
+            DatasetSliceQuery(manifest.market, manifest.interval, date_range.start_ts_ms(), date_range.end_ts_ms(),
+                split_name, manifest.dataset.snapshot_id, dict(manifest.dataset.options)))
 
     def quality_report(
         self,
@@ -1355,15 +1406,14 @@ class FrozenSQLiteCandleAdapter:
         context: DatasetLoadContext,
     ) -> dict[str, Any]:
         del context
-        path = _manifest_locator_path(manifest)
+        if manifest.dataset.artifact_ref is None:
+            raise ValueError("legacy_frozen_manifest_requires_explicit_migration")
+        path = self.resolve(manifest.dataset.artifact_ref, DatasetResolutionContext()).manifest.locator.path
         return {
             "dataset_source": manifest.dataset.source,
             "adapter_name": self.adapter_name,
             "adapter_version": self.adapter_version,
-            "source_locator": str(path),
-            "source_content_hash": manifest.dataset.source_content_hash,
-            "source_schema_hash": manifest.dataset.source_schema_hash,
-            "provenance_policy": "manifest_locator_hash_verified",
+            "source_locator": str(path), "provenance_policy": "artifact_manifest_verified",
         }
 
 
@@ -1388,13 +1438,27 @@ def _load_frozen_artifact_rows(path: Path) -> list[tuple[Any, ...]]:
     try:
         return conn.execute(
             """
-            SELECT ts, open, high, low, close, volume
+            SELECT pair, interval, ts, open, high, low, close, volume
             FROM candles
             ORDER BY pair ASC, interval ASC, ts ASC
             """,
         ).fetchall()
     finally:
         conn.close()
+
+
+def _artifact_scope(rows: list[tuple[Any, ...]]) -> dict[str, object]:
+    pairs = {(str(row[0]), str(row[1])) for row in rows}
+    if len(pairs) != 1:
+        return {"market": None, "interval": None, "start_ts": None, "end_ts": None}
+    market, interval = next(iter(pairs))
+    return {"market": market, "interval": interval, "start_ts": min((int(row[2]) for row in rows), default=None),
+            "end_ts": max((int(row[2]) for row in rows), default=None)}
+
+
+def _ts_to_date(ts: int) -> str:
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc).date().isoformat()
 
 
 class SQLiteTopOfBookAdapter:

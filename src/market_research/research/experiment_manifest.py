@@ -19,6 +19,7 @@ from .hashing import sha256_prefixed
 from .process_runtime import ALLOWED_RESEARCH_START_METHODS
 from .strategy_spec import StrategySpecError, validate_parameter_space_against_strategy_spec
 from .audit_trail import AuditTrailPolicy as ResearchAuditTrailPolicy
+from .datasets.contracts import DatasetArtifactRef
 
 
 class ManifestValidationError(ValueError):
@@ -135,6 +136,7 @@ class DatasetSpec:
     source_content_hash: str | None = None
     source_schema_hash: str | None = None
     locator: dict[str, object] | None = None
+    artifact_ref: DatasetArtifactRef | None = None
     options: dict[str, object] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
@@ -151,6 +153,9 @@ class DatasetSpec:
             payload["source_schema_hash"] = self.source_schema_hash
         if self.locator is not None:
             payload["locator"] = dict(self.locator)
+        if self.artifact_ref is not None:
+            payload["artifact_manifest_uri"] = self.artifact_ref.artifact_manifest_uri
+            payload["artifact_manifest_hash"] = self.artifact_ref.artifact_manifest_hash
         if self.options:
             payload["options"] = dict(self.options)
         if self.top_of_book is not None:
@@ -1082,12 +1087,23 @@ def _parse_dataset(payload: dict[str, Any]) -> DatasetSpec:
         "source_content_hash",
         "source_schema_hash",
         "locator",
+        "artifact_manifest_uri",
+        "artifact_manifest_hash",
         "options",
     }
     unknown = sorted(set(payload) - allowed_fields)
     if unknown:
         raise ManifestValidationError(f"dataset unsupported fields: {','.join(unknown)}")
     source = _required_str(payload, "source")
+    artifact_uri = _optional_non_empty_str(payload.get("artifact_manifest_uri"), "dataset.artifact_manifest_uri")
+    artifact_hash = _optional_hash(payload.get("artifact_manifest_hash"), "dataset.artifact_manifest_hash")
+    if (artifact_uri is None) != (artifact_hash is None):
+        raise ManifestValidationError("dataset.artifact_manifest_uri_and_hash_required_together")
+    if source == "frozen_sqlite_candles" and artifact_uri is None:
+        # Schema-v1 manifests are intentionally read-only research-only legacy
+        # compatibility. They cannot become validated candidates.
+        if payload.get("source_uri") is None:
+            raise ManifestValidationError("frozen_sqlite_candles_requires_artifact_manifest_reference")
     locator = _optional_mapping(payload.get("locator"), "dataset.locator")
     options = _optional_mapping(payload.get("options"), "dataset.options") or {}
     split = DatasetSplit(
@@ -1109,6 +1125,7 @@ def _parse_dataset(payload: dict[str, Any]) -> DatasetSpec:
         source_content_hash=_optional_hash(payload.get("source_content_hash"), "dataset.source_content_hash"),
         source_schema_hash=_optional_hash(payload.get("source_schema_hash"), "dataset.source_schema_hash"),
         locator=locator,
+        artifact_ref=(DatasetArtifactRef(artifact_uri, artifact_hash) if artifact_uri is not None and artifact_hash is not None else None),
         options=options,
     )
 

@@ -7730,13 +7730,8 @@ def _validate_dataset_adapter_provenance(
         adapter_name = str(payload.get("adapter_name") or "")
         adapter_version = str(payload.get("adapter_version") or "")
         source = str(payload.get("dataset_source") or payload.get("source") or "")
-        is_frozen_artifact = source == "frozen_sqlite_candles"
-        source_content_hash = str(
-            payload.get("artifact_content_hash" if is_frozen_artifact else "source_content_hash") or ""
-        )
-        source_schema_hash = str(
-            payload.get("artifact_schema_hash" if is_frozen_artifact else "source_schema_hash") or ""
-        )
+        source_content_hash = str(payload.get("artifact_content_hash") or payload.get("source_content_hash") or "")
+        source_schema_hash = str(payload.get("artifact_schema_hash") or payload.get("source_schema_hash") or "")
         adapter_provenance = payload.get("adapter_provenance")
         adapter_provenance_hash = str(payload.get("adapter_provenance_hash") or "")
         canonical_hash = str(payload.get("canonical_snapshot_hash") or payload.get("dataset_content_hash") or "")
@@ -7748,17 +7743,16 @@ def _validate_dataset_adapter_provenance(
             reasons.append(f"{split_name}:dataset_source_missing")
         if not canonical_hash.startswith("sha256:"):
             reasons.append(f"{split_name}:canonical_snapshot_hash_missing")
-        if not manifest.dataset.source_content_hash:
-            reasons.append(f"{split_name}:declared_source_content_hash_missing")
-        if not manifest.dataset.source_schema_hash:
-            reasons.append(f"{split_name}:declared_source_schema_hash_missing")
+        verification_status = str(payload.get("verification_status") or "UNAVAILABLE")
+        if verification_status != "VERIFIED":
+            reasons.append(f"{split_name}:dataset_verification_not_verified")
         if not source_content_hash.startswith("sha256:"):
             reasons.append(
-                f"{split_name}:{'artifact_content_hash' if is_frozen_artifact else 'source_content_hash'}_missing"
+                f"{split_name}:artifact_or_source_content_hash_missing"
             )
         if not source_schema_hash.startswith("sha256:"):
             reasons.append(
-                f"{split_name}:{'artifact_schema_hash' if is_frozen_artifact else 'source_schema_hash'}_missing"
+                f"{split_name}:artifact_or_source_schema_hash_missing"
             )
         if not isinstance(adapter_provenance, dict) or not adapter_provenance:
             reasons.append(f"{split_name}:adapter_provenance_missing")
@@ -7766,14 +7760,6 @@ def _validate_dataset_adapter_provenance(
             reasons.append(f"{split_name}:adapter_provenance_hash_missing")
         elif adapter_provenance_hash != sha256_prefixed(adapter_provenance or {}):
             reasons.append(f"{split_name}:adapter_provenance_hash_mismatch")
-        if manifest.dataset.source_content_hash and manifest.dataset.source_content_hash != source_content_hash:
-            reasons.append(
-                f"{split_name}:{'artifact_content_hash' if is_frozen_artifact else 'source_content_hash'}_mismatch"
-            )
-        if manifest.dataset.source_schema_hash and manifest.dataset.source_schema_hash != source_schema_hash:
-            reasons.append(
-                f"{split_name}:{'artifact_schema_hash' if is_frozen_artifact else 'source_schema_hash'}_mismatch"
-            )
         reasons.extend(f"{split_name}:{reason}" for reason in _validation_evidence_locator_reasons(manifest, "dataset"))
         reasons.extend(_top_of_book_provenance_reasons(manifest=manifest, split_name=split_name, payload=payload))
         reasons.extend(_depth_provenance_reasons(manifest=manifest, split_name=split_name, payload=payload))
@@ -7911,33 +7897,13 @@ def _validation_evidence_locator_reasons(manifest: ExperimentManifest, evidence:
 
 
 def _has_immutable_locator_material(*, source_uri: str | None, locator: dict[str, object] | None) -> bool:
-    material = {str(key).strip().lower(): value for key, value in (locator or {}).items()}
-    immutable_markers = (
-        "version_id",
-        "version",
-        "etag",
-        "content_hash",
-        "source_content_hash",
-        "managed_identity",
-        "snapshot_id",
-        "snapshot_hash",
-        "commit",
-    )
-    if any(str(material.get(key) or "").strip() for key in immutable_markers):
-        return True
-    if bool(material.get("immutable")) or bool(material.get("content_addressed")):
-        return True
-    uri = str(source_uri or "").strip().lower()
-    if uri.startswith(("sha256:", "ipfs://")):
-        return True
-    if uri.startswith("s3://") and (
-        "versionid=" in uri
-        or "version_id=" in uri
-        or "/sha256:" in uri
-        or "sha256:" in uri
-    ):
-        return True
-    return False
+    from .datasets.locators import LocatorValidationError, parse_immutable_locator
+    del source_uri
+    try:
+        parse_immutable_locator(locator)
+    except LocatorValidationError:
+        return False
+    return True
 
 
 def _validate_strategy_data_requirements(manifest: ExperimentManifest) -> None:

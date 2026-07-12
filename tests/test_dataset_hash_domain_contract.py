@@ -47,10 +47,8 @@ def _frozen_manifest(*, frozen: dict[str, object]) -> object:
             "dataset": {
                 "source": "frozen_sqlite_candles",
                 "snapshot_id": "hash-domain-fixture",
-                "source_uri": frozen["artifact_path"],
-                "source_content_hash": frozen["artifact_content_hash"],
-                "source_schema_hash": frozen["artifact_schema_hash"],
-                "locator": frozen["locator"],
+                "artifact_manifest_uri": frozen["artifact_manifest_uri"],
+                "artifact_manifest_hash": frozen["artifact_manifest_hash"],
                 "train": {"start": "2026-01-01", "end": "2026-01-01"},
                 "validation": {"start": "2026-01-02", "end": "2026-01-02"},
             },
@@ -107,8 +105,8 @@ def test_artifact_hash_is_distinct_from_snapshot_data_hash() -> None:
 
 
 def test_artifact_content_hash_changes_when_artifact_rows_change() -> None:
-    original = [(1, 100.0, 100.0, 100.0, 100.0, 1.0)]
-    changed = [(1, 100.0, 100.0, 100.0, 101.0, 1.0)]
+    original = [("KRW-BTC", "1m", 1, 100.0, 100.0, 100.0, 100.0, 1.0)]
+    changed = [("KRW-BTC", "1m", 1, 100.0, 100.0, 100.0, 101.0, 1.0)]
 
     assert artifact_content_hash(original) != artifact_content_hash(changed)
 

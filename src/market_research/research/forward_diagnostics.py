@@ -521,7 +521,8 @@ def forward_diagnostics_dataset_quality(
 def _source_content_hash_status(snapshot: DatasetSnapshot) -> str:
     if snapshot.source_content_hash:
         return "present"
-    return "derived_from_materialized_snapshot"
+    verification = (snapshot.adapter_provenance or {}).get("verification") or {}
+    return str(verification.get("overall_status") or "UNAVAILABLE")
 
 
 def _source_schema_hash_status(snapshot: DatasetSnapshot) -> str:

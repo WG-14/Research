@@ -20,8 +20,8 @@ from .experiment_manifest import ExperimentManifest
 from .hashing import content_hash_payload, sha256_prefixed
 
 
-REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 2
-REPRODUCTION_RECEIPT_SCHEMA_VERSION = 2
+REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 3
+REPRODUCTION_RECEIPT_SCHEMA_VERSION = 3
 
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
@@ -239,6 +239,13 @@ def _dataset_split_hashes(report: Mapping[str, Any]) -> tuple[dict[str, object],
             "split_name": str(split_name),
             "content_hash": _required_sha256(split, "content_hash", f"dataset_splits.{split_name}"),
             "quality_hash": _required_sha256(split, "quality_hash", f"dataset_splits.{split_name}"),
+            "snapshot_data_hash": _required_sha256(split, "snapshot_data_hash", f"dataset_splits.{split_name}"),
+            "snapshot_query_hash": _required_sha256(split, "snapshot_query_hash", f"dataset_splits.{split_name}"),
+            "snapshot_fingerprint_hash": _required_sha256(split, "snapshot_fingerprint_hash", f"dataset_splits.{split_name}"),
+            "artifact_id": split.get("artifact_id"),
+            "artifact_manifest_hash": split.get("artifact_manifest_hash"),
+            "artifact_content_hash": split.get("artifact_content_hash"),
+            "artifact_schema_hash": split.get("artifact_schema_hash"),
         })
     return tuple(sorted(rows, key=lambda item: str(item["split_name"])))
 
@@ -335,6 +342,14 @@ def _validate_fingerprint_payload(payload: Mapping[str, Any], *, context: str) -
         _required_string(split, "split_name", f"{context}.dataset_split_hashes[{index}]")
         _required_sha256(split, "content_hash", f"{context}.dataset_split_hashes[{index}]")
         _required_sha256(split, "quality_hash", f"{context}.dataset_split_hashes[{index}]")
+        for key in ("snapshot_data_hash", "snapshot_query_hash", "snapshot_fingerprint_hash"):
+            _required_sha256(split, key, f"{context}.dataset_split_hashes[{index}]")
+        artifact_values = [split.get(key) for key in ("artifact_id", "artifact_manifest_hash", "artifact_content_hash", "artifact_schema_hash")]
+        if any(value is not None for value in artifact_values):
+            if not isinstance(split.get("artifact_id"), str) or not split["artifact_id"]:
+                raise ReproductionContractError(f"{context}.dataset_split_hashes[{index}].artifact_id is required")
+            for key in ("artifact_manifest_hash", "artifact_content_hash", "artifact_schema_hash"):
+                _required_sha256(split, key, f"{context}.dataset_split_hashes[{index}]")
     strategy_hashes = payload.get("strategy_contract_hashes")
     if not isinstance(strategy_hashes, list) or not strategy_hashes:
         raise ReproductionContractError(f"{context}.strategy_contract_hashes is required")

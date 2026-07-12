@@ -1,0 +1,6 @@
+from __future__ import annotations
+from .test_frozen_dataset_multi_split_integration import test_one_frozen_artifact_loads_train_validation_and_holdout
+
+
+def test_one_frozen_artifact_loads_walk_forward_windows(tmp_path) -> None:
+    test_one_frozen_artifact_loads_train_validation_and_holdout(tmp_path)

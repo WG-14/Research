@@ -19,6 +19,58 @@ class DatasetLoadContext:
     manager: Any | None = None
 
 
+@dataclass(frozen=True)
+class DatasetResolutionContext:
+    """Runtime capabilities only; adapters never read process environment."""
+    db_path: str | Path | None = None
+
+
+@dataclass(frozen=True)
+class DatasetArtifactRef:
+    artifact_manifest_uri: str
+    artifact_manifest_hash: str
+
+
+@dataclass(frozen=True)
+class DatasetArtifactHandle:
+    reference: DatasetArtifactRef
+    manifest: Any
+
+
+@dataclass(frozen=True)
+class VerifiedDatasetArtifact:
+    handle: DatasetArtifactHandle
+    verification: Any
+
+
+@dataclass(frozen=True)
+class DatasetSliceQuery:
+    market: str
+    interval: str
+    start_ts: int
+    end_ts: int
+    split_role: str
+    snapshot_id: str
+    dataset_options: dict[str, object]
+
+
+class DatasetArtifactAdapter(Protocol):
+    source: str
+    adapter_name: str
+    adapter_version: str
+    requires_runtime_db: bool
+    requires_artifact_manifest: bool
+
+    def resolve(self, reference: DatasetArtifactRef, context: DatasetResolutionContext) -> DatasetArtifactHandle:
+        ...
+
+    def verify(self, handle: DatasetArtifactHandle) -> VerifiedDatasetArtifact:
+        ...
+
+    def materialize(self, artifact: VerifiedDatasetArtifact, query: DatasetSliceQuery) -> DatasetSnapshot:
+        ...
+
+
 class DatasetAdapter(Protocol):
     source: str
     adapter_name: str

@@ -7,13 +7,14 @@ interchangeable evidence merely because their serialized row values match.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
 from ..hashing import sha256_prefixed
 
 
 def canonical_candle_rows(rows: Iterable[tuple[Any, ...]]) -> list[dict[str, object]]:
-    """Return the candle-row canonicalization shared by artifact and snapshot hashing."""
+    """Canonical snapshot rows (the materialized snapshot has no pair column)."""
     return [
         {
             "ts": int(row[0]),
@@ -27,10 +28,52 @@ def canonical_candle_rows(rows: Iterable[tuple[Any, ...]]) -> list[dict[str, obj
     ]
 
 
-def artifact_content_hash(rows: Iterable[tuple[Any, ...]]) -> str:
-    """Hash the complete data content declared by one immutable artifact."""
+@dataclass(frozen=True)
+class ArtifactCandleRow:
+    pair: str
+    interval: str
+    ts: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+    def canonical_payload(self) -> dict[str, object]:
+        return {"pair": self.pair, "interval": self.interval, "ts": self.ts,
+                "open": self.open, "high": self.high, "low": self.low,
+                "close": self.close, "volume": self.volume}
+
+
+def canonical_artifact_rows(*, market: str | None, interval: str | None,
+                            rows: Iterable[tuple[Any, ...]]) -> list[dict[str, object]]:
+    """Canonical full artifact rows with market and interval in the hash domain.
+
+    Callers may pass full 8-column SQLite rows, or explicitly supply market and
+    interval for 6-column OHLCV projections.  Ambiguous six-column input is
+    rejected rather than being silently assigned a hash meaning.
+    """
+    output: list[dict[str, object]] = []
+    for row in rows:
+        if len(row) == 8:
+            pair, row_interval, ts, open_, high, low, close, volume = row
+        elif len(row) == 6 and market is not None and interval is not None:
+            pair, row_interval = market, interval
+            ts, open_, high, low, close, volume = row
+        else:
+            raise ValueError("artifact_content_hash_requires_pair_and_interval")
+        output.append(ArtifactCandleRow(str(pair), str(row_interval), int(ts), float(open_),
+            float(high), float(low), float(close), float(volume or 0.0)).canonical_payload())
+    return output
+
+
+def artifact_content_hash(rows: Iterable[tuple[Any, ...]], *, market: str | None = None,
+                          interval: str | None = None) -> str:
+    """Hash complete artifact rows using fixed pair/interval/OHLCV schema."""
     return sha256_prefixed(
-        {"hash_domain": "artifact_content_v1", "candle_rows": canonical_candle_rows(rows)},
+        {"hash_domain": "artifact_content_v2", "artifact_row_schema":
+         ["pair", "interval", "ts", "open", "high", "low", "close", "volume"],
+         "candle_rows": canonical_artifact_rows(market=market, interval=interval, rows=rows)},
         label="artifact_content_hash",
     )
 
@@ -74,7 +117,10 @@ def snapshot_query_hash(
     interval: str,
     start_ts: int,
     end_ts: int,
-    filters: Mapping[str, Any] | None = None,
+    dataset_options: Mapping[str, Any] | None = None,
+    top_of_book: Mapping[str, Any] | None = None,
+    depth: Mapping[str, Any] | None = None,
+    execution: Mapping[str, Any] | None = None,
 ) -> str:
     """Hash the requested materialization slice, independently of row content."""
     return sha256_prefixed(
@@ -83,7 +129,10 @@ def snapshot_query_hash(
             "market": str(market),
             "interval": str(interval),
             "requested_range": {"start_ts": int(start_ts), "end_ts": int(end_ts)},
-            "filters": dict(filters or {}),
+            "dataset_options": dict(dataset_options or {}),
+            "top_of_book": dict(top_of_book or {}),
+            "depth": dict(depth or {}),
+            "execution": dict(execution or {}),
         },
         label="snapshot_query_hash",
     )

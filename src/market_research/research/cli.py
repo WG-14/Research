@@ -34,6 +34,21 @@ from .validation_protocol import ResearchValidationError, run_research_backtest,
 from .forward_diagnostics_cli import cmd_research_forward_diagnostics
 from .batch_runner import run_research_batch
 
+
+def _required_runtime_db_path(context: "ResearchAppContext", manifest: Any) -> Path | None:
+    """Resolve only capabilities selected by the data sources."""
+    sources = [manifest.dataset.source]
+    if manifest.dataset.top_of_book is not None:
+        sources.append(manifest.dataset.top_of_book.source)
+    if manifest.dataset.depth is not None:
+        sources.append(manifest.dataset.depth.source)
+    if any(source in {"sqlite_candles", "sqlite_orderbook_top_snapshots", "orderbook_depth_levels"} for source in sources):
+        try:
+            return context.paths.require_database_path()
+        except (OSError, ValueError) as exc:
+            raise ValueError("required_runtime_database_capability_missing") from exc
+    return None
+
 if TYPE_CHECKING:
     from market_research.research_cli.context import ResearchAppContext
 
@@ -76,7 +91,7 @@ def cmd_research_backtest(
             calibration = load_calibration_artifact(execution_calibration_path) if execution_calibration_path else None
             report = run_research_backtest(
                 manifest=manifest,
-                db_path=context.paths.require_database_path(),
+                db_path=_required_runtime_db_path(context, manifest),
                 manager=context.paths,
                 execution_calibration=calibration,
                 manifest_path=manifest_path,
@@ -131,7 +146,7 @@ def cmd_research_walk_forward(
             calibration = load_calibration_artifact(execution_calibration_path) if execution_calibration_path else None
             report = run_research_walk_forward(
                 manifest=manifest,
-                db_path=context.paths.require_database_path(),
+                db_path=_required_runtime_db_path(context, manifest),
                 manager=context.paths,
                 execution_calibration=calibration,
                 manifest_path=manifest_path,

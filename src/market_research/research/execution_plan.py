@@ -157,7 +157,7 @@ def build_research_execution_plan(
     manifest: ExperimentManifest,
     snapshots: dict[str, DatasetSnapshot],
     quality_reports: dict[str, DatasetQualityReport],
-    db_path: str | Path,
+    db_path: str | Path | None,
     repository_version: str | None,
     created_at: str | None,
     include_walk_forward: bool = False,
@@ -458,10 +458,10 @@ def build_research_work_unit(
 def build_run_environment(
     *,
     manifest: ExperimentManifest,
-    db_path: str | Path,
+    db_path: str | Path | None,
     repository_version: str | None,
 ) -> dict[str, Any]:
-    resolved_db_path = str(Path(db_path).expanduser().resolve())
+    resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path is not None else None
     return {
         "repository_version": repository_version or "unknown",
         "python_version": sys.version.split()[0],
@@ -476,7 +476,7 @@ def build_run_environment(
             requested_max_workers=manifest.research_run.execution.max_workers,
         ),
         "work_unit_type": manifest.research_run.execution.work_unit,
-        "db_path_fingerprint": sha256_prefixed({"db_path": resolved_db_path}),
+        "db_path_fingerprint": (sha256_prefixed({"db_path": resolved_db_path}) if resolved_db_path else None),
         "manifest_hash": manifest.manifest_hash(),
     }
 

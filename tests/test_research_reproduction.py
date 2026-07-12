@@ -81,7 +81,7 @@ def test_comparator_reports_exact_result_hash_path_and_is_order_independent() ->
         "manifest_hash": digest("manifest"),
         "research_classification": "research_only",
         "dataset_fingerprint": digest("dataset"),
-        "dataset_split_hashes": [{"split_name": "train", "content_hash": digest("train"), "quality_hash": digest("quality")}],
+        "dataset_split_hashes": [{"split_name": "train", "content_hash": digest("train"), "quality_hash": digest("quality"), "snapshot_data_hash": digest("data"), "snapshot_query_hash": digest("query"), "snapshot_fingerprint_hash": digest("fingerprint"), "artifact_id": None, "artifact_manifest_hash": None, "artifact_content_hash": None, "artifact_schema_hash": None}],
         "strategy_contract_hashes": [digest("plugin")],
         "execution_assumption_hashes": [{"name": "cost_model", "hash": digest("cost")}],
         "candidate_fingerprints": [{
