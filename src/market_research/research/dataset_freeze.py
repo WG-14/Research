@@ -6,6 +6,7 @@ import errno
 import shutil
 import sqlite3
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -69,9 +70,11 @@ def freeze_sqlite_candles_dataset(*, source_db: str | Path, market: str, interva
     manifest_path = artifact_dir / "artifact.manifest.json"
     # Artifacts are a directory bundle. A final directory is only visible after
     # both files have been verified and atomically renamed into place.
+    expected_schema = _canonical_candles_schema_hash()
     if artifact_dir.exists():
         return _reuse_existing(artifact_dir=artifact_dir, artifact_path=artifact_path, manifest_path=manifest_path,
-            market=market, interval=interval, start_ts=start_ts, end_ts=end_ts, expected_content=content_hash)
+            market=market, interval=interval, start_ts=start_ts, end_ts=end_ts, expected_content=content_hash,
+            expected_schema=expected_schema)
     artifact_dir.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{digest}.staging-", dir=artifact_dir.parent))
     staging_db = staging / "candles.sqlite"
@@ -101,7 +104,8 @@ def freeze_sqlite_candles_dataset(*, source_db: str | Path, market: str, interva
                 raise
             shutil.rmtree(staging, ignore_errors=True)
             return _reuse_existing(artifact_dir=artifact_dir, artifact_path=artifact_path, manifest_path=manifest_path,
-                market=market, interval=interval, start_ts=start_ts, end_ts=end_ts, expected_content=content_hash)
+                market=market, interval=interval, start_ts=start_ts, end_ts=end_ts, expected_content=content_hash,
+                expected_schema=expected_schema)
         manifest = _verify_bundle(artifact_path, manifest_path, market=market, interval=interval,
             start_ts=start_ts, end_ts=end_ts, expected_content=content_hash, committed=True)
         return _result(manifest, artifact_path, manifest_path, reused_existing=False)
@@ -127,19 +131,23 @@ def _write_sqlite(path: Path, *, rows: list[tuple[Any, ...]], market: str, inter
 
 
 def _reuse_existing(*, artifact_dir: Path, artifact_path: Path, manifest_path: Path, market: str, interval: str,
-                    start_ts: int, end_ts: int, expected_content: str) -> dict[str, Any]:
+                    start_ts: int, end_ts: int, expected_content: str, expected_schema: str) -> dict[str, Any]:
     if not artifact_dir.is_dir():
         raise DatasetFreezeError("existing_artifact_path_conflict")
     try:
         manifest = _verify_bundle(artifact_path, manifest_path, market=market, interval=interval, start_ts=start_ts,
-            end_ts=end_ts, expected_content=expected_content, committed=True)
+            end_ts=end_ts, expected_content=expected_content, expected_schema=expected_schema, committed=True)
+    except DatasetFreezeError as exc:
+        if str(exc) in {"artifact_bundle_incomplete", "existing_artifact_schema_conflict", "artifact_scope_verification_failed"}:
+            raise
+        raise DatasetFreezeError("existing_artifact_invalid_or_tampered") from exc
     except (ArtifactManifestError, OSError, sqlite3.Error, ValueError) as exc:
         raise DatasetFreezeError("existing_artifact_invalid_or_tampered") from exc
     return _result(manifest, artifact_path, manifest_path, reused_existing=True)
 
 
 def _verify_bundle(db_path: Path, manifest_path: Path, *, market: str, interval: str, start_ts: int, end_ts: int,
-                   expected_content: str, committed: bool):
+                   expected_content: str, expected_schema: str | None = None, committed: bool):
     if not db_path.is_file() or not manifest_path.is_file():
         raise DatasetFreezeError("artifact_bundle_incomplete")
     if committed:
@@ -153,8 +161,13 @@ def _verify_bundle(db_path: Path, manifest_path: Path, *, market: str, interval:
     actual = artifact_content_hash(rows)
     if actual != expected_content or actual != manifest.content_hash:
         raise DatasetFreezeError("artifact_content_hash_verification_failed")
-    if sqlite_candles_schema_hash(db_path) != manifest.schema_hash:
-        raise DatasetFreezeError("artifact_schema_hash_verification_failed")
+    actual_schema = sqlite_candles_schema_hash(db_path)
+    if actual_schema != manifest.schema_hash:
+        raise DatasetFreezeError(
+            "existing_artifact_schema_conflict" if committed else "artifact_schema_hash_verification_failed"
+        )
+    if expected_schema is not None and actual_schema != expected_schema:
+        raise DatasetFreezeError("existing_artifact_schema_conflict")
     if len(rows) != manifest.row_count:
         raise DatasetFreezeError("artifact_row_count_verification_failed")
     actual_pairs = {(str(row[0]), str(row[1])) for row in rows}
@@ -167,6 +180,23 @@ def _verify_bundle(db_path: Path, manifest_path: Path, *, market: str, interval:
             or (manifest.coverage_start_ts, manifest.coverage_end_ts) != actual_coverage):
         raise DatasetFreezeError("artifact_scope_verification_failed")
     return manifest
+
+
+@lru_cache(maxsize=1)
+def _canonical_candles_schema_hash() -> str:
+    """Schema expected from this freezer's fixed immutable candle contract."""
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute(
+            "CREATE TABLE candles (pair TEXT NOT NULL, interval TEXT NOT NULL, ts INTEGER NOT NULL, "
+            "open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL, "
+            "volume REAL NOT NULL, PRIMARY KEY(pair, interval, ts))"
+        )
+        table_info = [tuple(row) for row in conn.execute("PRAGMA table_info(candles)").fetchall()]
+        index_list = [tuple(row) for row in conn.execute("PRAGMA index_list(candles)").fetchall()]
+        return artifact_schema_hash({"table": "candles", "table_info": table_info, "index_list": index_list})
+    finally:
+        conn.close()
 
 
 def _fail_if_requested(requested: str | None, stage: str) -> None:

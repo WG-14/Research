@@ -117,7 +117,11 @@ def load_artifact_manifest(path: str | Path, expected_hash: str | None = None) -
         raise ArtifactManifestError("artifact_manifest_reference_hash_mismatch")
     # A local artifact sidecar is authoritative only for the committed bundle
     # which contains it.  An outside DB cannot be smuggled in via a valid hash.
-    if manifest_path.name != "artifact.manifest.json" or parsed.locator.path != str((manifest_path.parent / "candles.sqlite").resolve()):
+    if (
+        manifest_path.name != "artifact.manifest.json"
+        or manifest_path.parent.name.startswith(".") and ".staging-" in manifest_path.parent.name
+        or parsed.locator.path != str((manifest_path.parent / "candles.sqlite").resolve())
+    ):
         raise ArtifactManifestError("artifact_manifest_locator_not_in_published_bundle")
     return parsed
 
