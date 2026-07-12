@@ -451,29 +451,12 @@ def write_clean_candle_segments_artifact(
 
 def dataset_quality_policy_payload(manifest: ExperimentManifest) -> dict[str, Any]:
     raw = manifest.raw.get("dataset_quality_policy")
-    if not isinstance(raw, dict):
-        return {
-            "source": "default_strict",
-            "dense_candles_required": True,
-            "missing_candle_policy": "fail",
-            "readiness_gate_effect": "strict_fail_closed",
-            "validation_readiness_effect": "missing candles fail validation readiness",
-            "synthetic_candle_authority": "not_allowed",
-        }
     return {
-        "source": "manifest",
-        "dense_candles_required": bool(raw.get("dense_candles_required", True)),
-        "missing_candle_policy": str(raw.get("missing_candle_policy") or "fail"),
-        "readiness_gate_effect": (
-            "metadata_only_no_gate_relaxation"
-            if str(raw.get("missing_candle_policy") or "fail").strip().lower() == "diagnostic_only"
-            else "strict_fail_closed"
-        ),
-        "validation_readiness_effect": (
-            "diagnostic_only does not satisfy or weaken validation readiness"
-            if str(raw.get("missing_candle_policy") or "fail").strip().lower() == "diagnostic_only"
-            else "missing candles fail validation readiness"
-        ),
+        "source": "manifest" if isinstance(raw, dict) else "default_strict",
+        "dense_candles_required": True,
+        "missing_candle_policy": "fail",
+        "readiness_gate_effect": "strict_fail_closed",
+        "validation_readiness_effect": "missing candles fail validation readiness",
         "synthetic_candle_authority": "not_allowed",
     }
 
@@ -500,7 +483,12 @@ def walk_forward_payload(manifest: ExperimentManifest) -> dict[str, Any]:
             "expected_min_windows": None,
             "status": "FAIL" if required else "NOT_REQUIRED",
             "reasons": ["walk_forward_missing"] if required else [],
-            "next_action": "add walk_forward config and run research-walk-forward" if required else "none",
+            "next_action": (
+                "review and correct the research manifest to include required walk_forward configuration, "
+                "then rerun readiness"
+                if required
+                else "none"
+            ),
         }
     windows = _rolling_walk_forward_windows(manifest)
     expected = manifest.walk_forward.min_windows
@@ -511,7 +499,11 @@ def walk_forward_payload(manifest: ExperimentManifest) -> dict[str, Any]:
         "expected_min_windows": expected,
         "status": status if required else "NOT_REQUIRED",
         "reasons": [] if status == "PASS" else ["walk_forward_insufficient_windows"],
-        "next_action": "none" if status == "PASS" else "adjust manifest walk_forward dates only with reviewed research intent",
+        "next_action": (
+            "none"
+            if status == "PASS"
+            else "review and correct manifest walk_forward dates only with reviewed research intent, then rerun readiness"
+        ),
     }
 
 

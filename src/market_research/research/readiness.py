@@ -279,8 +279,8 @@ def _top_of_book_payload(*, manifest: ExperimentManifest, split_reports: dict[st
     next_action = "none"
     if status in {"FAIL", "WARN"}:
         next_action = (
-            "candle backfill does not satisfy validation top-of-book requirements; "
-            "collect or backfill real orderbook_top_snapshots, or use a separate non-validation candle-only manifest"
+            "replace or correct the external immutable dataset so it includes the required "
+            "orderbook_top_snapshots, or use a reviewed candle-only research manifest"
         )
     return {
         "required": bool(spec.required),
@@ -346,7 +346,10 @@ def _execution_capability_payload(*, manifest: ExperimentManifest, top_of_book: 
     unavailable = list(contract.get("unavailable_required_capabilities") or [])
     next_action = "none"
     if unavailable:
-        next_action = "remove unsupported execution capability requirements or add matching depth/tick/queue/impact evidence and models"
+        next_action = (
+            "review and correct the research manifest so its execution capability requirements match "
+            "the externally prepared evidence, then rerun readiness"
+        )
     return {
         "contract": contract,
         "contract_hash": contract["execution_capability_contract_hash"],
@@ -430,7 +433,12 @@ def _execution_calibration_payload(
             "artifact_hash": None,
             "status": status,
             "reasons": ["execution_calibration_missing"],
-            "next_action": "provide --execution-calibration with a repo-generated calibration artifact" if required else "optional",
+            "next_action": (
+                "provide an externally prepared canonical execution calibration artifact "
+                "with --execution-calibration"
+                if required
+                else "optional"
+            ),
         }
     try:
         artifact = load_calibration_artifact(execution_calibration_path)
@@ -441,7 +449,7 @@ def _execution_calibration_payload(
             "artifact_hash": None,
             "status": "FAIL",
             "reasons": [str(exc)],
-            "next_action": "regenerate the execution calibration artifact",
+            "next_action": "replace the invalid artifact with an externally prepared canonical execution calibration artifact",
         }
     gates = [
         compare_calibration_to_scenario(

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import copy
 from collections import Counter
+from pathlib import Path
 
 import pytest
 
 from market_research.research.artifact_contract import apply_artifact_contract, validate_artifact_contract
-from market_research.research.experiment_manifest import ManifestValidationError, parse_manifest
+from market_research.research.experiment_manifest import ManifestValidationError, load_manifest, parse_manifest
 from market_research.research.run_summary import _next_action
 
 
@@ -45,6 +46,58 @@ def test_manifest_uses_research_classification_and_validation_contract_names() -
     assert "research_classification" in manifest.canonical_payload()
     assert "deployment_tier" not in manifest.canonical_payload()
     assert manifest.acceptance_gate.as_dict()["final_holdout_required_for_validation"] is False
+
+
+def test_dataset_quality_policy_is_strict_and_hash_equivalent_when_omitted() -> None:
+    omitted = parse_manifest(_manifest_payload())
+    explicit_payload = copy.deepcopy(_manifest_payload())
+    explicit_payload["dataset_quality_policy"] = {
+        "dense_candles_required": True,
+        "missing_candle_policy": "fail",
+    }
+    explicit = parse_manifest(explicit_payload)
+
+    assert omitted.canonical_payload()["dataset_quality_policy"] == {
+        "dense_candles_required": True,
+        "missing_candle_policy": "fail",
+    }
+    assert explicit.canonical_payload()["dataset_quality_policy"] == omitted.canonical_payload()["dataset_quality_policy"]
+    assert explicit.manifest_hash() == omitted.manifest_hash()
+
+
+def test_default_strict_manifest_hash_is_preserved() -> None:
+    manifest_path = Path(__file__).resolve().parents[1] / "examples/research/sma_filter_manifest.example.json"
+
+    assert load_manifest(manifest_path).manifest_hash() == (
+        "sha256:0becc8d3c136a813aa13a3400519aa301b7e7647c7a5cff16aa9f64c6aaf01f7"
+    )
+
+
+@pytest.mark.parametrize(
+    "policy, message",
+    (
+        (
+            {"dense_candles_required": False, "missing_candle_policy": "diagnostic_only"},
+            "dataset_quality_policy.missing_candle_policy must be fail",
+        ),
+        (
+            {"dense_candles_required": False, "missing_candle_policy": "fail"},
+            "dataset_quality_policy.dense_candles_required must be true",
+        ),
+        (
+            {"dense_candles_required": True, "missing_candle_policy": None},
+            "dataset_quality_policy.missing_candle_policy must be fail",
+        ),
+    ),
+)
+def test_dataset_quality_policy_rejects_non_strict_contract(
+    policy: dict[str, object], message: str
+) -> None:
+    payload = _manifest_payload()
+    payload["dataset_quality_policy"] = policy
+
+    with pytest.raises(ManifestValidationError, match=message):
+        parse_manifest(payload)
 
 
 @pytest.mark.parametrize("legacy_key", ("deployment_tier", "promotion_target"))

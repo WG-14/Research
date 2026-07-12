@@ -8,6 +8,9 @@
 - Removed retry, source-probe, and persistent-missing-candle artifact contracts.
 - Enforced the offline boundary against network code, remote-data names,
   operational database tables, and network runtime dependencies.
+- Removed the no-op diagnostic-only missing-candle policy.
+- Aligned readiness guidance with external-only datasets and calibration artifacts.
+- Hardened offline-boundary checks against network submodule import bypasses.
 
 ### 0.1.0
 

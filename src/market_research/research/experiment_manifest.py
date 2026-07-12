@@ -1123,22 +1123,17 @@ def _parse_dataset_quality_policy(value: Any) -> None:
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
         raise ManifestValidationError(f"dataset_quality_policy unsupported fields: {','.join(unknown)}")
-    missing_policy = str(value.get("missing_candle_policy") or "fail").strip().lower()
-    if missing_policy not in {"fail", "diagnostic_only"}:
-        raise ManifestValidationError("dataset_quality_policy.missing_candle_policy must be fail or diagnostic_only")
-    if bool(value.get("dense_candles_required", True)) and missing_policy != "fail":
-        raise ManifestValidationError("dataset_quality_policy dense_candles_required=true requires missing_candle_policy=fail")
+    missing_policy = str(value.get("missing_candle_policy", "fail")).strip().lower()
+    if missing_policy != "fail":
+        raise ManifestValidationError("dataset_quality_policy.missing_candle_policy must be fail")
+    if value.get("dense_candles_required", True) is not True:
+        raise ManifestValidationError("dataset_quality_policy.dense_candles_required must be true")
 
 
 def _canonical_dataset_quality_policy(value: Any) -> dict[str, object]:
-    if not isinstance(value, dict):
-        return {
-            "dense_candles_required": True,
-            "missing_candle_policy": "fail",
-        }
     return {
-        "dense_candles_required": bool(value.get("dense_candles_required", True)),
-        "missing_candle_policy": str(value.get("missing_candle_policy") or "fail").strip().lower(),
+        "dense_candles_required": True,
+        "missing_candle_policy": "fail",
     }
 
 

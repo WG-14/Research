@@ -79,8 +79,13 @@ def test_readiness_fails_closed_for_missing_candles_without_classification_artif
     assert report["status"] == "FAIL"
     assert "persistent_missing_classification" not in report
     assert any("replace or correct the external immutable dataset" in action for action in report["next_actions"])
-    assert "retry" not in str(report).lower()
-    assert "source probe" not in str(report).lower()
+    assert all(
+        "external immutable dataset" in action or "external SQLite" in action
+        for action in report["next_actions"]
+    )
+    report_text = str(report).lower()
+    for forbidden in ("retry", "source probe", "collect", "backfill", "repo-generated"):
+        assert forbidden not in report_text
 
 
 def test_readiness_cli_has_no_missing_classification_option() -> None:

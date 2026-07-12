@@ -16,14 +16,15 @@ from market_research.research.intervals import interval_to_milliseconds, interva
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "src" / "market_research"
-FORBIDDEN_IMPORTS = {
+FORBIDDEN_NETWORK_ROOTS = {
     "httpx",
     "requests",
     "aiohttp",
-    "urllib.request",
     "websockets",
+    "urllib3",
     "socket",
-    "http.client",
+    "httpcore",
+    "ccxt",
 }
 FORBIDDEN_URL_PREFIXES = ("http://", "https://", "ws://", "wss://")
 FORBIDDEN_REMOTE_NAMES = {
@@ -41,7 +42,15 @@ FORBIDDEN_SQL_TABLES = {
     "strategy_decisions",
     "execution_quality_events",
 }
-FORBIDDEN_RUNTIME_DEPENDENCIES = {"httpx", "requests", "aiohttp", "websockets"}
+FORBIDDEN_RUNTIME_DEPENDENCIES = {
+    "httpx",
+    "requests",
+    "aiohttp",
+    "websockets",
+    "urllib3",
+    "httpcore",
+    "ccxt",
+}
 
 
 def _source_violations(package: Path) -> list[str]:
@@ -53,11 +62,11 @@ def _source_violations(package: Path) -> list[str]:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name in FORBIDDEN_IMPORTS:
+                    if _module_root(alias.name) in FORBIDDEN_NETWORK_ROOTS:
                         violations.append(f"forbidden import {alias.name!r} in {path}")
             elif isinstance(node, ast.ImportFrom):
                 module = node.module or ""
-                if module in FORBIDDEN_IMPORTS:
+                if _module_root(module) in FORBIDDEN_NETWORK_ROOTS:
                     violations.append(f"forbidden import {module!r} in {path}")
                 if module == "urllib" and any(alias.name == "request" for alias in node.names):
                     violations.append(f"forbidden import 'urllib.request' in {path}")
@@ -71,12 +80,16 @@ def _source_violations(package: Path) -> list[str]:
                 if node.name in FORBIDDEN_REMOTE_NAMES:
                     violations.append(f"forbidden remote symbol {node.name!r} in {path}")
             elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-                if node.value.lower().startswith(FORBIDDEN_URL_PREFIXES):
+                if any(prefix in node.value.lower() for prefix in FORBIDDEN_URL_PREFIXES):
                     violations.append(f"forbidden URL literal in {path}")
                 for table in FORBIDDEN_SQL_TABLES:
                     if _contains_sql_identifier(node.value, table):
                         violations.append(f"forbidden operational SQL table {table!r} in {path}")
     return violations
+
+
+def _module_root(module: str) -> str:
+    return module.split(".", 1)[0]
 
 
 def _contains_sql_identifier(value: str, identifier: str) -> bool:
@@ -97,9 +110,14 @@ def _dotted_name(node: ast.Attribute) -> str:
 def _runtime_dependencies(pyproject_path: Path) -> set[str]:
     project = tomllib.loads(pyproject_path.read_text(encoding="utf-8")).get("project", {})
     return {
-        re.split(r"[<>=!~;\[ ]", str(item), maxsplit=1)[0].strip().lower()
+        _normalize_dependency_name(match.group(1))
         for item in project.get("dependencies", [])
+        if (match := re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", str(item))) is not None
     }
+
+
+def _normalize_dependency_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def test_offline_package_has_no_public_api_modules() -> None:
@@ -113,20 +131,37 @@ def test_offline_boundary_rejects_network_and_operational_reentry(tmp_path: Path
     fixture = tmp_path / "fixture"
     fixture.mkdir()
     (fixture / "network.py").write_text(
-        "import requests\nimport urllib\nURL = 'https://example.test'\nprobe = urllib.request\ndef fetch_remote(): pass\n",
+        "import requests.sessions\nfrom aiohttp.client import ClientSession\n"
+        "from websockets.client import connect\nimport httpx._client\n"
+        "from urllib.parse import urlparse\nimport urllib\n"
+        "TEXT = 'remote endpoint: https://example.test/path'\n"
+        "probe = urllib.request\ndef fetch_remote(): pass\n",
         encoding="utf-8",
     )
     (fixture / "database.py").write_text("SQL = 'SELECT * FROM orders'\n", encoding="utf-8")
     violations = _source_violations(fixture)
-    assert any("forbidden import" in item for item in violations)
+    assert any("requests.sessions" in item for item in violations)
+    assert any("aiohttp.client" in item for item in violations)
+    assert any("websockets.client" in item for item in violations)
+    assert any("httpx._client" in item for item in violations)
+    assert not any("urllib.parse" in item for item in violations)
     assert any("URL literal" in item for item in violations)
     assert any("network module reference" in item for item in violations)
     assert any("remote symbol" in item for item in violations)
     assert any("operational SQL table" in item for item in violations)
 
     fake_pyproject = tmp_path / "pyproject.toml"
-    fake_pyproject.write_text("[project]\ndependencies = ['aiohttp>=1']\n", encoding="utf-8")
-    assert "aiohttp" in _runtime_dependencies(fake_pyproject)
+    fake_pyproject.write_text(
+        "[project]\ndependencies = [\n"
+        "  'requests>=2',\n"
+        "  'requests[socks]>=2',\n"
+        "  'aiohttp; python_version >= \"3.12\"',\n"
+        "  'httpx~=0.28',\n"
+        "]\n",
+        encoding="utf-8",
+    )
+    dependencies = _runtime_dependencies(fake_pyproject)
+    assert {"requests", "aiohttp", "httpx"} <= dependencies
 
 
 def test_market_id_and_interval_helpers_are_local_and_deterministic() -> None:
