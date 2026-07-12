@@ -23,6 +23,7 @@ def _publish_process(
     wait_for_winner=None,
     winner_published=None,
     tamper_winner: bool = False,
+    role: str = "publisher",
 ) -> None:
     """Independent-process publisher used to exercise the filesystem race path."""
     import market_research.research.dataset_freeze as freezer
@@ -40,19 +41,26 @@ def _publish_process(
     else:
         def synchronized_replace(source_path, destination_path):
             barrier.wait(10)
-            result = original_replace(source_path, destination_path)
-            if winner_published is not None:
-                winner_published.set()
-            return result
+            return original_replace(source_path, destination_path)
         freezer.os.replace = synchronized_replace
     try:
         result = freezer.freeze_sqlite_candles_dataset(
             source_db=source, market="KRW-BTC", interval="1m", start_ts=1,
             end_ts=end_ts, out_dir=out_dir,
         )
-        queue.put(("ok", result))
+        queue.put({"status": "ok", "role": role, "result": result})
+        if winner_published is not None:
+            winner_published.set()
     except Exception as exc:  # Process boundary serializes the explicit failure for the parent assertion.
-        queue.put(("error", f"{type(exc).__name__}:{exc}"))
+        cause = exc.__cause__
+        queue.put({
+            "status": "error",
+            "role": role,
+            "exception_type": type(exc).__name__,
+            "reason": str(exc),
+            "cause_type": type(cause).__name__ if cause is not None else None,
+            "cause_reason": str(cause) if cause is not None else None,
+        })
     finally:
         freezer.os.replace = original_replace
         freezer.artifact_content_hash = original_hash
@@ -139,8 +147,8 @@ def test_concurrent_identical_publication_reuses_verified_bundle(tmp_path) -> No
     for process in processes:
         process.join(20)
         assert process.exitcode == 0
-    assert all(status == "ok" for status, _ in results)
-    published = [result for _, result in results]
+    assert all(result["status"] == "ok" for result in results)
+    published = [result["result"] for result in results]
     assert {result["artifact_id"] for result in published}.__len__() == 1
     assert sum(result["reused_existing"] for result in published) == 1
 
@@ -159,7 +167,29 @@ def test_concurrent_conflicting_publication_fails(tmp_path) -> None:
     for process in processes:
         process.join(20)
         assert process.exitcode == 0
-    assert any(status == "error" and ("scope" in value or "tampered" in value) for status, value in results)
+    assert any(
+        result["status"] == "error"
+        and result["reason"] in {"artifact_scope_verification_failed", "existing_artifact_invalid_or_tampered"}
+        for result in results
+    )
+
+
+def test_existing_content_hash_conflict_preserves_public_error_contract(tmp_path) -> None:
+    source = _source(tmp_path)
+    frozen = freeze_sqlite_candles_dataset(
+        source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out"
+    )
+    with sqlite3.connect(frozen["artifact_path"]) as db:
+        db.execute("UPDATE candles SET close=999 WHERE ts=1")
+
+    with pytest.raises(DatasetFreezeError) as raised:
+        freeze_sqlite_candles_dataset(
+            source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out"
+        )
+
+    assert str(raised.value) == "existing_artifact_invalid_or_tampered"
+    assert isinstance(raised.value.__cause__, DatasetFreezeError)
+    assert str(raised.value.__cause__) == "artifact_content_hash_verification_failed"
 
 
 def test_concurrent_tampered_winner_is_not_reused(tmp_path) -> None:
@@ -168,11 +198,27 @@ def test_concurrent_tampered_winner_is_not_reused(tmp_path) -> None:
     queue = context.Queue()
     published = context.Event()
     source = _source(tmp_path)
-    winner = context.Process(target=_publish_process, args=(str(source), str(tmp_path / "out"), barrier, queue), kwargs={"winner_published": published})
-    loser = context.Process(target=_publish_process, args=(str(source), str(tmp_path / "out"), barrier, queue), kwargs={"wait_for_winner": published, "tamper_winner": True})
+    winner = context.Process(target=_publish_process, args=(str(source), str(tmp_path / "out"), barrier, queue), kwargs={"winner_published": published, "role": "winner"})
+    loser = context.Process(target=_publish_process, args=(str(source), str(tmp_path / "out"), barrier, queue), kwargs={"wait_for_winner": published, "tamper_winner": True, "role": "reuser"})
     winner.start(); loser.start()
     results = [queue.get(timeout=20) for _ in range(2)]
     for process in (winner, loser):
         process.join(20)
         assert process.exitcode == 0
-    assert any(status == "error" and "artifact_content_hash_verification_failed" in value for status, value in results), results
+    successes = [result for result in results if result["status"] == "ok"]
+    failures = [result for result in results if result["status"] == "error"]
+    assert len(successes) == 1, results
+    assert len(failures) == 1, results
+    winner_result = successes[0]
+    reuser_failure = failures[0]
+    assert winner_result["role"] == "winner"
+    assert winner_result["result"]["reused_existing"] is False
+    assert reuser_failure["role"] == "reuser"
+    assert reuser_failure["exception_type"] == "DatasetFreezeError"
+    assert reuser_failure["reason"] == "existing_artifact_invalid_or_tampered"
+    assert reuser_failure["cause_type"] == "DatasetFreezeError"
+    assert reuser_failure["cause_reason"] == "artifact_content_hash_verification_failed"
+    assert not any(
+        result["status"] == "ok" and result["result"]["reused_existing"] is True
+        for result in results
+    )

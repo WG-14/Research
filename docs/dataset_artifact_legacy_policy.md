@@ -80,6 +80,11 @@ Selected related policies:
   safety is not claimed.
 - Verification caches are owned by a single run context. Each new run and each
   worker may independently verify the artifact.
+- Reuse rejection has one public tamper contract: a failed verification of an
+  existing bundle raises `existing_artifact_invalid_or_tampered`. The chained
+  `DatasetFreezeError` retains the specific verification reason, such as
+  `artifact_content_hash_verification_failed`; concurrent publication evidence
+  serializes both reasons explicitly rather than relying on traceback text.
 - Mutable `sqlite_candles` evidence is `DECLARED_ONLY` and therefore rejected
   for validated candidates unless a future adapter implements complete source
   verification. Selected completion policy A: research-only mutable SQLite
