@@ -806,11 +806,29 @@ def _reserve_experiment_attempt(
     split_hashes = {name: snapshot.snapshot_fingerprint_hash() for name, snapshot in snapshots.items()}
     final_holdout_loaded = "final_holdout" in snapshots
     dataset_quality_hash = combined_dataset_quality_hash(tuple(quality_reports.values())) if final_holdout_loaded else None
+    artifact_snapshot = next((item for item in snapshots.values() if item.artifact_id), None)
+    artifact_evidence = ({
+        "artifact_id": artifact_snapshot.artifact_id,
+        "artifact_manifest_hash": artifact_snapshot.artifact_manifest_hash,
+        "artifact_content_hash": artifact_snapshot.artifact_content_hash,
+        "artifact_schema_hash": artifact_snapshot.artifact_schema_hash,
+        "verification_status": artifact_snapshot.verification.overall_status.value if artifact_snapshot.verification else "UNAVAILABLE",
+    } if artifact_snapshot is not None else {})
+    holdout_snapshot = snapshots.get("final_holdout")
+    holdout_evidence = ({
+        "requested_range": holdout_snapshot.date_range.as_dict(),
+        "snapshot_query_hash": holdout_snapshot.snapshot_query_hash(),
+        "snapshot_data_hash": holdout_snapshot.snapshot_data_hash(),
+        "snapshot_fingerprint_hash": holdout_snapshot.snapshot_fingerprint_hash(),
+        "quality_hash": quality_reports["final_holdout"].content_hash,
+    } if holdout_snapshot is not None and "final_holdout" in quality_reports else {})
     if final_holdout_loaded:
         holdout_hashes = final_holdout_hashes_from_manifest(
             manifest=manifest,
             final_holdout_split_hash=split_hashes.get("final_holdout"),
             dataset_quality_hash=dataset_quality_hash,
+            dataset_artifact=artifact_evidence,
+            final_holdout_evidence=holdout_evidence,
         )
     else:
         holdout_payload = manifest.dataset.split.final_holdout.as_dict() if manifest.dataset.split.final_holdout is not None else None
@@ -861,18 +879,14 @@ def _reserve_experiment_attempt(
         "dataset_snapshot_id": manifest.dataset.snapshot_id,
         "dataset_content_hash": combined_dataset_fingerprint(tuple(snapshots.values())) if final_holdout_loaded else None,
         "dataset_quality_hash": dataset_quality_hash,
-        "dataset_artifact": {
-            "artifact_id": next((item.artifact_id for item in snapshots.values() if item.artifact_id), None),
-            "artifact_manifest_hash": next((item.artifact_manifest_hash for item in snapshots.values() if item.artifact_manifest_hash), None),
-            "artifact_content_hash": next((item.artifact_content_hash for item in snapshots.values() if item.artifact_content_hash), None),
-            "artifact_schema_hash": next((item.artifact_schema_hash for item in snapshots.values() if item.artifact_schema_hash), None),
-        },
+        "dataset_artifact": artifact_evidence,
         "dataset_split_evidence": {
             name: {
                 "requested_range": snapshot.date_range.as_dict(),
                 "snapshot_data_hash": snapshot.snapshot_data_hash(),
                 "snapshot_query_hash": snapshot.snapshot_query_hash(),
                 "snapshot_fingerprint_hash": snapshot.snapshot_fingerprint_hash(),
+                "quality_hash": quality_reports[name].content_hash,
                 "verification_status": snapshot.verification.overall_status.value if snapshot.verification else "UNAVAILABLE",
             }
             for name, snapshot in snapshots.items()
@@ -1835,18 +1849,12 @@ def run_research_backtest(
     report.update(write_result.report_payload or {})
     if manifest.research_run.report_detail == "summary":
         report["candidates"] = full_candidates
-    receipt_path = paths.report_path.with_name("reproduction_receipt.json")
-    # The report writer may retain a bounded candidate index in the persisted
-    # report.  Receipt evidence must bind the complete in-memory results.
-    receipt_report = dict(report)
-    receipt_report["candidates"] = full_candidates or []
-    receipt = create_reproduction_receipt(
-        report=receipt_report,
+    _attach_authoritative_reproduction_receipt(
+        report=report,
+        full_candidates=full_candidates or [],
         manifest=manifest,
-        receipt_path=receipt_path,
+        report_path=paths.report_path,
     )
-    report["reproduction_receipt_path"] = str(receipt_path.resolve())
-    report["reproduction_receipt_hash"] = receipt["receipt_content_hash"]
     _emit_progress(
         progress_callback,
         stage="complete",
@@ -2101,6 +2109,12 @@ def run_research_walk_forward(
     report.update(write_result.report_payload or {})
     if manifest.research_run.report_detail == "summary":
         report["candidates"] = full_candidates
+    _attach_authoritative_reproduction_receipt(
+        report=report,
+        full_candidates=full_candidates or [],
+        manifest=manifest,
+        report_path=paths.report_path,
+    )
     _emit_progress(
         progress_callback,
         stage="complete",
@@ -2109,6 +2123,46 @@ def run_research_walk_forward(
         elapsed_s=round(time.perf_counter() - started, 3),
     )
     return report
+
+
+def _attach_authoritative_reproduction_receipt(
+    *,
+    report: dict[str, Any],
+    full_candidates: list[dict[str, Any]],
+    manifest: ExperimentManifest,
+    report_path: Path,
+) -> None:
+    """Attach immutable-artifact receipt evidence, or an explicit policy-A result.
+
+    Mutable ``sqlite_candles`` is intentionally research-only DECLARED_ONLY
+    evidence.  It can produce a diagnostic report but cannot honestly produce
+    an authoritative immutable-artifact receipt.
+    """
+    split_rows = report.get("dataset_splits")
+    non_verified = (
+        isinstance(split_rows, dict)
+        and any(
+            not isinstance(row, dict) or row.get("verification_status") != VerificationStatus.VERIFIED.value
+            for row in split_rows.values()
+        )
+    )
+    if non_verified:
+        if manifest.research_classification != "research_only":
+            raise ResearchValidationError("authoritative_receipt_requires_verified_dataset_artifact")
+        report["reproduction_receipt_status"] = "UNAVAILABLE_MUTABLE_SOURCE_POLICY_A"
+        report["reproduction_receipt_reason"] = "mutable_dataset_source_not_verified_immutable_artifact"
+        report["warnings"] = sorted(set(report.get("warnings") or ()) | {
+            "dataset_verification_not_immutable_artifact",
+            "authoritative_reproduction_receipt_unavailable_mutable_source",
+        })
+        return
+    receipt_path = report_path.with_name("reproduction_receipt.json")
+    receipt_report = dict(report)
+    receipt_report["candidates"] = full_candidates
+    receipt = create_reproduction_receipt(report=receipt_report, manifest=manifest, receipt_path=receipt_path)
+    report["reproduction_receipt_path"] = str(receipt_path.resolve())
+    report["reproduction_receipt_hash"] = receipt["receipt_content_hash"]
+    report["reproduction_receipt_status"] = "AVAILABLE"
 
 
 def _evaluate_candidates(
@@ -5735,6 +5789,23 @@ def _report_payload(
             manifest=manifest,
             final_holdout_split_hash=split_hashes.get("final_holdout"),
             dataset_quality_hash=dataset_quality_hash,
+            dataset_artifact={
+                "artifact_id": next((snapshot.artifact_id for snapshot in snapshots if snapshot.artifact_id), None),
+                "artifact_manifest_hash": next((snapshot.artifact_manifest_hash for snapshot in snapshots if snapshot.artifact_manifest_hash), None),
+                "artifact_content_hash": next((snapshot.artifact_content_hash for snapshot in snapshots if snapshot.artifact_content_hash), None),
+                "artifact_schema_hash": next((snapshot.artifact_schema_hash for snapshot in snapshots if snapshot.artifact_schema_hash), None),
+                "verification_status": next((snapshot.verification.overall_status.value for snapshot in snapshots if snapshot.verification), "UNAVAILABLE"),
+            },
+            final_holdout_evidence=(
+                {
+                    "requested_range": next(snapshot.date_range.as_dict() for snapshot in snapshots if snapshot.split_name == "final_holdout"),
+                    "snapshot_query_hash": next(snapshot.snapshot_query_hash() for snapshot in snapshots if snapshot.split_name == "final_holdout"),
+                    "snapshot_data_hash": next(snapshot.snapshot_data_hash() for snapshot in snapshots if snapshot.split_name == "final_holdout"),
+                    "snapshot_fingerprint_hash": next(snapshot.snapshot_fingerprint_hash() for snapshot in snapshots if snapshot.split_name == "final_holdout"),
+                    "quality_hash": next(report.content_hash for report in quality_reports if report.payload["split_name"] == "final_holdout"),
+                }
+                if any(snapshot.split_name == "final_holdout" for snapshot in snapshots) else {}
+            ),
         )
         if manifest.dataset.split.final_holdout is not None and split_hashes.get("final_holdout") is not None
         else {}
@@ -5845,6 +5916,11 @@ def _report_payload(
                 "final_holdout_reuse_key_schema_version"
             ),
             "final_holdout_reuse_key_hash_v2": registry_row.get("final_holdout_reuse_key_hash_v2"),
+            "dataset_artifact_evidence_hash": registry_row.get("dataset_artifact_evidence_hash"),
+            "final_holdout_query_hash": registry_row.get("final_holdout_query_hash"),
+            "final_holdout_data_hash": registry_row.get("final_holdout_data_hash"),
+            "final_holdout_fingerprint_hash": registry_row.get("final_holdout_fingerprint_hash"),
+            "final_holdout_quality_hash": registry_row.get("final_holdout_quality_hash"),
             "objective_metric": registry_row.get("objective_metric"),
             "train_split_hash": registry_row.get("train_split_hash"),
             "validation_split_hash": registry_row.get("validation_split_hash"),
@@ -6251,6 +6327,11 @@ def _report_payload(
         "dataset_content_hash_semantics": "combined_run_dataset_fingerprint",
         "dataset_quality_hash": dataset_quality_hash,
         "dataset_artifact": dataset_artifact,
+        "dataset_artifact_evidence_hash": experiment_registry_fields.get("dataset_artifact_evidence_hash"),
+        "final_holdout_query_hash": experiment_registry_fields.get("final_holdout_query_hash"),
+        "final_holdout_data_hash": experiment_registry_fields.get("final_holdout_data_hash"),
+        "final_holdout_fingerprint_hash": experiment_registry_fields.get("final_holdout_fingerprint_hash"),
+        "final_holdout_quality_hash": experiment_registry_fields.get("final_holdout_quality_hash"),
         "dataset_adapter_provenance": dataset_adapter_provenance,
         "dataset_adapter_provenance_hash": dataset_adapter_provenance_hash,
         "dataset_quality_gate_status": dataset_quality_status,
@@ -7788,8 +7869,15 @@ def _validate_dataset_adapter_provenance(
         adapter_name = str(payload.get("adapter_name") or "")
         adapter_version = str(payload.get("adapter_version") or "")
         source = str(payload.get("dataset_source") or payload.get("source") or "")
-        source_content_hash = str(payload.get("artifact_content_hash") or payload.get("source_content_hash") or "")
-        source_schema_hash = str(payload.get("artifact_schema_hash") or payload.get("source_schema_hash") or "")
+        # Validated candidates never infer artifact evidence from mutable
+        # source fields.  The compatibility source branch remains explicit for
+        # non-artifact adapters that later implement full verification.
+        if manifest.dataset.artifact_ref is not None:
+            source_content_hash = str(payload.get("artifact_content_hash") or "")
+            source_schema_hash = str(payload.get("artifact_schema_hash") or "")
+        else:
+            source_content_hash = str(payload.get("source_content_hash") or "")
+            source_schema_hash = str(payload.get("source_schema_hash") or "")
         adapter_provenance = payload.get("adapter_provenance")
         adapter_provenance_hash = str(payload.get("adapter_provenance_hash") or "")
         canonical_hash = str(payload.get("canonical_snapshot_hash") or payload.get("dataset_content_hash") or "")
@@ -7949,6 +8037,14 @@ def _locator_contract_reasons(manifest: ExperimentManifest, evidence: str) -> li
         return []
     except (ArtifactManifestError, LocatorValidationError):
         return [f"invalid_immutable_{evidence}_locator"]
+
+
+def validate_immutable_dataset_locator(*, artifact_manifest_uri: str, artifact_manifest_hash: str) -> None:
+    """Public freeze-to-candidate boundary for first-class artifact references."""
+    manifest = load_artifact_manifest(artifact_manifest_uri, artifact_manifest_hash)
+    # Keep producer and consumer on the same strict locator parser even though
+    # the manifest parser already invokes it; this makes the boundary explicit.
+    parse_immutable_locator(manifest.locator.as_dict())
 
 
 def _validate_strategy_data_requirements(manifest: ExperimentManifest) -> None:

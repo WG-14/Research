@@ -3,9 +3,12 @@ import json
 import sqlite3
 from pathlib import Path
 import pytest
+from datetime import datetime, timezone
 from market_research.research.dataset_freeze import DatasetFreezeError, freeze_sqlite_candles_dataset
 from market_research.research.datasets.artifact_manifest import ArtifactManifestError, load_artifact_manifest, parse_artifact_manifest
 from market_research.research.datasets.hashing_contract import artifact_manifest_hash
+from market_research.research.dataset_snapshot import FrozenSQLiteCandleAdapter
+from market_research.research.datasets.contracts import DatasetArtifactRef, DatasetResolutionContext, DatasetSliceQuery
 
 
 def _source(tmp_path: Path) -> Path:
@@ -94,3 +97,71 @@ def test_existing_tampered_artifact_is_not_reused(tmp_path: Path) -> None:
         db.execute("UPDATE candles SET close=9 WHERE ts=1")
     with pytest.raises(DatasetFreezeError, match="tampered"):
         freeze_sqlite_candles_dataset(source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
+
+
+def _utc_ts(hour: int, minute: int = 0) -> int:
+    return int(datetime(2026, 1, 1, hour, minute, tzinfo=timezone.utc).timestamp() * 1000)
+
+
+def _hourly_source(tmp_path: Path) -> Path:
+    source = tmp_path / "hourly.sqlite"
+    with sqlite3.connect(source) as db:
+        db.execute("CREATE TABLE candles (pair TEXT, interval TEXT, ts INTEGER, open REAL, high REAL, low REAL, close REAL, volume REAL)")
+        for hour in range(13):
+            db.execute("INSERT INTO candles VALUES ('KRW-BTC','60m',?,?,?,?,?,?)", (_utc_ts(hour), 1., 1., 1., 1., 1.))
+    return source
+
+
+def _verified_hourly(tmp_path: Path):
+    frozen = freeze_sqlite_candles_dataset(source_db=_hourly_source(tmp_path), market="KRW-BTC", interval="60m", start_ts=_utc_ts(0), end_ts=_utc_ts(12), out_dir=tmp_path / "out")
+    adapter = FrozenSQLiteCandleAdapter()
+    handle = adapter.resolve(DatasetArtifactRef(frozen["artifact_manifest_uri"], frozen["artifact_manifest_hash"]), DatasetResolutionContext())
+    return frozen, adapter, adapter.verify(handle)
+
+
+def test_same_day_query_after_last_hourly_bucket_is_rejected_before_range_sql(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, adapter, verified = _verified_hourly(tmp_path)
+    called = False
+    def unexpected_sql(**kwargs):
+        nonlocal called
+        called = True
+        return []
+    monkeypatch.setattr("market_research.research.dataset_snapshot._load_frozen_rows", unexpected_sql)
+    with pytest.raises(ValueError, match="outside_verified"):
+        adapter.materialize(verified, DatasetSliceQuery("KRW-BTC", "60m", _utc_ts(0), _utc_ts(23, 59), "train", "s", {}))
+    assert called is False
+
+
+def test_query_inside_last_bucket_coverage_is_allowed(tmp_path: Path) -> None:
+    _, adapter, verified = _verified_hourly(tmp_path)
+    snapshot = adapter.materialize(verified, DatasetSliceQuery("KRW-BTC", "60m", _utc_ts(12), _utc_ts(12, 59) + 59_999, "train", "s", {}))
+    assert [candle.ts for candle in snapshot.candles] == [_utc_ts(12)]
+
+
+def test_full_day_one_minute_query_is_allowed(tmp_path: Path) -> None:
+    source = tmp_path / "minutes.sqlite"
+    start = _utc_ts(0)
+    with sqlite3.connect(source) as db:
+        db.execute("CREATE TABLE candles (pair TEXT, interval TEXT, ts INTEGER, open REAL, high REAL, low REAL, close REAL, volume REAL)")
+        db.executemany("INSERT INTO candles VALUES ('KRW-BTC','1m',?,?,?,?,?,?)", [(start + minute * 60_000, 1., 1., 1., 1., 1.) for minute in range(1440)])
+    frozen = freeze_sqlite_candles_dataset(source_db=source, market="KRW-BTC", interval="1m", start_ts=start, end_ts=start + 1439 * 60_000, out_dir=tmp_path / "out")
+    adapter = FrozenSQLiteCandleAdapter()
+    verified = adapter.verify(adapter.resolve(DatasetArtifactRef(frozen["artifact_manifest_uri"], frozen["artifact_manifest_hash"]), DatasetResolutionContext()))
+    snapshot = adapter.materialize(verified, DatasetSliceQuery("KRW-BTC", "1m", start, start + 86_400_000 - 1, "train", "s", {}))
+    assert len(snapshot.candles) == 1440
+
+
+@pytest.mark.parametrize("mutation", ("schema", "row_count", "scope"))
+def test_actual_artifact_mutation_is_rejected_by_complete_verification(tmp_path: Path, mutation: str) -> None:
+    frozen = freeze_sqlite_candles_dataset(source_db=_source(tmp_path), market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
+    with sqlite3.connect(frozen["artifact_path"]) as db:
+        if mutation == "schema":
+            db.execute("CREATE INDEX tampered_idx ON candles(ts)")
+        elif mutation == "row_count":
+            db.execute("INSERT INTO candles VALUES ('KRW-BTC','1m',3,3,3,3,3,1)")
+        else:
+            db.execute("UPDATE candles SET ts=0 WHERE ts=1")
+    adapter = FrozenSQLiteCandleAdapter()
+    handle = adapter.resolve(DatasetArtifactRef(frozen["artifact_manifest_uri"], frozen["artifact_manifest_hash"]), DatasetResolutionContext())
+    with pytest.raises(ValueError, match="not_verified"):
+        adapter.verify(handle)

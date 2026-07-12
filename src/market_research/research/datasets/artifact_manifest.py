@@ -9,12 +9,12 @@ from typing import Any
 from .hashing_contract import artifact_manifest_hash
 from .locators import ContentAddressedLocal, LocatorValidationError, parse_immutable_locator
 
-ARTIFACT_MANIFEST_SCHEMA_VERSION = 1
+ARTIFACT_MANIFEST_SCHEMA_VERSION = 2
 _TOP_LEVEL_FIELDS = frozenset({"schema_version", "artifact_type", "artifact_id", "format", "artifact",
                                "artifact_identity_hash", "scope", "canonicalization", "locator",
                                "artifact_manifest_hash"})
 _ARTIFACT_FIELDS = frozenset({"uri", "content_hash", "schema_hash", "row_count"})
-_SCOPE_FIELDS = frozenset({"market", "interval", "start_ts", "end_ts"})
+_SCOPE_FIELDS = frozenset({"market", "interval", "start_ts", "end_ts", "coverage_start_ts", "coverage_end_ts"})
 _CANONICALIZATION_FIELDS = frozenset({"name", "version"})
 _CANONICALIZATION = ("ohlcv_pair_interval_rows", 1)
 
@@ -37,6 +37,8 @@ class ArtifactManifest:
     interval: str
     start_ts: int
     end_ts: int
+    coverage_start_ts: int
+    coverage_end_ts: int
     canonicalization_name: str
     canonicalization_version: int
     artifact_identity_hash: str
@@ -49,7 +51,9 @@ class ArtifactManifest:
             "artifact": {"content_hash": self.content_hash, "schema_hash": self.schema_hash,
                          "row_count": self.row_count},
             "scope": {"market": self.market, "interval": self.interval,
-                      "start_ts": self.start_ts, "end_ts": self.end_ts},
+                      "start_ts": self.start_ts, "end_ts": self.end_ts,
+                      "coverage_start_ts": self.coverage_start_ts,
+                      "coverage_end_ts": self.coverage_end_ts},
             "canonicalization": {"name": self.canonicalization_name,
                                    "version": self.canonicalization_version},
         }
@@ -65,12 +69,13 @@ class ArtifactManifest:
 
 def build_artifact_manifest(*, artifact_id: str, path: str, content_hash: str, schema_hash: str,
                             row_count: int, market: str, interval: str, start_ts: int,
-                            end_ts: int) -> ArtifactManifest:
+                            end_ts: int, coverage_start_ts: int, coverage_end_ts: int) -> ArtifactManifest:
     identity = {
         "schema_version": ARTIFACT_MANIFEST_SCHEMA_VERSION,
         "artifact_type": "immutable_candle_dataset", "artifact_id": artifact_id, "format": "sqlite",
         "artifact": {"content_hash": content_hash, "schema_hash": schema_hash, "row_count": int(row_count)},
-        "scope": {"market": market, "interval": interval, "start_ts": int(start_ts), "end_ts": int(end_ts)},
+        "scope": {"market": market, "interval": interval, "start_ts": int(start_ts), "end_ts": int(end_ts),
+                  "coverage_start_ts": int(coverage_start_ts), "coverage_end_ts": int(coverage_end_ts)},
         "canonicalization": {"name": _CANONICALIZATION[0], "version": _CANONICALIZATION[1]},
     }
     identity_hash = artifact_manifest_hash(identity)
@@ -140,8 +145,12 @@ def _parse_values(payload: dict[str, Any], *, locator: ContentAddressedLocal) ->
         raise ArtifactManifestError("artifact_manifest_row_count_negative")
     start_ts = _strict_int(scope.get("start_ts"), "scope.start_ts")
     end_ts = _strict_int(scope.get("end_ts"), "scope.end_ts")
+    coverage_start_ts = _strict_int(scope.get("coverage_start_ts"), "scope.coverage_start_ts")
+    coverage_end_ts = _strict_int(scope.get("coverage_end_ts"), "scope.coverage_end_ts")
     if start_ts > end_ts:
         raise ArtifactManifestError("artifact_manifest_scope_inverted")
+    if coverage_start_ts != start_ts or coverage_end_ts < end_ts:
+        raise ArtifactManifestError("artifact_manifest_coverage_scope_invalid")
     uri = _text(artifact.get("uri"))
     if uri != locator.path:
         raise ArtifactManifestError("artifact_manifest_uri_locator_mismatch")
@@ -150,7 +159,8 @@ def _parse_values(payload: dict[str, Any], *, locator: ContentAddressedLocal) ->
         "artifact_id": artifact_id, "format": physical_format, "locator": locator,
         "content_hash": _hash(artifact.get("content_hash")), "schema_hash": _hash(artifact.get("schema_hash")),
         "row_count": row_count, "market": _text(scope.get("market")), "interval": _text(scope.get("interval")),
-        "start_ts": start_ts, "end_ts": end_ts, "canonicalization_name": canonical_name,
+        "start_ts": start_ts, "end_ts": end_ts, "coverage_start_ts": coverage_start_ts,
+        "coverage_end_ts": coverage_end_ts, "canonicalization_name": canonical_name,
         "canonicalization_version": canonical_version,
         "artifact_identity_hash": _hash(payload.get("artifact_identity_hash")),
         "artifact_manifest_hash": _hash(payload.get("artifact_manifest_hash")),

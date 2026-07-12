@@ -1343,12 +1343,15 @@ class FrozenSQLiteCandleAdapter:
         actual_content = artifact_content_hash(rows)
         actual_schema = sqlite_candles_schema_hash(path)
         actual_scope = _artifact_scope(rows)
+        declared_scope = {"market": manifest.market, "interval": manifest.interval,
+                          "start_ts": manifest.start_ts, "end_ts": manifest.end_ts,
+                          "coverage_start_ts": manifest.coverage_start_ts,
+                          "coverage_end_ts": manifest.coverage_end_ts}
         actual_pairs = {(str(row[0]), str(row[1])) for row in rows}
         status = VerificationStatus.VERIFIED
         if (actual_content != manifest.content_hash or actual_schema != manifest.schema_hash or
                 len(rows) != manifest.row_count or actual_pairs != {(manifest.market, manifest.interval)} or
-                actual_scope != {"market": manifest.market, "interval": manifest.interval,
-                                 "start_ts": manifest.start_ts, "end_ts": manifest.end_ts}):
+                actual_scope != declared_scope):
             status = VerificationStatus.MISMATCH
         verification = DatasetVerificationResult(overall_status=status,
             content_status=VerificationStatus.VERIFIED if actual_content == manifest.content_hash else VerificationStatus.MISMATCH,
@@ -1357,11 +1360,10 @@ class FrozenSQLiteCandleAdapter:
             schema_status=VerificationStatus.VERIFIED if actual_schema == manifest.schema_hash else VerificationStatus.MISMATCH,
             expected_schema_hash=manifest.schema_hash, actual_schema_hash=actual_schema,
             locator_status=VerificationStatus.VERIFIED, locator_type=manifest.locator.type,
-            scope_status=(VerificationStatus.VERIFIED if actual_scope == {"market": manifest.market, "interval": manifest.interval,
-                                 "start_ts": manifest.start_ts, "end_ts": manifest.end_ts}
+            scope_status=(VerificationStatus.VERIFIED if actual_scope == declared_scope
                           and len(rows) == manifest.row_count and actual_pairs == {(manifest.market, manifest.interval)}
                           else VerificationStatus.MISMATCH),
-            declared_scope={"market": manifest.market, "interval": manifest.interval, "start_ts": manifest.start_ts, "end_ts": manifest.end_ts},
+            declared_scope=declared_scope,
             actual_scope=actual_scope, adapter_name=self.adapter_name, adapter_version=self.adapter_version)
         verification.require_verified()
         return VerifiedDatasetArtifact(handle=handle, verification=verification)
@@ -1377,14 +1379,8 @@ class FrozenSQLiteCandleAdapter:
             raise TypeError("materialize_requires_verified_dataset_artifact")
         artifact.verification.require_verified()
         manifest = artifact.handle.manifest
-        # DateRange contracts are inclusive civil days whereas a candle scope
-        # records the final observed bucket.  Permit the remainder of that
-        # final UTC day; materialization still returns only verified rows.
-        from datetime import datetime, timezone
-        end_day = datetime.fromtimestamp(manifest.end_ts / 1000, tz=timezone.utc).date().isoformat()
-        scope_end_within_last_bucket = DateRange(end_day, end_day).end_ts_ms()
         if (query.market != manifest.market or query.interval != manifest.interval or query.start_ts < manifest.start_ts
-                or query.end_ts > scope_end_within_last_bucket):
+                or query.end_ts > manifest.coverage_end_ts):
             raise ValueError("dataset_slice_query_outside_verified_artifact_scope")
         rows = _load_frozen_rows(Path(manifest.locator.path), market=query.market, interval=query.interval,
             start_ts=query.start_ts, end_ts=query.end_ts)
@@ -1483,10 +1479,14 @@ def _load_frozen_artifact_rows(path: Path) -> list[tuple[Any, ...]]:
 def _artifact_scope(rows: list[tuple[Any, ...]]) -> dict[str, object]:
     pairs = {(str(row[0]), str(row[1])) for row in rows}
     if len(pairs) != 1:
-        return {"market": None, "interval": None, "start_ts": None, "end_ts": None}
+        return {"market": None, "interval": None, "start_ts": None, "end_ts": None,
+                "coverage_start_ts": None, "coverage_end_ts": None}
     market, interval = next(iter(pairs))
-    return {"market": market, "interval": interval, "start_ts": min((int(row[2]) for row in rows), default=None),
-            "end_ts": max((int(row[2]) for row in rows), default=None)}
+    start_ts = min((int(row[2]) for row in rows), default=None)
+    end_ts = max((int(row[2]) for row in rows), default=None)
+    return {"market": market, "interval": interval, "start_ts": start_ts, "end_ts": end_ts,
+            "coverage_start_ts": start_ts,
+            "coverage_end_ts": (end_ts + _interval_ms(interval) - 1) if end_ts is not None else None}
 
 
 def _ts_to_date(ts: int) -> str:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import errno
 import shutil
 import sqlite3
 import tempfile
@@ -11,6 +12,7 @@ from typing import Any
 from ..storage_io import write_json_atomic
 from .datasets.artifact_manifest import ArtifactManifestError, build_artifact_manifest, load_artifact_manifest
 from .datasets.hashing_contract import artifact_content_hash, artifact_schema_hash
+from market_research.research.intervals import interval_to_milliseconds
 
 
 class DatasetFreezeError(ValueError):
@@ -75,13 +77,15 @@ def freeze_sqlite_candles_dataset(*, source_db: str | Path, market: str, interva
     staging_db = staging / "candles.sqlite"
     staging_manifest = staging / "artifact.manifest.json"
     try:
-        _write_sqlite(staging_db, rows=rows, market=market, interval=interval)
+        _write_sqlite(staging_db, rows=rows, market=market, interval=interval,
+                      failure_stage=failure_stage)
         _fail_if_requested(failure_stage, "during_db_creation")
         schema_hash = sqlite_candles_schema_hash(staging_db)
         artifact_id = f"immutable-candle:{content_hash}"
         final_manifest = build_artifact_manifest(artifact_id=artifact_id, path=str(artifact_path), content_hash=content_hash,
             schema_hash=schema_hash, row_count=len(rows), market=market, interval=interval,
-            start_ts=int(start_ts), end_ts=int(end_ts))
+            start_ts=int(start_ts), end_ts=int(end_ts), coverage_start_ts=int(start_ts),
+            coverage_end_ts=_coverage_end_ts(end_ts=int(end_ts), interval=interval))
         write_json_atomic(staging_manifest, final_manifest.as_dict())
         _fail_if_requested(failure_stage, "during_manifest_creation")
         _verify_bundle(staging_db, staging_manifest, market=market, interval=interval, start_ts=start_ts,
@@ -92,7 +96,9 @@ def freeze_sqlite_candles_dataset(*, source_db: str | Path, market: str, interva
         try:
             _fail_if_requested(failure_stage, "during_final_publication")
             os.replace(staging, artifact_dir)
-        except FileExistsError:
+        except OSError as exc:
+            if not _is_destination_conflict(exc):
+                raise
             shutil.rmtree(staging, ignore_errors=True)
             return _reuse_existing(artifact_dir=artifact_dir, artifact_path=artifact_path, manifest_path=manifest_path,
                 market=market, interval=interval, start_ts=start_ts, end_ts=end_ts, expected_content=content_hash)
@@ -104,13 +110,17 @@ def freeze_sqlite_candles_dataset(*, source_db: str | Path, market: str, interva
         raise
 
 
-def _write_sqlite(path: Path, *, rows: list[tuple[Any, ...]], market: str, interval: str) -> None:
+def _write_sqlite(path: Path, *, rows: list[tuple[Any, ...]], market: str, interval: str,
+                  failure_stage: str | None = None) -> None:
     # `path` is always a same-filesystem staging path, never a published path.
     conn = sqlite3.connect(path)
     try:
         conn.execute("CREATE TABLE candles (pair TEXT NOT NULL, interval TEXT NOT NULL, ts INTEGER NOT NULL, open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL, volume REAL NOT NULL, PRIMARY KEY(pair, interval, ts))")
-        conn.executemany("INSERT INTO candles(pair, interval, ts, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [(market, interval, *tuple(row)) for row in rows])
+        for index, row in enumerate(rows):
+            conn.execute("INSERT INTO candles(pair, interval, ts, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (market, interval, *tuple(row)))
+            if index == 0:
+                _fail_if_requested(failure_stage, "during_db_write")
         conn.commit()
     finally:
         conn.close()
@@ -151,7 +161,10 @@ def _verify_bundle(db_path: Path, manifest_path: Path, *, market: str, interval:
     if actual_pairs != {(market, interval)} or (manifest.market, manifest.interval) != (market, interval):
         raise DatasetFreezeError("artifact_market_interval_verification_failed")
     actual_scope = (min((int(row[2]) for row in rows), default=int(start_ts)), max((int(row[2]) for row in rows), default=int(end_ts)))
-    if actual_scope != (int(start_ts), int(end_ts)) or (manifest.start_ts, manifest.end_ts) != actual_scope:
+    actual_coverage = (actual_scope[0], _coverage_end_ts(end_ts=actual_scope[1], interval=interval))
+    if (actual_scope != (int(start_ts), int(end_ts))
+            or (manifest.start_ts, manifest.end_ts) != actual_scope
+            or (manifest.coverage_start_ts, manifest.coverage_end_ts) != actual_coverage):
         raise DatasetFreezeError("artifact_scope_verification_failed")
     return manifest
 
@@ -161,12 +174,23 @@ def _fail_if_requested(requested: str | None, stage: str) -> None:
         raise DatasetFreezeError(f"freeze_failure_injected:{stage}")
 
 
+def _coverage_end_ts(*, end_ts: int, interval: str) -> int:
+    return int(end_ts) + interval_to_milliseconds(interval) - 1
+
+
+def _is_destination_conflict(exc: OSError) -> bool:
+    """Same-filesystem publisher conflict across POSIX and Windows errno forms."""
+    return isinstance(exc, FileExistsError) or exc.errno in {errno.EEXIST, errno.ENOTEMPTY}
+
+
 def _result(manifest, artifact_path: Path, manifest_path: Path, *, reused_existing: bool) -> dict[str, Any]:
     return {"artifact_id": manifest.artifact_id, "artifact_path": str(artifact_path), "manifest_path": str(manifest_path),
             "artifact_manifest_uri": str(manifest_path), "artifact_manifest_hash": manifest.artifact_manifest_hash,
             "artifact_content_hash": manifest.content_hash, "artifact_schema_hash": manifest.schema_hash,
             "row_count": manifest.row_count, "market": manifest.market, "interval": manifest.interval,
-            "start_ts": manifest.start_ts, "end_ts": manifest.end_ts, "locator": manifest.locator.as_dict(),
+            "start_ts": manifest.start_ts, "end_ts": manifest.end_ts,
+            "coverage_start_ts": manifest.coverage_start_ts, "coverage_end_ts": manifest.coverage_end_ts,
+            "locator": manifest.locator.as_dict(),
             "reused_existing": reused_existing}
 
 

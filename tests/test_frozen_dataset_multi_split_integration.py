@@ -9,6 +9,7 @@ from market_research.settings import ResearchSettings
 from market_research.research.dataset_freeze import freeze_sqlite_candles_dataset
 from market_research.research.experiment_manifest import parse_manifest
 from market_research.research.validation_protocol import run_research_backtest
+from market_research.research.reproduction import load_reproduction_receipt
 
 
 def _ts(day: str, minute: int = 0) -> int:
@@ -54,6 +55,12 @@ def test_one_frozen_artifact_runs_backtest_train_validation_holdout(tmp_path) ->
     assert {splits[name]["artifact_manifest_hash"] for name in ("train", "validation", "final_holdout")} == {frozen["artifact_manifest_hash"]}
     assert all(splits[name]["verification_status"] == "VERIFIED" for name in splits)
     assert report["reproduction_receipt_path"]
+    receipt = load_reproduction_receipt(report["reproduction_receipt_path"])
+    receipt_splits = {item["split_name"]: item for item in receipt["stable_fingerprint"]["dataset_split_hashes"]}
+    assert set(receipt_splits) == {"train", "validation", "final_holdout"}
+    for split_name, row in report["dataset_splits"].items():
+        for field in ("artifact_id", "artifact_manifest_hash", "artifact_content_hash", "artifact_schema_hash", "requested_range", "snapshot_data_hash", "snapshot_query_hash", "snapshot_fingerprint_hash", "quality_hash", "verification_status", "verification"):
+            assert receipt_splits[split_name][field] == row[field]
 
 
 def test_parallel_frozen_backtest_without_db(tmp_path) -> None:

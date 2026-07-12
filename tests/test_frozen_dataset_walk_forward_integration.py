@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from market_research.research.validation_protocol import run_research_walk_forward
+from market_research.research.reproduction import load_reproduction_receipt
 from .test_frozen_dataset_multi_split_integration import frozen_manifest_and_manager
 
 
@@ -11,6 +12,9 @@ def test_one_frozen_artifact_runs_two_walk_forward_windows_without_db(tmp_path) 
     assert len(windows) >= 4
     assert {split["artifact_manifest_hash"] for split in windows.values()} == {frozen["artifact_manifest_hash"]}
     assert all(split["snapshot_query_hash"] and split["snapshot_data_hash"] and split["quality_hash"] for split in windows.values())
+    receipt = load_reproduction_receipt(report["reproduction_receipt_path"])
+    receipt_names = {item["split_name"] for item in receipt["stable_fingerprint"]["dataset_split_hashes"]}
+    assert set(report["dataset_splits"]) == receipt_names
 
 
 def test_parallel_frozen_walk_forward_without_db(tmp_path) -> None:

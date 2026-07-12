@@ -13,7 +13,7 @@ def test_freeze_is_idempotent_for_identical_input(tmp_path) -> None:
     assert second["reused_existing"] is True
 
 
-@pytest.mark.parametrize("stage", ("during_db_creation", "during_manifest_creation", "after_verification_before_rename", "during_final_publication"))
+@pytest.mark.parametrize("stage", ("during_db_write", "during_db_creation", "during_manifest_creation", "after_verification_before_rename", "during_final_publication"))
 def test_interrupted_publication_never_exposes_bundle(tmp_path, stage: str) -> None:
     with pytest.raises(DatasetFreezeError, match="injected"):
         freeze_sqlite_candles_dataset(source_db=_source(tmp_path), market="KRW-BTC", interval="1m", start_ts=1, end_ts=2,

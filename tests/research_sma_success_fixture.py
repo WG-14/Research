@@ -16,12 +16,15 @@ def create_success_fixture(root: Path) -> tuple[Path, Path]:
         conn.execute("CREATE TABLE candles (pair TEXT, interval TEXT, ts INTEGER, open REAL, high REAL, low REAL, close REAL, volume REAL)")
         for day in ("2026-01-01", "2026-01-02"):
             base = int(datetime.fromisoformat(day).replace(tzinfo=timezone.utc).timestamp() * 1000)
-            for index, price in enumerate(PRICES):
+            # DateRange requests cover a civil day.  Freeze full bucket
+            # coverage rather than relying on the removed same-day bypass.
+            for index in range(1440):
+                price = PRICES[index] if index < len(PRICES) else PRICES[-1]
                 conn.execute("INSERT INTO candles VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ("KRW-BTC", "1m", base + index * 60_000, price, price, price, price, 1.0))
     frozen = freeze_sqlite_candles_dataset(
         source_db=db_path, market="KRW-BTC", interval="1m",
         start_ts=int(datetime.fromisoformat("2026-01-01").replace(tzinfo=timezone.utc).timestamp() * 1000),
-        end_ts=int(datetime.fromisoformat("2026-01-02").replace(tzinfo=timezone.utc).timestamp() * 1000) + (len(PRICES) - 1) * 60_000,
+        end_ts=int(datetime.fromisoformat("2026-01-02").replace(tzinfo=timezone.utc).timestamp() * 1000) + 1439 * 60_000,
         out_dir=(root / "frozen").resolve(),
     )
     manifest = {

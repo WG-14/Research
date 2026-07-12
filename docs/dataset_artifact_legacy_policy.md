@@ -19,7 +19,11 @@ Inventory performed against repository commit `d5fd34c4e860c736ae8e9ea27c669d716
 
 Policy:
 
-- Artifact manifest schema `1` is the only accepted artifact contract.
+- Artifact manifest schema `2` is the only accepted artifact contract.  It
+  records both raw first/last candle timestamps and inclusive interval-bucket
+  coverage boundaries (`coverage_start_ts`, `coverage_end_ts`).  A request is
+  valid only when its exact timestamp range lies inside that coverage; there
+  is no civil-day or same-UTC-day exception.
 - Experiment frozen-source declarations without `artifact_manifest_uri` and
   `artifact_manifest_hash` are a read-only legacy shape and are rejected by
   the normal loader with `legacy_frozen_manifest_requires_explicit_migration`.
@@ -38,9 +42,15 @@ Selected related policies:
   chain. This avoids a mutable parent redirecting a verified-looking child.
 - Artifact publication is **atomicity-only**: the staged database and sidecar
   are file-fsynced then atomically renamed as one directory. Parent-directory
-  fsync/power-loss durability is deliberately not claimed.
+  fsync/power-loss durability is deliberately not claimed. The tested
+  concurrency scope is same-filesystem multi-process publication; a winning
+  bundle is fully verified before it is reused. Distributed publication safety
+  is not claimed.
 - Verification caches are owned by a single run context. Each new run and each
   worker may independently verify the artifact.
 - Mutable `sqlite_candles` evidence is `DECLARED_ONLY` and therefore rejected
   for validated candidates unless a future adapter implements complete source
-  verification.
+  verification. Selected completion policy A: research-only mutable SQLite
+  runs produce reports with an explicit warning and
+  `reproduction_receipt_status=UNAVAILABLE_MUTABLE_SOURCE_POLICY_A`; they do
+  not attempt or claim an authoritative immutable-artifact receipt.

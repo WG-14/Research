@@ -45,7 +45,13 @@ class DatasetVerificationResult:
                     raise ValueError(f"dataset_verification_{label}_hashes_required")
                 if not self.content_method:
                     raise ValueError("dataset_verification_method_required")
+                if status is VerificationStatus.VERIFIED and expected != actual:
+                    raise ValueError(f"dataset_verification_{label}_verified_hash_mismatch")
+                if status is VerificationStatus.MISMATCH and expected == actual:
+                    raise ValueError(f"dataset_verification_{label}_mismatch_hash_equal")
         components = (self.content_status, self.schema_status, self.locator_status, self.scope_status)
+        if any(value is VerificationStatus.MISMATCH for value in components) and self.overall_status is not VerificationStatus.MISMATCH:
+            raise ValueError("dataset_verification_component_mismatch_requires_overall_mismatch")
         if self.overall_status is VerificationStatus.VERIFIED and any(
             value is not VerificationStatus.VERIFIED for value in components
         ):

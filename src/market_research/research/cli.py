@@ -36,12 +36,17 @@ from .batch_runner import run_research_batch
 from .datasets.registry import default_dataset_adapter_registry
 
 
-def _required_runtime_db_path(context: "ResearchAppContext", manifest: Any) -> Path | None:
-    """Resolve only capabilities selected by the data sources."""
-    registry = default_dataset_adapter_registry()
-    adapters = [registry.resolve(manifest.dataset.source)]
+def _required_runtime_db_path(context: "ResearchAppContext", manifest: Any, *, registry: Any | None = None) -> Path | None:
+    """Resolve runtime database capability from registered selected adapters.
+
+    The error names the source and evidence role so a manifest author can
+    distinguish candle, top-of-book, and implicit depth dependencies.
+    """
+    registry = registry or default_dataset_adapter_registry()
+    adapters: list[tuple[Any, str, str]] = [(registry.resolve(manifest.dataset.source), manifest.dataset.source, "candles")]
     if manifest.dataset.top_of_book is not None:
-        adapters.append(registry.resolve_top_of_book(manifest.dataset.top_of_book.source))
+        source = manifest.dataset.top_of_book.source
+        adapters.append((registry.resolve_top_of_book(source), source, "top_of_book"))
     timing = getattr(manifest, "execution_timing", None)
     execution_model = getattr(manifest, "execution_model", None)
     depth_needed = (
@@ -51,12 +56,21 @@ def _required_runtime_db_path(context: "ResearchAppContext", manifest: Any) -> P
         or any(getattr(item, "type", None) == "depth_walk" for item in getattr(execution_model, "scenarios", ()))
     )
     if depth_needed:
-        adapters.append(registry.resolve_depth(manifest.dataset.depth.source if manifest.dataset.depth else "orderbook_depth_levels"))
-    if any(bool(getattr(adapter, "requires_runtime_db", False)) for adapter in adapters):
+        source = manifest.dataset.depth.source if manifest.dataset.depth else "orderbook_depth_levels"
+        adapters.append((registry.resolve_depth(source), source, "depth"))
+    required = next(
+        ((source, role) for adapter, source, role in adapters if bool(getattr(adapter, "requires_runtime_db", False))),
+        None,
+    )
+    if required is not None:
         try:
             return context.paths.require_database_path()
         except (OSError, ValueError) as exc:
-            raise ValueError("required_runtime_database_capability_missing") from exc
+            source, role = required
+            raise ValueError(
+                "runtime_context_missing:"
+                f"source={source}:capability=runtime_db:role={role}"
+            ) from exc
     return None
 
 if TYPE_CHECKING:

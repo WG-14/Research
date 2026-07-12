@@ -14,8 +14,8 @@ from .research_classification import requires_candidate_validation
 from .hashing import content_hash_payload, sha256_prefixed
 
 
-EXPERIMENT_REGISTRY_SCHEMA_VERSION = 1
-FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION = 2
+EXPERIMENT_REGISTRY_SCHEMA_VERSION = 2
+FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION = 3
 EMPTY_EXPERIMENT_REGISTRY_HASH = sha256_prefixed([])
 VALIDATION_PERMITTED_STATUSES = {"COMPLETED"}
 EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE = "pre_completion_evidence_hash"
@@ -63,12 +63,17 @@ def research_freedom_hash(payload: dict[str, Any]) -> str:
             "hypothesis_id": payload.get("hypothesis_id"),
             "hypothesis_status": payload.get("hypothesis_status"),
             "dataset_snapshot_id": payload.get("dataset_snapshot_id"),
+            "dataset_artifact_evidence_hash": payload.get("dataset_artifact_evidence_hash"),
             "train_split_hash": payload.get("train_split_hash"),
             "validation_split_hash": payload.get("validation_split_hash"),
             "final_holdout_split_hash": payload.get("final_holdout_split_hash"),
             "final_holdout_fingerprint": payload.get("final_holdout_fingerprint"),
             "final_holdout_identity_hash": payload.get("final_holdout_identity_hash"),
             "final_holdout_content_hash": payload.get("final_holdout_content_hash"),
+            "final_holdout_query_hash": payload.get("final_holdout_query_hash"),
+            "final_holdout_data_hash": payload.get("final_holdout_data_hash"),
+            "final_holdout_fingerprint_hash": payload.get("final_holdout_fingerprint_hash"),
+            "final_holdout_quality_hash": payload.get("final_holdout_quality_hash"),
             "final_holdout_reuse_key_hash": payload.get("final_holdout_reuse_key_hash"),
             "final_holdout_reuse_key_hash_v1": payload.get("final_holdout_reuse_key_hash_v1"),
             "final_holdout_reuse_key_schema_version": payload.get("final_holdout_reuse_key_schema_version"),
@@ -76,7 +81,6 @@ def research_freedom_hash(payload: dict[str, Any]) -> str:
             "parameter_space_hash": payload.get("parameter_space_hash"),
             "computed_attempt_index": payload.get("computed_attempt_index"),
             "computed_holdout_reuse_count": payload.get("computed_holdout_reuse_count"),
-            "experiment_registry_path": payload.get("experiment_registry_path") or payload.get("path"),
             "experiment_registry_prior_hash": payload.get("experiment_registry_prior_hash")
             or payload.get("prior_registry_hash"),
             "experiment_registry_row_hash": payload.get("experiment_registry_row_hash") or payload.get("row_hash"),
@@ -134,13 +138,18 @@ def final_holdout_reuse_key_hash_v2_from_parts(
     final_holdout: dict[str, Any] | None,
     objective_metric: str | None,
     experiment_family_id: str | None = None,
+    dataset_artifact_evidence_hash: str | None = None,
+    final_holdout_query_hash: str | None = None,
+    final_holdout_data_hash: str | None = None,
+    final_holdout_fingerprint_hash: str | None = None,
+    final_holdout_quality_hash: str | None = None,
 ) -> str | None:
     metric = str(objective_metric or "").strip()
     if not metric:
         return None
     return sha256_prefixed(
         {
-            "schema": "final_holdout_reuse_key_v2",
+            "schema": "final_holdout_reuse_key_v3",
             "schema_version": FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION,
             "strategy_name": strategy_name,
             "market": market,
@@ -149,6 +158,11 @@ def final_holdout_reuse_key_hash_v2_from_parts(
             "final_holdout_end": (final_holdout or {}).get("end"),
             "objective_metric": metric,
             "experiment_family_id": experiment_family_id,
+            "dataset_artifact_evidence_hash": dataset_artifact_evidence_hash,
+            "final_holdout_query_hash": final_holdout_query_hash,
+            "final_holdout_data_hash": final_holdout_data_hash,
+            "final_holdout_fingerprint_hash": final_holdout_fingerprint_hash,
+            "final_holdout_quality_hash": final_holdout_quality_hash,
         }
     )
 
@@ -186,6 +200,8 @@ def final_holdout_hashes_from_manifest(
     manifest: Any,
     final_holdout_split_hash: str | None,
     dataset_quality_hash: str | None,
+    dataset_artifact: dict[str, Any] | None = None,
+    final_holdout_evidence: dict[str, Any] | None = None,
 ) -> dict[str, str | None]:
     dataset = getattr(manifest, "dataset", None)
     split = getattr(dataset, "split", None)
@@ -199,6 +215,8 @@ def final_holdout_hashes_from_manifest(
         interval=getattr(manifest, "interval", None),
         final_holdout=holdout_payload,
     )
+    artifact_evidence = _artifact_evidence(dataset_artifact)
+    split_evidence = _split_evidence(final_holdout_evidence)
     reuse_key_hash = final_holdout_reuse_key_hash_v2_from_parts(
         strategy_name=getattr(manifest, "strategy_name", None),
         market=getattr(manifest, "market", None),
@@ -206,6 +224,11 @@ def final_holdout_hashes_from_manifest(
         final_holdout=holdout_payload,
         objective_metric=objective_metric,
         experiment_family_id=None,
+        dataset_artifact_evidence_hash=artifact_evidence["dataset_artifact_evidence_hash"],
+        final_holdout_query_hash=split_evidence["final_holdout_query_hash"],
+        final_holdout_data_hash=split_evidence["final_holdout_data_hash"],
+        final_holdout_fingerprint_hash=split_evidence["final_holdout_fingerprint_hash"],
+        final_holdout_quality_hash=split_evidence["final_holdout_quality_hash"],
     )
     content_hash = final_holdout_content_hash_from_parts(
         dataset_snapshot_id=getattr(dataset, "snapshot_id", None),
@@ -222,6 +245,31 @@ def final_holdout_hashes_from_manifest(
         "objective_metric": objective_metric,
         "experiment_family_id": identity["experiment_family_id"],
         "final_holdout_fingerprint": identity_hash,
+        **artifact_evidence,
+        **split_evidence,
+    }
+
+
+def _artifact_evidence(value: dict[str, Any] | None) -> dict[str, str | None]:
+    artifact = value if isinstance(value, dict) else {}
+    canonical = {
+        "artifact_id": artifact.get("artifact_id"),
+        "artifact_manifest_hash": artifact.get("artifact_manifest_hash"),
+        "artifact_content_hash": artifact.get("artifact_content_hash"),
+        "artifact_schema_hash": artifact.get("artifact_schema_hash"),
+        "verification_status": artifact.get("verification_status"),
+    }
+    return {"dataset_artifact_evidence_hash": sha256_prefixed(canonical)}
+
+
+def _split_evidence(value: dict[str, Any] | None) -> dict[str, str | None]:
+    split = value if isinstance(value, dict) else {}
+    requested_range = split.get("requested_range")
+    return {
+        "final_holdout_query_hash": sha256_prefixed({"requested_range": requested_range, "snapshot_query_hash": split.get("snapshot_query_hash")}),
+        "final_holdout_data_hash": split.get("snapshot_data_hash"),
+        "final_holdout_fingerprint_hash": split.get("snapshot_fingerprint_hash"),
+        "final_holdout_quality_hash": split.get("quality_hash"),
     }
 
 
@@ -615,6 +663,11 @@ def _extend_registry_field_mismatch_reasons(
         "parameter_space_hash",
         "dataset_artifact",
         "dataset_split_evidence",
+        "dataset_artifact_evidence_hash",
+        "final_holdout_query_hash",
+        "final_holdout_data_hash",
+        "final_holdout_fingerprint_hash",
+        "final_holdout_quality_hash",
     ):
         expected = evidence.get(field)
         if expected is None:
@@ -626,7 +679,13 @@ def _extend_registry_field_mismatch_reasons(
             actual = completion.get(field)
         if expected is not None and str(row.get(field) or "") != str(expected or ""):
             if not (content_pending and field in PRE_CONTENT_COMPLETION_BOUND_FIELDS and str(actual or "") == str(expected or "")):
-                reasons.append("experiment_registry_stale")
+                reasons.append(
+                    "experiment_registry_artifact_evidence_mismatch"
+                    if field == "dataset_artifact_evidence_hash"
+                    else "experiment_registry_split_evidence_mismatch"
+                    if field.startswith("final_holdout_") and field.endswith("_hash")
+                    else "experiment_registry_stale"
+                )
                 break
         if expected is None and row.get(field) is not None and field.endswith("_identity_source"):
             reasons.append("experiment_registry_identity_source_missing")
