@@ -452,7 +452,7 @@ def dataset_provenance(snapshot: DatasetSnapshot) -> DatasetProvenance:
         interval=snapshot.interval,
         split_name=snapshot.split_name,
         date_range=snapshot.date_range.as_dict(),
-        content_hash=snapshot.content_hash(),
+        content_hash=snapshot.snapshot_fingerprint_hash(),
         source_uri=snapshot.source_uri,
         source_content_hash=snapshot.source_content_hash,
         source_content_hash_status=_source_content_hash_status(snapshot),
@@ -476,9 +476,11 @@ def forward_diagnostics_dataset_quality(
             dataset_quality_report_hash=quality_report.content_hash,
             dataset_quality_report_payload=payload,
             dataset_content_hash=str(
-                quality_report.payload.get("dataset_content_hash") or snapshot.content_hash()
+                quality_report.payload.get("snapshot_fingerprint_hash") or snapshot.snapshot_fingerprint_hash()
             ),
-            canonical_snapshot_hash=str(quality_report.payload.get("canonical_snapshot_hash") or snapshot.content_hash()),
+            canonical_snapshot_hash=str(
+                quality_report.payload.get("snapshot_fingerprint_hash") or snapshot.snapshot_fingerprint_hash()
+            ),
             source_content_hash_status=str(
                 quality_report.payload.get("source_content_hash_status")
                 or quality_report.payload.get("source_hash_status")
@@ -491,7 +493,7 @@ def forward_diagnostics_dataset_quality(
                 quality_report.payload.get("source_locator_policy") or _source_locator_policy(snapshot)
             ),
         )
-    dataset_content_hash = snapshot.content_hash()
+    dataset_content_hash = snapshot.snapshot_fingerprint_hash()
     payload = {
         "artifact_type": "forward_diagnostics_inline_dataset_quality",
         "quality_gate_status": "PASS",

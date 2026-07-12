@@ -15,6 +15,11 @@ from .datasets.registry import default_dataset_adapter_registry
 from .experiment_manifest import DateRange, ExperimentManifest, ManifestValidationError
 from .hashing import sha256_prefixed
 from .dataset_freeze import canonical_candle_rows_hash, sqlite_candles_schema_hash
+from .datasets.hashing_contract import (
+    snapshot_data_hash as calculate_snapshot_data_hash,
+    snapshot_fingerprint_hash as calculate_snapshot_fingerprint_hash,
+    snapshot_query_hash as calculate_snapshot_query_hash,
+)
 
 
 @dataclass(frozen=True)
@@ -78,6 +83,13 @@ class DatasetSnapshot:
     source_uri: str | None = None
     source_content_hash: str | None = None
     source_schema_hash: str | None = None
+    # The source_* fields above are legacy compatibility inputs.  Formal
+    # artifact evidence is deliberately separate from snapshot evidence.
+    artifact_id: str | None = None
+    artifact_content_hash: str | None = None
+    artifact_schema_hash: str | None = None
+    artifact_manifest_hash: str | None = None
+    adapter_version: str | None = None
     locator: dict[str, Any] | None = None
     options: dict[str, Any] | None = None
     adapter_provenance: dict[str, Any] | None = None
@@ -100,38 +112,77 @@ class DatasetSnapshot:
     orderbook_depth_source_schema_hash: str | None = None
     orderbook_depth_adapter_provenance: dict[str, Any] | None = None
 
-    def fingerprint_payload(self) -> dict[str, object]:
+    def _execution_evidence_payload(self) -> dict[str, object]:
         return {
-            "snapshot_id": self.snapshot_id,
-            "source": self.source,
-            "market": self.market,
-            "interval": self.interval,
-            "split_name": self.split_name,
-            "date_range": self.date_range.as_dict(),
-            "candles": [candle.as_tuple() for candle in self.candles],
             "top_of_book": [
                 quote.as_tuple() if quote is not None else None
                 for quote in self.top_of_book_quotes
             ],
             "top_of_book_event_quotes": [quote.as_tuple() for quote in self.top_of_book_event_quotes],
-            "top_of_book_config": {
-                "requested": self.top_of_book_requested,
-                "required": self.top_of_book_required,
-                "missing_policy": self.top_of_book_missing_policy,
-                "source": self.top_of_book_source,
-                "join_tolerance_ms": self.top_of_book_join_tolerance_ms,
-                "min_coverage_pct": self.top_of_book_min_coverage_pct,
-            },
             "orderbook_depth_snapshots": [_depth_snapshot_payload(snapshot) for snapshot in self.orderbook_depth_snapshots],
         }
 
+    def snapshot_data_hash(self) -> str:
+        cached = getattr(self, "_snapshot_data_hash_cache", None)
+        if cached is None:
+            cached = calculate_snapshot_data_hash(
+                candle_rows=(candle.as_tuple() for candle in self.candles),
+                execution_evidence=self._execution_evidence_payload(),
+            )
+            object.__setattr__(self, "_snapshot_data_hash_cache", cached)
+        return str(cached)
+
+    def snapshot_query_hash(self) -> str:
+        cached = getattr(self, "_snapshot_query_hash_cache", None)
+        if cached is None:
+            cached = calculate_snapshot_query_hash(
+                market=self.market,
+                interval=self.interval,
+                start_ts=self.date_range.start_ts_ms(),
+                end_ts=self.date_range.end_ts_ms(),
+                filters=self.options,
+            )
+            object.__setattr__(self, "_snapshot_query_hash_cache", cached)
+        return str(cached)
+
+    def artifact_identity(self) -> dict[str, object]:
+        return {
+            "artifact_id": self.artifact_id,
+            "artifact_content_hash": self.artifact_content_hash,
+            "artifact_schema_hash": self.artifact_schema_hash,
+            "artifact_manifest_hash": self.artifact_manifest_hash,
+        }
+
+    def snapshot_fingerprint_hash(self) -> str:
+        cached = getattr(self, "_snapshot_fingerprint_hash_cache", None)
+        if cached is None:
+            cached = calculate_snapshot_fingerprint_hash(
+                artifact_identity=self.artifact_identity(),
+                data_hash=self.snapshot_data_hash(),
+                query_hash=self.snapshot_query_hash(),
+                split_role=self.split_name,
+                adapter_version=self.adapter_version,
+            )
+            object.__setattr__(self, "_snapshot_fingerprint_hash_cache", cached)
+        return str(cached)
+
+    def fingerprint_payload(self) -> dict[str, object]:
+        return {
+            "snapshot_fingerprint_hash": self.snapshot_fingerprint_hash(),
+            "snapshot_data_hash": self.snapshot_data_hash(),
+            "snapshot_query_hash": self.snapshot_query_hash(),
+            "split_role": self.split_name,
+            "artifact_identity": self.artifact_identity(),
+            "adapter_version": self.adapter_version,
+        }
+
     def content_hash(self) -> str:
-        cached = getattr(self, "_content_hash_cache", None)
-        if cached is not None:
-            return str(cached)
-        value = sha256_prefixed(self.fingerprint_payload())
-        object.__setattr__(self, "_content_hash_cache", value)
-        return value
+        """Deprecated compatibility alias for :meth:`snapshot_fingerprint_hash`.
+
+        New code must use the explicitly named hash method so it cannot be
+        mistaken for immutable artifact content.
+        """
+        return self.snapshot_fingerprint_hash()
 
     def top_of_book_for_ts(self, ts: int) -> TopOfBookQuote | None:
         if not self.top_of_book_quotes:
@@ -313,6 +364,11 @@ def load_dataset_range(
         source_uri=snapshot.source_uri,
         source_content_hash=snapshot.source_content_hash,
         source_schema_hash=snapshot.source_schema_hash,
+        artifact_id=snapshot.artifact_id,
+        artifact_content_hash=snapshot.artifact_content_hash,
+        artifact_schema_hash=snapshot.artifact_schema_hash,
+        artifact_manifest_hash=snapshot.artifact_manifest_hash,
+        adapter_version=snapshot.adapter_version,
         locator=snapshot.locator,
         options=snapshot.options,
         adapter_provenance=snapshot.adapter_provenance,
@@ -394,6 +450,7 @@ def _load_sqlite_dataset_range(
         source_uri=manifest.dataset.source_uri,
         source_content_hash=manifest.dataset.source_content_hash,
         source_schema_hash=manifest.dataset.source_schema_hash,
+        adapter_version="1",
         locator=manifest.dataset.locator,
         options=manifest.dataset.options,
         top_of_book_requested=top_of_book_spec is not None,
@@ -536,26 +593,22 @@ def _build_source_agnostic_dataset_quality_report(
         "first_ts": actual_ts[0] if actual_ts else None,
         "last_ts": actual_ts[-1] if actual_ts else None,
         "db_schema_fingerprint": _db_schema_fingerprint(db_path) if db_path is not None and snapshot.source == "sqlite_candles" else None,
-        "dataset_content_hash": snapshot.content_hash(),
-        "canonical_snapshot_hash": snapshot.content_hash(),
-        "source_content_hash": snapshot.source_content_hash or snapshot.content_hash(),
-        "source_content_hash_status": (
-            "present" if snapshot.source_content_hash else "derived_from_materialized_snapshot"
-        ),
-        "source_schema_hash": (
-            snapshot.source_schema_hash
-            or (
-                _db_schema_fingerprint(db_path)
-                if db_path is not None and snapshot.source == "sqlite_candles"
-                else "not_applicable:source_schema_unavailable"
-            )
-        ),
-        "source_hash_status": "present" if snapshot.source_content_hash else "derived_from_materialized_snapshot",
+        "dataset_content_hash": snapshot.snapshot_fingerprint_hash(),
+        "dataset_content_hash_semantics": "combined_run_dataset_fingerprint",
+        "canonical_snapshot_hash": snapshot.snapshot_fingerprint_hash(),
+        "snapshot_data_hash": snapshot.snapshot_data_hash(),
+        "snapshot_query_hash": snapshot.snapshot_query_hash(),
+        "snapshot_fingerprint_hash": snapshot.snapshot_fingerprint_hash(),
+        "artifact_id": snapshot.artifact_id,
+        "artifact_content_hash": snapshot.artifact_content_hash,
+        "artifact_schema_hash": snapshot.artifact_schema_hash,
+        "artifact_manifest_hash": snapshot.artifact_manifest_hash,
+        "source_content_hash": snapshot.source_content_hash,
+        "source_content_hash_status": "compatibility_declared" if snapshot.source_content_hash else "unavailable",
+        "source_schema_hash": snapshot.source_schema_hash,
+        "source_hash_status": "compatibility_declared" if snapshot.source_content_hash else "unavailable",
         "source_schema_hash_status": (
-            "present"
-            if snapshot.source_schema_hash
-            or (snapshot.source == "sqlite_candles" and db_path is not None)
-            else "not_applicable"
+            "compatibility_declared" if snapshot.source_schema_hash else "unavailable"
         ),
         "source_locator_policy": (
             "runtime_db_path_excluded_from_dataset_hash"
@@ -1211,7 +1264,7 @@ def _manifest_locator_path(manifest: ExperimentManifest) -> Path:
 class FrozenSQLiteCandleAdapter:
     source = "frozen_sqlite_candles"
     adapter_name = "frozen_sqlite_candle_adapter"
-    adapter_version = "1"
+    adapter_version = "2"
     supported_capabilities = frozenset({"candles"})
     supported_top_of_book_sources = frozenset()
     supported_depth_sources = frozenset()
@@ -1227,9 +1280,15 @@ class FrozenSQLiteCandleAdapter:
     ) -> DatasetSnapshot:
         del context
         path = _manifest_locator_path(manifest)
-        schema_hash = sqlite_candles_schema_hash(path)
-        if manifest.dataset.source_schema_hash and schema_hash != manifest.dataset.source_schema_hash:
+        artifact_schema = sqlite_candles_schema_hash(path)
+        if manifest.dataset.source_schema_hash and artifact_schema != manifest.dataset.source_schema_hash:
             raise ValueError("source_schema_hash_mismatch")
+        # Verify the complete artifact before materializing a requested split.
+        # Its hash is never compared to the current range's rows.
+        artifact_rows = _load_frozen_artifact_rows(path)
+        artifact_content = canonical_candle_rows_hash(artifact_rows)
+        if manifest.dataset.source_content_hash and artifact_content != manifest.dataset.source_content_hash:
+            raise ValueError("source_content_hash_mismatch")
         rows = _load_frozen_rows(
             path,
             market=manifest.market,
@@ -1237,10 +1296,6 @@ class FrozenSQLiteCandleAdapter:
             start_ts=date_range.start_ts_ms(),
             end_ts=date_range.end_ts_ms(),
         )
-        content_hash = canonical_candle_rows_hash(rows)
-        if manifest.dataset.source_content_hash and content_hash != manifest.dataset.source_content_hash:
-            raise ValueError("source_content_hash_mismatch")
-        _reject_rows_outside_scope(path, market=manifest.market, interval=manifest.interval, start_ts=date_range.start_ts_ms(), end_ts=date_range.end_ts_ms())
         candles = tuple(
             Candle(
                 ts=int(row[0]),
@@ -1261,8 +1316,14 @@ class FrozenSQLiteCandleAdapter:
             date_range=date_range,
             candles=candles,
             source_uri=str(path),
+            # source_* remains a legacy manifest compatibility input.  The
+            # actual evidence is carried by the artifact_* fields below.
             source_content_hash=manifest.dataset.source_content_hash,
             source_schema_hash=manifest.dataset.source_schema_hash,
+            artifact_id=f"frozen_sqlite:{artifact_content}",
+            artifact_content_hash=artifact_content,
+            artifact_schema_hash=artifact_schema,
+            adapter_version=self.adapter_version,
             locator=manifest.dataset.locator,
             options=manifest.dataset.options,
         )
@@ -1322,20 +1383,18 @@ def _load_frozen_rows(path: Path, *, market: str, interval: str, start_ts: int, 
         conn.close()
 
 
-def _reject_rows_outside_scope(path: Path, *, market: str, interval: str, start_ts: int, end_ts: int) -> None:
+def _load_frozen_artifact_rows(path: Path) -> list[tuple[Any, ...]]:
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
-        row = conn.execute(
+        return conn.execute(
             """
-            SELECT COUNT(*) FROM candles
-            WHERE pair<>? OR interval<>? OR ts<? OR ts>?
+            SELECT ts, open, high, low, close, volume
+            FROM candles
+            ORDER BY pair ASC, interval ASC, ts ASC
             """,
-            (market, interval, int(start_ts), int(end_ts)),
-        ).fetchone()
+        ).fetchall()
     finally:
         conn.close()
-    if int(row[0] if row is not None else 0) > 0:
-        raise ValueError("frozen_sqlite_dataset_rows_outside_declared_scope")
 
 
 class SQLiteTopOfBookAdapter:

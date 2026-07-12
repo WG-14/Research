@@ -788,7 +788,7 @@ def _reserve_experiment_attempt(
     experiment_family_id = str(identity["experiment_family_id"])
     hypothesis_id = str(identity["hypothesis_id"])
     hypothesis_status = str(identity["hypothesis_status"])
-    split_hashes = {name: snapshot.content_hash() for name, snapshot in snapshots.items()}
+    split_hashes = {name: snapshot.snapshot_fingerprint_hash() for name, snapshot in snapshots.items()}
     final_holdout_loaded = "final_holdout" in snapshots
     dataset_quality_hash = combined_dataset_quality_hash(tuple(quality_reports.values())) if final_holdout_loaded else None
     if final_holdout_loaded:
@@ -3744,7 +3744,7 @@ def _evaluate_candidate_base_result(
             scenario_id=scenario_id,
             scenario_index=scenario_index,
             split_name=split_name,
-            dataset_content_hash=snapshots[split_name].content_hash(),
+            dataset_content_hash=snapshots[split_name].snapshot_fingerprint_hash(),
             parameter_values=params,
             progress_callback=progress_callback,
             artifact_context=artifact_context,
@@ -5561,7 +5561,7 @@ def _walk_forward_metrics(
                 scenario_id=active_scenario_id,
                 scenario_index=scenario_index,
                 split_name=f"{window_id}_train",
-                dataset_content_hash=train_snapshot.content_hash(),
+                dataset_content_hash=train_snapshot.snapshot_fingerprint_hash(),
                 parameter_values=parameter_values,
                 progress_callback=progress_callback,
                 artifact_context=artifact_context,
@@ -5578,7 +5578,7 @@ def _walk_forward_metrics(
                 scenario_id=active_scenario_id,
                 scenario_index=scenario_index,
                 split_name=f"{window_id}_test",
-                dataset_content_hash=test_snapshot.content_hash(),
+                dataset_content_hash=test_snapshot.snapshot_fingerprint_hash(),
                 parameter_values=parameter_values,
                 progress_callback=progress_callback,
                 artifact_context=artifact_context,
@@ -5692,7 +5692,7 @@ def _report_payload(
     portfolio_policy = manifest.portfolio_policy.as_dict()
     portfolio_policy_hash = manifest.portfolio_policy_hash()
     simulation_policy_hash = manifest.simulation_policy_hash()
-    split_hashes = {snapshot.split_name: snapshot.content_hash() for snapshot in snapshots}
+    split_hashes = {snapshot.split_name: snapshot.snapshot_fingerprint_hash() for snapshot in snapshots}
     final_holdout_hashes = (
         final_holdout_hashes_from_manifest(
             manifest=manifest,
@@ -5711,6 +5711,26 @@ def _report_payload(
         quality_reports=quality_reports,
     )
     dataset_adapter_provenance_hash = sha256_prefixed(dataset_adapter_provenance)
+    dataset_artifact = {
+        "artifact_ids": sorted({snapshot.artifact_id for snapshot in snapshots if snapshot.artifact_id is not None}),
+        "artifact_content_hashes": sorted(
+            {snapshot.artifact_content_hash for snapshot in snapshots if snapshot.artifact_content_hash is not None}
+        ),
+        "artifact_schema_hashes": sorted(
+            {snapshot.artifact_schema_hash for snapshot in snapshots if snapshot.artifact_schema_hash is not None}
+        ),
+        "artifact_manifest_hashes": sorted(
+            {snapshot.artifact_manifest_hash for snapshot in snapshots if snapshot.artifact_manifest_hash is not None}
+        ),
+    }
+    for plural, singular in (
+        ("artifact_ids", "artifact_id"),
+        ("artifact_content_hashes", "artifact_content_hash"),
+        ("artifact_schema_hashes", "artifact_schema_hash"),
+        ("artifact_manifest_hashes", "artifact_manifest_hash"),
+    ):
+        values = dataset_artifact[plural]
+        dataset_artifact[singular] = values[0] if len(values) == 1 else None
     top_of_book_quality_summary = _top_of_book_quality_summary(
         {str(report.payload["split_name"]): report for report in quality_reports}
     )
@@ -6173,7 +6193,9 @@ def _report_payload(
         "manifest_hash": manifest.manifest_hash(),
         "dataset_snapshot_id": manifest.dataset.snapshot_id,
         "dataset_content_hash": dataset_hash,
+        "dataset_content_hash_semantics": "combined_run_dataset_fingerprint",
         "dataset_quality_hash": dataset_quality_hash,
+        "dataset_artifact": dataset_artifact,
         "dataset_adapter_provenance": dataset_adapter_provenance,
         "dataset_adapter_provenance_hash": dataset_adapter_provenance_hash,
         "dataset_quality_gate_status": dataset_quality_status,
@@ -6188,7 +6210,14 @@ def _report_payload(
             snapshot.split_name: {
                 "date_range": snapshot.date_range.as_dict(),
                 "candle_count": len(snapshot.candles),
-                "content_hash": snapshot.content_hash(),
+                "artifact_id": snapshot.artifact_id,
+                "artifact_content_hash": snapshot.artifact_content_hash,
+                "artifact_schema_hash": snapshot.artifact_schema_hash,
+                "artifact_manifest_hash": snapshot.artifact_manifest_hash,
+                "content_hash": snapshot.snapshot_fingerprint_hash(),
+                "snapshot_data_hash": snapshot.snapshot_data_hash(),
+                "snapshot_query_hash": snapshot.snapshot_query_hash(),
+                "snapshot_fingerprint_hash": snapshot.snapshot_fingerprint_hash(),
                 "quality_hash": next(
                     report.content_hash for report in quality_reports if report.payload["split_name"] == snapshot.split_name
                 ),
@@ -7633,7 +7662,19 @@ def _dataset_adapter_provenance_payload(
         "declared_source_content_hash": manifest.dataset.source_content_hash,
         "declared_source_schema_hash": manifest.dataset.source_schema_hash,
         "canonical_snapshot_hash": combined_dataset_fingerprint(snapshots),
-        "split_hashes": {snapshot.split_name: snapshot.content_hash() for snapshot in snapshots},
+        "split_hashes": {snapshot.split_name: snapshot.snapshot_fingerprint_hash() for snapshot in snapshots},
+        "snapshot_data_hashes": {
+            snapshot.split_name: snapshot.snapshot_data_hash() for snapshot in snapshots
+        },
+        "snapshot_query_hashes": {
+            snapshot.split_name: snapshot.snapshot_query_hash() for snapshot in snapshots
+        },
+        "snapshot_fingerprint_hashes": {
+            snapshot.split_name: snapshot.snapshot_fingerprint_hash() for snapshot in snapshots
+        },
+        "artifact_content_hashes": {
+            snapshot.split_name: snapshot.artifact_content_hash for snapshot in snapshots
+        },
         "quality_report_hashes": {
             split_name: str(payload.get("content_hash"))
             for split_name, payload in sorted(split_reports.items())
@@ -7689,8 +7730,13 @@ def _validate_dataset_adapter_provenance(
         adapter_name = str(payload.get("adapter_name") or "")
         adapter_version = str(payload.get("adapter_version") or "")
         source = str(payload.get("dataset_source") or payload.get("source") or "")
-        source_content_hash = str(payload.get("source_content_hash") or "")
-        source_schema_hash = str(payload.get("source_schema_hash") or "")
+        is_frozen_artifact = source == "frozen_sqlite_candles"
+        source_content_hash = str(
+            payload.get("artifact_content_hash" if is_frozen_artifact else "source_content_hash") or ""
+        )
+        source_schema_hash = str(
+            payload.get("artifact_schema_hash" if is_frozen_artifact else "source_schema_hash") or ""
+        )
         adapter_provenance = payload.get("adapter_provenance")
         adapter_provenance_hash = str(payload.get("adapter_provenance_hash") or "")
         canonical_hash = str(payload.get("canonical_snapshot_hash") or payload.get("dataset_content_hash") or "")
@@ -7707,9 +7753,13 @@ def _validate_dataset_adapter_provenance(
         if not manifest.dataset.source_schema_hash:
             reasons.append(f"{split_name}:declared_source_schema_hash_missing")
         if not source_content_hash.startswith("sha256:"):
-            reasons.append(f"{split_name}:source_content_hash_missing")
+            reasons.append(
+                f"{split_name}:{'artifact_content_hash' if is_frozen_artifact else 'source_content_hash'}_missing"
+            )
         if not source_schema_hash.startswith("sha256:"):
-            reasons.append(f"{split_name}:source_schema_hash_missing")
+            reasons.append(
+                f"{split_name}:{'artifact_schema_hash' if is_frozen_artifact else 'source_schema_hash'}_missing"
+            )
         if not isinstance(adapter_provenance, dict) or not adapter_provenance:
             reasons.append(f"{split_name}:adapter_provenance_missing")
         if not adapter_provenance_hash.startswith("sha256:"):
@@ -7717,9 +7767,13 @@ def _validate_dataset_adapter_provenance(
         elif adapter_provenance_hash != sha256_prefixed(adapter_provenance or {}):
             reasons.append(f"{split_name}:adapter_provenance_hash_mismatch")
         if manifest.dataset.source_content_hash and manifest.dataset.source_content_hash != source_content_hash:
-            reasons.append(f"{split_name}:source_content_hash_mismatch")
+            reasons.append(
+                f"{split_name}:{'artifact_content_hash' if is_frozen_artifact else 'source_content_hash'}_mismatch"
+            )
         if manifest.dataset.source_schema_hash and manifest.dataset.source_schema_hash != source_schema_hash:
-            reasons.append(f"{split_name}:source_schema_hash_mismatch")
+            reasons.append(
+                f"{split_name}:{'artifact_schema_hash' if is_frozen_artifact else 'source_schema_hash'}_mismatch"
+            )
         reasons.extend(f"{split_name}:{reason}" for reason in _validation_evidence_locator_reasons(manifest, "dataset"))
         reasons.extend(_top_of_book_provenance_reasons(manifest=manifest, split_name=split_name, payload=payload))
         reasons.extend(_depth_provenance_reasons(manifest=manifest, split_name=split_name, payload=payload))

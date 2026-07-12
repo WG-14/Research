@@ -483,7 +483,7 @@ def build_run_environment(
 
 def precompute_dataset_hashes(snapshots: dict[str, DatasetSnapshot]) -> dict[str, str]:
     return {
-        split_name: snapshot.content_hash()
+        split_name: snapshot.snapshot_fingerprint_hash()
         for split_name, snapshot in sorted(snapshots.items())
     }
 

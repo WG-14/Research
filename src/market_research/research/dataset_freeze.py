@@ -5,8 +5,12 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .hashing import sha256_prefixed
 from ..storage_io import write_json_atomic
+from .datasets.hashing_contract import (
+    artifact_content_hash,
+    artifact_manifest_hash,
+    artifact_schema_hash,
+)
 
 
 class DatasetFreezeError(ValueError):
@@ -27,26 +31,15 @@ def _reject_repo_path(path: Path, *, label: str) -> None:
 
 
 def canonical_candle_rows_hash(rows: list[tuple[Any, ...]]) -> str:
-    return sha256_prefixed(
-        [
-            {
-                "ts": int(row[0]),
-                "open": float(row[1]),
-                "high": float(row[2]),
-                "low": float(row[3]),
-                "close": float(row[4]),
-                "volume": float(row[5] or 0.0),
-            }
-            for row in rows
-        ]
-    )
+    """Compatibility spelling for the artifact-content hash contract."""
+    return artifact_content_hash(rows)
 
 
 def sqlite_candles_schema_hash(db_path: str | Path) -> str:
     conn = sqlite3.connect(f"file:{Path(db_path).expanduser().resolve()}?mode=ro", uri=True)
     try:
         table_info = [tuple(row) for row in conn.execute("PRAGMA table_info(candles)").fetchall()]
-        return sha256_prefixed({"table": "candles", "table_info": table_info})
+        return artifact_schema_hash({"table": "candles", "table_info": table_info})
     finally:
         conn.close()
 
@@ -81,9 +74,9 @@ def freeze_sqlite_candles_dataset(
         ).fetchall()
     finally:
         conn.close()
-    source_content_hash = canonical_candle_rows_hash(rows)
+    artifact_content = artifact_content_hash(rows)
     source_schema_hash = sqlite_candles_schema_hash(source)
-    digest = source_content_hash.split(":", 1)[1]
+    digest = artifact_content.split(":", 1)[1]
     artifact_dir = out_root / "candles" / market / interval
     artifact_path = artifact_dir / f"{digest}.sqlite"
     manifest_path = artifact_dir / f"{digest}.manifest.json"
@@ -114,12 +107,14 @@ def freeze_sqlite_candles_dataset(
     finally:
         out_conn.close()
     artifact_schema_hash = sqlite_candles_schema_hash(artifact_path)
-    if canonical_candle_rows_hash(_read_candle_rows(artifact_path, market=market, interval=interval, start_ts=start_ts, end_ts=end_ts)) != source_content_hash:
+    if artifact_content_hash(_read_candle_rows(artifact_path, market=market, interval=interval, start_ts=start_ts, end_ts=end_ts)) != artifact_content:
         raise DatasetFreezeError("research_freeze_dataset_hash_verification_failed")
     manifest_fragment = {
         "source": "frozen_sqlite_candles",
         "source_uri": str(artifact_path),
-        "source_content_hash": source_content_hash,
+        # Compatibility input only.  PR-2 replaces this fragment with the
+        # first-class artifact-manifest reference.
+        "source_content_hash": artifact_content,
         "source_schema_hash": artifact_schema_hash,
         "locator": {"type": "immutable_sqlite", "path": str(artifact_path)},
     }
@@ -127,12 +122,14 @@ def freeze_sqlite_candles_dataset(
         "artifact_type": "immutable_candle_dataset_freeze",
         "format": "sqlite",
         "source_uri": str(source),
-        "source_content_hash": source_content_hash,
+        "artifact_content_hash": artifact_content,
+        "artifact_schema_hash": artifact_schema_hash,
+        "source_content_hash": artifact_content,
         "source_schema_hash": artifact_schema_hash,
         "source_input_schema_hash": source_schema_hash,
         "locator": manifest_fragment["locator"],
         "manifest_fragment": manifest_fragment,
-        "canonical_row_hash": source_content_hash,
+        "canonical_row_hash": artifact_content,
         "row_count": len(rows),
         "market": market,
         "interval": interval,
@@ -141,6 +138,7 @@ def freeze_sqlite_candles_dataset(
         "artifact_path": str(artifact_path),
         "manifest_path": str(manifest_path),
     }
+    payload["artifact_manifest_hash"] = artifact_manifest_hash(payload)
     write_json_atomic(manifest_path, payload)
     return payload
 
