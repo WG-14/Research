@@ -16,8 +16,10 @@ class DatasetAdapterRegistry:
         source = str(adapter.source or "").strip()
         if not source:
             raise ValueError("dataset adapter source must be non-empty")
-        required = ("load_range", "quality_report", "provenance", "verify_snapshot", "requires_runtime_db", "requires_artifact_manifest")
-        missing = [name for name in required if not hasattr(adapter, name)]
+        required_methods = ("load_range", "quality_report", "provenance", "verify_snapshot")
+        required_attributes = ("requires_runtime_db", "requires_artifact_manifest")
+        missing = [name for name in required_methods if not callable(getattr(adapter, name, None))]
+        missing.extend(name for name in required_attributes if not hasattr(adapter, name))
         if missing:
             raise ValueError(f"dataset_adapter_missing_capability:{source}:{','.join(missing)}")
         self._adapters[source] = adapter

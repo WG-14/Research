@@ -411,6 +411,8 @@ def load_dataset_range(
         orderbook_depth_source_schema_hash=depth_spec.source_schema_hash if depth_spec is not None else None,
         orderbook_depth_adapter_provenance=depth_provenance,
     )
+    if snapshot.verification is None or snapshot.verification.overall_status is VerificationStatus.MISMATCH:
+        raise ValueError("dataset_verification_mismatch_before_strategy_execution")
     return snapshot
 
 
