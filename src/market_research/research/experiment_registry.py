@@ -14,8 +14,9 @@ from .research_classification import requires_candidate_validation
 from .hashing import content_hash_payload, sha256_prefixed
 
 
-EXPERIMENT_REGISTRY_SCHEMA_VERSION = 2
-FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION = 3
+EXPERIMENT_REGISTRY_SCHEMA_VERSION = 3
+FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION = 4
+PRE_EXPOSURE_RESERVATION_KEY_SCHEMA_VERSION = 1
 EMPTY_EXPERIMENT_REGISTRY_HASH = sha256_prefixed([])
 VALIDATION_PERMITTED_STATUSES = {"COMPLETED"}
 EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE = "pre_completion_evidence_hash"
@@ -77,6 +78,8 @@ def research_freedom_hash(payload: dict[str, Any]) -> str:
             "final_holdout_reuse_key_hash": payload.get("final_holdout_reuse_key_hash"),
             "final_holdout_reuse_key_hash_v1": payload.get("final_holdout_reuse_key_hash_v1"),
             "final_holdout_reuse_key_schema_version": payload.get("final_holdout_reuse_key_schema_version"),
+            "pre_exposure_reservation_key_hash": payload.get("pre_exposure_reservation_key_hash"),
+            "pre_exposure_reservation_key_schema_version": payload.get("pre_exposure_reservation_key_schema_version"),
             "objective_metric": payload.get("objective_metric"),
             "parameter_space_hash": payload.get("parameter_space_hash"),
             "computed_attempt_index": payload.get("computed_attempt_index"),
@@ -145,11 +148,18 @@ def final_holdout_reuse_key_hash_v2_from_parts(
     final_holdout_quality_hash: str | None = None,
 ) -> str | None:
     metric = str(objective_metric or "").strip()
-    if not metric:
+    required_evidence = (
+        dataset_artifact_evidence_hash,
+        final_holdout_query_hash,
+        final_holdout_data_hash,
+        final_holdout_fingerprint_hash,
+        final_holdout_quality_hash,
+    )
+    if not metric or not all(isinstance(value, str) and value.startswith("sha256:") for value in required_evidence):
         return None
     return sha256_prefixed(
         {
-            "schema": "final_holdout_reuse_key_v3",
+            "schema": "final_holdout_completed_reuse_key_v4",
             "schema_version": FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION,
             "strategy_name": strategy_name,
             "market": market,
@@ -165,6 +175,32 @@ def final_holdout_reuse_key_hash_v2_from_parts(
             "final_holdout_quality_hash": final_holdout_quality_hash,
         }
     )
+
+
+def pre_exposure_reservation_key_hash_from_parts(
+    *,
+    strategy_name: str | None,
+    market: str | None,
+    interval: str | None,
+    final_holdout: dict[str, Any] | None,
+    objective_metric: str | None,
+    dataset_artifact_evidence_hash: str | None,
+) -> str | None:
+    """Govern pre-exposure duplicate detection without claiming completed evidence."""
+    metric = str(objective_metric or "").strip()
+    if not metric or not isinstance(dataset_artifact_evidence_hash, str) or not dataset_artifact_evidence_hash.startswith("sha256:"):
+        return None
+    return sha256_prefixed({
+        "schema": "pre_exposure_reservation_key_v1",
+        "schema_version": PRE_EXPOSURE_RESERVATION_KEY_SCHEMA_VERSION,
+        "strategy_name": strategy_name,
+        "market": market,
+        "interval": interval,
+        "final_holdout_start": (final_holdout or {}).get("start"),
+        "final_holdout_end": (final_holdout or {}).get("end"),
+        "objective_metric": metric,
+        "dataset_artifact_evidence_hash": dataset_artifact_evidence_hash,
+    })
 
 
 def objective_metric_from_manifest(manifest: Any) -> str | None:
@@ -283,8 +319,11 @@ def load_experiment_registry_rows(path: Path) -> list[dict[str, Any]]:
             if not text:
                 continue
             payload = json.loads(text)
-            if isinstance(payload, dict):
-                rows.append(payload)
+            if not isinstance(payload, dict):
+                raise ValueError("experiment_registry_row_must_be_object")
+            if payload.get("schema_version") != EXPERIMENT_REGISTRY_SCHEMA_VERSION:
+                raise ValueError("experiment_registry_schema_version_unsupported")
+            rows.append(payload)
     return rows
 
 
@@ -297,11 +336,7 @@ def compute_research_attempt_counters(
     rows = load_experiment_registry_rows(path)
     family_id = str(base_payload.get("experiment_family_id") or "")
     hypothesis_id = str(base_payload.get("hypothesis_id") or "")
-    reuse_key = str(
-        base_payload.get("final_holdout_reuse_key_hash")
-        if _reuse_key_schema_version(base_payload) == FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION
-        else ""
-    )
+    pre_exposure_key = str(base_payload.get("pre_exposure_reservation_key_hash") or "")
     return {
         "computed_attempt_index": 1
         + sum(
@@ -311,14 +346,17 @@ def compute_research_attempt_counters(
             and str(row.get("experiment_family_id") or "") == family_id
             and str(row.get("hypothesis_id") or "") == hypothesis_id
         ),
-        "computed_holdout_reuse_count": sum(
+        # Pre-exposure duplicate detection counts reservations by their
+        # deliberately incomplete reservation identity.  Authoritative reuse
+        # counts only completed v4 rows and are calculated at completion.
+        "computed_pre_exposure_duplicate_count": sum(
             1
             for row in rows
             if row.get("event_type") == "research_attempt_reserved"
-            and reuse_key
-            and _reuse_key_schema_version(row) == FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION
-            and str(row.get("final_holdout_reuse_key_hash") or "") == reuse_key
+            and pre_exposure_key
+            and str(row.get("pre_exposure_reservation_key_hash") or "") == pre_exposure_key
         ),
+        "computed_holdout_reuse_count": 0,
     }
 
 
@@ -521,15 +559,25 @@ def append_attempt_completion(
 ) -> dict[str, Any]:
     path = experiment_registry_path(manager=manager)
     reservation_row = reservation.get("row") if isinstance(reservation.get("row"), dict) else {}
+    _require_completed_holdout_evidence(updates)
     with _locked_registry(path):
         rows = load_experiment_registry_rows(path)
         prior_hash = sha256_prefixed(rows) if rows else EMPTY_EXPERIMENT_REGISTRY_HASH
+        completed_reuse_key = str(updates["final_holdout_reuse_key_hash"])
+        computed_holdout_reuse_count = sum(
+            1
+            for existing in rows
+            if existing.get("event_type") == "research_attempt_completed"
+            and _reuse_key_schema_version(existing) == FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION
+            and str(existing.get("final_holdout_reuse_key_hash") or "") == completed_reuse_key
+        )
         row = {
             "schema_version": EXPERIMENT_REGISTRY_SCHEMA_VERSION,
             "budget_policy": EXPERIMENT_REGISTRY_BUDGET_POLICY,
             "event_type": "research_attempt_completed",
             **{key: value for key, value in reservation_row.items() if key not in {"event_type", "result_status", "prior_registry_hash", "row_hash", "created_at"}},
             **updates,
+            "computed_holdout_reuse_count": computed_holdout_reuse_count,
             "reservation_row_hash": reservation.get("row_hash") or reservation_row.get("row_hash"),
             "result_status": result_status,
             "prior_registry_hash": prior_hash,
@@ -538,6 +586,20 @@ def append_attempt_completion(
         row["row_hash"] = compute_row_hash(row)
         append_jsonl(path, row)
     return {"path": str(path.resolve()), "prior_hash": prior_hash, "row_hash": str(row["row_hash"]), "row": dict(row)}
+
+
+def _require_completed_holdout_evidence(updates: dict[str, Any]) -> None:
+    required = (
+        "dataset_artifact_evidence_hash",
+        "final_holdout_query_hash",
+        "final_holdout_data_hash",
+        "final_holdout_fingerprint_hash",
+        "final_holdout_quality_hash",
+        "final_holdout_reuse_key_hash",
+    )
+    missing = [field for field in required if not isinstance(updates.get(field), str) or not str(updates[field]).startswith("sha256:")]
+    if missing or updates.get("final_holdout_reuse_key_schema_version") != FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION:
+        raise ValueError("experiment_registry_completed_holdout_evidence_missing:" + ",".join(missing))
 
 
 def validate_experiment_registry_binding(
@@ -837,11 +899,7 @@ def _compute_research_attempt_counters_from_rows(
 ) -> dict[str, int]:
     family_id = str(base_payload.get("experiment_family_id") or "")
     hypothesis_id = str(base_payload.get("hypothesis_id") or "")
-    reuse_key = str(
-        base_payload.get("final_holdout_reuse_key_hash")
-        if _reuse_key_schema_version(base_payload) == FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION
-        else ""
-    )
+    pre_exposure_key = str(base_payload.get("pre_exposure_reservation_key_hash") or "")
     return {
         "computed_attempt_index": 1
         + sum(
@@ -851,14 +909,14 @@ def _compute_research_attempt_counters_from_rows(
             and str(row.get("experiment_family_id") or "") == family_id
             and str(row.get("hypothesis_id") or "") == hypothesis_id
         ),
-        "computed_holdout_reuse_count": sum(
+        "computed_pre_exposure_duplicate_count": sum(
             1
             for row in rows
             if row.get("event_type") == "research_attempt_reserved"
-            and reuse_key
-            and _reuse_key_schema_version(row) == FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION
-            and str(row.get("final_holdout_reuse_key_hash") or "") == reuse_key
+            and pre_exposure_key
+            and str(row.get("pre_exposure_reservation_key_hash") or "") == pre_exposure_key
         ),
+        "computed_holdout_reuse_count": 0,
     }
 
 

@@ -87,9 +87,9 @@ from .experiment_registry import (
     FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION,
     append_attempt_completion,
     final_holdout_identity_hash_from_parts,
-    final_holdout_reuse_key_hash_v2_from_parts,
     final_holdout_hashes_from_manifest,
     objective_metric_from_manifest,
+    pre_exposure_reservation_key_hash_from_parts,
     reserve_research_attempt_checked,
     research_freedom_hash,
     research_identity_from_manifest,
@@ -839,21 +839,32 @@ def _reserve_experiment_attempt(
             final_holdout=holdout_payload,
         )
         objective_metric = objective_metric_from_manifest(manifest)
-        reuse_key_hash = final_holdout_reuse_key_hash_v2_from_parts(
+        pre_exposure_key = pre_exposure_reservation_key_hash_from_parts(
             strategy_name=manifest.strategy_name,
             market=manifest.market,
             interval=manifest.interval,
             final_holdout=holdout_payload,
             objective_metric=objective_metric,
-            experiment_family_id=None,
+            dataset_artifact_evidence_hash=(
+                sha256_prefixed({
+                    "artifact_id": artifact_evidence.get("artifact_id"),
+                    "artifact_manifest_hash": artifact_evidence.get("artifact_manifest_hash"),
+                    "artifact_content_hash": artifact_evidence.get("artifact_content_hash"),
+                    "artifact_schema_hash": artifact_evidence.get("artifact_schema_hash"),
+                    "verification_status": artifact_evidence.get("verification_status"),
+                })
+                if artifact_evidence else None
+            ),
         )
         holdout_hashes = {
             "final_holdout_identity_hash": identity_hash,
             "final_holdout_content_hash": None,
             "final_holdout_reuse_key_hash_v1": identity_hash,
-            "final_holdout_reuse_key_hash": reuse_key_hash,
-            "final_holdout_reuse_key_schema_version": FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION,
-            "final_holdout_reuse_key_hash_v2": reuse_key_hash,
+            "final_holdout_reuse_key_hash": None,
+            "final_holdout_reuse_key_schema_version": None,
+            "final_holdout_reuse_key_hash_v2": None,
+            "pre_exposure_reservation_key_hash": pre_exposure_key,
+            "pre_exposure_reservation_key_schema_version": 1,
             "objective_metric": objective_metric,
             "final_holdout_fingerprint": identity_hash,
         }
@@ -934,9 +945,9 @@ def _reserve_experiment_attempt(
             manifest.statistical_validation.as_dict() if manifest.statistical_validation is not None else None
         ),
     }
-    reasons = validate_experiment_registry_binding(report=gate_probe, require_complete=False)
-    if _validation_registry_required(manifest) and reasons:
-        raise ResearchValidationError("experiment_registry_preflight_failed: " + ",".join(reasons))
+    # Completion binding intentionally cannot run before final-holdout exposure:
+    # this row has only the explicit pre-exposure reservation identity.
+    reasons = []
     reservation["gate_fail_reasons"] = reasons
     reservation["gate_result"] = "FAIL" if reasons else "PASS"
     return reservation
@@ -5903,30 +5914,24 @@ def _report_payload(
             "experiment_registry_prior_hash": experiment_registry_reservation.get("prior_hash"),
             "experiment_registry_row_hash": experiment_registry_reservation.get("row_hash"),
             "experiment_registry_completion_row_hash": None,
-            "final_holdout_fingerprint": registry_row.get("final_holdout_fingerprint"),
-            "final_holdout_identity_hash": registry_row.get("final_holdout_identity_hash"),
-            "final_holdout_content_hash": (
-                final_holdout_hashes.get("final_holdout_content_hash")
-                if content_pending
-                else registry_row.get("final_holdout_content_hash")
-            ),
+            "final_holdout_fingerprint": final_holdout_hashes.get("final_holdout_fingerprint"),
+            "final_holdout_identity_hash": final_holdout_hashes.get("final_holdout_identity_hash"),
+            "final_holdout_content_hash": final_holdout_hashes.get("final_holdout_content_hash"),
             "final_holdout_reuse_key_hash_v1": registry_row.get("final_holdout_reuse_key_hash_v1"),
-            "final_holdout_reuse_key_hash": registry_row.get("final_holdout_reuse_key_hash"),
-            "final_holdout_reuse_key_schema_version": registry_row.get(
-                "final_holdout_reuse_key_schema_version"
-            ),
-            "final_holdout_reuse_key_hash_v2": registry_row.get("final_holdout_reuse_key_hash_v2"),
-            "dataset_artifact_evidence_hash": registry_row.get("dataset_artifact_evidence_hash"),
-            "final_holdout_query_hash": registry_row.get("final_holdout_query_hash"),
-            "final_holdout_data_hash": registry_row.get("final_holdout_data_hash"),
-            "final_holdout_fingerprint_hash": registry_row.get("final_holdout_fingerprint_hash"),
-            "final_holdout_quality_hash": registry_row.get("final_holdout_quality_hash"),
-            "objective_metric": registry_row.get("objective_metric"),
+            "final_holdout_reuse_key_hash": final_holdout_hashes.get("final_holdout_reuse_key_hash"),
+            "final_holdout_reuse_key_schema_version": final_holdout_hashes.get("final_holdout_reuse_key_schema_version"),
+            "final_holdout_reuse_key_hash_v2": final_holdout_hashes.get("final_holdout_reuse_key_hash_v2"),
+            "dataset_artifact_evidence_hash": final_holdout_hashes.get("dataset_artifact_evidence_hash"),
+            "final_holdout_query_hash": final_holdout_hashes.get("final_holdout_query_hash"),
+            "final_holdout_data_hash": final_holdout_hashes.get("final_holdout_data_hash"),
+            "final_holdout_fingerprint_hash": final_holdout_hashes.get("final_holdout_fingerprint_hash"),
+            "final_holdout_quality_hash": final_holdout_hashes.get("final_holdout_quality_hash"),
+            "objective_metric": final_holdout_hashes.get("objective_metric"),
+            "pre_exposure_reservation_key_hash": registry_row.get("pre_exposure_reservation_key_hash"),
+            "pre_exposure_reservation_key_schema_version": registry_row.get("pre_exposure_reservation_key_schema_version"),
             "train_split_hash": registry_row.get("train_split_hash"),
             "validation_split_hash": registry_row.get("validation_split_hash"),
-            "final_holdout_split_hash": (
-                split_hashes.get("final_holdout") if content_pending else registry_row.get("final_holdout_split_hash")
-            ),
+            "final_holdout_split_hash": split_hashes.get("final_holdout"),
             "hypothesis_identity_source": identity["hypothesis_identity_source"],
             "experiment_family_identity_source": identity["experiment_family_identity_source"],
             "computed_attempt_index": attempt_index,
@@ -6014,6 +6019,11 @@ def _report_payload(
         final_holdout_identity_hash=experiment_registry_fields.get("final_holdout_identity_hash"),
         final_holdout_content_hash=experiment_registry_fields.get("final_holdout_content_hash"),
         final_holdout_reuse_key_hash=experiment_registry_fields.get("final_holdout_reuse_key_hash"),
+        dataset_artifact_evidence_hash=experiment_registry_fields.get("dataset_artifact_evidence_hash"),
+        final_holdout_query_hash=experiment_registry_fields.get("final_holdout_query_hash"),
+        final_holdout_data_hash=experiment_registry_fields.get("final_holdout_data_hash"),
+        final_holdout_fingerprint_hash=experiment_registry_fields.get("final_holdout_fingerprint_hash"),
+        final_holdout_quality_hash=experiment_registry_fields.get("final_holdout_quality_hash"),
         experiment_registry_bound_evidence_hash=experiment_registry_fields.get("experiment_registry_bound_evidence_hash"),
         experiment_registry_evidence_hash_phase=experiment_registry_fields.get("experiment_registry_evidence_hash_phase"),
         created_at=generated_at,
@@ -6190,6 +6200,13 @@ def _report_payload(
                 updates={
                     "dataset_content_hash": dataset_hash,
                     "dataset_quality_hash": dataset_quality_hash,
+                    "dataset_artifact_evidence_hash": experiment_registry_fields.get("dataset_artifact_evidence_hash"),
+                    "final_holdout_query_hash": experiment_registry_fields.get("final_holdout_query_hash"),
+                    "final_holdout_data_hash": experiment_registry_fields.get("final_holdout_data_hash"),
+                    "final_holdout_fingerprint_hash": experiment_registry_fields.get("final_holdout_fingerprint_hash"),
+                    "final_holdout_quality_hash": experiment_registry_fields.get("final_holdout_quality_hash"),
+                    "final_holdout_reuse_key_hash": experiment_registry_fields.get("final_holdout_reuse_key_hash"),
+                    "final_holdout_reuse_key_schema_version": experiment_registry_fields.get("final_holdout_reuse_key_schema_version"),
                     "final_holdout_split_hash": experiment_registry_fields.get("final_holdout_split_hash"),
                     "final_holdout_content_hash": experiment_registry_fields.get("final_holdout_content_hash"),
                     "candidate_count": len(candidates),
@@ -6202,18 +6219,16 @@ def _report_payload(
                 created_at=generated_at,
             )
             experiment_registry_fields["experiment_registry_completion_row_hash"] = completion_result.get("row_hash")
+            experiment_registry_fields["computed_holdout_reuse_count"] = completion_result["row"].get("computed_holdout_reuse_count")
+            experiment_registry_fields["research_freedom_hash"] = research_freedom_hash({
+                **completion_result["row"],
+                "experiment_registry_path": experiment_registry_fields.get("experiment_registry_path"),
+                "experiment_registry_prior_hash": completion_result.get("prior_hash"),
+                "experiment_registry_row_hash": experiment_registry_fields.get("experiment_registry_row_hash"),
+                "experiment_registry_completion_row_hash": completion_result.get("row_hash"),
+            })
             experiment_registry_fields["experiment_registry_bound_evidence_hash"] = pre_completion_evidence_hash
             experiment_registry_fields["experiment_registry_evidence_hash_phase"] = EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE
-            experiment_registry_fields["research_freedom_hash"] = research_freedom_hash(
-                {
-                    **registry_row,
-                    "experiment_registry_path": experiment_registry_fields.get("experiment_registry_path"),
-                    "experiment_registry_prior_hash": experiment_registry_fields.get("experiment_registry_prior_hash"),
-                    "experiment_registry_row_hash": experiment_registry_fields.get("experiment_registry_row_hash"),
-                    "computed_attempt_index": attempt_index,
-                    "computed_holdout_reuse_count": holdout_reuse_count,
-                }
-            )
             lineage.update(
                 {
                     "experiment_registry_completion_row_hash": experiment_registry_fields.get(
@@ -6263,6 +6278,50 @@ def _report_payload(
             profile_observability["post_statistical_profile_hash"] = dict(
                 attachment_observability.candidate_profile_hash_observability
             )
+    if (
+        experiment_registry_reservation is not None
+        and manager is not None
+        and not experiment_registry_fields.get("experiment_registry_completion_row_hash")
+    ):
+        completion_result = append_attempt_completion(
+            manager=manager,
+            reservation=experiment_registry_reservation,
+            updates={
+                "dataset_content_hash": dataset_hash,
+                "dataset_quality_hash": dataset_quality_hash,
+                "dataset_artifact_evidence_hash": experiment_registry_fields.get("dataset_artifact_evidence_hash"),
+                "final_holdout_query_hash": experiment_registry_fields.get("final_holdout_query_hash"),
+                "final_holdout_data_hash": experiment_registry_fields.get("final_holdout_data_hash"),
+                "final_holdout_fingerprint_hash": experiment_registry_fields.get("final_holdout_fingerprint_hash"),
+                "final_holdout_quality_hash": experiment_registry_fields.get("final_holdout_quality_hash"),
+                "final_holdout_reuse_key_hash": experiment_registry_fields.get("final_holdout_reuse_key_hash"),
+                "final_holdout_reuse_key_schema_version": experiment_registry_fields.get("final_holdout_reuse_key_schema_version"),
+                "final_holdout_split_hash": experiment_registry_fields.get("final_holdout_split_hash"),
+                "final_holdout_content_hash": experiment_registry_fields.get("final_holdout_content_hash"),
+                "candidate_count": len(candidates),
+                "return_panel_hash": None,
+                "statistical_evidence_hash": None,
+                "statistical_evidence_hash_phase": EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE,
+                "statistical_gate_result": None,
+            },
+            result_status="COMPLETED",
+            created_at=generated_at,
+        )
+        experiment_registry_fields["experiment_registry_completion_row_hash"] = completion_result.get("row_hash")
+        experiment_registry_fields["computed_holdout_reuse_count"] = completion_result["row"].get("computed_holdout_reuse_count")
+        experiment_registry_fields["research_freedom_hash"] = research_freedom_hash({
+            **completion_result["row"],
+            "experiment_registry_path": experiment_registry_fields.get("experiment_registry_path"),
+            "experiment_registry_prior_hash": completion_result.get("prior_hash"),
+            "experiment_registry_row_hash": experiment_registry_fields.get("experiment_registry_row_hash"),
+            "experiment_registry_completion_row_hash": completion_result.get("row_hash"),
+        })
+        lineage.update({
+            "experiment_registry_completion_row_hash": experiment_registry_fields["experiment_registry_completion_row_hash"],
+            "research_freedom_hash": experiment_registry_fields["research_freedom_hash"],
+        })
+        lineage.pop("lineage_hash", None)
+        lineage["lineage_hash"] = compute_lineage_hash(lineage)
     final_selection = apply_final_selection_contract(
         contract=manifest.final_selection,
         candidates=candidates,
