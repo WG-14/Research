@@ -23,7 +23,7 @@ def materialize_sma_exit_policy(strategy_name: str, parameter_values: dict[str, 
         for item in str(parameter_values.get("STRATEGY_EXIT_RULES") or "stop_loss,opposite_cross,max_holding_time").split(",")
         if item.strip()
     )
-    allowed = {"stop_loss", "opposite_cross", "max_holding_time"}
+    allowed = {"stop_loss", "take_profit", "edge_invalidation", "opposite_cross", "crossover", "max_holding_time", "time_exit"}
     unknown = sorted(set(names) - allowed)
     if unknown:
         raise ValueError(f"unknown exit rule={unknown[0]!r}")
@@ -32,6 +32,8 @@ def materialize_sma_exit_policy(strategy_name: str, parameter_values: dict[str, 
         "strategy_name": strategy_name,
         "rules": list(names),
         "stop_loss": {"stop_loss_ratio": float(parameter_values.get("STRATEGY_EXIT_STOP_LOSS_RATIO") or 0.0)},
+        "take_profit": {"take_profit_ratio": float(parameter_values.get("STRATEGY_EXIT_TAKE_PROFIT_RATIO") or parameter_values.get("STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO") or 0.0)},
+        "edge_invalidation": {"min_edge_ratio": float(parameter_values.get("STRATEGY_EXIT_MIN_EDGE_RATIO") or 0.0)},
         "max_holding_time": {"max_holding_min": int(parameter_values.get("STRATEGY_EXIT_MAX_HOLDING_MIN") or 0)},
         "opposite_cross": {
             "min_take_profit_ratio": float(parameter_values.get("STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO") or 0.0),
@@ -58,6 +60,7 @@ def evaluate_sma_exit_policy(
     candle_ts: int,
     market_price: float,
     exit_signal: str,
+    feature_state: dict[str, object] | None = None,
 ) -> ResearchExitDecision:
     if not position.in_position:
         return ResearchExitDecision(False, None, "no open position for exit policy", ())
@@ -70,7 +73,18 @@ def evaluate_sma_exit_policy(
             triggered = threshold > 0.0 and pnl_ratio <= -threshold
             reason = "exit by stop loss" if triggered else "stop loss not triggered"
             context = {"threshold_ratio": threshold, "unrealized_pnl_ratio": pnl_ratio}
-        elif rule == "opposite_cross":
+        elif rule == "take_profit":
+            threshold = float(dict(policy.get("take_profit") or {}).get("take_profit_ratio") or 0.0)
+            triggered = threshold > 0.0 and pnl_ratio >= threshold
+            reason = "exit by take profit" if triggered else "take profit not triggered"
+            context = {"threshold_ratio": threshold, "unrealized_pnl_ratio": pnl_ratio}
+        elif rule == "edge_invalidation":
+            threshold = float(dict(policy.get("edge_invalidation") or {}).get("min_edge_ratio") or 0.0)
+            gap = float((feature_state or {}).get("gap_ratio") or 0.0)
+            triggered = threshold > 0.0 and gap < threshold
+            reason = "exit by edge invalidation" if triggered else "edge remains valid"
+            context = {"minimum_edge_ratio": threshold, "current_edge_ratio": gap}
+        elif rule in {"opposite_cross", "crossover"}:
             values = dict(policy.get("opposite_cross") or {})
             configured_floor = max(0.0, float(values.get("min_take_profit_ratio") or 0.0))
             roundtrip_fee = 2.0 * max(0.0, float(values.get("live_fee_rate_estimate") or 0.0))
@@ -81,7 +95,7 @@ def evaluate_sma_exit_policy(
             triggered = opposite and not noise_band
             reason = "exit by opposite cross" if triggered else ("opposite cross deferred: pnl in noise band" if opposite and noise_band else "opposite cross not triggered")
             context = {"unrealized_pnl_ratio": pnl_ratio, "min_profit_floor": floor, "roundtrip_fee_ratio": roundtrip_fee, "small_loss_tolerance_ratio": small_loss, "opposite_cross_triggered": opposite, "filter_applied": opposite and noise_band}
-        elif rule == "max_holding_time":
+        elif rule in {"max_holding_time", "time_exit"}:
             threshold = float(dict(policy.get("max_holding_time") or {}).get("max_holding_min") or 0.0) * 60.0
             holding = position.holding_duration(candle_ts)
             triggered = threshold > 0.0 and holding >= threshold

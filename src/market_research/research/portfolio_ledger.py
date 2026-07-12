@@ -19,6 +19,16 @@ class LedgerEntry:
     slippage: float
     realized_pnl: float | None
     effective_ts: int
+    cash_before: float
+    cash_after: float
+    asset_qty_before: float
+    asset_qty_after: float
+    cost_basis_before: float
+    cost_basis_after: float
+    realized_pnl_before: float
+    realized_pnl_after: float
+    fee_total_after: float
+    slippage_total_after: float
 
     def as_dict(self) -> dict[str, object]:
         return self.__dict__.copy()
@@ -57,6 +67,7 @@ class PortfolioLedger:
             raise ValueError("filled_fill_lineage_missing")
         if fill.fill_id in self._fill_ids:
             raise ValueError("duplicate_fill_id")
+        before = self.snapshot()
         price = float(fill.avg_fill_price or 0.0)
         qty = float(fill.filled_qty)
         fee = float(fill.fee)
@@ -88,7 +99,28 @@ class PortfolioLedger:
             ledger_entry_id=sha256_prefixed({"fill_id": fill.fill_id, "effective_ts": effective_ts}),
             fill_id=fill.fill_id, side=fill.side, qty=qty, cash_delta=cash_delta, fee=fee,
             slippage=slippage, realized_pnl=realized, effective_ts=effective_ts,
+            cash_before=before.cash, cash_after=self.cash,
+            asset_qty_before=before.asset_qty, asset_qty_after=self.asset_qty,
+            cost_basis_before=before.cost_basis, cost_basis_after=self.cost_basis,
+            realized_pnl_before=before.realized_pnl, realized_pnl_after=self.realized_pnl,
+            fee_total_after=self.fee_total, slippage_total_after=self.slippage_total,
         )
         self.entries.append(entry)
         self._fill_ids.add(fill.fill_id)
         return entry
+
+    @classmethod
+    def replay(cls, *, starting_cash: float, entries: tuple[LedgerEntry, ...] | list[LedgerEntry], initial_position_qty: float = 0.0) -> PortfolioSnapshot:
+        """Reconstruct and validate the portfolio solely from authoritative entries."""
+        snapshot = PortfolioSnapshot(float(starting_cash), float(initial_position_qty), 0.0, 0.0, 0.0, 0.0)
+        seen: set[str] = set()
+        for entry in entries:
+            if entry.ledger_entry_id in seen: raise ValueError("duplicate_ledger_entry_id")
+            seen.add(entry.ledger_entry_id)
+            expected = (entry.cash_before, entry.asset_qty_before, entry.cost_basis_before, entry.realized_pnl_before)
+            actual = (snapshot.cash, snapshot.asset_qty, snapshot.cost_basis, snapshot.realized_pnl)
+            if any(abs(a-b) > 1e-8 for a, b in zip(expected, actual)): raise ValueError("ledger_replay_before_state_mismatch")
+            snapshot = PortfolioSnapshot(entry.cash_after, entry.asset_qty_after, entry.cost_basis_after,
+                                         entry.realized_pnl_after, entry.fee_total_after, entry.slippage_total_after)
+            if snapshot.cash < -1e-8 or snapshot.asset_qty < -1e-8: raise ValueError("ledger_replay_invalid_state")
+        return snapshot

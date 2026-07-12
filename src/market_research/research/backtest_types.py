@@ -274,7 +274,7 @@ class BacktestRun:
     regime_performance: tuple[RegimePerformanceRow, ...] = ()
     regime_coverage: tuple[RegimeCoverageRow, ...] = ()
     execution_event_summary: dict[str, object] | None = None
-    decisions: tuple[dict[str, object], ...] = ()
+    decisions: tuple[object, ...] = ()
     equity_curve: tuple[EquityPoint, ...] = ()
     position_intervals: tuple[PositionInterval, ...] = ()
     closed_trades: tuple[ClosedTradeRecord, ...] = ()
@@ -288,3 +288,35 @@ class BacktestRun:
     execution_requests: tuple[object, ...] = ()
     fills: tuple[object, ...] = ()
     ledger_entries: tuple[object, ...] = ()
+
+    def validate_execution_lineage(self) -> None:
+        """Fail closed on duplicate, orphaned, or inconsistent execution lineage."""
+        streams = (("decision", self.decisions, lambda x: x.decision_id()),
+                   ("intent", self.order_intents, lambda x: x.intent_id),
+                   ("request", self.execution_requests, lambda x: x.request_id),
+                   ("fill", self.fills, lambda x: x.fill_id),
+                   ("ledger_entry", self.ledger_entries, lambda x: x.ledger_entry_id))
+        indexes: dict[str, dict[str, object]] = {}
+        for name, values, getter in streams:
+            ids = [str(getter(value)) for value in values]
+            if len(ids) != len(set(ids)):
+                raise ValueError(f"duplicate_{name}_id")
+            if any(not value for value in ids):
+                raise ValueError(f"missing_{name}_id")
+            indexes[name] = dict(zip(ids, values))
+        for intent in self.order_intents:
+            if intent.decision_id not in indexes["decision"]: raise ValueError("orphan_intent")
+        for request in self.execution_requests:
+            if request.intent_id not in indexes["intent"] or request.decision_id not in indexes["decision"]: raise ValueError("orphan_request")
+        for fill in self.fills:
+            if fill.request_id not in indexes["request"]: raise ValueError("orphan_fill")
+        for entry in self.ledger_entries:
+            fill = indexes["fill"].get(entry.fill_id)
+            if fill is None: raise ValueError("orphan_ledger_entry")
+            if fill.fill_status not in {"filled", "partial"} or float(fill.filled_qty) <= 0: raise ValueError("invalid_ledger_fill")
+        for trade in self.trades:
+            if not trade.get("ledger_entry_id"): continue
+            fill = indexes["fill"].get(str(trade.get("fill_id")))
+            entry = indexes["ledger_entry"].get(str(trade.get("ledger_entry_id")))
+            if fill is None or entry is None or entry.fill_id != fill.fill_id: raise ValueError("trade_projection_lineage_mismatch")
+            if trade.get("side") != fill.side or float(trade.get("qty") or 0) != float(fill.filled_qty) or trade.get("price") != fill.avg_fill_price: raise ValueError("trade_projection_value_mismatch")

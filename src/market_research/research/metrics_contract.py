@@ -21,9 +21,14 @@ class EquityPoint:
     cash: float
     asset_qty: float
 
+    @property
+    def mark_ts(self) -> int:
+        """Authoritative valuation timestamp; ``ts`` is its compatibility name."""
+        return self.ts
+
     def as_dict(self) -> dict[str, object]:
         return {
-            "ts": int(self.ts),
+            "ts": int(self.ts), "mark_ts": int(self.ts),
             "equity": float(self.equity),
             "cash": float(self.cash),
             "asset_qty": float(self.asset_qty),

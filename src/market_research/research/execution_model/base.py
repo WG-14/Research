@@ -19,6 +19,7 @@ class ExecutionRequest:
     side: str
     reference_price: float
     fee_rate: float
+    order_intent_ts: int = 0
     order_type: str = "market"
     requested_qty: float | None = None
     requested_notional: float | None = None
@@ -148,6 +149,11 @@ class ExecutionFill:
     request_id: str = ""
     fill_id: str = ""
     portfolio_effective_ts: int | None = None
+    order_intent_ts: int = 0
+    decision_id: str = ""
+    intent_id: str = ""
+    exit_rule: str | None = None
+    exit_reason: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -155,6 +161,7 @@ class ExecutionFill:
             "fill_id": self.fill_id,
             "signal_ts": self.signal_ts,
             "decision_ts": self.decision_ts,
+            "order_intent_ts": self.order_intent_ts,
             "submit_ts_assumption": self.submit_ts_assumption,
             "side": self.side,
             "order_type": self.order_type,
@@ -215,6 +222,8 @@ class ExecutionFill:
             "derived_seed_hash": self.derived_seed_hash,
             "seed_derivation_inputs": self.seed_derivation_inputs,
             "portfolio_effective_ts": self.portfolio_effective_ts,
+            "decision_id": self.decision_id, "intent_id": self.intent_id,
+            "exit_rule": self.exit_rule, "exit_reason": self.exit_reason,
         }
 
 

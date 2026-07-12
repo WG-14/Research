@@ -4198,7 +4198,10 @@ def _reproduction_result_hashes(run: BacktestRun) -> dict[str, str]:
     fields.  Receipt construction only validates these recorded values.
     """
 
-    strategy_behavior_hash = sha256_prefixed(list(run.decisions), label="reproduction_strategy_behavior")
+    strategy_behavior_hash = sha256_prefixed(
+        [item.as_dict() if hasattr(item, "as_dict") else item for item in run.decisions],
+        label="reproduction_strategy_behavior",
+    )
     trade_ledger_hash = sha256_prefixed(_execution_metadata(run.trades), label="reproduction_trade_ledger")
     equity_curve_hash = sha256_prefixed(
         [point.as_dict() for point in run.equity_curve], label="reproduction_equity_curve"
