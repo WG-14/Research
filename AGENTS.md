@@ -2,8 +2,8 @@
 
 ## Purpose
 
-`bithumb-research` is an offline, reproducible market-strategy research
-repository. It prepares public-market datasets, runs backtests and
+`market-research` is an offline, reproducible market-strategy research
+repository. It uses externally prepared immutable market datasets, runs backtests and
 walk-forward studies, performs statistical validation, and writes research
 reports and audit evidence. It is not a trading bot.
 

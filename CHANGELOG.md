@@ -12,4 +12,4 @@
 - strict fail-closed reproduction fingerprint and drift verification
 - wheel and sdist isolated-install validation
 - distribution checksums
-- `bithumb_research` package and CLI
+- `market_research` package and CLI

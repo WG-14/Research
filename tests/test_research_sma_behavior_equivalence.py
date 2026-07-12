@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import math
 
-from bithumb_research.research.dataset_snapshot import Candle, DatasetSnapshot
-from bithumb_research.research.experiment_manifest import DateRange, legacy_research_portfolio_policy
-from bithumb_research.research.strategies.sma_with_filter_kernel import run_sma_with_filter_backtest
+from market_research.research.dataset_snapshot import Candle, DatasetSnapshot
+from market_research.research.experiment_manifest import DateRange, legacy_research_portfolio_policy
+from market_research.research.strategies.sma_with_filter_kernel import run_sma_with_filter_backtest
 
 from tests.research_sma_success_fixture import PRICES
 

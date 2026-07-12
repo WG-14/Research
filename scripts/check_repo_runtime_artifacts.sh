@@ -19,7 +19,7 @@ candidates="$({
   find . -path ./.git -prune -o \( \
     -path './.tmp/pytest' -o \
     -path './pytest-debug' -o \
-    -path './bithumb-research-pytest-workspace' -o \
+    -path './market-research-pytest-workspace' -o \
     -path './derived/research' -o \
     -path './reports' -o \
     -path './reports/research' -o \

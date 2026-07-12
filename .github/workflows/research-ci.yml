@@ -9,10 +9,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      RESEARCH_DATA_ROOT: /tmp/bithumb-research/datasets
-      RESEARCH_ARTIFACT_ROOT: /tmp/bithumb-research/artifacts
-      RESEARCH_REPORT_ROOT: /tmp/bithumb-research/reports
-      RESEARCH_CACHE_ROOT: /tmp/bithumb-research/cache
+      RESEARCH_DATA_ROOT: /tmp/market-research/datasets
+      RESEARCH_ARTIFACT_ROOT: /tmp/market-research/artifacts
+      RESEARCH_REPORT_ROOT: /tmp/market-research/reports
+      RESEARCH_CACHE_ROOT: /tmp/market-research/cache
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -20,15 +20,15 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --dev
-      - run: uv run python -m compileall -q src/bithumb_research
-      - run: uv run pytest -q tests/test_repository_research_only_boundary.py tests/test_research_namespace_boundary.py
+      - run: uv run python -m compileall -q src/market_research
+      - run: uv run pytest -q tests/test_repository_research_only_boundary.py tests/test_market_research_namespace_boundary.py
       - run: uv run pytest -q
       - run: uv build
       - name: Inspect wheel and sdist boundaries
         run: |
           set -euo pipefail
-          wheel="dist/bithumb_research-0.1.0-py3-none-any.whl"
-          sdist="dist/bithumb_research-0.1.0.tar.gz"
+          wheel="dist/market_research-0.1.0-py3-none-any.whl"
+          sdist="dist/market_research-0.1.0.tar.gz"
           wheels=(dist/*.whl)
           sdists=(dist/*.tar.gz)
           test "${#wheels[@]}" -eq 1
@@ -39,31 +39,31 @@ jobs:
           from tarfile import open as open_tar
           from zipfile import ZipFile
 
-          wheel_path = "dist/bithumb_research-0.1.0-py3-none-any.whl"
-          sdist_path = "dist/bithumb_research-0.1.0.tar.gz"
+          wheel_path = "dist/market_research-0.1.0-py3-none-any.whl"
+          sdist_path = "dist/market_research-0.1.0.tar.gz"
           with ZipFile(wheel_path) as wheel:
               names = set(wheel.namelist())
           required = {
-              "bithumb_research/__init__.py",
-              "bithumb_research/__main__.py",
-              "bithumb_research/research_bootstrap.py",
+              "market_research/__init__.py",
+              "market_research/__main__.py",
+              "market_research/research_bootstrap.py",
           }
           assert required <= names, required - names
-          assert any(name.startswith("bithumb_research/research/") for name in names)
-          assert any(name.startswith("bithumb_research/research_cli/") for name in names)
+          assert any(name.startswith("market_research/research/") for name in names)
+          assert any(name.startswith("market_research/research_cli/") for name in names)
           assert any(".dist-info/" in name for name in names)
-          forbidden = ("bithumb_" + "bot/", "tests/", "scr" + "ipts/", "to" + "ols/", ".env.example", ".github/")
+          forbidden = ("tests/", "scr" + "ipts/", "to" + "ols/", ".env.example", ".github/")
           assert not [name for name in names if name.startswith(forbidden) or name.endswith("/.env.example")]
 
           with open_tar(sdist_path, "r:gz") as sdist:
               names = set(sdist.getnames())
-          root = "bithumb_research-0.1.0/"
+          root = "market_research-0.1.0/"
           required = {
               root + "pyproject.toml", root + "README.md", root + "CHANGELOG.md",
-              root + "src/bithumb_research/__init__.py",
+              root + "src/market_research/__init__.py",
           }
           assert required <= names, required - names
-          forbidden_parts = ("bithumb_" + "bot/", "/dist/", "/.venv/", "/.git/", "/tests/", "/docs/", "/.github/")
+          forbidden_parts = ("/dist/", "/.venv/", "/.git/", "/tests/", "/docs/", "/.github/")
           forbidden_suffixes = (".sqlite", ".sqlite3", ".db", "/.env", "/.env.example")
           assert not [name for name in names if any(part in name for part in forbidden_parts) or name.endswith(forbidden_suffixes)]
           PY
@@ -72,19 +72,19 @@ jobs:
           set -euo pipefail
           tmpdir="$(mktemp -d)"
           trap 'rm -rf "$tmpdir"' EXIT
-          wheel="${GITHUB_WORKSPACE}/dist/bithumb_research-0.1.0-py3-none-any.whl"
-          sdist="${GITHUB_WORKSPACE}/dist/bithumb_research-0.1.0.tar.gz"
+          wheel="${GITHUB_WORKSPACE}/dist/market_research-0.1.0-py3-none-any.whl"
+          sdist="${GITHUB_WORKSPACE}/dist/market_research-0.1.0.tar.gz"
           uv venv "$tmpdir/wheel-venv"
           uv venv "$tmpdir/sdist-venv"
           env -u PYTHONPATH uv pip install --python "$tmpdir/wheel-venv/bin/python" "$wheel"
           env -u PYTHONPATH uv pip install --python "$tmpdir/sdist-venv/bin/python" "$sdist"
           cd "$tmpdir"
           for environment in wheel sdist; do
-            env -u PYTHONPATH "./$environment-venv/bin/python" -c "import bithumb_research; import importlib.metadata; import importlib.util; assert importlib.metadata.version('bithumb-research') == '0.1.0'; assert bithumb_research.__name__ == 'bithumb_research'; assert importlib.util.find_spec('bithumb_' + 'bot') is None"
-            env -u PYTHONPATH "./$environment-venv/bin/bithumb-research" --help > "$environment-console-help.txt"
-            env -u PYTHONPATH "./$environment-venv/bin/python" -m bithumb_research --help > "$environment-module-help.txt"
+            env -u PYTHONPATH "./$environment-venv/bin/python" -c "import market_research; import importlib.metadata; assert importlib.metadata.version('market-research') == '0.1.0'; assert market_research.__name__ == 'market_research'"
+            env -u PYTHONPATH "./$environment-venv/bin/market-research" --help > "$environment-console-help.txt"
+            env -u PYTHONPATH "./$environment-venv/bin/python" -m market_research --help > "$environment-module-help.txt"
             diff -u "$environment-console-help.txt" "$environment-module-help.txt"
-            env -u PYTHONPATH "./$environment-venv/bin/python" -c "import importlib.metadata, json; from bithumb_research.research.strategy_catalog import list_research_strategies; print(json.dumps({'version': importlib.metadata.version('bithumb-research'), 'namespace': 'bithumb_research', 'strategies': [item.name for item in list_research_strategies()]}))" > "$environment-probe.json"
+            env -u PYTHONPATH "./$environment-venv/bin/python" -c "import importlib.metadata, json; from market_research.research.strategy_catalog import list_research_strategies; print(json.dumps({'version': importlib.metadata.version('market-research'), 'namespace': 'market_research', 'strategies': [item.name for item in list_research_strategies()]}))" > "$environment-probe.json"
           done
           diff -u wheel-console-help.txt sdist-console-help.txt
           diff -u wheel-probe.json sdist-probe.json
@@ -93,15 +93,15 @@ jobs:
           set -euo pipefail
           (
             cd dist
-            sha256sum bithumb_research-0.1.0-py3-none-any.whl bithumb_research-0.1.0.tar.gz | sort -k2 > SHA256SUMS
+            sha256sum market_research-0.1.0-py3-none-any.whl market_research-0.1.0.tar.gz | sort -k2 > SHA256SUMS
             sha256sum -c SHA256SUMS
           )
       - name: Upload distribution artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bithumb-research-0.1.0-dist
+          name: market-research-0.1.0-dist
           path: |
-            dist/bithumb_research-0.1.0-py3-none-any.whl
-            dist/bithumb_research-0.1.0.tar.gz
+            dist/market_research-0.1.0-py3-none-any.whl
+            dist/market_research-0.1.0.tar.gz
             dist/SHA256SUMS
           if-no-files-found: error

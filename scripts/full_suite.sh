@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-if [[ "${BITHUMB_CODEX_BLOCK_BROAD_TEST_RUNNERS:-0}" == "1" ]]; then
-  echo "[CODEX-BROAD-RUNNER-GUARD] Codex ${BITHUMB_CODEX_MODE:-session} must not run ${BASH_SOURCE[0]}." >&2
+if [[ "${RESEARCH_CODEX_BLOCK_BROAD_TEST_RUNNERS:-0}" == "1" ]]; then
+  echo "[CODEX-BROAD-RUNNER-GUARD] Codex ${RESEARCH_CODEX_MODE:-session} must not run ${BASH_SOURCE[0]}." >&2
   echo "[CODEX-BROAD-RUNNER-GUARD] Run only focused validation directly related to the patch or failure packet." >&2
   exit 126
 fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
-WORK_DIR="${CODEX_PYTEST_WORK_DIR:-${TMPDIR:-/tmp}/bithumb-research-codex-pytest}"
+WORK_DIR="${CODEX_PYTEST_WORK_DIR:-${TMPDIR:-/tmp}/market-research-codex-pytest}"
 LOG_DIR="${CODEX_PYTEST_LOG_DIR:-${WORK_DIR}/logs}"
 ITERATION="${CODEX_PYTEST_ITERATION:-manual}"
 
@@ -78,11 +78,11 @@ research_env=(
   "RESEARCH_CACHE_ROOT=${RESEARCH_CACHE_ROOT}"
 )
 
-run_stage "compile" "${research_env[@]}" uv run python -m compileall -q src/bithumb_research
+run_stage "compile" "${research_env[@]}" uv run python -m compileall -q src/market_research
 compile_exit=$?
 run_stage "research_repository_boundary" "${research_env[@]}" uv run pytest -q \
   tests/test_repository_research_only_boundary.py \
-  tests/test_research_namespace_boundary.py
+  tests/test_market_research_namespace_boundary.py
 boundary_exit=$?
 run_stage "pytest_collection" "${research_env[@]}" uv run pytest --collect-only -q
 collection_exit=$?

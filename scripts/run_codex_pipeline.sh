@@ -44,16 +44,16 @@ notify() {
 fail() {
   local message="$1"
   echo "[PIPELINE] ${message}" >&2
-  notify "bithumb-research pipeline failed" "high" "${message}"
+  notify "market-research pipeline failed" "high" "${message}"
   exit 1
 }
 
 on_error() {
   local exit_code=$?
   trap - ERR
-  local message="bithumb-research Codex pipeline failed during stage: ${stage}"
+  local message="market-research Codex pipeline failed during stage: ${stage}"
   echo "[PIPELINE] ${message}" >&2
-  notify "bithumb-research pipeline failed" "high" "${message}"
+  notify "market-research pipeline failed" "high" "${message}"
   exit "$exit_code"
 }
 trap on_error ERR
@@ -257,8 +257,8 @@ EOF
 
   PATH="${CODEX_PYTEST_GUARD_DIR}:${PATH}" \
     CODEX_PYTEST_GUARD_REAL_UV="${uv_bin}" \
-    BITHUMB_CODEX_MODE="default_patch" \
-    BITHUMB_CODEX_BLOCK_BROAD_TEST_RUNNERS=1 \
+    RESEARCH_CODEX_MODE="default_patch" \
+    RESEARCH_CODEX_BLOCK_BROAD_TEST_RUNNERS=1 \
     "${CODEX_BIN}" exec --full-auto --cd "${PROJECT_ROOT}" - < "${REQUEST_FILE}"
 }
 
@@ -302,7 +302,7 @@ post_codex_non_request="$(dirty_paths_excluding_request_file "${request_rel}")"
 if [[ -z "${post_codex_non_request}" ]]; then
   stage="check Codex modifications"
   echo "[PIPELINE] Codex completed but did not modify any file other than the request file." >&2
-  notify "bithumb-research pipeline failed" "high" \
+  notify "market-research pipeline failed" "high" \
     "Codex did not modify any file other than ${request_rel}; no commit was created."
   exit 1
 fi
@@ -314,7 +314,7 @@ run_stage "git commit -m apply" git commit -m "apply"
 run_stage "git push" git push
 
 stage="complete"
-notify "bithumb-research pipeline succeeded" "default" \
+notify "market-research pipeline succeeded" "default" \
   "Codex changes were committed and pushed."
 echo
 echo "[PIPELINE] success"

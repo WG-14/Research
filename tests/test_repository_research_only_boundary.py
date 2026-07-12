@@ -5,9 +5,9 @@ import json
 import pkgutil
 from pathlib import Path
 
-import bithumb_research
+import market_research
 
-from bithumb_research.research.strategy_catalog import list_research_strategies
+from market_research.research.strategy_catalog import list_research_strategies
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,14 +44,14 @@ def test_no_operational_files_or_legacy_path_manager_remain() -> None:
         "tests/operator",
     )
     assert not any((ROOT / path).exists() for path in forbidden)
-    paths_source = (ROOT / "src/bithumb_research/paths.py").read_text(encoding="utf-8")
+    paths_source = (ROOT / "src/market_research/paths.py").read_text(encoding="utf-8")
     assert "class PathManager:" not in paths_source
     assert "class Path" + "Config:" not in paths_source
 
 
 def test_architecture_paths_exist_and_strategy_catalog_is_exact() -> None:
     boundaries = json.loads((ROOT / "docs/architecture-boundaries.json").read_text(encoding="utf-8"))
-    for section in ("entrypoints", "research_core", "public_data_helpers"):
+    for section in ("entrypoints", "research_core", "offline_data_helpers"):
         assert all((ROOT / path).exists() for path in boundaries[section])
     assert {plugin.name for plugin in list_research_strategies()} == {
         "sma_with_filter",
@@ -62,5 +62,5 @@ def test_architecture_paths_exist_and_strategy_catalog_is_exact() -> None:
 
 
 def test_every_package_module_imports_without_side_effects() -> None:
-    for module in pkgutil.walk_packages(bithumb_research.__path__, bithumb_research.__name__ + "."):
+    for module in pkgutil.walk_packages(market_research.__path__, market_research.__name__ + "."):
         importlib.import_module(module.name)

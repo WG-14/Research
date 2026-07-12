@@ -7,14 +7,14 @@ from pathlib import Path
 
 
 FORBIDDEN_MODULES = (
-    "bithumb_research." + "config",
-    "bithumb_research." + "broker",
-    "bithumb_research.research_profile",
-    "bithumb_research.notifier",
-    "bithumb_research.notification_outbox",
-    "bithumb_research.runtime_strategy_decision",
-    "bithumb_research.runtime_strategy_set",
-    "bithumb_research.recovery",
+    "market_research." + "config",
+    "market_research." + "broker",
+    "market_research.research_profile",
+    "market_research.notifier",
+    "market_research.notification_outbox",
+    "market_research.runtime_strategy_decision",
+    "market_research.runtime_strategy_set",
+    "market_research.recovery",
 )
 
 
@@ -32,7 +32,7 @@ def _run(script: str, *, env: dict[str, str] | None = None) -> subprocess.Comple
 def test_workload_estimate_executes_without_operational_modules() -> None:
     script = """
 import sys
-from bithumb_research.research_cli.main import main
+from market_research.research_cli.main import main
 assert main(['research-workload-estimate', '--manifest', 'examples/research/sma_filter_manifest.example.json', '--json']) == 0
 for name in {forbidden!r}:
     assert name not in sys.modules, name
@@ -50,7 +50,7 @@ def test_readiness_uses_research_db_without_operational_modules(tmp_path: Path) 
 import sqlite3
 import sys
 from pathlib import Path
-from bithumb_research.research_cli.main import main
+from market_research.research_cli.main import main
 db = Path({db_path!r})
 with sqlite3.connect(db) as conn:
     conn.execute('CREATE TABLE candles (pair TEXT, interval TEXT, ts INTEGER, open REAL, high REAL, low REAL, close REAL, volume REAL)')
@@ -79,7 +79,7 @@ def test_backtest_failure_path_uses_research_context_without_operational_modules
 import sqlite3
 import sys
 from pathlib import Path
-from bithumb_research.research_cli.main import main
+from market_research.research_cli.main import main
 db = Path({db_path!r})
 with sqlite3.connect(db) as conn:
     conn.execute('CREATE TABLE candles (pair TEXT, interval TEXT, ts INTEGER, open REAL, high REAL, low REAL, close REAL, volume REAL)')
@@ -103,7 +103,7 @@ for name in {forbidden!r}:
 
 
 def test_research_context_transition_left_no_global_replacement_residue() -> None:
-    root = Path("src/bithumb_research")
+    root = Path("src/market_research")
     text = "\n".join(path.read_text(encoding="utf-8") for path in (root / "research").glob("*.py"))
     text += "\n" + "\n".join(path.read_text(encoding="utf-8") for path in (root / "research_cli").glob("*.py"))
 

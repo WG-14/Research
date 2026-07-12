@@ -10,17 +10,17 @@ from tests.research_threshold_success_fixture import create_success_fixture
 
 
 FORBIDDEN = (
-    "bithumb_research." + "config",
-    "bithumb_research.research_profile",
-    "bithumb_research." + "broker",
-    "bithumb_research.runtime_strategy_decision",
-    "bithumb_research.runtime_strategy_set",
-    "bithumb_research.runtime_adapter_bootstrap",
-    "bithumb_research.runtime_adapters",
-    "bithumb_research.strategy_authoring",
-    "bithumb_research.research.strategy_registry",
-    "bithumb_research.research.strategies.legacy_compat",
-    "bithumb_research.strategy_plugins",
+    "market_research." + "config",
+    "market_research.research_profile",
+    "market_research." + "broker",
+    "market_research.runtime_strategy_decision",
+    "market_research.runtime_strategy_set",
+    "market_research.runtime_adapter_bootstrap",
+    "market_research.runtime_adapters",
+    "market_research.strategy_authoring",
+    "market_research.research.strategy_registry",
+    "market_research.research.strategies.legacy_compat",
+    "market_research.strategy_plugins",
 )
 
 
@@ -29,7 +29,7 @@ def test_successful_threshold_backtest_stays_within_research_import_boundary(tmp
     root = tmp_path / "research-runtime"
     script = """
 import json, sys
-from bithumb_research.research_cli.main import main
+from market_research.research_cli.main import main
 rc = main(['research-backtest', '--manifest', sys.argv[1]])
 print(json.dumps({'rc': rc, 'forbidden': [name for name in sys.argv[2:] if name in sys.modules]}))
 raise SystemExit(rc)
@@ -74,7 +74,7 @@ raise SystemExit(rc)
 def test_catalog_resolves_threshold_without_loading_legacy_bridge() -> None:
     script = """
 import json, sys
-from bithumb_research.research.strategy_catalog import resolve_research_strategy
+from market_research.research.strategy_catalog import resolve_research_strategy
 plugin = resolve_research_strategy('threshold_research_only')
 print(json.dumps({
     'runner': plugin.runner.__module__,
@@ -90,6 +90,6 @@ print(json.dumps({
     )
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["runner"].startswith("bithumb_research.research.strategies.")
-    assert payload["event_builder"].startswith("bithumb_research.research.strategies.")
+    assert payload["runner"].startswith("market_research.research.strategies.")
+    assert payload["event_builder"].startswith("market_research.research.strategies.")
     assert payload["forbidden"] == []

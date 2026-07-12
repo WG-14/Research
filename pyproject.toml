@@ -1,11 +1,10 @@
 [project]
-name = "bithumb-research"
+name = "market-research"
 version = "0.1.0"
 description = "Offline and reproducible market-strategy research toolkit"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "httpx>=0.28.1",
     "pandas>=3.0.1",
     "pydantic>=2.12.5",
 ]
@@ -26,7 +25,7 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 [project.scripts]
-bithumb-research = "bithumb_research.research_bootstrap:run_cli"
+market-research = "market_research.research_bootstrap:run_cli"
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"

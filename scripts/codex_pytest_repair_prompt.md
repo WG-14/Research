@@ -1,6 +1,6 @@
 # Codex Pytest Repair Mode
 
-You are repairing a failure packet for the offline `bithumb-research` repository.
+You are repairing a failure packet for the offline `market-research` repository.
 This is a dedicated pytest repair task, not general feature work.
 
 ## Research Priorities

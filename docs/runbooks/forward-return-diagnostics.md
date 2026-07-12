@@ -46,7 +46,7 @@ hypothesis.
 ## Command
 
 ```bash
-uv run bithumb-research research-forward-diagnostics \
+uv run market-research research-forward-diagnostics \
   --manifest <manifest.json> \
   --split train \
   --features sma_gap,range_ratio,volume_ratio,breakout_distance,rolling_return,zscore,regime \

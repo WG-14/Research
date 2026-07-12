@@ -1,9 +1,10 @@
-# bithumb-research
+# market-research
 
-`bithumb-research` is an offline research repository for market-data
-preparation, reproducible backtests, walk-forward studies, statistical checks,
-and artifact-backed research reports. It does not connect to trading accounts,
-submit orders, or provide a runtime service.
+`market-research` is an exchange-independent offline research tool that uses
+externally prepared immutable market datasets to generate reproducible
+backtests, walk-forward studies, statistical validation, and artifact-backed
+reports. It does not provide exchange API collection, account connections,
+order submission, or a runtime service.
 
 ## Supported strategies
 
@@ -16,13 +17,13 @@ submit orders, or provide a runtime service.
 
 ```bash
 uv sync
-uv run bithumb-research --help
+uv run market-research --help
 ```
 
 The canonical command is:
 
 ```bash
-uv run bithumb-research <command>
+uv run market-research <command>
 ```
 
 ## Research settings
@@ -43,14 +44,14 @@ are either atomic JSON reports or append-only JSONL audit records.
 ## Typical workflow
 
 ```bash
-uv run bithumb-research research-freeze-dataset --db /abs/candles.sqlite \
+uv run market-research research-freeze-dataset --db /abs/candles.sqlite \
   --market KRW-BTC --interval 1m --start 2025-01-01 --end 2025-03-31 \
   --out /abs/datasets/krw-btc-1m.json
 
-uv run bithumb-research research-readiness --manifest /abs/experiment.json --json
-uv run bithumb-research research-backtest --manifest /abs/experiment.json
-uv run bithumb-research research-walk-forward --manifest /abs/experiment.json
-uv run bithumb-research research-validate --manifest /abs/experiment.json
+uv run market-research research-readiness --manifest /abs/experiment.json --json
+uv run market-research research-backtest --manifest /abs/experiment.json
+uv run market-research research-walk-forward --manifest /abs/experiment.json
+uv run market-research research-validate --manifest /abs/experiment.json
 ```
 
 `research-validate` records research-only stages: readiness, dataset quality,
@@ -62,7 +63,7 @@ or `INSUFFICIENT_EVIDENCE`.
 report. Verify that result later with an isolated rerun:
 
 ```bash
-uv run bithumb-research research-reproduce-run \
+uv run market-research research-reproduce-run \
   --manifest /abs/experiment.json \
   --receipt /abs/reproduction_receipt.json \
   --out /abs/reproduction_report.json

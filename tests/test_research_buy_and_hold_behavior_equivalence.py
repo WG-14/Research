@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import math
 
-from bithumb_research.research.dataset_snapshot import Candle, DatasetSnapshot
-from bithumb_research.research.experiment_manifest import (
+from market_research.research.dataset_snapshot import Candle, DatasetSnapshot
+from market_research.research.experiment_manifest import (
     DateRange,
     ExecutionTimingPolicy,
     legacy_research_portfolio_policy,
 )
-from bithumb_research.research.strategies.buy_and_hold_baseline_events import (
+from market_research.research.strategies.buy_and_hold_baseline_events import (
     build_buy_and_hold_baseline_events,
 )
-from bithumb_research.research.strategies.buy_and_hold_baseline_kernel import (
+from market_research.research.strategies.buy_and_hold_baseline_kernel import (
     run_buy_and_hold_baseline_backtest,
 )
 

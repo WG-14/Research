@@ -7,18 +7,18 @@ from pathlib import Path
 
 import pytest
 
-from bithumb_research.paths import ResearchPathManager
-from bithumb_research.research.experiment_manifest import load_manifest
-from bithumb_research.research.reproduction import (
+from market_research.paths import ResearchPathManager
+from market_research.research.experiment_manifest import load_manifest
+from market_research.research.reproduction import (
     REPRODUCTION_FINGERPRINT_SCHEMA_VERSION,
     ReproductionContractError,
     build_reproduction_fingerprint,
     compare_reproduction_fingerprints,
     load_reproduction_receipt,
 )
-from bithumb_research.research.hashing import sha256_prefixed
-from bithumb_research.research.validation_protocol import run_research_backtest
-from bithumb_research.settings import ResearchSettings
+from market_research.research.hashing import sha256_prefixed
+from market_research.research.validation_protocol import run_research_backtest
+from market_research.settings import ResearchSettings
 from tests.research_sma_success_fixture import create_success_fixture
 
 

@@ -2,8 +2,8 @@
 set -u
 set -o pipefail
 
-if [[ "${BITHUMB_CODEX_BLOCK_BROAD_TEST_RUNNERS:-0}" == "1" ]]; then
-  echo "[CODEX-BROAD-RUNNER-GUARD] Codex ${BITHUMB_CODEX_MODE:-session} must not run ${BASH_SOURCE[0]}." >&2
+if [[ "${RESEARCH_CODEX_BLOCK_BROAD_TEST_RUNNERS:-0}" == "1" ]]; then
+  echo "[CODEX-BROAD-RUNNER-GUARD] Codex ${RESEARCH_CODEX_MODE:-session} must not run ${BASH_SOURCE[0]}." >&2
   echo "[CODEX-BROAD-RUNNER-GUARD] Run only focused validation directly related to the patch or failure packet." >&2
   exit 126
 fi

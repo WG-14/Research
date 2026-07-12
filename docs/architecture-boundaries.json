@@ -1,16 +1,16 @@
 {
   "schema_version": 2,
   "entrypoints": [
-    "src/bithumb_research/research_bootstrap.py",
-    "src/bithumb_research/research_cli"
+    "src/market_research/research_bootstrap.py",
+    "src/market_research/research_cli"
   ],
   "research_core": [
-    "src/bithumb_research/research"
+    "src/market_research/research"
   ],
-  "public_data_helpers": [
-    "src/bithumb_research/public_api.py",
-    "src/bithumb_research/public_api_minute_candles.py",
-    "src/bithumb_research/public_api_orderbook.py"
+  "offline_data_helpers": [
+    "src/market_research/market_ids.py",
+    "src/market_research/market_policy.py",
+    "src/market_research/research/intervals.py"
   ],
   "forbidden_domains": [
     "private_exchange_access",

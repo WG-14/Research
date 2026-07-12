@@ -5,9 +5,9 @@ from collections import Counter
 
 import pytest
 
-from bithumb_research.research.artifact_contract import apply_artifact_contract, validate_artifact_contract
-from bithumb_research.research.experiment_manifest import ManifestValidationError, parse_manifest
-from bithumb_research.research.run_summary import _next_action
+from market_research.research.artifact_contract import apply_artifact_contract, validate_artifact_contract
+from market_research.research.experiment_manifest import ManifestValidationError, parse_manifest
+from market_research.research.run_summary import _next_action
 
 
 def _manifest_payload() -> dict[str, object]:

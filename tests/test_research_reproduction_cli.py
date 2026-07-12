@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from bithumb_research.paths import ResearchPathManager
-from bithumb_research.research.cli import cmd_research_backtest, cmd_research_reproduce_run
-from bithumb_research.research_cli.context import ResearchAppContext
-from bithumb_research.settings import ResearchSettings
+from market_research.paths import ResearchPathManager
+from market_research.research.cli import cmd_research_backtest, cmd_research_reproduce_run
+from market_research.research_cli.context import ResearchAppContext
+from market_research.settings import ResearchSettings
 from tests.research_sma_success_fixture import create_success_fixture
 
 
@@ -99,7 +99,7 @@ def test_reproduce_run_classifies_reproduced_receipt_failure(tmp_path: Path, mon
     receipt = context.settings.artifact_root / "reports" / "research" / "sma_success_import_boundary" / "reproduction_receipt.json"
     out = tmp_path / "failed.json"
 
-    import bithumb_research.research.cli as cli
+    import market_research.research.cli as cli
 
     def fail_reproduction(**_: object) -> dict[str, object]:
         return {"reproduction_receipt_path": str(tmp_path / "missing-receipt.json")}

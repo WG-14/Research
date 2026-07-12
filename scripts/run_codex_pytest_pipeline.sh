@@ -11,7 +11,7 @@ NOTIFY_SCRIPT="${NOTIFY_SCRIPT:-${SCRIPT_DIR}/notify_ntfy.sh}"
 ARTIFACT_CHECK_SCRIPT="${ARTIFACT_CHECK_SCRIPT:-${SCRIPT_DIR}/check_repo_runtime_artifacts.sh}"
 CODEX_BIN="${CODEX_BIN:-codex}"
 CODEX_PYTEST_MAX_ITERATIONS="${CODEX_PYTEST_MAX_ITERATIONS:-10}"
-CODEX_PYTEST_WORK_DIR="${CODEX_PYTEST_WORK_DIR:-${TMPDIR:-/tmp}/bithumb-research-codex-pytest}"
+CODEX_PYTEST_WORK_DIR="${CODEX_PYTEST_WORK_DIR:-${TMPDIR:-/tmp}/market-research-codex-pytest}"
 CODEX_PYTEST_COMMIT_PUSH="${CODEX_PYTEST_COMMIT_PUSH:-1}"
 CODEX_PYTEST_ALLOW_DIRTY="${CODEX_PYTEST_ALLOW_DIRTY:-0}"
 CODEX_PYTEST_STRICT_MOCK_GUARD="${CODEX_PYTEST_STRICT_MOCK_GUARD:-0}"
@@ -50,7 +50,7 @@ notify() {
 fail() {
   local message="$1"
   echo "[PYTEST-PIPELINE] ${message}" >&2
-  notify "bithumb-research pytest pipeline failed" "high" "${message}"
+  notify "market-research pytest pipeline failed" "high" "${message}"
   exit 1
 }
 
@@ -85,9 +85,9 @@ on_error() {
   local exit_code=$?
   trap - ERR
   cleanup_codex_pytest_guard
-  local message="bithumb-research Codex pytest pipeline failed during stage: ${stage}"
+  local message="market-research Codex pytest pipeline failed during stage: ${stage}"
   echo "[PYTEST-PIPELINE] ${message}" >&2
-  notify "bithumb-research pytest pipeline failed" "high" "${message}"
+  notify "market-research pytest pipeline failed" "high" "${message}"
   exit "${exit_code}"
 }
 trap on_error ERR
@@ -209,7 +209,7 @@ run_codex_pytest_repair_with_guard() {
   cleanup_codex_pytest_guard
   install_codex_pytest_guard
   run_stage "run Codex focused pytest repair" \
-    env BITHUMB_CODEX_MODE="pytest_repair" BITHUMB_CODEX_BLOCK_BROAD_TEST_RUNNERS=1 \
+    env RESEARCH_CODEX_MODE="pytest_repair" RESEARCH_CODEX_BLOCK_BROAD_TEST_RUNNERS=1 \
     "${CODEX_BIN}" exec --full-auto --cd "${PROJECT_ROOT}" - < "${codex_input_file}"
   cleanup_codex_pytest_guard
 }
@@ -250,10 +250,10 @@ complete_success() {
     run_stage "git commit -m pytest-repair" git commit -m "pytest-repair"
     run_stage "git push" git push
 
-    notify "bithumb-research pytest pipeline succeeded" "default" \
+    notify "market-research pytest pipeline succeeded" "default" \
       "WSL wrapper full-suite validation passed, and changes were committed and pushed."
   else
-    notify "bithumb-research pytest pipeline succeeded" "default" \
+    notify "market-research pytest pipeline succeeded" "default" \
       "WSL wrapper full-suite validation passed. Commit/push was skipped or no repository changes existed."
   fi
 

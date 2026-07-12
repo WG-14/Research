@@ -53,9 +53,9 @@
     "scenarios": [
       {
         "scenario_role": "base",
-        "label": "research_realistic_bithumb_app_fee_0004",
+        "label": "research_realistic_external_app_fee_0004",
         "fee_rate": 0.0004,
-        "fee_source": "operator_declared_bithumb_app_fee",
+        "fee_source": "operator_declared_external_app_fee",
         "fee_authority_policy": "research_declared_runtime_reference",
         "slippage_bps": 10,
         "slippage_source": "research_assumption",

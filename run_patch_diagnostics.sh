@@ -2,8 +2,8 @@
 set -u
 set -o pipefail
 
-if [[ "${BITHUMB_CODEX_BLOCK_BROAD_TEST_RUNNERS:-0}" == "1" ]]; then
-  echo "[CODEX-BROAD-RUNNER-GUARD] Codex ${BITHUMB_CODEX_MODE:-session} must not run ${BASH_SOURCE[0]}." >&2
+if [[ "${RESEARCH_CODEX_BLOCK_BROAD_TEST_RUNNERS:-0}" == "1" ]]; then
+  echo "[CODEX-BROAD-RUNNER-GUARD] Codex ${RESEARCH_CODEX_MODE:-session} must not run ${BASH_SOURCE[0]}." >&2
   echo "[CODEX-BROAD-RUNNER-GUARD] Run only focused validation directly related to the patch or failure packet." >&2
   exit 126
 fi
@@ -73,14 +73,14 @@ run "collect default fast candidate" bash -lc "
   uv run pytest --collect-only -q -m \"$FAST_EXPR\" | tee \"$LOG_DIR/collect_fast_raw.log\" | grep '::' | wc -l
 "
 
-run "fast tier guard tests" env BITHUMB_TEST_TIER=fast uv run pytest -q \
+run "fast tier guard tests" env RESEARCH_TEST_TIER=fast uv run pytest -q \
   tests/test_research_backtest_reproducibility.py::test_contract_research_backtest_wrapper_enforces_fast_budget \
   tests/test_research_backtest_reproducibility.py::test_fast_tier_blocks_production_backtest_before_io_and_tick_execution \
   tests/test_research_backtest_reproducibility.py::test_fast_tier_blocks_production_walk_forward_before_io_and_tick_execution \
   tests/test_research_backtest_reproducibility.py::test_fast_tier_allows_bounded_contract_evaluator_path \
   --durations=20 --durations-min=0
 
-run "formerly slow smoke tests" env BITHUMB_TEST_TIER=fast uv run pytest -q \
+run "formerly slow smoke tests" env RESEARCH_TEST_TIER=fast uv run pytest -q \
   tests/test_research_backtest_reproducibility.py::test_stress_report_is_candidate_order_independent \
   tests/test_research_backtest_reproducibility.py::test_different_stress_seed_changes_auditable_seed_hash \
   tests/test_research_backtest_reproducibility.py::test_candidate_profile_hash_remains_validation_bound_while_behavior_hash_is_logical \
@@ -88,12 +88,12 @@ run "formerly slow smoke tests" env BITHUMB_TEST_TIER=fast uv run pytest -q \
   tests/test_research_walk_forward.py::test_walk_forward_report_persists_artifact_discovery_metadata \
   --durations=20 --durations-min=0
 
-run "contract and resource guard research file" env BITHUMB_TEST_TIER=fast uv run pytest -q \
+run "contract and resource guard research file" env RESEARCH_TEST_TIER=fast uv run pytest -q \
   tests/test_research_backtest_reproducibility.py \
   -m "contract or resource_guard" \
   --durations=50 --durations-min=0.2
 
-run "default fast suite" env BITHUMB_TEST_TIER=fast uv run pytest -q \
+run "default fast suite" env RESEARCH_TEST_TIER=fast uv run pytest -q \
   -m "$FAST_EXPR" \
   --durations=80 --durations-min=1.0
 

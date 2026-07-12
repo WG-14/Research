@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
-WORK_DIR="${CODEX_PYTEST_WORK_DIR:-${TMPDIR:-/tmp}/bithumb-research-codex-pytest}"
+WORK_DIR="${CODEX_PYTEST_WORK_DIR:-${TMPDIR:-/tmp}/market-research-codex-pytest}"
 ITERATION="${CODEX_PYTEST_ITERATION:-manual}"
 LATEST_LOG_FILE="${WORK_DIR}/latest_full_suite_log"
 PYTHON_BIN="${PYTHON:-python3}"
@@ -132,7 +132,6 @@ from pathlib import Path
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8", errors="replace")
 replacements = [
-    (r"bithumb[-]bot", "<REMOVED_LEGACY_REPOSITORY>"),
     (r"run_full_pytest[_]tests", "<REMOVED_LEGACY_RUNNER>"),
     (r"run_fast_pr[_]tests", "<REMOVED_LEGACY_RUNNER>"),
     (r"pytest[_]workspace", "<REMOVED_LEGACY_WORKSPACE>"),

@@ -5,9 +5,9 @@ manifests, reports, cache entries, and audit records outside the Git checkout.
 
 ```bash
 uv sync
-uv run bithumb-research research-readiness --manifest /abs/experiment.json --json
-uv run bithumb-research research-backtest --manifest /abs/experiment.json
-uv run bithumb-research research-validate --manifest /abs/experiment.json
+uv run market-research research-readiness --manifest /abs/experiment.json --json
+uv run market-research research-backtest --manifest /abs/experiment.json
+uv run market-research research-validate --manifest /abs/experiment.json
 ```
 
 Set `RESEARCH_DB_PATH` to the external SQLite candle source and set the four
