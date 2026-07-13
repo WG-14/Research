@@ -4,10 +4,12 @@ import time
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 from .decision_event import OrderIntent, ResearchDecisionEvent
 from .execution_model.base import ExecutionFill, ExecutionRequest
 from .portfolio_ledger import LedgerEntry
+if TYPE_CHECKING:
+    from .strategy_contract import CompiledStrategyContract
 
 from market_research.market_regime import RegimeCoverageRow, RegimePerformanceRow
 
@@ -291,6 +293,12 @@ class BacktestRun:
     execution_requests: tuple[ExecutionRequest, ...] = ()
     fills: tuple[ExecutionFill, ...] = ()
     ledger_entries: tuple[LedgerEntry, ...] = ()
+    compiled_strategy_contract: "CompiledStrategyContract | None" = None
+    compiled_strategy_contract_hash: str | None = None
+    strategy_registry_hash: str | None = None
+    strategy_plugin_contract_hash: str | None = None
+    decision_stream_hash: str | None = None
+    metrics_hash: str | None = None
 
     def validate_execution_lineage(self) -> None:
         """Fail closed on duplicate, orphaned, or inconsistent execution lineage."""
@@ -323,6 +331,12 @@ class BacktestRun:
             if entry.side != fill.side or abs(float(entry.qty)-float(fill.filled_qty)) > 1e-8 or abs(float(entry.fee)-float(fill.fee)) > 1e-8 or entry.effective_ts != fill.portfolio_effective_ts: raise ValueError("ledger_fill_value_mismatch")
         if len({entry.fill_id for entry in self.ledger_entries}) != len(self.ledger_entries):
             raise ValueError("multiple_mutating_ledger_entries_for_fill")
+        mutating_fills = {fill.fill_id for fill in self.fills
+                          if fill.fill_status in {"filled", "partial"} and float(fill.filled_qty) > 0
+                          and fill.portfolio_effective_ts is not None}
+        applied = {entry.fill_id for entry in self.ledger_entries}
+        if not applied.issubset(mutating_fills):
+            raise ValueError("ledger_entry_without_mutating_fill")
         for trade in self.trades:
             if not trade.get("ledger_entry_id"): continue
             fill = indexes["fill"].get(str(trade.get("fill_id")))

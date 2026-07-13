@@ -283,7 +283,7 @@ def _fill_applies_to_mark(*, fill: Any, effective_ts: int, mark_boundary_ts: int
     )
 
 
-def _apply_pending_fills(
+def _removed_legacy_apply_pending_fills(
     *,
     pending_fills: list[PendingFill],
     trades: list[dict[str, object]],
@@ -317,7 +317,7 @@ def _apply_pending_fills(
     float,
     float,
 ]:
-    """Ledger-private pending-fill mutation helper.
+    """Removed migration path; retained temporarily as a non-exported audit marker.
 
     PortfolioLedger is the only authority-facing entry point for portfolio
     state mutation. This helper remains in the common module for compatibility
@@ -1472,7 +1472,6 @@ closed_trade_diagnostics = _closed_trade_diagnostics
 complete_audit_trace = _complete_audit_trace
 create_exit_rules = _create_exit_rules
 depth_request_fields = _depth_request_fields
-apply_pending_fills = _apply_pending_fills
 empty_metrics = _empty_metrics
 empty_metrics_v2 = _empty_metrics_v2
 execution_reference_warnings = _execution_reference_warnings

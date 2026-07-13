@@ -118,13 +118,10 @@ from .statistical_selection import (
 )
 from .return_panel import build_candidate_return_panel, write_candidate_return_panel
 from .stress_suite import StressSuiteContext, analyze_stress_suite, stress_suite_required
-from .strategy_spec import (
-    materialize_strategy_parameters,
-    materialized_strategy_parameters_hash,
-    strategy_parameter_source_map,
-)
 from .strategy_catalog import research_strategy_data_requirements, resolve_research_strategy
-from .strategy_spec import exit_policy_from_parameters, exit_policy_hash, materialize_strategy_parameters, strategy_spec_for_name
+from .strategy_compiler import StrategyCompiler, compiled_contract_from_payload
+from .builtin_registry import builtin_strategy_registry
+from .strategy_spec import exit_policy_hash, strategy_spec_for_name
 
 
 class ResearchValidationError(ValueError):
@@ -171,6 +168,7 @@ class EvaluationContext:
     progress_callback: ProgressCallback | None = None
     artifact_context: ResearchArtifactContext | None = None
     worker_pid: int | None = None
+    compiled_contract: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -219,6 +217,7 @@ def _task_from_evaluation_context(*, work_unit: ResearchWorkUnit, context: Evalu
         "scenario_id": context.scenario_id,
         "artifact_context": context.artifact_context,
         "work_unit": work_unit,
+        "compiled_contract": context.compiled_contract,
     }
 
 
@@ -304,6 +303,12 @@ def _evaluate_candidate_scenario_task(
     artifact_context = task.get("artifact_context")
     raw_candidate_count = int(task["raw_candidate_count"])
     param_candidate_id = candidate_id(params, index)
+    compiled_payload = task.get("compiled_contract")
+    compiled_contract = (compiled_contract_from_payload(dict(compiled_payload)) if isinstance(compiled_payload, dict)
+        else StrategyCompiler(builtin_strategy_registry()).compile(
+            strategy_name=manifest.strategy_name, raw_parameters=params, fee_rate=scenario.fee_rate,
+            slippage_bps=float(scenario.slippage_bps),
+            context=BacktestRunContext(policy_materialization_mode="research_validation")))
     worker_observability: list[dict[str, Any]] = []
     try:
         base = _evaluate_candidate_base_result(
@@ -324,6 +329,7 @@ def _evaluate_candidate_scenario_task(
             work_unit_observability=worker_observability,
             progress_callback=progress_callback,
             artifact_context=artifact_context if isinstance(artifact_context, ResearchArtifactContext) else None,
+            compiled_contract=compiled_contract,
         )
         observability = worker_observability[-1] if worker_observability else {}
         if worker_pid is not None:
@@ -2285,6 +2291,17 @@ def _evaluate_candidates(
         progress_callback=progress_callback,
     )
     substage_timings.append(timing)
+    compiled_by_candidate_scenario: dict[tuple[int, int], dict[str, Any]] = {}
+    for task in work_tasks:
+        key = (int(task["candidate_index"]), int(task["scenario_index"]))
+        if key not in compiled_by_candidate_scenario:
+            task_scenario = task["scenario"]
+            compiled_by_candidate_scenario[key] = StrategyCompiler(builtin_strategy_registry()).compile(
+                strategy_name=manifest.strategy_name, raw_parameters=dict(task["params"]),
+                fee_rate=task_scenario.fee_rate, slippage_bps=float(task_scenario.slippage_bps),
+                context=BacktestRunContext(policy_materialization_mode="research_validation"),
+            ).as_dict()
+        task["compiled_contract"] = compiled_by_candidate_scenario[key]
     if execution_plan is not None:
         selection = execution_plan.payload.get("work_unit_selection")
         if isinstance(selection, dict):
@@ -2466,6 +2483,7 @@ def _evaluate_candidates(
                     progress_callback=progress_callback,
                     artifact_context=artifact_context,
                     worker_pid=None,
+                    compiled_contract=task.get("compiled_contract"),
                 ),
             )
             append_started = time.perf_counter()
@@ -2502,6 +2520,7 @@ def _evaluate_candidates(
                         progress_callback=progress_callback,
                         artifact_context=artifact_context,
                         worker_pid=None,
+                        compiled_contract=task.get("compiled_contract"),
                     ),
                 ),
                 worker=lambda context: evaluator.evaluate(work_unit, context),
@@ -2672,20 +2691,16 @@ def _evaluate_candidates(
         for base in base_results:
             index = int(base["index"])
             params = dict(base["parameter_values"])
-            effective_params = materialize_strategy_parameters(
-                manifest.strategy_name,
-                params,
-                fee_rate=scenario.fee_rate,
-                slippage_bps=float(scenario.slippage_bps),
-            )
-            effective_params_hash = materialized_strategy_parameters_hash(effective_params)
-            parameter_source_map = strategy_parameter_source_map(
-                manifest.strategy_name,
-                params,
-                fee_rate=scenario.fee_rate,
-                slippage_bps=float(scenario.slippage_bps),
-            )
-            active_exit_policy = exit_policy_from_parameters(manifest.strategy_name, effective_params)
+            executed_usage = base.get("validation_resource_usage") or base.get("train_resource_usage") or {}
+            compiled_payload = dict(base.get("compiled_strategy_contract") or executed_usage.get("compiled_strategy_contract") or {})
+            compiled_hash = base.get("compiled_strategy_contract_hash") or executed_usage.get("compiled_strategy_contract_hash")
+            registry_hash = base.get("strategy_registry_hash") or executed_usage.get("strategy_registry_hash")
+            if not compiled_payload or not compiled_hash:
+                raise ResearchValidationError("executed_compiled_strategy_contract_missing")
+            effective_params = dict(compiled_payload["materialized_parameters"])
+            effective_params_hash = str(compiled_payload["materialized_parameters_hash"])
+            parameter_source_map = dict(compiled_payload["parameter_source_map"])
+            active_exit_policy = dict(compiled_payload.get("exit_policy") or {})
             active_exit_policy_hash = exit_policy_hash(active_exit_policy)
             stability_payload = stability[index]
             stability_score = stability_payload["score"]
@@ -2936,6 +2951,11 @@ def _evaluate_candidates(
                 "effective_strategy_parameters": effective_params,
                 "effective_strategy_parameters_hash": effective_params_hash,
                 "strategy_parameter_source_map": parameter_source_map,
+                "compiled_strategy_contract": compiled_payload,
+                "compiled_strategy_contract_hash": compiled_hash,
+                "strategy_registry_hash": registry_hash,
+                "capability_contract": compiled_payload["capability_contract"],
+                "capability_contract_hash": compiled_payload["capability_contract_hash"],
                 "candidate_regime_policy_applied_in_research": False,
                 "candidate_regime_policy_required_for_live": True,
                 "candidate_regime_policy_equivalence_required": True,
@@ -3053,6 +3073,11 @@ def _evaluate_candidates(
                     "effective_strategy_parameters": effective_params,
                     "effective_strategy_parameters_hash": effective_params_hash,
                     "strategy_parameter_source_map": parameter_source_map,
+                    "compiled_strategy_contract": compiled_payload,
+                    "compiled_strategy_contract_hash": compiled_hash,
+                    "strategy_registry_hash": registry_hash,
+                    "capability_contract": compiled_payload["capability_contract"],
+                    "capability_contract_hash": compiled_payload["capability_contract_hash"],
                     "candidate_regime_policy_applied_in_research": False,
                     "candidate_regime_policy_required_for_live": True,
                     "candidate_regime_policy_equivalence_required": True,
@@ -3805,6 +3830,7 @@ def _evaluate_candidate_base_result(
     work_unit_observability: list[dict[str, Any]] | None,
     progress_callback: ProgressCallback | None,
     artifact_context: ResearchArtifactContext | None = None,
+    compiled_contract: Any = None,
 ) -> dict[str, Any]:
     param_candidate_id = candidate_id(params, index)
     work_started = time.perf_counter()
@@ -3878,6 +3904,7 @@ def _evaluate_candidate_base_result(
                     portfolio_policy=manifest.portfolio_policy,
                     risk_policy=manifest.risk_policy,
                     context=context,
+                    compiled_contract=compiled_contract,
                 )
             profile_observability: dict[str, Any] = {}
             if manifest.research_run.diagnostic_mode == "profiling":
@@ -3925,7 +3952,7 @@ def _evaluate_candidate_base_result(
                     "candles_processed": len(snapshots[split_name].candles),
                 }
             )
-            if context.audit_trace is not None:
+            if context.audit_trace is not None and not isinstance(getattr(exc, "audit_trace_index", None), dict):
                 audit_index = context.audit_trace.complete(status="failed")
                 if isinstance(exc, BacktestResourceLimitExceeded):
                     exc.evidence.setdefault("audit_trace_index", audit_index)
@@ -3987,6 +4014,12 @@ def _evaluate_candidate_base_result(
             work_unit=work_unit,
             executed_policy_evidence=executed_policy_evidence,
         )
+        base.update({
+            "compiled_strategy_contract": compiled_contract.as_dict(),
+            "compiled_strategy_contract_hash": compiled_contract.compiled_contract_hash,
+            "strategy_registry_hash": compiled_contract.strategy_registry_hash,
+            "strategy_plugin_contract_hash": compiled_contract.strategy_plugin_contract_hash,
+        })
         return base
 
     train = _run("train")
@@ -4060,6 +4093,10 @@ def _evaluate_candidate_base_result(
         **executed_policy_evidence,
         "metrics_v2_source": "computed",
         "parameter_values": params,
+        "compiled_strategy_contract": compiled_contract.as_dict(),
+        "compiled_strategy_contract_hash": compiled_contract.compiled_contract_hash,
+        "strategy_registry_hash": compiled_contract.strategy_registry_hash,
+        "strategy_plugin_contract_hash": compiled_contract.strategy_plugin_contract_hash,
         "train_metrics": train.metrics.as_dict(),
         "validation_metrics": validation.metrics.as_dict(),
         "final_holdout_metrics": final_holdout.metrics.as_dict() if final_holdout else None,
@@ -6630,6 +6667,9 @@ def _report_payload(
         "strategy_plugin_contract_hash": (
             best.get("strategy_plugin_contract_hash") if best else strategy_plugin.contract_hash()
         ),
+        "strategy_registry_hash": best.get("strategy_registry_hash") if best else builtin_strategy_registry().content_hash,
+        "compiled_strategy_contract": best.get("compiled_strategy_contract") if best else None,
+        "compiled_strategy_contract_hash": best.get("compiled_strategy_contract_hash") if best else None,
         "exit_policy": best.get("exit_policy") if best else None,
         "exit_policy_hash": best.get("exit_policy_hash") if best else None,
         "best_validation_metrics_v2": best.get("validation_metrics_v2") if best else None,
@@ -7041,7 +7081,6 @@ def _closed_trade_diagnostics_summary(candidate: dict[str, Any]) -> dict[str, An
         "loss_by_entry_exit_regime": loss_by_regime,
         "max_loss_trade_dependency": max_loss_trade,
         "max_holding_exit_count": exit_rule_distribution.get("max_holding_time", 0),
-        "opposite_cross_exit_count": exit_rule_distribution.get("opposite_cross", 0),
     }
 
 

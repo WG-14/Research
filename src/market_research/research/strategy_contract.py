@@ -7,7 +7,9 @@ dependency.  It is the contract consumed by ``market-research``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable
+import inspect
+from types import MappingProxyType
+from typing import Any, Callable, Iterable, Mapping
 
 from .backtest_types import BacktestRunContext
 from .dataset_snapshot import DatasetSnapshot
@@ -25,6 +27,73 @@ ResearchDataRequirementBuilder = Callable[[object | None], "ResearchStrategyData
 ResearchDecisionBuilder = Callable[..., Any]
 ResearchPayloadAdapter = Callable[[dict[str, object], Any], dict[str, object]]
 ExitPolicyMaterializer = Callable[[str, dict[str, Any]], Any]
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyCapabilityContract:
+    """Versioned, fail-closed declaration of behavior required by a strategy."""
+
+    schema_version: int = 1
+    instrument_count: int = 1
+    direction: str = "long_only"
+    max_concurrent_positions: int = 1
+    pyramiding: bool = False
+    partial_exit: bool = False
+    max_intents_per_decision: int = 1
+    portfolio_mode: str = "single_asset_cash_qty"
+
+    def as_dict(self) -> dict[str, object]:
+        return {field: getattr(self, field) for field in self.__dataclass_fields__}
+
+    def contract_hash(self) -> str:
+        return sha256_prefixed(self.as_dict())
+
+
+ENGINE_SUPPORTED_CAPABILITIES = StrategyCapabilityContract()
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledStrategyContract:
+    """The sole authoritative interpretation of a candidate/scenario strategy."""
+
+    schema_version: int
+    strategy_name: str
+    strategy_version: str
+    raw_parameters: Mapping[str, object]
+    materialized_parameters: Mapping[str, object]
+    parameter_source_map: Mapping[str, str]
+    materialized_parameters_hash: str
+    data_requirements: Mapping[str, object]
+    exit_policy: Mapping[str, object] | None
+    exit_mode: str
+    capability_contract: Mapping[str, object]
+    capability_contract_hash: str
+    strategy_plugin_contract_hash: str
+    strategy_registry_hash: str
+    compiled_contract_hash: str
+
+    @staticmethod
+    def immutable_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
+        return MappingProxyType(dict(value))
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "strategy_name": self.strategy_name,
+            "strategy_version": self.strategy_version,
+            "raw_parameters": dict(self.raw_parameters),
+            "materialized_parameters": dict(self.materialized_parameters),
+            "parameter_source_map": dict(self.parameter_source_map),
+            "materialized_parameters_hash": self.materialized_parameters_hash,
+            "data_requirements": dict(self.data_requirements),
+            "exit_policy": dict(self.exit_policy) if self.exit_policy is not None else None,
+            "exit_mode": self.exit_mode,
+            "capability_contract": dict(self.capability_contract),
+            "capability_contract_hash": self.capability_contract_hash,
+            "strategy_plugin_contract_hash": self.strategy_plugin_contract_hash,
+            "strategy_registry_hash": self.strategy_registry_hash,
+            "compiled_contract_hash": self.compiled_contract_hash,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +254,10 @@ class ResearchStrategyPlugin:
     decision_builder: ResearchDecisionBuilder | None = None
     payload_adapter: ResearchPayloadAdapter | None = None
     exit_policy_materializer: ExitPolicyMaterializer | None = None
+    runtime_factory: Callable[..., Any] | None = None
+    exit_decision_builder: Callable[..., Any] | None = None
+    exit_mode: str = "strategy_owned"
+    required_capabilities: StrategyCapabilityContract = ENGINE_SUPPORTED_CAPABILITIES
     execution_authority: str = "common_simulation_engine"
 
     def __post_init__(self) -> None:
@@ -204,6 +277,8 @@ class ResearchStrategyPlugin:
         object.__setattr__(self, "optional_data", tuple(sorted({str(x).strip().lower() for x in self.optional_data if str(x).strip()})))
         if self.diagnostics_builder is None:
             object.__setattr__(self, "diagnostics_builder", generic_diagnostics_count_builder)
+        if self.exit_mode not in {"strategy_owned", "common_typed_policy"}:
+            raise ValueError(f"research_strategy_exit_mode_invalid:{name}:{self.exit_mode}")
 
     def data_requirements(self, strategy_spec: object | None = None) -> ResearchStrategyDataRequirements:
         if self.data_requirements_builder is not None:
@@ -211,8 +286,28 @@ class ResearchStrategyPlugin:
         return ResearchStrategyDataRequirements(self.required_data, self.optional_data)
 
     def contract_payload(self) -> dict[str, object]:
+        hooks = {}
+        for role, hook in (
+            ("parameter_materializer", self.parameter_materializer),
+            ("runtime_factory", self.runtime_factory),
+            ("event_builder_compatibility", self.event_builder),
+            ("exit_policy_materializer", self.exit_policy_materializer),
+            ("exit_decision_builder", self.exit_decision_builder),
+            ("data_requirements_builder", self.data_requirements_builder),
+            ("diagnostics_builder", self.diagnostics_builder),
+            ("payload_adapter", self.payload_adapter),
+        ):
+            if hook is not None:
+                try:
+                    source_binding = inspect.getsource(hook)
+                except (OSError, TypeError):
+                    code = getattr(hook, "__code__", None)
+                    source_binding = repr((getattr(code, "co_code", b""), getattr(code, "co_consts", ())))
+                hooks[role] = {"module": hook.__module__, "qualname": hook.__qualname__, "role": role,
+                               "hook_contract_version": self.decision_contract_version,
+                               "source_artifact_hash": sha256_prefixed(source_binding)}
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "name": self.name,
             "version": self.version,
             "strategy_spec_hash": self.spec.spec_hash(),
@@ -222,11 +317,15 @@ class ResearchStrategyPlugin:
             "decision_contract_version": self.decision_contract_version,
             "diagnostics_namespace": self.diagnostics_namespace,
             "execution_authority": self.execution_authority,
+            "exit_mode": self.exit_mode,
+            "required_capabilities": self.required_capabilities.as_dict(),
+            "behavior_hooks": hooks,
             "event_builder_module": self.event_builder.__module__,
             "event_builder_qualname": self.event_builder.__qualname__,
             "parameter_materializer_module": (
                 self.parameter_materializer.__module__ if self.parameter_materializer is not None else None
             ),
+            "source_artifact_binding": "per_hook_source_artifact_hash",
         }
 
     def contract_hash(self) -> str:

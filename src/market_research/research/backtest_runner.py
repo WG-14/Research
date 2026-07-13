@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from itertools import tee
 from dataclasses import replace
 from typing import Any
 
@@ -8,7 +7,6 @@ from .backtest_types import BacktestRun, BacktestRunContext
 from .dataset_snapshot import DatasetSnapshot
 from .execution_model import ExecutionModel
 from .experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy, legacy_research_portfolio_policy
-from .strategy_spec import materialize_strategy_parameters
 
 
 def run_plugin_backtest(
@@ -24,70 +22,13 @@ def run_plugin_backtest(
     portfolio_policy: PortfolioPolicy | None = None,
     context: BacktestRunContext | None = None,
 ) -> BacktestRun:
-    event_builder = getattr(plugin, "event_builder", None) or getattr(plugin, "research_event_builder", None)
-    if event_builder is None:
-        raise ValueError(f"research_event_builder_missing:{plugin.name}")
-    parameter_materializer = getattr(plugin, "parameter_materializer", None) or getattr(
-        plugin, "research_parameter_materializer", None
-    )
-    if parameter_materializer is None:
-        effective_parameters = materialize_strategy_parameters(
-            plugin.name,
-            parameter_values,
-            fee_rate=fee_rate,
-            slippage_bps=slippage_bps,
-        )
-    else:
-        effective_parameters = parameter_materializer(
-            plugin=plugin,
-            parameter_values=parameter_values,
-            fee_rate=fee_rate,
-            slippage_bps=slippage_bps,
-            context=context,
-        )
-    timing_policy = execution_timing_policy or ExecutionTimingPolicy()
+    from .simulation_engine import run_common_simulation_backtest
     policy = portfolio_policy or legacy_research_portfolio_policy()
-    decision_events = event_builder(
-        dataset=dataset,
-        parameter_values=effective_parameters,
-        fee_rate=fee_rate,
-        slippage_bps=slippage_bps,
-        execution_timing_policy=timing_policy,
-        portfolio_policy=policy,
-        context=context,
-    )
-    decision_events, emptiness_probe = tee(iter(decision_events), 2)
-    try:
-        next(emptiness_probe)
-    except StopIteration:
-        return _with_portfolio_policy_evidence(
-            _empty_plugin_backtest_result(
-                plugin=plugin,
-                dataset=dataset,
-                parameter_stability_score=parameter_stability_score,
-                portfolio_policy=policy,
-                context=context,
-            ),
-            policy=policy,
-        )
-    from . import backtest_kernel
-
-    return _with_portfolio_policy_evidence(
-        backtest_kernel.run_decision_event_backtest(
-            dataset=dataset,
-            strategy_name=plugin.name,
-            parameter_values=effective_parameters,
-            fee_rate=fee_rate,
-            slippage_bps=slippage_bps,
-            decision_events=decision_events,
-            parameter_stability_score=parameter_stability_score,
-            execution_model=execution_model,
-            execution_timing_policy=timing_policy,
-            portfolio_policy=policy,
-            context=context,
-        ),
-        policy=policy,
-    )
+    return _with_portfolio_policy_evidence(run_common_simulation_backtest(
+        plugin=plugin, dataset=dataset, parameter_values=parameter_values, fee_rate=fee_rate,
+        slippage_bps=slippage_bps, parameter_stability_score=parameter_stability_score,
+        execution_model=execution_model, execution_timing_policy=execution_timing_policy,
+        portfolio_policy=policy, context=context), policy=policy)
 
 
 def _empty_plugin_backtest_result(

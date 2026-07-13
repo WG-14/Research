@@ -9,7 +9,7 @@ from pathlib import Path
 from tests.research_sma_success_fixture import create_success_fixture
 
 
-FORBIDDEN = ("market_research." + "config", "market_research.research_profile", "market_research." + "broker", "market_research.runtime_strategy_decision", "market_research.runtime_strategy_set", "market_research.runtime_adapter_bootstrap", "market_research.runtime_adapters", "market_research.strategy_authoring", "market_research.research.strategy_registry", "market_research.strategy_plugins")
+FORBIDDEN = ("market_research." + "config", "market_research.research_profile", "market_research." + "broker", "market_research.runtime_strategy_decision", "market_research.runtime_strategy_set", "market_research.runtime_adapter_bootstrap", "market_research.runtime_adapters", "market_research.strategy_authoring", "market_research.strategy_plugins")
 
 
 def test_successful_sma_backtest_does_not_load_operational_modules(tmp_path: Path) -> None:

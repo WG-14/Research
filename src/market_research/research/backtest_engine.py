@@ -12,7 +12,6 @@ from typing import Any, Iterable
 from .backtest_common import (
     _behavior_hashes,
     _trade_hash_payload,
-    apply_pending_fills,
     closed_trade_diagnostics,
     complete_audit_trace,
     create_exit_rules,

@@ -20,6 +20,11 @@ _CONTRACT_FIELDS = (
     "risk_policy", "execution_limitations", "suspension_or_invalidation_criteria",
 )
 
+_EVIDENCE_BINDING_FIELDS = (
+    "strategy_registry_hash", "strategy_plugin_contract_hash", "compiled_strategy_contract_hash",
+    "capability_contract_hash",
+)
+
 
 def build_strategy_research_package(report: dict[str, Any]) -> dict[str, Any]:
     """Build only from an internally valid authoritative final-selection report."""
@@ -71,8 +76,25 @@ def build_strategy_research_package(report: dict[str, Any]) -> dict[str, Any]:
         actual_report_hash = sha256_prefixed(report_content_hash_payload(report))
         if recorded_report_hash != actual_report_hash:
             raise StrategyPackageError("strategy_package_source_report_content_hash_mismatch")
+    missing_bindings = [field for field in _EVIDENCE_BINDING_FIELDS if not str(merged.get(field) or "").startswith("sha256:")]
+    if missing_bindings:
+        raise StrategyPackageError("strategy_package_missing_evidence_binding:" + ",".join(missing_bindings))
+    compiled_payload = merged.get("compiled_strategy_contract")
+    if not isinstance(compiled_payload, dict):
+        raise StrategyPackageError("strategy_package_compiled_contract_payload_missing")
+    compiled_material = dict(compiled_payload)
+    recorded_compiled_hash = compiled_material.pop("compiled_contract_hash", None)
+    if recorded_compiled_hash != merged["compiled_strategy_contract_hash"] or sha256_prefixed(compiled_material) != recorded_compiled_hash:
+        raise StrategyPackageError("strategy_package_compiled_contract_hash_mismatch")
+    capability = compiled_payload.get("capability_contract")
+    if not isinstance(capability, dict) or sha256_prefixed(capability) != merged["capability_contract_hash"]:
+        raise StrategyPackageError("strategy_package_capability_contract_hash_mismatch")
+    decision_hash = evidence.get("decision_stream_hash") or selected.get("decision_stream_hash")
+    metrics_hash = selected.get("metrics_hash") or evidence.get("metrics_hash")
+    if not str(decision_hash or "").startswith("sha256:") or not str(metrics_hash or "").startswith("sha256:"):
+        raise StrategyPackageError("strategy_package_missing_decision_or_metrics_hash")
     package = {
-        "schema_version": 2, "selected_candidate_id": selected_id,
+        "schema_version": 3, "selected_candidate_id": selected_id,
         **{field: merged[field] for field in _CONTRACT_FIELDS},
         "execution_timing_hash": executed_timing,
         "execution_timing_stream_hash": evidence.get("execution_timing_stream_hash", evidence.get("executed_execution_timing_hash")),
@@ -80,6 +102,11 @@ def build_strategy_research_package(report: dict[str, Any]) -> dict[str, Any]:
         "request_stream_hash": evidence["execution_request_stream_hash"],
         "fill_stream_hash": evidence["execution_fill_stream_hash"],
         "ledger_stream_hash": evidence.get("ledger_stream_hash", evidence.get("portfolio_ledger_hash")),
+        "decision_stream_hash": decision_hash,
+        "metrics_hash": metrics_hash,
+        **{field: merged[field] for field in _EVIDENCE_BINDING_FIELDS},
+        "capability_contract": merged.get("capability_contract") or
+            dict(merged.get("compiled_strategy_contract") or {}).get("capability_contract"),
         "validation_result": "PASS",
         "source_report_content_hash": recorded_report_hash or sha256_prefixed(report),
         "selected_candidate_evidence_hash": candidate_evidence_hash,

@@ -326,13 +326,6 @@ THRESHOLD_RESEARCH_ONLY_SPEC = StrategySpec(
 
 
 def strategy_spec_for_name(strategy_name: str) -> StrategySpec:
-    # The built-in research manifest contracts are self-contained. Keep their
-    # validation independent from runtime plugin discovery so manifest-only
-    # commands do not load operational configuration or adapters.
-    if strategy_name in {"sma_with_filter", "__test_top_of_book_required__"}:
-        return SMA_WITH_FILTER_SPEC
-    if strategy_name == "buy_and_hold":
-        return BUY_AND_HOLD_SPEC
     try:
         from .strategy_catalog import ResearchStrategyCatalogError, resolve_research_strategy
 

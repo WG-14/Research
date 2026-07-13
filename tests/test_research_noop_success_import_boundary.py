@@ -18,7 +18,6 @@ FORBIDDEN = (
     "market_research.runtime_adapter_bootstrap",
     "market_research.runtime_adapters",
     "market_research.strategy_authoring",
-    "market_research.research.strategy_registry",
     "market_research.strategy_plugins",
 )
 

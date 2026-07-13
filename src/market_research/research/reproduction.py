@@ -20,8 +20,8 @@ from .experiment_manifest import ExperimentManifest
 from .hashing import content_hash_payload, sha256_prefixed
 
 
-REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 5
-REPRODUCTION_RECEIPT_SCHEMA_VERSION = 5
+REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 6
+REPRODUCTION_RECEIPT_SCHEMA_VERSION = 6
 
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
@@ -262,6 +262,14 @@ def _candidate_fingerprint(candidate: Any) -> dict[str, object]:
         raise ReproductionContractError(f"candidate {candidate_id} has no scenario_results")
     scenarios = tuple(sorted((_scenario_fingerprint(item, candidate_id) for item in scenarios_value), key=_scenario_sort_key))
     primary_scenario_id = _required_string(candidate, "primary_scenario_id", f"candidate {candidate_id}")
+    compiled = candidate.get("compiled_strategy_contract")
+    if not isinstance(compiled, dict):
+        raise ReproductionContractError(f"candidate {candidate_id}.compiled_strategy_contract is required")
+    compiled_material = dict(compiled)
+    embedded_compiled_hash = compiled_material.pop("compiled_contract_hash", None)
+    recorded_compiled_hash = _required_sha256(candidate, "compiled_strategy_contract_hash", f"candidate {candidate_id}")
+    if embedded_compiled_hash != recorded_compiled_hash or sha256_prefixed(compiled_material) != recorded_compiled_hash:
+        raise ReproductionContractError(f"candidate {candidate_id}.compiled_strategy_contract_hash mismatch")
     return {
         "candidate_id": candidate_id,
         "effective_strategy_parameters_hash": _required_sha256(
@@ -271,6 +279,8 @@ def _candidate_fingerprint(candidate: Any) -> dict[str, object]:
         "strategy_plugin_contract_hash": _required_sha256(
             candidate, "strategy_plugin_contract_hash", f"candidate {candidate_id}"
         ),
+        "strategy_registry_hash": _required_sha256(candidate, "strategy_registry_hash", f"candidate {candidate_id}"),
+        "compiled_strategy_contract_hash": recorded_compiled_hash,
         "acceptance_gate_status": _required_string(candidate, "acceptance_gate_result", f"candidate {candidate_id}"),
         "gate_fail_reasons": sorted(str(item) for item in _string_list(candidate.get("gate_fail_reasons"), "gate_fail_reasons")),
         "primary_scenario_id": primary_scenario_id,
@@ -311,6 +321,7 @@ def _scenario_fingerprint(scenario: Any, candidate_id: str) -> dict[str, object]
                 break
     if isinstance(execution, dict):
         aliases = {
+            "decision_stream_hash": "decision_stream_hash",
             "execution_timing_policy_hash": "executed_execution_timing_policy_hash",
             "execution_timing_stream_hash": "execution_timing_stream_hash",
             "execution_model_hash": "executed_execution_model_hash",
@@ -325,6 +336,9 @@ def _scenario_fingerprint(scenario: Any, candidate_id: str) -> dict[str, object]
                 if not isinstance(value, str) or not value.startswith("sha256:"):
                     raise ReproductionContractError(f"{context}.{source_key} must be a sha256 hash")
                 result[output_key] = value
+        for required_key in ("decision_stream_hash", "request_stream_hash", "fill_stream_hash", "ledger_stream_hash"):
+            if required_key not in result:
+                raise ReproductionContractError(f"{context}.{required_key} is required")
         seed_rows = scenario.get("execution_fill_stream") or ()
         seed_hashes = sorted({str(fill.get("derived_seed_hash")) for fill in seed_rows if isinstance(fill, dict) and fill.get("derived_seed_hash")})
         if seed_hashes:

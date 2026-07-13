@@ -1,26 +1,15 @@
 {
-  "schema_version": 2,
-  "entrypoints": [
-    "src/market_research/research_bootstrap.py",
-    "src/market_research/research_cli"
-  ],
-  "research_core": [
-    "src/market_research/research"
-  ],
-  "offline_data_helpers": [
-    "src/market_research/market_ids.py",
-    "src/market_research/research/intervals.py"
-  ],
-  "forbidden_domains": [
-    "private_exchange_access",
-    "account_connected_runtime",
-    "order_submission",
-    "account_access",
-    "state_repair",
-    "reviewed_account_profile",
-    "network_market_data_collection",
-    "operational_order_fill_database_ingestion",
-    "exchange_raw_order_semantics_inference",
-    "retry_backfill_source_probe"
-  ]
+  "schema_version": 3,
+  "entrypoints": ["src/market_research/research_bootstrap.py", "src/market_research/research_cli"],
+  "research_core": ["src/market_research/research_core", "src/market_research/research/simulation_engine.py", "src/market_research/research/portfolio_ledger.py"],
+  "strategy_sdk": ["src/market_research/strategy_sdk", "src/market_research/research/strategy_contract.py", "src/market_research/research/strategy_registry.py", "src/market_research/research/strategy_compiler.py"],
+  "builtin_strategies": ["src/market_research/builtin_strategies", "src/market_research/research/strategies"],
+  "composition_root": ["src/market_research/research_composition"],
+  "dependency_rules": {
+    "research_core_forbids": ["builtin_strategies", "research_composition"],
+    "strategy_sdk_forbids": ["builtin_strategies", "research_composition"],
+    "concrete_plugin_imports_allowed_from": ["composition_root"]
+  },
+  "offline_data_helpers": ["src/market_research/market_ids.py", "src/market_research/research/intervals.py"],
+  "forbidden_domains": ["private_exchange_access", "account_connected_runtime", "order_submission", "account_access", "state_repair", "reviewed_account_profile", "network_market_data_collection", "operational_order_fill_database_ingestion", "exchange_raw_order_semantics_inference", "retry_backfill_source_probe"]
 }
