@@ -5,7 +5,7 @@ from market_research.research.dataset_freeze import freeze_sqlite_candles_datase
 from .test_dataset_artifact_manifest_contract import _source
 from .test_frozen_dataset_multi_split_integration import frozen_manifest_and_manager
 from market_research.research.validation_protocol import run_research_backtest, run_research_walk_forward
-from market_research.research.builtin_registry import builtin_strategy_registry
+from market_research.research_composition import builtin_strategy_registry
 import pytest
 
 

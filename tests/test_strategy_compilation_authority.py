@@ -1,5 +1,6 @@
-from market_research.research.builtin_registry import builtin_strategy_registry
+from market_research.research_composition import builtin_strategy_registry
 from market_research.research.strategy_compiler import StrategyCompiler
+from market_research.research.strategy_contract import ParameterExtensionResult
 import market_research.research.strategy_compiler as compiler_module
 
 
@@ -35,9 +36,10 @@ def test_plugin_extension_receives_materialized_parameters():
     plugin = builtin_strategy_registry().resolve("sma_with_filter")
     observed = {}
 
-    def extension(*, materialized_parameters, **kwargs):
-        observed.update(materialized_parameters)
-        return materialized_parameters
+    def extension(*, materialized, context):
+        del context
+        observed.update(materialized.values)
+        return ParameterExtensionResult(values=materialized.values, source_overrides={})
 
     from dataclasses import replace
     from market_research.research.strategy_registry import StrategyRegistry
@@ -46,3 +48,74 @@ def test_plugin_extension_receives_materialized_parameters():
         raw_parameters={"SMA_SHORT": 2, "SMA_LONG": 3}, fee_rate=.001, slippage_bps=10)
     assert observed["LIVE_FEE_RATE_ESTIMATE"] == .001
     assert observed["STRATEGY_ENTRY_SLIPPAGE_BPS"] == 10
+
+
+def test_parameter_extension_cannot_receive_raw_parameters():
+    plugin = builtin_strategy_registry().resolve("sma_with_filter")
+
+    def legacy(*, parameter_values, fee_rate, slippage_bps):
+        return parameter_values, fee_rate, slippage_bps
+
+    from dataclasses import replace
+    from market_research.research.strategy_registry import StrategyRegistry
+    changed = replace(plugin, parameter_materializer=legacy)
+    try:
+        StrategyCompiler(StrategyRegistry.build((changed,))).compile(
+            strategy_name=changed.name,
+            raw_parameters={"SMA_SHORT": 2, "SMA_LONG": 3},
+            fee_rate=.001,
+            slippage_bps=10,
+        )
+    except TypeError as exc:
+        assert "materialized" in str(exc)
+    else:
+        raise AssertionError("legacy parameter materializer signature was accepted")
+
+
+def test_parameter_extension_materialized_payload_is_immutable():
+    plugin = builtin_strategy_registry().resolve("sma_with_filter")
+
+    def extension(*, materialized, context):
+        del context
+        materialized.values["SMA_SHORT"] = 99
+
+    from dataclasses import replace
+    from market_research.research.strategy_registry import StrategyRegistry
+    changed = replace(plugin, parameter_materializer=extension)
+    try:
+        StrategyCompiler(StrategyRegistry.build((changed,))).compile(
+            strategy_name=changed.name,
+            raw_parameters={"SMA_SHORT": 2, "SMA_LONG": 3},
+            fee_rate=.001,
+            slippage_bps=10,
+        )
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("parameter extension mutated compiler-owned materialization")
+
+
+def test_parameter_extension_returns_source_overrides_for_every_changed_key():
+    plugin = builtin_strategy_registry().resolve("sma_with_filter")
+
+    def extension(*, materialized, context):
+        del context
+        values = dict(materialized.values)
+        values["SMA_SHORT"] = 99
+        return ParameterExtensionResult(values=values, source_overrides={})
+
+    from dataclasses import replace
+    from market_research.research.strategy_compiler import StrategyCompilationError
+    from market_research.research.strategy_registry import StrategyRegistry
+    changed = replace(plugin, parameter_materializer=extension)
+    try:
+        StrategyCompiler(StrategyRegistry.build((changed,))).compile(
+            strategy_name=changed.name,
+            raw_parameters={"SMA_SHORT": 2, "SMA_LONG": 3},
+            fee_rate=.001,
+            slippage_bps=10,
+        )
+    except StrategyCompilationError as exc:
+        assert exc.reason_code == "parameter_extension_source_overrides_invalid"
+    else:
+        raise AssertionError("changed parameter without source override was accepted")

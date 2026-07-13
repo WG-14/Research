@@ -147,8 +147,12 @@ def build_manifest_workload_estimate(manifest: ExperimentManifest) -> dict[str, 
     }
 
 
-def build_manifest_workload_estimate_from_path(manifest_path: str) -> dict[str, Any]:
-    return build_manifest_workload_estimate(load_manifest(manifest_path))
+def build_manifest_workload_estimate_from_path(
+    manifest_path: str, *, strategy_registry: Any
+) -> dict[str, Any]:
+    return build_manifest_workload_estimate(
+        load_manifest(manifest_path, registry=strategy_registry)
+    )
 
 
 def _dataset_split_ranges(manifest: ExperimentManifest) -> list[dict[str, Any]]:

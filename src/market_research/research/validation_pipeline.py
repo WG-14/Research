@@ -14,7 +14,7 @@ from market_research.storage_io import write_json_atomic
 from .experiment_manifest import ExperimentManifest
 from .hashing import content_hash_payload, sha256_prefixed
 from .validation_protocol import run_research_backtest, run_research_walk_forward
-from market_research.research_composition import builtin_strategy_registry
+from .strategy_registry import StrategyRegistry
 
 
 class ValidationRunError(ValueError):
@@ -45,10 +45,10 @@ def run_research_validation(
     execution_calibration_path: str | None = None, candidate_id: str | None = None,
     out_path: str | Path | None = None, generated_at: str | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    strategy_registry: StrategyRegistry,
 ) -> dict[str, Any]:
     if mode != "strict":
         raise ValidationRunError("validation_run_mode_unsupported")
-    strategy_registry = builtin_strategy_registry()
     backtest = run_research_backtest(
         manifest=manifest, db_path=db_path, manager=manager, execution_calibration=execution_calibration,
         manifest_path=manifest_path, command_args={"manifest": manifest_path},

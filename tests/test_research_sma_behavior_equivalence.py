@@ -4,7 +4,7 @@ from market_research.research.dataset_snapshot import Candle, DatasetSnapshot
 from market_research.research.experiment_manifest import DateRange, ExecutionTimingPolicy, legacy_research_portfolio_policy
 from market_research.research.execution_model import FixedBpsExecutionModel
 from market_research.research.simulation_engine import run_common_simulation_backtest
-from market_research.research.strategy_catalog import resolve_research_strategy
+from market_research.research_composition import resolve_builtin_strategy as resolve_research_strategy
 
 
 def test_sma_signal_stream_preserved_after_engine_migration() -> None:

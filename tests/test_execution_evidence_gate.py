@@ -17,7 +17,7 @@ def test_validation_fails_when_executed_model_hash_differs():
 
 def test_zero_intent_run_allows_zero_execution_counts():
     from market_research.research.simulation_engine import run_common_simulation_backtest
-    from market_research.research.strategy_catalog import resolve_research_strategy
+    from market_research.research_composition import resolve_builtin_strategy as resolve_research_strategy
     from tests.test_common_simulation_engine import _dataset
     model = FixedBpsExecutionModel(.001, 10)
     run = run_common_simulation_backtest(plugin=resolve_research_strategy("noop_baseline"), dataset=_dataset(), parameter_values={}, fee_rate=.001, slippage_bps=10, execution_model=model, execution_timing_policy=ExecutionTimingPolicy(), portfolio_policy=__import__("market_research.research.experiment_manifest", fromlist=["legacy_research_portfolio_policy"]).legacy_research_portfolio_policy())

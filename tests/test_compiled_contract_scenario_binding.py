@@ -1,4 +1,4 @@
-from market_research.research.builtin_registry import builtin_strategy_registry
+from market_research.research_composition import builtin_strategy_registry
 from market_research.research.simulation_engine import run_common_simulation_backtest
 from market_research.research.strategy_compiler import StrategyCompiler
 from tests.test_common_simulation_engine import _dataset

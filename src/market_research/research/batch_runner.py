@@ -12,7 +12,8 @@ from typing import Any
 
 from market_research.storage_io import write_json_atomic, write_text_atomic
 
-from .experiment_manifest import load_manifest
+from .experiment_manifest import load_manifest_with_registry
+from .strategy_registry import StrategyRegistry
 from .report_writer import research_paths
 from .resource_planner import detect_resource_contract
 
@@ -32,13 +33,17 @@ def run_research_batch(
     out_path: str | Path | None,
     manager: Any,
     project_root: Path,
+    strategy_registry: StrategyRegistry,
 ) -> ResearchBatchResult:
     if command != "research-backtest":
         raise ValueError("research_batch_supports_research_backtest_only")
     manifest_paths = [Path(path).expanduser().resolve() for path in sorted(glob.glob(str(manifest_glob)))]
     if not manifest_paths:
         raise ValueError("research_batch_manifest_glob_matched_no_files")
-    manifests = [(path, load_manifest(path)) for path in manifest_paths]
+    manifests = [
+        (path, load_manifest_with_registry(path, registry=strategy_registry))
+        for path in manifest_paths
+    ]
     experiment_ids: dict[str, Path] = {}
     duplicates: list[str] = []
     for path, manifest in manifests:

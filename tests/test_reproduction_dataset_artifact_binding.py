@@ -13,7 +13,7 @@ from market_research.research.reproduction import (
     create_reproduction_receipt,
 )
 from market_research.research.validation_protocol import run_research_backtest
-from market_research.research.builtin_registry import builtin_strategy_registry
+from market_research.research_composition import builtin_strategy_registry
 
 from .test_frozen_dataset_multi_split_integration import frozen_manifest_and_manager
 

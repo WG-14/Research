@@ -3,7 +3,7 @@ from dataclasses import replace
 from market_research.research.execution_model import StressExecutionModel
 from market_research.research.experiment_manifest import ExecutionTimingPolicy, legacy_research_portfolio_policy
 from market_research.research.simulation_engine import run_common_simulation_backtest
-from market_research.research.strategy_catalog import resolve_research_strategy
+from market_research.research_composition import resolve_builtin_strategy as resolve_research_strategy
 from market_research.research.strategy_compiler import StrategyCompiler
 from market_research.research.strategy_registry import StrategyRegistry
 from tests.test_research_threshold_behavior_equivalence import _data

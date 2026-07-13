@@ -161,6 +161,7 @@ def build_research_execution_plan(
     repository_version: str | None,
     created_at: str | None,
     include_walk_forward: bool = False,
+    strategy_registry: Any,
 ) -> ResearchExecutionPlan:
     candidates = iter_parameter_candidates(manifest.parameter_space)
     execution_scenarios = required_execution_scenarios(manifest.execution_model.scenarios)
@@ -181,6 +182,7 @@ def build_research_execution_plan(
         diagnostic_mode=manifest.research_run.diagnostic_mode,
         audit_trail=manifest.research_run.audit_trail,
         expected_candle_count=dataset_candles,
+        strategy_registry=strategy_registry,
     )
     plugin_expected_us_per_candle = _plugin_expected_us_per_candle(plugin_complexity)
     estimated_plugin_runtime_us = (
@@ -679,11 +681,12 @@ def _plugin_complexity_metadata(
     diagnostic_mode: str = "exploratory",
     audit_trail: Any | None = None,
     expected_candle_count: int | None = None,
+    strategy_registry: Any,
 ) -> dict[str, Any]:
     try:
         from .strategy_catalog import resolve_research_strategy
 
-        plugin = resolve_research_strategy(strategy_name)
+        plugin = resolve_research_strategy(strategy_name, registry=strategy_registry)
     except Exception:
         return {
             "schema_version": 1,

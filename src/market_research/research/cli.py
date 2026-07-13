@@ -232,7 +232,10 @@ def cmd_research_workload_estimate(*, context: "ResearchAppContext", manifest_pa
     try:
         from .workload_estimate import build_manifest_workload_estimate_from_path
 
-        payload = build_manifest_workload_estimate_from_path(manifest_path)
+        strategy_registry = builtin_strategy_registry()
+        payload = build_manifest_workload_estimate_from_path(
+            manifest_path, strategy_registry=strategy_registry
+        )
     except (ManifestValidationError, OSError, ValueError) as exc:
         context.printer(f"[RESEARCH-WORKLOAD-ESTIMATE] error={exc}")
         return 1
@@ -270,6 +273,7 @@ def cmd_research_batch(
             out_path=out_path,
             manager=context.paths,
             project_root=context.paths.project_root,
+            strategy_registry=builtin_strategy_registry(),
         )
     except (OSError, ValueError) as exc:
         context.printer(f"[RESEARCH-BATCH] error={exc}")
@@ -329,6 +333,7 @@ def cmd_research_validate(
                 candidate_id=candidate_id,
                 out_path=out_path,
                 progress_callback=_print_research_backtest_progress,
+                strategy_registry=strategy_registry,
             )
         except (
             ManifestValidationError,
@@ -379,7 +384,8 @@ def cmd_research_reproduce_run(
         # A. Baseline preflight.  No dataset access or backtest work is allowed
         # until the supplied receipt is itself a valid baseline.
         try:
-            manifest = load_manifest(manifest_path)
+            strategy_registry = builtin_strategy_registry()
+            manifest = load_manifest_with_registry(manifest_path, registry=strategy_registry)
             receipt = load_reproduction_receipt(receipt_path)
             if receipt["manifest_hash"] != manifest.manifest_hash():
                 raise ReproductionContractError("receipt manifest_hash does not match manifest")

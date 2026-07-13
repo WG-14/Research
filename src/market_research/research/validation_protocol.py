@@ -1659,6 +1659,8 @@ def run_research_backtest(
     candidate_evaluator: CandidateScenarioEvaluator | None = None,
     strategy_registry: StrategyRegistry,
 ) -> dict[str, Any]:
+    if manifest.validated_strategy_registry_hash != strategy_registry.content_hash:
+        raise ResearchValidationError("manifest_runtime_strategy_registry_hash_mismatch")
     strategy_registry.resolve(manifest.strategy_name)
     _enforce_fast_tier_research_runner_policy(
         candidate_evaluator=candidate_evaluator,
@@ -1768,6 +1770,7 @@ def run_research_backtest(
         repository_version=_repository_version(),
         created_at=generated_at,
         include_walk_forward=False,
+        strategy_registry=strategy_registry,
     )
     manifest = _apply_execution_plan_resource_policy(manifest=manifest, execution_plan=execution_plan)
     manifest, memory_admission = _apply_memory_admission_policy(
@@ -1791,6 +1794,7 @@ def run_research_backtest(
             repository_version=_repository_version(),
             created_at=generated_at,
             include_walk_forward=False,
+            strategy_registry=strategy_registry,
         )
         manifest = _apply_execution_plan_resource_policy(manifest=manifest, execution_plan=execution_plan)
     _emit_progress(
@@ -1916,6 +1920,8 @@ def run_research_walk_forward(
     candidate_evaluator: CandidateScenarioEvaluator | None = None,
     strategy_registry: StrategyRegistry,
 ) -> dict[str, Any]:
+    if manifest.validated_strategy_registry_hash != strategy_registry.content_hash:
+        raise ResearchValidationError("manifest_runtime_strategy_registry_hash_mismatch")
     strategy_registry.resolve(manifest.strategy_name)
     _enforce_fast_tier_research_runner_policy(
         candidate_evaluator=candidate_evaluator,
@@ -2032,6 +2038,7 @@ def run_research_walk_forward(
         repository_version=_repository_version(),
         created_at=generated_at,
         include_walk_forward=True,
+        strategy_registry=strategy_registry,
     )
     manifest = _apply_execution_plan_resource_policy(manifest=manifest, execution_plan=execution_plan)
     manifest, memory_admission = _apply_memory_admission_policy(
@@ -2055,6 +2062,7 @@ def run_research_walk_forward(
             repository_version=_repository_version(),
             created_at=generated_at,
             include_walk_forward=True,
+            strategy_registry=strategy_registry,
         )
         manifest = _apply_execution_plan_resource_policy(manifest=manifest, execution_plan=execution_plan)
     _emit_progress(

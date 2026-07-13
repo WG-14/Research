@@ -4,7 +4,7 @@ import copy
 
 import pytest
 
-from market_research.research.builtin_registry import builtin_strategy_registry
+from market_research.research_composition import builtin_strategy_registry
 from market_research.research.hashing import sha256_prefixed
 from market_research.research.strategy_compiler import (
     StrategyCompilationError,

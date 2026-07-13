@@ -2,7 +2,6 @@
 from dataclasses import replace
 from typing import Any
 
-from market_research.research.backtest_types import BacktestRunContext
 from market_research.research.strategy_contract import ResearchStrategyPlugin
 from market_research.research.strategy_spec import StrategySpec
 
@@ -17,13 +16,6 @@ BUY_AND_HOLD_BASELINE_SPEC = StrategySpec(
     optional_data=(), exit_policy_schema={"schema_version": 1, "rules": (),
         "description": "Executable canary emits one BUY intent, then HOLD decisions."})
 from .buy_and_hold_baseline_events import build_buy_and_hold_baseline_events
-
-
-def _materialize(*, plugin: ResearchStrategyPlugin, parameter_values: dict[str, Any], fee_rate: float,
-                 slippage_bps: float, materialized_parameters: dict[str, Any],
-                 context: BacktestRunContext | None = None) -> dict[str, Any]:
-    del plugin, parameter_values, context, fee_rate, slippage_bps
-    return dict(materialized_parameters)
 
 
 class _BuyAndHoldRuntime:
@@ -57,7 +49,7 @@ def build_buy_and_hold_baseline_plugin() -> ResearchStrategyPlugin:
         version=BUY_AND_HOLD_BASELINE_SPEC.strategy_version, spec=BUY_AND_HOLD_BASELINE_SPEC,
         required_data=BUY_AND_HOLD_BASELINE_SPEC.required_data,
         optional_data=BUY_AND_HOLD_BASELINE_SPEC.optional_data,
-        event_builder=build_buy_and_hold_baseline_events, parameter_materializer=_materialize,
+        event_builder=build_buy_and_hold_baseline_events,
         decision_contract_version=BUY_AND_HOLD_BASELINE_SPEC.decision_contract_version,
         diagnostics_namespace="buy_and_hold_baseline", runtime_factory=_runtime_factory,
         reconstruction_module=__name__, reconstruction_qualname="build_buy_and_hold_baseline_plugin")

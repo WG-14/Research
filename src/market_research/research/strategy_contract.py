@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import inspect
 import marshal
 import re
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from .backtest_types import BacktestRunContext
 from .dataset_snapshot import DatasetSnapshot
@@ -23,7 +23,6 @@ from .strategy_spec import StrategySpec
 
 
 ResearchEventBuilder = Callable[..., Iterable[ResearchDecisionEvent]]
-ResearchParameterMaterializer = Callable[..., dict[str, Any]]
 DiagnosticCountBuilder = Callable[[dict[str, object]], dict[str, Any]]
 ResearchDataRequirementBuilder = Callable[[object | None], "ResearchStrategyDataRequirements"]
 ResearchDecisionBuilder = Callable[..., Any]
@@ -32,6 +31,48 @@ ExitPolicyMaterializer = Callable[[str, dict[str, Any]], Any]
 
 
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+@dataclass(frozen=True, slots=True)
+class MaterializedParameterSet:
+    """Immutable compiler-owned parameter values exposed to an extension."""
+
+    values: Mapping[str, object]
+    sources: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", deep_freeze(self.values))
+        object.__setattr__(self, "sources", deep_freeze(self.sources))
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterExtensionContext:
+    """Non-materialization metadata available to a parameter extension."""
+
+    strategy_name: str
+    strategy_version: str
+    policy_materialization_mode: str
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterExtensionResult:
+    """Final parameter values and explicit provenance for every changed key."""
+
+    values: Mapping[str, object]
+    source_overrides: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", deep_freeze(self.values))
+        object.__setattr__(self, "source_overrides", deep_freeze(self.source_overrides))
+
+
+class ResearchParameterExtension(Protocol):
+    def __call__(
+        self,
+        *,
+        materialized: MaterializedParameterSet,
+        context: ParameterExtensionContext,
+    ) -> ParameterExtensionResult: ...
 
 
 def is_sha256_hash(value: object) -> bool:
@@ -305,7 +346,7 @@ class ResearchStrategyPlugin:
     event_builder: ResearchEventBuilder
     decision_contract_version: str
     diagnostics_namespace: str
-    parameter_materializer: ResearchParameterMaterializer | None = None
+    parameter_materializer: ResearchParameterExtension | None = None
     diagnostics_builder: DiagnosticCountBuilder | None = None
     data_requirements_builder: ResearchDataRequirementBuilder | None = None
     decision_builder: ResearchDecisionBuilder | None = None

@@ -73,7 +73,7 @@ raise SystemExit(rc)
 def test_catalog_resolves_threshold_without_loading_legacy_bridge() -> None:
     script = """
 import json, sys
-from market_research.research.strategy_catalog import resolve_research_strategy
+from market_research.research_composition import resolve_builtin_strategy as resolve_research_strategy
 plugin = resolve_research_strategy('threshold_research_only')
 print(json.dumps({
     'execution_authority': plugin.execution_authority,

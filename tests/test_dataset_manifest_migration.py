@@ -1,6 +1,7 @@
 from __future__ import annotations
 import pytest
-from market_research.research.experiment_manifest import ManifestValidationError, parse_manifest
+from market_research.research.experiment_manifest import ManifestValidationError
+from market_research.research_composition import parse_builtin_manifest as parse_manifest
 from market_research.research.dataset_snapshot import load_dataset_split
 
 

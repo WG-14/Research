@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from market_research.research_composition import builtin_strategy_registry
 
 from market_research.research.execution_calibration import build_calibration_artifact, compare_calibration_to_scenario
 from market_research.research.readiness import build_research_readiness_report
@@ -74,7 +75,11 @@ def test_readiness_fails_closed_for_missing_candles_without_classification_artif
         )
 
     manifest = Path("examples/research/sma_filter_manifest.example.json")
-    report = build_research_readiness_report(manifest_path=manifest, db_path=db_path)
+    report = build_research_readiness_report(
+        manifest_path=manifest,
+        db_path=db_path,
+        strategy_registry=builtin_strategy_registry(),
+    )
 
     assert report["status"] == "FAIL"
     assert "persistent_missing_classification" not in report

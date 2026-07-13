@@ -1,6 +1,5 @@
-"""Compatibility factory delegating to the production composition root."""
-def build_threshold_research_only_plugin():
-    from market_research.research_composition import builtin_strategy_registry
-    return builtin_strategy_registry().resolve("threshold_research_only")
+"""Compatibility lookup requiring an explicitly selected registry."""
+def build_threshold_research_only_plugin(*, registry):
+    return registry.resolve("threshold_research_only")
 
 __all__ = ["build_threshold_research_only_plugin"]

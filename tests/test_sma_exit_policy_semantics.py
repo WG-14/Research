@@ -3,7 +3,7 @@ from market_research.research.position_model import ResearchPosition
 from dataclasses import replace
 from market_research.research.decision_event import OrderIntent, ResearchDecisionEvent
 from market_research.research.simulation_engine import run_common_simulation_backtest
-from market_research.research.strategy_catalog import resolve_research_strategy
+from market_research.research_composition import resolve_builtin_strategy as resolve_research_strategy
 from market_research.research.strategy_compiler import StrategyCompiler
 from market_research.research.strategy_registry import StrategyRegistry
 from tests.test_common_simulation_engine import _dataset

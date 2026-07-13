@@ -1,5 +1,5 @@
 from dataclasses import replace
-from market_research.research.builtin_registry import builtin_strategy_registry
+from market_research.research_composition import builtin_strategy_registry
 
 
 def test_plugin_contract_binds_every_behavior_hook():

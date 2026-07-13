@@ -1,7 +1,9 @@
 import json
+from dataclasses import replace
+import pytest
 
-from market_research.research.builtin_registry import builtin_strategy_registry
-from market_research.research.experiment_manifest import load_manifest
+from market_research.research_composition import builtin_strategy_registry
+from market_research.research.experiment_manifest import ManifestValidationError, load_manifest, parse_manifest
 from market_research.research.simulation_engine import run_common_simulation_backtest
 from market_research.research.strategy_compiler import StrategyCompiler
 from market_research.research.strategy_registry import StrategyRegistry
@@ -9,6 +11,11 @@ from market_research.research.strategy_contract import ResearchStrategyPlugin
 from market_research.research.strategy_spec import StrategyParameterSchema, StrategySpec
 from tests.research_sma_success_fixture import create_success_fixture
 from tests.test_common_simulation_engine import _dataset
+
+
+def test_manifest_parser_requires_explicit_registry():
+    with pytest.raises(ManifestValidationError, match="authoritative_manifest_registry_required"):
+        parse_manifest({})
 
 
 def test_custom_registry_flows_through_manifest_and_simulation(tmp_path):
@@ -23,6 +30,23 @@ def test_custom_registry_flows_through_manifest_and_simulation(tmp_path):
         compiled_contract=compiled, dataset=_dataset(),
         parameter_values={"SMA_SHORT": 1, "SMA_LONG": 2}, fee_rate=0, slippage_bps=0)
     assert run.strategy_registry_hash == registry.content_hash == compiled.strategy_registry_hash
+
+
+def test_manifest_registry_hash_must_match_runtime_registry_hash(tmp_path):
+    from market_research.research.validation_protocol import ResearchValidationError, run_research_backtest
+
+    _, manifest_path = create_success_fixture(tmp_path)
+    registry_a = builtin_strategy_registry()
+    manifest = load_manifest(manifest_path, registry=registry_a)
+    plugin = registry_a.resolve(manifest.strategy_name)
+    registry_b = StrategyRegistry.build((replace(plugin, version=plugin.version + ".different"),))
+    with pytest.raises(ResearchValidationError, match="manifest_runtime_strategy_registry_hash_mismatch"):
+        run_research_backtest(
+            manifest=manifest,
+            db_path=None,
+            manager=None,
+            strategy_registry=registry_b,
+        )
 
 
 def test_unknown_strategy_fails_closed_in_manifest(tmp_path):

@@ -1,7 +1,7 @@
 from pathlib import Path
 from dataclasses import replace
 import pytest
-from market_research.research.strategy_catalog import resolve_research_strategy
+from market_research.research_composition import resolve_builtin_strategy as resolve_research_strategy
 
 
 def test_common_engine_does_not_import_strategy_exit_evaluator():

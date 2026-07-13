@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import math
-import inspect
 from collections.abc import Mapping
 from typing import Any
 
 from .backtest_types import BacktestRunContext
 from .hashing import sha256_prefixed
 from .strategy_contract import (CompiledStrategyContract, ENGINE_SUPPORTED_CAPABILITIES,
-                                ResearchStrategyPlugin, is_sha256_hash,
+                                MaterializedParameterSet, ParameterExtensionContext,
+                                ParameterExtensionResult, ResearchStrategyPlugin, is_sha256_hash,
                                 normalize_exit_policy_materialization)
 from .strategy_registry import StrategyRegistry
 from .immutable_contract import canonical_mutable
@@ -41,25 +41,44 @@ class StrategyCompiler:
         baseline = materialize_parameters_from_spec(
             plugin.spec, raw, fee_rate=fee_rate, slippage_bps=slippage_bps
         )
+        sources = parameter_source_map_from_spec(
+            plugin.spec, raw, fee_rate=fee_rate, slippage_bps=slippage_bps
+        )
         if plugin.parameter_materializer is not None:
-            inputs = {
-                "plugin": plugin, "parameter_values": raw, "materialized_parameters": dict(baseline),
-                "fee_rate": fee_rate, "slippage_bps": slippage_bps, "context": context,
-            }
-            accepted = inspect.signature(plugin.parameter_materializer).parameters
-            accepts_kwargs = any(value.kind is inspect.Parameter.VAR_KEYWORD for value in accepted.values())
-            values = plugin.parameter_materializer(**(inputs if accepts_kwargs else
-                {key: value for key, value in inputs.items() if key in accepted}))
+            result = plugin.parameter_materializer(
+                materialized=MaterializedParameterSet(values=baseline, sources=sources),
+                context=ParameterExtensionContext(
+                    strategy_name=plugin.name,
+                    strategy_version=plugin.version,
+                    policy_materialization_mode=str(
+                        getattr(context, "policy_materialization_mode", "research_only")
+                    ),
+                ),
+            )
+            if not isinstance(result, ParameterExtensionResult):
+                raise StrategyCompilationError("parameter_extension_result_invalid")
+            values = dict(result.values)
+            if set(values) != set(baseline):
+                raise StrategyCompilationError("parameter_extension_key_set_changed")
+            changed = {key for key in values if values[key] != baseline[key]}
+            overrides = dict(result.source_overrides)
+            if set(overrides) != changed:
+                raise StrategyCompilationError(
+                    "parameter_extension_source_overrides_invalid",
+                    ",".join(sorted(changed.symmetric_difference(overrides))),
+                )
+            invalid_sources = sorted(
+                key for key, value in overrides.items() if value != "plugin_parameter_materializer"
+            )
+            if invalid_sources:
+                raise StrategyCompilationError(
+                    "parameter_extension_source_override_invalid", ",".join(invalid_sources)
+                )
+            sources.update(overrides)
         else:
             values = baseline
         values = dict(values)
-        sources = parameter_source_map_from_spec(plugin.spec, raw, fee_rate=fee_rate, slippage_bps=slippage_bps)
-        # Record the authority for the final value. A materializer which replaces
-        # a spec/default value supersedes the source which merely introduced it.
-        if plugin.parameter_materializer is not None:
-            for key, value in values.items():
-                if key not in baseline or baseline[key] != value:
-                    sources[key] = "plugin_parameter_materializer"
+        plugin.spec.validate_parameters(values)
         missing = sorted(set(values) - set(sources))
         if missing:
             raise StrategyCompilationError("unrecorded_behavior_default", ",".join(missing))

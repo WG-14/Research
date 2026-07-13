@@ -12,7 +12,8 @@ from market_research.research.dataset_snapshot import (
     load_dataset_split,
 )
 from market_research.research.datasets.hashing_contract import artifact_content_hash
-from market_research.research.experiment_manifest import DateRange, parse_manifest
+from market_research.research.experiment_manifest import DateRange
+from market_research.research_composition import parse_builtin_manifest as parse_manifest
 
 
 def _timestamp(day: str, minute: int = 0) -> int:

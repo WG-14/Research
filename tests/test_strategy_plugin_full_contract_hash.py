@@ -1,4 +1,4 @@
-from market_research.research.builtin_registry import builtin_strategy_registry
+from market_research.research_composition import builtin_strategy_registry
 from market_research.builtin_strategies import sma_with_filter
 
 

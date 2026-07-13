@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from market_research.research.experiment_manifest import parse_manifest
+from market_research.research_composition import parse_builtin_manifest as parse_manifest
 from market_research.research.experiment_registry import (
     EXPERIMENT_REGISTRY_SCHEMA_VERSION,
     FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION,
@@ -11,7 +11,7 @@ from market_research.research.experiment_registry import (
     load_experiment_registry_rows,
 )
 from market_research.research.validation_protocol import run_research_backtest
-from market_research.research.builtin_registry import builtin_strategy_registry
+from market_research.research_composition import builtin_strategy_registry
 
 from .test_frozen_dataset_multi_split_integration import frozen_manifest_and_manager
 

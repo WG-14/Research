@@ -7,10 +7,10 @@ from pathlib import Path
 from market_research.paths import ResearchPathManager
 from market_research.settings import ResearchSettings
 from market_research.research.dataset_freeze import freeze_sqlite_candles_dataset
-from market_research.research.experiment_manifest import parse_manifest
+from market_research.research_composition import parse_builtin_manifest as parse_manifest
 from market_research.research.validation_protocol import run_research_backtest
 from market_research.research.reproduction import load_reproduction_receipt
-from market_research.research.builtin_registry import builtin_strategy_registry
+from market_research.research_composition import builtin_strategy_registry
 
 
 def _ts(day: str, minute: int = 0) -> int:

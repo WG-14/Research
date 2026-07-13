@@ -2,11 +2,11 @@
 from dataclasses import replace
 from typing import Any, Mapping
 
-from market_research.research.backtest_types import BacktestRunContext
 from market_research.research.exit_decision import ExitDecision
 from .sma_exit_rules import evaluate_sma_exit_policy, materialize_sma_exit_policy
 from market_research.research.position_model import ResearchPosition
-from market_research.research.strategy_contract import (ResearchDataRequirement,
+from market_research.research.strategy_contract import (MaterializedParameterSet,
+    ParameterExtensionContext, ParameterExtensionResult, ResearchDataRequirement,
     ResearchStrategyDataRequirements, ResearchStrategyPlugin)
 from market_research.research.strategy_spec import StrategyParameterSchema, StrategySpec
 
@@ -49,17 +49,18 @@ SMA_WITH_FILTER_SPEC = StrategySpec(
 from .sma_with_filter_events import build_sma_with_filter_research_events
 
 
-def _materialize(*, plugin: ResearchStrategyPlugin, parameter_values: dict[str, Any], fee_rate: float,
-                 slippage_bps: float, materialized_parameters: dict[str, Any],
-                 context: BacktestRunContext | None = None) -> dict[str, Any]:
-    del plugin, context, fee_rate, slippage_bps
-    values = dict(materialized_parameters)
+def _materialize(*, materialized: MaterializedParameterSet,
+                 context: ParameterExtensionContext) -> ParameterExtensionResult:
+    del context
+    values = dict(materialized.values)
+    changed: dict[str, str] = {}
     for key, value in {"SMA_FILTER_GAP_MIN_RATIO": 0.0, "SMA_FILTER_VOL_MIN_RANGE_RATIO": 0.0,
                        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": 0.0, "SMA_COST_EDGE_ENABLED": False,
                        "SMA_MARKET_REGIME_ENABLED": False}.items():
-        if key not in parameter_values:
+        if materialized.sources[key] != "raw_parameter_values" and values[key] != value:
             values[key] = value
-    return values
+            changed[key] = "plugin_parameter_materializer"
+    return ParameterExtensionResult(values=values, source_overrides=changed)
 
 
 def _requirements(parameters: object | None = None) -> ResearchStrategyDataRequirements:

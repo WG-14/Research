@@ -14,6 +14,7 @@ from market_research.research.strategies.noop_baseline_events import (
     build_noop_baseline_events,
 )
 from market_research.research.backtest_engine import run_noop_baseline_backtest
+from market_research.research_composition import builtin_strategy_registry
 
 from tests.research_noop_success_fixture import PRICES
 
@@ -70,6 +71,7 @@ def test_noop_research_kernel_matches_fixed_legacy_behavior_golden() -> None:
         fee_rate=0.001,
         slippage_bps=10.0,
         portfolio_policy=policy,
+        strategy_registry=builtin_strategy_registry(),
     )
 
     assert len(result.decisions) == 4
@@ -111,6 +113,7 @@ def test_noop_marks_an_initial_position_without_changing_it() -> None:
         fee_rate=0.001,
         slippage_bps=10.0,
         portfolio_policy=policy,
+        strategy_registry=builtin_strategy_registry(),
     )
 
     assert result.metrics_v2 is not None

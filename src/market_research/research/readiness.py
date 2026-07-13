@@ -12,7 +12,8 @@ from .datasets.registry import default_dataset_adapter_registry
 from .dataset_snapshot import load_dataset_range
 from .execution_calibration import compare_calibration_to_scenario, load_calibration_artifact
 from .execution_calibration_contract import ExecutionCalibrationThresholds
-from .experiment_manifest import ExperimentManifest, load_manifest
+from .experiment_manifest import ExperimentManifest, load_manifest_with_registry
+from .strategy_registry import StrategyRegistry
 
 if TYPE_CHECKING:
     from market_research.research_cli.context import ResearchAppContext
@@ -26,9 +27,10 @@ def build_research_readiness_report(
     progress_callback: Any | None = None,
     mode: str = "research",
     environment_summary: dict[str, object] | None = None,
+    strategy_registry: StrategyRegistry,
 ) -> dict[str, Any]:
     resolved_manifest_path = Path(manifest_path).expanduser().resolve()
-    manifest = load_manifest(resolved_manifest_path)
+    manifest = load_manifest_with_registry(resolved_manifest_path, registry=strategy_registry)
     resolved_db_path = Path(db_path).expanduser().resolve()
     env_summary = environment_summary or {
         "settings_source": "RESEARCH_*",
@@ -122,10 +124,14 @@ def cmd_research_readiness(
     as_json: bool = False,
 ) -> int:
     try:
+        from market_research.research_composition import builtin_strategy_registry
+
+        strategy_registry = builtin_strategy_registry()
         report = build_research_readiness_report(
             manifest_path=manifest_path,
             db_path=context.paths.require_database_path(),
             execution_calibration_path=execution_calibration_path,
+            strategy_registry=strategy_registry,
             environment_summary=(context.environment.as_dict() if context.environment is not None else None),
             progress_callback=(
                 None

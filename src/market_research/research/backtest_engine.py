@@ -51,6 +51,7 @@ from .dataset_snapshot import DatasetSnapshot
 from .decision_event import ResearchDecisionEvent
 from .execution_model import ExecutionModel
 from .experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
+from .strategy_registry import StrategyRegistry
 
 
 def _run_registered_strategy_backtest(
@@ -65,12 +66,14 @@ def _run_registered_strategy_backtest(
     execution_timing_policy: ExecutionTimingPolicy | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
     context: BacktestRunContext | None = None,
+    strategy_registry: StrategyRegistry,
 ) -> BacktestRun:
     from .strategy_catalog import resolve_research_strategy
 
     from .simulation_engine import run_common_simulation_backtest
     return run_common_simulation_backtest(
-        plugin=resolve_research_strategy(strategy_name), dataset=dataset,
+        plugin=resolve_research_strategy(strategy_name, registry=strategy_registry),
+        registry=strategy_registry, dataset=dataset,
         parameter_values=parameter_values, fee_rate=fee_rate, slippage_bps=slippage_bps,
         parameter_stability_score=parameter_stability_score, execution_model=execution_model,
         execution_timing_policy=execution_timing_policy, portfolio_policy=portfolio_policy, context=context,
@@ -88,6 +91,7 @@ def run_sma_backtest(
     execution_timing_policy: ExecutionTimingPolicy | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
     context: BacktestRunContext | None = None,
+    strategy_registry: StrategyRegistry,
 ) -> BacktestRun:
     return _run_registered_strategy_backtest(
         "sma_with_filter",
@@ -100,6 +104,7 @@ def run_sma_backtest(
         execution_timing_policy=execution_timing_policy,
         portfolio_policy=portfolio_policy,
         context=context,
+        strategy_registry=strategy_registry,
     )
 
 
@@ -118,6 +123,7 @@ def run_noop_baseline_backtest(
     execution_timing_policy: ExecutionTimingPolicy | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
     context: BacktestRunContext | None = None,
+    strategy_registry: StrategyRegistry,
 ) -> BacktestRun:
     # Compatibility path ultimately reaches run_decision_event_backtest.
     return _run_registered_strategy_backtest(
@@ -131,6 +137,7 @@ def run_noop_baseline_backtest(
         execution_timing_policy=execution_timing_policy,
         portfolio_policy=portfolio_policy,
         context=context,
+        strategy_registry=strategy_registry,
     )
 
 
@@ -145,6 +152,7 @@ def run_buy_and_hold_baseline_backtest(
     execution_timing_policy: ExecutionTimingPolicy | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
     context: BacktestRunContext | None = None,
+    strategy_registry: StrategyRegistry,
 ) -> BacktestRun:
     return _run_registered_strategy_backtest(
         "buy_and_hold_baseline",
@@ -157,6 +165,7 @@ def run_buy_and_hold_baseline_backtest(
         execution_timing_policy=execution_timing_policy,
         portfolio_policy=portfolio_policy,
         context=context,
+        strategy_registry=strategy_registry,
     )
 
 
@@ -173,6 +182,7 @@ def run_decision_event_backtest(
     execution_timing_policy: ExecutionTimingPolicy | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
     context: BacktestRunContext | None = None,
+    strategy_registry: StrategyRegistry,
 ) -> BacktestRun:
     """Compatibility wrapper for the common backtest kernel boundary."""
     from .backtest_kernel import run_decision_event_backtest as _run_decision_event_backtest
@@ -189,6 +199,7 @@ def run_decision_event_backtest(
         execution_timing_policy=execution_timing_policy,
         portfolio_policy=portfolio_policy,
         context=context,
+        strategy_registry=strategy_registry,
     )
 
 
@@ -205,6 +216,7 @@ def _run_decision_event_backtest_impl(
     execution_timing_policy: ExecutionTimingPolicy | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
     context: BacktestRunContext | None = None,
+    strategy_registry: StrategyRegistry,
 ) -> BacktestRun:
     """Compatibility implementation name; delegates to BacktestKernel."""
     from .backtest_kernel import run_decision_event_backtest as _run_decision_event_backtest
@@ -221,4 +233,5 @@ def _run_decision_event_backtest_impl(
         execution_timing_policy=execution_timing_policy,
         portfolio_policy=portfolio_policy,
         context=context,
+        strategy_registry=strategy_registry,
     )

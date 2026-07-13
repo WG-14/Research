@@ -1,5 +1,5 @@
 import pytest
-from market_research.research.builtin_registry import builtin_strategy_registry
+from market_research.research_composition import builtin_strategy_registry
 from market_research.research.strategy_registry import StrategyRegistry, StrategyRegistryError
 
 

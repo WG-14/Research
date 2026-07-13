@@ -5,7 +5,7 @@ import pytest
 from market_research.research.strategy_package import StrategyPackageError, build_strategy_research_package
 from market_research.research.hashing import sha256_prefixed
 from market_research.research.hashing import report_content_hash_payload
-from market_research.research.builtin_registry import builtin_strategy_registry
+from market_research.research_composition import builtin_strategy_registry
 from market_research.research.strategy_compiler import StrategyCompiler
 
 

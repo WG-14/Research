@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from market_research.research.strategy_catalog import list_research_strategies
+from market_research.research_composition import list_builtin_strategies as list_research_strategies
 from market_research.research.strategy_contract import ResearchStrategyPlugin
 
 

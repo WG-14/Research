@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 from market_research.research.artifact_contract import apply_artifact_contract, validate_artifact_contract
-from market_research.research.experiment_manifest import ManifestValidationError, load_manifest, parse_manifest
+from market_research.research.experiment_manifest import ManifestValidationError
+from market_research.research_composition import (
+    load_builtin_manifest as load_manifest,
+    parse_builtin_manifest as parse_manifest,
+)
 from market_research.research.run_summary import _next_action
 
 

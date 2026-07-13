@@ -64,6 +64,7 @@ def execute_research_command(
             out_path=args.out, as_json=args.json,
             allow_final_holdout_diagnostics=args.allow_final_holdout_diagnostics,
             allow_degraded_diagnostics=args.allow_degraded_diagnostics,
+            strategy_registry=cli.builtin_strategy_registry(),
         ))
     if command == "research-batch":
         return int(cli.cmd_research_batch(

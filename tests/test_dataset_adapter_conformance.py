@@ -6,9 +6,10 @@ from market_research.research.datasets.registry import DatasetAdapterRegistry, d
 from market_research.research.dataset_freeze import freeze_sqlite_candles_dataset
 from market_research.research.dataset_snapshot import Candle, DatasetLoadContext, DatasetSnapshot, FrozenSQLiteCandleAdapter, SQLiteCandleAdapter
 from market_research.research.datasets.contracts import DatasetArtifactRef, DatasetResolutionContext, DatasetSliceQuery
-from market_research.research.experiment_manifest import DateRange, load_manifest
+from market_research.research.experiment_manifest import DateRange
+from market_research.research_composition import load_builtin_manifest as load_manifest
 from market_research.research.validation_protocol import run_research_backtest
-from market_research.research.builtin_registry import builtin_strategy_registry
+from market_research.research_composition import builtin_strategy_registry
 from market_research.paths import ResearchPathManager
 from market_research.settings import ResearchSettings
 import pytest

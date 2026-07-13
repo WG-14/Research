@@ -1,7 +1,7 @@
 import pytest
 from market_research.research.causal_market_view import CausalMarketView, FutureMarketAccessError
 from tests.test_common_simulation_engine import _dataset
-from market_research.research.builtin_registry import builtin_strategy_registry
+from market_research.research_composition import builtin_strategy_registry
 
 
 def test_strategy_cannot_read_future_candle():

@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from market_research.research.artifact_contract import apply_artifact_contract
-from market_research.research.experiment_manifest import ManifestValidationError, load_manifest
+from market_research.research.experiment_manifest import ManifestValidationError, load_manifest_with_registry
+from market_research.research.strategy_registry import StrategyRegistry
 from market_research.research.forward_diagnostics import ForwardDiagnosticsUnavailableError, run_forward_diagnostics
 from market_research.research.forward_diagnostics_failure_report import (
     FAILURE_ARTIFACT_TYPE,
@@ -39,6 +40,7 @@ def cmd_research_forward_diagnostics(
     as_json: bool = False,
     allow_final_holdout_diagnostics: bool = False,
     allow_degraded_diagnostics: bool = False,
+    strategy_registry: StrategyRegistry,
 ) -> int:
     active_manager = context.paths
     active_db_path = context.paths.require_database_path()
@@ -50,7 +52,7 @@ def cmd_research_forward_diagnostics(
         split = _normalize_split(split_name)
         feature_names = _normalize_features(features)
         horizon_steps = _normalize_horizons(horizons)
-        manifest = load_manifest(manifest_path)
+        manifest = load_manifest_with_registry(manifest_path, registry=strategy_registry)
         result = run_forward_diagnostics(
             manifest=manifest,
             db_path=active_db_path,

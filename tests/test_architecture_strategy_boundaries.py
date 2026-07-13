@@ -33,7 +33,8 @@ def test_composition_imports_builtin_package_ownership_surfaces():
 def test_architecture_manifest_paths_are_all_scanned_and_strategy_files_classified():
     payload = json.loads(Path("docs/architecture-boundaries.json").read_text())
     roles = ("research_core", "strategy_sdk", "builtin_strategies",
-             "compatibility_strategy_event_adapters", "composition_root")
+             "compatibility_strategy_event_adapters", "compatibility_strategy_adapters",
+             "composition_root")
     classified = set().union(*(_declared_files(payload, role) for role in roles))
     expected = set().union(*(set(Path(root).rglob("*.py")) for root in (
         "src/market_research/research_core", "src/market_research/strategy_sdk",
@@ -53,6 +54,21 @@ def test_all_declared_core_and_sdk_files_obey_dependency_direction():
                 values = ([node.module or ""] if isinstance(node, ast.ImportFrom)
                           else [item.name for item in node.names] if isinstance(node, ast.Import) else [])
                 if any("builtin_strategies" in value or "research_composition" in value for value in values):
+                    violations.append((str(path), values))
+    assert violations == []
+
+
+def test_core_and_compatibility_modules_do_not_import_composition():
+    payload = json.loads(Path("docs/architecture-boundaries.json").read_text())
+    violations = []
+    for role in ("research_core", "strategy_sdk", "compatibility_strategy_event_adapters",
+                 "compatibility_strategy_adapters"):
+        for path in _declared_files(payload, role):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                values = ([node.module or ""] if isinstance(node, ast.ImportFrom)
+                          else [item.name for item in node.names] if isinstance(node, ast.Import) else [])
+                if any("research_composition" in value for value in values):
                     violations.append((str(path), values))
     assert violations == []
 

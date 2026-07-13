@@ -291,9 +291,10 @@ def build_missing_candle_ranges_artifact(
     manifest_path: str | Path,
     db_path: str | Path | None = None,
     generated_at: str | None = None,
+    strategy_registry: Any,
 ) -> dict[str, Any]:
     resolved_manifest_path = Path(manifest_path).expanduser().resolve()
-    manifest = load_manifest(resolved_manifest_path)
+    manifest = load_manifest(resolved_manifest_path, registry=strategy_registry)
     resolved_db_path = _configured_db_path(db_path)
     now = generated_at or datetime.now(UTC).isoformat()
     splits: dict[str, Any] = {}
@@ -346,8 +347,13 @@ def write_missing_candle_ranges_artifact(
     manifest_path: str | Path,
     out_path: str | Path,
     db_path: str | Path | None = None,
+    strategy_registry: Any,
 ) -> dict[str, Any]:
-    payload = build_missing_candle_ranges_artifact(manifest_path=manifest_path, db_path=db_path)
+    payload = build_missing_candle_ranges_artifact(
+        manifest_path=manifest_path,
+        db_path=db_path,
+        strategy_registry=strategy_registry,
+    )
     resolved_out = _validate_report_artifact_out_path(out_path)
     write_json_atomic(resolved_out, payload)
     return payload

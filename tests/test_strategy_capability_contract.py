@@ -1,6 +1,6 @@
 import pytest
 from dataclasses import replace
-from market_research.research.builtin_registry import builtin_strategy_registry
+from market_research.research_composition import builtin_strategy_registry
 from market_research.research.strategy_compiler import StrategyCompilationError, StrategyCompiler
 from market_research.research.strategy_contract import StrategyCapabilityContract
 from market_research.research.strategy_registry import StrategyRegistry

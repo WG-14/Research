@@ -833,6 +833,7 @@ class ExperimentManifest:
     research_run: ResearchRunPolicy
     raw: dict[str, Any]
     manifest_input_provenance: ManifestInputProvenance = field(default_factory=ManifestInputProvenance)
+    validated_strategy_registry_hash: str | None = field(default=None, compare=False, repr=False)
 
     def canonical_payload(self) -> dict[str, Any]:
         return {
@@ -906,7 +907,9 @@ class ExperimentManifest:
 
 
 def load_manifest(path: str | Path, *, registry: "StrategyRegistry | None" = None) -> ExperimentManifest:
-    """Legacy built-in convenience loader; authoritative callers pass a registry."""
+    """Load a manifest using an explicitly selected strategy registry."""
+    if registry is None:
+        raise ManifestValidationError("authoritative_manifest_registry_required")
     manifest_path = Path(path).expanduser()
     with manifest_path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
@@ -928,10 +931,9 @@ def parse_manifest_with_registry(payload: dict[str, Any], *, registry: "Strategy
 
 
 def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | None" = None) -> ExperimentManifest:
-    """Legacy built-in convenience parser; use parse_manifest_with_registry for validation."""
+    """Parse a manifest using an explicitly selected strategy registry."""
     if registry is None:
-        from .builtin_registry import builtin_strategy_registry
-        registry = builtin_strategy_registry()
+        raise ManifestValidationError("authoritative_manifest_registry_required")
     if not isinstance(payload, dict):
         raise ManifestValidationError("manifest must be a JSON object")
     allowed_fields = {
@@ -1035,6 +1037,7 @@ def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | Non
         research_run=research_run,
         raw=dict(payload),
         manifest_input_provenance=manifest_input_provenance,
+        validated_strategy_registry_hash=registry.content_hash,
     )
 
 

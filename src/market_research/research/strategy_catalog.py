@@ -1,24 +1,27 @@
-"""Compatibility facade over the immutable built-in strategy registry."""
+"""Dependency-free compatibility helpers for an explicit strategy registry."""
 from __future__ import annotations
 
-from .builtin_registry import builtin_strategy_registry
 from .strategy_contract import ResearchStrategyDataRequirements, ResearchStrategyPlugin
-from .strategy_registry import StrategyRegistryError
+from .strategy_registry import StrategyRegistry, StrategyRegistryError
 
 ResearchStrategyCatalogError = StrategyRegistryError
 
 
-def resolve_research_strategy(name: str) -> ResearchStrategyPlugin:
-    return builtin_strategy_registry().resolve(name)
+def resolve_research_strategy(name: str, *, registry: StrategyRegistry) -> ResearchStrategyPlugin:
+    return registry.resolve(name)
 
 
-def list_research_strategies() -> tuple[ResearchStrategyPlugin, ...]:
-    registry = builtin_strategy_registry()
+def list_research_strategies(*, registry: StrategyRegistry) -> tuple[ResearchStrategyPlugin, ...]:
     return tuple(registry.plugins[name] for name in sorted(registry.plugins))
 
 
-def research_strategy_data_requirements(strategy_name: str, *, strategy_spec: object | None = None) -> ResearchStrategyDataRequirements:
-    return resolve_research_strategy(strategy_name).data_requirements(strategy_spec)
+def research_strategy_data_requirements(
+    strategy_name: str,
+    *,
+    registry: StrategyRegistry,
+    strategy_spec: object | None = None,
+) -> ResearchStrategyDataRequirements:
+    return resolve_research_strategy(strategy_name, registry=registry).data_requirements(strategy_spec)
 
 
 def register_research_strategy(plugin: ResearchStrategyPlugin) -> None:

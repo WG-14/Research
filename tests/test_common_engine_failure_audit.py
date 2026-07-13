@@ -2,7 +2,7 @@ import pytest
 
 from market_research.research.backtest_types import BacktestRun, BacktestRunContext
 from market_research.research.simulation_engine import run_common_simulation_backtest
-from market_research.research.strategy_catalog import resolve_research_strategy
+from market_research.research_composition import resolve_builtin_strategy as resolve_research_strategy
 from tests.test_common_engine_audit_e2e import Sink
 from tests.test_common_simulation_engine import _dataset
 
