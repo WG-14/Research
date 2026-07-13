@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
 from market_research.research.dataset_snapshot import FrozenSQLiteCandleAdapter
 from market_research.research.datasets.contracts import DatasetArtifactRef, DatasetResolutionContext, DatasetRunContext, DatasetSliceQuery
 from market_research.research.dataset_freeze import freeze_sqlite_candles_dataset
@@ -10,7 +12,7 @@ import pytest
 
 
 def test_materialize_requires_verified_artifact_and_reuses_verification_within_run(tmp_path) -> None:
-    frozen = freeze_sqlite_candles_dataset(source_db=_source(tmp_path), market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
+    frozen = freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE, source_db=_source(tmp_path), market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
     adapter = FrozenSQLiteCandleAdapter()
     ref = DatasetArtifactRef(frozen["artifact_manifest_uri"], frozen["artifact_manifest_hash"])
     context = DatasetRunContext()
@@ -24,7 +26,7 @@ def test_materialize_requires_verified_artifact_and_reuses_verification_within_r
 
 
 def test_second_run_reverifies_and_detects_tampering(tmp_path) -> None:
-    frozen = freeze_sqlite_candles_dataset(source_db=_source(tmp_path), market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
+    frozen = freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE, source_db=_source(tmp_path), market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
     ref = DatasetArtifactRef(frozen["artifact_manifest_uri"], frozen["artifact_manifest_hash"])
     adapter = FrozenSQLiteCandleAdapter()
     DatasetRunContext().resolve_verified(adapter, ref, DatasetResolutionContext())

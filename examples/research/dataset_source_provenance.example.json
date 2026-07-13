@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "artifact_type": "dataset_source_provenance",
+  "sources": [
+    {
+      "provider_id": "replace-with-provider-id",
+      "dataset_id": "replace-with-dataset-id",
+      "release_id": "replace-with-immutable-release-id",
+      "acquired_at": "2026-05-02T00:00:00Z",
+      "coverage_start_ts": 1672531200000,
+      "coverage_end_ts": 1777679999999,
+      "content_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  ],
+  "source_priority": [
+    "replace-with-provider-id"
+  ],
+  "semantics": {
+    "asset_class": "spot",
+    "corporate_actions": "not_applicable",
+    "instrument_scope": "single_instrument",
+    "observation_calendar": "continuous_24x7",
+    "price_adjustment": "not_applicable",
+    "timezone": "UTC",
+    "universe": "not_applicable"
+  },
+  "lineage": [
+    {
+      "layer": "raw",
+      "artifact_id": "replace-with-raw-artifact-id",
+      "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "schema_version": 1,
+      "transformation_id": "replace-with-acquisition-contract-id"
+    },
+    {
+      "layer": "cleaned",
+      "artifact_id": "replace-with-cleaned-artifact-id",
+      "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "schema_version": 1,
+      "transformation_id": "replace-with-cleaning-contract-id"
+    },
+    {
+      "layer": "standardized",
+      "artifact_id": "replace-with-standardized-artifact-id",
+      "content_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "schema_version": 1,
+      "transformation_id": "replace-with-standardization-contract-id"
+    }
+  ],
+  "provenance_manifest_hash": "sha256:a503ce133a040efa27635803dd4e983d9973807d571863fd62811739f684733f"
+}

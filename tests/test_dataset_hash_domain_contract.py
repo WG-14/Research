@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
+
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -84,7 +86,7 @@ def _freeze_fixture(tmp_path: Path) -> dict[str, object]:
                 "INSERT INTO candles VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 ("KRW-BTC", "1m", _timestamp(day), price, price, price, price, 1.0),
             )
-    return freeze_sqlite_candles_dataset(
+    return freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE,
         source_db=source,
         market="KRW-BTC",
         interval="1m",

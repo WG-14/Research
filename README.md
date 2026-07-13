@@ -50,16 +50,29 @@ are either atomic JSON reports or append-only JSONL audit records.
 
 ## Typical workflow
 
+Prepare an external provenance manifest first. The checked-in
+`examples/research/dataset_source_provenance.example.json` is a shape example;
+replace every placeholder and recompute `provenance_manifest_hash` with the
+same canonical contract before use.
+
 ```bash
 uv run market-research research-freeze-dataset --db /abs/candles.sqlite \
   --market KRW-BTC --interval 1m --start 2025-01-01 --end 2025-03-31 \
-  --out /abs/datasets/krw-btc-1m.json
+  --provenance-manifest /abs/dataset-source-provenance.json \
+  --out /abs/datasets
 
 uv run market-research research-readiness --manifest /abs/experiment.json --json
 uv run market-research research-backtest --manifest /abs/experiment.json
 uv run market-research research-walk-forward --manifest /abs/experiment.json
 uv run market-research research-validate --manifest /abs/experiment.json
 ```
+
+The freeze command prints the generated schema-3 `artifact_manifest_uri` and
+`artifact_manifest_hash`. Put those exact values in the experiment manifest
+with `dataset.source=frozen_sqlite_candles`. A mutable
+`dataset.source=sqlite_candles` run is exploratory compatibility only: it is
+`DECLARED_ONLY`, cannot become a validated candidate, and never receives an
+authoritative reproduction receipt.
 
 `research-validate` records research-only stages: readiness, dataset quality,
 backtest, final holdout, stress suite, statistical validation, walk-forward,

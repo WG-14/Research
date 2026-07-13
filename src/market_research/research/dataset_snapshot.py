@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import math
 from dataclasses import dataclass
 from bisect import bisect_left, bisect_right
 from pathlib import Path
@@ -20,7 +21,7 @@ from .experiment_manifest import DateRange, ExperimentManifest, ManifestValidati
 from .hashing import sha256_prefixed
 from .immutable_contract import deep_freeze
 from .dataset_freeze import sqlite_candles_schema_hash
-from .datasets.hashing_contract import artifact_content_hash
+from .datasets.hashing_contract import artifact_content_hash, canonical_candle_rows
 from .datasets.hashing_contract import (
     snapshot_data_hash as calculate_snapshot_data_hash,
     snapshot_fingerprint_hash as calculate_snapshot_fingerprint_hash,
@@ -95,6 +96,7 @@ class DatasetSnapshot:
     artifact_content_hash: str | None = None
     artifact_schema_hash: str | None = None
     artifact_manifest_hash: str | None = None
+    source_provenance_hash: str | None = None
     adapter_version: str | None = None
     locator: dict[str, Any] | None = None
     options: dict[str, Any] | None = None
@@ -171,6 +173,7 @@ class DatasetSnapshot:
             "artifact_content_hash": self.artifact_content_hash,
             "artifact_schema_hash": self.artifact_schema_hash,
             "artifact_manifest_hash": self.artifact_manifest_hash,
+            "source_provenance_hash": self.source_provenance_hash,
         }
 
     def snapshot_fingerprint_hash(self) -> str:
@@ -398,6 +401,7 @@ def load_dataset_range(
         artifact_content_hash=snapshot.artifact_content_hash,
         artifact_schema_hash=snapshot.artifact_schema_hash,
         artifact_manifest_hash=snapshot.artifact_manifest_hash,
+        source_provenance_hash=snapshot.source_provenance_hash,
         adapter_version=snapshot.adapter_version,
         locator=snapshot.locator,
         options=_snapshot_materialization_contract(manifest),
@@ -480,17 +484,7 @@ def _load_sqlite_dataset_range(
         ).fetchall()
     finally:
         conn.close()
-    candles = tuple(
-        Candle(
-            ts=int(row[0]),
-            open=float(row[1]),
-            high=float(row[2]),
-            low=float(row[3]),
-            close=float(row[4]),
-            volume=float(row[5] or 0.0),
-        )
-        for row in rows
-    )
+    candles = tuple(Candle(**row) for row in canonical_candle_rows(rows))
     top_of_book_spec = manifest.dataset.top_of_book
     snapshot = DatasetSnapshot(
         snapshot_id=manifest.dataset.snapshot_id,
@@ -562,7 +556,16 @@ def _build_source_agnostic_dataset_quality_report(
     ohlc_violations = 0
     non_positive_prices = 0
     negative_volume = 0
+    missing_ohlcv = 0
+    non_finite_ohlcv = 0
     for candle in candles:
+        values = (candle.open, candle.high, candle.low, candle.close, candle.volume)
+        if any(value is None for value in values):
+            missing_ohlcv += 1
+            continue
+        if any(not math.isfinite(float(value)) for value in values):
+            non_finite_ohlcv += 1
+            continue
         if not (
             candle.low <= candle.open <= candle.high
             and candle.low <= candle.close <= candle.high
@@ -589,6 +592,10 @@ def _build_source_agnostic_dataset_quality_report(
         reasons.append("non_positive_price")
     if negative_volume:
         reasons.append("negative_volume")
+    if missing_ohlcv:
+        reasons.append("missing_ohlcv_value")
+    if non_finite_ohlcv:
+        reasons.append("non_finite_ohlcv_value")
     if actual_ts and (min(actual_ts) < start_ts or max(actual_ts) > end_ts):
         reasons.append("timestamp_outside_split_range")
     unexpected_count = sum(
@@ -646,6 +653,8 @@ def _build_source_agnostic_dataset_quality_report(
         "ohlc_violation_count": ohlc_violations,
         "non_positive_price_count": non_positive_prices,
         "negative_volume_count": negative_volume,
+        "missing_ohlcv_count": missing_ohlcv,
+        "non_finite_ohlcv_count": non_finite_ohlcv,
         "first_ts": actual_ts[0] if actual_ts else None,
         "last_ts": actual_ts[-1] if actual_ts else None,
         "db_schema_fingerprint": _db_schema_fingerprint(db_path) if db_path is not None and snapshot.source == "sqlite_candles" else None,
@@ -659,6 +668,7 @@ def _build_source_agnostic_dataset_quality_report(
         "artifact_content_hash": snapshot.artifact_content_hash,
         "artifact_schema_hash": snapshot.artifact_schema_hash,
         "artifact_manifest_hash": snapshot.artifact_manifest_hash,
+        "source_provenance_hash": snapshot.source_provenance_hash,
         "verification_status": (snapshot.verification.overall_status.value if snapshot.verification else "UNAVAILABLE"),
         "verification": snapshot.verification.as_dict() if snapshot.verification else None,
         "source_content_hash": snapshot.source_content_hash,
@@ -1399,12 +1409,19 @@ class FrozenSQLiteCandleAdapter:
             start_ts=query.start_ts, end_ts=query.end_ts)
         return DatasetSnapshot(snapshot_id=query.snapshot_id, source=self.source, market=query.market,
             interval=query.interval, split_name=query.split_role,
-            date_range=DateRange(_ts_to_date(query.start_ts), _ts_to_date(query.end_ts)), candles=tuple(Candle(int(row[0]), float(row[1]), float(row[2]), float(row[3]), float(row[4]), float(row[5] or 0.0)) for row in rows),
+            date_range=DateRange(_ts_to_date(query.start_ts), _ts_to_date(query.end_ts)),
+            candles=tuple(Candle(**row) for row in canonical_candle_rows(rows)),
             source_uri=manifest.locator.path, artifact_id=manifest.artifact_id,
             artifact_content_hash=manifest.content_hash, artifact_schema_hash=manifest.schema_hash,
-            artifact_manifest_hash=manifest.artifact_manifest_hash, adapter_version=self.adapter_version,
+            artifact_manifest_hash=manifest.artifact_manifest_hash,
+            source_provenance_hash=manifest.source_provenance.provenance_manifest_hash,
+            adapter_version=self.adapter_version,
             locator=manifest.locator.as_dict(), options=dict(query.dataset_options),
-            adapter_provenance={"verification": artifact.verification.as_dict()}, verification=artifact.verification)
+            adapter_provenance={
+                "verification": artifact.verification.as_dict(),
+                "source_provenance": manifest.source_provenance.as_dict(),
+                "source_provenance_hash": manifest.source_provenance.provenance_manifest_hash,
+            }, verification=artifact.verification)
 
     def load_range(
         self,
@@ -1438,6 +1455,8 @@ class FrozenSQLiteCandleAdapter:
                 "adapter_name": self.adapter_name,
                 "adapter_version": self.adapter_version,
                 "source_locator_policy": "manifest_locator_hash_verified",
+                "source_provenance": snapshot.adapter_provenance.get("source_provenance") if snapshot.adapter_provenance else None,
+                "source_provenance_hash": snapshot.source_provenance_hash,
             },
         )
 
@@ -1450,12 +1469,15 @@ class FrozenSQLiteCandleAdapter:
         del context
         if manifest.dataset.artifact_ref is None:
             raise ValueError("legacy_frozen_manifest_requires_explicit_migration")
-        path = self.resolve(manifest.dataset.artifact_ref, DatasetResolutionContext()).manifest.locator.path
+        artifact_manifest = self.resolve(manifest.dataset.artifact_ref, DatasetResolutionContext()).manifest
+        path = artifact_manifest.locator.path
         return {
             "dataset_source": manifest.dataset.source,
             "adapter_name": self.adapter_name,
             "adapter_version": self.adapter_version,
             "source_locator": str(path), "provenance_policy": "artifact_manifest_verified",
+            "source_provenance": artifact_manifest.source_provenance.as_dict(),
+            "source_provenance_hash": artifact_manifest.source_provenance.provenance_manifest_hash,
         }
 
 

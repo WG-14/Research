@@ -48,7 +48,10 @@ evidence) were previously recorded against commit
 
 Policy:
 
-- Artifact manifest schema `2` is the only accepted artifact contract.  It
+- Artifact manifest schema `3` is the only accepted artifact contract. It
+  binds the ordered raw/cleaned/standardized lineage, source identities and
+  priority, acquisition timestamps, upstream hashes, and supported market
+  semantics in addition to content and schema integrity. It
   records both raw first/last candle timestamps and inclusive interval-bucket
   coverage boundaries (`coverage_start_ts`, `coverage_end_ts`).  A request is
   valid only when its exact timestamp range lies inside that coverage; there
@@ -57,7 +60,10 @@ Policy:
   `artifact_manifest_hash` are a read-only legacy shape and are rejected by
   the normal loader with `legacy_frozen_manifest_requires_explicit_migration`.
   They are never eligible for validated-candidate execution.
-- Receipt schema `4` is the current schema. Receipt schemas 1 and 2 are
+- Artifact manifest schema `2` is read-only legacy and is rejected by the
+  normal loader. Recreate it from the original source and a reviewed
+  provenance manifest; do not translate or relabel its old hash domains.
+- Receipt schema `7` is the current schema. Receipt schemas 1 and 2 are
   rejected; they cannot be silently reinterpreted because their dataset hashes
   do not establish the artifact/snapshot domain separation.
 - Unknown manifest or receipt versions fail closed. There is no automatic

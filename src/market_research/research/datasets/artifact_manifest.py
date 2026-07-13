@@ -8,11 +8,17 @@ from typing import Any
 
 from .hashing_contract import artifact_manifest_hash
 from .locators import ContentAddressedLocal, LocatorValidationError, parse_immutable_locator
+from .source_provenance import (
+    DatasetSourceProvenance,
+    SourceProvenanceError,
+    parse_dataset_source_provenance,
+    validate_source_coverage,
+)
 
-ARTIFACT_MANIFEST_SCHEMA_VERSION = 2
+ARTIFACT_MANIFEST_SCHEMA_VERSION = 3
 _TOP_LEVEL_FIELDS = frozenset({"schema_version", "artifact_type", "artifact_id", "format", "artifact",
                                "artifact_identity_hash", "scope", "canonicalization", "locator",
-                               "artifact_manifest_hash"})
+                               "source_provenance", "artifact_manifest_hash"})
 _ARTIFACT_FIELDS = frozenset({"uri", "content_hash", "schema_hash", "row_count"})
 _SCOPE_FIELDS = frozenset({"market", "interval", "start_ts", "end_ts", "coverage_start_ts", "coverage_end_ts"})
 _CANONICALIZATION_FIELDS = frozenset({"name", "version"})
@@ -41,6 +47,7 @@ class ArtifactManifest:
     coverage_end_ts: int
     canonicalization_name: str
     canonicalization_version: int
+    source_provenance: DatasetSourceProvenance
     artifact_identity_hash: str
     artifact_manifest_hash: str
 
@@ -56,6 +63,7 @@ class ArtifactManifest:
                       "coverage_end_ts": self.coverage_end_ts},
             "canonicalization": {"name": self.canonicalization_name,
                                    "version": self.canonicalization_version},
+            "source_provenance": self.source_provenance.as_dict(),
         }
 
     def as_dict(self) -> dict[str, Any]:
@@ -69,7 +77,8 @@ class ArtifactManifest:
 
 def build_artifact_manifest(*, artifact_id: str, path: str, content_hash: str, schema_hash: str,
                             row_count: int, market: str, interval: str, start_ts: int,
-                            end_ts: int, coverage_start_ts: int, coverage_end_ts: int) -> ArtifactManifest:
+                            end_ts: int, coverage_start_ts: int, coverage_end_ts: int,
+                            source_provenance: DatasetSourceProvenance) -> ArtifactManifest:
     identity = {
         "schema_version": ARTIFACT_MANIFEST_SCHEMA_VERSION,
         "artifact_type": "immutable_candle_dataset", "artifact_id": artifact_id, "format": "sqlite",
@@ -77,6 +86,7 @@ def build_artifact_manifest(*, artifact_id: str, path: str, content_hash: str, s
         "scope": {"market": market, "interval": interval, "start_ts": int(start_ts), "end_ts": int(end_ts),
                   "coverage_start_ts": int(coverage_start_ts), "coverage_end_ts": int(coverage_end_ts)},
         "canonicalization": {"name": _CANONICALIZATION[0], "version": _CANONICALIZATION[1]},
+        "source_provenance": source_provenance.as_dict(),
     }
     identity_hash = artifact_manifest_hash(identity)
     locator = ContentAddressedLocal(path=str(Path(path).resolve()), artifact_content_hash=content_hash)
@@ -144,6 +154,10 @@ def _parse_values(payload: dict[str, Any], *, locator: ContentAddressedLocal) ->
     canonical_version = _strict_int(canonicalization.get("version"), "canonicalization.version")
     if (canonical_name, canonical_version) != _CANONICALIZATION:
         raise ArtifactManifestError("artifact_manifest_canonicalization_unsupported")
+    try:
+        source_provenance = parse_dataset_source_provenance(payload.get("source_provenance"))
+    except SourceProvenanceError as exc:
+        raise ArtifactManifestError(str(exc)) from exc
     row_count = _strict_int(artifact.get("row_count"), "artifact.row_count")
     if row_count < 0:
         raise ArtifactManifestError("artifact_manifest_row_count_negative")
@@ -155,6 +169,10 @@ def _parse_values(payload: dict[str, Any], *, locator: ContentAddressedLocal) ->
         raise ArtifactManifestError("artifact_manifest_scope_inverted")
     if coverage_start_ts != start_ts or coverage_end_ts < end_ts:
         raise ArtifactManifestError("artifact_manifest_coverage_scope_invalid")
+    try:
+        validate_source_coverage(source_provenance, start_ts=start_ts, end_ts=end_ts)
+    except SourceProvenanceError as exc:
+        raise ArtifactManifestError(str(exc)) from exc
     uri = _text(artifact.get("uri"))
     if uri != locator.path:
         raise ArtifactManifestError("artifact_manifest_uri_locator_mismatch")
@@ -165,7 +183,7 @@ def _parse_values(payload: dict[str, Any], *, locator: ContentAddressedLocal) ->
         "row_count": row_count, "market": _text(scope.get("market")), "interval": _text(scope.get("interval")),
         "start_ts": start_ts, "end_ts": end_ts, "coverage_start_ts": coverage_start_ts,
         "coverage_end_ts": coverage_end_ts, "canonicalization_name": canonical_name,
-        "canonicalization_version": canonical_version,
+        "canonicalization_version": canonical_version, "source_provenance": source_provenance,
         "artifact_identity_hash": _hash(payload.get("artifact_identity_hash")),
         "artifact_manifest_hash": _hash(payload.get("artifact_manifest_hash")),
     }

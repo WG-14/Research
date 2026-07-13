@@ -6514,6 +6514,7 @@ def _report_payload(
                 "artifact_content_hash": snapshot.artifact_content_hash,
                 "artifact_schema_hash": snapshot.artifact_schema_hash,
                 "artifact_manifest_hash": snapshot.artifact_manifest_hash,
+                "source_provenance_hash": snapshot.source_provenance_hash,
                 "verification_status": snapshot.verification.overall_status.value if snapshot.verification else "UNAVAILABLE",
                 "verification": snapshot.verification.as_dict() if snapshot.verification else None,
                 "content_hash": snapshot.snapshot_fingerprint_hash(),
@@ -7976,6 +7977,9 @@ def _dataset_adapter_provenance_payload(
         },
         "artifact_content_hashes": {
             snapshot.split_name: snapshot.artifact_content_hash for snapshot in snapshots
+        },
+        "source_provenance_hashes": {
+            snapshot.split_name: snapshot.source_provenance_hash for snapshot in snapshots
         },
         "quality_report_hashes": {
             split_name: str(payload.get("content_hash"))

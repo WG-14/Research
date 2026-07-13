@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
 import json
 import multiprocessing
 import os
@@ -44,7 +46,7 @@ def _publish_process(
             return original_replace(source_path, destination_path)
         freezer.os.replace = synchronized_replace
     try:
-        result = freezer.freeze_sqlite_candles_dataset(
+        result = freezer.freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE,
             source_db=source, market="KRW-BTC", interval="1m", start_ts=1,
             end_ts=end_ts, out_dir=out_dir,
         )
@@ -68,8 +70,8 @@ def _publish_process(
 
 def test_freeze_is_idempotent_for_identical_input(tmp_path) -> None:
     source = _source(tmp_path)
-    first = freeze_sqlite_candles_dataset(source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
-    second = freeze_sqlite_candles_dataset(source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
+    first = freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE, source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
+    second = freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE, source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
     assert first["artifact_id"] == second["artifact_id"]
     assert second["reused_existing"] is True
 
@@ -77,29 +79,29 @@ def test_freeze_is_idempotent_for_identical_input(tmp_path) -> None:
 @pytest.mark.parametrize("stage", ("during_db_write", "during_db_creation", "during_manifest_creation", "after_verification_before_rename", "during_final_publication"))
 def test_interrupted_publication_never_exposes_bundle(tmp_path, stage: str) -> None:
     with pytest.raises(DatasetFreezeError, match="injected"):
-        freeze_sqlite_candles_dataset(source_db=_source(tmp_path), market="KRW-BTC", interval="1m", start_ts=1, end_ts=2,
+        freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE, source_db=_source(tmp_path), market="KRW-BTC", interval="1m", start_ts=1, end_ts=2,
                                       out_dir=tmp_path / "out", failure_stage=stage)
     assert not list((tmp_path / "out").rglob("artifact.manifest.json"))
 
 
 def test_manifest_only_bundle_is_not_resolved(tmp_path) -> None:
     source = _source(tmp_path)
-    frozen = freeze_sqlite_candles_dataset(source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
+    frozen = freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE, source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
     Path(frozen["artifact_path"]).unlink()
     with pytest.raises(DatasetFreezeError, match="incomplete"):
-        freeze_sqlite_candles_dataset(source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
+        freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE, source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
 
 
 def test_db_only_bundle_is_not_resolved(tmp_path) -> None:
     source = _source(tmp_path)
-    frozen = freeze_sqlite_candles_dataset(source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
+    frozen = freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE, source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
     Path(frozen["manifest_path"]).unlink()
     with pytest.raises(DatasetFreezeError, match="incomplete"):
-        freeze_sqlite_candles_dataset(source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
+        freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE, source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
 
 
 def test_orphan_staging_bundle_is_not_resolved(tmp_path) -> None:
-    frozen = freeze_sqlite_candles_dataset(source_db=_source(tmp_path), market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
+    frozen = freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE, source_db=_source(tmp_path), market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
     staging = Path(frozen["manifest_path"]).parent.parent / ".orphan.staging-race"
     staging.mkdir()
     shutil.copy2(frozen["artifact_path"], staging / "candles.sqlite")
@@ -115,25 +117,26 @@ def test_orphan_staging_bundle_is_not_resolved(tmp_path) -> None:
 
 def test_existing_schema_conflict_is_rejected(tmp_path) -> None:
     source = _source(tmp_path)
-    frozen = freeze_sqlite_candles_dataset(source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
+    frozen = freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE, source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
     with sqlite3.connect(frozen["artifact_path"]) as db:
         db.execute("CREATE INDEX incompatible_schema ON candles(ts)")
     with pytest.raises(DatasetFreezeError, match="schema_conflict"):
-        freeze_sqlite_candles_dataset(source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
+        freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE, source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
 
 
 def test_existing_scope_conflict_is_rejected(tmp_path) -> None:
     source = _source(tmp_path)
-    frozen = freeze_sqlite_candles_dataset(source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
+    frozen = freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE, source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
     manifest = load_artifact_manifest(frozen["manifest_path"])
     altered = build_artifact_manifest(
         artifact_id=manifest.artifact_id, path=frozen["artifact_path"], content_hash=manifest.content_hash,
         schema_hash=manifest.schema_hash, row_count=manifest.row_count, market=manifest.market,
         interval=manifest.interval, start_ts=1, end_ts=1, coverage_start_ts=1, coverage_end_ts=60_000,
+        source_provenance=manifest.source_provenance,
     )
     Path(frozen["manifest_path"]).write_text(json.dumps(altered.as_dict()))
     with pytest.raises(DatasetFreezeError, match="scope_verification_failed"):
-        freeze_sqlite_candles_dataset(source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
+        freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE, source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out")
 
 
 def test_concurrent_identical_publication_reuses_verified_bundle(tmp_path) -> None:
@@ -176,14 +179,14 @@ def test_concurrent_conflicting_publication_fails(tmp_path) -> None:
 
 def test_existing_content_hash_conflict_preserves_public_error_contract(tmp_path) -> None:
     source = _source(tmp_path)
-    frozen = freeze_sqlite_candles_dataset(
+    frozen = freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE,
         source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out"
     )
     with sqlite3.connect(frozen["artifact_path"]) as db:
         db.execute("UPDATE candles SET close=999 WHERE ts=1")
 
     with pytest.raises(DatasetFreezeError) as raised:
-        freeze_sqlite_candles_dataset(
+        freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE,
             source_db=source, market="KRW-BTC", interval="1m", start_ts=1, end_ts=2, out_dir=tmp_path / "out"
         )
 

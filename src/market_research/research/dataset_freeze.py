@@ -12,7 +12,12 @@ from typing import Any
 
 from ..storage_io import write_json_atomic
 from .datasets.artifact_manifest import ArtifactManifestError, build_artifact_manifest, load_artifact_manifest
-from .datasets.hashing_contract import artifact_content_hash, artifact_schema_hash
+from .datasets.hashing_contract import artifact_content_hash, artifact_schema_hash, dataset_artifact_key_hash
+from .datasets.source_provenance import (
+    DatasetSourceProvenance,
+    load_dataset_source_provenance,
+    validate_source_coverage,
+)
 from market_research.research.intervals import interval_to_milliseconds
 
 
@@ -49,6 +54,7 @@ def sqlite_candles_schema_hash(db_path: str | Path) -> str:
 
 def freeze_sqlite_candles_dataset(*, source_db: str | Path, market: str, interval: str,
                                   start_ts: int, end_ts: int, out_dir: str | Path,
+                                  source_provenance: DatasetSourceProvenance,
                                   failure_stage: str | None = None) -> dict[str, Any]:
     """Publish a verified directory bundle using atomicity-only durability.
 
@@ -62,9 +68,14 @@ def freeze_sqlite_candles_dataset(*, source_db: str | Path, market: str, interva
     if not out_root.is_absolute():
         raise DatasetFreezeError("research_freeze_dataset_rejects_repo_relative_output")
     _reject_repo_path(out_root, label="research_freeze_dataset_output")
+    validate_source_coverage(source_provenance, start_ts=int(start_ts), end_ts=int(end_ts))
     rows = _read_candle_rows(source, market=market, interval=interval, start_ts=start_ts, end_ts=end_ts)
     content_hash = artifact_content_hash(rows, market=market, interval=interval)
-    digest = content_hash.split(":", 1)[1]
+    artifact_key_hash = dataset_artifact_key_hash(
+        content_hash=content_hash,
+        source_provenance_hash=source_provenance.provenance_manifest_hash,
+    )
+    digest = artifact_key_hash.split(":", 1)[1]
     artifact_dir = out_root / "candles" / market / interval / digest
     artifact_path = artifact_dir / "candles.sqlite"
     manifest_path = artifact_dir / "artifact.manifest.json"
@@ -74,7 +85,7 @@ def freeze_sqlite_candles_dataset(*, source_db: str | Path, market: str, interva
     if artifact_dir.exists():
         return _reuse_existing(artifact_dir=artifact_dir, artifact_path=artifact_path, manifest_path=manifest_path,
             market=market, interval=interval, start_ts=start_ts, end_ts=end_ts, expected_content=content_hash,
-            expected_schema=expected_schema)
+            expected_schema=expected_schema, expected_provenance_hash=source_provenance.provenance_manifest_hash)
     artifact_dir.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{digest}.staging-", dir=artifact_dir.parent))
     staging_db = staging / "candles.sqlite"
@@ -84,15 +95,17 @@ def freeze_sqlite_candles_dataset(*, source_db: str | Path, market: str, interva
                       failure_stage=failure_stage)
         _fail_if_requested(failure_stage, "during_db_creation")
         schema_hash = sqlite_candles_schema_hash(staging_db)
-        artifact_id = f"immutable-candle:{content_hash}"
+        artifact_id = f"immutable-candle:{artifact_key_hash}"
         final_manifest = build_artifact_manifest(artifact_id=artifact_id, path=str(artifact_path), content_hash=content_hash,
             schema_hash=schema_hash, row_count=len(rows), market=market, interval=interval,
             start_ts=int(start_ts), end_ts=int(end_ts), coverage_start_ts=int(start_ts),
-            coverage_end_ts=_coverage_end_ts(end_ts=int(end_ts), interval=interval))
+            coverage_end_ts=_coverage_end_ts(end_ts=int(end_ts), interval=interval),
+            source_provenance=source_provenance)
         write_json_atomic(staging_manifest, final_manifest.as_dict())
         _fail_if_requested(failure_stage, "during_manifest_creation")
         _verify_bundle(staging_db, staging_manifest, market=market, interval=interval, start_ts=start_ts,
-            end_ts=end_ts, expected_content=content_hash, committed=False)
+            end_ts=end_ts, expected_content=content_hash,
+            expected_provenance_hash=source_provenance.provenance_manifest_hash, committed=False)
         # ensure file contents are flushed before publishing the directory
         _fsync_file(staging_db); _fsync_file(staging_manifest)
         _fail_if_requested(failure_stage, "after_verification_before_rename")
@@ -105,9 +118,11 @@ def freeze_sqlite_candles_dataset(*, source_db: str | Path, market: str, interva
             shutil.rmtree(staging, ignore_errors=True)
             return _reuse_existing(artifact_dir=artifact_dir, artifact_path=artifact_path, manifest_path=manifest_path,
                 market=market, interval=interval, start_ts=start_ts, end_ts=end_ts, expected_content=content_hash,
-                expected_schema=expected_schema)
+                expected_schema=expected_schema,
+                expected_provenance_hash=source_provenance.provenance_manifest_hash)
         manifest = _verify_bundle(artifact_path, manifest_path, market=market, interval=interval,
-            start_ts=start_ts, end_ts=end_ts, expected_content=content_hash, committed=True)
+            start_ts=start_ts, end_ts=end_ts, expected_content=content_hash,
+            expected_provenance_hash=source_provenance.provenance_manifest_hash, committed=True)
         return _result(manifest, artifact_path, manifest_path, reused_existing=False)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
@@ -131,12 +146,14 @@ def _write_sqlite(path: Path, *, rows: list[tuple[Any, ...]], market: str, inter
 
 
 def _reuse_existing(*, artifact_dir: Path, artifact_path: Path, manifest_path: Path, market: str, interval: str,
-                    start_ts: int, end_ts: int, expected_content: str, expected_schema: str) -> dict[str, Any]:
+                    start_ts: int, end_ts: int, expected_content: str, expected_schema: str,
+                    expected_provenance_hash: str) -> dict[str, Any]:
     if not artifact_dir.is_dir():
         raise DatasetFreezeError("existing_artifact_path_conflict")
     try:
         manifest = _verify_bundle(artifact_path, manifest_path, market=market, interval=interval, start_ts=start_ts,
-            end_ts=end_ts, expected_content=expected_content, expected_schema=expected_schema, committed=True)
+            end_ts=end_ts, expected_content=expected_content, expected_schema=expected_schema,
+            expected_provenance_hash=expected_provenance_hash, committed=True)
     except DatasetFreezeError as exc:
         if str(exc) in {"artifact_bundle_incomplete", "existing_artifact_schema_conflict", "artifact_scope_verification_failed"}:
             raise
@@ -147,7 +164,8 @@ def _reuse_existing(*, artifact_dir: Path, artifact_path: Path, manifest_path: P
 
 
 def _verify_bundle(db_path: Path, manifest_path: Path, *, market: str, interval: str, start_ts: int, end_ts: int,
-                   expected_content: str, expected_schema: str | None = None, committed: bool):
+                   expected_content: str, expected_schema: str | None = None,
+                   expected_provenance_hash: str, committed: bool):
     if not db_path.is_file() or not manifest_path.is_file():
         raise DatasetFreezeError("artifact_bundle_incomplete")
     if committed:
@@ -170,6 +188,8 @@ def _verify_bundle(db_path: Path, manifest_path: Path, *, market: str, interval:
         raise DatasetFreezeError("existing_artifact_schema_conflict")
     if len(rows) != manifest.row_count:
         raise DatasetFreezeError("artifact_row_count_verification_failed")
+    if manifest.source_provenance.provenance_manifest_hash != expected_provenance_hash:
+        raise DatasetFreezeError("artifact_source_provenance_verification_failed")
     actual_pairs = {(str(row[0]), str(row[1])) for row in rows}
     if actual_pairs != {(market, interval)} or (manifest.market, manifest.interval) != (market, interval):
         raise DatasetFreezeError("artifact_market_interval_verification_failed")
@@ -220,6 +240,8 @@ def _result(manifest, artifact_path: Path, manifest_path: Path, *, reused_existi
             "row_count": manifest.row_count, "market": manifest.market, "interval": manifest.interval,
             "start_ts": manifest.start_ts, "end_ts": manifest.end_ts,
             "coverage_start_ts": manifest.coverage_start_ts, "coverage_end_ts": manifest.coverage_end_ts,
+            "source_provenance": manifest.source_provenance.as_dict(),
+            "source_provenance_hash": manifest.source_provenance.provenance_manifest_hash,
             "locator": manifest.locator.as_dict(),
             "reused_existing": reused_existing}
 
@@ -245,9 +267,12 @@ def _fsync_file(path: Path) -> None:
         os.fsync(handle.fileno())
 
 
-def cmd_research_freeze_dataset(*, db_path: str, market: str, interval: str, start: str, end: str, out_path: str) -> int:
+def cmd_research_freeze_dataset(*, db_path: str, market: str, interval: str, start: str, end: str,
+                                out_path: str, provenance_manifest_path: str) -> int:
     from .experiment_manifest import DateRange
     date_range = DateRange(start=start, end=end)
+    source_provenance = load_dataset_source_provenance(provenance_manifest_path)
     print(json.dumps(freeze_sqlite_candles_dataset(source_db=db_path, market=market, interval=interval,
-        start_ts=date_range.start_ts_ms(), end_ts=date_range.end_ts_ms(), out_dir=out_path), sort_keys=True, ensure_ascii=False))
+        start_ts=date_range.start_ts_ms(), end_ts=date_range.end_ts_ms(), out_dir=out_path,
+        source_provenance=source_provenance), sort_keys=True, ensure_ascii=False))
     return 0

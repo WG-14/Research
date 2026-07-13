@@ -47,6 +47,7 @@ def _freeze_dataset(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--start", required=True)
     parser.add_argument("--end", required=True)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--provenance-manifest", required=True)
 
 
 def _readiness(parser: argparse.ArgumentParser) -> None:

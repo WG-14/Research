@@ -8,6 +8,7 @@ interchangeable evidence merely because their serialized row values match.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, Iterable, Mapping
 
 from ..hashing import sha256_prefixed
@@ -18,11 +19,11 @@ def canonical_candle_rows(rows: Iterable[tuple[Any, ...]]) -> list[dict[str, obj
     return [
         {
             "ts": int(row[0]),
-            "open": float(row[1]),
-            "high": float(row[2]),
-            "low": float(row[3]),
-            "close": float(row[4]),
-            "volume": float(row[5] or 0.0),
+            "open": finite_candle_value(row[1], "open"),
+            "high": finite_candle_value(row[2], "high"),
+            "low": finite_candle_value(row[3], "low"),
+            "close": finite_candle_value(row[4], "close"),
+            "volume": finite_candle_value(row[5], "volume"),
         }
         for row in rows
     ]
@@ -62,9 +63,28 @@ def canonical_artifact_rows(*, market: str | None, interval: str | None,
             ts, open_, high, low, close, volume = row
         else:
             raise ValueError("artifact_content_hash_requires_pair_and_interval")
-        output.append(ArtifactCandleRow(str(pair), str(row_interval), int(ts), float(open_),
-            float(high), float(low), float(close), float(volume or 0.0)).canonical_payload())
+        output.append(ArtifactCandleRow(
+            str(pair), str(row_interval), int(ts),
+            finite_candle_value(open_, "open"), finite_candle_value(high, "high"),
+            finite_candle_value(low, "low"), finite_candle_value(close, "close"),
+            finite_candle_value(volume, "volume"),
+        ).canonical_payload())
     return output
+
+
+def finite_candle_value(value: Any, field: str) -> float:
+    """Reject missing and non-finite OHLCV values without implicit imputation."""
+    if value is None:
+        raise ValueError(f"candle_{field}_missing")
+    if isinstance(value, bool):
+        raise ValueError(f"candle_{field}_invalid")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"candle_{field}_invalid") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"candle_{field}_non_finite")
+    return parsed
 
 
 def artifact_content_hash(rows: Iterable[tuple[Any, ...]], *, market: str | None = None,
@@ -92,6 +112,18 @@ def artifact_manifest_hash(manifest: Mapping[str, Any]) -> str:
     return sha256_prefixed(
         {"hash_domain": "artifact_manifest_v1", "manifest": payload},
         label="artifact_manifest_hash",
+    )
+
+
+def dataset_artifact_key_hash(*, content_hash: str, source_provenance_hash: str) -> str:
+    """Content address for a dataset bundle including its semantic provenance."""
+    return sha256_prefixed(
+        {
+            "hash_domain": "dataset_artifact_key_v1",
+            "artifact_content_hash": str(content_hash),
+            "source_provenance_hash": str(source_provenance_hash),
+        },
+        label="dataset_artifact_key_hash",
     )
 
 

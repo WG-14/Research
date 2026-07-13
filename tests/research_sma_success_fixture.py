@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
+
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -21,7 +23,7 @@ def create_success_fixture(root: Path) -> tuple[Path, Path]:
             for index in range(1440):
                 price = PRICES[index] if index < len(PRICES) else PRICES[-1]
                 conn.execute("INSERT INTO candles VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ("KRW-BTC", "1m", base + index * 60_000, price, price, price, price, 1.0))
-    frozen = freeze_sqlite_candles_dataset(
+    frozen = freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE,
         source_db=db_path, market="KRW-BTC", interval="1m",
         start_ts=int(datetime.fromisoformat("2026-01-01").replace(tzinfo=timezone.utc).timestamp() * 1000),
         end_ts=int(datetime.fromisoformat("2026-01-02").replace(tzinfo=timezone.utc).timestamp() * 1000) + 1439 * 60_000,

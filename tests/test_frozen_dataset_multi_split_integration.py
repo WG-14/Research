@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
+
 import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -42,7 +44,7 @@ def frozen_manifest_and_manager(
             for minute in range(1440):
                 price = 100.0 + day_index + minute / 10_000
                 db.execute("INSERT INTO candles VALUES (?,?,?,?,?,?,?,?)", ("KRW-BTC", "1m", _ts(day, minute), price, price, price, price, 1.0))
-    frozen = freeze_sqlite_candles_dataset(source_db=source, market="KRW-BTC", interval="1m", start_ts=_ts("2026-01-01"), end_ts=_ts("2026-01-04", 1439), out_dir=tmp_path / "frozen")
+    frozen = freeze_sqlite_candles_dataset(source_provenance=TEST_SOURCE_PROVENANCE, source_db=source, market="KRW-BTC", interval="1m", start_ts=_ts("2026-01-01"), end_ts=_ts("2026-01-04", 1439), out_dir=tmp_path / "frozen")
     payload = {
         "experiment_id": "frozen_integration", "hypothesis": "frozen artifact integration", "strategy_name": strategy_name,
         "research_classification": "research_only", "market": "KRW-BTC", "interval": "1m",
@@ -99,6 +101,16 @@ def test_backtest_candidate_search_does_not_materialize_final_holdout(tmp_path) 
     assert set(splits) == {"train", "validation"}
     assert {splits[name]["artifact_manifest_hash"] for name in ("train", "validation")} == {frozen["artifact_manifest_hash"]}
     assert all(splits[name]["verification_status"] == "VERIFIED" for name in splits)
+    adapter_evidence = report["dataset_adapter_provenance"]["adapter_provenance_by_split"]
+    assert {
+        evidence["source_provenance"]["semantics"]["observation_calendar"]
+        for evidence in adapter_evidence.values()
+    } == {"continuous_24x7"}
+    assert {
+        tuple(evidence["source_provenance"]["source_priority"])
+        for evidence in adapter_evidence.values()
+    } == {("test-provider",)}
+    assert all(splits[name]["source_provenance_hash"].startswith("sha256:") for name in splits)
     assert report["reproduction_receipt_path"]
     receipt = load_reproduction_receipt(report["reproduction_receipt_path"])
     receipt_splits = {item["split_name"]: item for item in receipt["stable_fingerprint"]["dataset_split_hashes"]}

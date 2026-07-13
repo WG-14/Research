@@ -23,6 +23,7 @@ def execute_research_command(
                 start=args.start,
                 end=args.end,
                 out_path=args.out,
+                provenance_manifest_path=args.provenance_manifest,
             )
         )
 

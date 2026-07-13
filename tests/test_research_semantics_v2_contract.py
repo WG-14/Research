@@ -186,7 +186,7 @@ def test_default_strict_manifest_hash_is_preserved() -> None:
     manifest_path = Path(__file__).resolve().parents[1] / "examples/research/sma_filter_manifest.example.json"
 
     assert load_manifest(manifest_path).manifest_hash() == (
-        "sha256:0becc8d3c136a813aa13a3400519aa301b7e7647c7a5cff16aa9f64c6aaf01f7"
+        "sha256:c1d572fc37ca44bfde59e45341d3e50a3af1430d26ed22fe3f24518de7796d2c"
     )
 
 

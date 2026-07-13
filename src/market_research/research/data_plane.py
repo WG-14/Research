@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -181,6 +182,10 @@ def build_dataset_quality_report_sql(
         reasons.append("non_positive_price")
     if int(stats["negative_volume_count"]):
         reasons.append("negative_volume")
+    if int(stats["missing_ohlcv_count"]):
+        reasons.append("missing_ohlcv_value")
+    if int(stats["non_finite_ohlcv_count"]):
+        reasons.append("non_finite_ohlcv_value")
     if int(stats["unexpected_bucket_count"]):
         reasons.append("unexpected_candle_bucket")
 
@@ -222,6 +227,8 @@ def build_dataset_quality_report_sql(
         "ohlc_violation_count": int(stats["ohlc_violation_count"]),
         "non_positive_price_count": int(stats["non_positive_price_count"]),
         "negative_volume_count": int(stats["negative_volume_count"]),
+        "missing_ohlcv_count": int(stats["missing_ohlcv_count"]),
+        "non_finite_ohlcv_count": int(stats["non_finite_ohlcv_count"]),
         "first_ts": stats["first_ts"],
         "last_ts": stats["last_ts"],
         "db_schema_fingerprint": _safe_db_schema_fingerprint(db_path),
@@ -553,6 +560,8 @@ def _scan_candles_sql(
     ohlc_violations = 0
     non_positive_prices = 0
     negative_volume = 0
+    missing_ohlcv = 0
+    non_finite_ohlcv = 0
     interval_mismatch = 0
     non_monotonic = 0
     first_ts: int | None = None
@@ -613,6 +622,8 @@ def _scan_candles_sql(
             "ohlc_violation_count": 0,
             "non_positive_price_count": 0,
             "negative_volume_count": 0,
+            "missing_ohlcv_count": 0,
+            "non_finite_ohlcv_count": 0,
             "first_ts": None,
             "last_ts": None,
         }
@@ -646,17 +657,24 @@ def _scan_candles_sql(
             if previous_row_ts is not None and ts < previous_row_ts:
                 non_monotonic += 1
             previous_row_ts = ts
-            open_price = float(row[1])
-            high = float(row[2])
-            low = float(row[3])
-            close = float(row[4])
-            volume = float(row[5] or 0.0)
-            if not (low <= open_price <= high and low <= close <= high and low <= high):
-                ohlc_violations += 1
-            if open_price <= 0.0 or high <= 0.0 or low <= 0.0 or close <= 0.0:
-                non_positive_prices += 1
-            if volume < 0.0:
-                negative_volume += 1
+            raw_ohlcv = tuple(row[index] for index in range(1, 6))
+            if any(value is None for value in raw_ohlcv):
+                missing_ohlcv += 1
+            else:
+                try:
+                    open_price, high, low, close, volume = (float(value) for value in raw_ohlcv)
+                except (TypeError, ValueError):
+                    non_finite_ohlcv += 1
+                else:
+                    if not all(math.isfinite(value) for value in (open_price, high, low, close, volume)):
+                        non_finite_ohlcv += 1
+                    else:
+                        if not (low <= open_price <= high and low <= close <= high and low <= high):
+                            ohlc_violations += 1
+                        if open_price <= 0.0 or high <= 0.0 or low <= 0.0 or close <= 0.0:
+                            non_positive_prices += 1
+                        if volume < 0.0:
+                            negative_volume += 1
             if not _is_expected_bucket(ts, start_ts=start_ts, end_ts=end_ts, interval_ms=interval_ms):
                 unexpected_count += 1
                 continue
@@ -695,6 +713,8 @@ def _scan_candles_sql(
         "ohlc_violation_count": ohlc_violations,
         "non_positive_price_count": non_positive_prices,
         "negative_volume_count": negative_volume,
+        "missing_ohlcv_count": missing_ohlcv,
+        "non_finite_ohlcv_count": non_finite_ohlcv,
         "first_ts": first_ts,
         "last_ts": last_ts,
     }
