@@ -1,9 +1,10 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "entrypoints": ["src/market_research/research_bootstrap.py", "src/market_research/research_cli"],
   "research_core": ["src/market_research/research_core", "src/market_research/research/simulation_engine.py", "src/market_research/research/portfolio_ledger.py"],
   "strategy_sdk": ["src/market_research/strategy_sdk", "src/market_research/research/strategy_contract.py", "src/market_research/research/strategy_registry.py", "src/market_research/research/strategy_compiler.py"],
-  "builtin_strategies": ["src/market_research/builtin_strategies", "src/market_research/research/strategies"],
+  "builtin_strategies": ["src/market_research/builtin_strategies"],
+  "compatibility_strategy_event_adapters": ["src/market_research/research/strategies"],
   "composition_root": ["src/market_research/research_composition"],
   "dependency_rules": {
     "research_core_forbids": ["builtin_strategies", "research_composition"],

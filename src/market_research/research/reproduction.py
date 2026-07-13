@@ -18,10 +18,11 @@ from market_research.storage_io import write_json_atomic
 
 from .experiment_manifest import ExperimentManifest
 from .hashing import content_hash_payload, sha256_prefixed
+from .strategy_compiler import StrategyCompilationError, compiled_contract_from_payload
 
 
-REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 6
-REPRODUCTION_RECEIPT_SCHEMA_VERSION = 6
+REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 7
+REPRODUCTION_RECEIPT_SCHEMA_VERSION = 7
 
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
@@ -262,14 +263,30 @@ def _candidate_fingerprint(candidate: Any) -> dict[str, object]:
         raise ReproductionContractError(f"candidate {candidate_id} has no scenario_results")
     scenarios = tuple(sorted((_scenario_fingerprint(item, candidate_id) for item in scenarios_value), key=_scenario_sort_key))
     primary_scenario_id = _required_string(candidate, "primary_scenario_id", f"candidate {candidate_id}")
-    compiled = candidate.get("compiled_strategy_contract")
-    if not isinstance(compiled, dict):
-        raise ReproductionContractError(f"candidate {candidate_id}.compiled_strategy_contract is required")
-    compiled_material = dict(compiled)
-    embedded_compiled_hash = compiled_material.pop("compiled_contract_hash", None)
     recorded_compiled_hash = _required_sha256(candidate, "compiled_strategy_contract_hash", f"candidate {candidate_id}")
-    if embedded_compiled_hash != recorded_compiled_hash or sha256_prefixed(compiled_material) != recorded_compiled_hash:
-        raise ReproductionContractError(f"candidate {candidate_id}.compiled_strategy_contract_hash mismatch")
+    primary = next((item for item in scenarios_value if isinstance(item, dict) and
+                    str(item.get("scenario_id") or "") == primary_scenario_id), None)
+    if primary is None:
+        raise ReproductionContractError(f"candidate {candidate_id}.primary_scenario_id mismatch")
+    compiled = primary.get("compiled_strategy_contract")
+    scenario_compiled_hash = primary.get("compiled_strategy_contract_hash")
+    if not isinstance(compiled, dict) or scenario_compiled_hash != recorded_compiled_hash:
+        raise ReproductionContractError(f"candidate {candidate_id}.primary scenario compiled contract mismatch")
+    if candidate.get("compiled_strategy_contract") != compiled:
+        raise ReproductionContractError(f"candidate {candidate_id}.compiled_strategy_contract primary mismatch")
+    try:
+        hydrated = compiled_contract_from_payload(
+            dict(compiled), expected_compiled_hash=recorded_compiled_hash,
+            expected_registry_hash=_required_sha256(candidate, "strategy_registry_hash", f"candidate {candidate_id}"),
+            expected_plugin_hash=_required_sha256(candidate, "strategy_plugin_contract_hash", f"candidate {candidate_id}"),
+        )
+    except StrategyCompilationError as exc:
+        raise ReproductionContractError(f"candidate {candidate_id}.compiled_strategy_contract invalid:{exc}") from exc
+    if candidate.get("capability_contract_hash") not in {None, hydrated.capability_contract_hash}:
+        raise ReproductionContractError(f"candidate {candidate_id}.capability_contract_hash mismatch")
+    if (candidate.get("capability_contract") is not None
+            and candidate.get("capability_contract") != compiled.get("capability_contract")):
+        raise ReproductionContractError(f"candidate {candidate_id}.capability_contract mismatch")
     return {
         "candidate_id": candidate_id,
         "effective_strategy_parameters_hash": _required_sha256(
@@ -293,6 +310,14 @@ def _scenario_fingerprint(scenario: Any, candidate_id: str) -> dict[str, object]
         raise ReproductionContractError(f"candidate {candidate_id} scenario must be an object")
     scenario_id = _required_string(scenario, "scenario_id", f"candidate {candidate_id} scenario")
     context = f"candidate {candidate_id} scenario {scenario_id}"
+    compiled_payload = scenario.get("compiled_strategy_contract")
+    compiled_hash = _required_sha256(scenario, "compiled_strategy_contract_hash", context)
+    if not isinstance(compiled_payload, dict):
+        raise ReproductionContractError(f"{context}.compiled_strategy_contract is required")
+    try:
+        compiled_contract_from_payload(dict(compiled_payload), expected_compiled_hash=compiled_hash)
+    except StrategyCompilationError as exc:
+        raise ReproductionContractError(f"{context}.compiled_strategy_contract invalid:{exc}") from exc
     metrics_hash = _required_sha256(scenario, "metrics_hash", context)
     behavior_hash = _required_sha256(scenario, "behavior_hash", context)
     strategy_behavior_hash = _required_sha256(scenario, "strategy_behavior_hash", context)
@@ -303,6 +328,7 @@ def _scenario_fingerprint(scenario: Any, candidate_id: str) -> dict[str, object]
         "scenario_index": _required_int(scenario, "scenario_index", context),
         "scenario_id": scenario_id,
         "scenario_role": _required_string(scenario, "scenario_role", context),
+        "compiled_strategy_contract_hash": compiled_hash,
         "behavior_hash": behavior_hash,
         "strategy_behavior_hash": strategy_behavior_hash,
         "trade_ledger_hash": trade_ledger_hash,
@@ -339,6 +365,14 @@ def _scenario_fingerprint(scenario: Any, candidate_id: str) -> dict[str, object]
         for required_key in ("decision_stream_hash", "request_stream_hash", "fill_stream_hash", "ledger_stream_hash"):
             if required_key not in result:
                 raise ReproductionContractError(f"{context}.{required_key} is required")
+        for payload_key, output_key in (
+            ("decision_stream", "decision_stream_hash"),
+            ("execution_request_stream", "request_stream_hash"),
+            ("execution_fill_stream", "fill_stream_hash"),
+            ("ledger_stream", "ledger_stream_hash"),
+        ):
+            if scenario.get(payload_key) is not None and sha256_prefixed(scenario[payload_key]) != result[output_key]:
+                raise ReproductionContractError(f"{context}.{payload_key} tampered")
         seed_rows = scenario.get("execution_fill_stream") or ()
         seed_hashes = sorted({str(fill.get("derived_seed_hash")) for fill in seed_rows if isinstance(fill, dict) and fill.get("derived_seed_hash")})
         if seed_hashes:

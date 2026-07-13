@@ -6,6 +6,7 @@ from typing import Any
 
 from .research_classification import requires_candidate_validation
 from .hashing import sha256_prefixed
+from .immutable_contract import canonical_mutable, deep_freeze
 
 
 class StrategySpecError(ValueError):
@@ -90,6 +91,10 @@ class StrategySpec:
     exit_policy_schema: dict[str, Any]
     parameter_schema: tuple[StrategyParameterSchema, ...] = ()
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "default_parameters", deep_freeze(self.default_parameters))
+        object.__setattr__(self, "exit_policy_schema", deep_freeze(self.exit_policy_schema))
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "strategy_name": self.strategy_name,
@@ -99,11 +104,11 @@ class StrategySpec:
             "behavior_affecting_parameter_names": list(self.behavior_affecting_parameter_names),
             "metadata_only_parameter_names": list(self.metadata_only_parameter_names),
             "research_only_parameter_names": list(self.research_only_parameter_names),
-            "default_parameters": dict(self.default_parameters),
+            "default_parameters": canonical_mutable(self.default_parameters),
             "decision_contract_version": self.decision_contract_version,
             "required_data": list(self.required_data),
             "optional_data": list(self.optional_data),
-            "exit_policy_schema": dict(self.exit_policy_schema),
+            "exit_policy_schema": canonical_mutable(self.exit_policy_schema),
             "parameter_schema": [item.as_dict() for item in self.parameter_schema],
         }
 
@@ -349,8 +354,9 @@ def validate_parameter_space_against_strategy_spec(
     strategy_name: str,
     parameter_space: dict[str, tuple[object, ...]],
     research_classification: str,
+    spec: StrategySpec | None = None,
 ) -> StrategySpec:
-    spec = strategy_spec_for_name(strategy_name)
+    spec = spec or strategy_spec_for_name(strategy_name)
     accepted = set(spec.accepted_parameter_names)
     unknown = sorted(key for key in parameter_space if key not in accepted)
     if unknown:

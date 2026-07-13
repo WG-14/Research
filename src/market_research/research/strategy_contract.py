@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import inspect
-from types import MappingProxyType
+import re
 from typing import Any, Callable, Iterable, Mapping
 
 from .backtest_types import BacktestRunContext
@@ -17,6 +17,7 @@ from .decision_event import ResearchDecisionEvent
 from .execution_model import ExecutionModel
 from .experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
 from .hashing import sha256_prefixed
+from .immutable_contract import canonical_mutable, deep_freeze
 from .strategy_spec import StrategySpec
 
 
@@ -27,6 +28,45 @@ ResearchDataRequirementBuilder = Callable[[object | None], "ResearchStrategyData
 ResearchDecisionBuilder = Callable[..., Any]
 ResearchPayloadAdapter = Callable[[dict[str, object], Any], dict[str, object]]
 ExitPolicyMaterializer = Callable[[str, dict[str, Any]], Any]
+
+
+_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def is_sha256_hash(value: object) -> bool:
+    return isinstance(value, str) and _SHA256_RE.fullmatch(value) is not None
+
+
+def _source_artifact(value: Any) -> str:
+    try:
+        return inspect.getsource(value)
+    except (OSError, TypeError):
+        code = getattr(value, "__code__", None)
+        return repr((getattr(code, "co_code", b""), getattr(code, "co_consts", ())))
+
+
+def _transitive_behavior_binding(hook: Callable[..., Any]) -> dict[str, str]:
+    """Bind strategy-owned helpers/classes referenced by a public hook."""
+    components = {f"{hook.__module__}:{hook.__qualname__}": sha256_prefixed(_source_artifact(hook))}
+    code = getattr(hook, "__code__", None)
+    globals_map = getattr(hook, "__globals__", {})
+    for name in sorted(set(getattr(code, "co_names", ()))):
+        referenced = globals_map.get(name)
+        if not (inspect.isfunction(referenced) or inspect.isclass(referenced)):
+            continue
+        module = str(getattr(referenced, "__module__", ""))
+        if not module.startswith("market_research"):
+            continue
+        identity = f"{module}:{getattr(referenced, '__qualname__', name)}"
+        if inspect.isclass(referenced):
+            methods = {method_name: sha256_prefixed(_source_artifact(member))
+                       for method_name, member in sorted(vars(referenced).items())
+                       if inspect.isfunction(member)}
+            components[identity] = sha256_prefixed({"class_source": _source_artifact(referenced),
+                                                    "runtime_methods": methods})
+        else:
+            components[identity] = sha256_prefixed(_source_artifact(referenced))
+    return components
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,23 +112,28 @@ class CompiledStrategyContract:
     strategy_registry_hash: str
     compiled_contract_hash: str
 
-    @staticmethod
-    def immutable_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
-        return MappingProxyType(dict(value))
+    def __post_init__(self) -> None:
+        for field_name in (
+            "raw_parameters", "materialized_parameters", "parameter_source_map",
+            "data_requirements", "capability_contract",
+        ):
+            object.__setattr__(self, field_name, deep_freeze(getattr(self, field_name)))
+        if self.exit_policy is not None:
+            object.__setattr__(self, "exit_policy", deep_freeze(self.exit_policy))
 
     def as_dict(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
             "strategy_name": self.strategy_name,
             "strategy_version": self.strategy_version,
-            "raw_parameters": dict(self.raw_parameters),
-            "materialized_parameters": dict(self.materialized_parameters),
-            "parameter_source_map": dict(self.parameter_source_map),
+            "raw_parameters": canonical_mutable(self.raw_parameters),
+            "materialized_parameters": canonical_mutable(self.materialized_parameters),
+            "parameter_source_map": canonical_mutable(self.parameter_source_map),
             "materialized_parameters_hash": self.materialized_parameters_hash,
-            "data_requirements": dict(self.data_requirements),
-            "exit_policy": dict(self.exit_policy) if self.exit_policy is not None else None,
+            "data_requirements": canonical_mutable(self.data_requirements),
+            "exit_policy": canonical_mutable(self.exit_policy) if self.exit_policy is not None else None,
             "exit_mode": self.exit_mode,
-            "capability_contract": dict(self.capability_contract),
+            "capability_contract": canonical_mutable(self.capability_contract),
             "capability_contract_hash": self.capability_contract_hash,
             "strategy_plugin_contract_hash": self.strategy_plugin_contract_hash,
             "strategy_registry_hash": self.strategy_registry_hash,
@@ -279,6 +324,8 @@ class ResearchStrategyPlugin:
             object.__setattr__(self, "diagnostics_builder", generic_diagnostics_count_builder)
         if self.exit_mode not in {"strategy_owned", "common_typed_policy"}:
             raise ValueError(f"research_strategy_exit_mode_invalid:{name}:{self.exit_mode}")
+        if self.exit_mode == "common_typed_policy" and self.exit_decision_builder is not None:
+            raise ValueError(f"research_strategy_multiple_exit_authorities:{name}:common_policy_with_strategy_builder")
 
     def data_requirements(self, strategy_spec: object | None = None) -> ResearchStrategyDataRequirements:
         if self.data_requirements_builder is not None:
@@ -298,22 +345,19 @@ class ResearchStrategyPlugin:
             ("payload_adapter", self.payload_adapter),
         ):
             if hook is not None:
-                try:
-                    source_binding = inspect.getsource(hook)
-                except (OSError, TypeError):
-                    code = getattr(hook, "__code__", None)
-                    source_binding = repr((getattr(code, "co_code", b""), getattr(code, "co_consts", ())))
+                components = _transitive_behavior_binding(hook)
                 hooks[role] = {"module": hook.__module__, "qualname": hook.__qualname__, "role": role,
                                "hook_contract_version": self.decision_contract_version,
-                               "source_artifact_hash": sha256_prefixed(source_binding)}
+                               "source_artifact_hash": sha256_prefixed(components),
+                               "transitive_behavior_components": components}
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "name": self.name,
             "version": self.version,
             "strategy_spec_hash": self.spec.spec_hash(),
             "required_data": list(self.required_data),
             "optional_data": list(self.optional_data),
-            "research_data_requirements": self.data_requirements().capability_contract_payload(),
+            "research_data_requirements": self.data_requirements(self.spec.default_parameters).capability_contract_payload(),
             "decision_contract_version": self.decision_contract_version,
             "diagnostics_namespace": self.diagnostics_namespace,
             "execution_authority": self.execution_authority,
@@ -325,7 +369,7 @@ class ResearchStrategyPlugin:
             "parameter_materializer_module": (
                 self.parameter_materializer.__module__ if self.parameter_materializer is not None else None
             ),
-            "source_artifact_binding": "per_hook_source_artifact_hash",
+            "source_artifact_binding": "transitive_strategy_owned_components_v2",
         }
 
     def contract_hash(self) -> str:

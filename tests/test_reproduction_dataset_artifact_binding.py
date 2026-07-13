@@ -13,6 +13,7 @@ from market_research.research.reproduction import (
     create_reproduction_receipt,
 )
 from market_research.research.validation_protocol import run_research_backtest
+from market_research.research.builtin_registry import builtin_strategy_registry
 
 from .test_frozen_dataset_multi_split_integration import frozen_manifest_and_manager
 
@@ -25,7 +26,8 @@ def test_receipt_projection_preserves_artifact_and_split_hashes() -> None:
 
 def _valid_report_and_fingerprint(tmp_path):
     _, manifest, manager = frozen_manifest_and_manager(tmp_path)
-    report = run_research_backtest(manifest=manifest, db_path=None, manager=manager)
+    report = run_research_backtest(manifest=manifest, db_path=None, manager=manager,
+                                   strategy_registry=builtin_strategy_registry())
     return report, manifest, build_reproduction_fingerprint(report, manifest=manifest).as_dict()
 
 

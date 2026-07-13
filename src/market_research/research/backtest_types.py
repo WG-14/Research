@@ -299,6 +299,7 @@ class BacktestRun:
     strategy_plugin_contract_hash: str | None = None
     decision_stream_hash: str | None = None
     metrics_hash: str | None = None
+    authoritative_decision_ids: tuple[str, ...] = ()
 
     def validate_execution_lineage(self) -> None:
         """Fail closed on duplicate, orphaned, or inconsistent execution lineage."""
@@ -315,6 +316,11 @@ class BacktestRun:
             if any(not value for value in ids):
                 raise ValueError(f"missing_{name}_id")
             indexes[name] = dict(zip(ids, values))
+        if self.authoritative_decision_ids:
+            authoritative_ids = tuple(str(value) for value in self.authoritative_decision_ids)
+            if len(authoritative_ids) != len(set(authoritative_ids)):
+                raise ValueError("duplicate_authoritative_decision_id")
+            indexes["decision"] = {value: indexes["decision"].get(value) for value in authoritative_ids}
         for intent in self.order_intents:
             if intent.decision_id not in indexes["decision"]: raise ValueError("orphan_intent")
         for request in self.execution_requests:
@@ -335,8 +341,13 @@ class BacktestRun:
                           if fill.fill_status in {"filled", "partial"} and float(fill.filled_qty) > 0
                           and fill.portfolio_effective_ts is not None}
         applied = {entry.fill_id for entry in self.ledger_entries}
-        if not applied.issubset(mutating_fills):
-            raise ValueError("ledger_entry_without_mutating_fill")
+        pending = {str(trade.get("fill_id")) for trade in self.trades
+                   if trade.get("pending_execution_at_end") is True
+                   and trade.get("pending_execution_after_dataset_end") is True}
+        if applied & pending:
+            raise ValueError("fill_both_applied_and_pending")
+        if mutating_fills != applied | pending:
+            raise ValueError("mutating_fill_ledger_correspondence_mismatch")
         for trade in self.trades:
             if not trade.get("ledger_entry_id"): continue
             fill = indexes["fill"].get(str(trade.get("fill_id")))

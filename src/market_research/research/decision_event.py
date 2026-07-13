@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 from .hashing import sha256_prefixed
+
+
+class IntentSizing(str, Enum):
+    UNSPECIFIED = "unspecified"
+    PORTFOLIO_POLICY_FRACTIONAL_CASH = "portfolio_policy_fractional_cash"
+    FULL_POSITION = "full_position"
+    EXPLICIT_QUANTITY = "explicit_quantity"
+    POSITION_FRACTION = "position_fraction"
 
 
 @dataclass(frozen=True)
@@ -18,23 +27,30 @@ class OrderIntent:
     decision_id: str
     intent_id: str
     side: str
-    sizing: str = "portfolio_policy_fractional_cash"
+    sizing: IntentSizing = IntentSizing.UNSPECIFIED
     buy_fraction: float | None = None
     requested_qty: float | None = None
     reason: str = ""
     order_intent_ts: int = 0
     exit_rule: str | None = None
     exit_reason: str | None = None
-    schema_version: int = 1
+    schema_version: int = 2
+
+    def __post_init__(self) -> None:
+        try:
+            sizing = self.sizing if isinstance(self.sizing, IntentSizing) else IntentSizing(str(self.sizing))
+        except ValueError as exc:
+            raise ValueError(f"unsupported_intent_sizing:{self.sizing}") from exc
+        object.__setattr__(self, "sizing", sizing)
 
     @classmethod
     def from_decision(cls, *, decision_id: str, side: str, **values: Any) -> "OrderIntent":
-        payload = {"schema_version": 1, "decision_id": decision_id, "side": str(side).upper(), **values}
+        payload = {"schema_version": 2, "decision_id": decision_id, "side": str(side).upper(), **values}
         return cls(
             decision_id=decision_id,
             intent_id=sha256_prefixed(payload),
             side=str(side).upper(),
-            sizing=str(values.get("sizing") or "portfolio_policy_fractional_cash"),
+            sizing=IntentSizing(str(values.get("sizing") or "unspecified")),
             buy_fraction=(float(values["buy_fraction"]) if values.get("buy_fraction") is not None else None),
             requested_qty=(float(values["requested_qty"]) if values.get("requested_qty") is not None else None),
             reason=str(values.get("reason") or ""),
@@ -46,7 +62,7 @@ class OrderIntent:
     def as_dict(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version, "decision_id": self.decision_id,
-            "intent_id": self.intent_id, "side": self.side, "sizing": self.sizing,
+            "intent_id": self.intent_id, "side": self.side, "sizing": self.sizing.value,
             "buy_fraction": self.buy_fraction, "requested_qty": self.requested_qty,
             "reason": self.reason, "order_intent_ts": self.order_intent_ts,
             "exit_rule": self.exit_rule, "exit_reason": self.exit_reason,

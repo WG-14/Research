@@ -17,6 +17,7 @@ class StrategyRegistryError(ValueError):
 class StrategyRegistry:
     schema_version: int
     plugins: Mapping[str, ResearchStrategyPlugin]
+    plugin_contract_hashes: Mapping[str, str]
     content_hash: str
 
     @classmethod
@@ -27,12 +28,15 @@ class StrategyRegistry:
                 raise StrategyRegistryError(f"duplicate_research_strategy:{plugin.name}")
             values[plugin.name] = plugin
         payload = {"schema_version": 1, "plugins": {name: values[name].contract_hash() for name in sorted(values)}}
-        return cls(1, MappingProxyType(values), sha256_prefixed(payload))
+        hashes = {name: values[name].contract_hash() for name in sorted(values)}
+        return cls(1, MappingProxyType(values), MappingProxyType(hashes), sha256_prefixed(payload))
 
     def resolve(self, name: str) -> ResearchStrategyPlugin:
         key = str(name or "").strip().lower()
         try:
-            return self.plugins[key]
+            plugin = self.plugins[key]
         except KeyError as exc:
             raise StrategyRegistryError(f"unsupported_research_strategy:{key}") from exc
-
+        if plugin.contract_hash() != self.plugin_contract_hashes[key]:
+            raise StrategyRegistryError(f"stale_research_strategy_contract:{key}")
+        return plugin

@@ -5,6 +5,7 @@ from market_research.research.dataset_freeze import freeze_sqlite_candles_datase
 from .test_dataset_artifact_manifest_contract import _source
 from .test_frozen_dataset_multi_split_integration import frozen_manifest_and_manager
 from market_research.research.validation_protocol import run_research_backtest, run_research_walk_forward
+from market_research.research.builtin_registry import builtin_strategy_registry
 import pytest
 
 
@@ -43,7 +44,8 @@ def test_real_backtest_verifies_once_and_materializes_each_split(tmp_path, monke
             calls[__name] += 1
             return __original(self, *args, **kwargs)
         monkeypatch.setattr(FrozenSQLiteCandleAdapter, name, wrapped)
-    run_research_backtest(manifest=manifest, db_path=None, manager=manager)
+    run_research_backtest(manifest=manifest, db_path=None, manager=manager,
+                          strategy_registry=builtin_strategy_registry())
     assert calls == {"resolve": 1, "verify": 1, "materialize": 3}
 
 
@@ -56,6 +58,7 @@ def test_real_walk_forward_verifies_once_and_materializes_every_split(tmp_path, 
             calls[__name] += 1
             return __original(self, *args, **kwargs)
         monkeypatch.setattr(FrozenSQLiteCandleAdapter, name, wrapped)
-    report = run_research_walk_forward(manifest=manifest, db_path=None, manager=manager)
+    report = run_research_walk_forward(manifest=manifest, db_path=None, manager=manager,
+                                       strategy_registry=builtin_strategy_registry())
     assert calls["verify"] == 1
     assert calls["materialize"] == len(report["dataset_splits"])

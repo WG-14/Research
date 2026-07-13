@@ -19,6 +19,7 @@ from market_research.research.reproduction import (
 from market_research.research.hashing import sha256_prefixed
 from market_research.research.validation_protocol import run_research_backtest
 from market_research.settings import ResearchSettings
+from market_research.research.builtin_registry import builtin_strategy_registry
 from tests.research_sma_success_fixture import create_success_fixture
 
 
@@ -39,6 +40,7 @@ def _run_report(tmp_path: Path) -> tuple[Path, Path, ResearchPathManager, dict[s
         db_path=db_path,
         manager=manager,
         manifest_path=str(manifest_path),
+        strategy_registry=builtin_strategy_registry(),
     )
     return db_path, manifest_path, manager, report
 

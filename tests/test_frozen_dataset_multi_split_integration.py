@@ -10,6 +10,7 @@ from market_research.research.dataset_freeze import freeze_sqlite_candles_datase
 from market_research.research.experiment_manifest import parse_manifest
 from market_research.research.validation_protocol import run_research_backtest
 from market_research.research.reproduction import load_reproduction_receipt
+from market_research.research.builtin_registry import builtin_strategy_registry
 
 
 def _ts(day: str, minute: int = 0) -> int:
@@ -50,7 +51,8 @@ def frozen_manifest_and_manager(tmp_path: Path, *, walk_forward: bool = False, e
 
 def test_one_frozen_artifact_runs_backtest_train_validation_holdout(tmp_path) -> None:
     frozen, manifest, manager = frozen_manifest_and_manager(tmp_path)
-    report = run_research_backtest(manifest=manifest, db_path=None, manager=manager)
+    report = run_research_backtest(manifest=manifest, db_path=None, manager=manager,
+                                   strategy_registry=builtin_strategy_registry())
     splits = report["dataset_splits"]
     assert {splits[name]["artifact_manifest_hash"] for name in ("train", "validation", "final_holdout")} == {frozen["artifact_manifest_hash"]}
     assert all(splits[name]["verification_status"] == "VERIFIED" for name in splits)
@@ -65,4 +67,5 @@ def test_one_frozen_artifact_runs_backtest_train_validation_holdout(tmp_path) ->
 
 def test_parallel_frozen_backtest_without_db(tmp_path) -> None:
     _, manifest, manager = frozen_manifest_and_manager(tmp_path, execution_mode="parallel")
-    assert run_research_backtest(manifest=manifest, db_path=None, manager=manager)["dataset_splits"]["train"]["verification_status"] == "VERIFIED"
+    assert run_research_backtest(manifest=manifest, db_path=None, manager=manager,
+        strategy_registry=builtin_strategy_registry())["dataset_splits"]["train"]["verification_status"] == "VERIFIED"

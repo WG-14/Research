@@ -11,6 +11,7 @@ from market_research.research.experiment_registry import (
     load_experiment_registry_rows,
 )
 from market_research.research.validation_protocol import run_research_backtest
+from market_research.research.builtin_registry import builtin_strategy_registry
 
 from .test_frozen_dataset_multi_split_integration import frozen_manifest_and_manager
 
@@ -24,7 +25,8 @@ def test_actual_registry_rows_bind_completed_frozen_artifact_evidence(tmp_path) 
         **parsed.raw, "objective_metric": "return", "experiment_family_id": "registry-evidence-family",
         "hypothesis_id": "registry-evidence-hypothesis",
     })
-    report = run_research_backtest(manifest=parsed, db_path=None, manager=manager)
+    report = run_research_backtest(manifest=parsed, db_path=None, manager=manager,
+                                   strategy_registry=builtin_strategy_registry())
     rows = load_experiment_registry_rows(Path(report["experiment_registry_path"]))
     reservation = next(row for row in rows if row["event_type"] == "research_attempt_reserved")
     completion = next(row for row in rows if row["event_type"] == "research_attempt_completed")

@@ -13,3 +13,9 @@ def test_core_has_no_concrete_strategy_imports():
 def test_boundary_manifest_classifies_four_roles():
     payload = json.loads(Path("docs/architecture-boundaries.json").read_text())
     assert {"research_core", "strategy_sdk", "builtin_strategies", "composition_root"} <= set(payload)
+
+
+def test_composition_imports_builtin_package_ownership_surfaces():
+    source = Path("src/market_research/research_composition/builtin_registry.py").read_text()
+    assert "market_research.builtin_strategies" in source
+    assert "market_research.research.strategies" not in source

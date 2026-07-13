@@ -5,7 +5,7 @@ import itertools
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from market_research.execution_reality_contract import (
     evaluate_execution_reality_policy,
@@ -20,6 +20,8 @@ from .process_runtime import ALLOWED_RESEARCH_START_METHODS
 from .strategy_spec import StrategySpecError, validate_parameter_space_against_strategy_spec
 from .audit_trail import AuditTrailPolicy as ResearchAuditTrailPolicy
 from .datasets.contracts import DatasetArtifactRef
+if TYPE_CHECKING:
+    from .strategy_registry import StrategyRegistry
 
 
 class ManifestValidationError(ValueError):
@@ -903,14 +905,14 @@ class ExperimentManifest:
         )
 
 
-def load_manifest(path: str | Path) -> ExperimentManifest:
+def load_manifest(path: str | Path, *, registry: "StrategyRegistry | None" = None) -> ExperimentManifest:
     manifest_path = Path(path).expanduser()
     with manifest_path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
-    return parse_manifest(payload)
+    return parse_manifest(payload, registry=registry)
 
 
-def parse_manifest(payload: dict[str, Any]) -> ExperimentManifest:
+def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | None" = None) -> ExperimentManifest:
     if not isinstance(payload, dict):
         raise ManifestValidationError("manifest must be a JSON object")
     allowed_fields = {
@@ -934,12 +936,14 @@ def parse_manifest(payload: dict[str, Any]) -> ExperimentManifest:
     parameter_space = _parse_parameter_space(payload.get("parameter_space"))
     research_classification = _parse_research_classification(payload.get("research_classification"))
     try:
+        plugin_spec = registry.resolve(strategy_name).spec if registry is not None else None
         validate_parameter_space_against_strategy_spec(
             strategy_name=strategy_name,
             parameter_space=parameter_space,
             research_classification=research_classification,
+            spec=plugin_spec,
         )
-    except StrategySpecError as exc:
+    except (StrategySpecError, ValueError) as exc:
         raise ManifestValidationError(str(exc)) from exc
     if payload.get("cost_model") is None and payload.get("execution_model") is None:
         raise ManifestValidationError("manifest requires cost_model or execution_model")

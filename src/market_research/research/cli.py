@@ -35,6 +35,7 @@ from .forward_diagnostics_cli import cmd_research_forward_diagnostics
 from .batch_runner import run_research_batch
 from .datasets.registry import default_dataset_adapter_registry
 from .strategy_package import StrategyPackageError, build_strategy_research_package
+from market_research.research_composition import builtin_strategy_registry
 
 
 def _required_runtime_db_path(context: "ResearchAppContext", manifest: Any, *, registry: Any | None = None) -> Path | None:
@@ -120,7 +121,8 @@ def cmd_research_backtest(
     rc = 1
     try:
         try:
-            manifest = load_manifest(manifest_path)
+            strategy_registry = builtin_strategy_registry()
+            manifest = load_manifest(manifest_path, registry=strategy_registry)
             if diagnostic_mode is not None:
                 manifest = replace(
                     manifest,
@@ -139,6 +141,7 @@ def cmd_research_backtest(
                     "diagnostic_mode": diagnostic_mode,
                 },
                 progress_callback=_print_research_backtest_progress,
+                strategy_registry=strategy_registry,
             )
         except ArtifactBudgetExceeded as exc:
             payload = _write_artifact_budget_failure_payload(
@@ -180,7 +183,8 @@ def cmd_research_walk_forward(
     rc = 1
     try:
         try:
-            manifest = load_manifest(manifest_path)
+            strategy_registry = builtin_strategy_registry()
+            manifest = load_manifest(manifest_path, registry=strategy_registry)
             calibration = load_calibration_artifact(execution_calibration_path) if execution_calibration_path else None
             report = run_research_walk_forward(
                 manifest=manifest,
@@ -193,6 +197,7 @@ def cmd_research_walk_forward(
                     "execution_calibration": execution_calibration_path,
                 },
                 progress_callback=_print_research_walk_forward_progress,
+                strategy_registry=strategy_registry,
             )
         except ArtifactBudgetExceeded as exc:
             payload = _write_artifact_budget_failure_payload(
@@ -280,7 +285,8 @@ def _write_artifact_budget_failure_payload(
     exc: ArtifactBudgetExceeded,
 ) -> dict[str, object]:
     try:
-        manifest = load_manifest(manifest_path)
+        strategy_registry = builtin_strategy_registry()
+        manifest = load_manifest(manifest_path, registry=strategy_registry)
         experiment_id = manifest.experiment_id
     except Exception:
         experiment_id = "unknown"
@@ -309,7 +315,8 @@ def cmd_research_validate(
     rc = 1
     try:
         try:
-            manifest = load_manifest(manifest_path)
+            strategy_registry = builtin_strategy_registry()
+            manifest = load_manifest(manifest_path, registry=strategy_registry)
             calibration = load_calibration_artifact(execution_calibration_path) if execution_calibration_path else None
             validation_run = run_research_validation(
                 manifest=manifest,
@@ -419,6 +426,7 @@ def cmd_research_reproduce_run(
                 manifest_path=manifest_path,
                 command_args={"manifest": manifest_path, "receipt": receipt_path, "reproduction": True},
                 progress_callback=_print_research_backtest_progress,
+                strategy_registry=strategy_registry,
             )
             reproduced_receipt_path = Path(str(reproduced_report["reproduction_receipt_path"]))
             try:

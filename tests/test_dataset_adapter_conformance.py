@@ -8,6 +8,7 @@ from market_research.research.dataset_snapshot import Candle, DatasetLoadContext
 from market_research.research.datasets.contracts import DatasetArtifactRef, DatasetResolutionContext, DatasetSliceQuery
 from market_research.research.experiment_manifest import DateRange, load_manifest
 from market_research.research.validation_protocol import run_research_backtest
+from market_research.research.builtin_registry import builtin_strategy_registry
 from market_research.paths import ResearchPathManager
 from market_research.settings import ResearchSettings
 import pytest
@@ -115,6 +116,7 @@ def test_mismatch_fails_before_strategy_execution(tmp_path: Path, monkeypatch: p
     with pytest.raises(Exception, match="dataset_verification_mismatch_before_strategy_execution"):
         run_research_backtest(
             manifest=load_manifest(manifest_path), db_path=db_path, manager=manager,
+            strategy_registry=builtin_strategy_registry(),
             candidate_evaluator=SpyEvaluator(),
         )
     assert calls == 0

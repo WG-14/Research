@@ -13,7 +13,7 @@ from typing import Any
 from .backtest_common import execution_event_summary
 from .backtest_types import BacktestRun, BacktestRunContext, BacktestResourceLimitExceeded
 from .dataset_snapshot import DatasetSnapshot
-from .decision_event import OrderIntent, ResearchDecisionEvent
+from .decision_event import IntentSizing, OrderIntent, ResearchDecisionEvent
 from .execution_model import ExecutionFill, ExecutionModel, ExecutionRequest, FixedBpsExecutionModel, model_params_hash
 from .execution_timing import build_signal_event, resolve_execution_reference
 from .experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy, legacy_research_portfolio_policy
@@ -24,7 +24,8 @@ from .portfolio_ledger import LedgerEntry, PortfolioLedger
 from .risk_contract import ResearchRiskPolicy, evaluate_research_risk
 from .position_model import ResearchPosition
 from .strategy_contract import CompiledStrategyContract, ResearchStrategyPlugin
-from .strategy_compiler import compile_builtin_strategy
+from .strategy_compiler import StrategyCompiler
+from .strategy_registry import StrategyRegistry
 from .causal_market_view import CausalMarketView
 from .portfolio_view import ReadOnlyPortfolioView
 from .exit_policy import GenericExitPolicyEvaluator
@@ -35,6 +36,27 @@ import inspect
 
 class ExecutionTimelineError(ValueError):
     pass
+
+
+def _validate_runtime_intent(*, intent: OrderIntent, compiled: CompiledStrategyContract,
+                             has_position: bool, pending_buy: bool) -> None:
+    capability = compiled.capability_contract
+    if intent.side not in {"BUY", "SELL"}:
+        raise ValueError("strategy_capability_direction_rejected")
+    if intent.side == "BUY":
+        if intent.sizing is not IntentSizing.PORTFOLIO_POLICY_FRACTIONAL_CASH:
+            raise ValueError("strategy_capability_buy_sizing_rejected")
+        if (has_position or pending_buy) and not bool(capability.get("pyramiding")):
+            raise ValueError("strategy_capability_pyramiding_rejected")
+    if intent.side == "SELL":
+        if not has_position:
+            raise ValueError("strategy_capability_short_rejected")
+        if not bool(capability.get("partial_exit")):
+            if intent.sizing is not IntentSizing.FULL_POSITION or intent.requested_qty is not None:
+                raise ValueError("strategy_capability_partial_or_ambiguous_exit_rejected")
+        elif intent.sizing not in {IntentSizing.FULL_POSITION, IntentSizing.EXPLICIT_QUANTITY,
+                                   IntentSizing.POSITION_FRACTION}:
+            raise ValueError("strategy_capability_sell_sizing_rejected")
 
 
 def _stream_hash(values: tuple[object, ...]) -> str:
@@ -89,20 +111,28 @@ def _trade_from_fill(fill: ExecutionFill, ledger: PortfolioLedger, entry: Ledger
     }
 
 
-def run_common_simulation_backtest(
+def _run_common_simulation_backtest(
     *, plugin: ResearchStrategyPlugin, dataset: DatasetSnapshot, parameter_values: dict[str, Any], fee_rate: float,
     slippage_bps: float, parameter_stability_score: float | None = None, execution_model: ExecutionModel | None = None,
     execution_timing_policy: ExecutionTimingPolicy | None = None, portfolio_policy: PortfolioPolicy | None = None,
     risk_policy: ResearchRiskPolicy | None = None, context: BacktestRunContext | None = None,
     compiled_contract: CompiledStrategyContract | None = None,
+    registry: StrategyRegistry | None = None, compiler: StrategyCompiler | None = None,
 ) -> BacktestRun:
     """Run a plugin event stream through the one execution and ledger path."""
     timing = execution_timing_policy or ExecutionTimingPolicy()
     policy = portfolio_policy or legacy_research_portfolio_policy()
     model = execution_model or FixedBpsExecutionModel(fee_rate=float(fee_rate), slippage_bps=float(slippage_bps))
     context = context or BacktestRunContext()
-    compiled = compiled_contract or compile_builtin_strategy(strategy_name=plugin.name, raw_parameters=parameter_values,
-        fee_rate=fee_rate, slippage_bps=slippage_bps, context=context)
+    if compiled_contract is None:
+        active_registry = registry or StrategyRegistry.build((plugin,))
+        active_compiler = compiler or StrategyCompiler(active_registry)
+        compiled = active_compiler.compile(strategy_name=plugin.name, raw_parameters=parameter_values,
+            fee_rate=fee_rate, slippage_bps=slippage_bps, context=context)
+    else:
+        compiled = compiled_contract
+    if registry is not None and compiled.strategy_registry_hash != registry.content_hash:
+        raise ValueError("compiled_strategy_registry_contract_mismatch")
     if compiled.strategy_plugin_contract_hash != plugin.contract_hash():
         raise ValueError("compiled_strategy_plugin_contract_mismatch")
     materialized = dict(compiled.materialized_parameters)
@@ -117,10 +147,13 @@ def run_common_simulation_backtest(
     intervals: list[PositionInterval] = []
     closed: list[ClosedTradeRecord] = []
     pending: list[ExecutionFill] = []
+    pending_status: list[ExecutionFill] = []
     pending_buy = False
     # entry ts/price/qty plus round-trip fee, slippage and realized P&L accumulators.
     open_entry: tuple[int, float, float, float, float, float] | None = None
     model_invocations = 0
+    exit_decision_evidence: list[dict[str, object]] = []
+    sell_event_keys: set[tuple[str, int]] = set()
     peak = float(policy.starting_cash_krw)
     max_dd = 0.0
     run_id = sha256_prefixed({"candidate_id": context.candidate_id, "scenario_id": context.scenario_id, "split": context.split_name, "strategy": plugin.name, "dataset": dataset.snapshot_fingerprint_hash()})
@@ -160,12 +193,17 @@ def run_common_simulation_backtest(
             raise BacktestResourceLimitExceeded("backtest_trade_limit_exceeded", evidence | {"trade_count": len(ledger.entries)})
 
     def apply_ready(boundary: int) -> None:
-        nonlocal pending_buy, open_entry
+        nonlocal pending_buy, open_entry, last_execution_status
+        for resolved in sorted(tuple(pending_status), key=lambda item: (int(item.portfolio_effective_ts or 0), item.fill_id)):
+            if int(resolved.portfolio_effective_ts or 0) <= boundary:
+                pending_status.remove(resolved)
+                last_execution_status = resolved.fill_status
         for fill in sorted(tuple(pending), key=lambda item: (int(item.portfolio_effective_ts or 0), item.fill_id)):
             if int(fill.portfolio_effective_ts or 0) > boundary:
                 continue
             pending.remove(fill)
             entry = ledger.apply(fill)
+            last_execution_status = fill.fill_status
             trade = _trade_from_fill(fill, ledger, entry)
             trades.append(trade)
             if fill.side == "BUY":
@@ -187,11 +225,37 @@ def run_common_simulation_backtest(
 
     all_decisions: list[ResearchDecisionEvent] = []
     all_equity: list[EquityPoint] = []
+
+    def complete_candle_lifecycle(index: int, candle: Any, mark_ts: int) -> None:
+        nonlocal peak, max_dd, last_heartbeat_at
+        apply_ready(mark_ts)
+        snapshot = ledger.snapshot()
+        mark = snapshot.cash + snapshot.asset_qty * float(candle.close)
+        peak = max(peak, mark)
+        max_dd = max(max_dd, ((peak - mark) / peak * 100.0) if peak else 0.0)
+        point = EquityPoint(ts=mark_ts, equity=mark, cash=snapshot.cash, asset_qty=snapshot.asset_qty)
+        equity.append(point)
+        all_equity.append(point)
+        trace_equity_mark(context, ts=mark_ts, equity=mark, cash=snapshot.cash, asset_qty=snapshot.asset_qty)
+        now = time.perf_counter()
+        bar_due = bool(context.heartbeat.bar_interval and (index + 1) % context.heartbeat.bar_interval == 0)
+        time_due = bool(context.heartbeat.interval_s is not None and now - last_heartbeat_at >= context.heartbeat.interval_s)
+        if bar_due or time_due:
+            heartbeat = {"stage": "heartbeat", "bar_count": index + 1,
+                         "candidate_id": context.candidate_id, "scenario_id": context.scenario_id,
+                         "split": context.split_name}
+            if context.progress_callback is not None:
+                context.progress_callback(heartbeat)
+            audit = getattr(context, "audit_trace", None)
+            if audit is not None and hasattr(audit, "append_heartbeat"):
+                audit.append_heartbeat(heartbeat)
+            last_heartbeat_at = now
+        check_resources(index + 1)
     try:
       for index, candle in enumerate(dataset.candles):
         mark_ts = build_signal_event(candle=candle, interval=dataset.interval, side="HOLD", policy=timing, feature_snapshot={}, regime_snapshot={}).signal_candle_close_ts
         apply_ready(mark_ts)
-        causal = CausalMarketView(dataset, index, mark_ts)
+        causal = CausalMarketView.from_dataset(dataset, index, mark_ts)
         view_for_strategy = portfolio_view(float(candle.close))
         if runtime is not None:
             batch = runtime.on_market_event(causal, view_for_strategy, runtime_state)
@@ -204,7 +268,7 @@ def run_common_simulation_backtest(
         if len(current_events) > 1:
             raise ValueError("strategy_capability_multiple_intents_per_decision")
         if not current_events:
-            check_resources(index + 1)
+            complete_candle_lifecycle(index, candle, mark_ts)
             continue
         event = current_events[0]
         decision_id = event.decision_id()
@@ -213,28 +277,41 @@ def run_common_simulation_backtest(
         trace_decision(context, event.as_dict())
         if event.exit_intent is not None and compiled.exit_mode == "common_typed_policy":
             raise ValueError("common_policy_strategy_supplied_exit_intent")
+        if event.exit_intent is not None and plugin.exit_decision_builder is not None:
+            raise ValueError("strategy_multiple_exit_authorities")
         intent = event.order_intent
         if ledger.asset_qty > 0:
             exit_decision = None
+            exit_source = None
             if compiled.exit_mode == "strategy_owned" and plugin.exit_decision_builder is not None:
+                if event.order_intent is not None and event.order_intent.side == "SELL":
+                    raise ValueError("strategy_multiple_exit_authorities")
                 exit_decision = plugin.exit_decision_builder(policy=exit_policy or {}, portfolio=portfolio_view(float(candle.close)), event=event, market_price=float(candle.close))
+                exit_source = "strategy_exit_callback"
             elif compiled.exit_mode == "strategy_owned" and event.exit_intent is not None:
                 intent = event.exit_intent
+                exit_source = "strategy_runtime_exit_intent"
             elif compiled.exit_mode == "common_typed_policy":
                 exit_decision = GenericExitPolicyEvaluator().evaluate(policy=exit_policy or {}, portfolio=portfolio_view(float(candle.close)), market_price=float(candle.close), event_ts=event.decision_ts)
+                exit_source = "common_typed_policy"
             if exit_decision is not None:
                 intent = (OrderIntent.from_decision(decision_id=decision_id, side="SELL", sizing="full_position",
                     reason=exit_decision.reason, decision_ts=event.decision_ts, exit_rule=exit_decision.rule,
                     exit_reason=exit_decision.reason) if exit_decision.triggered else None)
+            if exit_source is not None:
+                exit_decision_evidence.append({"decision_id": decision_id, "event_ts": event.decision_ts,
+                                               "source": exit_source,
+                                               "triggered": bool(exit_decision.triggered) if exit_decision is not None else True})
         if intent is not None and intent.decision_id != decision_id:
             raise ValueError("intent_decision_lineage_mismatch")
-        if intent is not None and intent.side == "BUY" and (ledger.asset_qty > 0 or pending_buy):
-            raise ValueError("strategy_capability_pyramiding_rejected")
-        if intent is not None and intent.side not in {"BUY", "SELL"}:
-            raise ValueError("strategy_capability_direction_rejected")
-        if intent is not None and intent.side == "SELL" and intent.requested_qty is not None and abs(intent.requested_qty-ledger.asset_qty) > 1e-12:
-            raise ValueError("strategy_capability_partial_exit_rejected")
         if intent is not None:
+            _validate_runtime_intent(intent=intent, compiled=compiled,
+                                     has_position=ledger.asset_qty > 0, pending_buy=pending_buy)
+            if intent.side == "SELL":
+                event_key = (decision_id, int(event.decision_ts))
+                if event_key in sell_event_keys:
+                    raise ValueError("duplicate_sell_request_for_event")
+                sell_event_keys.add(event_key)
             if intent.order_intent_ts == 0:
                 intent = replace(intent, order_intent_ts=int(event.decision_ts))
             if intent.order_intent_ts < event.decision_ts:
@@ -262,7 +339,7 @@ def run_common_simulation_backtest(
                 signal_candle_close_ts=signal.signal_candle_close_ts, signal_reference_price=signal.signal_reference_price,
                 signal_reference_source=signal.signal_reference_source, fill_reference_policy=timing.fill_reference_policy,
                 allow_same_candle_close_fill=timing.allow_same_candle_close_fill, feature_snapshot=event.feature_snapshot,
-                entry_signal_source=event.entry_signal, entry_sizing_source=intent.sizing,
+                entry_signal_source=event.entry_signal, entry_sizing_source=intent.sizing.value,
                 orderbook_depth_snapshot=depth, orderbook_depth_ref=depth.depth_ref() if depth else None,
                 depth_snapshot_ts=int(depth.ts) if depth else None,
                 depth_snapshot_age_ms=(int(depth.ts)-int(reference.fill_reference_ts or signal.decision_ts)) if depth else None,
@@ -275,7 +352,6 @@ def run_common_simulation_backtest(
             _validate_fill_timeline(fill)
             fills.append(fill)
             trace_execution(context, fill.as_dict())
-            last_execution_status = fill.fill_status
             if fill.side == "BUY" and fill.fill_status in {"filled", "partial"} and fill.filled_qty > 0:
                 pending_buy = True
             if fill.fill_status in {"filled", "partial"} and fill.filled_qty > 0:
@@ -283,21 +359,11 @@ def run_common_simulation_backtest(
             else:
                 failed_trade = _trade_from_fill(fill, ledger, None)
                 trades.append(failed_trade)
-        apply_ready(mark_ts)
-        snapshot = ledger.snapshot()
-        mark = snapshot.cash + snapshot.asset_qty * float(candle.close)
-        peak = max(peak, mark)
-        max_dd = max(max_dd, ((peak - mark) / peak * 100.0) if peak else 0.0)
-        equity.append(EquityPoint(ts=mark_ts, equity=mark, cash=snapshot.cash, asset_qty=snapshot.asset_qty))
-        all_equity.append(equity[-1])
-        trace_equity_mark(context, ts=mark_ts, equity=mark, cash=snapshot.cash, asset_qty=snapshot.asset_qty)
-        now = time.perf_counter()
-        bar_due = bool(context.heartbeat.bar_interval and (index + 1) % context.heartbeat.bar_interval == 0)
-        time_due = bool(context.heartbeat.interval_s is not None and now - last_heartbeat_at >= context.heartbeat.interval_s)
-        if context.progress_callback is not None and (bar_due or time_due):
-            context.progress_callback({"event": "heartbeat", "bar_count": index + 1, "candidate_id": context.candidate_id})
-            last_heartbeat_at = now
-        check_resources(index + 1)
+                if int(fill.portfolio_effective_ts or mark_ts) <= mark_ts:
+                    last_execution_status = fill.fill_status
+                else:
+                    pending_status.append(fill)
+        complete_candle_lifecycle(index, candle, mark_ts)
     except Exception as exc:
       audit_index = complete_audit_trace(context, status="failed")
       if audit_index is not None:
@@ -342,19 +408,39 @@ def run_common_simulation_backtest(
         "strategy_registry_hash": compiled.strategy_registry_hash,
         "strategy_plugin_contract_hash": compiled.strategy_plugin_contract_hash,
         "capability_contract_hash": compiled.capability_contract_hash,
+        "exit_decision_evidence": exit_decision_evidence,
         "execution_request_stream_hash": _stream_hash(tuple(requests)), "execution_fill_stream_hash": _stream_hash(tuple(fills)),
         "ledger_stream_hash": _stream_hash(ledger_entries), "timing_invariant_status": timing_status,
         # Schema-v1 aliases retained for readers while their former mixed-domain semantics are retired.
         "declared_execution_timing_hash": policy_hash, "executed_execution_timing_hash": policy_hash,
         "portfolio_ledger_hash": _stream_hash(ledger_entries),
     })
-    audit_index = complete_audit_trace(context, status="completed")
     decision_limit = context.resource_limits.max_decisions_retained
     equity_limit = context.resource_limits.max_equity_points_retained
-    # BacktestRun streams remain authoritative and complete. Retention limits apply
-    # only to report/detail projections, never to lineage or canonical hashes.
-    retained_decisions = tuple(decisions)
-    retained_equity = tuple(equity)
-    result = BacktestRun(metrics=metrics, metrics_v2=metrics_v2, trades=tuple(trades), candle_count=len(dataset.candles), warnings=(), decisions=retained_decisions, equity_curve=retained_equity, position_intervals=tuple(intervals), closed_trades=tuple(closed), execution_event_summary=summary, order_intents=tuple(intents), execution_requests=tuple(requests), fills=tuple(fills), ledger_entries=ledger_entries, resource_usage={"common_execution_authority": "common_simulation_engine", "executed_portfolio_policy": policy.as_dict(), "executed_portfolio_policy_hash": policy.policy_hash(), "execution_evidence": summary, "compiled_strategy_contract": compiled.as_dict(), "compiled_strategy_contract_hash": compiled.compiled_contract_hash, "strategy_registry_hash": compiled.strategy_registry_hash, "strategy_plugin_contract_hash": compiled.strategy_plugin_contract_hash, "runtime_seconds": time.perf_counter() - context.started_at, "final_cash": final.cash, "final_asset_qty": final.asset_qty, "final_marked_equity": final.cash + final.asset_qty * last_price, "open_position_at_end": final.asset_qty > 0, "final_position_marked_to_market": final.asset_qty > 0}, strategy_diagnostics={"strategy_diagnostics_namespace": plugin.diagnostics_namespace, "strategy_specific_diagnostics": {plugin.diagnostics_namespace: {"decision_count": len(all_decisions), "hold_decision_count": sum(1 for event in all_decisions if event.final_signal == "HOLD")}}}, retained_detail_summary={"authoritative_decision_count": len(all_decisions), "retained_decision_projection_count": min(len(all_decisions), decision_limit) if decision_limit is not None else len(all_decisions), "authoritative_equity_count": len(all_equity), "retained_equity_projection_count": min(len(all_equity), equity_limit) if equity_limit is not None else len(all_equity), "canonical_hashes_cover_complete_streams": True}, audit_trace_index=audit_index, compiled_strategy_contract=compiled, compiled_strategy_contract_hash=compiled.compiled_contract_hash, strategy_registry_hash=compiled.strategy_registry_hash, strategy_plugin_contract_hash=compiled.strategy_plugin_contract_hash, decision_stream_hash=_stream_hash(tuple(all_decisions)), metrics_hash=sha256_prefixed(metrics_v2.as_dict() if hasattr(metrics_v2, "as_dict") else metrics_v2))
+    # Authoritative hashes cover complete streams; returned detail projections
+    # obey retention independently.
+    retained_decisions = tuple(decisions if decision_limit is None else decisions[-max(0, decision_limit):]) if decision_limit != 0 else ()
+    retained_equity = tuple(equity if equity_limit is None else equity[-max(0, equity_limit):]) if equity_limit != 0 else ()
+    result = BacktestRun(metrics=metrics, metrics_v2=metrics_v2, trades=tuple(trades), candle_count=len(dataset.candles), warnings=(), decisions=tuple(all_decisions), equity_curve=tuple(all_equity), position_intervals=tuple(intervals), closed_trades=tuple(closed), execution_event_summary=summary, order_intents=tuple(intents), execution_requests=tuple(requests), fills=tuple(fills), ledger_entries=ledger_entries, resource_usage={"common_execution_authority": "common_simulation_engine", "executed_portfolio_policy": policy.as_dict(), "executed_portfolio_policy_hash": policy.policy_hash(), "execution_evidence": summary, "compiled_strategy_contract": compiled.as_dict(), "compiled_strategy_contract_hash": compiled.compiled_contract_hash, "strategy_registry_hash": compiled.strategy_registry_hash, "strategy_plugin_contract_hash": compiled.strategy_plugin_contract_hash, "runtime_seconds": time.perf_counter() - context.started_at, "final_cash": final.cash, "final_asset_qty": final.asset_qty, "final_marked_equity": final.cash + final.asset_qty * last_price, "open_position_at_end": final.asset_qty > 0, "final_position_marked_to_market": final.asset_qty > 0}, strategy_diagnostics={"strategy_diagnostics_namespace": plugin.diagnostics_namespace, "strategy_specific_diagnostics": {plugin.diagnostics_namespace: {"decision_count": len(all_decisions), "hold_decision_count": sum(1 for event in all_decisions if event.final_signal == "HOLD")}}}, retained_detail_summary={"authoritative_decision_count": len(all_decisions), "retained_decision_projection_count": len(retained_decisions), "authoritative_equity_count": len(all_equity), "retained_equity_projection_count": len(retained_equity), "canonical_hashes_cover_complete_streams": True}, audit_trace_index=None, compiled_strategy_contract=compiled, compiled_strategy_contract_hash=compiled.compiled_contract_hash, strategy_registry_hash=compiled.strategy_registry_hash, strategy_plugin_contract_hash=compiled.strategy_plugin_contract_hash, decision_stream_hash=_stream_hash(tuple(all_decisions)), metrics_hash=sha256_prefixed(metrics_v2.as_dict() if hasattr(metrics_v2, "as_dict") else metrics_v2), authoritative_decision_ids=tuple(item.decision_id() for item in all_decisions))
     result.validate_execution_lineage()
-    return result
+    audit_index = complete_audit_trace(context, status="completed")
+    return replace(result, decisions=retained_decisions, equity_curve=retained_equity,
+                   audit_trace_index=audit_index)
+
+
+def run_common_simulation_backtest(**kwargs: Any) -> BacktestRun:
+    """Finalize every engine failure, including metrics/replay/lineage failures."""
+    context = kwargs.get("context")
+    if context is None:
+        context = BacktestRunContext()
+        kwargs["context"] = context
+    try:
+        return _run_common_simulation_backtest(**kwargs)
+    except Exception as exc:
+        if not isinstance(getattr(exc, "audit_trace_index", None), dict):
+            audit_index = complete_audit_trace(context, status="failed")
+            if audit_index is not None:
+                setattr(exc, "audit_trace_index", audit_index)
+                if isinstance(exc, BacktestResourceLimitExceeded):
+                    exc.evidence["audit_trace_index"] = audit_index
+        raise

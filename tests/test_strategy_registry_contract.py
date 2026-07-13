@@ -22,3 +22,22 @@ def test_registry_hash_changes_when_plugin_contract_changes():
     plugin = builtin_strategy_registry().resolve("noop_baseline")
     changed = replace(plugin, version=plugin.version + ".changed")
     assert StrategyRegistry.build((plugin,)).content_hash != StrategyRegistry.build((changed,)).content_hash
+
+
+def test_nested_spec_mutation_is_rejected():
+    plugin = builtin_strategy_registry().resolve("sma_with_filter")
+    with pytest.raises(TypeError):
+        plugin.spec.default_parameters["SMA_FILTER_GAP_MIN_RATIO"] = 99
+    with pytest.raises(TypeError):
+        plugin.spec.exit_policy_schema["opposite_cross"]["unit"] = "changed"
+
+
+def test_registry_detects_stale_plugin_contract():
+    plugin = builtin_strategy_registry().resolve("noop_baseline")
+    registry = StrategyRegistry.build((plugin,))
+    object.__setattr__(plugin, "version", plugin.version + ".mutated")
+    try:
+        with pytest.raises(StrategyRegistryError, match="stale_research_strategy_contract"):
+            registry.resolve(plugin.name)
+    finally:
+        object.__setattr__(plugin, "version", plugin.version.removesuffix(".mutated"))

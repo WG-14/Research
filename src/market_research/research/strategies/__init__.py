@@ -1,1 +1,1 @@
-"""Research strategy implementations owned by the research package."""
+"""Compatibility event adapters; plugin ownership lives in ``builtin_strategies``."""

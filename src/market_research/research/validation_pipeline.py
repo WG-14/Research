@@ -14,6 +14,7 @@ from market_research.storage_io import write_json_atomic
 from .experiment_manifest import ExperimentManifest
 from .hashing import content_hash_payload, sha256_prefixed
 from .validation_protocol import run_research_backtest, run_research_walk_forward
+from market_research.research_composition import builtin_strategy_registry
 
 
 class ValidationRunError(ValueError):
@@ -47,15 +48,18 @@ def run_research_validation(
 ) -> dict[str, Any]:
     if mode != "strict":
         raise ValidationRunError("validation_run_mode_unsupported")
+    strategy_registry = builtin_strategy_registry()
     backtest = run_research_backtest(
         manifest=manifest, db_path=db_path, manager=manager, execution_calibration=execution_calibration,
         manifest_path=manifest_path, command_args={"manifest": manifest_path},
         generated_at=generated_at, progress_callback=progress_callback,
+        strategy_registry=strategy_registry,
     )
     walk_forward = run_research_walk_forward(
         manifest=manifest, db_path=db_path, manager=manager, execution_calibration=execution_calibration,
         manifest_path=manifest_path, command_args={"manifest": manifest_path},
         generated_at=generated_at, progress_callback=progress_callback,
+        strategy_registry=strategy_registry,
     ) if bool(getattr(manifest.acceptance_gate, "walk_forward_required", False)) else None
     candidates = [item for item in backtest.get("candidates") or [] if isinstance(item, dict)]
     selected = next((item for item in candidates if item.get("candidate_id") == candidate_id), None) if candidate_id else None

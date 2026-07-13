@@ -31,3 +31,13 @@ def test_memory_limit_is_checked_during_event_loop():
     with pytest.raises(BacktestResourceLimitExceeded, match="memory_limit"):
         run_common_simulation_backtest(plugin=resolve_research_strategy("noop_baseline"), dataset=_dataset(),
             parameter_values={}, fee_rate=0, slippage_bps=0, context=context)
+
+
+def test_trade_limit_fails_with_structured_evidence():
+    context = BacktestRunContext(resource_limits=BacktestResourceLimits(max_trades=0))
+    with pytest.raises(BacktestResourceLimitExceeded, match="trade_limit") as caught:
+        run_common_simulation_backtest(plugin=resolve_research_strategy("buy_and_hold_baseline"),
+            dataset=_dataset(), parameter_values={"BUY_HOLD_BUY_INDEX": 1},
+            fee_rate=0, slippage_bps=0, context=context)
+    assert caught.value.evidence["trade_count"] == 1
+    assert caught.value.evidence["event_number"] >= 1

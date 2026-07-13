@@ -118,9 +118,8 @@ from .statistical_selection import (
 )
 from .return_panel import build_candidate_return_panel, write_candidate_return_panel
 from .stress_suite import StressSuiteContext, analyze_stress_suite, stress_suite_required
-from .strategy_catalog import research_strategy_data_requirements, resolve_research_strategy
 from .strategy_compiler import StrategyCompiler, compiled_contract_from_payload
-from .builtin_registry import builtin_strategy_registry
+from .strategy_registry import StrategyRegistry
 from .strategy_spec import exit_policy_hash, strategy_spec_for_name
 
 
@@ -169,6 +168,7 @@ class EvaluationContext:
     artifact_context: ResearchArtifactContext | None = None
     worker_pid: int | None = None
     compiled_contract: dict[str, Any] | None = None
+    strategy_registry: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -218,6 +218,7 @@ def _task_from_evaluation_context(*, work_unit: ResearchWorkUnit, context: Evalu
         "artifact_context": context.artifact_context,
         "work_unit": work_unit,
         "compiled_contract": context.compiled_contract,
+        "strategy_registry": context.strategy_registry,
     }
 
 
@@ -304,8 +305,11 @@ def _evaluate_candidate_scenario_task(
     raw_candidate_count = int(task["raw_candidate_count"])
     param_candidate_id = candidate_id(params, index)
     compiled_payload = task.get("compiled_contract")
+    registry = task.get("strategy_registry")
+    if not isinstance(registry, StrategyRegistry):
+        raise ResearchValidationError("strategy_registry_required")
     compiled_contract = (compiled_contract_from_payload(dict(compiled_payload)) if isinstance(compiled_payload, dict)
-        else StrategyCompiler(builtin_strategy_registry()).compile(
+        else StrategyCompiler(registry).compile(
             strategy_name=manifest.strategy_name, raw_parameters=params, fee_rate=scenario.fee_rate,
             slippage_bps=float(scenario.slippage_bps),
             context=BacktestRunContext(policy_materialization_mode="research_validation")))
@@ -314,7 +318,7 @@ def _evaluate_candidate_scenario_task(
         base = _evaluate_candidate_base_result(
             manifest=manifest,
             manager=manager,
-            plugin=resolve_research_strategy(manifest.strategy_name),
+            plugin=registry.resolve(manifest.strategy_name),
             snapshots=snapshots,
             params=params,
             index=index,
@@ -1642,7 +1646,9 @@ def run_research_backtest(
     command_args: dict[str, Any] | None = None,
     progress_callback: ProgressCallback | None = None,
     candidate_evaluator: CandidateScenarioEvaluator | None = None,
+    strategy_registry: StrategyRegistry,
 ) -> dict[str, Any]:
+    strategy_registry.resolve(manifest.strategy_name)
     _enforce_fast_tier_research_runner_policy(
         candidate_evaluator=candidate_evaluator,
         entrypoint="run_research_backtest",
@@ -1659,7 +1665,7 @@ def run_research_backtest(
         research_classification=manifest.research_classification,
     )
     _validate_parallel_research_run_policy(manifest)
-    _validate_strategy_data_requirements(manifest)
+    _validate_strategy_data_requirements(manifest, strategy_registry)
     artifact_context = ResearchArtifactContext(
         manager=manager,
         experiment_id=manifest.experiment_id,
@@ -1798,6 +1804,7 @@ def run_research_backtest(
         progress_callback=progress_callback,
         candidate_evaluator=candidate_evaluator,
         artifact_context=artifact_context,
+        strategy_registry=strategy_registry,
     )
     candidates = evaluation.candidates
     stage_timings.append(_stage_timing("candidate_evaluation", stage_started, candidate_count=len(candidates)))
@@ -1831,6 +1838,7 @@ def run_research_backtest(
         experiment_registry_reservation=experiment_registry_reservation,
         execution_plan=execution_plan,
         execution_observability=execution_observability,
+        strategy_registry=strategy_registry,
         artifact_context=artifact_context,
     )
     report.setdefault("artifact_observability", {})["candidate_results"] = dict(
@@ -1895,7 +1903,9 @@ def run_research_walk_forward(
     command_args: dict[str, Any] | None = None,
     progress_callback: ProgressCallback | None = None,
     candidate_evaluator: CandidateScenarioEvaluator | None = None,
+    strategy_registry: StrategyRegistry,
 ) -> dict[str, Any]:
+    strategy_registry.resolve(manifest.strategy_name)
     _enforce_fast_tier_research_runner_policy(
         candidate_evaluator=candidate_evaluator,
         entrypoint="run_research_walk_forward",
@@ -1913,7 +1923,7 @@ def run_research_walk_forward(
     if manifest.walk_forward is None:
         raise ResearchValidationError("walk_forward_missing")
     _validate_parallel_research_run_policy(manifest)
-    _validate_strategy_data_requirements(manifest)
+    _validate_strategy_data_requirements(manifest, strategy_registry)
     artifact_context = ResearchArtifactContext(
         manager=manager,
         experiment_id=manifest.experiment_id,
@@ -2058,6 +2068,7 @@ def run_research_walk_forward(
         progress_callback=progress_callback,
         candidate_evaluator=candidate_evaluator,
         artifact_context=artifact_context,
+        strategy_registry=strategy_registry,
     )
     candidates = evaluation.candidates
     stage_timings.append(_stage_timing("candidate_evaluation", stage_started, candidate_count=len(candidates)))
@@ -2091,6 +2102,7 @@ def run_research_walk_forward(
         experiment_registry_reservation=experiment_registry_reservation,
         execution_plan=execution_plan,
         execution_observability=execution_observability,
+        strategy_registry=strategy_registry,
         artifact_context=artifact_context,
     )
     report.setdefault("artifact_observability", {})["candidate_results"] = dict(
@@ -2198,6 +2210,7 @@ def _evaluate_candidates(
     progress_callback: ProgressCallback | None = None,
     candidate_evaluator: CandidateScenarioEvaluator | None = None,
     artifact_context: ResearchArtifactContext | None = None,
+    strategy_registry: StrategyRegistry,
 ) -> CandidateEvaluationResult:
     substage_timings: list[dict[str, Any]] = []
     candidate_artifact_observability = {
@@ -2234,7 +2247,7 @@ def _evaluate_candidates(
     dataset_quality_status, dataset_quality_reasons = _combined_dataset_quality_gate(quality_reports)
     dataset_warning_codes = _dataset_quality_warning_codes(quality_reports)
     top_of_book_quality_summary = _top_of_book_quality_summary(quality_reports)
-    strategy_plugin = resolve_research_strategy(manifest.strategy_name)
+    strategy_plugin = strategy_registry.resolve(manifest.strategy_name)
     strategy_spec = strategy_plugin.spec
     metrics_gate_policy = metrics_gate_policy_from_acceptance_gate(manifest.acceptance_gate)
     metrics_gate_policy_digest = metrics_gate_policy_hash(metrics_gate_policy)
@@ -2296,12 +2309,13 @@ def _evaluate_candidates(
         key = (int(task["candidate_index"]), int(task["scenario_index"]))
         if key not in compiled_by_candidate_scenario:
             task_scenario = task["scenario"]
-            compiled_by_candidate_scenario[key] = StrategyCompiler(builtin_strategy_registry()).compile(
+            compiled_by_candidate_scenario[key] = StrategyCompiler(strategy_registry).compile(
                 strategy_name=manifest.strategy_name, raw_parameters=dict(task["params"]),
                 fee_rate=task_scenario.fee_rate, slippage_bps=float(task_scenario.slippage_bps),
                 context=BacktestRunContext(policy_materialization_mode="research_validation"),
             ).as_dict()
         task["compiled_contract"] = compiled_by_candidate_scenario[key]
+        task["strategy_registry"] = strategy_registry
     if execution_plan is not None:
         selection = execution_plan.payload.get("work_unit_selection")
         if isinstance(selection, dict):
@@ -2484,6 +2498,7 @@ def _evaluate_candidates(
                     artifact_context=artifact_context,
                     worker_pid=None,
                     compiled_contract=task.get("compiled_contract"),
+                    strategy_registry=strategy_registry,
                 ),
             )
             append_started = time.perf_counter()
@@ -2521,6 +2536,7 @@ def _evaluate_candidates(
                         artifact_context=artifact_context,
                         worker_pid=None,
                         compiled_contract=task.get("compiled_contract"),
+                        strategy_registry=strategy_registry,
                     ),
                 ),
                 worker=lambda context: evaluator.evaluate(work_unit, context),
@@ -4039,6 +4055,8 @@ def _evaluate_candidate_base_result(
             parameter_stability_score=None,
             progress_callback=progress_callback,
             artifact_context=artifact_context,
+            plugin=plugin,
+            compiled_contract=compiled_contract,
         )
         if include_walk_forward
         else None
@@ -4866,6 +4884,20 @@ def _declare_candidate_scenario_semantics(
     base = next((item for item in scenario_results if item.get("scenario_role") == "base"), None)
     stress_results = [item for item in scenario_results if item.get("scenario_role") == "stress"]
     aggregate_result = candidate.get("acceptance_gate_result")
+    if primary:
+        primary_contract = primary.get("compiled_strategy_contract")
+        primary_contract_hash = primary.get("compiled_strategy_contract_hash")
+        if not isinstance(primary_contract, dict) or not primary_contract_hash:
+            raise ResearchValidationError("primary_scenario_compiled_contract_missing")
+        compiled_contract_from_payload(
+            dict(primary_contract), expected_compiled_hash=str(primary_contract_hash)
+        )
+        candidate["compiled_strategy_contract"] = primary_contract
+        candidate["compiled_strategy_contract_hash"] = primary_contract_hash
+        candidate["strategy_registry_hash"] = primary_contract["strategy_registry_hash"]
+        candidate["strategy_plugin_contract_hash"] = primary_contract["strategy_plugin_contract_hash"]
+        candidate["capability_contract"] = primary_contract["capability_contract"]
+        candidate["capability_contract_hash"] = primary_contract["capability_contract_hash"]
     candidate.update(
         {
             "primary_scenario_id": primary.get("scenario_id"),
@@ -4951,7 +4983,9 @@ def _attach_candidate_diagnostic_blocks(
     manifest: ExperimentManifest,
     strategy_plugin: Any,
 ) -> None:
-    candidate["research_strategy_data_requirements"] = strategy_plugin.data_requirements().capability_contract_payload()
+    candidate["research_strategy_data_requirements"] = strategy_plugin.data_requirements(
+        candidate.get("effective_strategy_parameters") or candidate.get("parameter_values") or {}
+    ).capability_contract_payload()
     candidate["cost_sensitivity"] = _cost_sensitivity_summary(candidate.get("scenario_results") or [])
     candidate["position_sizing_sensitivity"] = _position_sizing_sensitivity_summary(
         base_policy=manifest.portfolio_policy,
@@ -5590,6 +5624,8 @@ def _walk_forward_metrics(
     parameter_stability_score: float | None = None,
     progress_callback: ProgressCallback | None = None,
     artifact_context: ResearchArtifactContext | None = None,
+    plugin: Any,
+    compiled_contract: Any,
 ) -> dict[str, Any]:
     config = manifest.walk_forward
     if config is None:
@@ -5601,7 +5637,6 @@ def _walk_forward_metrics(
             "failure_reason": "walk_forward_missing",
             "windows": [],
         }
-    plugin = resolve_research_strategy(manifest.strategy_name)
     active_scenario = scenario or ExecutionScenario(
         type="fixed_bps",
         fee_rate=float(fee_rate),
@@ -5635,6 +5670,7 @@ def _walk_forward_metrics(
                 portfolio_policy=manifest.portfolio_policy,
                 risk_policy=manifest.risk_policy,
                 context=None,
+                compiled_contract=compiled_contract,
             )
         return run_common_simulation_backtest(
             plugin=plugin,
@@ -5648,6 +5684,7 @@ def _walk_forward_metrics(
             portfolio_policy=manifest.portfolio_policy,
             risk_policy=manifest.risk_policy,
             context=context,
+            compiled_contract=compiled_contract,
         )
 
     for window_id in sorted({key.rsplit("_", 1)[0] for key in snapshots if key.startswith("window_")}):
@@ -5786,6 +5823,7 @@ def _report_payload(
     execution_plan: ResearchExecutionPlan | None = None,
     execution_observability: dict[str, Any] | None = None,
     artifact_context: ResearchArtifactContext | None = None,
+    strategy_registry: StrategyRegistry,
 ) -> dict[str, Any]:
     dataset_hash = combined_dataset_fingerprint(snapshots)
     dataset_quality_hash = combined_dataset_quality_hash(quality_reports)
@@ -6354,7 +6392,7 @@ def _report_payload(
         warnings.add(STATISTICAL_EVIDENCE_GENERATION_UNAVAILABLE_WARNING)
     warnings = sorted(warnings)
     signal_depth_summary = _report_signal_depth_summary(candidates)
-    strategy_plugin = resolve_research_strategy(manifest.strategy_name)
+    strategy_plugin = strategy_registry.resolve(manifest.strategy_name)
     strategy_spec = strategy_plugin.spec
     depth_walk_used = bool(signal_depth_summary.get("depth_walk_execution_model_used"))
     depth_available_semantics = (
@@ -6667,7 +6705,7 @@ def _report_payload(
         "strategy_plugin_contract_hash": (
             best.get("strategy_plugin_contract_hash") if best else strategy_plugin.contract_hash()
         ),
-        "strategy_registry_hash": best.get("strategy_registry_hash") if best else builtin_strategy_registry().content_hash,
+        "strategy_registry_hash": best.get("strategy_registry_hash") if best else strategy_registry.content_hash,
         "compiled_strategy_contract": best.get("compiled_strategy_contract") if best else None,
         "compiled_strategy_contract_hash": best.get("compiled_strategy_contract_hash") if best else None,
         "exit_policy": best.get("exit_policy") if best else None,
@@ -8106,8 +8144,11 @@ def validate_immutable_dataset_locator(*, artifact_manifest_uri: str, artifact_m
     parse_immutable_locator(manifest.locator.as_dict())
 
 
-def _validate_strategy_data_requirements(manifest: ExperimentManifest) -> None:
-    requirements = research_strategy_data_requirements(manifest.strategy_name)
+def _validate_strategy_data_requirements(manifest: ExperimentManifest,
+                                         strategy_registry: StrategyRegistry) -> None:
+    requirements = strategy_registry.resolve(manifest.strategy_name).data_requirements(
+        {key: values[0] for key, values in manifest.parameter_space.items() if values}
+    )
     available = _manifest_data_capabilities(manifest)
     missing = [
         capability.name
