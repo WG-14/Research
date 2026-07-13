@@ -496,7 +496,7 @@ def walk_forward_payload(manifest: ExperimentManifest) -> dict[str, Any]:
                 else "none"
             ),
         }
-    windows = _rolling_walk_forward_windows(manifest)
+    windows = rolling_walk_forward_windows(manifest)
     expected = manifest.walk_forward.min_windows
     status = "PASS" if len(windows) >= expected else "FAIL"
     return {
@@ -513,17 +513,12 @@ def walk_forward_payload(manifest: ExperimentManifest) -> dict[str, Any]:
     }
 
 
-def _rolling_walk_forward_windows(manifest: ExperimentManifest) -> list[dict[str, DateRange]]:
+def rolling_walk_forward_windows(manifest: ExperimentManifest) -> list[dict[str, DateRange]]:
     config = manifest.walk_forward
     if config is None:
         return []
     start = datetime.strptime(manifest.dataset.split.train.start, "%Y-%m-%d")
-    end = datetime.strptime(
-        manifest.dataset.split.final_holdout.end
-        if manifest.dataset.split.final_holdout is not None
-        else manifest.dataset.split.validation.end,
-        "%Y-%m-%d",
-    )
+    end = datetime.strptime(manifest.dataset.split.validation.end, "%Y-%m-%d")
     windows: list[dict[str, DateRange]] = []
     cursor = start
     while True:

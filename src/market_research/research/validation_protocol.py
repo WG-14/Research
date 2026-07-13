@@ -6,7 +6,7 @@ import time
 import json
 import inspect
 from dataclasses import dataclass, fields, replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
 from typing import Any, Callable, Protocol
@@ -18,6 +18,7 @@ from market_research.execution_reality_contract import (
 )
 from .execution_calibration_contract import ExecutionCalibrationThresholds
 from market_research.paths import ResearchPathManager
+from market_research.storage_io import write_json_atomic
 from market_research.market_regime import MARKET_REGIME_VERSION, evaluate_regime_acceptance_gate
 
 from .dataset_snapshot import (
@@ -29,6 +30,7 @@ from .dataset_snapshot import (
     load_dataset_range,
     load_dataset_split,
 )
+from .data_plane import rolling_walk_forward_windows
 from .datasets.registry import default_dataset_adapter_registry
 from .datasets.contracts import DatasetRunContext
 from .datasets.locators import LocatorValidationError, parse_immutable_locator
@@ -77,7 +79,11 @@ from .executor import (
     execute_research_work_units_serial,
     sort_work_results_deterministically,
 )
-from .final_selection import apply_final_selection_contract
+from .final_selection import (
+    apply_final_selection_contract,
+    build_selection_artifact,
+    validate_selection_artifact,
+)
 from .hashing import content_hash_payload, observe_hashing, sha256_prefixed
 from .family_registry import (
     append_family_trial_registry_row,
@@ -548,7 +554,7 @@ def _load_worker_task_snapshots_from_db(
         return _load_walk_forward_snapshots(
             db_path=db_path,
             manifest=manifest,
-            windows=_rolling_walk_forward_windows(manifest),
+            windows=rolling_walk_forward_windows(manifest),
             run_context=run_context,
         )
     return {
@@ -666,12 +672,21 @@ def _apply_execution_plan_resource_policy(
         or plan.get("max_workers")
         or manifest.research_run.execution.max_workers
     )
-    changed = effective_workers != int(manifest.research_run.execution.max_workers)
+    effective_work_unit = str(
+        resource_plan.get("work_unit_type")
+        or plan.get("work_unit_type")
+        or manifest.research_run.execution.work_unit
+    )
+    changed = (
+        effective_workers != int(manifest.research_run.execution.max_workers)
+        or effective_work_unit != manifest.research_run.execution.work_unit
+    )
     if not changed:
         return manifest
     adjusted_execution = replace(
         manifest.research_run.execution,
         max_workers=effective_workers,
+        work_unit=effective_work_unit,
     )
     return replace(manifest, research_run=replace(manifest.research_run, execution=adjusted_execution))
 
@@ -1708,57 +1723,7 @@ def run_research_backtest(
             reasons=",".join(report.quality_gate_reasons) if report.quality_gate_reasons else "none",
         )
     _validate_run_purpose_dataset_scope(manifest=manifest, snapshots=snapshots)
-    experiment_registry_reservation = _reserve_experiment_attempt(
-        manifest=manifest,
-        manager=manager,
-        snapshots=snapshots,
-        quality_reports=quality_reports,
-        manifest_path=manifest_path,
-        command_name="research-backtest",
-        command_args=command_args,
-        repository_version=_repository_version(),
-        created_at=generated_at,
-    )
-    if manifest.dataset.split.final_holdout is not None:
-        stage_started = time.perf_counter()
-        snapshots["final_holdout"] = load_dataset_split(
-            db_path=db_path,
-            manifest=manifest,
-            split_name="final_holdout",
-            run_context=run_context,
-        )
-        stage_timings.append(
-            _stage_timing(
-                "load_split",
-                stage_started,
-                split="final_holdout",
-                candles=len(snapshots["final_holdout"].candles),
-            )
-        )
-        _emit_progress(
-            progress_callback,
-            stage="load_split",
-            split="final_holdout",
-            candles=len(snapshots["final_holdout"].candles),
-        )
-        stage_started = time.perf_counter()
-        quality_reports["final_holdout"] = _quality_reports(
-            db_path=db_path,
-            snapshots={"final_holdout": snapshots["final_holdout"]},
-        )["final_holdout"]
-        _validate_dataset_adapter_provenance(
-            manifest=manifest,
-            quality_reports={"final_holdout": quality_reports["final_holdout"]},
-        )
-        stage_timings.append(_stage_timing("quality_report", stage_started, split="final_holdout"))
-        report = quality_reports["final_holdout"]
-        _emit_progress(
-            progress_callback,
-            stage="quality_report",
-            split="final_holdout",
-            status=report.quality_gate_status,
-            reasons=",".join(report.quality_gate_reasons) if report.quality_gate_reasons else "none",
-        )
+    experiment_registry_reservation = None
     _require_enough_candles(snapshots.values())
     manifest = _canonicalize_runner_default_execution(manifest)
 
@@ -1946,7 +1911,7 @@ def run_research_walk_forward(
         experiment_id=manifest.experiment_id,
         budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
     )
-    windows = _rolling_walk_forward_windows(manifest)
+    windows = rolling_walk_forward_windows(manifest)
     if len(windows) < manifest.walk_forward.min_windows:
         raise ResearchValidationError(
             f"walk_forward_insufficient_windows: available={len(windows)} min_windows={manifest.walk_forward.min_windows}"
@@ -1977,57 +1942,7 @@ def run_research_walk_forward(
             status=report.quality_gate_status,
             reasons=",".join(report.quality_gate_reasons) if report.quality_gate_reasons else "none",
         )
-    experiment_registry_reservation = _reserve_experiment_attempt(
-        manifest=manifest,
-        manager=manager,
-        snapshots=snapshots,
-        quality_reports=quality_reports,
-        manifest_path=manifest_path,
-        command_name="research-walk-forward",
-        command_args=command_args,
-        repository_version=_repository_version(),
-        created_at=generated_at,
-    )
-    if manifest.dataset.split.final_holdout is not None:
-        stage_started = time.perf_counter()
-        snapshots["final_holdout"] = load_dataset_split(
-            db_path=db_path,
-            manifest=manifest,
-            split_name="final_holdout",
-            run_context=run_context,
-        )
-        stage_timings.append(
-            _stage_timing(
-                "load_split",
-                stage_started,
-                split="final_holdout",
-                candles=len(snapshots["final_holdout"].candles),
-            )
-        )
-        _emit_progress(
-            progress_callback,
-            stage="load_split",
-            split="final_holdout",
-            candles=len(snapshots["final_holdout"].candles),
-        )
-        stage_started = time.perf_counter()
-        quality_reports["final_holdout"] = _quality_reports(
-            db_path=db_path,
-            snapshots={"final_holdout": snapshots["final_holdout"]},
-        )["final_holdout"]
-        _validate_dataset_adapter_provenance(
-            manifest=manifest,
-            quality_reports={"final_holdout": quality_reports["final_holdout"]},
-        )
-        stage_timings.append(_stage_timing("quality_report", stage_started, split="final_holdout"))
-        report = quality_reports["final_holdout"]
-        _emit_progress(
-            progress_callback,
-            stage="quality_report",
-            split="final_holdout",
-            status=report.quality_gate_status,
-            reasons=",".join(report.quality_gate_reasons) if report.quality_gate_reasons else "none",
-        )
+    experiment_registry_reservation = None
     _require_enough_candles(snapshots.values())
     manifest = _canonicalize_runner_default_execution(manifest)
     execution_plan = build_research_execution_plan(
@@ -2173,6 +2088,287 @@ def run_research_walk_forward(
         elapsed_s=round(time.perf_counter() - started, 3),
     )
     return report
+
+
+def run_final_holdout_confirmation(
+    *,
+    manifest: ExperimentManifest,
+    selection_report: dict[str, Any],
+    db_path: str | Path | None,
+    manager: ResearchPathManager,
+    generated_at: str | None = None,
+    progress_callback: ProgressCallback | None = None,
+    strategy_registry: StrategyRegistry,
+) -> dict[str, Any]:
+    """Evaluate exactly the candidate frozen by a verified pre-holdout selection."""
+    if manifest.dataset.split.final_holdout is None:
+        raise ResearchValidationError("final_holdout_missing")
+    artifact = selection_report.get("selection_artifact")
+    if not isinstance(artifact, dict):
+        raise ResearchValidationError("selection_artifact_missing")
+    artifact_reasons = validate_selection_artifact(artifact)
+    if artifact_reasons:
+        raise ResearchValidationError("selection_artifact_invalid:" + ",".join(artifact_reasons))
+    if artifact.get("manifest_hash") != manifest.manifest_hash():
+        raise ResearchValidationError("selection_artifact_manifest_hash_mismatch")
+    selected_id = str(artifact["selected_candidate_id"])
+    candidates = [item for item in selection_report.get("candidates") or [] if isinstance(item, dict)]
+    selected = next(
+        (item for item in candidates if str(item.get("parameter_candidate_id") or "") == selected_id),
+        None,
+    )
+    if selected is None:
+        raise ResearchValidationError("selection_artifact_candidate_missing")
+    parameter_values = dict(selected.get("parameter_values_raw") or selected.get("parameter_values") or {})
+    if sha256_prefixed(parameter_values) != artifact.get("parameter_values_hash"):
+        raise ResearchValidationError("selection_artifact_parameter_hash_mismatch")
+    if selected.get("effective_strategy_parameters_hash") != artifact.get("effective_strategy_parameters_hash"):
+        raise ResearchValidationError("selection_artifact_effective_parameter_hash_mismatch")
+    compiled_payload = selected.get("compiled_strategy_contract")
+    if not isinstance(compiled_payload, dict):
+        raise ResearchValidationError("selection_artifact_compiled_contract_missing")
+    if selected.get("compiled_strategy_contract_hash") != artifact.get("compiled_strategy_contract_hash"):
+        raise ResearchValidationError("selection_artifact_compiled_contract_hash_mismatch")
+    plugin = strategy_registry.resolve(manifest.strategy_name)
+    compiled_contract = validate_compiled_strategy_contract(
+        compiled_payload,
+        expected_strategy_name=manifest.strategy_name,
+        expected_registry_hash=strategy_registry.content_hash,
+        expected_plugin_hash=plugin.contract_hash(),
+        expected_compiled_hash=str(artifact["compiled_strategy_contract_hash"]),
+    )
+
+    authorization = _reserve_final_holdout_authorization(
+        manifest=manifest,
+        selection_report=selection_report,
+        selection_artifact=artifact,
+        manager=manager,
+        generated_at=generated_at,
+    )
+    run_context = DatasetRunContext()
+    snapshot = load_dataset_split(
+        db_path=db_path,
+        manifest=manifest,
+        split_name="final_holdout",
+        run_context=run_context,
+    )
+    _require_enough_candles((snapshot,))
+    quality = _quality_reports(db_path=db_path, snapshots={"final_holdout": snapshot})["final_holdout"]
+    _validate_dataset_adapter_provenance(manifest=manifest, quality_reports={"final_holdout": quality})
+    scenario = _base_report_scenario(manifest)
+    scenario_index = next(
+        (index for index, item in enumerate(manifest.execution_model.scenarios) if item is scenario),
+        0,
+    )
+    scenario_id = _scenario_id(scenario, scenario_index)
+    context = _backtest_context(
+        manifest=manifest,
+        manager=manager,
+        candidate_id=selected_id,
+        scenario_id=scenario_id,
+        scenario_index=scenario_index,
+        split_name="final_holdout",
+        dataset_content_hash=snapshot.snapshot_fingerprint_hash(),
+        parameter_values=parameter_values,
+        progress_callback=progress_callback,
+        artifact_context=ResearchArtifactContext(
+            manager=manager,
+            experiment_id=manifest.experiment_id,
+            budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
+        ),
+    )
+    execution_model = _execution_model_from_scenario(
+        scenario,
+        seed_context=_seed_context(
+            simulation_seed_scope_hash=manifest.simulation_seed_scope_hash(),
+            scenario=scenario,
+            scenario_id=scenario_id,
+            parameter_candidate_id=selected_id,
+            split_name="final_holdout",
+        ),
+    )
+    run = run_common_simulation_backtest(
+        plugin=plugin,
+        dataset=snapshot,
+        parameter_values=parameter_values,
+        fee_rate=scenario.fee_rate,
+        slippage_bps=float(scenario.slippage_bps),
+        parameter_stability_score=None,
+        execution_model=execution_model,
+        execution_timing_policy=manifest.execution_timing,
+        portfolio_policy=manifest.portfolio_policy,
+        risk_policy=manifest.risk_policy,
+        context=context,
+        compiled_contract=compiled_contract,
+    )
+    validate_execution_evidence(
+        run=run,
+        timing=manifest.execution_timing,
+        model=execution_model,
+        validation_bound=requires_candidate_validation(manifest.research_classification),
+    )
+    metrics = run.metrics.as_dict()
+    metrics_v2 = _metrics_v2_payload(run)
+    gate_result, gate_reasons = _final_holdout_gate_result(
+        manifest=manifest,
+        metrics=metrics,
+        metrics_v2=metrics_v2,
+        quality=quality,
+    )
+    artifact_evidence = {
+        "artifact_id": snapshot.artifact_id,
+        "artifact_manifest_hash": snapshot.artifact_manifest_hash,
+        "artifact_content_hash": snapshot.artifact_content_hash,
+        "artifact_schema_hash": snapshot.artifact_schema_hash,
+        "verification_status": snapshot.verification.overall_status.value if snapshot.verification else "UNAVAILABLE",
+    }
+    holdout_evidence = {
+        "requested_range": snapshot.date_range.as_dict(),
+        "snapshot_query_hash": snapshot.snapshot_query_hash(),
+        "snapshot_data_hash": snapshot.snapshot_data_hash(),
+        "snapshot_fingerprint_hash": snapshot.snapshot_fingerprint_hash(),
+        "quality_hash": quality.content_hash,
+    }
+    holdout_hashes = final_holdout_hashes_from_manifest(
+        manifest=manifest,
+        final_holdout_split_hash=snapshot.snapshot_fingerprint_hash(),
+        dataset_quality_hash=quality.content_hash,
+        dataset_artifact=artifact_evidence,
+        final_holdout_evidence=holdout_evidence,
+    )
+    completion = append_attempt_completion(
+        manager=manager,
+        reservation=authorization,
+        updates={
+            **holdout_hashes,
+            "selection_artifact_hash": artifact["content_hash"],
+            "selected_candidate_id": selected_id,
+            "candidate_count": 1,
+            "confirmation_gate_result": gate_result,
+        },
+        result_status="COMPLETED",
+        created_at=generated_at,
+    )
+    material = {
+        "schema_version": 1,
+        "artifact_type": "final_holdout_confirmation",
+        "manifest_hash": manifest.manifest_hash(),
+        "selection_artifact_hash": artifact["content_hash"],
+        "selected_candidate_id": selected_id,
+        "candidate_results": [{
+            "candidate_id": selected_id,
+            "compiled_strategy_contract_hash": compiled_contract.compiled_contract_hash,
+            "metrics": metrics,
+            "metrics_v2": metrics_v2,
+            "execution_event_summary": run.execution_event_summary or execution_event_summary(run.trades),
+            "reproduction_hashes": _reproduction_result_hashes(run),
+        }],
+        "dataset_evidence": {**artifact_evidence, **holdout_evidence},
+        **holdout_hashes,
+        "experiment_registry_path": authorization["path"],
+        "authorization_row_hash": authorization["row_hash"],
+        "completion_row_hash": completion["row_hash"],
+        "confirmation_gate_result": gate_result,
+        "confirmation_gate_fail_reasons": gate_reasons,
+    }
+    report = {**material, "content_hash": sha256_prefixed(material, label="final_holdout_confirmation")}
+    target = manager.report_path("research", manifest.experiment_id, "final_holdout_confirmation.json")
+    write_json_atomic(target, report)
+    report["confirmation_artifact_path"] = str(target.resolve())
+    return report
+
+
+def _reserve_final_holdout_authorization(
+    *,
+    manifest: ExperimentManifest,
+    selection_report: dict[str, Any],
+    selection_artifact: dict[str, Any],
+    manager: ResearchPathManager,
+    generated_at: str | None,
+) -> dict[str, Any]:
+    split_rows = selection_report.get("dataset_splits")
+    split_rows = split_rows if isinstance(split_rows, dict) else {}
+    source = next((item for item in split_rows.values() if isinstance(item, dict)), {})
+    artifact_evidence = {
+        "artifact_id": source.get("artifact_id"),
+        "artifact_manifest_hash": source.get("artifact_manifest_hash"),
+        "artifact_content_hash": source.get("artifact_content_hash"),
+        "artifact_schema_hash": source.get("artifact_schema_hash"),
+        "verification_status": source.get("verification_status"),
+    }
+    dataset_artifact_evidence_hash = sha256_prefixed(artifact_evidence)
+    holdout_range = manifest.dataset.split.final_holdout.as_dict() if manifest.dataset.split.final_holdout else None
+    pre_exposure_key = pre_exposure_reservation_key_hash_from_parts(
+        strategy_name=manifest.strategy_name,
+        market=manifest.market,
+        interval=manifest.interval,
+        final_holdout=holdout_range,
+        objective_metric=objective_metric_from_manifest(manifest),
+        dataset_artifact_evidence_hash=dataset_artifact_evidence_hash,
+    )
+    if pre_exposure_key is None:
+        raise ResearchValidationError("final_holdout_pre_exposure_identity_incomplete")
+    identity = research_identity_from_manifest(manifest)
+    base_payload = {
+        "run_id": manifest.experiment_id,
+        "experiment_id": manifest.experiment_id,
+        "experiment_family_id": identity["experiment_family_id"],
+        "hypothesis_id": identity["hypothesis_id"],
+        "hypothesis_status": identity["hypothesis_status"],
+        "manifest_hash": manifest.manifest_hash(),
+        "research_classification": manifest.research_classification,
+        "dataset_snapshot_id": manifest.dataset.snapshot_id,
+        "dataset_artifact": artifact_evidence,
+        "dataset_artifact_evidence_hash": dataset_artifact_evidence_hash,
+        "final_holdout_identity_hash": final_holdout_identity_hash_from_parts(
+            dataset_source=manifest.dataset.source,
+            market=manifest.market,
+            interval=manifest.interval,
+            final_holdout=holdout_range,
+        ),
+        "pre_exposure_reservation_key_hash": pre_exposure_key,
+        "pre_exposure_reservation_key_schema_version": 1,
+        "final_holdout_content_pending_until_completion": True,
+        "objective_metric": objective_metric_from_manifest(manifest),
+        "selection_artifact_hash": selection_artifact["content_hash"],
+        "selected_candidate_id": selection_artifact["selected_candidate_id"],
+        "declared_attempt_index": None,
+        "declared_holdout_reuse_count": None,
+    }
+    contract = manifest.statistical_validation.as_dict() if manifest.statistical_validation is not None else {"gates": {"max_holdout_reuse_count": 0}}
+    reservation = reserve_research_attempt_checked(
+        manager=manager,
+        base_payload=base_payload,
+        statistical_validation_contract=contract,
+        created_at=generated_at,
+    )
+    if not reservation.get("accepted"):
+        raise ResearchValidationError(
+            "final_holdout_pre_exposure_authorization_failed:"
+            + ",".join(str(item) for item in reservation.get("reasons") or [])
+        )
+    return reservation
+
+
+def _final_holdout_gate_result(
+    *,
+    manifest: ExperimentManifest,
+    metrics: dict[str, Any],
+    metrics_v2: dict[str, Any],
+    quality: DatasetQualityReport,
+) -> tuple[str, list[str]]:
+    gate = manifest.acceptance_gate
+    reasons = list(quality.quality_gate_reasons) if quality.quality_gate_status != "PASS" else []
+    if int(metrics.get("trade_count") or 0) < gate.min_trade_count:
+        reasons.append("final_holdout_min_trade_count_failed")
+    if float(metrics.get("max_drawdown_pct") or 0.0) > gate.max_mdd_pct:
+        reasons.append("final_holdout_max_drawdown_failed")
+    if not _profit_factor_passes(metrics.get("profit_factor"), metrics.get("profit_factor_unbounded"), gate.min_profit_factor):
+        reasons.append("final_holdout_profit_factor_failed")
+    if gate.oos_return_must_be_positive and float(metrics.get("return_pct") or 0.0) <= 0.0:
+        reasons.append("final_holdout_return_not_positive")
+    reasons.extend(_metrics_v2_gate_reasons(gate=gate, metrics_v2=metrics_v2, prefix="final_holdout_"))
+    return ("PASS" if not reasons else "FAIL", sorted(set(reasons)))
 
 
 def _attach_authoritative_reproduction_receipt(
@@ -2745,16 +2941,8 @@ def _evaluate_candidates(
             validation_metrics = dict(base["validation_metrics"])
             train_metrics_v2 = dict(base["train_metrics_v2"])
             validation_metrics_v2 = dict(base["validation_metrics_v2"])
-            final_holdout_metrics = (
-                dict(base["final_holdout_metrics"]) if isinstance(base.get("final_holdout_metrics"), dict) else None
-            )
-            final_holdout_metrics_v2 = (
-                dict(base["final_holdout_metrics_v2"]) if isinstance(base.get("final_holdout_metrics_v2"), dict) else None
-            )
             train_metrics["parameter_stability_score"] = stability_score
             validation_metrics["parameter_stability_score"] = stability_score
-            if final_holdout_metrics is not None:
-                final_holdout_metrics["parameter_stability_score"] = stability_score
             walk_forward = base["walk_forward_metrics"]
             regime_gate = evaluate_regime_acceptance_gate(
                 gate=manifest.acceptance_gate.regime_acceptance_gate,
@@ -2764,8 +2952,6 @@ def _evaluate_candidates(
                 manifest=manifest,
                 validation_metrics=validation_metrics,
                 validation_metrics_v2=validation_metrics_v2,
-                final_holdout_metrics=final_holdout_metrics,
-                final_holdout_metrics_v2=final_holdout_metrics_v2,
                 walk_forward_metrics=walk_forward,
                 stability_score=stability_score,
                 include_walk_forward=include_walk_forward,
@@ -2775,7 +2961,6 @@ def _evaluate_candidates(
                 dataset_quality_reasons=dataset_quality_reasons,
             )
             validation_stress_suite = None
-            final_holdout_stress_suite = None
             stress_gate_result = None
             stress_fail_reasons: list[str] = []
             stress_contract = manifest.stress_suite.as_dict() if manifest.stress_suite is not None else None
@@ -2804,32 +2989,6 @@ def _evaluate_candidates(
                     parameter_perturbation_candidates=perturbation_candidates,
                 )
                 stress_fail_reasons.extend(str(reason) for reason in validation_stress_suite.get("fail_reasons") or [])
-                if final_holdout_metrics is not None:
-                    final_holdout_stress_suite = analyze_stress_suite(
-                        contract=manifest.stress_suite,
-                        context=StressSuiteContext(
-                            manifest_hash=manifest_hash,
-                            experiment_id=manifest.experiment_id,
-                            candidate_id=base["candidate_id"],
-                            scenario_id=scenario_id,
-                            split_name="final_holdout",
-                            parameter_values=params,
-                            portfolio_policy_hash=portfolio_policy_hash,
-                            simulation_policy_hash=simulation_policy_hash,
-                        ),
-                        original_metrics=final_holdout_metrics,
-                        metrics_v2=final_holdout_metrics_v2,
-                        closed_trades=_closed_trades_for_stress_suite(
-                            manager=manager,
-                            base=base,
-                            split_name="final_holdout",
-                        ),
-                        starting_cash=manifest.portfolio_policy.starting_cash_krw,
-                        parameter_perturbation_candidates=perturbation_candidates,
-                    )
-                    stress_fail_reasons.extend(
-                        f"final_holdout_{reason}" for reason in final_holdout_stress_suite.get("fail_reasons") or []
-                    )
                 stress_gate_result = "PASS" if not stress_fail_reasons else "FAIL"
                 if manifest.stress_suite.required_for_validation and stress_gate_result != "PASS":
                     gate_result = "FAIL"
@@ -2923,8 +3082,6 @@ def _evaluate_candidates(
                 "train_executed_portfolio_policy_hash": base.get("train_executed_portfolio_policy_hash"),
                 "validation_executed_portfolio_policy": base.get("validation_executed_portfolio_policy"),
                 "validation_executed_portfolio_policy_hash": base.get("validation_executed_portfolio_policy_hash"),
-                "final_holdout_executed_portfolio_policy": base.get("final_holdout_executed_portfolio_policy"),
-                "final_holdout_executed_portfolio_policy_hash": base.get("final_holdout_executed_portfolio_policy_hash"),
                 "simulation_policy_hash": simulation_policy_hash,
                 "execution_reality_contract": execution_contract,
                 "execution_contract_hash": execution_contract["execution_contract_hash"],
@@ -2935,10 +3092,8 @@ def _evaluate_candidates(
                 "execution_reality_summary": execution_reality_summary,
                 "train_execution_event_summary": base.get("train_execution_event_summary") or {},
                 "validation_execution_event_summary": base.get("validation_execution_event_summary") or {},
-                "final_holdout_execution_event_summary": base.get("final_holdout_execution_event_summary"),
                 "train_strategy_diagnostics": base.get("train_strategy_diagnostics") or {},
                 "validation_strategy_diagnostics": base.get("validation_strategy_diagnostics") or {},
-                "final_holdout_strategy_diagnostics": base.get("final_holdout_strategy_diagnostics"),
                 "strategy_diagnostics": base.get("validation_strategy_diagnostics") or {},
                 "execution_event_summary": base.get("validation_execution_event_summary") or {},
                 "behavior_hash": (base.get("validation_reproduction_hashes") or {}).get("behavior_hash"),
@@ -2962,21 +3117,6 @@ def _evaluate_candidates(
                 "validation_composite_behavior_hash": (base.get("validation_resource_usage") or {}).get("composite_behavior_hash"),
                 "validation_composite_behavior_hash_v2": (
                     (base.get("validation_resource_usage") or {}).get("composite_behavior_hash_v2")
-                ),
-                "final_holdout_behavior_hash": (
-                    (base.get("final_holdout_resource_usage") or {}).get("behavior_hash")
-                    if base.get("final_holdout_resource_usage")
-                    else None
-                ),
-                "final_holdout_composite_behavior_hash": (
-                    (base.get("final_holdout_resource_usage") or {}).get("composite_behavior_hash")
-                    if base.get("final_holdout_resource_usage")
-                    else None
-                ),
-                "final_holdout_composite_behavior_hash_v2": (
-                    (base.get("final_holdout_resource_usage") or {}).get("composite_behavior_hash_v2")
-                    if base.get("final_holdout_resource_usage")
-                    else None
                 ),
                 "strategy_spec": strategy_spec.as_dict(),
                 "strategy_spec_hash": strategy_spec.spec_hash(),
@@ -3002,7 +3142,6 @@ def _evaluate_candidates(
                 ],
                 "train_metrics": train_metrics,
                 "validation_metrics": validation_metrics,
-                "final_holdout_metrics": final_holdout_metrics,
                 # Produced while the complete validation result is available;
                 # receipt construction consumes this field directly.
                 "metrics_hash": (base.get("validation_reproduction_hashes") or {}).get("metrics_hash"),
@@ -3012,20 +3151,16 @@ def _evaluate_candidates(
                 "stress_suite_contract": stress_contract,
                 "stress_suite_contract_hash": stress_contract_hash,
                 "validation_stress_suite": validation_stress_suite,
-                "final_holdout_stress_suite": final_holdout_stress_suite,
                 "stress_suite_gate_result": stress_gate_result,
                 "stress_suite_fail_reasons": sorted(set(stress_fail_reasons)),
                 "train_metrics_v2": train_metrics_v2,
                 "validation_metrics_v2": validation_metrics_v2,
-                "final_holdout_metrics_v2": final_holdout_metrics_v2,
                 "walk_forward_metrics": walk_forward,
                 "regime_gate_result": regime_gate.as_dict(),
                 "market_regime_bucket_performance": base["validation_regime_performance"],
                 "market_regime_coverage": base["validation_regime_coverage"],
                 "train_market_regime_bucket_performance": base["train_regime_performance"],
                 "train_market_regime_coverage": base["train_regime_coverage"],
-                "final_holdout_market_regime_bucket_performance": base["final_holdout_regime_performance"],
-                "final_holdout_market_regime_coverage": base["final_holdout_regime_coverage"],
                 "allowed_live_regimes": list(regime_gate.allowed_live_regimes),
                 "blocked_live_regimes": list(regime_gate.blocked_live_regimes),
                 "regime_evidence": regime_gate.evidence,
@@ -3049,25 +3184,18 @@ def _evaluate_candidates(
                 "retained_detail_summary": base.get("retained_detail_summary"),
                 "train_closed_trade_count": base.get("train_closed_trade_count"),
                 "validation_closed_trade_count": base.get("validation_closed_trade_count"),
-                "final_holdout_closed_trade_count": base.get("final_holdout_closed_trade_count"),
                 "train_closed_trades_hash": base.get("train_closed_trades_hash"),
                 "validation_closed_trades_hash": base.get("validation_closed_trades_hash"),
-                "final_holdout_closed_trades_hash": base.get("final_holdout_closed_trades_hash"),
                 "train_equity_curve_count": base.get("train_equity_curve_count"),
                 "validation_equity_curve_count": base.get("validation_equity_curve_count"),
-                "final_holdout_equity_curve_count": base.get("final_holdout_equity_curve_count"),
                 "train_resource_usage": base.get("train_resource_usage"),
                 "validation_resource_usage": base.get("validation_resource_usage"),
-                "final_holdout_resource_usage": base.get("final_holdout_resource_usage"),
                 "train_audit_trace_index": base.get("train_audit_trace_index"),
                 "validation_audit_trace_index": base.get("validation_audit_trace_index"),
-                "final_holdout_audit_trace_index": base.get("final_holdout_audit_trace_index"),
                 "train_equity_curve": [],
                 "validation_equity_curve": [],
-                "final_holdout_equity_curve": [],
                 "train_execution_metadata": base.get("train_execution_metadata") or [],
                 "validation_execution_metadata": base.get("validation_execution_metadata") or [],
-                "final_holdout_execution_metadata": base.get("final_holdout_execution_metadata"),
             }
             _apply_fail_reason_classification(scenario_result, reason_key="scenario_fail_reasons")
             candidate_payload = aggregates.setdefault(
@@ -3199,7 +3327,6 @@ def _evaluate_candidates(
                 "execution_calibration_gate": _combined_calibration_gate(candidate_payload.get("scenario_results") or []),
                 "train_metrics": primary.get("train_metrics"),
                 "validation_metrics": candidate_payload.get("primary_validation_metrics"),
-                "final_holdout_metrics": candidate_payload.get("primary_final_holdout_metrics"),
                 "metrics_schema_version": primary.get("metrics_schema_version"),
                 "metrics_gate_policy": primary.get("metrics_gate_policy") or candidate_payload.get("metrics_gate_policy"),
                 "metrics_gate_policy_hash": primary.get("metrics_gate_policy_hash") or candidate_payload.get("metrics_gate_policy_hash"),
@@ -3208,19 +3335,15 @@ def _evaluate_candidates(
                 "stress_suite_contract": primary.get("stress_suite_contract"),
                 "stress_suite_contract_hash": primary.get("stress_suite_contract_hash"),
                 "validation_stress_suite": primary.get("validation_stress_suite"),
-                "final_holdout_stress_suite": primary.get("final_holdout_stress_suite"),
                 "stress_suite_gate_result": primary.get("stress_suite_gate_result"),
                 "stress_suite_fail_reasons": primary.get("stress_suite_fail_reasons") or [],
                 "train_metrics_v2": primary.get("train_metrics_v2"),
                 "validation_metrics_v2": primary.get("validation_metrics_v2"),
-                "final_holdout_metrics_v2": primary.get("final_holdout_metrics_v2"),
                 "walk_forward_metrics": primary.get("walk_forward_metrics"),
                 "market_regime_bucket_performance": primary.get("market_regime_bucket_performance"),
                 "market_regime_coverage": primary.get("market_regime_coverage"),
                 "train_market_regime_bucket_performance": primary.get("train_market_regime_bucket_performance"),
                 "train_market_regime_coverage": primary.get("train_market_regime_coverage"),
-                "final_holdout_market_regime_bucket_performance": primary.get("final_holdout_market_regime_bucket_performance"),
-                "final_holdout_market_regime_coverage": primary.get("final_holdout_market_regime_coverage"),
                 "regime_gate_result": primary.get("regime_gate_result"),
                 "allowed_live_regimes": list(primary.get("allowed_live_regimes") or []),
                 "blocked_live_regimes": list(primary.get("blocked_live_regimes") or []),
@@ -3581,17 +3704,6 @@ def _merge_candidate_scenario_split_results(
             {
                 "work_unit_mode": "candidate_scenario_split",
                 "split_work_unit_hashes": [item.work_unit_hash for item in group],
-                "final_holdout_metrics": None,
-                "final_holdout_metrics_v2": None,
-                "final_holdout_closed_trades": (),
-                "final_holdout_equity_curve": [],
-                "final_holdout_execution_metadata": None,
-                "final_holdout_execution_event_summary": None,
-                "final_holdout_strategy_diagnostics": None,
-                "final_holdout_regime_performance": None,
-                "final_holdout_regime_coverage": None,
-                "final_holdout_resource_usage": None,
-                "final_holdout_audit_trace_index": None,
                 "warnings": sorted(set(train_base.get("warnings") or ()) | set(validation_base.get("warnings") or ())),
                 "validation_executed_portfolio_policy": validation_base.get("validation_executed_portfolio_policy"),
                 "validation_executed_portfolio_policy_hash": validation_base.get(
@@ -3599,8 +3711,6 @@ def _merge_candidate_scenario_split_results(
                 ),
                 "executed_portfolio_policy": validation_base.get("validation_executed_portfolio_policy"),
                 "executed_portfolio_policy_hash": validation_base.get("validation_executed_portfolio_policy_hash"),
-                "final_holdout_executed_portfolio_policy": None,
-                "final_holdout_executed_portfolio_policy_hash": None,
             }
         )
         first = group[0]
@@ -4061,7 +4171,6 @@ def _evaluate_candidate_base_result(
 
     train = _run("train")
     validation = _run("validation")
-    final_holdout = _run("final_holdout") if "final_holdout" in snapshots else None
     walk_forward = (
         _walk_forward_metrics(
             manifest=manifest,
@@ -4085,7 +4194,6 @@ def _evaluate_candidate_base_result(
     executed_policy_evidence = _candidate_executed_portfolio_policy_evidence(
         train=train,
         validation=validation,
-        final_holdout=final_holdout,
         work_unit=work_unit,
     )
     work_wall_seconds = time.perf_counter() - work_started
@@ -4138,52 +4246,30 @@ def _evaluate_candidate_base_result(
         "strategy_plugin_contract_hash": compiled_contract.strategy_plugin_contract_hash,
         "train_metrics": train.metrics.as_dict(),
         "validation_metrics": validation.metrics.as_dict(),
-        "final_holdout_metrics": final_holdout.metrics.as_dict() if final_holdout else None,
         "train_metrics_v2": _metrics_v2_payload(train),
         "validation_metrics_v2": _metrics_v2_payload(validation),
-        "final_holdout_metrics_v2": _metrics_v2_payload(final_holdout) if final_holdout else None,
         "train_closed_trades": train.closed_trades,
         "validation_closed_trades": validation.closed_trades,
-        "final_holdout_closed_trades": final_holdout.closed_trades if final_holdout else (),
         "train_equity_curve": [point.as_dict() for point in train.equity_curve],
         "validation_equity_curve": [point.as_dict() for point in validation.equity_curve],
-        "final_holdout_equity_curve": [point.as_dict() for point in final_holdout.equity_curve] if final_holdout else [],
         "train_execution_metadata": _execution_metadata(train.trades),
         "validation_execution_metadata": _execution_metadata(validation.trades),
-        "final_holdout_execution_metadata": _execution_metadata(final_holdout.trades) if final_holdout else None,
         "train_execution_event_summary": train.execution_event_summary or execution_event_summary(train.trades),
         "validation_execution_event_summary": validation.execution_event_summary or execution_event_summary(validation.trades),
-        "final_holdout_execution_event_summary": (
-            final_holdout.execution_event_summary or execution_event_summary(final_holdout.trades)
-            if final_holdout
-            else None
-        ),
         "train_strategy_diagnostics": train.strategy_diagnostics or {},
         "validation_strategy_diagnostics": validation.strategy_diagnostics or {},
-        "final_holdout_strategy_diagnostics": final_holdout.strategy_diagnostics if final_holdout else None,
         "train_regime_performance": [row.as_dict() for row in train.regime_performance],
         "train_regime_coverage": [row.as_dict() for row in train.regime_coverage],
         "validation_regime_performance": [row.as_dict() for row in validation.regime_performance],
         "validation_regime_coverage": [row.as_dict() for row in validation.regime_coverage],
-        "final_holdout_regime_performance": (
-            [row.as_dict() for row in final_holdout.regime_performance] if final_holdout else None
-        ),
-        "final_holdout_regime_coverage": (
-            [row.as_dict() for row in final_holdout.regime_coverage] if final_holdout else None
-        ),
         "walk_forward_metrics": walk_forward,
-        "warnings": sorted(set(train.warnings + validation.warnings + ((final_holdout.warnings if final_holdout else ())))),
+        "warnings": sorted(set(train.warnings + validation.warnings)),
         "train_resource_usage": train.resource_usage,
         "validation_resource_usage": validation.resource_usage,
         "train_reproduction_hashes": _reproduction_result_hashes(train),
         "validation_reproduction_hashes": _reproduction_result_hashes(validation),
-        "final_holdout_reproduction_hashes": (
-            _reproduction_result_hashes(final_holdout) if final_holdout is not None else None
-        ),
-        "final_holdout_resource_usage": final_holdout.resource_usage if final_holdout else None,
         "train_audit_trace_index": train.audit_trace_index,
         "validation_audit_trace_index": validation.audit_trace_index,
-        "final_holdout_audit_trace_index": final_holdout.audit_trace_index if final_holdout else None,
         "retained_detail_summary": validation.retained_detail_summary,
     }
 
@@ -4227,36 +4313,19 @@ def _candidate_executed_portfolio_policy_evidence(
     *,
     train: BacktestRun,
     validation: BacktestRun,
-    final_holdout: BacktestRun | None,
     work_unit: ResearchWorkUnit,
 ) -> dict[str, Any]:
     split_evidence = {
         "train": _run_portfolio_policy_evidence(train),
         "validation": _run_portfolio_policy_evidence(validation),
-        "final_holdout": _run_portfolio_policy_evidence(final_holdout) if final_holdout else None,
     }
-    primary = (
-        split_evidence.get("final_holdout")
-        or split_evidence.get("validation")
-        or split_evidence.get("train")
-        or {}
-    )
+    primary = split_evidence.get("validation") or split_evidence.get("train") or {}
     payload: dict[str, Any] = {
         "work_unit_portfolio_policy_hash": work_unit.portfolio_policy_hash,
         "train_executed_portfolio_policy": split_evidence["train"].get("executed_portfolio_policy"),
         "train_executed_portfolio_policy_hash": split_evidence["train"].get("executed_portfolio_policy_hash"),
         "validation_executed_portfolio_policy": split_evidence["validation"].get("executed_portfolio_policy"),
         "validation_executed_portfolio_policy_hash": split_evidence["validation"].get("executed_portfolio_policy_hash"),
-        "final_holdout_executed_portfolio_policy": (
-            split_evidence["final_holdout"].get("executed_portfolio_policy")
-            if isinstance(split_evidence.get("final_holdout"), dict)
-            else None
-        ),
-        "final_holdout_executed_portfolio_policy_hash": (
-            split_evidence["final_holdout"].get("executed_portfolio_policy_hash")
-            if isinstance(split_evidence.get("final_holdout"), dict)
-            else None
-        ),
         "executed_portfolio_policy": primary.get("executed_portfolio_policy"),
         "executed_portfolio_policy_hash": primary.get("executed_portfolio_policy_hash"),
         "ledger_starting_cash_krw": primary.get("ledger_starting_cash_krw"),
@@ -4369,6 +4438,7 @@ def _partial_split_base_result(
     payload[f"{split_name}_regime_performance"] = [row.as_dict() for row in split_run.regime_performance]
     payload[f"{split_name}_regime_coverage"] = [row.as_dict() for row in split_run.regime_coverage]
     payload[f"{split_name}_resource_usage"] = split_run.resource_usage
+    payload[f"{split_name}_reproduction_hashes"] = _reproduction_result_hashes(split_run)
     payload[f"{split_name}_audit_trace_index"] = split_run.audit_trace_index
     return payload
 
@@ -4436,7 +4506,7 @@ def _failed_candidate_base_result(
         else {}
     )
     split_policy_evidence: dict[str, Any] = {}
-    if policy_evidence.get("executed_portfolio_policy_hash") and split in {"train", "validation", "final_holdout"}:
+    if policy_evidence.get("executed_portfolio_policy_hash") and split in {"train", "validation"}:
         split_policy_evidence = {
             f"{split}_executed_portfolio_policy": policy_evidence.get("executed_portfolio_policy"),
             f"{split}_executed_portfolio_policy_hash": policy_evidence.get("executed_portfolio_policy_hash"),
@@ -4451,22 +4521,16 @@ def _failed_candidate_base_result(
         **split_policy_evidence,
         "train_metrics": metrics,
         "validation_metrics": metrics,
-        "final_holdout_metrics": None,
         "train_metrics_v2": metrics_v2,
         "validation_metrics_v2": metrics_v2,
-        "final_holdout_metrics_v2": None,
         "train_execution_metadata": [],
         "validation_execution_metadata": [],
-        "final_holdout_execution_metadata": None,
         "train_execution_event_summary": {},
         "validation_execution_event_summary": {},
-        "final_holdout_execution_event_summary": None,
         "train_regime_performance": [],
         "train_regime_coverage": [],
         "validation_regime_performance": [],
         "validation_regime_coverage": [],
-        "final_holdout_regime_performance": None,
-        "final_holdout_regime_coverage": None,
         "walk_forward_metrics": None,
         "warnings": [reason],
         "candidate_failed": True,
@@ -4560,9 +4624,6 @@ def _pre_stress_gate_summaries(
     for base in base_results:
         index = int(base["index"])
         validation_metrics = dict(base["validation_metrics"])
-        final_holdout_metrics = (
-            dict(base["final_holdout_metrics"]) if isinstance(base.get("final_holdout_metrics"), dict) else None
-        )
         regime_gate = evaluate_regime_acceptance_gate(
             gate=manifest.acceptance_gate.regime_acceptance_gate,
             performance_rows=tuple(base.get("validation_regime_performance") or ()),
@@ -4571,10 +4632,6 @@ def _pre_stress_gate_summaries(
             manifest=manifest,
             validation_metrics=validation_metrics,
             validation_metrics_v2=dict(base["validation_metrics_v2"]),
-            final_holdout_metrics=final_holdout_metrics,
-            final_holdout_metrics_v2=(
-                dict(base["final_holdout_metrics_v2"]) if isinstance(base.get("final_holdout_metrics_v2"), dict) else None
-            ),
             walk_forward_metrics=base["walk_forward_metrics"],
             stability_score=stability[index]["score"],
             include_walk_forward=include_walk_forward,
@@ -4612,9 +4669,7 @@ def _portfolio_policy_execution_gate_reasons(base: dict[str, Any]) -> list[str]:
     if executed_hash != declared_hash:
         return [PORTFOLIO_POLICY_EXECUTION_MISMATCH_REASON]
     expected_splits = {"train", "validation"}
-    if base.get("final_holdout_metrics") is not None or base.get("final_holdout_metrics_v2") is not None:
-        expected_splits.add("final_holdout")
-    for split in ("train", "validation", "final_holdout"):
+    for split in ("train", "validation"):
         split_hash = base.get(f"{split}_executed_portfolio_policy_hash")
         if split_hash is None or str(split_hash).strip() == "":
             if split in expected_splits:
@@ -4701,9 +4756,6 @@ def _parameter_perturbation_candidates(
                 "candidate_id": base.get("candidate_id"),
                 "parameter_values": dict(base.get("parameter_values") or {}),
                 "validation_metrics": dict(base.get("validation_metrics") or {}),
-                "final_holdout_metrics": (
-                    dict(base.get("final_holdout_metrics")) if isinstance(base.get("final_holdout_metrics"), dict) else None
-                ),
                 "scenario_acceptance_gate_result": summary.get("gate_result"),
                 "scenario_fail_reasons": list(summary.get("fail_reasons") or []),
             }
@@ -4928,12 +4980,10 @@ def _declare_candidate_scenario_semantics(
             else "primary_scenario_alias",
             "primary_cost_model": primary.get("cost_model"),
             "primary_validation_metrics": primary.get("validation_metrics"),
-            "primary_final_holdout_metrics": primary.get("final_holdout_metrics"),
             "aggregate_gate_policy": policy,
             "aggregate_acceptance_gate_result": aggregate_result,
             "base_scenario_id": base.get("scenario_id") if isinstance(base, dict) else None,
             "base_validation_metrics": base.get("validation_metrics") if isinstance(base, dict) else None,
-            "base_final_holdout_metrics": base.get("final_holdout_metrics") if isinstance(base, dict) else None,
             "stress_scenario_ids": [item.get("scenario_id") for item in stress_results],
             "stress_gate_results": [
                 {
@@ -5315,12 +5365,10 @@ def _gate_result(
     *,
     manifest: ExperimentManifest,
     validation_metrics: dict[str, Any],
-    final_holdout_metrics: dict[str, Any] | None,
     walk_forward_metrics: dict[str, Any] | None,
     stability_score: float | None,
     include_walk_forward: bool,
     validation_metrics_v2: dict[str, Any] | None = None,
-    final_holdout_metrics_v2: dict[str, Any] | None = None,
     regime_gate_result: dict[str, Any] | None = None,
     execution_calibration_gate: dict[str, Any] | None = None,
     dataset_quality_status: str = "PASS",
@@ -5339,13 +5387,7 @@ def _gate_result(
         reasons.append("profit_factor_failed")
     if gate.oos_return_must_be_positive and float(validation_metrics.get("return_pct") or 0.0) <= 0.0:
         reasons.append("validation_return_not_positive")
-    if final_holdout_metrics and gate.oos_return_must_be_positive and float(final_holdout_metrics.get("return_pct") or 0.0) <= 0.0:
-        reasons.append("final_holdout_return_not_positive")
     reasons.extend(_metrics_v2_gate_reasons(gate=gate, metrics_v2=validation_metrics_v2, prefix=""))
-    if final_holdout_metrics_v2 is not None:
-        reasons.extend(_metrics_v2_gate_reasons(gate=gate, metrics_v2=final_holdout_metrics_v2, prefix="final_holdout_"))
-    elif gate.metrics_contract_required and gate.final_holdout_required_for_validation and final_holdout_metrics is not None:
-        reasons.append("final_holdout_metrics_v2_missing")
     if gate.parameter_stability_required and (stability_score is None or stability_score < 0.5):
         reasons.append("parameter_stability_failed")
     if gate.walk_forward_required:
@@ -6388,6 +6430,11 @@ def _report_payload(
         },
         validation_required=manifest.research_classification != "research_only",
     )
+    selection_artifact = build_selection_artifact(
+        manifest_hash=manifest.manifest_hash(),
+        selection_result=final_selection,
+        candidates=candidates,
+    )
     best = next(
         (
             candidate
@@ -6626,6 +6673,8 @@ def _report_payload(
         "selected_candidate_score_hash": final_selection.get("selected_candidate_score_hash"),
         "candidate_final_scores_hash": final_selection.get("candidate_final_scores_hash"),
         "candidate_final_scores": final_selection.get("candidate_final_scores") or [],
+        "selection_artifact": selection_artifact,
+        "selection_artifact_hash": selection_artifact.get("content_hash") if selection_artifact else None,
         "statistical_validation_required": statistical_validation_required(manifest),
         "statistical_validation_contract": statistical_contract,
         "benchmark": statistical_evidence.get("benchmark") if statistical_evidence else None,
@@ -6732,7 +6781,6 @@ def _report_payload(
         "exit_policy": best.get("exit_policy") if best else None,
         "exit_policy_hash": best.get("exit_policy_hash") if best else None,
         "best_validation_metrics_v2": best.get("validation_metrics_v2") if best else None,
-        "best_final_holdout_metrics_v2": best.get("final_holdout_metrics_v2") if best else None,
         "closed_trade_diagnostics_summary": _closed_trade_diagnostics_summary(best or {}),
         "stress_suite_gate_result": (
             stress_summary_candidate.get("stress_suite_gate_result") if stress_summary_candidate else None
@@ -6743,9 +6791,6 @@ def _report_payload(
         "best_validation_stress_suite": (
             stress_summary_candidate.get("validation_stress_suite") if stress_summary_candidate else None
         ),
-        "best_final_holdout_stress_suite": (
-            stress_summary_candidate.get("final_holdout_stress_suite") if stress_summary_candidate else None
-        ),
         "candidate_acceptance_gate_result": "PASS" if best else "FAIL",
         "statistical_selection_gate_result": statistical_evidence.get("statistical_gate_result") if statistical_evidence else None,
         "walk_forward_gate_result": best.get("walk_forward_gate_result") if best else None,
@@ -6753,7 +6798,7 @@ def _report_payload(
         "validation_blocking_reasons": [],
         "gate_result": "FAIL",
         "warnings": warnings,
-        "candidates": candidates,
+        "candidates": [_selection_only_candidate_payload(candidate) for candidate in candidates],
         "repository_version": repository_version,
         "lineage": lineage,
         "lineage_hash": lineage["lineage_hash"],
@@ -8387,33 +8432,17 @@ def _combined_l2_depth_summary(payloads: list[dict[str, Any]]) -> dict[str, Any]
     }
 
 
-def _rolling_walk_forward_windows(manifest: ExperimentManifest) -> list[dict[str, DateRange]]:
-    config = manifest.walk_forward
-    if config is None:
-        return []
-    start = _parse_manifest_day(manifest.dataset.split.train.start)
-    end = _parse_manifest_day(
-        manifest.dataset.split.final_holdout.end
-        if manifest.dataset.split.final_holdout is not None
-        else manifest.dataset.split.validation.end
-    )
-    windows: list[dict[str, DateRange]] = []
-    cursor = start
-    while True:
-        train_start = cursor
-        train_end = train_start + timedelta(days=config.train_window_days - 1)
-        test_start = train_end + timedelta(days=1)
-        test_end = test_start + timedelta(days=config.test_window_days - 1)
-        if test_end > end:
-            break
-        windows.append(
-            {
-                "train": DateRange(start=train_start.strftime("%Y-%m-%d"), end=train_end.strftime("%Y-%m-%d")),
-                "test": DateRange(start=test_start.strftime("%Y-%m-%d"), end=test_end.strftime("%Y-%m-%d")),
-            }
-        )
-        cursor = cursor + timedelta(days=config.step_days)
-    return windows
+def _selection_only_candidate_payload(value: Any) -> Any:
+    """Remove confirmatory evidence from candidate-search report payloads."""
+    if isinstance(value, dict):
+        return {
+            key: _selection_only_candidate_payload(item)
+            for key, item in value.items()
+            if "final_holdout" not in str(key)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_selection_only_candidate_payload(item) for item in value]
+    return value
 
 
 def _load_walk_forward_snapshots(
@@ -8444,10 +8473,6 @@ def _load_walk_forward_snapshots(
             run_context=run_context,
         )
     return snapshots
-
-
-def _parse_manifest_day(value: str) -> datetime:
-    return datetime.strptime(value, "%Y-%m-%d")
 
 
 def _repository_version() -> str:

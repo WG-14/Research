@@ -13,7 +13,11 @@ from market_research.storage_io import write_json_atomic
 
 from .experiment_manifest import ExperimentManifest
 from .hashing import content_hash_payload, sha256_prefixed
-from .validation_protocol import run_research_backtest, run_research_walk_forward
+from .validation_protocol import (
+    run_final_holdout_confirmation,
+    run_research_backtest,
+    run_research_walk_forward,
+)
 from .strategy_registry import StrategyRegistry
 
 
@@ -49,33 +53,85 @@ def run_research_validation(
 ) -> dict[str, Any]:
     if mode != "strict":
         raise ValidationRunError("validation_run_mode_unsupported")
-    backtest = run_research_backtest(
-        manifest=manifest, db_path=db_path, manager=manager, execution_calibration=execution_calibration,
-        manifest_path=manifest_path, command_args={"manifest": manifest_path},
-        generated_at=generated_at, progress_callback=progress_callback,
-        strategy_registry=strategy_registry,
+    walk_forward_required = bool(getattr(manifest.acceptance_gate, "walk_forward_required", False))
+    selection_report = (
+        run_research_walk_forward(
+            manifest=manifest, db_path=db_path, manager=manager, execution_calibration=execution_calibration,
+            manifest_path=manifest_path, command_args={"manifest": manifest_path},
+            generated_at=generated_at, progress_callback=progress_callback,
+            strategy_registry=strategy_registry,
+        )
+        if walk_forward_required
+        else run_research_backtest(
+            manifest=manifest, db_path=db_path, manager=manager, execution_calibration=execution_calibration,
+            manifest_path=manifest_path, command_args={"manifest": manifest_path},
+            generated_at=generated_at, progress_callback=progress_callback,
+            strategy_registry=strategy_registry,
+        )
     )
-    walk_forward = run_research_walk_forward(
-        manifest=manifest, db_path=db_path, manager=manager, execution_calibration=execution_calibration,
-        manifest_path=manifest_path, command_args={"manifest": manifest_path},
-        generated_at=generated_at, progress_callback=progress_callback,
-        strategy_registry=strategy_registry,
-    ) if bool(getattr(manifest.acceptance_gate, "walk_forward_required", False)) else None
-    candidates = [item for item in backtest.get("candidates") or [] if isinstance(item, dict)]
-    selected = next((item for item in candidates if item.get("candidate_id") == candidate_id), None) if candidate_id else None
-    selected = selected or next((item for item in candidates if item.get("acceptance_gate_status") == "PASS"), None)
-    status = "PASS" if selected is not None else "INSUFFICIENT_EVIDENCE"
+    artifact = selection_report.get("selection_artifact")
+    selected_id = str(artifact.get("selected_candidate_id") or "") if isinstance(artifact, dict) else ""
+    if candidate_id is not None and str(candidate_id) != selected_id:
+        raise ValidationRunError("candidate_id_does_not_match_frozen_selection")
+    candidates = [item for item in selection_report.get("candidates") or [] if isinstance(item, dict)]
+    selected = next((item for item in candidates if str(item.get("parameter_candidate_id") or "") == selected_id), None)
+    confirmation = (
+        run_final_holdout_confirmation(
+            manifest=manifest,
+            selection_report=selection_report,
+            db_path=db_path,
+            manager=manager,
+            generated_at=generated_at,
+            progress_callback=progress_callback,
+            strategy_registry=strategy_registry,
+        )
+        if selected is not None and manifest.dataset.split.final_holdout is not None
+        else None
+    )
+    status = (
+        "PASS"
+        if selected is not None
+        and (confirmation is None or confirmation.get("confirmation_gate_result") == "PASS")
+        else "INSUFFICIENT_EVIDENCE"
+    )
+    stage_status = {
+        "readiness": "PASS",
+        "dataset_quality": "PASS",
+        "backtest": "PASS" if not walk_forward_required else "NOT_RUN",
+        "walk_forward": "PASS" if walk_forward_required else "NOT_REQUIRED",
+        "final_selection": "PASS" if selected is not None else "INSUFFICIENT_EVIDENCE",
+        "final_holdout": confirmation.get("confirmation_gate_result") if confirmation else "NOT_REQUIRED",
+        "research_candidate_report": status,
+    }
     stages = [
-        {"name": name, "status": "PASS" if name in {"readiness", "dataset_quality", "backtest"} else "INSUFFICIENT_EVIDENCE"}
+        {"name": name, "status": stage_status.get(name, "INSUFFICIENT_EVIDENCE")}
         for name in VALIDATION_STAGE_ORDER
     ]
+    reproduction_binding_material = {
+        "schema_version": 1,
+        "selection_artifact_hash": artifact.get("content_hash") if isinstance(artifact, dict) else None,
+        "final_holdout_confirmation_hash": confirmation.get("content_hash") if confirmation else None,
+    }
+    reproduction_binding = {
+        **reproduction_binding_material,
+        "content_hash": sha256_prefixed(reproduction_binding_material, label="selection_confirmation_reproduction"),
+    }
     summary = {
         "schema_version": 2,
         "experiment_id": manifest.experiment_id,
         "manifest_hash": manifest.manifest_hash(),
         "validation_stages": stages,
-        "backtest_report_hash": backtest.get("content_hash"),
-        "walk_forward_report_hash": walk_forward.get("content_hash") if walk_forward else None,
+        "selection_report_hash": selection_report.get("content_hash"),
+        "backtest_report_hash": selection_report.get("content_hash") if not walk_forward_required else None,
+        "walk_forward_report_hash": selection_report.get("content_hash") if walk_forward_required else None,
+        "selection_artifact_hash": artifact.get("content_hash") if isinstance(artifact, dict) else None,
+        "final_holdout_confirmation_hash": confirmation.get("content_hash") if confirmation else None,
+        "final_holdout_confirmation": confirmation,
+        "final_selection_gate_result": selection_report.get("final_selection_gate_result"),
+        "selected_candidate_id": selected_id or None,
+        "candidates": candidates,
+        "selection_artifact": artifact,
+        "reproduction_binding": reproduction_binding,
         "selected_candidate": selected,
         "end_to_end_validation_result": status,
     }

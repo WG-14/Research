@@ -49,7 +49,7 @@ def test_artifact_and_split_drift_report_distinct_reproduction_paths(tmp_path) -
     _, _, baseline = _valid_report_and_fingerprint(tmp_path)
 
     artifact_only = copy.deepcopy(baseline)
-    _split(artifact_only, "final_holdout")["artifact_content_hash"] = sha256_prefixed(
+    _split(artifact_only, "validation")["artifact_content_hash"] = sha256_prefixed(
         {"artifact": "tampered-content"}
     )
     _recompute_stable_fingerprint_hash(artifact_only)
@@ -61,7 +61,7 @@ def test_artifact_and_split_drift_report_distinct_reproduction_paths(tmp_path) -
 
     split_only = copy.deepcopy(baseline)
     original_artifact = {
-        field: _split(split_only, "final_holdout")[field]
+        field: _split(split_only, "validation")[field]
         for field in (
             "artifact_id",
             "artifact_manifest_hash",
@@ -69,7 +69,7 @@ def test_artifact_and_split_drift_report_distinct_reproduction_paths(tmp_path) -
             "artifact_schema_hash",
         )
     }
-    changed_split = _split(split_only, "final_holdout")
+    changed_split = _split(split_only, "validation")
     changed_split["requested_range"] = {"start": "2026-01-03", "end": "2026-01-03"}
     changed_split["snapshot_query_hash"] = sha256_prefixed({"split": "changed-query"})
     changed_split["snapshot_fingerprint_hash"] = sha256_prefixed({"split": "changed-fingerprint"})

@@ -2334,8 +2334,8 @@ def _parse_final_selection(value: Any, *, research_classification: str) -> Final
     if unknown:
         raise ManifestValidationError(f"final_selection unsupported fields: {','.join(unknown)}")
     schema_version = _positive_int(value.get("schema_version"), "final_selection.schema_version")
-    if schema_version != 1:
-        raise ManifestValidationError("final_selection.schema_version must be 1")
+    if schema_version != 2:
+        raise ManifestValidationError("final_selection.schema_version must be 2; legacy schema_version 1 is not translated")
     required = bool(value.get("required_for_validation", validation_required))
     if validation_required and not required:
         raise ManifestValidationError("final_selection.required_for_validation must be true for validation-bound manifests")
@@ -2388,7 +2388,6 @@ def _parse_final_selection_must_pass(value: Any) -> dict[str, object]:
         "stress_suite_gate_result",
         "execution_calibration_policy_result",
         "metrics_schema_version",
-        "final_holdout_present",
     }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
@@ -2410,23 +2409,22 @@ def _parse_final_selection_exposure_policy(
             f"final_selection.selection_exposure_policy unsupported fields: {','.join(unknown)}"
         )
     final_holdout_usage = str(value.get("final_holdout_usage") or "").strip()
-    if final_holdout_usage != "confirmatory_metric_in_rank":
+    if final_holdout_usage != "prohibited_during_selection":
         raise ManifestValidationError(
-            "final_selection.selection_exposure_policy.final_holdout_usage must be confirmatory_metric_in_rank"
+            "final_selection.selection_exposure_policy.final_holdout_usage must be prohibited_during_selection"
         )
     counts_as_holdout_reuse = value.get("counts_as_holdout_reuse")
     if not isinstance(counts_as_holdout_reuse, bool):
         raise ManifestValidationError(
             "final_selection.selection_exposure_policy.counts_as_holdout_reuse must be boolean"
         )
-    has_final_holdout_rank_metric = any(rule.metric.startswith("final_holdout.") for rule in rules)
-    if has_final_holdout_rank_metric and counts_as_holdout_reuse is not True:
+    if counts_as_holdout_reuse is not False:
         raise ManifestValidationError(
-            "final_selection.selection_exposure_policy.counts_as_holdout_reuse must be true when final_holdout metrics are ranked"
+            "final_selection.selection_exposure_policy.counts_as_holdout_reuse must be false"
         )
-    if not has_final_holdout_rank_metric:
+    if any(rule.metric.startswith("final_holdout.") for rule in rules):
         raise ManifestValidationError(
-            "final_selection.selection_exposure_policy.final_holdout_usage confirmatory_metric_in_rank requires a final_holdout ranking metric"
+            "final_selection.ranking must not reference final_holdout metrics"
         )
     return {
         "final_holdout_usage": final_holdout_usage,

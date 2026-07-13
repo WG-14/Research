@@ -7,7 +7,8 @@ from .experiment_manifest import FinalSelectionContract
 from .hashing import sha256_prefixed
 
 
-FINAL_SELECTION_SCHEMA_VERSION = 1
+FINAL_SELECTION_SCHEMA_VERSION = 2
+SELECTION_ARTIFACT_SCHEMA_VERSION = 1
 LEGACY_IMPLICIT_FINAL_RANK_WARNING = "legacy_implicit_final_rank_policy_v1"
 
 
@@ -117,6 +118,106 @@ def apply_final_selection_contract(
         "gate_result": "PASS" if selected_public is not None else "FAIL",
         "fail_reasons": [] if selected_public is not None else fail_reasons,
     }
+
+
+def build_selection_artifact(
+    *,
+    manifest_hash: str,
+    selection_result: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Freeze the pre-holdout selection and all evidence that may affect it."""
+    selected_id = str(selection_result.get("selected_candidate_id") or "")
+    selected = next(
+        (candidate for candidate in candidates if str(candidate.get("parameter_candidate_id") or "") == selected_id),
+        None,
+    )
+    if selected is None:
+        return None
+    selection_candidates = [_selection_only_payload(candidate) for candidate in candidates]
+    selected_payload = _selection_only_payload(selected)
+    material = {
+        "schema_version": SELECTION_ARTIFACT_SCHEMA_VERSION,
+        "artifact_type": "pre_holdout_candidate_selection",
+        "manifest_hash": manifest_hash,
+        "selected_candidate_id": selected_id,
+        "parameter_values_hash": sha256_prefixed(selected.get("parameter_values_raw") or selected.get("parameter_values") or {}),
+        "effective_strategy_parameters_hash": selected.get("effective_strategy_parameters_hash"),
+        "compiled_strategy_contract_hash": selected.get("compiled_strategy_contract_hash"),
+        "selection_universe_hash": sha256_prefixed(selection_candidates),
+        "validation_evidence_hash": sha256_prefixed(
+            {
+                "candidate_id": selected_id,
+                "validation_metrics": selected_payload.get("validation_metrics"),
+                "validation_metrics_v2": selected_payload.get("validation_metrics_v2"),
+                "validation_stress_suite": selected_payload.get("validation_stress_suite"),
+                "walk_forward_metrics": selected_payload.get("walk_forward_metrics"),
+                "acceptance_gate_result": selected_payload.get("acceptance_gate_result"),
+            }
+        ),
+        "final_selection_contract_hash": selection_result.get("final_selection_contract_hash"),
+        "candidate_scores_hash": selection_result.get("candidate_final_scores_hash"),
+    }
+    return {**material, "content_hash": sha256_prefixed(material, label="selection_artifact")}
+
+
+def validate_selection_artifact(artifact: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if artifact.get("schema_version") != SELECTION_ARTIFACT_SCHEMA_VERSION:
+        reasons.append("selection_artifact_schema_version_unsupported")
+    if artifact.get("artifact_type") != "pre_holdout_candidate_selection":
+        reasons.append("selection_artifact_type_invalid")
+    required_hashes = (
+        "manifest_hash",
+        "parameter_values_hash",
+        "effective_strategy_parameters_hash",
+        "compiled_strategy_contract_hash",
+        "selection_universe_hash",
+        "validation_evidence_hash",
+        "final_selection_contract_hash",
+        "candidate_scores_hash",
+        "content_hash",
+    )
+    for field in required_hashes:
+        if not str(artifact.get(field) or "").startswith("sha256:"):
+            reasons.append(f"selection_artifact_{field}_missing")
+    expected = sha256_prefixed(
+        {key: value for key, value in artifact.items() if key != "content_hash"},
+        label="selection_artifact",
+    )
+    if artifact.get("content_hash") != expected:
+        reasons.append("selection_artifact_content_hash_mismatch")
+    if not str(artifact.get("selected_candidate_id") or ""):
+        reasons.append("selection_artifact_selected_candidate_id_missing")
+    return sorted(set(reasons))
+
+
+def validate_confirmation_artifact(
+    confirmation: dict[str, Any],
+    *,
+    selection_artifact: dict[str, Any],
+) -> list[str]:
+    reasons = validate_selection_artifact(selection_artifact)
+    if confirmation.get("schema_version") != 1 or confirmation.get("artifact_type") != "final_holdout_confirmation":
+        reasons.append("final_holdout_confirmation_contract_invalid")
+    if confirmation.get("selection_artifact_hash") != selection_artifact.get("content_hash"):
+        reasons.append("final_holdout_confirmation_selection_hash_mismatch")
+    candidate_results = confirmation.get("candidate_results")
+    if not isinstance(candidate_results, list) or len(candidate_results) != 1:
+        reasons.append("final_holdout_confirmation_candidate_count_invalid")
+    else:
+        candidate_id = str(candidate_results[0].get("candidate_id") or "") if isinstance(candidate_results[0], dict) else ""
+        if candidate_id != str(selection_artifact.get("selected_candidate_id") or ""):
+            reasons.append("final_holdout_confirmation_candidate_mismatch")
+    recorded = confirmation.get("content_hash")
+    material = {
+        key: value
+        for key, value in confirmation.items()
+        if key not in {"content_hash", "confirmation_artifact_path"}
+    }
+    if recorded != sha256_prefixed(material, label="final_holdout_confirmation"):
+        reasons.append("final_holdout_confirmation_content_hash_mismatch")
+    return sorted(set(reasons))
 
 
 def validate_final_selection_report(report: dict[str, Any]) -> list[str]:
@@ -271,7 +372,7 @@ def _fallback_metrics_reasons(candidate: dict[str, Any]) -> list[str]:
         reasons.append("final_selection_metrics_not_complete")
     if candidate.get("metrics_v2_source") != "computed":
         reasons.append("final_selection_metrics_not_computed")
-    for split_key in ("train_metrics_v2", "validation_metrics_v2", "final_holdout_metrics_v2"):
+    for split_key in ("train_metrics_v2", "validation_metrics_v2"):
         metrics = candidate.get(split_key)
         if not isinstance(metrics, dict):
             continue
@@ -311,8 +412,6 @@ def _must_pass_value(*, field: str, candidate: dict[str, Any], report_context: d
         return value.get("status") if isinstance(value, dict) else value
     if field == "metrics_schema_version":
         return candidate.get("metrics_schema_version")
-    if field == "final_holdout_present":
-        return candidate.get("final_holdout_present")
     return candidate.get(field, report_context.get(field))
 
 
@@ -321,11 +420,8 @@ def _metric_value(*, candidate: dict[str, Any], metric: str) -> tuple[Any, str]:
         return str(candidate.get("parameter_candidate_id") or ""), "candidate.parameter_candidate_id"
     prefixes = {
         "validation.metrics_v2.": "validation_metrics_v2",
-        "final_holdout.metrics_v2.": "final_holdout_metrics_v2",
         "validation.stress.": "validation_stress_suite",
-        "final_holdout.stress.": "final_holdout_stress_suite",
         "validation.benchmark.": "benchmark_metrics.validation",
-        "final_holdout.benchmark.": "benchmark_metrics.final_holdout",
     }
     for prefix, source_key in prefixes.items():
         if metric.startswith(prefix):
@@ -365,6 +461,18 @@ def _nested_value(payload: Any, dotted: str) -> Any:
     if isinstance(current, bool):
         return current
     return None
+
+
+def _selection_only_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _selection_only_payload(item)
+            for key, item in sorted(value.items())
+            if "final_holdout" not in str(key)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_selection_only_payload(item) for item in value]
+    return value
 
 
 def _unsupported_metric_reason(metric: str) -> str | None:

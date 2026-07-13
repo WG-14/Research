@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .execution_evidence import REQUIRED_FIELDS, REQUIRED_FIELDS_V2
-from .final_selection import validate_final_selection_report
+from .final_selection import validate_confirmation_artifact, validate_final_selection_report
 from .hashing import report_content_hash_payload, sha256_prefixed
 from .strategy_compiler import StrategyCompilationError, validate_compiled_strategy_contract
 
@@ -34,6 +34,18 @@ def build_strategy_research_package(report: dict[str, Any]) -> dict[str, Any]:
         raise StrategyPackageError("strategy_package_final_selection_invalid:" + ",".join(reasons))
     if report.get("final_selection_gate_result") != "PASS":
         raise StrategyPackageError("strategy_package_requires_final_selection_pass")
+    selection_artifact = report.get("selection_artifact")
+    confirmation = report.get("final_holdout_confirmation")
+    if not isinstance(selection_artifact, dict) or not isinstance(confirmation, dict):
+        raise StrategyPackageError("strategy_package_requires_selection_and_confirmation_evidence")
+    confirmation_reasons = validate_confirmation_artifact(
+        confirmation,
+        selection_artifact=selection_artifact,
+    )
+    if confirmation_reasons:
+        raise StrategyPackageError("strategy_package_confirmation_invalid:" + ",".join(confirmation_reasons))
+    if confirmation.get("confirmation_gate_result") != "PASS":
+        raise StrategyPackageError("strategy_package_requires_final_holdout_confirmation_pass")
     selected_id = str(report.get("selected_candidate_id") or "")
     if not selected_id:
         raise StrategyPackageError("strategy_package_selected_candidate_missing")
@@ -163,6 +175,8 @@ def build_strategy_research_package(report: dict[str, Any]) -> dict[str, Any]:
         "capability_contract": merged.get("capability_contract") or
             dict(merged.get("compiled_strategy_contract") or {}).get("capability_contract"),
         "validation_result": "PASS",
+        "selection_artifact_hash": selection_artifact["content_hash"],
+        "final_holdout_confirmation_hash": confirmation["content_hash"],
         "source_report_content_hash": recorded_report_hash,
         "selected_candidate_evidence_hash": candidate_evidence_hash,
     }

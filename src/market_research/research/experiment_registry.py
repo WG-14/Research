@@ -337,6 +337,13 @@ def compute_research_attempt_counters(
     family_id = str(base_payload.get("experiment_family_id") or "")
     hypothesis_id = str(base_payload.get("hypothesis_id") or "")
     pre_exposure_key = str(base_payload.get("pre_exposure_reservation_key_hash") or "")
+    duplicate_count = sum(
+        1
+        for row in rows
+        if row.get("event_type") == "research_attempt_reserved"
+        and pre_exposure_key
+        and str(row.get("pre_exposure_reservation_key_hash") or "") == pre_exposure_key
+    )
     return {
         "computed_attempt_index": 1
         + sum(
@@ -349,14 +356,8 @@ def compute_research_attempt_counters(
         # Pre-exposure duplicate detection counts reservations by their
         # deliberately incomplete reservation identity.  Authoritative reuse
         # counts only completed v4 rows and are calculated at completion.
-        "computed_pre_exposure_duplicate_count": sum(
-            1
-            for row in rows
-            if row.get("event_type") == "research_attempt_reserved"
-            and pre_exposure_key
-            and str(row.get("pre_exposure_reservation_key_hash") or "") == pre_exposure_key
-        ),
-        "computed_holdout_reuse_count": 0,
+        "computed_pre_exposure_duplicate_count": duplicate_count,
+        "computed_holdout_reuse_count": duplicate_count,
     }
 
 
@@ -900,6 +901,13 @@ def _compute_research_attempt_counters_from_rows(
     family_id = str(base_payload.get("experiment_family_id") or "")
     hypothesis_id = str(base_payload.get("hypothesis_id") or "")
     pre_exposure_key = str(base_payload.get("pre_exposure_reservation_key_hash") or "")
+    duplicate_count = sum(
+        1
+        for row in rows
+        if row.get("event_type") == "research_attempt_reserved"
+        and pre_exposure_key
+        and str(row.get("pre_exposure_reservation_key_hash") or "") == pre_exposure_key
+    )
     return {
         "computed_attempt_index": 1
         + sum(
@@ -909,14 +917,8 @@ def _compute_research_attempt_counters_from_rows(
             and str(row.get("experiment_family_id") or "") == family_id
             and str(row.get("hypothesis_id") or "") == hypothesis_id
         ),
-        "computed_pre_exposure_duplicate_count": sum(
-            1
-            for row in rows
-            if row.get("event_type") == "research_attempt_reserved"
-            and pre_exposure_key
-            and str(row.get("pre_exposure_reservation_key_hash") or "") == pre_exposure_key
-        ),
-        "computed_holdout_reuse_count": 0,
+        "computed_pre_exposure_duplicate_count": duplicate_count,
+        "computed_holdout_reuse_count": duplicate_count,
     }
 
 

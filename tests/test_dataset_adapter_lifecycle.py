@@ -35,7 +35,7 @@ def test_second_run_reverifies_and_detects_tampering(tmp_path) -> None:
         DatasetRunContext().resolve_verified(adapter, ref, DatasetResolutionContext())
 
 
-def test_real_backtest_verifies_once_and_materializes_each_split(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_real_backtest_verifies_once_and_materializes_selection_splits(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, manifest, manager = frozen_manifest_and_manager(tmp_path)
     calls = {"resolve": 0, "verify": 0, "materialize": 0}
     for name in calls:
@@ -46,7 +46,7 @@ def test_real_backtest_verifies_once_and_materializes_each_split(tmp_path, monke
         monkeypatch.setattr(FrozenSQLiteCandleAdapter, name, wrapped)
     run_research_backtest(manifest=manifest, db_path=None, manager=manager,
                           strategy_registry=builtin_strategy_registry())
-    assert calls == {"resolve": 1, "verify": 1, "materialize": 3}
+    assert calls == {"resolve": 1, "verify": 1, "materialize": 2}
 
 
 def test_real_walk_forward_verifies_once_and_materializes_every_split(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

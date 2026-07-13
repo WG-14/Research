@@ -76,6 +76,23 @@ def test_fingerprint_ignores_nondeterministic_fields_and_collection_order(tmp_pa
     ).stable_fingerprint_hash
 
 
+def test_reproduction_binds_selection_and_confirmation_hashes(tmp_path: Path) -> None:
+    _, manifest_path, _, report = _run_report(tmp_path)
+    manifest = load_manifest(manifest_path)
+    bound = copy.deepcopy(report)
+    bound["selection_artifact_hash"] = sha256_prefixed({"selection": "one"})
+    bound["final_holdout_confirmation_hash"] = sha256_prefixed({"confirmation": "one"})
+    baseline = build_reproduction_fingerprint(bound, manifest=manifest)
+
+    changed_selection = copy.deepcopy(bound)
+    changed_selection["selection_artifact_hash"] = sha256_prefixed({"selection": "two"})
+    changed_confirmation = copy.deepcopy(bound)
+    changed_confirmation["final_holdout_confirmation_hash"] = sha256_prefixed({"confirmation": "two"})
+
+    assert build_reproduction_fingerprint(changed_selection, manifest=manifest).stable_fingerprint_hash != baseline.stable_fingerprint_hash
+    assert build_reproduction_fingerprint(changed_confirmation, manifest=manifest).stable_fingerprint_hash != baseline.stable_fingerprint_hash
+
+
 def test_comparator_reports_exact_result_hash_path_and_is_order_independent() -> None:
     digest = lambda value: sha256_prefixed({"value": value})
     fingerprint = {

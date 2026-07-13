@@ -122,6 +122,8 @@ def build_reproduction_fingerprint(
         "validation_eligibility_status": _required_string(report, "validation_eligibility_gate_result", "report"),
         "statistical_gate_result": report.get("statistical_gate_result"),
         "final_selection_gate_result": report.get("final_selection_gate_result"),
+        "selection_artifact_hash": report.get("selection_artifact_hash"),
+        "final_holdout_confirmation_hash": report.get("final_holdout_confirmation_hash"),
     }
     material: dict[str, object] = {
         "schema_version": REPRODUCTION_FINGERPRINT_SCHEMA_VERSION,
