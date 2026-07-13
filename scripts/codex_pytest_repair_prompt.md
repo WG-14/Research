@@ -50,13 +50,20 @@ Codex owns:
 * reviewing the complete repository diff before handoff
 * reporting residual risk and required wrapper revalidation
 
-Work through all visible failure clusters in the packet. Do not stop after fixing
-the first failure when additional known clusters remain.
+Work through all visible failure clusters that remain relevant under the current
+repair. Do not stop after fixing the first cluster when additional independently
+actionable clusters remain in the packet.
 
 ## Prohibited Commands
 
+Run pytest only through `uv run pytest`.
+
+Do not invoke `pytest`, `python -m pytest`, or `uv run python -m pytest`
+directly, even with a focused selector.
+
 Do not run, invoke indirectly, or shell-wrap:
 
+* selector-less `-k` or `-m` pytest commands
 * `./scripts/run_codex_pytest_pipeline.sh`
 * `./scripts/full_suite.sh`
 * `./scripts/check_repo_runtime_artifacts.sh`
@@ -93,11 +100,12 @@ Prefer validation in this order:
 1. the specific failing test function
 2. the failing test file
 3. a narrow expression within the relevant test file
-4. the smallest related test group justified by changed shared behavior
+4. the smallest set of individually focused test-file commands justified by
+   changed shared behavior
 
-Use selector-less `-k` only when the failure packet does not identify a usable
-test file and the expression is narrow enough to avoid becoming an effective
-full-suite run.
+Use `-k` or `-m` only together with the narrowest relevant test file identified
+from the failure packet or repository inspection. Do not run a selector-less
+`-k` or `-m` command, and do not use a test-directory target.
 
 After each repair, run the narrowest focused command that verifies the selected
 failure cluster.
@@ -242,6 +250,10 @@ Do not perform unrelated feature work, speculative redesign, or broad cleanup.
 A multi-file repair is allowed when it is the smallest coherent change required
 to restore the applicable research contract.
 
+When one repair is likely to invalidate the evidence for another cluster, do not
+guess from stale evidence; report that the wrapper must provide a new failure
+packet after revalidation.
+
 ## Test Change Decision Rule
 
 Tests may be changed when repository evidence shows that the existing
@@ -272,7 +284,18 @@ When changing a test, run focused validation covering both:
 
 ## Repair Infrastructure Changes
 
-Repair infrastructure, validation scripts, repository policy documents, and
+The repository-root `AGENTS.md`, all applicable nested `AGENTS.md` files,
+reviewed Research Semantics, and explicit research contracts are fixed
+authorities for this pytest repair session.
+
+Do not modify any of these authorities as part of a pytest repair. If they are
+genuinely contradictory or cannot be satisfied together, report
+`BLOCKED_BY_RESEARCH_CONTRACT_CONFLICT`.
+
+Documentation that does not define repository purpose or research contracts may
+be modified when required by the repair.
+
+Repair infrastructure, validation scripts, non-authoritative documentation, and
 pytest configuration are not ordinary repair targets.
 
 Modify them only when failure-packet evidence and repository inspection show
@@ -296,9 +319,6 @@ Never remove, bypass, disable, or weaken:
 * look-ahead and data-leakage protections
 * train, validation, and final-holdout separation
 * manifest, artifact, and hash-binding checks
-
-Do not weaken `AGENTS.md` or an explicit research contract merely to make the
-current failure easier to repair.
 
 If repository policy documents are genuinely contradictory, report
 `BLOCKED_BY_RESEARCH_CONTRACT_CONFLICT` rather than silently choosing the less
@@ -360,6 +380,18 @@ Confirm that:
 
 If the final diff reveals an unjustified or unrelated change, remove or correct
 that change before handoff.
+
+## Blocked Handoff
+
+When ending with any `BLOCKED_*` status:
+
+1. do not leave speculative, partial, or knowingly invalid changes in the
+   repository
+2. revert changes that were made only to test an unsuccessful hypothesis
+3. preserve a change only when it is independently correct, contract-preserving,
+   and clearly documented in the final report
+4. report whether the remaining repository diff is empty
+5. do not claim readiness for wrapper validation
 
 ## Required Final Report
 
