@@ -367,6 +367,8 @@ def _scenario_fingerprint(
             if isinstance(usage, dict) and isinstance(usage.get("execution_evidence"), dict):
                 execution = usage["execution_evidence"]
                 break
+    if not isinstance(execution, dict):
+        raise ReproductionContractError(f"{context}.execution_evidence is required")
     if isinstance(execution, dict):
         aliases = {
             "decision_stream_hash": "decision_stream_hash",
