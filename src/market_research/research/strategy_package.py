@@ -7,6 +7,7 @@ from typing import Any
 from .execution_evidence import REQUIRED_FIELDS, REQUIRED_FIELDS_V2
 from .final_selection import validate_confirmation_artifact, validate_final_selection_report
 from .hashing import report_content_hash_payload, sha256_prefixed
+from .governance import validate_strategy_approval
 from .strategy_compiler import StrategyCompilationError, validate_compiled_strategy_contract
 
 
@@ -27,7 +28,131 @@ _EVIDENCE_BINDING_FIELDS = (
 )
 
 
-def build_strategy_research_package(report: dict[str, Any]) -> dict[str, Any]:
+def _complete_semantic_contract(
+    *, report: dict[str, Any], merged: dict[str, Any], primary: dict[str, Any],
+    confirmation: dict[str, Any], compiled_payload: dict[str, Any], selected_id: str,
+    strategy_name: str, strategy_version: str,
+) -> dict[str, Any]:
+    hypothesis = report.get("hypothesis_spec")
+    if not isinstance(hypothesis, dict):
+        raise StrategyPackageError("strategy_package_hypothesis_spec_missing")
+    if sha256_prefixed(hypothesis) != report.get("hypothesis_contract_hash"):
+        raise StrategyPackageError("strategy_package_hypothesis_contract_hash_mismatch")
+    strategy_spec = merged.get("strategy_spec")
+    if not isinstance(strategy_spec, dict):
+        raise StrategyPackageError("strategy_package_strategy_spec_missing")
+    if sha256_prefixed(strategy_spec) != merged.get("strategy_spec_hash"):
+        raise StrategyPackageError("strategy_package_strategy_spec_hash_mismatch")
+    if (
+        strategy_spec.get("strategy_name") != strategy_name
+        or strategy_spec.get("strategy_version") != strategy_version
+    ):
+        raise StrategyPackageError("strategy_package_strategy_spec_identity_mismatch")
+    rule_spec = strategy_spec.get("rule_spec")
+    features = strategy_spec.get("feature_definitions")
+    if not isinstance(rule_spec, dict):
+        raise StrategyPackageError("strategy_package_rule_spec_missing")
+    if not isinstance(features, list) or not features or not all(isinstance(item, dict) for item in features):
+        raise StrategyPackageError("strategy_package_feature_definitions_missing")
+    market = str(report.get("market") or "").strip()
+    interval = str(report.get("interval") or "").strip()
+    if not market or not interval:
+        raise StrategyPackageError("strategy_package_target_asset_missing")
+    expected_performance = _expected_performance_range(
+        primary=primary, confirmation=confirmation, selected_id=selected_id,
+    )
+    return {
+        "hypothesis": hypothesis,
+        "target_asset": {"market": market, "interval": interval},
+        "strategy_spec": strategy_spec,
+        "feature_definitions": features,
+        "compiled_strategy_contract": compiled_payload,
+        "effective_strategy_parameters": dict(compiled_payload["materialized_parameters"]),
+        "effective_strategy_parameters_hash": compiled_payload["materialized_parameters_hash"],
+        "signal_calculation_timing": merged["execution_timing_policy"],
+        "entry_conditions": {
+            "entry": rule_spec.get("entry"),
+            "entry_prohibitions": list(rule_spec.get("entry_prohibitions") or []),
+        },
+        "fill_assumptions": {
+            "execution_timing_policy": merged["execution_timing_policy"],
+            "execution_model": merged["execution_model"],
+            "partial_fill_assumptions": merged["partial_fill_assumptions"],
+            "order_failure_assumptions": merged["order_failure_assumptions"],
+        },
+        "take_profit": rule_spec.get("take_profit"),
+        "edge_invalidation": rule_spec.get("edge_invalidation"),
+        "time_exit": rule_spec.get("time_exit"),
+        "stop_loss": rule_spec.get("stop_loss"),
+        "position_sizing": {
+            "rule": rule_spec.get("position_sizing"),
+            "portfolio_policy": merged["portfolio_policy"],
+        },
+        "cost_assumptions": merged["cost_assumption"],
+        "allowed_market_regimes": {
+            "allowed": list(report.get("allowed_live_regimes") or []),
+            "blocked": list(report.get("blocked_live_regimes") or []),
+            "empty_allowed_semantics": "no_regime_restriction_declared",
+        },
+        "strategy_suspension_conditions": merged["suspension_or_invalidation_criteria"],
+        "expected_performance_range": expected_performance,
+        "known_limitations": {
+            "data": report.get("data_limitations") or {},
+            "execution": list(merged.get("execution_limitations") or []),
+            "statistical": list(report.get("statistical_evidence_limitations") or []),
+            "stress": _stress_limitations(merged),
+        },
+    }
+
+
+def _expected_performance_range(
+    *, primary: dict[str, Any], confirmation: dict[str, Any], selected_id: str,
+) -> dict[str, Any]:
+    validation = primary.get("validation_metrics")
+    holdout_row = next(
+        (
+            item for item in confirmation.get("candidate_results") or []
+            if isinstance(item, dict) and str(item.get("candidate_id") or "") == selected_id
+        ),
+        None,
+    )
+    holdout = holdout_row.get("metrics") if isinstance(holdout_row, dict) else None
+    if not isinstance(validation, dict) or not isinstance(holdout, dict):
+        raise StrategyPackageError("strategy_package_expected_performance_evidence_missing")
+    ranges: dict[str, dict[str, float | int]] = {}
+    for name in sorted(set(validation) | set(holdout)):
+        observations = [
+            value for value in (validation.get(name), holdout.get(name))
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        ]
+        if observations:
+            ranges[name] = {
+                "minimum": min(observations),
+                "maximum": max(observations),
+                "observation_count": len(observations),
+            }
+    if not ranges:
+        raise StrategyPackageError("strategy_package_expected_performance_range_empty")
+    return {
+        "basis": "validation_and_final_holdout_observed_range",
+        "validation_metrics": validation,
+        "final_holdout_metrics": holdout,
+        "metric_ranges": ranges,
+    }
+
+
+def _stress_limitations(merged: dict[str, Any]) -> list[str]:
+    limitations: set[str] = set()
+    for key in ("validation_stress_suite", "final_holdout_stress_suite", "best_validation_stress_suite"):
+        value = merged.get(key)
+        if isinstance(value, dict):
+            limitations.update(str(item) for item in value.get("limitations") or [])
+    return sorted(limitations)
+
+
+def build_strategy_research_package(
+    report: dict[str, Any], *, approval: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Build only from an internally valid authoritative final-selection report."""
     reasons = validate_final_selection_report(report)
     if reasons:
@@ -160,9 +285,15 @@ def build_strategy_research_package(report: dict[str, Any]) -> dict[str, Any]:
         expected = evidence.get(hash_key, evidence.get("portfolio_ledger_hash") if hash_key == "ledger_stream_hash" else None)
         if stream is not None and sha256_prefixed(stream) != expected:
             raise StrategyPackageError(f"strategy_package_{payload_key}_tampered")
+    semantic_contract = _complete_semantic_contract(
+        report=report, merged=merged, primary=primary, confirmation=confirmation,
+        compiled_payload=compiled_payload, selected_id=selected_id,
+        strategy_name=hydrated.strategy_name, strategy_version=hydrated.strategy_version,
+    )
     package = {
-        "schema_version": 4, "selected_candidate_id": selected_id,
+        "schema_version": 5, "selected_candidate_id": selected_id,
         **{field: merged[field] for field in _CONTRACT_FIELDS},
+        **semantic_contract,
         "execution_timing_hash": executed_timing,
         "execution_timing_stream_hash": evidence.get("execution_timing_stream_hash", evidence.get("executed_execution_timing_hash")),
         "execution_model_hash": evidence["executed_execution_model_hash"],
@@ -189,5 +320,41 @@ def build_strategy_research_package(report: dict[str, Any]) -> dict[str, Any]:
         return False
     if contains_forbidden(package):
         raise StrategyPackageError("strategy_package_operational_field_forbidden")
+    approval_reasons = validate_strategy_approval(
+        approval,
+        source_report_hash=recorded_report_hash,
+        selected_candidate_id=selected_id,
+        final_holdout_confirmation_hash=str(confirmation["content_hash"]),
+        hypothesis_id=str(report.get("hypothesis_id") or ""),
+        hypothesis_version=str(report.get("hypothesis_version") or ""),
+        hypothesis_contract_hash=str(report.get("hypothesis_contract_hash") or ""),
+        strategy_name=str(hydrated.strategy_name),
+        strategy_version=str(hydrated.strategy_version),
+        strategy_plugin_contract_hash=str(merged["strategy_plugin_contract_hash"]),
+        effective_strategy_parameters_hash=str(merged["effective_strategy_parameters_hash"]),
+    )
+    if approval_reasons:
+        raise StrategyPackageError(
+            "strategy_package_research_approval_invalid:" + ",".join(approval_reasons)
+        )
+    if not isinstance(approval, dict):
+        raise StrategyPackageError("strategy_package_research_approval_invalid:strategy_approval_missing")
+    approved_at = str(approval.get("approved_at") or "").strip()
+    if not approved_at:
+        raise StrategyPackageError("strategy_package_research_approval_timestamp_missing")
+    package["approval_record"] = {
+        "reviewer_id": approval["reviewer_id"],
+        "rationale": approval["rationale"],
+        "approved_at": approved_at,
+        "approval_hash": approval["content_hash"],
+        "review_row_hash": approval["review_row_hash"],
+        "transition_row_hash": approval["transition_row_hash"],
+    }
+    package["research_approval_hash"] = approval["content_hash"]
+    package["research_approval_review_row_hash"] = approval["review_row_hash"]
+    package["research_approval_transition_row_hash"] = approval["transition_row_hash"]
+    package["approved_hypothesis_id"] = approval["hypothesis_id"]
+    package["approved_hypothesis_version"] = approval["hypothesis_version"]
+    package["approved_hypothesis_contract_hash"] = approval["hypothesis_contract_hash"]
     package["content_hash"] = sha256_prefixed(package)
     return package

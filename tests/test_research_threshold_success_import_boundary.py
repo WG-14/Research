@@ -49,7 +49,7 @@ raise SystemExit(rc)
     )
     assert result.returncode == 0, result.stderr + result.stdout
     assert json.loads(result.stdout.splitlines()[-1]) == {"rc": 0, "forbidden": []}
-    report = root / "artifacts" / "reports" / "research" / "threshold_success_import_boundary" / "backtest_report.json"
+    report = root / "reports" / "research" / "threshold_success_import_boundary" / "backtest_report.json"
     assert report.is_file()
     assert json.loads(report.read_text(encoding="utf-8"))["candidate_count"] == 1
     candidate = json.loads(

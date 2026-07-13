@@ -15,6 +15,7 @@ class MarketRegimeSnapshot:
     volatility_bucket: str
     volume_bucket: str
     liquidity_bucket: str
+    liquidity_evidence_source: str
     composite_regime: str
     allows_sma_entry: bool
     block_reason: str
@@ -44,6 +45,7 @@ class MarketRegimeSnapshot:
             "volatility_bucket": self.volatility_bucket,
             "volume_bucket": self.volume_bucket,
             "liquidity_bucket": self.liquidity_bucket,
+            "liquidity_evidence_source": self.liquidity_evidence_source,
             "composite_regime": self.composite_regime,
             "allows_sma_entry": bool(self.allows_sma_entry),
             "block_reason": self.block_reason,

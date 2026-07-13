@@ -118,6 +118,52 @@ def _mark_aborted(parser: argparse.ArgumentParser) -> None:
 
 def _export_strategy_package(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--result", required=True)
+    parser.add_argument("--approval", required=True)
+    parser.add_argument("--out", required=True)
+
+
+def _compare_reports(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--report", action="append", required=True)
+    parser.add_argument("--out", required=True)
+
+
+def _render_report(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--report", required=True)
+    parser.add_argument("--out", required=True)
+
+
+def _governance_subject(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--subject-type", required=True, choices=("hypothesis", "strategy_candidate"))
+    parser.add_argument("--subject-id", required=True)
+    parser.add_argument("--subject-version", required=True)
+
+
+def _governance_transition(parser: argparse.ArgumentParser) -> None:
+    _governance_subject(parser)
+    parser.add_argument("--from-state")
+    parser.add_argument("--to-state", required=True)
+    parser.add_argument("--actor", required=True)
+    parser.add_argument("--reason", required=True)
+    parser.add_argument("--evidence", action="append", default=[])
+
+
+def _human_review(parser: argparse.ArgumentParser) -> None:
+    _governance_subject(parser)
+    parser.add_argument("--decision", required=True, choices=("APPROVED", "CHANGES_REQUESTED", "REJECTED"))
+    parser.add_argument("--reviewer", required=True)
+    parser.add_argument("--reviewer-role", required=True)
+    parser.add_argument("--rationale", required=True)
+    parser.add_argument("--reviewed-artifact-hash", required=True)
+    parser.add_argument("--requested-changes")
+    parser.add_argument("--resolved-requirement", action="append", default=[])
+
+
+def _approve_strategy_candidate(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--result", required=True)
+    parser.add_argument("--subject-version", required=True)
+    parser.add_argument("--reviewer", required=True)
+    parser.add_argument("--rationale", required=True)
+    parser.add_argument("--resolved-requirement", action="append", default=[])
     parser.add_argument("--out", required=True)
 
 
@@ -148,6 +194,11 @@ _COMMANDS: tuple[tuple[str, ParserBuilder, str], ...] = (
     ("research-registry-validate", lambda parser: parser.add_argument("--experiment-id", required=True), "validate registry binding for an experiment"),
     ("research-mark-attempt-aborted", _mark_aborted, "append an aborted event for an incomplete research attempt"),
     ("research-export-strategy-package", _export_strategy_package, "export a deterministic offline Strategy Research Package"),
+    ("research-compare", _compare_reports, "compare two or more hash-verified research decision reports"),
+    ("research-render-report", _render_report, "render a hash-verified research decision report as Markdown"),
+    ("research-governance-transition", _governance_transition, "append a guarded hypothesis or strategy lifecycle transition"),
+    ("research-record-human-review", _human_review, "record a separate human research review decision"),
+    ("research-approve-strategy-candidate", _approve_strategy_candidate, "approve an out-of-sample-passed strategy candidate"),
 )
 
 

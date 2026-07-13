@@ -1,7 +1,20 @@
 {
   "experiment_id": "sma_filter_v1_2026_05",
   "hypothesis": "In an uptrend with sufficient volatility/liquidity, the SMA strategy has positive expectancy after fees and slippage.",
+  "hypothesis_spec": {
+    "schema_version": 1,
+    "hypothesis_id": "sma-uptrend-filter-positive-expectancy",
+    "version": "1.0.0",
+    "phenomenon": "SMA crossovers conditioned on trend, volatility, and liquidity have positive out-of-sample expectancy after costs.",
+    "mechanism": "Trend persistence and delayed price adjustment can sustain directional movement after a filtered crossover.",
+    "observation_conditions": ["uptrend regime", "sufficient volatility", "sufficient liquidity", "complete closed-candle data"],
+    "comparison_target": "cash",
+    "falsification_criteria": ["validation return is not positive", "profit factor is below 1.1", "required walk-forward stability fails"],
+    "experiment_family_id": "sma-uptrend-filter-family",
+    "registration_status": "unregistered"
+  },
   "strategy_name": "sma_with_filter",
+  "strategy_version": "sma_with_filter.research_runtime_contract.v2",
   "research_classification": "exploratory",
   "market": "KRW-BTC",
   "interval": "1m",
@@ -31,6 +44,22 @@
     "fee_rate": 0.0004,
     "slippage_bps": [10]
   },
+  "execution_timing": {
+    "signal_basis": "closed_candle",
+    "decision_time": "candle_close",
+    "decision_guard_ms": 0,
+    "fill_reference_policy": "next_candle_open",
+    "quote_selection": "first_after_or_equal",
+    "max_quote_wait_ms": 3000,
+    "missing_quote_policy": "warn",
+    "allow_same_candle_close_fill": false,
+    "min_execution_reality_level_for_validation": "candle_next_open",
+    "depth_required": false,
+    "trade_tick_required": false,
+    "queue_position_required": false,
+    "market_impact_required": false,
+    "intra_candle_path_required": false
+  },
   "portfolio_policy": {
     "schema_version": 1,
     "starting_cash_krw": 1000000,
@@ -46,6 +75,20 @@
       "max_order_krw": null,
       "rounding_policy": "engine_float_no_exchange_lot_rounding"
     },
+    "source": "manifest"
+  },
+  "risk_policy": {
+    "schema_version": 1,
+    "max_daily_loss_krw": 0,
+    "max_position_loss_pct": 0,
+    "max_drawdown_pct": 0,
+    "max_daily_order_count": 0,
+    "max_trade_count_per_day": 0,
+    "cooldown_after_loss_min": 0,
+    "max_open_positions": 1,
+    "unresolved_order_policy": "block",
+    "policy_status": "disabled_explicit",
+    "missing_policy": "fail_closed_for_validation",
     "source": "manifest"
   },
   "execution_model": {

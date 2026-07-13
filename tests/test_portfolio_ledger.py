@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from market_research.research.portfolio_ledger import PortfolioLedger
 from tests.test_common_simulation_engine import SpyModel, _run
 
@@ -20,4 +22,6 @@ def test_fee_is_debited_exactly_once_and_equity_reconciles():
     entry = ledger.apply(run.fills[0])
     assert entry is not None and ledger.snapshot().fee_total == run.fills[0].fee
     snapshot = ledger.snapshot()
-    assert snapshot.cash + snapshot.asset_qty * float(run.fills[0].avg_fill_price) + 0.0 > 0
+    marked_equity = snapshot.cash + snapshot.asset_qty * float(run.fills[0].avg_fill_price)
+    expected_equity = 1_000_000 - run.fills[0].fee
+    assert marked_equity == pytest.approx(expected_equity)

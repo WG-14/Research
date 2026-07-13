@@ -83,5 +83,15 @@ class ResearchPathManager:
     def report_path(self, *parts: str) -> Path:
         return self.report_root.joinpath(*_safe_parts(*parts))
 
+    def external_output_path(self, value: str | Path, *, label: str) -> Path:
+        """Validate an explicit output override without bypassing repository boundaries."""
+        raw = Path(value).expanduser()
+        if not raw.is_absolute():
+            raise ResearchPathError(f"{label} must be an absolute path")
+        resolved = raw.resolve()
+        if self.is_within(resolved, self.project_root):
+            raise ResearchPathError(f"{label} must be outside the repository: {resolved}")
+        return resolved
+
     def cache_path(self, *parts: str) -> Path:
         return self.cache_root.joinpath(*_safe_parts(*parts))

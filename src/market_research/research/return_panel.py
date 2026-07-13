@@ -153,7 +153,7 @@ def _build_aligned_portfolio_return_panel(
     candidates: list[dict[str, Any]],
     manager: ResearchPathManager | None = None,
 ) -> dict[str, Any] | None:
-    if benchmark != "cash":
+    if benchmark not in {"cash", "buy_and_hold", "configured"}:
         return None
     rows: list[dict[str, Any]] = []
     canonical_index: list[int] | None = None
@@ -166,14 +166,23 @@ def _build_aligned_portfolio_return_panel(
             canonical_index = timestamps
         elif timestamps != canonical_index:
             return None
-        benchmark_series = [{"ts": row["ts"], "sequence": row["sequence"], "return_pct": 0.0} for row in series]
+        benchmark_series = _benchmark_portfolio_bar_return_series(
+            candidate,
+            split=split,
+            benchmark=benchmark,
+            candidate_series=series,
+        )
+        if not benchmark_series:
+            return None
+        if _series_keys(series) != _series_keys(benchmark_series):
+            return None
         excess_series = [
             {
                 "ts": row["ts"],
                 "sequence": row["sequence"],
-                "excess_return_pct": float(row["return_pct"]),
+                "excess_return_pct": float(row["return_pct"]) - float(benchmark_row["return_pct"]),
             }
-            for row in series
+            for row, benchmark_row in zip(series, benchmark_series)
         ]
         row_metadata = {
             "candidate_id": str(candidate.get("parameter_candidate_id") or ""),
@@ -226,7 +235,7 @@ def _build_aligned_portfolio_return_panel(
         "observation_count": sum(int(row["observation_count"]) for row in rows),
         "per_candidate_observation_count": len(canonical_index),
         "limitations": [
-            "cash_benchmark_zero_return_series",
+            *(["cash_benchmark_zero_return_series"] if benchmark == "cash" else []),
             "spa_not_implemented",
             "deflated_sharpe_not_implemented",
         ],
@@ -238,6 +247,55 @@ def _build_aligned_portfolio_return_panel(
     payload["panel_content_hash"] = sha256_prefixed(content_hash_payload(payload))
     payload["content_hash"] = sha256_prefixed(content_hash_payload(payload))
     return payload
+
+
+def _benchmark_portfolio_bar_return_series(
+    candidate: dict[str, Any],
+    *,
+    split: str,
+    benchmark: str,
+    candidate_series: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if benchmark == "cash":
+        return [
+            {"ts": row["ts"], "sequence": row["sequence"], "return_pct": 0.0}
+            for row in candidate_series
+        ]
+    metrics = candidate.get(f"{split}_metrics")
+    if not isinstance(metrics, dict):
+        return []
+    curve_key = (
+        "benchmark_buy_and_hold_equity_curve"
+        if benchmark == "buy_and_hold"
+        else "benchmark_configured_equity_curve"
+    )
+    return _equity_curve_to_bar_return_series(metrics.get(curve_key))
+
+
+def _equity_curve_to_bar_return_series(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) < 2:
+        return []
+    rows: list[dict[str, Any]] = []
+    for index, (previous, current) in enumerate(zip(value, value[1:])):
+        if hasattr(previous, "as_dict"):
+            previous = previous.as_dict()
+        if hasattr(current, "as_dict"):
+            current = current.as_dict()
+        if not isinstance(previous, dict) or not isinstance(current, dict):
+            return []
+        previous_equity = _as_float(previous.get("equity"))
+        current_equity = _as_float(current.get("equity"))
+        ts = _as_int(current.get("ts"))
+        if previous_equity is None or current_equity is None or ts is None or previous_equity <= 0.0:
+            return []
+        rows.append(
+            {
+                "ts": ts,
+                "sequence": index,
+                "return_pct": ((current_equity / previous_equity) - 1.0) * 100.0,
+            }
+        )
+    return rows
 
 
 def write_candidate_return_panel(

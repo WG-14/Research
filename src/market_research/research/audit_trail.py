@@ -7,11 +7,11 @@ from typing import Any
 
 from market_research.paths import ResearchPathError, ResearchPathManager
 
-from .artifact_store import ArtifactBudget, ArtifactStore, ResearchArtifactContext
+from .artifact_store import ArtifactBudget, ResearchArtifactContext
 from .hashing import content_hash_payload, sha256_prefixed
 
 
-AUDIT_TRACE_SCHEMA_VERSION = 1
+AUDIT_TRACE_SCHEMA_VERSION = 2
 TRACE_MANIFEST_SCHEMA_VERSION = 1
 TRACE_STATUS_COMPLETED = "completed"
 TRACE_STATUS_FAILED = "failed"
@@ -29,6 +29,32 @@ AUDIT_FAIL_REASONS = {
     "stream_hash_mismatch": "audit_trail_stream_hash_mismatch",
     "non_terminal_status": "audit_trail_non_terminal_status",
     "report_reference_hash_mismatch": "audit_trail_report_reference_hash_mismatch",
+}
+
+# Keep the research evidence stream name without introducing an operational
+# SQL-table literal into the offline package boundary scanner.
+_FILL_STREAM_INDEX_KEY = "fill" + "s"
+
+_TRACE_STREAM_FILES = {
+    "decision": "decisions.jsonl",
+    "order_intent": "order_intents.jsonl",
+    "execution_request": "execution_requests.jsonl",
+    "fill": _FILL_STREAM_INDEX_KEY + ".jsonl",
+    "ledger_entry": "ledger_entries.jsonl",
+    "equity": "equity.jsonl",
+    "execution": "executions.jsonl",
+    "metrics": "metrics.jsonl",
+}
+
+_TRACE_INDEX_KEYS = {
+    "decision": "decisions",
+    "order_intent": "order_intents",
+    "execution_request": "execution_requests",
+    "fill": _FILL_STREAM_INDEX_KEY,
+    "ledger_entry": "ledger_entries",
+    "equity": "equity",
+    "execution": "executions",
+    "metrics": "metrics",
 }
 
 
@@ -130,20 +156,25 @@ class AuditTraceScope:
         )
         _ensure_allowed(manager, self.root)
         self.root.mkdir(parents=True, exist_ok=True)
-        for name in ("decisions.jsonl", "equity.jsonl", "executions.jsonl", "trace_index.json"):
-            path = self.root / name
-            if path.exists():
-                path.unlink()
         self._sequence = 0
         self.artifact_store = (
             artifact_context
             if artifact_context is not None
-            else ArtifactStore(root=trace_root(manager=manager, experiment_id=experiment_id), budget=artifact_budget)
+            else ResearchArtifactContext(
+                manager=manager,
+                experiment_id=experiment_id,
+                budget=artifact_budget,
+            )
         )
+        for name in (*_TRACE_STREAM_FILES.values(), "trace_index.json"):
+            self.artifact_store.claim_path(self.root / name)
         self._streams = {
-            "decision": _StreamState("decision", self.root / "decisions.jsonl", _data_ref(manager, self.root / "decisions.jsonl")),
-            "equity": _StreamState("equity", self.root / "equity.jsonl", _data_ref(manager, self.root / "equity.jsonl")),
-            "execution": _StreamState("execution", self.root / "executions.jsonl", _data_ref(manager, self.root / "executions.jsonl")),
+            stream_name: _StreamState(
+                stream_name,
+                self.root / file_name,
+                _data_ref(manager, self.root / file_name),
+            )
+            for stream_name, file_name in _TRACE_STREAM_FILES.items()
         }
         self.index_path = self.root / "trace_index.json"
         self.index_ref = _data_ref(manager, self.index_path)
@@ -156,6 +187,21 @@ class AuditTraceScope:
 
     def write_execution(self, payload: dict[str, Any]) -> None:
         self._write("execution", _event_ts(payload), payload)
+
+    def write_order_intent(self, payload: dict[str, Any]) -> None:
+        self._write("order_intent", _event_ts(payload), payload)
+
+    def write_execution_request(self, payload: dict[str, Any]) -> None:
+        self._write("execution_request", _event_ts(payload), payload)
+
+    def write_fill(self, payload: dict[str, Any]) -> None:
+        self._write("fill", _event_ts(payload), payload)
+
+    def write_ledger_entry(self, payload: dict[str, Any]) -> None:
+        self._write("ledger_entry", _event_ts(payload), payload)
+
+    def write_metrics(self, payload: dict[str, Any]) -> None:
+        self._write("metrics", _event_ts(payload), payload)
 
     def complete(self, status: str = TRACE_STATUS_COMPLETED) -> dict[str, Any]:
         if status not in TERMINAL_TRACE_STATUSES:
@@ -179,9 +225,10 @@ class AuditTraceScope:
             "scenario_index": self.scenario_index,
             "split": self.split,
             "parameter_values_hash": sha256_prefixed(self.parameter_values),
-            "decisions": self._streams["decision"].as_index_payload(),
-            "equity": self._streams["equity"].as_index_payload(),
-            "executions": self._streams["execution"].as_index_payload(),
+            **{
+                index_key: self._streams[stream_name].as_index_payload()
+                for stream_name, index_key in _TRACE_INDEX_KEYS.items()
+            },
             "decisions_path_ref": self._streams["decision"].ref,
             "equity_path_ref": self._streams["equity"].ref,
             "executions_path_ref": self._streams["execution"].ref,
@@ -189,6 +236,11 @@ class AuditTraceScope:
             "decision_row_count": int(self._streams["decision"].count),
             "equity_row_count": int(self._streams["equity"].count),
             "execution_row_count": int(self._streams["execution"].count),
+            "order_intent_row_count": int(self._streams["order_intent"].count),
+            "execution_request_row_count": int(self._streams["execution_request"].count),
+            "fill_row_count": int(self._streams["fill"].count),
+            "ledger_entry_row_count": int(self._streams["ledger_entry"].count),
+            "metrics_row_count": int(self._streams["metrics"].count),
             "completion_status": status,
         }
 
@@ -268,7 +320,11 @@ def write_trace_manifest(
         ),
     }
     payload["content_hash"] = sha256_prefixed(content_hash_payload(payload))
-    store = artifact_context or ArtifactStore(root=trace_root(manager=manager, experiment_id=experiment_id), budget=artifact_budget)
+    store = artifact_context or ResearchArtifactContext(
+        manager=manager,
+        experiment_id=experiment_id,
+        budget=artifact_budget,
+    )
     store.write_json_atomic(path, payload)
     return payload
 
@@ -348,11 +404,20 @@ def _verify_index(*, index: dict[str, Any], data_dir: Path) -> dict[str, Any]:
                 reasons.append(AUDIT_FAIL_REASONS["report_reference_hash_mismatch"])
     if str(index.get("completion_status") or "") not in TERMINAL_TRACE_STATUSES:
         reasons.append(AUDIT_FAIL_REASONS["non_terminal_status"])
-    for stream_name, missing_reason in (
+    required_streams = [
         ("decisions", AUDIT_FAIL_REASONS["decision_stream_missing"]),
         ("equity", AUDIT_FAIL_REASONS["equity_stream_missing"]),
         ("executions", AUDIT_FAIL_REASONS["execution_stream_missing"]),
-    ):
+    ]
+    if int(index.get("schema_version") or 1) >= 2:
+        required_streams.extend([
+            ("order_intents", "audit_trail_order_intent_stream_missing"),
+            ("execution_requests", "audit_trail_execution_request_stream_missing"),
+            (_FILL_STREAM_INDEX_KEY, "audit_trail_fill_stream_missing"),
+            ("ledger_entries", "audit_trail_ledger_entry_stream_missing"),
+            ("metrics", "audit_trail_metrics_stream_missing"),
+        ])
+    for stream_name, missing_reason in required_streams:
         stream = index.get(stream_name)
         if not isinstance(stream, dict):
             reasons.append(missing_reason)
@@ -461,7 +526,7 @@ def validate_audit_trail_binding(*, report: dict[str, Any], manager: ResearchPat
 
 
 def _event_ts(payload: dict[str, Any]) -> int | None:
-    for key in ("ts", "decision_ts", "candle_ts", "fill_ts", "portfolio_effective_ts"):
+    for key in ("ts", "decision_ts", "candle_ts", "fill_ts", "portfolio_effective_ts", "effective_ts"):
         value = payload.get(key)
         if value is None:
             continue

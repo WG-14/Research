@@ -7,7 +7,8 @@ from typing import Any
 
 from .backtest_types import BacktestRunContext
 from .hashing import sha256_prefixed
-from .strategy_contract import (CompiledStrategyContract, ENGINE_SUPPORTED_CAPABILITIES,
+from .strategy_contract import (CompiledStrategyContract, ENGINE_CAPABILITY_SUPPORT,
+                                ENGINE_SUPPORTED_CAPABILITIES,
                                 MaterializedParameterSet, ParameterExtensionContext,
                                 ParameterExtensionResult, ResearchStrategyPlugin, is_sha256_hash,
                                 normalize_exit_policy_materialization)
@@ -32,9 +33,7 @@ class StrategyCompiler:
                 slippage_bps: float, context: BacktestRunContext | None = None) -> CompiledStrategyContract:
         plugin = self.registry.resolve(strategy_name)
         required = plugin.required_capabilities
-        supported = ENGINE_SUPPORTED_CAPABILITIES
-        mismatches = [name for name in required.__dataclass_fields__
-                      if name != "schema_version" and getattr(required, name) != getattr(supported, name)]
+        mismatches = list(ENGINE_CAPABILITY_SUPPORT.unsupported_fields(required))
         if mismatches:
             raise StrategyCompilationError("unsupported_strategy_capability", ",".join(mismatches))
         raw = dict(raw_parameters)
@@ -99,7 +98,7 @@ class StrategyCompiler:
             "exit_policy": policy, "exit_mode": plugin.exit_mode, "capability_contract": capability,
             "capability_contract_hash": required.contract_hash(),
             "strategy_plugin_contract_hash": plugin.contract_hash(),
-            "strategy_registry_hash": self.registry.content_hash,
+            "strategy_registry_hash": self.registry.execution_scope_hash(plugin.name),
         }
         compiled_hash = sha256_prefixed(base)
         contract = CompiledStrategyContract(
@@ -110,7 +109,7 @@ class StrategyCompiler:
             exit_policy=dict(policy) if policy is not None else None,
             exit_mode=plugin.exit_mode, capability_contract=capability,
             capability_contract_hash=required.contract_hash(), strategy_plugin_contract_hash=plugin.contract_hash(),
-            strategy_registry_hash=self.registry.content_hash, compiled_contract_hash=compiled_hash,
+            strategy_registry_hash=self.registry.execution_scope_hash(plugin.name), compiled_contract_hash=compiled_hash,
         )
         return validate_compiled_strategy_contract(contract)
 

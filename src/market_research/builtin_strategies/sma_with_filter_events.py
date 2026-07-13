@@ -17,7 +17,7 @@ def _sma(values: list[float], end: int, window: int) -> float:
 
 
 def build_sma_with_filter_research_events(*, dataset: DatasetSnapshot, parameter_values: dict[str, Any], fee_rate: float, slippage_bps: float, execution_timing_policy: ExecutionTimingPolicy, portfolio_policy: Any | None = None, context: Any | None = None) -> tuple[ResearchDecisionEvent, ...]:
-    del portfolio_policy, context, fee_rate
+    del portfolio_policy, context, fee_rate, slippage_bps
     short_n, long_n = int(parameter_values["SMA_SHORT"]), int(parameter_values["SMA_LONG"])
     if short_n <= 0 or long_n <= 0 or short_n >= long_n:
         raise ValueError("SMA_SHORT must be smaller than SMA_LONG")
@@ -43,7 +43,7 @@ def build_sma_with_filter_research_events(*, dataset: DatasetSnapshot, parameter
             blocked.append("volatility")
         if raw == "BUY" and overextended > float(parameter_values.get("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO") or 0.0):
             blocked.append("overextended")
-        required_edge = max(0.0, float(parameter_values.get("SMA_COST_EDGE_MIN_RATIO") or 0.0), 2.0 * float(parameter_values.get("LIVE_FEE_RATE_ESTIMATE") or 0.0) + float(slippage_bps) / 10_000.0 + float(parameter_values.get("ENTRY_EDGE_BUFFER_RATIO") or 0.0), float(parameter_values.get("STRATEGY_MIN_EXPECTED_EDGE_RATIO") or 0.0))
+        required_edge = max(0.0, float(parameter_values.get("SMA_COST_EDGE_MIN_RATIO") or 0.0), 2.0 * float(parameter_values.get("LIVE_FEE_RATE_ESTIMATE") or 0.0) + float(parameter_values.get("STRATEGY_ENTRY_SLIPPAGE_BPS") or 0.0) / 10_000.0 + float(parameter_values.get("ENTRY_EDGE_BUFFER_RATIO") or 0.0), float(parameter_values.get("STRATEGY_MIN_EXPECTED_EDGE_RATIO") or 0.0))
         if raw == "BUY" and bool(parameter_values.get("SMA_COST_EDGE_ENABLED")) and gap < required_edge:
             blocked.append("cost_edge")
         entry = "HOLD" if raw == "BUY" and blocked else raw

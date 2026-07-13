@@ -9,7 +9,7 @@ from market_research.research_composition import builtin_strategy_registry
 from market_research.research.strategy_registry import (StrategyRegistry, StrategyRegistryError,
     reconstruct_strategy_registry)
 from market_research.research.strategy_contract import ResearchStrategyPlugin
-from market_research.research.strategy_spec import StrategySpec
+from market_research.research.strategy_spec import StrategyRuleDeclaration, StrategyRuleSpec, StrategySpec
 
 
 def _reconstruct_hash(descriptor):
@@ -21,8 +21,15 @@ def _custom_events(**_values):
 
 
 def build_importable_custom_plugin():
+    rules = StrategyRuleSpec(1,
+        entry=StrategyRuleDeclaration("fixture_entry", "Fixture entry rule.", "never"),
+        take_profit=StrategyRuleDeclaration("take_profit", "Disabled.", "never"),
+        edge_invalidation=StrategyRuleDeclaration("edge_invalidation", "Disabled.", "never"),
+        time_exit=StrategyRuleDeclaration("time_exit", "Disabled.", "never"),
+        stop_loss=StrategyRuleDeclaration("stop_loss", "Disabled.", "never"),
+        position_sizing=StrategyRuleDeclaration("no_position", "No allocation.", "always"))
     spec = StrategySpec("transport_custom", "v1", (), (), (), (), (), {}, "v1", ("candles",), (),
-                        {"schema_version": 1, "rules": ()})
+                        {"schema_version": 1, "rules": ()}, rule_spec=rules)
     return ResearchStrategyPlugin(name=spec.strategy_name, version=spec.strategy_version, spec=spec,
         required_data=("candles",), optional_data=(), event_builder=_custom_events,
         decision_contract_version="v1", diagnostics_namespace="custom", reconstruction_module=__name__,

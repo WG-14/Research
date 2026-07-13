@@ -8,6 +8,78 @@ from market_research.research.immutable_contract import canonical_mutable, deep_
 
 
 @dataclass(frozen=True)
+class ExecutionCostBreakdown:
+    """Common cost evidence without double-debiting price-embedded costs.
+
+    The current repository contract is unlevered spot research.  Fees are cash
+    debits; spread and slippage are embedded in the execution price; tax,
+    borrow, and rollover are explicitly not applicable to this supported scope.
+    Market impact and, without two-sided quotes, spread remain unavailable
+    rather than being silently reported as modeled zero.
+    """
+
+    fee_cash_debit: float
+    tax_cash_debit: float
+    spread_embedded: float | None
+    slippage_embedded: float
+    market_impact_embedded: float | None
+    borrow_cash_debit: float
+    rollover_cash_debit: float
+    not_applicable_components: tuple[str, ...]
+    unavailable_components: tuple[str, ...]
+
+    @classmethod
+    def from_fill(cls, fill: Any) -> "ExecutionCostBreakdown":
+        qty = max(0.0, float(fill.filled_qty or 0.0))
+        reference = float(fill.reference_price or 0.0)
+        execution = float(fill.avg_fill_price if fill.avg_fill_price is not None else reference)
+        slippage = abs(execution - reference) * qty
+        spread: float | None = None
+        unavailable: list[str] = []
+        if fill.best_bid is not None and fill.best_ask is not None:
+            midpoint = (float(fill.best_bid) + float(fill.best_ask)) / 2.0
+            spread = (
+                max(0.0, reference - midpoint) * qty
+                if str(fill.side).upper() == "BUY"
+                else max(0.0, midpoint - reference) * qty
+            )
+        else:
+            unavailable.append("spread")
+        market_impact: float | None = None
+        if str(fill.market_impact_mode or "unavailable") == "unavailable":
+            unavailable.append("market_impact")
+        return cls(
+            fee_cash_debit=max(0.0, float(fill.fee or 0.0)),
+            tax_cash_debit=0.0,
+            spread_embedded=spread,
+            slippage_embedded=slippage,
+            market_impact_embedded=market_impact,
+            borrow_cash_debit=0.0,
+            rollover_cash_debit=0.0,
+            not_applicable_components=("tax", "borrow", "rollover"),
+            unavailable_components=tuple(sorted(unavailable)),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "accounting_semantics": "cash_debits_plus_price_embedded_costs_no_double_debit",
+            "fee_cash_debit": self.fee_cash_debit,
+            "tax_cash_debit": self.tax_cash_debit,
+            "spread_embedded": self.spread_embedded,
+            "slippage_embedded": self.slippage_embedded,
+            "market_impact_embedded": self.market_impact_embedded,
+            "borrow_cash_debit": self.borrow_cash_debit,
+            "rollover_cash_debit": self.rollover_cash_debit,
+            "cash_debit_total": (
+                self.fee_cash_debit + self.tax_cash_debit
+                + self.borrow_cash_debit + self.rollover_cash_debit
+            ),
+            "not_applicable_components": list(self.not_applicable_components),
+            "unavailable_components": list(self.unavailable_components),
+        }
+
+
+@dataclass(frozen=True)
 class ExecutionRequest:
     """Authoritative request after timing resolution; timestamps are causal.
 
@@ -202,6 +274,9 @@ class ExecutionFill:
                 raise ValueError("execution_fill_id_content_mismatch")
             object.__setattr__(self, "fill_id", calculated)
 
+    def cost_breakdown(self) -> ExecutionCostBreakdown:
+        return ExecutionCostBreakdown.from_fill(self)
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "request_id": self.request_id,
@@ -271,6 +346,7 @@ class ExecutionFill:
             "portfolio_effective_ts": self.portfolio_effective_ts,
             "decision_id": self.decision_id, "intent_id": self.intent_id,
             "exit_rule": self.exit_rule, "exit_reason": self.exit_reason,
+            "cost_breakdown": self.cost_breakdown().as_dict(),
         }
 
 

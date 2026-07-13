@@ -146,6 +146,40 @@ ENGINE_SUPPORTED_CAPABILITIES = StrategyCapabilityContract()
 
 
 @dataclass(frozen=True, slots=True)
+class EngineCapabilitySupport:
+    """Independent limits supported by the common execution/accounting path."""
+
+    max_instrument_count: int = 1
+    directions: tuple[str, ...] = ("long_only",)
+    max_concurrent_positions: int = 1
+    pyramiding: bool = False
+    partial_exit: bool = True
+    max_intents_per_decision: int = 1
+    portfolio_modes: tuple[str, ...] = ("single_asset_cash_qty",)
+
+    def unsupported_fields(self, required: StrategyCapabilityContract) -> tuple[str, ...]:
+        unsupported: list[str] = []
+        if required.instrument_count > self.max_instrument_count:
+            unsupported.append("instrument_count")
+        if required.direction not in self.directions:
+            unsupported.append("direction")
+        if required.max_concurrent_positions > self.max_concurrent_positions:
+            unsupported.append("max_concurrent_positions")
+        if required.pyramiding and not self.pyramiding:
+            unsupported.append("pyramiding")
+        if required.partial_exit and not self.partial_exit:
+            unsupported.append("partial_exit")
+        if required.max_intents_per_decision > self.max_intents_per_decision:
+            unsupported.append("max_intents_per_decision")
+        if required.portfolio_mode not in self.portfolio_modes:
+            unsupported.append("portfolio_mode")
+        return tuple(unsupported)
+
+
+ENGINE_CAPABILITY_SUPPORT = EngineCapabilitySupport()
+
+
+@dataclass(frozen=True, slots=True)
 class CompiledStrategyContract:
     """The sole authoritative interpretation of a candidate/scenario strategy."""
 
@@ -368,6 +402,8 @@ class ResearchStrategyPlugin:
             raise ValueError(f"research_strategy_version_missing:{name}")
         if not str(self.decision_contract_version or "").strip():
             raise ValueError(f"research_strategy_decision_contract_version_missing:{name}")
+        if self.spec.rule_spec is None:
+            raise ValueError(f"research_strategy_rule_spec_missing:{name}")
         if self.event_builder is None:
             raise ValueError(f"research_strategy_event_builder_missing:{name}")
         if self.execution_authority != "common_simulation_engine":

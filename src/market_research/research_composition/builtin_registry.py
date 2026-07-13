@@ -2,10 +2,7 @@
 from __future__ import annotations
 from functools import lru_cache
 
-from market_research.builtin_strategies.buy_and_hold_baseline import build_buy_and_hold_baseline_plugin
-from market_research.builtin_strategies.noop_baseline import build_noop_baseline_plugin
-from market_research.builtin_strategies.sma_with_filter import build_sma_with_filter_plugin
-from market_research.builtin_strategies.threshold_research_only import build_threshold_research_only_plugin
+from market_research.builtin_strategies import discover_builtin_strategy_factories
 from market_research.research.strategy_registry import StrategyRegistry
 from market_research.research.strategy_compiler import StrategyCompiler
 from market_research.research.experiment_manifest import (
@@ -17,8 +14,7 @@ from market_research.research.experiment_manifest import (
 
 @lru_cache(maxsize=1)
 def builtin_strategy_registry() -> StrategyRegistry:
-    return StrategyRegistry.build((build_sma_with_filter_plugin(), build_buy_and_hold_baseline_plugin(),
-                                   build_noop_baseline_plugin(), build_threshold_research_only_plugin()))
+    return StrategyRegistry.build(factory() for factory in discover_builtin_strategy_factories())
 
 
 def compile_builtin_strategy(**values):

@@ -55,6 +55,12 @@ Prepare an external provenance manifest first. The checked-in
 replace every placeholder and recompute `provenance_manifest_hash` with the
 same canonical contract before use.
 
+Use `examples/research/sma_filter_manifest.example.json` as the structured
+study shape. It separates the versioned `hypothesis_spec`, the registered
+`strategy_version`, and explicit experiment conditions. Structured studies
+must declare execution timing, portfolio/position sizing, and risk policy;
+validation-bound studies cannot rely on legacy implicit defaults.
+
 ```bash
 uv run market-research research-freeze-dataset --db /abs/candles.sqlite \
   --market KRW-BTC --interval 1m --start 2025-01-01 --end 2025-03-31 \
@@ -78,6 +84,68 @@ authoritative reproduction receipt.
 backtest, final holdout, stress suite, statistical validation, walk-forward,
 final selection, and a research candidate report. Results are `PASS`, `FAIL`,
 or `INSUFFICIENT_EVIDENCE`.
+
+Automated `PASS` is not human research approval. Hypothesis and strategy
+candidate lifecycle state is stored in a repository-external append-only
+governance registry. Use `research-governance-transition` to record guarded
+state changes and their evidence hashes, and `research-record-human-review` to
+record an independent review decision. A `CHANGES_REQUESTED` review uses a JSON
+array whose entries contain `requirement_id`, `description`, and
+`verification_condition`; every requirement must be explicitly resolved by a
+later approval.
+
+After the hypothesis is `SUPPORTED` and the selected strategy candidate is
+`OUT_OF_SAMPLE_PASSED`, create a bound approval and then export the review
+package:
+
+```bash
+uv run market-research research-approve-strategy-candidate \
+  --result /abs/validation-summary.json \
+  --subject-version 1 \
+  --reviewer reviewer-id \
+  --rationale "economic rationale and overfit review passed" \
+  --out /abs/strategy-approval.json
+
+uv run market-research research-export-strategy-package \
+  --result /abs/validation-summary.json \
+  --approval /abs/strategy-approval.json \
+  --out /abs/strategy-research-package.json
+```
+
+Strategy Research Package schema 5 is a self-contained review contract. It
+includes the bound hypothesis, target market and interval, feature and rule
+definitions, the complete compiled strategy contract and effective parameters,
+signal/fill/exit/position/cost assumptions, permitted regimes, suspension
+conditions, validation-to-holdout observed performance ranges, known
+limitations, and the human approval record. Missing semantic fields fail the
+export instead of producing a hash-only handoff.
+
+`research-validate` also writes a hash-bound `research_candidate_report.json`
+with fixed sections for hypothesis and conditions, data quality, performance,
+trades, costs, regimes, robustness, out-of-sample evidence, failure periods,
+limitations, and the automated research conclusion. It never grants
+operational permission or represents automated evidence as human approval.
+Render or compare those reports without rerunning the study:
+
+```bash
+uv run market-research research-render-report \
+  --report /abs/reports/research/example/research_candidate_report.json \
+  --out /abs/reports/research/example/research_candidate_report.md
+
+uv run market-research research-compare \
+  --report /abs/reports/research/experiment-a/research_candidate_report.json \
+  --report /abs/reports/research/experiment-b/research_candidate_report.json \
+  --out /abs/reports/research/comparison.json
+```
+
+Both commands verify source content hashes. Comparison is deterministic and
+marks market, interval, or strategy-contract differences as compatibility
+warnings.
+
+The general transition command cannot create `RESEARCH_APPROVED`. The approval
+command also checks the current hypothesis and strategy states, unresolved
+review requirements, report and final-holdout hashes, strategy plugin contract,
+and effective parameter hash. Retired strategies cannot reuse an old approval.
 
 `research-backtest` writes `reproduction_receipt.json` beside its experiment
 report. Verify that result later with an isolated rerun:

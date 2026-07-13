@@ -7,6 +7,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any
 
 from market_research.storage_io import write_json_atomic
+from market_research.paths import ResearchPathManager
 
 from .artifact_store import ArtifactBudgetExceeded
 from .experiment_manifest import ManifestValidationError, load_manifest, load_manifest_with_registry
@@ -19,6 +20,15 @@ from .experiment_registry import (
     validate_experiment_registry_binding,
 )
 from .hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
+from .governance import (
+    GovernanceError,
+    GovernanceSubject,
+    GovernanceSubjectType,
+    HumanReviewDecision,
+    append_human_review,
+    append_lifecycle_transition,
+    approve_strategy_candidate,
+)
 from .reproduction import (
     ReproductionContractError,
     compare_reproduction_fingerprints,
@@ -29,13 +39,150 @@ from .return_panel import validate_return_panel_binding
 from .execution_calibration import ExecutionCalibrationError, load_calibration_artifact
 from .research_classification import requires_candidate_validation
 from .run_summary import ResearchRunSummary, build_research_run_summary
-from .validation_pipeline import ValidationRunError, run_research_validation, validation_next_action_payload
+from .validation_pipeline import ValidationRunError, validation_next_action_payload
 from .validation_protocol import ResearchValidationError, run_research_backtest, run_research_walk_forward
 from .forward_diagnostics_cli import cmd_research_forward_diagnostics
 from .batch_runner import run_research_batch
 from .datasets.registry import default_dataset_adapter_registry
-from .strategy_package import StrategyPackageError, build_strategy_research_package
+from .strategy_package import StrategyPackageError
+from .research_reporting import ResearchReportingError
+from .application import ResearchApplicationService
 from market_research.research_composition import builtin_strategy_registry
+
+
+def _governance_subject(subject_type: str, subject_id: str, subject_version: str) -> GovernanceSubject:
+    return GovernanceSubject(
+        GovernanceSubjectType(subject_type),
+        subject_id,
+        subject_version,
+    )
+
+
+def _parse_evidence_assignments(values: tuple[str, ...]) -> dict[str, str]:
+    evidence: dict[str, str] = {}
+    for value in values:
+        key, separator, digest = value.partition("=")
+        if not separator or not key.strip() or not digest.strip() or key.strip() in evidence:
+            raise GovernanceError("governance_evidence_assignment_invalid")
+        evidence[key.strip()] = digest.strip()
+    return evidence
+
+
+def cmd_research_governance_transition(
+    *, context: "ResearchAppContext", subject_type: str, subject_id: str,
+    subject_version: str, from_state: str | None, to_state: str,
+    actor_id: str, reason: str, evidence: tuple[str, ...],
+) -> int:
+    try:
+        row = append_lifecycle_transition(
+            manager=context.paths,
+            subject=_governance_subject(subject_type, subject_id, subject_version),
+            from_state=from_state,
+            to_state=to_state,
+            actor_id=actor_id,
+            reason=reason,
+            evidence_hashes=_parse_evidence_assignments(evidence),
+        )
+    except (GovernanceError, ValueError) as exc:
+        context.printer(f"[RESEARCH-GOVERNANCE-TRANSITION] error={exc}")
+        return 1
+    context.printer(f"[RESEARCH-GOVERNANCE-TRANSITION] row_hash={row['row_hash']}")
+    return 0
+
+
+def cmd_research_record_human_review(
+    *, context: "ResearchAppContext", subject_type: str, subject_id: str,
+    subject_version: str, decision: str, reviewer_id: str, reviewer_role: str,
+    rationale: str, reviewed_artifact_hash: str, requested_changes_path: str | None,
+    resolved_requirement_ids: tuple[str, ...],
+) -> int:
+    try:
+        requested: tuple[dict[str, str], ...] = ()
+        if requested_changes_path:
+            payload = json.loads(Path(requested_changes_path).read_text(encoding="utf-8"))
+            if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+                raise GovernanceError("human_review_requested_changes_file_must_be_array")
+            requested = tuple(payload)
+        row = append_human_review(
+            manager=context.paths,
+            subject=_governance_subject(subject_type, subject_id, subject_version),
+            decision=HumanReviewDecision(decision),
+            reviewer_id=reviewer_id,
+            reviewer_role=reviewer_role,
+            rationale=rationale,
+            reviewed_artifact_hash=reviewed_artifact_hash,
+            requested_changes=requested,
+            resolved_requirement_ids=resolved_requirement_ids,
+        )
+    except (OSError, json.JSONDecodeError, GovernanceError, ValueError) as exc:
+        context.printer(f"[RESEARCH-HUMAN-REVIEW] error={exc}")
+        return 1
+    context.printer(f"[RESEARCH-HUMAN-REVIEW] row_hash={row['row_hash']}")
+    return 0
+
+
+def cmd_research_approve_strategy_candidate(
+    *, context: "ResearchAppContext", result_path: str, subject_version: str,
+    reviewer_id: str, rationale: str, resolved_requirement_ids: tuple[str, ...],
+    out_path: str,
+) -> int:
+    try:
+        report = json.loads(Path(result_path).read_text(encoding="utf-8"))
+        if not isinstance(report, dict):
+            raise GovernanceError("strategy_approval_report_must_be_object")
+        recorded_hash = str(report.get("content_hash") or "")
+        actual_hash = sha256_prefixed(report_content_hash_payload(report))
+        if recorded_hash != actual_hash:
+            raise GovernanceError("strategy_approval_source_report_content_hash_mismatch")
+        candidate_id = str(report.get("selected_candidate_id") or "").strip()
+        if not candidate_id:
+            raise GovernanceError("strategy_approval_selected_candidate_missing")
+        confirmation = report.get("final_holdout_confirmation")
+        confirmation_hash = (
+            str(confirmation.get("content_hash") or "")
+            if isinstance(confirmation, dict) else ""
+        )
+        if not confirmation_hash:
+            raise GovernanceError("strategy_approval_final_holdout_confirmation_missing")
+        hypothesis_id = str(report.get("hypothesis_id") or "").strip()
+        hypothesis_version = str(report.get("hypothesis_version") or "").strip()
+        hypothesis_contract_hash = str(report.get("hypothesis_contract_hash") or "").strip()
+        if not hypothesis_id or not hypothesis_version or not hypothesis_contract_hash:
+            raise GovernanceError("strategy_approval_hypothesis_identity_missing")
+        candidates = [item for item in report.get("candidates") or [] if isinstance(item, dict)]
+        selected = next(
+            (item for item in candidates if str(item.get("parameter_candidate_id") or item.get("candidate_id") or "") == candidate_id),
+            None,
+        )
+        compiled = selected.get("compiled_strategy_contract") if isinstance(selected, dict) else None
+        if not isinstance(selected, dict) or not isinstance(compiled, dict):
+            raise GovernanceError("strategy_approval_selected_candidate_contract_missing")
+        target = Path(out_path).expanduser().resolve()
+        if ResearchPathManager.is_within(target, context.paths.project_root):
+            raise GovernanceError("strategy_approval_output_must_be_repository_external")
+        approval = approve_strategy_candidate(
+            manager=context.paths,
+            subject=_governance_subject("strategy_candidate", candidate_id, subject_version),
+            hypothesis_subject=_governance_subject("hypothesis", hypothesis_id, hypothesis_version),
+            hypothesis_contract_hash=hypothesis_contract_hash,
+            strategy_name=str(compiled.get("strategy_name") or ""),
+            strategy_version=str(compiled.get("strategy_version") or ""),
+            strategy_plugin_contract_hash=str(selected.get("strategy_plugin_contract_hash") or ""),
+            effective_strategy_parameters_hash=str(selected.get("effective_strategy_parameters_hash") or ""),
+            source_report_hash=recorded_hash,
+            final_holdout_confirmation_hash=confirmation_hash,
+            reviewer_id=reviewer_id,
+            rationale=rationale,
+            resolved_requirement_ids=resolved_requirement_ids,
+        )
+        write_json_atomic(target, approval)
+    except (OSError, json.JSONDecodeError, GovernanceError, ValueError) as exc:
+        context.printer(f"[RESEARCH-APPROVE-STRATEGY-CANDIDATE] error={exc}")
+        return 1
+    context.printer(
+        f"[RESEARCH-APPROVE-STRATEGY-CANDIDATE] content_hash={approval['content_hash']}"
+    )
+    return 0
 
 
 def _required_runtime_db_path(context: "ResearchAppContext", manifest: Any, *, registry: Any | None = None) -> Path | None:
@@ -97,16 +244,50 @@ def _print_research_command_finished(
     context.printer(f"[RESEARCH-COMMAND-FINISHED] {json.dumps(payload, sort_keys=True, default=str)}")
 
 
-def cmd_research_export_strategy_package(*, context: "ResearchAppContext", result_path: str, out_path: str) -> int:
+def cmd_research_export_strategy_package(
+    *, context: "ResearchAppContext", result_path: str, approval_path: str, out_path: str
+) -> int:
     """Export an offline immutable review package from a selected result JSON."""
     try:
         result = json.loads(Path(result_path).read_text(encoding="utf-8"))
-        package = build_strategy_research_package(result)
-        write_json_atomic(Path(out_path), package)
+        approval = json.loads(Path(approval_path).read_text(encoding="utf-8"))
+        package = ResearchApplicationService(
+            context.paths, builtin_strategy_registry()
+        ).export_strategy_package(report=result, approval=approval, out_path=out_path)
     except (OSError, ValueError, StrategyPackageError) as exc:
         context.printer(f"[RESEARCH-EXPORT-STRATEGY-PACKAGE] error={exc}")
         return 1
     context.printer(f"[RESEARCH-EXPORT-STRATEGY-PACKAGE] content_hash={package['content_hash']}")
+    return 0
+
+
+def cmd_research_compare(
+    *, context: "ResearchAppContext", report_paths: tuple[str, ...], out_path: str,
+) -> int:
+    try:
+        reports = [json.loads(Path(path).read_text(encoding="utf-8")) for path in report_paths]
+        comparison = ResearchApplicationService(
+            context.paths, builtin_strategy_registry()
+        ).compare_reports(reports=reports, out_path=out_path)
+    except (OSError, json.JSONDecodeError, ResearchReportingError, ValueError) as exc:
+        context.printer(f"[RESEARCH-COMPARE] error={exc}")
+        return 1
+    context.printer(f"[RESEARCH-COMPARE] content_hash={comparison['content_hash']}")
+    return 0
+
+
+def cmd_research_render_report(
+    *, context: "ResearchAppContext", report_path: str, out_path: str,
+) -> int:
+    try:
+        report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+        rendered = ResearchApplicationService(
+            context.paths, builtin_strategy_registry()
+        ).render_report(report=report, out_path=out_path)
+    except (OSError, json.JSONDecodeError, ResearchReportingError, ValueError) as exc:
+        context.printer(f"[RESEARCH-RENDER-REPORT] error={exc}")
+        return 1
+    context.printer(f"[RESEARCH-RENDER-REPORT] source_hash={report['content_hash']}")
     return 0
 
 
@@ -139,6 +320,7 @@ def cmd_research_backtest(
                     "manifest": manifest_path,
                     "execution_calibration": execution_calibration_path,
                     "diagnostic_mode": diagnostic_mode,
+                    "run_id": context.run_id,
                 },
                 progress_callback=_print_research_backtest_progress,
                 strategy_registry=strategy_registry,
@@ -148,6 +330,7 @@ def cmd_research_backtest(
                 manager=context.paths,
                 manifest_path=manifest_path,
                 exc=exc,
+                run_id=context.run_id,
             )
             context.printer(f"[RESEARCH-BACKTEST] artifact_budget_failure={json.dumps(payload, sort_keys=True)}")
             rc = 1
@@ -155,6 +338,7 @@ def cmd_research_backtest(
             context.printer(f"[RESEARCH-BACKTEST] error={exc}")
             rc = 1
         else:
+            context.run_result_hash = str(report.get("content_hash") or "") or None
             _print_report_summary("RESEARCH-BACKTEST", report)
             if _standalone_report_is_non_validation_eligible_validation_diagnostic(report):
                 rc = 1
@@ -195,6 +379,7 @@ def cmd_research_walk_forward(
                 command_args={
                     "manifest": manifest_path,
                     "execution_calibration": execution_calibration_path,
+                    "run_id": context.run_id,
                 },
                 progress_callback=_print_research_walk_forward_progress,
                 strategy_registry=strategy_registry,
@@ -204,6 +389,7 @@ def cmd_research_walk_forward(
                 manager=context.paths,
                 manifest_path=manifest_path,
                 exc=exc,
+                run_id=context.run_id,
             )
             context.printer(f"[RESEARCH-WALK-FORWARD] artifact_budget_failure={json.dumps(payload, sort_keys=True)}")
             rc = 1
@@ -211,6 +397,7 @@ def cmd_research_walk_forward(
             context.printer(f"[RESEARCH-WALK-FORWARD] error={exc}")
             rc = 1
         else:
+            context.run_result_hash = str(report.get("content_hash") or "") or None
             _print_report_summary("RESEARCH-WALK-FORWARD", report)
             if _standalone_report_is_non_validation_eligible_validation_diagnostic(report):
                 rc = 1
@@ -287,6 +474,7 @@ def _write_artifact_budget_failure_payload(
     manager: Any,
     manifest_path: str,
     exc: ArtifactBudgetExceeded,
+    run_id: str | None = None,
 ) -> dict[str, object]:
     try:
         strategy_registry = builtin_strategy_registry()
@@ -297,11 +485,15 @@ def _write_artifact_budget_failure_payload(
     payload: dict[str, object] = {
         "schema_version": 1,
         "status": "ARTIFACT_BUDGET_EXCEEDED",
+        "run_id": run_id,
         **exc.as_dict(),
     }
-    path = manager.data_dir() / "reports" / "research" / experiment_id / "artifact_budget_failure.json"
+    path = manager.report_path("research", experiment_id, "artifact_budget_failure.json")
     payload["failure_artifact_path"] = str(path.resolve())
     payload["failure_artifact_ref"] = path.resolve().relative_to(manager.data_dir().resolve()).as_posix()
+    payload["content_hash"] = sha256_prefixed(
+        content_hash_payload(payload), label="artifact_budget_failure"
+    )
     write_json_atomic(path, payload)
     return payload
 
@@ -322,10 +514,11 @@ def cmd_research_validate(
             strategy_registry = builtin_strategy_registry()
             manifest = load_manifest_with_registry(manifest_path, registry=strategy_registry)
             calibration = load_calibration_artifact(execution_calibration_path) if execution_calibration_path else None
-            validation_run = run_research_validation(
+            validation_run = ResearchApplicationService(
+                context.paths, strategy_registry
+            ).validate(
                 manifest=manifest,
-                db_path=context.paths.require_database_path(),
-                manager=context.paths,
+                db_path=_required_runtime_db_path(context, manifest),
                 manifest_path=manifest_path,
                 mode=mode,
                 execution_calibration=calibration,
@@ -333,7 +526,8 @@ def cmd_research_validate(
                 candidate_id=candidate_id,
                 out_path=out_path,
                 progress_callback=_print_research_backtest_progress,
-                strategy_registry=strategy_registry,
+                run_id=context.run_id,
+                record_lifecycle=False,
             )
         except (
             ManifestValidationError,
@@ -346,6 +540,7 @@ def cmd_research_validate(
             context.printer(f"[RESEARCH-VALIDATE] error={exc}")
             rc = 1
         else:
+            context.run_result_hash = str(validation_run.get("content_hash") or "") or None
             _print_validation_run_summary(validation_run)
             rc = 0 if validation_run.get("end_to_end_validation_result") == "PASS" else 1
     finally:
@@ -626,7 +821,7 @@ def cmd_research_registry_validate(*, context: "ResearchAppContext", experiment_
         }, sort_keys=True, indent=2))
         return 1
     ok = True
-    report_path = context.paths.data_dir() / "reports" / "research" / experiment_id / "backtest_report.json"
+    report_path = context.paths.report_path("research", experiment_id, "backtest_report.json")
     evidence_path = context.paths.data_dir() / "reports" / "research" / experiment_id / "statistical_selection_evidence.json"
     panel_path = context.paths.data_dir() / "reports" / "research" / experiment_id / "candidate_return_panel.json"
     report = _load_json_if_exists(report_path)

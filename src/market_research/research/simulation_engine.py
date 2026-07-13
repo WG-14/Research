@@ -29,7 +29,13 @@ from .strategy_registry import StrategyRegistry
 from .causal_market_view import CausalMarketView
 from .portfolio_view import ReadOnlyPortfolioView
 from .exit_policy import GenericExitPolicyEvaluator
-from .backtest_common import trace_decision, trace_equity_mark, trace_execution, complete_audit_trace
+from .backtest_common import (
+    complete_audit_trace,
+    trace_decision,
+    trace_equity_mark,
+    trace_execution,
+    trace_lineage_event,
+)
 import time
 import inspect
 
@@ -54,9 +60,12 @@ def _validate_runtime_intent(*, intent: OrderIntent, compiled: CompiledStrategyC
         if not bool(capability.get("partial_exit")):
             if intent.sizing is not IntentSizing.FULL_POSITION or intent.requested_qty is not None:
                 raise ValueError("strategy_capability_partial_or_ambiguous_exit_rejected")
-        elif intent.sizing not in {IntentSizing.FULL_POSITION, IntentSizing.EXPLICIT_QUANTITY,
-                                   IntentSizing.POSITION_FRACTION}:
+        elif intent.sizing not in {IntentSizing.FULL_POSITION, IntentSizing.EXPLICIT_QUANTITY}:
             raise ValueError("strategy_capability_sell_sizing_rejected")
+        elif intent.sizing is IntentSizing.EXPLICIT_QUANTITY and (
+            intent.requested_qty is None or float(intent.requested_qty) <= 0.0
+        ):
+            raise ValueError("strategy_capability_partial_exit_quantity_invalid")
 
 
 def _stream_hash(values: tuple[object, ...]) -> str:
@@ -117,6 +126,7 @@ def _run_common_simulation_backtest(
     risk_policy: ResearchRiskPolicy | None = None, context: BacktestRunContext | None = None,
     compiled_contract: CompiledStrategyContract | None = None,
     registry: StrategyRegistry | None = None, compiler: StrategyCompiler | None = None,
+    decision_stream_transformer: Any | None = None,
 ) -> BacktestRun:
     """Run a plugin event stream through the one execution and ledger path."""
     timing = execution_timing_policy or ExecutionTimingPolicy()
@@ -133,10 +143,11 @@ def _run_common_simulation_backtest(
             compiled_contract,
             expected_strategy_name=plugin.name,
             expected_strategy_version=plugin.version,
-            expected_registry_hash=(registry.content_hash if registry is not None else None),
             expected_plugin_hash=plugin.contract_hash(),
         )
-    if registry is not None and compiled.strategy_registry_hash != registry.content_hash:
+    if registry is not None and not registry.accepts_execution_hash(
+        plugin.name, compiled.strategy_registry_hash
+    ):
         raise ValueError("compiled_strategy_registry_contract_mismatch")
     if compiled.strategy_plugin_contract_hash != plugin.contract_hash():
         raise ValueError("compiled_strategy_plugin_contract_mismatch")
@@ -197,17 +208,30 @@ def _run_common_simulation_backtest(
         if limits.max_trades is not None and len(ledger.entries) > limits.max_trades:
             raise BacktestResourceLimitExceeded("backtest_trade_limit_exceeded", evidence | {"trade_count": len(ledger.entries)})
 
-    def apply_ready(boundary: int) -> None:
+    def apply_ready(boundary: int, *, defer_next_open_at_boundary: bool = False) -> None:
         nonlocal pending_buy, open_entry, last_execution_status
         for resolved in sorted(tuple(pending_status), key=lambda item: (int(item.portfolio_effective_ts or 0), item.fill_id)):
             if int(resolved.portfolio_effective_ts or 0) <= boundary:
                 pending_status.remove(resolved)
                 last_execution_status = resolved.fill_status
         for fill in sorted(tuple(pending), key=lambda item: (int(item.portfolio_effective_ts or 0), item.fill_id)):
-            if int(fill.portfolio_effective_ts or 0) > boundary:
+            effective_ts = int(fill.portfolio_effective_ts or 0)
+            if effective_ts > boundary:
+                continue
+            # A contiguous candle's next-open timestamp is equal to the prior
+            # candle's close timestamp.  The close mark must be finalized before
+            # that next-open fill becomes portfolio-effective; timestamp equality
+            # alone is therefore insufficient to order these two market events.
+            if (
+                defer_next_open_at_boundary
+                and effective_ts == boundary
+                and fill.fill_reference_policy == "next_candle_open"
+            ):
                 continue
             pending.remove(fill)
             entry = ledger.apply(fill)
+            if entry is not None:
+                trace_lineage_event(context, stream="ledger_entry", payload=entry.as_dict())
             last_execution_status = fill.fill_status
             trade = _trade_from_fill(fill, ledger, entry)
             trades.append(trade)
@@ -233,12 +257,15 @@ def _run_common_simulation_backtest(
 
     def complete_candle_lifecycle(index: int, candle: Any, mark_ts: int) -> None:
         nonlocal peak, max_dd, last_heartbeat_at
-        apply_ready(mark_ts)
+        apply_ready(mark_ts, defer_next_open_at_boundary=True)
         snapshot = ledger.snapshot()
         mark = snapshot.cash + snapshot.asset_qty * float(candle.close)
         peak = max(peak, mark)
         max_dd = max(max_dd, ((peak - mark) / peak * 100.0) if peak else 0.0)
-        point = EquityPoint(ts=mark_ts, equity=mark, cash=snapshot.cash, asset_qty=snapshot.asset_qty)
+        point = EquityPoint(
+            ts=mark_ts, equity=mark, cash=snapshot.cash, asset_qty=snapshot.asset_qty,
+            mark_price=float(candle.close), mark_price_source="candle_close",
+        )
         equity.append(point)
         all_equity.append(point)
         trace_equity_mark(context, ts=mark_ts, equity=mark, cash=snapshot.cash, asset_qty=snapshot.asset_qty)
@@ -272,6 +299,22 @@ def _run_common_simulation_backtest(
             current_events = tuple(item for item in generated if int(item.candle_ts) == int(candle.ts))
         if len(current_events) > 1:
             raise ValueError("strategy_capability_multiple_intents_per_decision")
+        if current_events and decision_stream_transformer is not None:
+            original_event = current_events[0]
+            transformed = decision_stream_transformer.transform(original_event)
+            if transformed is None:
+                trace_lineage_event(
+                    context,
+                    stream="decision_stream_perturbation",
+                    payload={
+                        "decision_id": original_event.decision_id(),
+                        "result": "omitted",
+                        "layer": "decision_stream_pre_execution",
+                    },
+                )
+                current_events = ()
+            elif transformed is not original_event:
+                raise ValueError("decision_stream_transformer_must_retain_or_omit_event")
         if not current_events:
             complete_candle_lifecycle(index, candle, mark_ts)
             continue
@@ -279,7 +322,16 @@ def _run_common_simulation_backtest(
         decision_id = event.decision_id()
         decisions.append(event)
         all_decisions.append(event)
-        trace_decision(context, event.as_dict())
+        trace_decision(
+            context,
+            {
+                **event.as_dict(),
+                "input_candle": {
+                    "ts": int(candle.ts),
+                    "row_hash": sha256_prefixed(candle.as_tuple()),
+                },
+            },
+        )
         if event.exit_intent is not None and compiled.exit_mode == "common_typed_policy":
             raise ValueError("common_policy_strategy_supplied_exit_intent")
         if event.exit_intent is not None and plugin.exit_decision_builder is not None:
@@ -330,11 +382,20 @@ def _run_common_simulation_backtest(
                 intent = None
         if intent is not None:
             intents.append(intent)
+            trace_lineage_event(context, stream="order_intent", payload=intent.as_dict())
             signal = build_signal_event(candle=candle, interval=dataset.interval, side=intent.side, policy=timing, feature_snapshot=event.feature_snapshot, regime_snapshot={})
             reference = resolve_execution_reference(dataset=dataset, signal=signal, signal_index=index, policy=timing, model_latency_ms=int(getattr(model, "latency_ms", 0) or 0))
             snapshot = ledger.snapshot()
-            requested_notional = snapshot.cash * float(intent.buy_fraction if intent.buy_fraction is not None else policy.position_sizing.buy_fraction) if intent.side == "BUY" else None
-            requested_qty = snapshot.asset_qty if intent.side == "SELL" else intent.requested_qty
+            requested_notional = (
+                snapshot.cash * float(policy.position_sizing.buy_fraction)
+                if intent.side == "BUY"
+                else None
+            )
+            requested_qty = (
+                snapshot.asset_qty
+                if intent.side == "SELL" and intent.sizing is IntentSizing.FULL_POSITION
+                else intent.requested_qty
+            )
             depth = dataset.first_depth_snapshot_after_or_equal(target_ts=int(reference.fill_reference_ts or signal.decision_ts), max_wait_ms=int(timing.max_quote_wait_ms))
             request = ExecutionRequest(signal_ts=signal.signal_candle_start_ts, decision_ts=signal.decision_ts, order_intent_ts=int(intent.order_intent_ts), side=intent.side,
                 reference_price=float(reference.fill_reference_price or signal.signal_reference_price), fee_rate=float(fee_rate),
@@ -349,6 +410,7 @@ def _run_common_simulation_backtest(
                 depth_snapshot_age_ms=(int(depth.ts)-int(reference.fill_reference_ts or signal.decision_ts)) if depth else None,
                 depth_available=bool(depth and depth.has_depth))
             requests.append(request)
+            trace_lineage_event(context, stream="execution_request", payload=request.as_dict())
             if not reference.failure_reason:
                 model_invocations += 1
             fill = _failed_fill(request=request, model=model, reason=str(reference.failure_reason)) if reference.failure_reason else model.simulate(request)
@@ -356,6 +418,7 @@ def _run_common_simulation_backtest(
             _validate_fill_timeline(fill)
             fills.append(fill)
             trace_execution(context, fill.as_dict())
+            trace_lineage_event(context, stream="fill", payload=fill.as_dict())
             if fill.side == "BUY" and fill.fill_status in {"filled", "partial"} and fill.filled_qty > 0:
                 pending_buy = True
             if fill.fill_status in {"filled", "partial"} and fill.filled_qty > 0:
@@ -380,11 +443,25 @@ def _run_common_simulation_backtest(
         trades.append(_trade_from_fill(fill, ledger, None) | {"pending_execution_at_end": True, "pending_execution_after_dataset_end": True, "dataset_final_mark_ts": final_ts})
     final = ledger.snapshot()
     last_price = float(dataset.candles[-1].close) if dataset.candles else 0.0
-    execution_records = tuple(ExecutionRecord(side=item.side, status=item.fill_status, filled_qty=item.filled_qty, price=item.avg_fill_price, fee=item.fee, slippage=abs(float(item.avg_fill_price or item.reference_price) - item.reference_price) * item.filled_qty, ts=item.fill_reference_ts) for item in fills)
-    metrics_v2 = build_metrics_v2(starting_cash=float(policy.starting_cash_krw), final_cash=final.cash, final_asset_qty=final.asset_qty, final_mark_price=last_price, equity_curve=tuple(equity), position_intervals=tuple(intervals), closed_trades=tuple(closed), execution_records=execution_records, final_open_cost_basis=final.cost_basis, summary_max_drawdown_pct=max_dd)
+    ledger_entries = tuple(ledger.entries)
+    applied_fill_ids = {entry.fill_id for entry in ledger_entries}
+    # Performance accounting covers only fills that became effective inside the
+    # study period.  Attempts and after-period fills remain in the authoritative
+    # execution streams and execution evidence summary, but cannot create costs
+    # that are absent from cash and the portfolio ledger.
+    execution_records = tuple(
+        ExecutionRecord(
+            side=item.side, status=item.fill_status, filled_qty=item.filled_qty,
+            price=item.avg_fill_price, fee=item.fee,
+            slippage=abs(float(item.avg_fill_price or item.reference_price) - item.reference_price) * item.filled_qty,
+            ts=item.fill_reference_ts,
+        )
+        for item in fills
+        if item.fill_id in applied_fill_ids
+    )
+    metrics_v2 = build_metrics_v2(starting_cash=float(policy.starting_cash_krw), final_cash=final.cash, final_asset_qty=final.asset_qty, final_mark_price=last_price, equity_curve=tuple(equity), position_intervals=tuple(intervals), closed_trades=tuple(closed), execution_records=execution_records, final_open_cost_basis=final.cost_basis, accounting_realized_pnl=final.realized_pnl, summary_max_drawdown_pct=max_dd)
     q = metrics_v2.trade_quality
     metrics = ResearchMetrics(return_pct=metrics_v2.return_risk.total_return_pct, max_drawdown_pct=max_dd, profit_factor=q.profit_factor, profit_factor_unbounded=q.profit_factor_unbounded, trade_count=q.closed_trade_count, win_rate=q.win_rate, avg_win=q.avg_win, avg_loss=q.avg_loss, fee_total=final.fee_total, slippage_total=final.slippage_total, max_consecutive_losses=q.max_consecutive_losses, single_trade_dependency_score=q.single_trade_dependency_score, parameter_stability_score=parameter_stability_score)
-    ledger_entries = tuple(ledger.entries)
     replayed = PortfolioLedger.replay(starting_cash=float(policy.starting_cash_krw),
         initial_position_qty=float(policy.initial_position_qty), entries=ledger_entries)
     if replayed != final:
@@ -418,14 +495,30 @@ def _run_common_simulation_backtest(
         # Schema-v1 aliases retained for readers while their former mixed-domain semantics are retired.
         "declared_execution_timing_hash": policy_hash, "executed_execution_timing_hash": policy_hash,
         "portfolio_ledger_hash": _stream_hash(ledger_entries),
+        "decision_stream_perturbation_evidence": (
+            decision_stream_transformer.evidence()
+            if decision_stream_transformer is not None
+            else None
+        ),
     })
+    trace_lineage_event(
+        context,
+        stream="metrics",
+        payload={
+            "metrics_hash": summary["metrics_hash"],
+            "ledger_stream_hash": summary["ledger_stream_hash"],
+            "execution_fill_stream_hash": summary["execution_fill_stream_hash"],
+            "decision_stream_hash": summary["decision_stream_hash"],
+            "closed_trade_ids": [sha256_prefixed(item.as_dict()) for item in closed],
+        },
+    )
     decision_limit = context.resource_limits.max_decisions_retained
     equity_limit = context.resource_limits.max_equity_points_retained
     # Authoritative hashes cover complete streams; returned detail projections
     # obey retention independently.
     retained_decisions = tuple(decisions if decision_limit is None else decisions[-max(0, decision_limit):]) if decision_limit != 0 else ()
     retained_equity = tuple(equity if equity_limit is None else equity[-max(0, equity_limit):]) if equity_limit != 0 else ()
-    result = BacktestRun(metrics=metrics, metrics_v2=metrics_v2, trades=tuple(trades), candle_count=len(dataset.candles), warnings=(), decisions=tuple(all_decisions), equity_curve=tuple(all_equity), position_intervals=tuple(intervals), closed_trades=tuple(closed), execution_event_summary=summary, order_intents=tuple(intents), execution_requests=tuple(requests), fills=tuple(fills), ledger_entries=ledger_entries, resource_usage={"common_execution_authority": "common_simulation_engine", "executed_portfolio_policy": policy.as_dict(), "executed_portfolio_policy_hash": policy.policy_hash(), "execution_evidence": summary, "compiled_strategy_contract": compiled.as_dict(), "compiled_strategy_contract_hash": compiled.compiled_contract_hash, "strategy_registry_hash": compiled.strategy_registry_hash, "strategy_plugin_contract_hash": compiled.strategy_plugin_contract_hash, "runtime_seconds": time.perf_counter() - context.started_at, "final_cash": final.cash, "final_asset_qty": final.asset_qty, "final_marked_equity": final.cash + final.asset_qty * last_price, "open_position_at_end": final.asset_qty > 0, "final_position_marked_to_market": final.asset_qty > 0}, strategy_diagnostics={"strategy_diagnostics_namespace": plugin.diagnostics_namespace, "strategy_specific_diagnostics": {plugin.diagnostics_namespace: {"decision_count": len(all_decisions), "hold_decision_count": sum(1 for event in all_decisions if event.final_signal == "HOLD")}}}, retained_detail_summary={"authoritative_decision_count": len(all_decisions), "retained_decision_projection_count": len(retained_decisions), "authoritative_equity_count": len(all_equity), "retained_equity_projection_count": len(retained_equity), "canonical_hashes_cover_complete_streams": True}, audit_trace_index=None, compiled_strategy_contract=compiled, compiled_strategy_contract_hash=compiled.compiled_contract_hash, strategy_registry_hash=compiled.strategy_registry_hash, strategy_plugin_contract_hash=compiled.strategy_plugin_contract_hash, decision_stream_hash=_stream_hash(tuple(all_decisions)), metrics_hash=sha256_prefixed(metrics_v2.as_dict() if hasattr(metrics_v2, "as_dict") else metrics_v2), authoritative_decision_ids=tuple(item.decision_id() for item in all_decisions))
+    result = BacktestRun(metrics=metrics, metrics_v2=metrics_v2, trades=tuple(trades), candle_count=len(dataset.candles), warnings=(), decisions=tuple(all_decisions), equity_curve=tuple(all_equity), position_intervals=tuple(intervals), closed_trades=tuple(closed), execution_event_summary=summary, order_intents=tuple(intents), execution_requests=tuple(requests), fills=tuple(fills), ledger_entries=ledger_entries, resource_usage={"common_execution_authority": "common_simulation_engine", "executed_portfolio_policy": policy.as_dict(), "executed_portfolio_policy_hash": policy.policy_hash(), "execution_evidence": summary, "decision_stream_perturbation_evidence": summary["decision_stream_perturbation_evidence"], "compiled_strategy_contract": compiled.as_dict(), "compiled_strategy_contract_hash": compiled.compiled_contract_hash, "strategy_registry_hash": compiled.strategy_registry_hash, "strategy_plugin_contract_hash": compiled.strategy_plugin_contract_hash, "runtime_seconds": time.perf_counter() - context.started_at, "final_cash": final.cash, "final_asset_qty": final.asset_qty, "final_marked_equity": final.cash + final.asset_qty * last_price, "open_position_at_end": final.asset_qty > 0, "final_position_marked_to_market": final.asset_qty > 0}, strategy_diagnostics={"strategy_diagnostics_namespace": plugin.diagnostics_namespace, "strategy_specific_diagnostics": {plugin.diagnostics_namespace: {"decision_count": len(all_decisions), "hold_decision_count": sum(1 for event in all_decisions if event.final_signal == "HOLD")}}}, retained_detail_summary={"authoritative_decision_count": len(all_decisions), "retained_decision_projection_count": len(retained_decisions), "authoritative_equity_count": len(all_equity), "retained_equity_projection_count": len(retained_equity), "canonical_hashes_cover_complete_streams": True}, audit_trace_index=None, compiled_strategy_contract=compiled, compiled_strategy_contract_hash=compiled.compiled_contract_hash, strategy_registry_hash=compiled.strategy_registry_hash, strategy_plugin_contract_hash=compiled.strategy_plugin_contract_hash, decision_stream_hash=_stream_hash(tuple(all_decisions)), metrics_hash=sha256_prefixed(metrics_v2.as_dict() if hasattr(metrics_v2, "as_dict") else metrics_v2), authoritative_decision_ids=tuple(item.decision_id() for item in all_decisions))
     result.validate_execution_lineage()
     audit_index = complete_audit_trace(context, status="completed")
     return replace(result, decisions=retained_decisions, equity_curve=retained_equity,

@@ -70,7 +70,7 @@ class ReportFinalizationState:
 def research_paths(manager: ResearchPathManager, experiment_id: str, report_name: str) -> ResearchReportPaths:
     research_derived_root = manager.data_dir() / "derived" / "research" / experiment_id
     derived_path = research_derived_root / f"{report_name}_candidates.json"
-    report_path = manager.data_dir() / "reports" / "research" / experiment_id / f"{report_name}_report.json"
+    report_path = manager.report_path("research", experiment_id, f"{report_name}_report.json")
     candidate_events_path = research_derived_root / "candidate_events.jsonl"
     candidate_results_dir = research_derived_root / "candidate_results"
     candidate_failures_dir = research_derived_root / "candidate_failures"
@@ -95,7 +95,7 @@ def research_artifact_refs(paths: ResearchReportPaths, *, manager: ResearchPathM
     data_dir = manager.data_dir().resolve()
     return {
         "derived_candidates": _relative_artifact_ref(paths.derived_path, data_dir),
-        "report": _relative_artifact_ref(paths.report_path, data_dir),
+        "report": _relative_artifact_ref(paths.report_path, manager.report_root.resolve()),
         "candidate_events": _relative_artifact_ref(paths.candidate_events_path, data_dir),
         "candidate_results_dir": _relative_artifact_ref(paths.candidate_results_dir, data_dir),
         "candidate_failures_dir": _relative_artifact_ref(paths.candidate_failures_dir, data_dir),
@@ -153,7 +153,11 @@ def write_research_report(
 ) -> ResearchReportWriteResult:
     started = time.perf_counter()
     paths = research_paths(manager, experiment_id, report_name)
-    store = artifact_context or ArtifactStore(root=manager.data_dir(), budget=artifact_budget)
+    store = artifact_context or ResearchArtifactContext(
+        manager=manager,
+        experiment_id=experiment_id,
+        budget=artifact_budget,
+    )
     with observe_hashing() as hash_observer:
         state = build_report_artifacts(
             manager=manager,
@@ -241,7 +245,7 @@ def build_report_artifacts(
             "derived_candidates_hash": derived_candidates_hash,
             "derived_candidates_bytes": 0,
             "report_path": str(paths.report_path.resolve()),
-            "report_ref": _relative_artifact_ref(paths.report_path, manager.data_dir().resolve()),
+            "report_ref": _relative_artifact_ref(paths.report_path, manager.report_root.resolve()),
             "report_bytes": 0,
             "artifact_file_count": _predicted_file_count(store, paths.derived_path, paths.report_path),
             "artifact_total_bytes": 0,

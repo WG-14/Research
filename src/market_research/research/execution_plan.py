@@ -12,6 +12,7 @@ from .experiment_manifest import ExecutionScenario, ExperimentManifest, required
 from .hashing import sha256_prefixed
 from .parameter_space import candidate_id, iter_parameter_candidates
 from .process_runtime import process_policy_observability
+from .code_provenance import collect_code_provenance
 from .resource_planner import plan_research_resources
 from .backtest_types import resolve_tick_observability_policy
 
@@ -464,8 +465,11 @@ def build_run_environment(
     repository_version: str | None,
 ) -> dict[str, Any]:
     resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path is not None else None
+    code_provenance = collect_code_provenance(Path(__file__).resolve().parents[3])
     return {
         "repository_version": repository_version or "unknown",
+        "code_provenance": code_provenance,
+        "code_provenance_hash": code_provenance["code_provenance_hash"],
         "python_version": sys.version.split()[0],
         "platform": platform.platform(),
         "system": platform.system(),

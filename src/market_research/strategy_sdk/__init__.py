@@ -6,7 +6,9 @@ from market_research.research.strategy_compiler import StrategyCompilationError,
 from market_research.research.strategy_contract import (CompiledStrategyContract, ResearchStrategyPlugin,
     StrategyCapabilityContract)
 from market_research.research.strategy_registry import StrategyRegistry, StrategyRegistryError
+from .runtime import EventBuilderStrategyRuntime, make_event_builder_runtime_factory
 
 __all__ = ["CausalMarketView", "CompiledStrategyContract", "ExitDecision", "FutureMarketAccessError",
            "ReadOnlyPortfolioView", "ResearchStrategyPlugin", "StrategyCapabilityContract",
-           "StrategyCompilationError", "StrategyCompiler", "StrategyRegistry", "StrategyRegistryError"]
+           "StrategyCompilationError", "StrategyCompiler", "StrategyRegistry", "StrategyRegistryError",
+           "EventBuilderStrategyRuntime", "make_event_builder_runtime_factory"]

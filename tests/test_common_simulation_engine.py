@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from market_research.research.dataset_snapshot import Candle, DatasetSnapshot
@@ -7,6 +9,8 @@ from market_research.research.execution_model import FixedBpsExecutionModel
 from market_research.research.experiment_manifest import DateRange, ExecutionTimingPolicy, legacy_research_portfolio_policy
 from market_research.research.simulation_engine import run_common_simulation_backtest
 from market_research.research_composition import resolve_builtin_strategy as resolve_research_strategy
+from market_research.research.decision_event import OrderIntent, ResearchDecisionEvent
+from market_research.research.strategy_registry import StrategyRegistry
 
 
 def _dataset() -> DatasetSnapshot:
@@ -59,3 +63,54 @@ def test_no_order_intent_does_not_invoke_execution_model():
     spy = SpyModel()
     run_common_simulation_backtest(plugin=resolve_research_strategy("noop_baseline"), dataset=_dataset(), parameter_values={}, fee_rate=.001, slippage_bps=10, execution_model=spy, execution_timing_policy=ExecutionTimingPolicy(), portfolio_policy=legacy_research_portfolio_policy())
     assert spy.requests == []
+
+
+def test_portfolio_policy_is_the_single_buy_sizing_authority():
+    base = resolve_research_strategy("noop_baseline")
+
+    def event_builder(**values):
+        dataset = values["dataset"]
+        if len(dataset.candles) != 1:
+            return ()
+        candle = dataset.candles[0]
+        event = ResearchDecisionEvent(
+            candle_ts=candle.ts,
+            decision_ts=candle.ts + 60_000,
+            strategy_name=base.name,
+            strategy_version=base.version,
+            raw_signal="BUY",
+            final_signal="BUY",
+            entry_signal="BUY",
+            reason="fixture",
+            feature_snapshot={},
+            strategy_diagnostics={},
+        )
+        return (replace(event, order_intent=OrderIntent.from_decision(
+            decision_id=event.decision_id(),
+            side="BUY",
+            sizing="portfolio_policy_fractional_cash",
+            buy_fraction=0.1,
+        )),)
+
+    plugin = replace(base, event_builder=event_builder, runtime_factory=None)
+    registry = StrategyRegistry.build((plugin,))
+    sizing = replace(legacy_research_portfolio_policy().position_sizing, buy_fraction=0.5)
+    policy = replace(legacy_research_portfolio_policy(), position_sizing=sizing)
+    spy = SpyModel()
+
+    run_common_simulation_backtest(
+        plugin=plugin,
+        registry=registry,
+        dataset=_dataset(),
+        parameter_values={},
+        fee_rate=0.001,
+        slippage_bps=10,
+        execution_model=spy,
+        execution_timing_policy=ExecutionTimingPolicy(
+            fill_reference_policy="next_candle_open",
+            allow_same_candle_close_fill=False,
+        ),
+        portfolio_policy=policy,
+    )
+
+    assert spy.requests[0].requested_notional == policy.starting_cash_krw * 0.5

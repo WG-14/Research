@@ -2,6 +2,7 @@ from market_research.research_composition import builtin_strategy_registry
 from market_research.research.strategy_compiler import StrategyCompiler
 from market_research.research.strategy_contract import ParameterExtensionResult
 import market_research.research.strategy_compiler as compiler_module
+import inspect
 
 
 def test_parameter_source_map_covers_every_materialized_parameter():
@@ -48,6 +49,14 @@ def test_plugin_extension_receives_materialized_parameters():
         raw_parameters={"SMA_SHORT": 2, "SMA_LONG": 3}, fee_rate=.001, slippage_bps=10)
     assert observed["LIVE_FEE_RATE_ESTIMATE"] == .001
     assert observed["STRATEGY_ENTRY_SLIPPAGE_BPS"] == 10
+
+
+def test_strategy_reads_compiled_cost_evidence_not_runtime_cost_arguments():
+    plugin = builtin_strategy_registry().resolve("sma_with_filter")
+    source = inspect.getsource(plugin.event_builder)
+
+    assert 'parameter_values.get("STRATEGY_ENTRY_SLIPPAGE_BPS")' in source
+    assert "float(slippage_bps)" not in source
 
 
 def test_parameter_extension_cannot_receive_raw_parameters():

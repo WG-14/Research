@@ -1,9 +1,10 @@
 """Built-in buy-and-hold plugin implementation."""
-from dataclasses import replace
-from typing import Any
 
 from market_research.research.strategy_contract import ResearchStrategyPlugin
-from market_research.research.strategy_spec import StrategySpec
+from market_research.research.strategy_spec import (
+    StrategyFeatureDefinition, StrategyRuleDeclaration, StrategyRuleSpec, StrategySpec,
+)
+from market_research.strategy_sdk.runtime import make_event_builder_runtime_factory
 
 BUY_AND_HOLD_BASELINE_SPEC = StrategySpec(
     strategy_name="buy_and_hold_baseline", strategy_version="buy_and_hold_baseline.research_contract.v1",
@@ -14,34 +15,28 @@ BUY_AND_HOLD_BASELINE_SPEC = StrategySpec(
     default_parameters={"BUY_HOLD_DECISION_REASON": "buy_and_hold_architecture_canary"},
     decision_contract_version="research_buy_and_hold_baseline_decision_contract.v1", required_data=("candles",),
     optional_data=(), exit_policy_schema={"schema_version": 1, "rules": (),
-        "description": "Executable canary emits one BUY intent, then HOLD decisions."})
+        "description": "Executable canary emits one BUY intent, then HOLD decisions."},
+    rule_spec=StrategyRuleSpec(1,
+        entry=StrategyRuleDeclaration("buy_at_index", "Buy once at the configured candle index.",
+            "candle_index == BUY_HOLD_BUY_INDEX", ("BUY_HOLD_BUY_INDEX",)),
+        take_profit=StrategyRuleDeclaration("take_profit", "No take-profit exit.", "never"),
+        edge_invalidation=StrategyRuleDeclaration("edge_invalidation", "No edge-invalidation exit.", "never"),
+        time_exit=StrategyRuleDeclaration("time_exit", "No time exit.", "never"),
+        stop_loss=StrategyRuleDeclaration("stop_loss", "No stop-loss exit.", "never"),
+        position_sizing=StrategyRuleDeclaration("portfolio_fractional_cash", "Use experiment portfolio buy fraction.", "on entry"),
+        entry_prohibitions=(StrategyRuleDeclaration("existing_position", "Do not pyramid after entry.", "position or buy pending"),)),
+    feature_definitions=(StrategyFeatureDefinition(
+        "candle_index", "Zero-based candle index used to select the single baseline entry.",
+        ("candles",), "candle_index", ("BUY_HOLD_BUY_INDEX",),
+    ),))
 from .buy_and_hold_baseline_events import build_buy_and_hold_baseline_events
 
 
-class _BuyAndHoldRuntime:
-    def __init__(self, *, compiled_contract: Any, execution_timing_policy: Any,
-                 portfolio_policy: Any, fee_rate: float, slippage_bps: float) -> None:
-        self.parameters = dict(compiled_contract.materialized_parameters)
-        self.timing, self.portfolio_policy = execution_timing_policy, portfolio_policy
-        self.fee_rate, self.slippage_bps = fee_rate, slippage_bps
-
-    def initialize(self, context: Any) -> dict[str, object]:
-        return {}
-
-    def on_market_event(self, market: Any, portfolio: Any, state: Any) -> tuple[Any, ...]:
-        snapshot = market.causal_snapshot()
-        current = replace(snapshot, candles=(market.current_candle,),
-                          top_of_book_quotes=snapshot.top_of_book_quotes[-1:])
-        events = build_buy_and_hold_baseline_events(dataset=current,
-            parameter_values=self.parameters, fee_rate=self.fee_rate, slippage_bps=self.slippage_bps,
-            execution_timing_policy=self.timing, portfolio_policy=self.portfolio_policy,
-            candle_index_offset=market.current_index)
-        return events
-
-
-def _runtime_factory(**values: Any) -> _BuyAndHoldRuntime:
-    values.pop("context", None)
-    return _BuyAndHoldRuntime(**values)
+_runtime_factory = make_event_builder_runtime_factory(
+    build_buy_and_hold_baseline_events,
+    current_candle_only=True,
+    pass_candle_index_offset=True,
+)
 
 
 def build_buy_and_hold_baseline_plugin() -> ResearchStrategyPlugin:
@@ -54,4 +49,6 @@ def build_buy_and_hold_baseline_plugin() -> ResearchStrategyPlugin:
         diagnostics_namespace="buy_and_hold_baseline", runtime_factory=_runtime_factory,
         reconstruction_module=__name__, reconstruction_qualname="build_buy_and_hold_baseline_plugin")
 
-__all__ = ["build_buy_and_hold_baseline_plugin"]
+STRATEGY_PLUGIN_FACTORY = build_buy_and_hold_baseline_plugin
+
+__all__ = ["build_buy_and_hold_baseline_plugin", "STRATEGY_PLUGIN_FACTORY"]

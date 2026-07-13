@@ -38,7 +38,9 @@ def _context(tmp_path: Path) -> tuple[ResearchAppContext, Path, Path]:
 def test_reproduce_run_passes_in_isolated_roots(tmp_path: Path) -> None:
     context, _, manifest_path = _context(tmp_path)
     assert cmd_research_backtest(context=context, manifest_path=str(manifest_path)) == 0
-    receipt = context.settings.artifact_root / "reports" / "research" / "sma_success_import_boundary" / "reproduction_receipt.json"
+    receipt = context.paths.report_path(
+        "research", "sma_success_import_boundary", "reproduction_receipt.json"
+    )
     out = tmp_path / "reproduction_report.json"
 
     rc = cmd_research_reproduce_run(
@@ -57,7 +59,9 @@ def test_reproduce_run_passes_in_isolated_roots(tmp_path: Path) -> None:
 def test_reproduce_run_rejects_changed_manifest_before_backtest(tmp_path: Path) -> None:
     context, _, manifest_path = _context(tmp_path)
     assert cmd_research_backtest(context=context, manifest_path=str(manifest_path)) == 0
-    receipt = context.settings.artifact_root / "reports" / "research" / "sma_success_import_boundary" / "reproduction_receipt.json"
+    receipt = context.paths.report_path(
+        "research", "sma_success_import_boundary", "reproduction_receipt.json"
+    )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["parameter_space"]["SMA_SHORT"] = [3]
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -77,7 +81,9 @@ def test_reproduce_run_rejects_changed_manifest_before_backtest(tmp_path: Path) 
 def test_reproduce_run_rejects_frozen_dataset_tamper(tmp_path: Path) -> None:
     context, _, manifest_path = _context(tmp_path)
     assert cmd_research_backtest(context=context, manifest_path=str(manifest_path)) == 0
-    receipt = context.settings.artifact_root / "reports" / "research" / "sma_success_import_boundary" / "reproduction_receipt.json"
+    receipt = context.paths.report_path(
+        "research", "sma_success_import_boundary", "reproduction_receipt.json"
+    )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     artifact_manifest = json.loads(Path(manifest["dataset"]["artifact_manifest_uri"]).read_text(encoding="utf-8"))
     with sqlite3.connect(artifact_manifest["artifact"]["uri"]) as conn:
@@ -100,7 +106,9 @@ def test_reproduce_run_rejects_frozen_dataset_tamper(tmp_path: Path) -> None:
 def test_reproduce_run_classifies_reproduced_receipt_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context, _, manifest_path = _context(tmp_path)
     assert cmd_research_backtest(context=context, manifest_path=str(manifest_path)) == 0
-    receipt = context.settings.artifact_root / "reports" / "research" / "sma_success_import_boundary" / "reproduction_receipt.json"
+    receipt = context.paths.report_path(
+        "research", "sma_success_import_boundary", "reproduction_receipt.json"
+    )
     out = tmp_path / "failed.json"
 
     import market_research.research.cli as cli

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from tests.dataset_provenance_fixture import TEST_SOURCE_PROVENANCE
 
+import json
 import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -261,3 +262,9 @@ def test_research_validate_executes_final_holdout_exactly_once(tmp_path, monkeyp
 
     assert calls == [selection_report["selection_artifact"]["selected_candidate_id"]]
     assert summary["final_holdout_confirmation"]["candidate_results"][0]["candidate_id"] == calls[0]
+    report_path = manager.report_path("research", manifest.experiment_id, "research_candidate_report.json")
+    assert report_path.is_file()
+    decision_report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert decision_report["content_hash"] == summary["research_candidate_report_hash"]
+    assert decision_report["sections"]["research_conclusion"]["operational_permission"] is False
+    assert not (manager.artifact_root / "reports" / "research" / manifest.experiment_id).exists()

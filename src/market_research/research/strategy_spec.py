@@ -13,6 +13,116 @@ class StrategySpecError(ValueError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class StrategyFeatureDefinition:
+    name: str
+    description: str
+    source_data: tuple[str, ...]
+    calculation: str
+    lookback_parameter_names: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.name.strip() or not self.description.strip() or not self.calculation.strip():
+            raise StrategySpecError("strategy feature name, description, and calculation are required")
+        if not self.source_data or any(not item.strip() for item in self.source_data):
+            raise StrategySpecError(f"strategy feature source_data is required:{self.name}")
+        if len(set(self.source_data)) != len(self.source_data):
+            raise StrategySpecError(f"strategy feature has duplicate source data:{self.name}")
+        if len(set(self.lookback_parameter_names)) != len(self.lookback_parameter_names):
+            raise StrategySpecError(f"strategy feature has duplicate lookback parameter:{self.name}")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "source_data": list(self.source_data),
+            "calculation": self.calculation,
+            "lookback_parameter_names": list(self.lookback_parameter_names),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyRuleDeclaration:
+    rule_id: str
+    description: str
+    enabled_when: str
+    parameter_names: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.rule_id.strip() or not self.description.strip() or not self.enabled_when.strip():
+            raise StrategySpecError("strategy rule id, description, and enabled_when are required")
+        if len(set(self.parameter_names)) != len(self.parameter_names):
+            raise StrategySpecError(f"strategy rule has duplicate parameter binding:{self.rule_id}")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "rule_id": self.rule_id,
+            "description": self.description,
+            "enabled_when": self.enabled_when,
+            "parameter_names": list(self.parameter_names),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyRuleSpec:
+    schema_version: int
+    entry: StrategyRuleDeclaration
+    take_profit: StrategyRuleDeclaration
+    edge_invalidation: StrategyRuleDeclaration
+    time_exit: StrategyRuleDeclaration
+    stop_loss: StrategyRuleDeclaration
+    position_sizing: StrategyRuleDeclaration
+    entry_prohibitions: tuple[StrategyRuleDeclaration, ...] = ()
+    additional_exits: tuple[StrategyRuleDeclaration, ...] = ()
+    exit_priority: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise StrategySpecError("strategy rule spec schema_version must be 1")
+        declarations = (
+            self.entry, self.take_profit, self.edge_invalidation, self.time_exit,
+            self.stop_loss, self.position_sizing, *self.entry_prohibitions,
+            *self.additional_exits,
+        )
+        ids = [item.rule_id for item in declarations]
+        if len(set(ids)) != len(ids):
+            raise StrategySpecError("strategy rule ids must be unique")
+        exit_ids = {
+            self.take_profit.rule_id, self.edge_invalidation.rule_id,
+            self.time_exit.rule_id, self.stop_loss.rule_id,
+            *(item.rule_id for item in self.additional_exits),
+        }
+        if len(set(self.exit_priority)) != len(self.exit_priority):
+            raise StrategySpecError("strategy exit priority must not contain duplicates")
+        unknown_priority = sorted(set(self.exit_priority) - exit_ids)
+        if unknown_priority:
+            raise StrategySpecError(
+                "strategy exit priority references unknown rule(s): " + ",".join(unknown_priority)
+            )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "entry": self.entry.as_dict(),
+            "take_profit": self.take_profit.as_dict(),
+            "edge_invalidation": self.edge_invalidation.as_dict(),
+            "time_exit": self.time_exit.as_dict(),
+            "stop_loss": self.stop_loss.as_dict(),
+            "position_sizing": self.position_sizing.as_dict(),
+            "entry_prohibitions": [item.as_dict() for item in self.entry_prohibitions],
+            "additional_exits": [item.as_dict() for item in self.additional_exits],
+            "exit_priority": list(self.exit_priority),
+        }
+
+    def parameter_names(self) -> tuple[str, ...]:
+        declarations = (
+            self.entry, self.take_profit, self.edge_invalidation, self.time_exit,
+            self.stop_loss, self.position_sizing, *self.entry_prohibitions,
+            *self.additional_exits,
+        )
+        return tuple(sorted({name for item in declarations for name in item.parameter_names}))
+
+
 @dataclass(frozen=True)
 class StrategyParameterSchema:
     name: str
@@ -90,10 +200,32 @@ class StrategySpec:
     optional_data: tuple[str, ...]
     exit_policy_schema: dict[str, Any]
     parameter_schema: tuple[StrategyParameterSchema, ...] = ()
+    rule_spec: StrategyRuleSpec | None = None
+    feature_definitions: tuple[StrategyFeatureDefinition, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "default_parameters", deep_freeze(self.default_parameters))
         object.__setattr__(self, "exit_policy_schema", deep_freeze(self.exit_policy_schema))
+        if self.rule_spec is not None:
+            unknown = sorted(set(self.rule_spec.parameter_names()) - set(self.accepted_parameter_names))
+            if unknown:
+                raise StrategySpecError(
+                    "strategy rule spec references unknown parameter(s): " + ",".join(unknown)
+                )
+        feature_names = [item.name for item in self.feature_definitions]
+        if len(set(feature_names)) != len(feature_names):
+            raise StrategySpecError("strategy feature names must be unique")
+        unknown_feature_parameters = sorted({
+            name
+            for feature in self.feature_definitions
+            for name in feature.lookback_parameter_names
+            if name not in self.accepted_parameter_names
+        })
+        if unknown_feature_parameters:
+            raise StrategySpecError(
+                "strategy feature references unknown parameter(s): "
+                + ",".join(unknown_feature_parameters)
+            )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -110,6 +242,8 @@ class StrategySpec:
             "optional_data": list(self.optional_data),
             "exit_policy_schema": canonical_mutable(self.exit_policy_schema),
             "parameter_schema": [item.as_dict() for item in self.parameter_schema],
+            "rule_spec": self.rule_spec.as_dict() if self.rule_spec is not None else None,
+            "feature_definitions": [item.as_dict() for item in self.feature_definitions],
         }
 
     def validate_parameters(self, parameter_values: dict[str, Any]) -> None:
@@ -191,7 +325,7 @@ def validate_parameter_space_against_strategy_spec(
                 "validation-bound manifests must declare every runtime-bound behavior-affecting "
                 "strategy parameter: " + ",".join(missing_behavior)
             )
-    _validate_exit_policy_parameter_values(parameter_space)
+    _validate_exit_policy_parameter_values(parameter_space, spec=spec)
     return spec
 
 
@@ -270,7 +404,7 @@ def materialize_parameters_from_spec(
         and "STRATEGY_ENTRY_SLIPPAGE_BPS" not in parameter_values
     ):
         values["STRATEGY_ENTRY_SLIPPAGE_BPS"] = float(slippage_bps)
-    _validate_exit_policy_materialized_values(values)
+    _validate_exit_policy_materialized_values(values, spec=spec)
     return values
 
 
@@ -447,11 +581,30 @@ def _normalize_exit_rule_names(raw: str) -> tuple[str, ...]:
     return tuple(token.strip().lower() for token in raw.split(",") if token.strip())
 
 
-def _validate_exit_policy_parameter_values(parameter_space: dict[str, tuple[object, ...]]) -> None:
+def _allowed_exit_rule_names(spec: StrategySpec) -> set[str]:
+    configured = spec.exit_policy_schema.get("allowed_rules")
+    if configured is None:
+        configured = spec.exit_policy_schema.get("rules") or ()
+    return {str(item).strip().lower() for item in configured if str(item).strip()}
+
+
+def _validate_strategy_exit_rule_names(raw: object, *, spec: StrategySpec) -> None:
+    if not isinstance(raw, str):
+        raise StrategySpecError("STRATEGY_EXIT_RULES must be str")
+    unsupported = sorted(set(_normalize_exit_rule_names(raw)) - _allowed_exit_rule_names(spec))
+    if unsupported:
+        raise StrategySpecError(
+            "STRATEGY_EXIT_RULES contains unsupported rule(s): " + ",".join(unsupported)
+        )
+
+
+def _validate_exit_policy_parameter_values(
+    parameter_space: dict[str, tuple[object, ...]], *, spec: StrategySpec
+) -> None:
     rules_values = parameter_space.get("STRATEGY_EXIT_RULES")
     if rules_values is not None:
         for raw_rules in rules_values:
-            _validate_common_exit_rule_names(raw_rules, allow_strategy_owned_rule="opposite_cross")
+            _validate_strategy_exit_rule_names(raw_rules, spec=spec)
     ratio_values = parameter_space.get("STRATEGY_EXIT_STOP_LOSS_RATIO")
     _validate_ratio_rule_pair(
         values=ratio_values,
@@ -460,30 +613,45 @@ def _validate_exit_policy_parameter_values(parameter_space: dict[str, tuple[obje
         rule_name="stop_loss",
     )
     _validate_ratio_rule_pair(
-        values=parameter_space.get("TAKE_PROFIT_RATIO"),
+        values=parameter_space.get("STRATEGY_EXIT_TAKE_PROFIT_RATIO"),
         rules_values=rules_values,
-        parameter_name="TAKE_PROFIT_RATIO",
+        parameter_name="STRATEGY_EXIT_TAKE_PROFIT_RATIO",
         rule_name="take_profit",
+    )
+    _validate_ratio_rule_pair(
+        values=parameter_space.get("STRATEGY_EXIT_MIN_EDGE_RATIO"),
+        rules_values=rules_values,
+        parameter_name="STRATEGY_EXIT_MIN_EDGE_RATIO",
+        rule_name="edge_invalidation",
     )
 
 
-def _validate_exit_policy_materialized_values(values: dict[str, Any]) -> None:
+def _validate_exit_policy_materialized_values(values: dict[str, Any], *, spec: StrategySpec) -> None:
     stop_loss_ratio = _non_negative_float(
         "STRATEGY_EXIT_STOP_LOSS_RATIO",
         values.get("STRATEGY_EXIT_STOP_LOSS_RATIO", 0.0),
     )
-    take_profit_ratio = _non_negative_float("TAKE_PROFIT_RATIO", values.get("TAKE_PROFIT_RATIO", 0.0))
-    _validate_common_exit_rule_names(
-        values.get("STRATEGY_EXIT_RULES") or "",
-        allow_strategy_owned_rule="opposite_cross",
+    take_profit_ratio = _non_negative_float(
+        "STRATEGY_EXIT_TAKE_PROFIT_RATIO",
+        values.get("STRATEGY_EXIT_TAKE_PROFIT_RATIO", 0.0),
     )
+    min_edge_ratio = _non_negative_float(
+        "STRATEGY_EXIT_MIN_EDGE_RATIO", values.get("STRATEGY_EXIT_MIN_EDGE_RATIO", 0.0)
+    )
+    _validate_strategy_exit_rule_names(values.get("STRATEGY_EXIT_RULES") or "", spec=spec)
     rules = _normalize_exit_rule_names(str(values.get("STRATEGY_EXIT_RULES") or ""))
     if stop_loss_ratio > 0.0 and "stop_loss" not in rules:
         raise StrategySpecError(
             "STRATEGY_EXIT_STOP_LOSS_RATIO is positive but STRATEGY_EXIT_RULES does not include stop_loss"
         )
     if take_profit_ratio > 0.0 and "take_profit" not in rules:
-        raise StrategySpecError("TAKE_PROFIT_RATIO is positive but STRATEGY_EXIT_RULES does not include take_profit")
+        raise StrategySpecError(
+            "STRATEGY_EXIT_TAKE_PROFIT_RATIO is positive but STRATEGY_EXIT_RULES does not include take_profit"
+        )
+    if min_edge_ratio > 0.0 and "edge_invalidation" not in rules:
+        raise StrategySpecError(
+            "STRATEGY_EXIT_MIN_EDGE_RATIO is positive but STRATEGY_EXIT_RULES does not include edge_invalidation"
+        )
 
 
 def _validate_ratio_rule_pair(

@@ -8,7 +8,9 @@ from market_research.research.position_model import ResearchPosition
 from market_research.research.strategy_contract import (MaterializedParameterSet,
     ParameterExtensionContext, ParameterExtensionResult, ResearchDataRequirement,
     ResearchStrategyDataRequirements, ResearchStrategyPlugin)
-from market_research.research.strategy_spec import StrategyParameterSchema, StrategySpec
+from market_research.research.strategy_spec import (StrategyFeatureDefinition, StrategyParameterSchema,
+    StrategyRuleDeclaration, StrategyRuleSpec, StrategySpec)
+from market_research.strategy_sdk.runtime import make_event_builder_runtime_factory
 
 _SMA_ACCEPTED = (
     "SMA_SHORT", "SMA_LONG", "SMA_FILTER_GAP_MIN_RATIO", "SMA_FILTER_VOL_WINDOW",
@@ -17,6 +19,7 @@ _SMA_ACCEPTED = (
     "SMA_COST_EDGE_ENABLED", "SMA_COST_EDGE_MIN_RATIO", "ENTRY_EDGE_BUFFER_RATIO",
     "STRATEGY_MIN_EXPECTED_EDGE_RATIO", "STRATEGY_ENTRY_SLIPPAGE_BPS", "LIVE_FEE_RATE_ESTIMATE",
     "STRATEGY_EXIT_RULES", "STRATEGY_EXIT_STOP_LOSS_RATIO", "STRATEGY_EXIT_MAX_HOLDING_MIN",
+    "STRATEGY_EXIT_TAKE_PROFIT_RATIO", "STRATEGY_EXIT_MIN_EDGE_RATIO",
     "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO", "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO")
 _SMA_RESEARCH_ONLY = ("SMA_FILTER_VOLUME_WINDOW", "SMA_FILTER_LIQUIDITY_WINDOW")
 _SMA_DEFAULTS = {
@@ -28,6 +31,7 @@ _SMA_DEFAULTS = {
     "STRATEGY_MIN_EXPECTED_EDGE_RATIO": 0.0, "STRATEGY_ENTRY_SLIPPAGE_BPS": 0.0,
     "LIVE_FEE_RATE_ESTIMATE": .0004, "STRATEGY_EXIT_RULES": "stop_loss,opposite_cross,max_holding_time",
     "STRATEGY_EXIT_STOP_LOSS_RATIO": 0.0, "STRATEGY_EXIT_MAX_HOLDING_MIN": 0,
+    "STRATEGY_EXIT_TAKE_PROFIT_RATIO": 0.0, "STRATEGY_EXIT_MIN_EDGE_RATIO": 0.0,
     "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": 0.0, "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": 0.0}
 _BOOL_PARAMETERS = {"SMA_MARKET_REGIME_ENABLED", "SMA_COST_EDGE_ENABLED"}
 _INT_PARAMETERS = {"SMA_SHORT", "SMA_LONG", "SMA_FILTER_VOL_WINDOW", "SMA_FILTER_VOLUME_WINDOW",
@@ -39,12 +43,46 @@ SMA_WITH_FILTER_SPEC = StrategySpec(
     metadata_only_parameter_names=(), research_only_parameter_names=_SMA_RESEARCH_ONLY,
     default_parameters=_SMA_DEFAULTS, decision_contract_version="research_sma_decision_contract.v3_entry_exit_risk_exit",
     required_data=("candles",), optional_data=("top_of_book",),
-    exit_policy_schema={"schema_version": 1, "rules": ("stop_loss", "opposite_cross", "max_holding_time")},
+    exit_policy_schema={"schema_version": 1,
+        "rules": ("stop_loss", "opposite_cross", "max_holding_time"),
+        "allowed_rules": ("stop_loss", "take_profit", "edge_invalidation", "opposite_cross", "max_holding_time")},
     parameter_schema=tuple(StrategyParameterSchema(name,
         "bool" if name in _BOOL_PARAMETERS else "int" if name in _INT_PARAMETERS else "str" if name == "STRATEGY_EXIT_RULES" else "float",
         required=name in {"SMA_SHORT", "SMA_LONG"}, min_value=(None if name in _BOOL_PARAMETERS or name == "STRATEGY_EXIT_RULES" else 1 if name in {"SMA_SHORT", "SMA_LONG", "SMA_FILTER_VOL_WINDOW", "SMA_FILTER_VOLUME_WINDOW", "SMA_FILTER_LIQUIDITY_WINDOW", "SMA_FILTER_OVEREXT_LOOKBACK"} else 0),
         runtime_bound=name not in _SMA_RESEARCH_ONLY, behavior_affecting=name not in _SMA_RESEARCH_ONLY)
-        for name in _SMA_ACCEPTED))
+        for name in _SMA_ACCEPTED),
+    rule_spec=StrategyRuleSpec(1,
+        entry=StrategyRuleDeclaration("golden_cross", "Buy on a short-SMA cross above the long SMA.",
+            "previous short <= long and current short > long", ("SMA_SHORT", "SMA_LONG")),
+        take_profit=StrategyRuleDeclaration("take_profit", "Exit when marked profit reaches the configured ratio.",
+            "take_profit listed in STRATEGY_EXIT_RULES", ("STRATEGY_EXIT_RULES", "STRATEGY_EXIT_TAKE_PROFIT_RATIO")),
+        edge_invalidation=StrategyRuleDeclaration("edge_invalidation", "Exit when the SMA gap no longer supports the edge.",
+            "edge_invalidation listed and gap below threshold", ("STRATEGY_EXIT_RULES", "STRATEGY_EXIT_MIN_EDGE_RATIO")),
+        time_exit=StrategyRuleDeclaration("max_holding_time", "Exit after the maximum holding duration.",
+            "max_holding_time listed and threshold positive", ("STRATEGY_EXIT_RULES", "STRATEGY_EXIT_MAX_HOLDING_MIN")),
+        stop_loss=StrategyRuleDeclaration("stop_loss", "Exit when marked loss reaches the configured ratio.",
+            "stop_loss listed and threshold positive", ("STRATEGY_EXIT_RULES", "STRATEGY_EXIT_STOP_LOSS_RATIO")),
+        position_sizing=StrategyRuleDeclaration("portfolio_fractional_cash", "Use experiment portfolio buy fraction.", "on entry"),
+        entry_prohibitions=(
+            StrategyRuleDeclaration("gap_filter", "Block entry below the minimum SMA gap.", "gap below threshold", ("SMA_FILTER_GAP_MIN_RATIO",)),
+            StrategyRuleDeclaration("volatility_filter", "Block entry below minimum range volatility.", "volatility below threshold", ("SMA_FILTER_VOL_MIN_RANGE_RATIO",)),
+            StrategyRuleDeclaration("overextension_filter", "Block overextended entries.", "return above threshold", ("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO",)),
+            StrategyRuleDeclaration("cost_edge_filter", "Block entries whose modeled edge does not exceed costs.", "cost edge enabled and gap below required edge", ("SMA_COST_EDGE_ENABLED", "SMA_COST_EDGE_MIN_RATIO", "ENTRY_EDGE_BUFFER_RATIO")),
+        ),
+        additional_exits=(StrategyRuleDeclaration("opposite_cross", "Exit on a dead cross outside the configured noise band.",
+            "opposite_cross listed", ("STRATEGY_EXIT_RULES", "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO", "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO")),),
+        exit_priority=("stop_loss", "opposite_cross", "max_holding_time")),
+    feature_definitions=(
+        StrategyFeatureDefinition("short_sma", "Arithmetic mean of completed closes over the short window.",
+            ("candles.close",), "mean(close[-SMA_SHORT:])", ("SMA_SHORT",)),
+        StrategyFeatureDefinition("long_sma", "Arithmetic mean of completed closes over the long window.",
+            ("candles.close",), "mean(close[-SMA_LONG:])", ("SMA_LONG",)),
+        StrategyFeatureDefinition("gap_ratio", "Relative distance between short and long moving averages.",
+            ("short_sma", "long_sma"), "(short_sma - long_sma) / long_sma", ()),
+        StrategyFeatureDefinition("range_ratio", "Completed-candle high-low range relative to close.",
+            ("candles.high", "candles.low", "candles.close"), "(high - low) / close",
+            ("SMA_FILTER_VOL_WINDOW",)),
+    ))
 
 from .sma_with_filter_events import build_sma_with_filter_research_events
 
@@ -90,34 +128,18 @@ def _exit_decision(*, policy: dict[str, object], portfolio: Any, event: Any,
     return ExitDecision(result.triggered, result.rule, result.reason, {"evaluations": result.evaluations})
 
 
-class _SmaRuntime:
-    def __init__(self, *, compiled_contract: Any, execution_timing_policy: Any, portfolio_policy: Any,
-                 fee_rate: float, slippage_bps: float) -> None:
-        self.parameters = dict(compiled_contract.materialized_parameters)
-        self.timing, self.portfolio_policy = execution_timing_policy, portfolio_policy
-        self.fee_rate, self.slippage_bps = fee_rate, slippage_bps
-        self.window = max(int(self.parameters["SMA_LONG"]),
-            int(self.parameters.get("SMA_FILTER_VOL_WINDOW") or 1),
-            int(self.parameters.get("SMA_FILTER_OVEREXT_LOOKBACK") or 1)) + 2
-
-    def initialize(self, context: Any) -> dict[str, object]:
-        return {}
-
-    def on_market_event(self, market: Any, portfolio: Any, state: Any) -> tuple[Any, ...]:
-        snapshot = market.causal_snapshot()
-        offset = max(0, len(snapshot.candles) - self.window)
-        if offset:
-            snapshot = replace(snapshot, candles=snapshot.candles[offset:],
-                               top_of_book_quotes=snapshot.top_of_book_quotes[offset:])
-        events = build_sma_with_filter_research_events(dataset=snapshot,
-            parameter_values=self.parameters, fee_rate=self.fee_rate, slippage_bps=self.slippage_bps,
-            execution_timing_policy=self.timing, portfolio_policy=self.portfolio_policy)
-        return tuple(event for event in events if event.candle_ts == market.current_candle.ts)
+def _runtime_window_rows(parameters: dict[str, object]) -> int:
+    return max(
+        int(parameters["SMA_LONG"]),
+        int(parameters.get("SMA_FILTER_VOL_WINDOW") or 1),
+        int(parameters.get("SMA_FILTER_OVEREXT_LOOKBACK") or 1),
+    ) + 2
 
 
-def _runtime_factory(**values: Any) -> _SmaRuntime:
-    values.pop("context", None)
-    return _SmaRuntime(**values)
+_runtime_factory = make_event_builder_runtime_factory(
+    build_sma_with_filter_research_events,
+    window_rows_builder=_runtime_window_rows,
+)
 
 
 def build_sma_with_filter_plugin() -> ResearchStrategyPlugin:
@@ -131,4 +153,6 @@ def build_sma_with_filter_plugin() -> ResearchStrategyPlugin:
         exit_mode="strategy_owned", runtime_factory=_runtime_factory,
         reconstruction_module=__name__, reconstruction_qualname="build_sma_with_filter_plugin")
 
-__all__ = ["build_sma_with_filter_plugin"]
+STRATEGY_PLUGIN_FACTORY = build_sma_with_filter_plugin
+
+__all__ = ["build_sma_with_filter_plugin", "STRATEGY_PLUGIN_FACTORY"]

@@ -64,7 +64,13 @@ def aggregate_regime_coverage(*, snapshots: Iterable[Any], trades: Iterable[dict
     trade_list = [trade for trade in trades if _is_effective_trade(trade)]
     total = len(snapshot_list)
     rows: list[RegimeCoverageRow] = []
-    for dimension in ("price_regime", "volatility_bucket", "volume_bucket", "composite_regime"):
+    for dimension in (
+        "price_regime",
+        "volatility_bucket",
+        "volume_bucket",
+        "liquidity_bucket",
+        "composite_regime",
+    ):
         candle_counts: dict[str, int] = defaultdict(int)
         trade_counts: dict[str, int] = defaultdict(int)
         for snapshot in snapshot_list:
@@ -100,7 +106,13 @@ def aggregate_regime_performance(
     ]
     coverage_lookup = {(row.dimension, row.regime): row for row in coverage}
     rows: list[RegimePerformanceRow] = []
-    for dimension in ("price_regime", "volatility_bucket", "volume_bucket", "composite_regime"):
+    for dimension in (
+        "price_regime",
+        "volatility_bucket",
+        "volume_bucket",
+        "liquidity_bucket",
+        "composite_regime",
+    ):
         regimes = {row.regime for row in coverage if row.dimension == dimension}
         regimes.update(_snapshot_value(trade.get("entry_regime_snapshot"), dimension) for trade in closed)
         for regime in sorted(regimes):

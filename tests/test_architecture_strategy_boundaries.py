@@ -28,6 +28,8 @@ def test_composition_imports_builtin_package_ownership_surfaces():
     source = Path("src/market_research/research_composition/builtin_registry.py").read_text()
     assert "market_research.builtin_strategies" in source
     assert "market_research.research.strategies" not in source
+    assert "build_sma_with_filter_plugin" not in source
+    assert "build_buy_and_hold_baseline_plugin" not in source
 
 
 def test_architecture_manifest_paths_are_all_scanned_and_strategy_files_classified():
@@ -83,6 +85,27 @@ def test_only_composition_imports_concrete_plugin_factories():
                     and "research_composition" not in path.parts):
                 violations.append(str(path))
     assert violations == []
+
+
+def test_builtin_strategy_discovery_uses_explicit_markers_in_stable_order(monkeypatch):
+    from types import SimpleNamespace
+    import market_research.builtin_strategies as builtins
+
+    first = lambda: "first"
+    second = lambda: "second"
+    modules = {
+        "fixture.alpha": SimpleNamespace(STRATEGY_PLUGIN_FACTORY=first),
+        "fixture.helper": SimpleNamespace(),
+        "fixture.zeta": SimpleNamespace(STRATEGY_PLUGIN_FACTORY=second),
+    }
+    monkeypatch.setattr(
+        builtins,
+        "iter_modules",
+        lambda *_args, **_kwargs: [SimpleNamespace(name=name) for name in reversed(modules)],
+    )
+    monkeypatch.setattr(builtins, "import_module", modules.__getitem__)
+
+    assert builtins.discover_builtin_strategy_factories() == (first, second)
 
 
 def test_generic_strategy_spec_rejects_legacy_concrete_spec_exports():

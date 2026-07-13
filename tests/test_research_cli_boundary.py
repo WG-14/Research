@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from market_research.paths import ResearchPathManager
 from market_research.research_cli.registry import command_registry
 from market_research.settings import ResearchSettings
@@ -25,6 +27,11 @@ RESEARCH_COMMANDS = {
     "research-registry-validate",
     "research-mark-attempt-aborted",
     "research-export-strategy-package",
+    "research-compare",
+    "research-render-report",
+    "research-governance-transition",
+    "research-record-human-review",
+    "research-approve-strategy-candidate",
 }
 
 FORBIDDEN_OPERATIONAL_COMMANDS = {
@@ -84,6 +91,21 @@ def test_research_settings_default_to_external_roots_without_creating_outputs(mo
     assert paths.artifact_path("derived", "candidate.json") == settings.artifact_root / "derived" / "candidate.json"
     assert paths.report_path("research", "summary.json") == settings.report_root / "research" / "summary.json"
     assert not settings.data_root.exists()
+
+
+def test_explicit_outputs_must_be_absolute_and_repository_external(tmp_path) -> None:
+    settings = ResearchSettings(
+        data_root=tmp_path / "data", artifact_root=tmp_path / "artifacts",
+        report_root=tmp_path / "reports", cache_root=tmp_path / "cache",
+        db_path=None, max_workers=1, random_seed=0,
+    )
+    paths = ResearchPathManager.from_settings(settings, project_root=Path.cwd())
+
+    with pytest.raises(ValueError, match="absolute path"):
+        paths.external_output_path("relative.json", label="result")
+    with pytest.raises(ValueError, match="outside the repository"):
+        paths.external_output_path(Path.cwd() / "result.json", label="result")
+    assert paths.external_output_path(tmp_path / "outside.json", label="result") == tmp_path / "outside.json"
 
 
 def test_research_help_has_no_operational_import_or_environment_requirement() -> None:

@@ -14,6 +14,8 @@ class ResearchAppContext:
     paths: ResearchPathManager
     printer: Callable[[str], None] = print
     environment: ResearchEnvironmentSummary | None = None
+    run_id: str | None = None
+    run_result_hash: str | None = None
 
 
 def build_research_context() -> ResearchAppContext:

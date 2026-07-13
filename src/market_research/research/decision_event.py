@@ -124,6 +124,10 @@ class ResearchDecisionEvent:
             "final_signal": self.final_signal, "reason": self.reason,
             "feature_snapshot": canonical_mutable(self.feature_snapshot),
             "strategy_diagnostics": canonical_mutable(self.strategy_diagnostics),
+            "blocked_filters": list(self.blocked_filters),
+            "order_intent": self.order_intent.as_dict() if self.order_intent is not None else None,
+            "exit_intent": self.exit_intent.as_dict() if self.exit_intent is not None else None,
+            "extra_payload": canonical_mutable(self.extra_payload),
         }
 
     def __getitem__(self, key: str) -> object:

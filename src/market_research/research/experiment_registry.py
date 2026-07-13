@@ -62,7 +62,12 @@ def research_freedom_hash(payload: dict[str, Any]) -> str:
         {
             "experiment_family_id": payload.get("experiment_family_id"),
             "hypothesis_id": payload.get("hypothesis_id"),
+            "hypothesis_version": payload.get("hypothesis_version"),
+            "hypothesis_contract_hash": payload.get("hypothesis_contract_hash"),
+            "hypothesis_semantic_fingerprint": payload.get("hypothesis_semantic_fingerprint"),
             "hypothesis_status": payload.get("hypothesis_status"),
+            "pre_registered_at": payload.get("pre_registered_at"),
+            "registration_evidence_hash": payload.get("registration_evidence_hash"),
             "dataset_snapshot_id": payload.get("dataset_snapshot_id"),
             "dataset_artifact_evidence_hash": payload.get("dataset_artifact_evidence_hash"),
             "train_split_hash": payload.get("train_split_hash"),
@@ -94,23 +99,44 @@ def research_freedom_hash(payload: dict[str, Any]) -> str:
 def research_identity_from_manifest(manifest: Any) -> dict[str, Any]:
     raw = getattr(manifest, "raw", {}) if isinstance(getattr(manifest, "raw", {}), dict) else {}
     experiment_id = str(getattr(manifest, "experiment_id", "") or raw.get("experiment_id") or "")
-    explicit_family = raw.get("experiment_family_id")
-    explicit_hypothesis = raw.get("hypothesis_id")
+    spec = getattr(manifest, "hypothesis_spec", None)
     manifest_hypothesis = getattr(manifest, "hypothesis", None)
-    family_id = str(explicit_family or experiment_id)
-    hypothesis_id = str(explicit_hypothesis or manifest_hypothesis or experiment_id)
+    if spec is not None:
+        family_id = str(spec.experiment_family_id)
+        hypothesis_id = str(spec.hypothesis_id)
+        status = str(spec.registration_status)
+        identity_source = "manifest.hypothesis_spec"
+        family_source = "manifest.hypothesis_spec.experiment_family_id"
+        version = str(spec.version)
+        contract_hash = str(spec.contract_hash())
+        semantic_fingerprint = str(spec.semantic_fingerprint())
+        pre_registered_at = spec.pre_registered_at
+        registration_evidence_hash = spec.registration_evidence_hash
+        pre_registration_verified = bool(spec.pre_registration_verified)
+    else:
+        family_id = experiment_id
+        hypothesis_id = sha256_prefixed({"legacy_hypothesis": manifest_hypothesis or experiment_id})
+        status = "unregistered"
+        identity_source = "legacy_manifest.hypothesis"
+        family_source = "experiment_id"
+        version = None
+        contract_hash = None
+        semantic_fingerprint = None
+        pre_registered_at = None
+        registration_evidence_hash = None
+        pre_registration_verified = False
     return {
         "experiment_family_id": family_id,
         "hypothesis_id": hypothesis_id,
-        "hypothesis_status": str(raw.get("hypothesis_status") or "pre_registered"),
-        "hypothesis_identity_source": (
-            "manifest.hypothesis_id"
-            if explicit_hypothesis
-            else "manifest.hypothesis"
-            if manifest_hypothesis
-            else "experiment_id"
-        ),
-        "experiment_family_identity_source": "manifest.experiment_family_id" if explicit_family else "experiment_id",
+        "hypothesis_version": version,
+        "hypothesis_contract_hash": contract_hash,
+        "hypothesis_semantic_fingerprint": semantic_fingerprint,
+        "hypothesis_status": status,
+        "hypothesis_identity_source": identity_source,
+        "experiment_family_identity_source": family_source,
+        "pre_registered_at": pre_registered_at,
+        "registration_evidence_hash": registration_evidence_hash,
+        "pre_registration_verified": pre_registration_verified,
         "experiment_id": experiment_id,
     }
 
@@ -706,7 +732,12 @@ def _extend_registry_field_mismatch_reasons(
         "experiment_id",
         "experiment_family_id",
         "hypothesis_id",
+        "hypothesis_version",
+        "hypothesis_contract_hash",
+        "hypothesis_semantic_fingerprint",
         "hypothesis_status",
+        "pre_registered_at",
+        "registration_evidence_hash",
         "hypothesis_identity_source",
         "experiment_family_identity_source",
         "manifest_hash",

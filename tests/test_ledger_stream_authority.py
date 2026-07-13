@@ -51,3 +51,22 @@ def test_pending_after_dataset_fill_has_explicit_pending_evidence():
     assert pending["pending_execution_at_end"] is True
     assert pending["pending_execution_after_dataset_end"] is True
     run.validate_execution_lineage()
+
+
+def test_after_period_fill_costs_are_excluded_from_performance_accounting():
+    data = _dataset()
+    quote = TopOfBookQuote(ts=301_000, pair="KRW-BTC", bid_price=104, ask_price=105,
+                           spread_bps=10, source="fixture")
+    data = replace(data, top_of_book_event_quotes=(quote,))
+    run = run_common_simulation_backtest(
+        plugin=resolve_research_strategy("buy_and_hold_baseline"), dataset=data,
+        parameter_values={"BUY_HOLD_BUY_INDEX": 4}, fee_rate=.001, slippage_bps=10,
+        execution_timing_policy=ExecutionTimingPolicy(
+            fill_reference_policy="first_orderbook_after_decision", max_quote_wait_ms=3000),
+    )
+    assert run.fills[0].fee > 0.0
+    assert not run.ledger_entries
+    assert run.metrics.fee_total == 0.0
+    assert run.metrics_v2.cost_execution.fee_total == 0.0
+    assert run.metrics_v2.cost_execution.slippage_total == 0.0
+    assert run.metrics_v2.trade_quality.execution_count == 0

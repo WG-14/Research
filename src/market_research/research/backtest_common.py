@@ -238,6 +238,18 @@ def _trace_execution(context: BacktestRunContext, trade: dict[str, object]) -> N
     sink.write_execution(dict(trade))
 
 
+def _trace_lineage_event(
+    context: BacktestRunContext,
+    *,
+    stream: str,
+    payload: dict[str, object],
+) -> None:
+    sink = context.audit_trace
+    writer = getattr(sink, f"write_{stream}", None) if sink is not None else None
+    if callable(writer):
+        writer(dict(payload))
+
+
 def _complete_audit_trace(context: BacktestRunContext, *, status: str) -> dict[str, object] | None:
     sink = context.audit_trace
     if sink is None:
@@ -1367,5 +1379,6 @@ timing_request_fields = _timing_request_fields
 trace_decision = _trace_decision
 trace_equity_mark = _trace_equity_mark
 trace_execution = _trace_execution
+trace_lineage_event = _trace_lineage_event
 trade_from_fill = _trade_from_fill
 trade_hash_payload = _trade_hash_payload

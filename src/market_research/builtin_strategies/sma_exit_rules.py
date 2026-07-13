@@ -23,7 +23,7 @@ def materialize_sma_exit_policy(strategy_name: str, parameter_values: dict[str, 
         for item in str(parameter_values.get("STRATEGY_EXIT_RULES") or "stop_loss,opposite_cross,max_holding_time").split(",")
         if item.strip()
     )
-    allowed = {"stop_loss", "take_profit", "edge_invalidation", "opposite_cross", "crossover", "max_holding_time", "time_exit"}
+    allowed = {"stop_loss", "take_profit", "edge_invalidation", "opposite_cross", "max_holding_time"}
     unknown = sorted(set(names) - allowed)
     if unknown:
         raise ValueError(f"unknown exit rule={unknown[0]!r}")

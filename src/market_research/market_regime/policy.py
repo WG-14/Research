@@ -204,7 +204,10 @@ def _row_value(row: Any, key: str, default: Any = None) -> Any:
 def _matches(row: Any, regime: str) -> bool:
     name = _row_regime(row)
     dimension = _row_dimension(row)
-    return name == regime or (dimension in {"price_regime", "volatility_bucket", "volume_bucket"} and name == regime)
+    return name == regime or (
+        dimension in {"price_regime", "volatility_bucket", "volume_bucket", "liquidity_bucket"}
+        and name == regime
+    )
 
 
 def evaluate_regime_acceptance_gate(

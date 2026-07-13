@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from typing import Any
 
 from .context import ResearchAppContext
 
@@ -28,6 +29,49 @@ def execute_research_command(
         )
 
     from market_research.research import cli
+
+    lifecycle_commands = {
+        "research-backtest",
+        "research-walk-forward",
+        "research-validate",
+        "research-reproduce-run",
+    }
+    if command in lifecycle_commands:
+        from market_research.research.run_lifecycle import start_run
+
+        handle = start_run(
+            manager=context.paths,
+            command=command,
+            command_args=_namespace_payload(args),
+        )
+        context.run_id = handle.run_id
+        context.run_result_hash = None
+        try:
+            rc = _dispatch_research_command(command, args, context, cli)
+        except BaseException as exc:
+            handle.finish(
+                status="ABORTED" if isinstance(exc, KeyboardInterrupt) else "FAILED",
+                exit_code=130 if isinstance(exc, KeyboardInterrupt) else 1,
+                result_content_hash=context.run_result_hash,
+                error=exc,
+            )
+            raise
+        handle.finish(
+            status="SUCCEEDED" if rc == 0 else "FAILED",
+            exit_code=rc,
+            result_content_hash=context.run_result_hash,
+        )
+        return rc
+
+    return _dispatch_research_command(command, args, context, cli)
+
+
+def _dispatch_research_command(
+    command: str,
+    args: argparse.Namespace,
+    context: ResearchAppContext,
+    cli: Any,
+) -> int:
 
     if command == "research-backtest":
         return int(cli.cmd_research_backtest(
@@ -86,5 +130,45 @@ def execute_research_command(
     if command == "research-mark-attempt-aborted":
         return int(cli.cmd_research_mark_attempt_aborted(context=context, row_hash=args.row_hash, reason=args.reason))
     if command == "research-export-strategy-package":
-        return int(cli.cmd_research_export_strategy_package(context=context, result_path=args.result, out_path=args.out))
+        return int(cli.cmd_research_export_strategy_package(
+            context=context, result_path=args.result, approval_path=args.approval, out_path=args.out,
+        ))
+    if command == "research-compare":
+        return int(cli.cmd_research_compare(
+            context=context, report_paths=tuple(args.report), out_path=args.out,
+        ))
+    if command == "research-render-report":
+        return int(cli.cmd_research_render_report(
+            context=context, report_path=args.report, out_path=args.out,
+        ))
+    if command == "research-governance-transition":
+        return int(cli.cmd_research_governance_transition(
+            context=context, subject_type=args.subject_type, subject_id=args.subject_id,
+            subject_version=args.subject_version, from_state=args.from_state,
+            to_state=args.to_state, actor_id=args.actor, reason=args.reason,
+            evidence=tuple(args.evidence),
+        ))
+    if command == "research-record-human-review":
+        return int(cli.cmd_research_record_human_review(
+            context=context, subject_type=args.subject_type, subject_id=args.subject_id,
+            subject_version=args.subject_version, decision=args.decision,
+            reviewer_id=args.reviewer, reviewer_role=args.reviewer_role,
+            rationale=args.rationale, reviewed_artifact_hash=args.reviewed_artifact_hash,
+            requested_changes_path=args.requested_changes,
+            resolved_requirement_ids=tuple(args.resolved_requirement),
+        ))
+    if command == "research-approve-strategy-candidate":
+        return int(cli.cmd_research_approve_strategy_candidate(
+            context=context, result_path=args.result, subject_version=args.subject_version,
+            reviewer_id=args.reviewer, rationale=args.rationale,
+            resolved_requirement_ids=tuple(args.resolved_requirement), out_path=args.out,
+        ))
     raise ValueError(f"unsupported research command: {command}")
+
+
+def _namespace_payload(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in vars(args).items()
+        if key not in {"func", "handler"}
+    }

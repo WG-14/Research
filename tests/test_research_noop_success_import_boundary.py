@@ -52,7 +52,6 @@ raise SystemExit(rc)
     assert json.loads(result.stdout.splitlines()[-1]) == {"rc": 0, "forbidden": []}
     report_path = (
         root
-        / "artifacts"
         / "reports"
         / "research"
         / "noop_success_import_boundary"

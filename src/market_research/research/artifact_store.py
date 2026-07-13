@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -86,9 +88,21 @@ class ArtifactBudgetExceeded(RuntimeError):
         return payload
 
 
+class ResearchArtifactCollisionError(RuntimeError):
+    """Raised when a run attempts to reuse an already claimed evidence path."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = str(path.resolve())
+        super().__init__(f"research_artifact_path_already_claimed:{self.path}")
+
+
 class ArtifactStore:
-    def __init__(self, *, root: Path, budget: ArtifactBudget | None = None) -> None:
+    def __init__(
+        self, *, root: Path, budget: ArtifactBudget | None = None,
+        additional_roots: tuple[Path, ...] = (),
+    ) -> None:
         self.root = root.resolve()
+        self.roots = (self.root, *(path.resolve() for path in additional_roots))
         self.budget = budget or ArtifactBudget()
         self._known_files: set[Path] = set()
         self._total_bytes = 0
@@ -143,7 +157,7 @@ class ArtifactStore:
 
     def _reserve_file(self, path: Path) -> None:
         resolved = path.resolve()
-        if self.root not in resolved.parents and resolved != self.root:
+        if not any(root == resolved or root in resolved.parents for root in self.roots):
             raise ValueError(f"artifact path outside store root: {resolved}")
         if resolved not in self._known_files:
             next_count = len(self._known_files) + 1
@@ -205,9 +219,7 @@ class ResearchArtifactContext:
     """Run-wide accounting for one research experiment's generated artifacts.
 
     The budget is intentionally run-wide, not per trace scope. It covers the
-    existing research output buckets for one experiment:
-    `data/<mode>/derived/research/<experiment_id>` and
-    `data/<mode>/reports/research/<experiment_id>`.
+    configured derived-artifact and report buckets for one experiment.
     """
 
     def __init__(
@@ -220,8 +232,12 @@ class ResearchArtifactContext:
         self.manager = manager
         self.experiment_id = experiment_id
         self.derived_root = (manager.data_dir() / "derived" / "research" / experiment_id).resolve()
-        self.report_root = (manager.data_dir() / "reports" / "research" / experiment_id).resolve()
-        self.store = ArtifactStore(root=manager.data_dir(), budget=budget)
+        self.report_root = manager.report_path("research", experiment_id).resolve()
+        self.store = ArtifactStore(
+            root=manager.data_dir(), budget=budget, additional_roots=(manager.report_root,),
+        )
+        self._claimed_paths: set[Path] = set()
+        self._claim_root = self.derived_root / ".path_claims"
 
     @property
     def budget(self) -> ArtifactBudget:
@@ -245,11 +261,45 @@ class ResearchArtifactContext:
 
     def write_json_atomic(self, path: Path, payload: dict[str, Any]) -> ArtifactWriteEvent:
         self._ensure_in_research_run(path)
+        self.claim_path(path)
         return self.store.write_json_atomic(path, payload)
 
     def append_jsonl(self, path: Path, payload: dict[str, Any], *, audit_stream: bool = False) -> None:
         self._ensure_in_research_run(path)
+        self.claim_path(path)
         self.store.append_jsonl(path, payload, audit_stream=audit_stream)
+
+    def claim_path(self, path: Path) -> None:
+        """Atomically reserve one immutable evidence path for this run context.
+
+        Rewrites from the same context remain possible during report finalization,
+        but another process or a later run cannot append to or replace the path.
+        Claim files deliberately survive failures so partial evidence is not
+        mistaken for an unused run namespace.
+        """
+        self._ensure_in_research_run(path)
+        resolved = path.resolve()
+        if resolved in self._claimed_paths:
+            return
+        if ResearchPathManager.is_within(resolved, self.manager.data_dir()):
+            relative = "artifact:" + resolved.relative_to(self.manager.data_dir().resolve()).as_posix()
+        else:
+            relative = "report:" + resolved.relative_to(self.manager.report_root.resolve()).as_posix()
+        claim_name = hashlib.sha256(relative.encode("utf-8")).hexdigest() + ".claim"
+        self._claim_root.mkdir(parents=True, exist_ok=True)
+        claim_path = self._claim_root / claim_name
+        try:
+            fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError as exc:
+            raise ResearchArtifactCollisionError(resolved) from exc
+        try:
+            if resolved.exists():
+                raise ResearchArtifactCollisionError(resolved)
+            os.write(fd, (relative + "\n").encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        self._claimed_paths.add(resolved)
 
     def _ensure_in_research_run(self, path: Path) -> None:
         resolved = path.resolve()

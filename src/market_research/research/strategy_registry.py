@@ -42,6 +42,24 @@ class StrategyRegistry:
             raise StrategyRegistryError(f"stale_research_strategy_contract:{key}")
         return plugin
 
+    def execution_scope_hash(self, name: str) -> str:
+        """Hash only the selected strategy contract used by one execution.
+
+        ``content_hash`` remains the immutable catalog/transport identity.  An
+        execution contract must not, however, change merely because an
+        unrelated strategy is added to that catalog.
+        """
+        plugin = self.resolve(name)
+        return sha256_prefixed({
+            "schema_version": 1,
+            "strategy_name": plugin.name,
+            "strategy_plugin_contract_hash": self.plugin_contract_hashes[plugin.name],
+        })
+
+    def accepts_execution_hash(self, name: str, value: str) -> bool:
+        """Accept current scoped hashes and same-catalog legacy v2 hashes."""
+        return value in {self.execution_scope_hash(name), self.content_hash}
+
     def descriptor(self) -> dict[str, object]:
         """Return the deterministic, process-safe reconstruction contract."""
         plugins: list[dict[str, object]] = []

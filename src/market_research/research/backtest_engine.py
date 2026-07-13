@@ -54,7 +54,7 @@ from .experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
 from .strategy_registry import StrategyRegistry
 
 
-def _run_registered_strategy_backtest(
+def run_registered_strategy_backtest(
     strategy_name: str,
     *,
     dataset: DatasetSnapshot,
@@ -93,7 +93,7 @@ def run_sma_backtest(
     context: BacktestRunContext | None = None,
     strategy_registry: StrategyRegistry,
 ) -> BacktestRun:
-    return _run_registered_strategy_backtest(
+    return run_registered_strategy_backtest(
         "sma_with_filter",
         dataset=dataset,
         parameter_values=parameter_values,
@@ -126,7 +126,7 @@ def run_noop_baseline_backtest(
     strategy_registry: StrategyRegistry,
 ) -> BacktestRun:
     # Compatibility path ultimately reaches run_decision_event_backtest.
-    return _run_registered_strategy_backtest(
+    return run_registered_strategy_backtest(
         "noop_baseline",
         dataset=dataset,
         parameter_values=parameter_values,
@@ -154,7 +154,7 @@ def run_buy_and_hold_baseline_backtest(
     context: BacktestRunContext | None = None,
     strategy_registry: StrategyRegistry,
 ) -> BacktestRun:
-    return _run_registered_strategy_backtest(
+    return run_registered_strategy_backtest(
         "buy_and_hold_baseline",
         dataset=dataset,
         parameter_values=parameter_values,

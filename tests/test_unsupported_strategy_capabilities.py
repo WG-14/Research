@@ -4,11 +4,12 @@ import pytest
 
 from market_research.research.decision_event import OrderIntent, ResearchDecisionEvent
 from market_research.research.execution_model import FixedBpsExecutionModel
-from market_research.research.experiment_manifest import legacy_research_portfolio_policy
+from market_research.research.experiment_manifest import ExecutionTimingPolicy, legacy_research_portfolio_policy
 from market_research.research.simulation_engine import run_common_simulation_backtest
 from market_research.research_composition import resolve_builtin_strategy as resolve_research_strategy
 from market_research.research.strategy_compiler import StrategyCompiler
 from market_research.research.strategy_registry import StrategyRegistry
+from market_research.research.strategy_contract import StrategyCapabilityContract
 from tests.test_common_simulation_engine import _dataset
 
 
@@ -90,7 +91,55 @@ def test_explicit_full_position_sell_is_accepted():
     data = replace(data, candles=data.candles[:1])
     run = run_common_simulation_backtest(plugin=plugin, registry=registry, compiled_contract=compiled,
         dataset=data, parameter_values={}, fee_rate=0, slippage_bps=0, execution_model=model,
-        portfolio_policy=replace(legacy_research_portfolio_policy(), initial_position_qty=1.0))
+        portfolio_policy=replace(legacy_research_portfolio_policy(), initial_position_qty=1.0),
+        execution_timing_policy=ExecutionTimingPolicy(
+            fill_reference_policy="candle_close_legacy",
+            allow_same_candle_close_fill=True,
+            source="explicit_test_legacy_opt_in",
+        ))
     assert model.count == 1
     assert run.execution_requests[0].requested_qty == 1.0
     assert run.ledger_entries[0].side == "SELL"
+
+
+def test_declared_partial_exit_uses_common_execution_and_ledger_path():
+    plugin = replace(
+        _plugin_with_intents({
+            "side": "SELL",
+            "sizing": "explicit_quantity",
+            "requested_qty": 0.5,
+        }),
+        required_capabilities=StrategyCapabilityContract(partial_exit=True),
+    )
+    registry = StrategyRegistry.build((plugin,))
+    compiled = StrategyCompiler(registry).compile(
+        strategy_name=plugin.name,
+        raw_parameters={},
+        fee_rate=0,
+        slippage_bps=0,
+    )
+    model = SpyModel()
+    data = replace(_dataset(), candles=_dataset().candles[:1])
+
+    run = run_common_simulation_backtest(
+        plugin=plugin,
+        registry=registry,
+        compiled_contract=compiled,
+        dataset=data,
+        parameter_values={},
+        fee_rate=0,
+        slippage_bps=0,
+        execution_model=model,
+        portfolio_policy=replace(
+            legacy_research_portfolio_policy(), initial_position_qty=1.0
+        ),
+        execution_timing_policy=ExecutionTimingPolicy(
+            fill_reference_policy="candle_close_legacy",
+            allow_same_candle_close_fill=True,
+            source="explicit_test_legacy_opt_in",
+        ),
+    )
+
+    assert model.count == 1
+    assert run.ledger_entries[0].qty == 0.5
+    assert run.resource_usage["final_asset_qty"] == 0.5

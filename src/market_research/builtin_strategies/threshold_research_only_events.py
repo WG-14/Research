@@ -21,12 +21,14 @@ def build_threshold_research_only_events(
     execution_timing_policy: ExecutionTimingPolicy,
     portfolio_policy: PortfolioPolicy,
     context: Any | None = None,
+    candle_index_offset: int = 0,
 ) -> tuple[ResearchDecisionEvent, ...]:
     """Evaluate the strict close-above threshold on every candle."""
-    del fee_rate, slippage_bps, context
+    del fee_rate, slippage_bps, portfolio_policy, context
     threshold = float(parameter_values["THRESHOLD_CLOSE_ABOVE"])
     events: list[ResearchDecisionEvent] = []
-    for index, candle in enumerate(dataset.candles):
+    for local_index, candle in enumerate(dataset.candles):
+        index = int(candle_index_offset) + local_index
         close = float(candle.close)
         is_buy = close > threshold
         signal = "BUY" if is_buy else "HOLD"
@@ -57,7 +59,7 @@ def build_threshold_research_only_events(
                 order_intent=(
                     OrderIntent.from_decision(decision_id=decision_id, side="BUY",
                         sizing="portfolio_policy_fractional_cash",
-                        buy_fraction=float(portfolio_policy.position_sizing.buy_fraction), reason=reason)
+                        reason=reason)
                     if is_buy
                     else None
                 ),

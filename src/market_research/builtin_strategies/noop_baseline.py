@@ -1,9 +1,10 @@
 """Built-in noop plugin implementation."""
-from dataclasses import replace
-from typing import Any
 
 from market_research.research.strategy_contract import ResearchStrategyPlugin
-from market_research.research.strategy_spec import StrategySpec
+from market_research.research.strategy_spec import (
+    StrategyFeatureDefinition, StrategyRuleDeclaration, StrategyRuleSpec, StrategySpec,
+)
+from market_research.strategy_sdk.runtime import make_event_builder_runtime_factory
 
 NOOP_BASELINE_SPEC = StrategySpec(
     strategy_name="noop_baseline", strategy_version="noop_baseline.research_contract.v1",
@@ -13,34 +14,27 @@ NOOP_BASELINE_SPEC = StrategySpec(
     default_parameters={"NOOP_DECISION_START_INDEX": 0, "NOOP_DECISION_REASON": "noop_baseline_hold"},
     decision_contract_version="research_noop_baseline_decision_contract.v1", required_data=("candles",),
     optional_data=(), exit_policy_schema={"schema_version": 1, "rules": (),
-        "description": "No-op baseline never emits executable entry or exit intent."})
+        "description": "No-op baseline never emits executable entry or exit intent."},
+    rule_spec=StrategyRuleSpec(1,
+        entry=StrategyRuleDeclaration("noop_hold", "Always emit HOLD.", "always"),
+        take_profit=StrategyRuleDeclaration("take_profit", "No take-profit exit.", "never"),
+        edge_invalidation=StrategyRuleDeclaration("edge_invalidation", "No edge-invalidation exit.", "never"),
+        time_exit=StrategyRuleDeclaration("time_exit", "No time exit.", "never"),
+        stop_loss=StrategyRuleDeclaration("stop_loss", "No stop-loss exit.", "never"),
+        position_sizing=StrategyRuleDeclaration("no_position", "Never allocate capital.", "always"),
+        entry_prohibitions=(StrategyRuleDeclaration("all_entries", "Block every entry.", "always"),)),
+    feature_definitions=(StrategyFeatureDefinition(
+        "decision_index", "Zero-based candle index used only to emit deterministic HOLD decisions.",
+        ("candles",), "candle_index", ("NOOP_DECISION_START_INDEX",),
+    ),))
 from .noop_baseline_events import build_noop_baseline_events
 
 
-class _NoopRuntime:
-    def __init__(self, *, compiled_contract: Any, execution_timing_policy: Any,
-                 portfolio_policy: Any, fee_rate: float, slippage_bps: float) -> None:
-        self.parameters = dict(compiled_contract.materialized_parameters)
-        self.timing, self.portfolio_policy = execution_timing_policy, portfolio_policy
-        self.fee_rate, self.slippage_bps = fee_rate, slippage_bps
-
-    def initialize(self, context: Any) -> dict[str, object]:
-        return {}
-
-    def on_market_event(self, market: Any, portfolio: Any, state: Any) -> tuple[Any, ...]:
-        snapshot = market.causal_snapshot()
-        current = replace(snapshot, candles=(market.current_candle,),
-                          top_of_book_quotes=snapshot.top_of_book_quotes[-1:])
-        events = build_noop_baseline_events(dataset=current,
-            parameter_values=self.parameters, fee_rate=self.fee_rate, slippage_bps=self.slippage_bps,
-            execution_timing_policy=self.timing, portfolio_policy=self.portfolio_policy,
-            candle_index_offset=market.current_index)
-        return events
-
-
-def _runtime_factory(**values: Any) -> _NoopRuntime:
-    values.pop("context", None)
-    return _NoopRuntime(**values)
+_runtime_factory = make_event_builder_runtime_factory(
+    build_noop_baseline_events,
+    current_candle_only=True,
+    pass_candle_index_offset=True,
+)
 
 
 def build_noop_baseline_plugin() -> ResearchStrategyPlugin:
@@ -52,4 +46,6 @@ def build_noop_baseline_plugin() -> ResearchStrategyPlugin:
         diagnostics_namespace="noop_baseline", runtime_factory=_runtime_factory,
         reconstruction_module=__name__, reconstruction_qualname="build_noop_baseline_plugin")
 
-__all__ = ["build_noop_baseline_plugin"]
+STRATEGY_PLUGIN_FACTORY = build_noop_baseline_plugin
+
+__all__ = ["build_noop_baseline_plugin", "STRATEGY_PLUGIN_FACTORY"]

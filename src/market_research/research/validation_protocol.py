@@ -37,7 +37,10 @@ from .datasets.locators import LocatorValidationError, parse_immutable_locator
 from .datasets.artifact_manifest import ArtifactManifestError, load_artifact_manifest
 from .datasets.verification import DatasetVerificationResult, VerificationStatus, verification_allowed
 from .backtest_common import execution_event_summary
+from .benchmark_suite import BenchmarkSuiteRunner
+from .walk_forward_selection import build_walk_forward_selection_evidence
 from .simulation_engine import run_common_simulation_backtest
+from .decision_stream_perturbation import EntrySignalOmissionTransformer
 from .execution_evidence import validate_execution_evidence
 from .backtest_types import (
     BacktestHeartbeatPolicy,
@@ -85,6 +88,7 @@ from .final_selection import (
     validate_selection_artifact,
 )
 from .hashing import content_hash_payload, observe_hashing, sha256_prefixed
+from .hash_chain import append_hash_chained_jsonl
 from .family_registry import (
     append_family_trial_registry_row,
     family_trial_registry_path,
@@ -910,19 +914,28 @@ def _reserve_experiment_attempt(
         "run_id": manifest.experiment_id,
         "experiment_family_id": experiment_family_id,
         "hypothesis_id": hypothesis_id,
+        "hypothesis_version": identity["hypothesis_version"],
+        "hypothesis_contract_hash": identity["hypothesis_contract_hash"],
+        "hypothesis_semantic_fingerprint": identity["hypothesis_semantic_fingerprint"],
         "hypothesis_status": hypothesis_status,
         "hypothesis_identity_source": identity["hypothesis_identity_source"],
         "experiment_family_identity_source": identity["experiment_family_identity_source"],
+        "pre_registered_at": identity["pre_registered_at"],
+        "registration_evidence_hash": identity["registration_evidence_hash"],
         "experiment_id": manifest.experiment_id,
         "manifest_hash": manifest.manifest_hash(),
         "manifest_metadata_hash": sha256_prefixed(
             {
-                "experiment_family_id": manifest.raw.get("experiment_family_id"),
-                "hypothesis_id": manifest.raw.get("hypothesis_id"),
-                "hypothesis_status": manifest.raw.get("hypothesis_status"),
+                "experiment_family_id": experiment_family_id,
+                "hypothesis_id": hypothesis_id,
+                "hypothesis_version": identity["hypothesis_version"],
+                "hypothesis_contract_hash": identity["hypothesis_contract_hash"],
+                "hypothesis_semantic_fingerprint": identity["hypothesis_semantic_fingerprint"],
+                "hypothesis_status": hypothesis_status,
                 "attempt_index": manifest.raw.get("attempt_index"),
                 "holdout_reuse_count": manifest.raw.get("holdout_reuse_count"),
-                "pre_registered_at": manifest.raw.get("pre_registered_at"),
+                "pre_registered_at": identity["pre_registered_at"],
+                "registration_evidence_hash": identity["registration_evidence_hash"],
             }
         ),
         "dataset_snapshot_id": manifest.dataset.snapshot_id,
@@ -1084,9 +1097,11 @@ def _append_candidate_event(
         experiment_id=manifest.experiment_id,
         budget=_artifact_budget_from_limits(manifest.research_run.resource_limits),
     )
-    store.append_jsonl(
-        _candidate_events_path(manager, manifest.experiment_id),
-        {"experiment_id": manifest.experiment_id, "manifest_hash": manifest.manifest_hash(), **event},
+    append_hash_chained_jsonl(
+        store=store,
+        path=_candidate_events_path(manager, manifest.experiment_id),
+        payload={"experiment_id": manifest.experiment_id, "manifest_hash": manifest.manifest_hash(), **event},
+        label="candidate_event",
     )
 
 
@@ -1674,7 +1689,9 @@ def run_research_backtest(
     candidate_evaluator: CandidateScenarioEvaluator | None = None,
     strategy_registry: StrategyRegistry,
 ) -> dict[str, Any]:
-    if manifest.validated_strategy_registry_hash != strategy_registry.content_hash:
+    if not strategy_registry.accepts_execution_hash(
+        manifest.strategy_name, str(manifest.validated_strategy_registry_hash or "")
+    ):
         raise ResearchValidationError("manifest_runtime_strategy_registry_hash_mismatch")
     strategy_registry.resolve(manifest.strategy_name)
     _enforce_fast_tier_research_runner_policy(
@@ -1885,7 +1902,9 @@ def run_research_walk_forward(
     candidate_evaluator: CandidateScenarioEvaluator | None = None,
     strategy_registry: StrategyRegistry,
 ) -> dict[str, Any]:
-    if manifest.validated_strategy_registry_hash != strategy_registry.content_hash:
+    if not strategy_registry.accepts_execution_hash(
+        manifest.strategy_name, str(manifest.validated_strategy_registry_hash or "")
+    ):
         raise ResearchValidationError("manifest_runtime_strategy_registry_hash_mismatch")
     strategy_registry.resolve(manifest.strategy_name)
     _enforce_fast_tier_research_runner_policy(
@@ -2133,7 +2152,7 @@ def run_final_holdout_confirmation(
     compiled_contract = validate_compiled_strategy_contract(
         compiled_payload,
         expected_strategy_name=manifest.strategy_name,
-        expected_registry_hash=strategy_registry.content_hash,
+        expected_registry_hash=strategy_registry.execution_scope_hash(manifest.strategy_name),
         expected_plugin_hash=plugin.contract_hash(),
         expected_compiled_hash=str(artifact["compiled_strategy_contract_hash"]),
     )
@@ -2314,6 +2333,9 @@ def _reserve_final_holdout_authorization(
         "experiment_id": manifest.experiment_id,
         "experiment_family_id": identity["experiment_family_id"],
         "hypothesis_id": identity["hypothesis_id"],
+        "hypothesis_version": identity["hypothesis_version"],
+        "hypothesis_contract_hash": identity["hypothesis_contract_hash"],
+        "hypothesis_semantic_fingerprint": identity["hypothesis_semantic_fingerprint"],
         "hypothesis_status": identity["hypothesis_status"],
         "manifest_hash": manifest.manifest_hash(),
         "research_classification": manifest.research_classification,
@@ -2921,6 +2943,15 @@ def _evaluate_candidates(
             base_results=base_results,
             pre_stress_gate_by_index=pre_stress_gate_by_index,
         )
+        selected_walk_forward = (
+            build_walk_forward_selection_evidence(
+                candidates=base_results,
+                acceptance_gate=manifest.acceptance_gate,
+                min_windows=manifest.walk_forward.min_windows,
+            )
+            if include_walk_forward and manifest.walk_forward is not None
+            else None
+        )
         for base in base_results:
             index = int(base["index"])
             params = dict(base["parameter_values"])
@@ -2935,6 +2966,13 @@ def _evaluate_candidates(
             parameter_source_map = dict(compiled_payload["parameter_source_map"])
             active_exit_policy = dict(compiled_payload.get("exit_policy") or {})
             active_exit_policy_hash = exit_policy_hash(active_exit_policy)
+            executed_compiled_contract = validate_compiled_strategy_contract(
+                compiled_payload,
+                expected_strategy_name=manifest.strategy_name,
+                expected_registry_hash=strategy_registry.execution_scope_hash(manifest.strategy_name),
+                expected_plugin_hash=strategy_plugin.contract_hash(),
+                expected_compiled_hash=str(compiled_hash),
+            )
             stability_payload = stability[index]
             stability_score = stability_payload["score"]
             train_metrics = dict(base["train_metrics"])
@@ -2943,7 +2981,12 @@ def _evaluate_candidates(
             validation_metrics_v2 = dict(base["validation_metrics_v2"])
             train_metrics["parameter_stability_score"] = stability_score
             validation_metrics["parameter_stability_score"] = stability_score
-            walk_forward = base["walk_forward_metrics"]
+            fixed_parameter_walk_forward = base["walk_forward_metrics"]
+            walk_forward = (
+                selected_walk_forward
+                if requires_candidate_validation(manifest.research_classification)
+                else fixed_parameter_walk_forward
+            )
             regime_gate = evaluate_regime_acceptance_gate(
                 gate=manifest.acceptance_gate.regime_acceptance_gate,
                 performance_rows=tuple(base.get("validation_regime_performance") or ()),
@@ -2966,6 +3009,18 @@ def _evaluate_candidates(
             stress_contract = manifest.stress_suite.as_dict() if manifest.stress_suite is not None else None
             stress_contract_hash = sha256_prefixed(stress_contract) if stress_contract is not None else None
             if manifest.stress_suite is not None:
+                signal_omission_runs = _signal_omission_stress_runs(
+                    manifest=manifest,
+                    snapshot=snapshots["validation"],
+                    scenario=scenario,
+                    scenario_id=scenario_id,
+                    scenario_index=scenario_index,
+                    candidate_id=str(base["candidate_id"]),
+                    parameter_values=params,
+                    plugin=strategy_plugin,
+                    registry=strategy_registry,
+                    compiled_contract=executed_compiled_contract,
+                )
                 validation_stress_suite = analyze_stress_suite(
                     contract=manifest.stress_suite,
                     context=StressSuiteContext(
@@ -2987,6 +3042,7 @@ def _evaluate_candidates(
                     ),
                     starting_cash=manifest.portfolio_policy.starting_cash_krw,
                     parameter_perturbation_candidates=perturbation_candidates,
+                    signal_omission_runs=signal_omission_runs,
                 )
                 stress_fail_reasons.extend(str(reason) for reason in validation_stress_suite.get("fail_reasons") or [])
                 stress_gate_result = "PASS" if not stress_fail_reasons else "FAIL"
@@ -3156,6 +3212,7 @@ def _evaluate_candidates(
                 "train_metrics_v2": train_metrics_v2,
                 "validation_metrics_v2": validation_metrics_v2,
                 "walk_forward_metrics": walk_forward,
+                "fixed_parameter_walk_forward_diagnostics": fixed_parameter_walk_forward,
                 "regime_gate_result": regime_gate.as_dict(),
                 "market_regime_bucket_performance": base["validation_regime_performance"],
                 "market_regime_coverage": base["validation_regime_coverage"],
@@ -4756,8 +4813,85 @@ def _parameter_perturbation_candidates(
                 "candidate_id": base.get("candidate_id"),
                 "parameter_values": dict(base.get("parameter_values") or {}),
                 "validation_metrics": dict(base.get("validation_metrics") or {}),
+                "final_holdout_metrics": dict(base.get("final_holdout_metrics") or {}),
                 "scenario_acceptance_gate_result": summary.get("gate_result"),
                 "scenario_fail_reasons": list(summary.get("fail_reasons") or []),
+            }
+        )
+    return tuple(rows)
+
+
+def _signal_omission_stress_runs(
+    *,
+    manifest: ExperimentManifest,
+    snapshot: DatasetSnapshot,
+    scenario: ExecutionScenario,
+    scenario_id: str,
+    scenario_index: int,
+    candidate_id: str,
+    parameter_values: dict[str, Any],
+    plugin: Any,
+    registry: StrategyRegistry,
+    compiled_contract: Any,
+) -> tuple[dict[str, Any], ...]:
+    contract = manifest.stress_suite.signal_omission if manifest.stress_suite is not None else None
+    if contract is None:
+        return ()
+    rows: list[dict[str, Any]] = []
+    for rate in contract.omission_rates_pct:
+        seed_material = {
+            "manifest_hash": manifest.manifest_hash(),
+            "candidate_id": candidate_id,
+            "scenario_id": scenario_id,
+            "split_name": snapshot.split_name,
+            "signal_omission_contract_hash": sha256_prefixed(contract.as_dict()),
+            "omission_rate_pct": rate,
+        }
+        transformer = EntrySignalOmissionTransformer(
+            omission_rate_pct=rate,
+            seed_material=seed_material,
+        )
+        execution_model = _execution_model_from_scenario(
+            scenario,
+            seed_context=_seed_context(
+                simulation_seed_scope_hash=manifest.simulation_seed_scope_hash(),
+                scenario=scenario,
+                scenario_id=scenario_id,
+                parameter_candidate_id=candidate_id,
+                split_name=snapshot.split_name,
+            ),
+        )
+        run = run_common_simulation_backtest(
+            plugin=plugin,
+            dataset=snapshot,
+            parameter_values=parameter_values,
+            fee_rate=scenario.fee_rate,
+            slippage_bps=scenario.slippage_bps,
+            execution_model=execution_model,
+            execution_timing_policy=manifest.execution_timing,
+            portfolio_policy=manifest.portfolio_policy,
+            risk_policy=manifest.risk_policy,
+            context=BacktestRunContext(
+                experiment_id=manifest.experiment_id,
+                candidate_id=candidate_id,
+                scenario_id=f"{scenario_id}:signal_omission:{rate:g}",
+                scenario_index=scenario_index,
+                split_name=snapshot.split_name,
+                report_detail="summary",
+            ),
+            compiled_contract=compiled_contract,
+            registry=registry,
+            decision_stream_transformer=transformer,
+        )
+        rows.append(
+            {
+                "omission_rate_pct": rate,
+                "return_pct": run.metrics.return_pct,
+                "metrics_hash": run.metrics_hash,
+                "decision_stream_hash": run.decision_stream_hash,
+                "decision_stream_perturbation_evidence": run.execution_event_summary.get(
+                    "decision_stream_perturbation_evidence"
+                ),
             }
         )
     return tuple(rows)
@@ -4874,6 +5008,9 @@ def _write_failed_candidate_evidence(
     path = _candidate_failure_path(manager, manifest.experiment_id, str(candidate["candidate_id"]))
     candidate["failure_artifact_ref"] = _data_dir_relative_ref(manager, path)
     candidate["failure_artifact_path"] = str(path)
+    candidate["failure_artifact_content_hash"] = sha256_prefixed(
+        content_hash_payload(candidate), label="candidate_failure_artifact"
+    )
     store = artifact_context or ResearchArtifactContext(
         manager=manager,
         experiment_id=manifest.experiment_id,
@@ -6058,7 +6195,7 @@ def _report_payload(
         hypothesis_status=hypothesis_status,
         hypothesis_identity_source=identity["hypothesis_identity_source"],
         experiment_family_identity_source=identity["experiment_family_identity_source"],
-        pre_registered_at=manifest.raw.get("pre_registered_at"),
+        pre_registered_at=identity.get("pre_registered_at"),
         manifest_path=manifest_path,
         manifest_hash=manifest.manifest_hash(),
         manifest_canonical_hash=manifest.manifest_hash(),
@@ -6092,6 +6229,11 @@ def _report_payload(
         repository_version=repository_version,
         command_name=command_name or f"research-{report_kind}",
         command_args=command_args or {},
+        environment=(
+            execution_plan.payload.get("run_environment")
+            if execution_plan is not None
+            else {"repository_version": repository_version}
+        ),
         cost_execution_model_hash=sha256_prefixed(manifest.execution_model.as_dict()),
         portfolio_policy_hash=portfolio_policy_hash,
         simulation_policy_hash=simulation_policy_hash,
@@ -6161,8 +6303,17 @@ def _report_payload(
     )
     stress_contract = manifest.stress_suite.as_dict() if manifest.stress_suite is not None else None
     stress_contract_hash = sha256_prefixed(stress_contract) if stress_contract is not None else None
-    benchmark_metrics = _benchmark_metrics_for_splits(snapshots)
-    _attach_benchmark_metrics(candidates=candidates, benchmark_metrics=benchmark_metrics)
+    benchmark_metrics = _benchmark_metrics_for_splits(
+        snapshots,
+        manifest=manifest,
+        strategy_registry=strategy_registry,
+        candidates=candidates,
+    )
+    _attach_benchmark_metrics(
+        candidates=candidates,
+        benchmark_metrics=benchmark_metrics,
+        required=bool(manifest.benchmark_suite and manifest.benchmark_suite.required_for_validation),
+    )
     required_scenario_ids = sorted(
         {
             str(scenario_id)
@@ -6482,6 +6633,7 @@ def _report_payload(
     payload = {
         "report_kind": report_kind,
         "experiment_id": manifest.experiment_id,
+        "run_id": (command_args or {}).get("run_id"),
         "run_purpose": manifest.research_run.run_purpose,
         "hypothesis": manifest.hypothesis,
         "manifest_hash": manifest.manifest_hash(),
@@ -6594,6 +6746,8 @@ def _report_payload(
         "signal_depth_coverage_summary": signal_depth_summary,
         "execution_event_summary": _report_execution_event_summary(candidates),
         "strategy_name": manifest.strategy_name,
+        "strategy_version": strategy_plugin.version,
+        "declared_strategy_version": manifest.strategy_version,
         "regime_classifier_version": MARKET_REGIME_VERSION,
         "regime_acceptance_gate": manifest.acceptance_gate.regime_acceptance_gate.as_dict(),
         "execution_model": manifest.execution_model.as_dict(),
@@ -6661,6 +6815,14 @@ def _report_payload(
         ),
         "metrics_contract_required": bool(manifest.acceptance_gate.metrics_contract_required),
         "stress_suite_required": stress_suite_required(manifest),
+        "benchmark_suite_required": bool(
+            manifest.benchmark_suite and manifest.benchmark_suite.required_for_validation
+        ),
+        "benchmark_suite_contract": (
+            manifest.benchmark_suite.as_dict() if manifest.benchmark_suite is not None else None
+        ),
+        "benchmark_suite_gate_result": best.get("benchmark_suite_gate_result") if best else None,
+        "benchmark_suite_fail_reasons": best.get("benchmark_suite_fail_reasons") if best else [],
         "stress_suite_contract": stress_contract,
         "stress_suite_contract_hash": stress_contract_hash,
         "final_selection_required": bool(
@@ -6758,7 +6920,20 @@ def _report_payload(
         "hypothesis_status": lineage.get("hypothesis_status"),
         "hypothesis_identity_source": identity["hypothesis_identity_source"],
         "experiment_family_identity_source": identity["experiment_family_identity_source"],
-        "pre_registered_gate": bool(lineage.get("pre_registered_at") or lineage.get("hypothesis_status")),
+        "pre_registered_gate": bool(identity.get("pre_registration_verified")),
+        "hypothesis_spec": manifest.hypothesis_spec.as_dict() if manifest.hypothesis_spec is not None else None,
+        "hypothesis_contract_hash": identity.get("hypothesis_contract_hash"),
+        "hypothesis_semantic_fingerprint": identity.get("hypothesis_semantic_fingerprint"),
+        "hypothesis_version": identity.get("hypothesis_version"),
+        "experiment_specification_completeness": {
+            "status": "COMPLETE" if manifest.hypothesis_spec is not None else "LEGACY_INCOMPLETE",
+            "explicit_contract_fields": sorted(
+                field for field in (
+                    "strategy_version", "execution_timing", "portfolio_policy", "risk_policy",
+                    "cost_model", "execution_model", "acceptance_gate",
+                ) if manifest.raw.get(field) is not None
+            ),
+        },
         "search_budget": lineage.get("search_budget"),
         "parameter_space_hash": sha256_prefixed(manifest.parameter_space),
         "parameter_grid_size": lineage.get("parameter_grid_size"),
@@ -6776,7 +6951,11 @@ def _report_payload(
         "strategy_plugin_contract_hash": (
             best.get("strategy_plugin_contract_hash") if best else strategy_plugin.contract_hash()
         ),
-        "strategy_registry_hash": best.get("strategy_registry_hash") if best else strategy_registry.content_hash,
+        "strategy_registry_hash": (
+            best.get("strategy_registry_hash")
+            if best
+            else strategy_registry.execution_scope_hash(manifest.strategy_name)
+        ),
         "compiled_strategy_contract": best.get("compiled_strategy_contract") if best else None,
         "compiled_strategy_contract_hash": best.get("compiled_strategy_contract_hash") if best else None,
         "exit_policy": best.get("exit_policy") if best else None,
@@ -6971,6 +7150,10 @@ def _validation_blocking_reasons(
         if report.get("final_selection_gate_result") != "PASS":
             reasons.extend(str(item) for item in report.get("final_selection_fail_reasons") or [])
             reasons.append("final_selection_gate_not_passed")
+    if isinstance(report, dict) and report.get("benchmark_suite_required"):
+        if best is None or best.get("benchmark_suite_gate_result") != "PASS":
+            reasons.extend(str(item) for item in (best or {}).get("benchmark_suite_fail_reasons") or [])
+            reasons.append("benchmark_suite_gate_not_passed")
     if statistical_required:
         if not isinstance(statistical_evidence, dict):
             reasons.append("statistical_evidence_missing")
@@ -7834,34 +8017,26 @@ def _execution_calibration_warning_reasons(candidate: dict[str, Any]) -> list[st
 
 def _benchmark_metrics_for_splits(
     snapshots: dict[str, DatasetSnapshot] | tuple[DatasetSnapshot, ...],
-) -> dict[str, dict[str, float | None]]:
-    items = snapshots.items() if isinstance(snapshots, dict) else ((snapshot.split_name, snapshot) for snapshot in snapshots)
-    return {
-        split_name: {
-            "cash_return_pct": 0.0,
-            "buy_and_hold_return_pct": _buy_and_hold_return_pct(snapshot),
-        }
-        for split_name, snapshot in sorted(items)
-    }
-
-
-def _buy_and_hold_return_pct(snapshot: DatasetSnapshot) -> float | None:
-    if not snapshot.candles:
-        return None
-    start = float(snapshot.candles[0].open)
-    end = float(snapshot.candles[-1].close)
-    if start <= 0.0:
-        return None
-    return round(((end - start) / start) * 100.0, 12)
+    *,
+    manifest: ExperimentManifest,
+    strategy_registry: StrategyRegistry,
+    candidates: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    return BenchmarkSuiteRunner(
+        manifest=manifest,
+        strategy_registry=strategy_registry,
+    ).run(snapshots, candidates=candidates)
 
 
 def _attach_benchmark_metrics(
     *,
     candidates: list[dict[str, Any]],
-    benchmark_metrics: dict[str, dict[str, float | None]],
+    benchmark_metrics: dict[str, dict[str, Any]],
+    required: bool,
 ) -> None:
     for candidate in candidates:
         candidate_benchmarks: dict[str, dict[str, float | None]] = {}
+        candidate_fail_reasons: list[str] = []
         for split_name in ("validation", "final_holdout"):
             split_metrics = benchmark_metrics.get(split_name)
             if not isinstance(split_metrics, dict):
@@ -7879,14 +8054,84 @@ def _attach_benchmark_metrics(
                 "buy_and_hold_return_pct": buy_hold,
                 "excess_return_vs_cash_pct": excess_cash,
                 "excess_return_vs_buy_and_hold_pct": excess_buy_hold,
+                "buy_and_hold_method": split_metrics.get("buy_and_hold_method"),
+                "benchmark_execution_contract_hash": split_metrics.get("benchmark_execution_contract_hash"),
+                "buy_and_hold_metrics_hash": split_metrics.get("buy_and_hold_metrics_hash"),
             }
+            random_entry = split_metrics.get("random_entry")
+            if isinstance(random_entry, dict):
+                payload["random_entry"] = random_entry
+                payload["excess_return_vs_random_entry_median_pct"] = (
+                    None
+                    if return_pct is None or _finite_float_or_none(random_entry.get("return_pct_median")) is None
+                    else round(return_pct - float(random_entry["return_pct_median"]), 12)
+                )
+                if random_entry.get("status") != "PASS":
+                    candidate_fail_reasons.extend(str(item) for item in random_entry.get("fail_reasons") or [])
+            same_holding_by_candidate = split_metrics.get("same_holding_period_by_candidate")
+            same_holding = (
+                same_holding_by_candidate.get(str(candidate.get("parameter_candidate_id") or ""))
+                if isinstance(same_holding_by_candidate, dict)
+                else None
+            )
+            if isinstance(same_holding, dict):
+                payload["same_holding_period"] = same_holding
+                same_holding_return = _finite_float_or_none(same_holding.get("return_pct"))
+                payload["excess_return_vs_same_holding_period_pct"] = (
+                    None
+                    if return_pct is None or same_holding_return is None
+                    else round(return_pct - same_holding_return, 12)
+                )
+                if same_holding.get("status") != "PASS":
+                    candidate_fail_reasons.extend(str(item) for item in same_holding.get("fail_reasons") or [])
+            simpler = split_metrics.get("simpler_strategy")
+            if isinstance(simpler, dict):
+                payload["simpler_strategy"] = simpler
+                simpler_return = _finite_float_or_none(simpler.get("return_pct"))
+                payload["excess_return_vs_simpler_strategy_pct"] = (
+                    None if return_pct is None or simpler_return is None else round(return_pct - simpler_return, 12)
+                )
+                if simpler.get("status") != "PASS":
+                    candidate_fail_reasons.extend(str(item) for item in simpler.get("fail_reasons") or [])
+            approved = split_metrics.get("approved_strategy")
+            if isinstance(approved, dict):
+                payload["approved_strategy"] = approved
+                approved_return = _finite_float_or_none(approved.get("return_pct"))
+                payload["excess_return_vs_approved_strategy_pct"] = (
+                    None if return_pct is None or approved_return is None else round(return_pct - approved_return, 12)
+                )
+                if approved.get("status") != "PASS":
+                    candidate_fail_reasons.extend(str(item) for item in approved.get("fail_reasons") or [])
             candidate_benchmarks[split_name] = payload
             if isinstance(candidate_metrics, dict):
                 candidate_metrics["benchmark_cash_return_pct"] = cash
                 candidate_metrics["benchmark_buy_and_hold_return_pct"] = buy_hold
                 candidate_metrics["excess_return_vs_cash_pct"] = excess_cash
                 candidate_metrics["excess_return_vs_buy_and_hold_pct"] = excess_buy_hold
+                candidate_metrics["benchmark_buy_and_hold_equity_curve"] = split_metrics.get(
+                    "buy_and_hold_equity_curve"
+                )
+                if isinstance(approved, dict):
+                    candidate_metrics["benchmark_configured_return_pct"] = approved.get("return_pct")
+                    candidate_metrics["benchmark_configured_equity_curve"] = approved.get("equity_curve")
         candidate["benchmark_metrics"] = candidate_benchmarks
+        if required:
+            validation = candidate_benchmarks.get("validation")
+            if not isinstance(validation, dict):
+                candidate_fail_reasons.append("benchmark_suite_validation_evidence_missing")
+            for required_name in (
+                "random_entry",
+                "same_holding_period",
+                "simpler_strategy",
+                "approved_strategy",
+            ):
+                if not isinstance((validation or {}).get(required_name), dict):
+                    candidate_fail_reasons.append(f"benchmark_suite_{required_name}_missing")
+        candidate["benchmark_suite_required"] = required
+        candidate["benchmark_suite_fail_reasons"] = sorted(set(candidate_fail_reasons))
+        candidate["benchmark_suite_gate_result"] = (
+            "FAIL" if candidate_fail_reasons else ("PASS" if required else "NOT_REQUIRED")
+        )
 
 
 def _finite_float_or_none(value: Any) -> float | None:

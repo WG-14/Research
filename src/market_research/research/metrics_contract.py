@@ -20,6 +20,8 @@ class EquityPoint:
     equity: float
     cash: float
     asset_qty: float
+    mark_price: float | None = None
+    mark_price_source: str | None = None
 
     @property
     def mark_ts(self) -> int:
@@ -32,6 +34,8 @@ class EquityPoint:
             "equity": float(self.equity),
             "cash": float(self.cash),
             "asset_qty": float(self.asset_qty),
+            "mark_price": float(self.mark_price) if self.mark_price is not None else None,
+            "mark_price_source": self.mark_price_source,
         }
 
 
@@ -274,6 +278,7 @@ def build_metrics_v2(
     closed_trades: tuple[ClosedTradeRecord, ...],
     execution_records: tuple[ExecutionRecord, ...],
     final_open_cost_basis: float = 0.0,
+    accounting_realized_pnl: float | None = None,
     summary_period_start_ts: int | None = None,
     summary_period_end_ts: int | None = None,
     summary_elapsed_ms: int | None = None,
@@ -307,7 +312,12 @@ def build_metrics_v2(
         else _max_drawdown_pct(points)
     )
     net_values = [float(trade.net_pnl) for trade in closed_trades]
-    realized_pnl = sum(net_values)
+    closed_trade_realized_pnl = sum(net_values)
+    realized_pnl = (
+        float(accounting_realized_pnl)
+        if accounting_realized_pnl is not None
+        else closed_trade_realized_pnl
+    )
     realized_return_pct = (realized_pnl / float(starting_cash) * 100.0) if starting_cash > 0.0 else 0.0
     open_position_at_end = float(final_asset_qty) > 1e-12 or any(interval.close_ts is None for interval in position_intervals)
     unrealized_pnl_end = (float(final_asset_qty) * float(final_mark_price)) - float(final_open_cost_basis)
@@ -407,7 +417,7 @@ def build_metrics_v2(
             payoff_ratio=payoff_ratio,
             profit_factor=profit_factor,
             profit_factor_unbounded=profit_factor_unbounded,
-            expectancy_per_trade_krw=(realized_pnl / len(net_values)) if net_values else None,
+            expectancy_per_trade_krw=(closed_trade_realized_pnl / len(net_values)) if net_values else None,
             expectancy_per_trade_pct=expectancy_pct,
             max_consecutive_losses=_max_consecutive_losses(net_values),
             single_trade_dependency_score=(largest_abs / total_abs) if total_abs > 0.0 else None,

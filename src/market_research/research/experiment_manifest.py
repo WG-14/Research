@@ -15,11 +15,13 @@ from market_research.market_regime import RegimeAcceptanceGate
 from .risk_contract import ResearchRiskPolicy
 
 from .research_classification import RESEARCH_CLASSIFICATIONS, requires_candidate_validation, normalize_research_classification
+from .benchmark_contract import BenchmarkSuiteContract, parse_benchmark_suite_contract
 from .hashing import sha256_prefixed
 from .process_runtime import ALLOWED_RESEARCH_START_METHODS
 from .strategy_spec import StrategySpecError, validate_parameter_space_against_strategy_spec
 from .audit_trail import AuditTrailPolicy as ResearchAuditTrailPolicy
 from .datasets.contracts import DatasetArtifactRef
+from .hypothesis_contract import HypothesisSpec, parse_hypothesis_spec
 if TYPE_CHECKING:
     from .strategy_registry import StrategyRegistry
 
@@ -367,18 +369,18 @@ class ExecutionTimingPolicy:
     signal_basis: str = "closed_candle"
     decision_time: str = "candle_close"
     decision_guard_ms: int = 0
-    fill_reference_policy: str = "candle_close_legacy"
+    fill_reference_policy: str = "next_candle_open"
     quote_selection: str = "first_after_or_equal"
     max_quote_wait_ms: int = 3000
     missing_quote_policy: str = "warn"
-    allow_same_candle_close_fill: bool = True
+    allow_same_candle_close_fill: bool = False
     min_execution_reality_level_for_validation: str | None = None
     depth_required: bool = False
     trade_tick_required: bool = False
     queue_position_required: bool = False
     market_impact_required: bool = False
     intra_candle_path_required: bool = False
-    source: str = "legacy_default"
+    source: str = "safe_default"
 
     def as_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -733,12 +735,36 @@ class StressParameterPerturbationContract:
     relative_pct: tuple[float, ...]
     numeric_params_only: bool = True
     min_pass_ratio: float = 0.8
+    min_neighbor_trade_count_retention_pct: float = 50.0
+    min_neighbor_return_retention_pct: float = 0.0
+    min_connected_pass_region_size: int = 2
+    max_normalized_local_curvature: float = 2.0
 
     def as_dict(self) -> dict[str, object]:
         return {
             "relative_pct": list(self.relative_pct),
             "numeric_params_only": self.numeric_params_only,
             "min_pass_ratio": self.min_pass_ratio,
+            "min_neighbor_trade_count_retention_pct": self.min_neighbor_trade_count_retention_pct,
+            "min_neighbor_return_retention_pct": self.min_neighbor_return_retention_pct,
+            "min_connected_pass_region_size": self.min_connected_pass_region_size,
+            "max_normalized_local_curvature": self.max_normalized_local_curvature,
+        }
+
+
+@dataclass(frozen=True)
+class StressSignalOmissionContract:
+    omission_rates_pct: tuple[float, ...]
+    seed_policy: str
+    min_return_retention_pct: float
+    min_omitted_entry_signals: int = 1
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "omission_rates_pct": list(self.omission_rates_pct),
+            "seed_policy": self.seed_policy,
+            "min_return_retention_pct": self.min_return_retention_pct,
+            "min_omitted_entry_signals": self.min_omitted_entry_signals,
         }
 
 
@@ -749,6 +775,7 @@ class StressSuiteContract:
     trade_order_monte_carlo: StressTradeOrderMonteCarloContract | None = None
     period_ablation: StressPeriodAblationContract | None = None
     parameter_perturbation: StressParameterPerturbationContract | None = None
+    signal_omission: StressSignalOmissionContract | None = None
     risk_adjusted_score: StressRiskAdjustedScoreContract | None = None
 
     def as_dict(self) -> dict[str, object]:
@@ -763,6 +790,8 @@ class StressSuiteContract:
             payload["period_ablation"] = self.period_ablation.as_dict()
         if self.parameter_perturbation is not None:
             payload["parameter_perturbation"] = self.parameter_perturbation.as_dict()
+        if self.signal_omission is not None:
+            payload["signal_omission"] = self.signal_omission.as_dict()
         if self.risk_adjusted_score is not None:
             payload["risk_adjusted_score"] = self.risk_adjusted_score.as_dict()
         return payload
@@ -814,7 +843,9 @@ class FinalSelectionContract:
 class ExperimentManifest:
     experiment_id: str
     hypothesis: str
+    hypothesis_spec: HypothesisSpec | None
     strategy_name: str
+    strategy_version: str | None
     market: str
     interval: str
     dataset: DatasetSpec
@@ -826,6 +857,7 @@ class ExperimentManifest:
     risk_policy: ResearchRiskPolicy
     research_classification: str
     acceptance_gate: AcceptanceGate
+    benchmark_suite: BenchmarkSuiteContract | None
     statistical_validation: StatisticalSelectionContract | None
     stress_suite: StressSuiteContract | None
     final_selection: FinalSelectionContract | None
@@ -836,7 +868,7 @@ class ExperimentManifest:
     validated_strategy_registry_hash: str | None = field(default=None, compare=False, repr=False)
 
     def canonical_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "experiment_id": self.experiment_id,
             "hypothesis": self.hypothesis,
             "strategy_name": self.strategy_name,
@@ -866,6 +898,13 @@ class ExperimentManifest:
             "walk_forward": self.walk_forward.as_dict() if self.walk_forward is not None else None,
             "research_run": self.research_run.as_dict(),
         }
+        if self.hypothesis_spec is not None:
+            payload["hypothesis_spec"] = self.hypothesis_spec.as_dict()
+        if self.benchmark_suite is not None:
+            payload["benchmark_suite"] = self.benchmark_suite.as_dict()
+        if self.strategy_version is not None:
+            payload["strategy_version"] = self.strategy_version
+        return payload
 
     def manifest_hash(self) -> str:
         return sha256_prefixed(self.canonical_payload())
@@ -937,10 +976,10 @@ def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | Non
     if not isinstance(payload, dict):
         raise ManifestValidationError("manifest must be a JSON object")
     allowed_fields = {
-        "experiment_id", "hypothesis", "strategy_name", "market", "interval", "dataset",
+        "experiment_id", "hypothesis", "hypothesis_spec", "strategy_name", "strategy_version", "market", "interval", "dataset",
         "parameter_space", "research_classification", "cost_model", "execution_model",
         "execution_timing", "dataset_quality_policy", "portfolio_policy", "risk_policy",
-        "acceptance_gate", "statistical_validation", "stress_suite", "final_selection",
+        "acceptance_gate", "benchmark_suite", "statistical_validation", "stress_suite", "final_selection",
         "walk_forward", "research_run", "attempt_index", "holdout_reuse_count",
     }
     unknown = sorted(set(payload) - allowed_fields)
@@ -949,15 +988,50 @@ def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | Non
 
     experiment_id = _required_str(payload, "experiment_id")
     hypothesis = _required_str(payload, "hypothesis")
+    try:
+        hypothesis_spec = (
+            parse_hypothesis_spec(payload["hypothesis_spec"])
+            if payload.get("hypothesis_spec") is not None
+            else None
+        )
+    except ValueError as exc:
+        raise ManifestValidationError(str(exc)) from exc
     strategy_name = _required_str(payload, "strategy_name")
+    strategy_version = _optional_non_empty_str(
+        payload.get("strategy_version"), "strategy_version"
+    )
     market = _required_str(payload, "market")
     interval = _required_str(payload, "interval")
     dataset_payload = _required_dict(payload, "dataset")
     dataset = _parse_dataset(dataset_payload)
     parameter_space = _parse_parameter_space(payload.get("parameter_space"))
     research_classification = _parse_research_classification(payload.get("research_classification"))
+    if requires_candidate_validation(research_classification) and hypothesis_spec is None:
+        raise ManifestValidationError(
+            "hypothesis_spec is required for validation-bound manifests"
+        )
+    if hypothesis_spec is not None:
+        missing_explicit_contracts = [
+            field for field in ("strategy_version", "execution_timing", "portfolio_policy", "risk_policy")
+            if payload.get(field) is None
+        ]
+        if missing_explicit_contracts:
+            raise ManifestValidationError(
+                "structured research manifest requires explicit contract field(s): "
+                + ",".join(missing_explicit_contracts)
+            )
+    if requires_candidate_validation(research_classification) and strategy_version is None:
+        raise ManifestValidationError(
+            "strategy_version is required for validation-bound manifests"
+        )
     try:
-        plugin_spec = registry.resolve(strategy_name).spec if registry is not None else None
+        plugin = registry.resolve(strategy_name)
+        plugin_spec = plugin.spec
+        if strategy_version is not None and strategy_version != plugin.version:
+            raise ManifestValidationError(
+                "manifest strategy_version does not match registered strategy: "
+                f"{strategy_version}!={plugin.version}"
+            )
         validate_parameter_space_against_strategy_spec(
             strategy_name=strategy_name,
             parameter_space=parameter_space,
@@ -982,8 +1056,25 @@ def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | Non
     portfolio_policy = _parse_portfolio_policy(payload.get("portfolio_policy"), research_classification=research_classification)
     risk_policy = _parse_risk_policy(payload.get("risk_policy"), research_classification=research_classification)
     acceptance_gate = _parse_acceptance_gate(_required_dict(payload, "acceptance_gate"))
-    if requires_candidate_validation(research_classification) and acceptance_gate.max_single_trade_dependency_score is None:
-        acceptance_gate = replace(acceptance_gate, max_single_trade_dependency_score=0.8)
+    if requires_candidate_validation(research_classification):
+        acceptance_gate = replace(
+            acceptance_gate,
+            max_single_trade_dependency_score=(
+                acceptance_gate.max_single_trade_dependency_score
+                if acceptance_gate.max_single_trade_dependency_score is not None
+                else 0.8
+            ),
+            walk_forward_required=True,
+        )
+    try:
+        benchmark_suite = parse_benchmark_suite_contract(
+            payload.get("benchmark_suite"),
+            research_classification=research_classification,
+            registry=registry,
+            candidate_strategy_name=strategy_name,
+        )
+    except ValueError as exc:
+        raise ManifestValidationError(str(exc)) from exc
     statistical_validation = _parse_statistical_validation(
         payload.get("statistical_validation"),
         research_classification=research_classification,
@@ -1012,13 +1103,19 @@ def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | Non
         research_classification=research_classification,
         execution_model=execution_model,
     )
-    if cost_policy_reasons:
-        raise ManifestValidationError(",".join(cost_policy_reasons))
+    execution_stress_policy_reasons = validation_execution_stress_policy_reasons(
+        research_classification=research_classification,
+        execution_model=execution_model,
+    )
+    if cost_policy_reasons or execution_stress_policy_reasons:
+        raise ManifestValidationError(",".join(sorted(set(cost_policy_reasons + execution_stress_policy_reasons))))
 
     return ExperimentManifest(
         experiment_id=experiment_id,
         hypothesis=hypothesis,
+        hypothesis_spec=hypothesis_spec,
         strategy_name=strategy_name,
+        strategy_version=strategy_version,
         market=market,
         interval=interval,
         dataset=dataset,
@@ -1030,6 +1127,7 @@ def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | Non
         risk_policy=risk_policy,
         research_classification=research_classification,
         acceptance_gate=acceptance_gate,
+        benchmark_suite=benchmark_suite,
         statistical_validation=statistical_validation,
         stress_suite=stress_suite,
         final_selection=final_selection,
@@ -1037,7 +1135,7 @@ def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | Non
         research_run=research_run,
         raw=dict(payload),
         manifest_input_provenance=manifest_input_provenance,
-        validated_strategy_registry_hash=registry.content_hash,
+        validated_strategy_registry_hash=registry.execution_scope_hash(strategy_name),
     )
 
 
@@ -1815,6 +1913,68 @@ def validation_cost_assumption_policy_reasons(
     return sorted(set(reasons))
 
 
+def validation_execution_stress_policy_reasons(
+    *,
+    research_classification: str,
+    execution_model: ExecutionModelConfig,
+) -> list[str]:
+    if not requires_candidate_validation(research_classification):
+        return []
+    reasons: list[str] = []
+    if execution_model.scenario_policy != "must_pass_base_and_survive_stress":
+        reasons.append("validation_execution_stress_policy_required")
+    base_scenarios = [
+        scenario
+        for scenario in execution_model.scenarios
+        if scenario.scenario_role == "base"
+    ]
+    stress_scenarios = [
+        scenario
+        for scenario in execution_model.scenarios
+        if scenario.scenario_role == "stress"
+    ]
+    if len(base_scenarios) != 1:
+        reasons.append("validation_exactly_one_base_execution_scenario_required")
+    if not stress_scenarios:
+        reasons.append("validation_execution_stress_scenarios_required")
+    if len(base_scenarios) != 1 or not stress_scenarios:
+        return sorted(set(reasons))
+
+    base = base_scenarios[0]
+    base_total_cost_bps = base.fee_rate * 10_000.0 + base.slippage_bps + base.market_order_extra_cost_bps
+    if base_total_cost_bps <= 0.0:
+        reasons.append("validation_positive_base_execution_cost_required")
+        return sorted(set(reasons))
+
+    cost_ratios = [
+        (
+            scenario.fee_rate * 10_000.0
+            + scenario.slippage_bps
+            + scenario.market_order_extra_cost_bps
+        )
+        / base_total_cost_bps
+        for scenario in stress_scenarios
+    ]
+    if not any(1.5 <= ratio < 2.0 for ratio in cost_ratios):
+        reasons.append("validation_execution_cost_1_5x_scenario_required")
+    if not any(ratio >= 2.0 for ratio in cost_ratios):
+        reasons.append("validation_execution_cost_2x_scenario_required")
+    if not any(scenario.slippage_bps > base.slippage_bps for scenario in stress_scenarios):
+        reasons.append("validation_increased_slippage_scenario_required")
+    if not any(scenario.latency_ms > base.latency_ms for scenario in stress_scenarios):
+        reasons.append("validation_increased_latency_scenario_required")
+    if not any(
+        scenario.market_order_extra_cost_bps > base.market_order_extra_cost_bps
+        for scenario in stress_scenarios
+    ):
+        reasons.append("validation_adverse_fill_price_scenario_required")
+    if not any(scenario.partial_fill_rate > base.partial_fill_rate for scenario in stress_scenarios):
+        reasons.append("validation_partial_fill_scenario_required")
+    if not any(scenario.order_failure_rate > base.order_failure_rate for scenario in stress_scenarios):
+        reasons.append("validation_order_failure_scenario_required")
+    return sorted(set(reasons))
+
+
 def _parse_execution_timing(value: Any) -> ExecutionTimingPolicy:
     if value is None:
         return ExecutionTimingPolicy()
@@ -2293,6 +2453,7 @@ def _parse_stress_suite(value: Any, *, research_classification: str) -> StressSu
         "trade_order_monte_carlo",
         "period_ablation",
         "parameter_perturbation",
+        "signal_omission",
         "risk_adjusted_score",
     }
     unknown = sorted(set(value) - allowed_fields)
@@ -2301,14 +2462,29 @@ def _parse_stress_suite(value: Any, *, research_classification: str) -> StressSu
     required = bool(value.get("required_for_validation", validation_required))
     if validation_required and not required:
         raise ManifestValidationError("stress_suite.required_for_validation must be true for validation-bound manifests")
-    return StressSuiteContract(
+    contract = StressSuiteContract(
         required_for_validation=required,
         trade_removal=_parse_stress_trade_removal(value.get("trade_removal")),
         trade_order_monte_carlo=_parse_stress_trade_order_monte_carlo(value.get("trade_order_monte_carlo")),
         period_ablation=_parse_stress_period_ablation(value.get("period_ablation")),
         parameter_perturbation=_parse_stress_parameter_perturbation(value.get("parameter_perturbation")),
+        signal_omission=_parse_stress_signal_omission(value.get("signal_omission")),
         risk_adjusted_score=_parse_stress_risk_adjusted_score(value.get("risk_adjusted_score")),
     )
+    if required:
+        required_components = {
+            "trade_removal": contract.trade_removal,
+            "trade_order_monte_carlo": contract.trade_order_monte_carlo,
+            "period_ablation": contract.period_ablation,
+            "parameter_perturbation": contract.parameter_perturbation,
+            "signal_omission": contract.signal_omission,
+        }
+        missing = sorted(name for name, component in required_components.items() if component is None)
+        if missing:
+            raise ManifestValidationError(
+                "stress_suite required components missing: " + ",".join(missing)
+            )
+    return contract
 
 
 def _parse_final_selection(value: Any, *, research_classification: str) -> FinalSelectionContract | None:
@@ -2621,7 +2797,15 @@ def _parse_stress_parameter_perturbation(value: Any) -> StressParameterPerturbat
         return None
     if not isinstance(value, dict):
         raise ManifestValidationError("stress_suite.parameter_perturbation must be an object")
-    allowed_fields = {"relative_pct", "numeric_params_only", "min_pass_ratio"}
+    allowed_fields = {
+        "relative_pct",
+        "numeric_params_only",
+        "min_pass_ratio",
+        "min_neighbor_trade_count_retention_pct",
+        "min_neighbor_return_retention_pct",
+        "min_connected_pass_region_size",
+        "max_normalized_local_curvature",
+    }
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
         raise ManifestValidationError(f"stress_suite.parameter_perturbation unsupported fields: {','.join(unknown)}")
@@ -2641,10 +2825,90 @@ def _parse_stress_parameter_perturbation(value: Any) -> StressParameterPerturbat
     min_pass_ratio = 0.8
     if "min_pass_ratio" in value:
         min_pass_ratio = _probability(value.get("min_pass_ratio"), "stress_suite.parameter_perturbation.min_pass_ratio")
+    min_trade_retention = _optional_finite_float(
+        value.get("min_neighbor_trade_count_retention_pct", 50.0),
+        "stress_suite.parameter_perturbation.min_neighbor_trade_count_retention_pct",
+    )
+    min_return_retention = _optional_finite_float(
+        value.get("min_neighbor_return_retention_pct", 0.0),
+        "stress_suite.parameter_perturbation.min_neighbor_return_retention_pct",
+    )
+    max_curvature = _optional_finite_float(
+        value.get("max_normalized_local_curvature", 2.0),
+        "stress_suite.parameter_perturbation.max_normalized_local_curvature",
+    )
+    if min_trade_retention is None or min_trade_retention < 0.0:
+        raise ManifestValidationError(
+            "stress_suite.parameter_perturbation.min_neighbor_trade_count_retention_pct must be non-negative"
+        )
+    if min_return_retention is None or min_return_retention < 0.0:
+        raise ManifestValidationError(
+            "stress_suite.parameter_perturbation.min_neighbor_return_retention_pct must be non-negative"
+        )
+    if max_curvature is None or max_curvature < 0.0:
+        raise ManifestValidationError(
+            "stress_suite.parameter_perturbation.max_normalized_local_curvature must be non-negative"
+        )
     return StressParameterPerturbationContract(
         relative_pct=tuple(sorted(parsed_relative)),
         numeric_params_only=bool(value.get("numeric_params_only", True)),
         min_pass_ratio=min_pass_ratio,
+        min_neighbor_trade_count_retention_pct=float(min_trade_retention),
+        min_neighbor_return_retention_pct=float(min_return_retention),
+        min_connected_pass_region_size=_positive_int(
+            value.get("min_connected_pass_region_size", 2),
+            "stress_suite.parameter_perturbation.min_connected_pass_region_size",
+        ),
+        max_normalized_local_curvature=float(max_curvature),
+    )
+
+
+def _parse_stress_signal_omission(value: Any) -> StressSignalOmissionContract | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ManifestValidationError("stress_suite.signal_omission must be an object")
+    allowed = {
+        "omission_rates_pct",
+        "seed_policy",
+        "min_return_retention_pct",
+        "min_omitted_entry_signals",
+    }
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ManifestValidationError(f"stress_suite.signal_omission unsupported fields: {','.join(unknown)}")
+    raw_rates = value.get("omission_rates_pct")
+    if not isinstance(raw_rates, list) or not raw_rates:
+        raise ManifestValidationError("stress_suite.signal_omission.omission_rates_pct must be a non-empty array")
+    rates = tuple(
+        sorted(
+            float(_optional_finite_float(item, "stress_suite.signal_omission.omission_rates_pct"))
+            for item in raw_rates
+        )
+    )
+    if len(set(rates)) != len(rates) or any(rate <= 0.0 or rate > 100.0 for rate in rates):
+        raise ManifestValidationError(
+            "stress_suite.signal_omission.omission_rates_pct values must be unique and in (0, 100]"
+        )
+    seed_policy = str(value.get("seed_policy") or "")
+    if seed_policy != "derived_from_manifest_candidate_scenario_split_contract_hash":
+        raise ManifestValidationError("stress_suite.signal_omission.seed_policy unsupported")
+    retention = _optional_finite_float(
+        value.get("min_return_retention_pct"),
+        "stress_suite.signal_omission.min_return_retention_pct",
+    )
+    if retention is None or retention < 0.0:
+        raise ManifestValidationError(
+            "stress_suite.signal_omission.min_return_retention_pct must be non-negative"
+        )
+    return StressSignalOmissionContract(
+        omission_rates_pct=rates,
+        seed_policy=seed_policy,
+        min_return_retention_pct=float(retention),
+        min_omitted_entry_signals=_positive_int(
+            value.get("min_omitted_entry_signals", 1),
+            "stress_suite.signal_omission.min_omitted_entry_signals",
+        ),
     )
 
 

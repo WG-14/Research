@@ -7,6 +7,8 @@ from market_research.research_composition import resolve_builtin_strategy as res
 from market_research.research.strategy_compiler import StrategyCompiler
 from market_research.research.strategy_registry import StrategyRegistry
 from tests.test_common_simulation_engine import _dataset
+from market_research.research.dataset_snapshot import Candle, DatasetSnapshot
+from market_research.research.experiment_manifest import DateRange, ExecutionTimingPolicy
 
 
 def test_sma_opposite_cross_noise_band_does_not_trigger_sell():
@@ -59,3 +61,57 @@ def test_sma_noise_band_creates_no_sell_intent_request_fill_or_ledger():
     assert all(entry.side != "SELL" for entry in run.ledger_entries)
     assert any(item["source"] == "strategy_exit_callback" and item["triggered"] is False
                for item in run.execution_event_summary["exit_decision_evidence"])
+
+
+def test_close_triggered_stop_loss_exits_at_gapped_next_open():
+    base = resolve_research_strategy("sma_with_filter")
+
+    class Runtime:
+        def initialize(self, context): return {}
+        def on_market_event(self, market, portfolio, state):
+            candle = market.current_candle
+            if candle.ts not in {0, 60_000}:
+                return ()
+            event = ResearchDecisionEvent(
+                candle_ts=candle.ts, decision_ts=candle.ts + 60_000,
+                strategy_name=base.name, strategy_version=base.version,
+                raw_signal="BUY" if candle.ts == 0 else "HOLD",
+                final_signal="BUY" if candle.ts == 0 else "HOLD",
+                entry_signal="BUY" if candle.ts == 0 else "HOLD",
+                exit_signal="HOLD", reason="gap-stop-fixture",
+                feature_snapshot={}, strategy_diagnostics={},
+            )
+            if candle.ts == 0:
+                event = replace(event, order_intent=OrderIntent.from_decision(
+                    decision_id=event.decision_id(), side="BUY",
+                    sizing="portfolio_policy_fractional_cash", decision_ts=event.decision_ts))
+            return (event,)
+
+    plugin = replace(base, runtime_factory=lambda **kwargs: Runtime())
+    registry = StrategyRegistry.build((plugin,))
+    parameters = {
+        "SMA_SHORT": 1, "SMA_LONG": 2,
+        "STRATEGY_EXIT_RULES": "stop_loss",
+        "STRATEGY_EXIT_STOP_LOSS_RATIO": .05,
+    }
+    compiled = StrategyCompiler(registry).compile(
+        strategy_name=plugin.name, raw_parameters=parameters, fee_rate=0, slippage_bps=0)
+    dataset = DatasetSnapshot(
+        "engine", "gap-stop", "KRW-BTC", "1m", "validation",
+        DateRange("2026-01-01", "2026-01-01"),
+        (
+            Candle(0, 100, 100, 100, 100, 1),
+            Candle(60_000, 100, 100, 90, 90, 1),
+            Candle(120_000, 70, 70, 70, 70, 1),
+        ),
+    )
+    run = run_common_simulation_backtest(
+        plugin=plugin, registry=registry, compiled_contract=compiled,
+        dataset=dataset, parameter_values=parameters, fee_rate=0, slippage_bps=0,
+        execution_timing_policy=ExecutionTimingPolicy(),
+    )
+    sell = next(fill for fill in run.fills if fill.side == "SELL")
+    assert sell.exit_rule == "stop_loss"
+    assert sell.fill_reference_source == "next_candle_open"
+    assert sell.avg_fill_price == 70.0
+    assert sell.avg_fill_price != 95.0

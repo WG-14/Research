@@ -25,7 +25,7 @@ def build_buy_and_hold_baseline_events(
     candle_index_offset: int = 0,
 ) -> tuple[ResearchDecisionEvent, ...]:
     """Emit one BUY at the configured candle and HOLD everywhere else."""
-    del fee_rate, slippage_bps, context
+    del fee_rate, slippage_bps, portfolio_policy, context
     buy_index = max(0, int(parameter_values["BUY_HOLD_BUY_INDEX"]))
     decision_reason = str(
         parameter_values.get("BUY_HOLD_DECISION_REASON")
@@ -67,7 +67,7 @@ def build_buy_and_hold_baseline_events(
                 order_intent=(
                     OrderIntent.from_decision(decision_id=decision_id, side="BUY",
                         sizing="portfolio_policy_fractional_cash",
-                        buy_fraction=float(portfolio_policy.position_sizing.buy_fraction), reason=decision_reason)
+                        reason=decision_reason)
                     if is_buy
                     else None
                 ),

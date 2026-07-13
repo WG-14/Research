@@ -17,6 +17,11 @@ MONTE_CARLO_LIMITATIONS = (
     "monte_carlo_does_not_reconstruct_intratrade_equity_path",
     "monte_carlo_uses_closed_trade_pnl_not_bar_return_series",
 )
+TRADE_BOOTSTRAP_LIMITATIONS = (
+    "trade_bootstrap_assumes_closed_trades_are_exchangeable",
+    "trade_bootstrap_does_not_preserve_time_series_dependence",
+    "trade_bootstrap_does_not_reconstruct_intratrade_equity_path",
+)
 PERIOD_ABLATION_LIMITATIONS = (
     "period_ablation_uses_closed_trade_exit_year_not_full_signal_rerun",
 )
@@ -66,9 +71,22 @@ def analyze_stress_suite(
     closed_trades: tuple[ClosedTradeRecord, ...],
     starting_cash: float,
     parameter_perturbation_candidates: tuple[dict[str, Any], ...] = (),
+    signal_omission_runs: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, Any]:
     contract_payload = contract.as_dict()
     contract_hash = sha256_prefixed(contract_payload)
+    required_components = {
+        "trade_removal": contract.trade_removal,
+        "trade_order_monte_carlo": contract.trade_order_monte_carlo,
+        "period_ablation": contract.period_ablation,
+        "parameter_perturbation": contract.parameter_perturbation,
+        "signal_omission": contract.signal_omission,
+    }
+    missing_required_components = sorted(
+        name
+        for name, component in required_components.items()
+        if contract.required_for_validation and component is None
+    )
     seed_material = {
         "manifest_hash": context.manifest_hash,
         "experiment_id": context.experiment_id,
@@ -81,7 +99,10 @@ def analyze_stress_suite(
         "simulation_policy_hash": context.simulation_policy_hash,
         "starting_cash": float(starting_cash),
     }
-    fail_reasons: list[str] = []
+    fail_reasons: list[str] = [
+        f"stress_suite_required_component_missing:{name}"
+        for name in missing_required_components
+    ]
     limitations: list[str] = []
     payload: dict[str, Any] = {
         "stress_suite_schema_version": STRESS_SUITE_SCHEMA_VERSION,
@@ -115,6 +136,14 @@ def analyze_stress_suite(
         payload["parameter_perturbation"] = section
         fail_reasons.extend(str(reason) for reason in section.get("fail_reasons") or [])
         limitations.extend(str(item) for item in section.get("limitations") or [])
+    if contract.signal_omission is not None:
+        section = analyze_signal_omission(
+            contract=contract.signal_omission.as_dict(),
+            original_metrics=original_metrics,
+            runs=signal_omission_runs,
+        )
+        payload["signal_omission"] = section
+        fail_reasons.extend(str(reason) for reason in section.get("fail_reasons") or [])
     if contract.trade_removal is not None:
         section = analyze_trade_removal(
             contract=contract.trade_removal.as_dict(),
@@ -135,6 +164,15 @@ def analyze_stress_suite(
         payload["trade_order_monte_carlo"] = section
         fail_reasons.extend(str(reason) for reason in section.get("fail_reasons") or [])
         limitations.extend(str(item) for item in section.get("limitations") or [])
+        uncertainty_section = analyze_trade_bootstrap_uncertainty(
+            contract=contract.trade_order_monte_carlo.as_dict(),
+            seed_material=seed_material,
+            closed_trades=closed_trades,
+            starting_cash=starting_cash,
+        )
+        payload["trade_bootstrap_uncertainty"] = uncertainty_section
+        fail_reasons.extend(str(reason) for reason in uncertainty_section.get("fail_reasons") or [])
+        limitations.extend(str(item) for item in uncertainty_section.get("limitations") or [])
     if contract.risk_adjusted_score is not None:
         section = analyze_risk_adjusted_score(
             contract=contract.risk_adjusted_score.as_dict(),
@@ -298,6 +336,88 @@ def analyze_trade_order_monte_carlo(
     )
 
 
+def analyze_trade_bootstrap_uncertainty(
+    *,
+    contract: dict[str, Any],
+    seed_material: dict[str, Any],
+    closed_trades: tuple[ClosedTradeRecord, ...],
+    starting_cash: float,
+) -> dict[str, Any]:
+    iterations = int(contract.get("iterations") or 0)
+    min_closed_trades = int(contract.get("min_closed_trades") or 10)
+    fail_reasons: list[str] = []
+    if len(closed_trades) < min_closed_trades:
+        fail_reasons.append("stress_trade_bootstrap_insufficient_trades")
+    if not closed_trades:
+        fail_reasons.append("stress_trade_bootstrap_no_closed_trades")
+        return {
+            "method": "closed_trade_iid_bootstrap_with_replacement",
+            "status": "FAIL",
+            "iterations": iterations,
+            "trade_count": 0,
+            "confidence_level": 0.95,
+            "fail_reasons": sorted(set(fail_reasons)),
+            "limitations": list(TRADE_BOOTSTRAP_LIMITATIONS),
+        }
+
+    bootstrap_seed_material = dict(seed_material)
+    bootstrap_seed_material["analysis"] = "trade_bootstrap_uncertainty"
+    seed_hash = sha256_prefixed(bootstrap_seed_material)
+    seed = int(seed_hash.split(":", 1)[1][:16], 16)
+    rng = random.Random(seed)
+    pnls = [float(trade.net_pnl) for trade in closed_trades]
+    sample_size = len(pnls)
+    expectancies: list[float] = []
+    terminal_returns: list[float] = []
+    max_drawdowns: list[float] = []
+    profit_factors: list[float] = []
+    unbounded_profit_factor_count = 0
+    for _ in range(iterations):
+        sample = [pnls[rng.randrange(sample_size)] for _ in range(sample_size)]
+        expectancies.append(sum(sample) / sample_size)
+        terminal_returns.append(sum(sample) / starting_cash * 100.0)
+        _, max_drawdown, _ = _pnl_path_stats(sample, starting_cash=starting_cash)
+        max_drawdowns.append(max_drawdown)
+        gross_profit = sum(value for value in sample if value > 0.0)
+        gross_loss = abs(sum(value for value in sample if value < 0.0))
+        if gross_loss > 0.0:
+            profit_factors.append(gross_profit / gross_loss)
+        elif gross_profit > 0.0:
+            unbounded_profit_factor_count += 1
+
+    expectancy_interval = _interval_payload(expectancies)
+    if expectancy_interval["p025"] is None or expectancy_interval["p025"] <= 0.0:
+        fail_reasons.append("stress_trade_bootstrap_expectancy_not_positive")
+    return _json_safe(
+        {
+            "method": "closed_trade_iid_bootstrap_with_replacement",
+            "status": "PASS" if not fail_reasons else "FAIL",
+            "iterations": iterations,
+            "trade_count": sample_size,
+            "confidence_level": 0.95,
+            "seed": seed,
+            "seed_material_hash": seed_hash,
+            "expectancy_per_trade_krw": expectancy_interval,
+            "terminal_return_pct": _interval_payload(terminal_returns),
+            "max_drawdown_pct": _interval_payload(max_drawdowns),
+            "profit_factor": _interval_payload(profit_factors),
+            "profit_factor_unbounded_probability": (
+                unbounded_profit_factor_count / iterations if iterations > 0 else 0.0
+            ),
+            "fail_reasons": sorted(set(fail_reasons)),
+            "limitations": list(TRADE_BOOTSTRAP_LIMITATIONS),
+        }
+    )
+
+
+def _interval_payload(values: list[float]) -> dict[str, float | None]:
+    return {
+        "p025": _percentile(values, 2.5),
+        "median": _percentile(values, 50.0),
+        "p975": _percentile(values, 97.5),
+    }
+
+
 def analyze_period_ablation(
     *,
     contract: dict[str, Any],
@@ -432,6 +552,10 @@ def analyze_parameter_perturbation(
 ) -> dict[str, Any]:
     relative_values = [float(item) for item in contract.get("relative_pct") or []]
     min_pass_ratio = float(contract.get("min_pass_ratio") or 0.8)
+    min_trade_retention = float(contract.get("min_neighbor_trade_count_retention_pct", 50.0))
+    min_return_retention = float(contract.get("min_neighbor_return_retention_pct", 0.0))
+    min_connected_size = int(contract.get("min_connected_pass_region_size", 2))
+    max_curvature = float(contract.get("max_normalized_local_curvature", 2.0))
     numeric_items = [(key, value) for key, value in sorted(base_parameter_values.items()) if _is_numeric_param_value(value)]
     if not numeric_items:
         return {
@@ -460,6 +584,14 @@ def analyze_parameter_perturbation(
         for item in candidates
         if isinstance(item.get("parameter_values"), dict)
     }
+    base_candidate = candidate_by_params.get(_parameter_signature(base_parameter_values))
+    base_metrics = (
+        base_candidate.get("validation_metrics")
+        if isinstance(base_candidate, dict) and isinstance(base_candidate.get("validation_metrics"), dict)
+        else {}
+    )
+    base_return = _finite_or_none(base_metrics.get("return_pct"))
+    base_trade_count = _finite_or_none(base_metrics.get("trade_count"))
     cases: list[dict[str, Any]] = []
     passing = 0
     for parameter, base_value in numeric_items:
@@ -484,6 +616,7 @@ def analyze_parameter_perturbation(
                     matched.get("final_holdout_metrics") if isinstance(matched.get("final_holdout_metrics"), dict) else None
                 )
                 validation_return = _finite_or_none(validation_metrics.get("return_pct"))
+                validation_trade_count = _finite_or_none(validation_metrics.get("trade_count"))
                 validation_mdd = _finite_or_none(validation_metrics.get("max_drawdown_pct"))
                 final_holdout_return = (
                     _finite_or_none(final_holdout_metrics.get("return_pct")) if isinstance(final_holdout_metrics, dict) else None
@@ -492,6 +625,28 @@ def analyze_parameter_perturbation(
                 matched_fail_reasons = [str(reason) for reason in matched.get("scenario_fail_reasons") or []]
                 if matched_gate != "PASS":
                     case_reasons.append("stress_parameter_perturbation_constraint_invalid")
+                trade_count_retention = (
+                    (validation_trade_count / base_trade_count) * 100.0
+                    if validation_trade_count is not None and base_trade_count is not None and base_trade_count > 0.0
+                    else None
+                )
+                return_retention = (
+                    (validation_return / base_return) * 100.0
+                    if validation_return is not None and base_return is not None and base_return > 0.0
+                    else None
+                )
+                if trade_count_retention is None:
+                    case_reasons.append("stress_parameter_perturbation_trade_count_retention_missing")
+                elif trade_count_retention < min_trade_retention:
+                    case_reasons.append("stress_parameter_perturbation_trade_count_retention_failed")
+                if return_retention is None:
+                    case_reasons.append("stress_parameter_perturbation_return_retention_missing")
+                elif return_retention < min_return_retention:
+                    case_reasons.append("stress_parameter_perturbation_return_retention_failed")
+            if matched is None:
+                validation_trade_count = None
+                trade_count_retention = None
+                return_retention = None
             if not case_reasons:
                 passing += 1
             cases.append(
@@ -502,6 +657,9 @@ def analyze_parameter_perturbation(
                     "target_value": target_value,
                     "matched_candidate_id": matched_candidate_id,
                     "validation_return_pct": validation_return,
+                    "validation_trade_count": validation_trade_count,
+                    "trade_count_retention_pct": trade_count_retention,
+                    "return_retention_pct": return_retention,
                     "validation_max_drawdown_pct": validation_mdd,
                     "final_holdout_return_pct": final_holdout_return,
                     "matched_candidate_gate_result": matched_gate,
@@ -514,6 +672,54 @@ def analyze_parameter_perturbation(
     fail_reasons = sorted({reason for case in cases for reason in case.get("fail_reasons") or []})
     if pass_ratio < min_pass_ratio:
         fail_reasons.append("stress_parameter_perturbation_pass_ratio_failed")
+    connected_pass_region_size = 1 + passing if base_candidate is not None else 0
+    if connected_pass_region_size < min_connected_size:
+        fail_reasons.append("stress_parameter_perturbation_connected_pass_region_too_small")
+    curvature_cases: list[dict[str, Any]] = []
+    cases_by_key = {
+        (str(case["parameter"]), float(case["relative_pct"])): case
+        for case in cases
+    }
+    for parameter, _base_value in numeric_items:
+        magnitudes = sorted({abs(value) for value in relative_values if value != 0.0})
+        for magnitude in magnitudes:
+            lower = cases_by_key.get((parameter, -magnitude))
+            upper = cases_by_key.get((parameter, magnitude))
+            if lower is None or upper is None or base_return is None:
+                continue
+            lower_return = _finite_or_none(lower.get("validation_return_pct"))
+            upper_return = _finite_or_none(upper.get("validation_return_pct"))
+            if lower_return is None or upper_return is None:
+                continue
+            second_difference = lower_return - (2.0 * base_return) + upper_return
+            normalized = abs(second_difference) / max(abs(base_return), 1e-12)
+            curvature_cases.append(
+                {
+                    "parameter": parameter,
+                    "relative_pct_magnitude": magnitude,
+                    "second_difference_return_pct_points": second_difference,
+                    "normalized_local_curvature": normalized,
+                    "gate_result": "PASS" if normalized <= max_curvature else "FAIL",
+                }
+            )
+    if not curvature_cases:
+        fail_reasons.append("stress_parameter_perturbation_curvature_evidence_missing")
+    elif any(case["gate_result"] != "PASS" for case in curvature_cases):
+        fail_reasons.append("stress_parameter_perturbation_local_curvature_failed")
+    comparable_returns = [
+        float(case["validation_return_pct"])
+        for case in cases
+        if _finite_or_none(case.get("validation_return_pct")) is not None
+    ]
+    unstable_peak = bool(
+        base_return is not None
+        and comparable_returns
+        and base_return > max(comparable_returns)
+        and (
+            connected_pass_region_size < min_connected_size
+            or any(case["gate_result"] != "PASS" for case in curvature_cases)
+        )
+    )
     return _json_safe(
         {
             "method": "existing_grid_relative_parameter_perturbation",
@@ -521,6 +727,13 @@ def analyze_parameter_perturbation(
             "relative_pct": relative_values,
             "min_pass_ratio": min_pass_ratio,
             "pass_ratio": pass_ratio,
+            "min_neighbor_trade_count_retention_pct": min_trade_retention,
+            "min_neighbor_return_retention_pct": min_return_retention,
+            "min_connected_pass_region_size": min_connected_size,
+            "connected_pass_region_size": connected_pass_region_size,
+            "max_normalized_local_curvature": max_curvature,
+            "local_curvature_cases": curvature_cases,
+            "unstable_peak": unstable_peak,
             "cases": cases,
             "limitations": list(PARAMETER_PERTURBATION_LIMITATIONS),
             "fail_reasons": sorted(set(fail_reasons)),
@@ -562,6 +775,66 @@ def analyze_risk_adjusted_score(*, contract: dict[str, Any], metrics_v2: dict[st
             "limitations": limitations,
             "fail_reasons": fail_reasons,
             "status": "PASS" if not fail_reasons else "FAIL",
+        }
+    )
+
+
+def analyze_signal_omission(
+    *,
+    contract: dict[str, Any],
+    original_metrics: dict[str, Any],
+    runs: tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    expected_rates = [float(item) for item in contract.get("omission_rates_pct") or []]
+    min_retention = float(contract.get("min_return_retention_pct") or 0.0)
+    min_omitted = int(contract.get("min_omitted_entry_signals") or 1)
+    base_return = _finite_or_none(original_metrics.get("return_pct"))
+    by_rate = {float(run.get("omission_rate_pct")): run for run in runs}
+    cases: list[dict[str, Any]] = []
+    fail_reasons: list[str] = []
+    for rate in expected_rates:
+        run = by_rate.get(rate)
+        reasons: list[str] = []
+        if not isinstance(run, dict):
+            reasons.append("stress_signal_omission_run_missing")
+            evidence: dict[str, Any] = {}
+            stressed_return = None
+        else:
+            evidence = run.get("decision_stream_perturbation_evidence") or {}
+            stressed_return = _finite_or_none(run.get("return_pct"))
+            if evidence.get("layer") != "decision_stream_pre_execution":
+                reasons.append("stress_signal_omission_wrong_layer")
+            if int(evidence.get("omitted_entry_signal_count") or 0) < min_omitted:
+                reasons.append("stress_signal_omission_minimum_omitted_signals_failed")
+        retention = (
+            (stressed_return / base_return) * 100.0
+            if stressed_return is not None and base_return is not None and base_return > 0.0
+            else None
+        )
+        if retention is None:
+            reasons.append("stress_signal_omission_return_retention_missing")
+        elif retention < min_retention:
+            reasons.append("stress_signal_omission_return_retention_failed")
+        fail_reasons.extend(reasons)
+        cases.append(
+            {
+                "omission_rate_pct": rate,
+                "return_pct": stressed_return,
+                "return_retention_pct": retention,
+                "decision_stream_perturbation_evidence": evidence,
+                "gate_result": "PASS" if not reasons else "FAIL",
+                "fail_reasons": sorted(set(reasons)),
+            }
+        )
+    return _json_safe(
+        {
+            "method": "deterministic_pre_execution_entry_signal_omission_rerun",
+            "status": "PASS" if not fail_reasons else "FAIL",
+            "seed_policy": contract.get("seed_policy"),
+            "min_return_retention_pct": min_retention,
+            "min_omitted_entry_signals": min_omitted,
+            "cases": cases,
+            "fail_reasons": sorted(set(fail_reasons)),
         }
     )
 
@@ -658,7 +931,7 @@ def _is_numeric_param_value(value: Any) -> bool:
 
 
 def _perturbed_value(base_value: Any, relative_pct: float) -> Any:
-    target = float(base_value) * (1.0 + float(relative_pct))
+    target = float(base_value) * (1.0 + (float(relative_pct) / 100.0))
     if isinstance(base_value, int) and not isinstance(base_value, bool):
         return int(round(target))
     return round(target, 12)

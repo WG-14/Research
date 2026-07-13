@@ -216,11 +216,11 @@ def allocate_batch_child_process_budget(*, max_concurrent_manifests: int) -> dic
 
 def _batch_summary_path(*, manager: Any, out_path: str | Path | None) -> Path:
     if out_path is None:
-        path = manager.data_dir() / "reports" / "research" / "batch" / "research_batch_summary.json"
+        path = manager.report_path("research", "batch", "research_batch_summary.json")
     else:
         path = Path(out_path).expanduser()
         if not path.is_absolute():
-            path = manager.data_dir() / "reports" / "research" / "batch" / path
+            path = manager.report_path("research", "batch") / path
     resolved = path.resolve()
     _ensure_allowed(manager, resolved)
     return resolved
@@ -230,8 +230,8 @@ def _ensure_allowed(manager: Any, path: Path) -> None:
     resolved = path.resolve()
     if _is_within(resolved, manager.project_root.resolve()):
         raise ValueError(f"research batch artifact must be outside repository: {resolved}")
-    if not _is_within(resolved, manager.data_dir().resolve()):
-        raise ValueError(f"research batch artifact must be under research artifact root: {resolved}")
+    if not _is_within(resolved, manager.report_root.resolve()):
+        raise ValueError(f"research batch report must be under research report root: {resolved}")
 
 
 def _research_cli_environment(manager: Any) -> dict[str, str]:
