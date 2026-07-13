@@ -14,6 +14,9 @@ class LedgerEntry:
     fill_id: str
     side: str
     qty: float
+    price: float
+    notional: float
+    basis_allocation: float
     cash_delta: float
     fee: float
     slippage: float
@@ -97,7 +100,9 @@ class PortfolioLedger:
         effective_ts = int(fill.portfolio_effective_ts if fill.portfolio_effective_ts is not None else fill.fill_reference_ts or fill.submit_ts_assumption)
         entry = LedgerEntry(
             ledger_entry_id=sha256_prefixed({"fill_id": fill.fill_id, "effective_ts": effective_ts}),
-            fill_id=fill.fill_id, side=fill.side, qty=qty, cash_delta=cash_delta, fee=fee,
+            fill_id=fill.fill_id, side=fill.side, qty=qty, price=price, notional=qty * price,
+            basis_allocation=(qty * price + fee if fill.side == "BUY" else proportional_basis),
+            cash_delta=cash_delta, fee=fee,
             slippage=slippage, realized_pnl=realized, effective_ts=effective_ts,
             cash_before=before.cash, cash_after=self.cash,
             asset_qty_before=before.asset_qty, asset_qty_after=self.asset_qty,
@@ -120,7 +125,45 @@ class PortfolioLedger:
             expected = (entry.cash_before, entry.asset_qty_before, entry.cost_basis_before, entry.realized_pnl_before)
             actual = (snapshot.cash, snapshot.asset_qty, snapshot.cost_basis, snapshot.realized_pnl)
             if any(abs(a-b) > 1e-8 for a, b in zip(expected, actual)): raise ValueError("ledger_replay_before_state_mismatch")
-            snapshot = PortfolioSnapshot(entry.cash_after, entry.asset_qty_after, entry.cost_basis_after,
-                                         entry.realized_pnl_after, entry.fee_total_after, entry.slippage_total_after)
+            qty = float(entry.qty)
+            price = float(entry.price)
+            fee = float(entry.fee)
+            if qty <= 0 or price <= 0 or fee < 0 or entry.slippage < 0:
+                raise ValueError("ledger_replay_invalid_transaction")
+            if abs(float(entry.notional) - qty * price) > 1e-8:
+                raise ValueError("ledger_replay_notional_mismatch")
+            if entry.side == "BUY":
+                cash_delta = -(qty * price + fee)
+                asset_qty = snapshot.asset_qty + qty
+                cost_basis = snapshot.cost_basis + qty * price + fee
+                realized_delta = 0.0
+                expected_basis = qty * price + fee
+            elif entry.side == "SELL":
+                if qty > snapshot.asset_qty + 1e-8:
+                    raise ValueError("ledger_replay_sell_exceeds_quantity")
+                expected_basis = snapshot.cost_basis * (qty / snapshot.asset_qty) if snapshot.asset_qty else 0.0
+                cash_delta = qty * price - fee
+                asset_qty = max(0.0, snapshot.asset_qty - qty)
+                cost_basis = max(0.0, snapshot.cost_basis - expected_basis)
+                realized_delta = cash_delta - expected_basis
+            else:
+                raise ValueError("ledger_replay_unsupported_side")
+            if abs(float(entry.basis_allocation) - expected_basis) > 1e-8:
+                raise ValueError("ledger_replay_basis_allocation_mismatch")
+            calculated = PortfolioSnapshot(
+                snapshot.cash + cash_delta, asset_qty, cost_basis,
+                snapshot.realized_pnl + realized_delta,
+                snapshot.fee_total + fee, snapshot.slippage_total + float(entry.slippage),
+            )
+            if abs(float(entry.cash_delta) - cash_delta) > 1e-8:
+                raise ValueError("ledger_replay_cash_delta_mismatch")
+            recorded = (entry.cash_after, entry.asset_qty_after, entry.cost_basis_after,
+                        entry.realized_pnl_after, entry.fee_total_after, entry.slippage_total_after)
+            if any(abs(a-b) > 1e-8 for a, b in zip(recorded, calculated.__dict__.values())):
+                raise ValueError("ledger_replay_after_state_mismatch")
+            expected_realized = realized_delta if entry.side == "SELL" else None
+            if entry.realized_pnl != expected_realized:
+                raise ValueError("ledger_replay_realized_pnl_mismatch")
+            snapshot = calculated
             if snapshot.cash < -1e-8 or snapshot.asset_qty < -1e-8: raise ValueError("ledger_replay_invalid_state")
         return snapshot

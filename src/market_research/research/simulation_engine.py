@@ -1,8 +1,8 @@
 """Common, event-driven simulation authority for every research strategy.
 
-Strategies emit decisions and typed intents only.  This module alone resolves
-timing, invokes an execution model, validates causality, and applies fills to
-the portfolio ledger.
+Strategies emit decisions and typed intents only. This module alone resolves
+timing, invokes an execution model, validates causality, and applies execution
+results to the portfolio ledger.
 """
 
 from __future__ import annotations
@@ -111,7 +111,8 @@ def run_common_simulation_backtest(
     closed: list[ClosedTradeRecord] = []
     pending: list[ExecutionFill] = []
     pending_buy = False
-    open_entry: tuple[int, float, float, float, float] | None = None
+    # entry ts/price/qty plus round-trip fee, slippage and realized P&L accumulators.
+    open_entry: tuple[int, float, float, float, float, float] | None = None
     model_invocations = 0
     peak = float(policy.starting_cash_krw)
     max_dd = 0.0
@@ -131,26 +132,32 @@ def run_common_simulation_backtest(
             if fill.side == "BUY":
                 pending_buy = False
                 if open_entry is None:
-                    open_entry = (int(fill.portfolio_effective_ts or boundary), float(fill.avg_fill_price or 0.0), float(fill.filled_qty), float(fill.fee), abs(float(fill.avg_fill_price or fill.reference_price)-fill.reference_price)*float(fill.filled_qty))
+                    open_entry = (int(fill.portfolio_effective_ts or boundary), float(fill.avg_fill_price or 0.0), float(fill.filled_qty), float(fill.fee), abs(float(fill.avg_fill_price or fill.reference_price)-fill.reference_price)*float(fill.filled_qty), 0.0)
                     intervals.append(PositionInterval(open_ts=int(fill.portfolio_effective_ts or boundary)))
-            elif entry is not None and open_entry is not None and ledger.asset_qty <= 1e-12:
-                entry_ts, entry_price, _, entry_fee, entry_slippage = open_entry
-                pnl = float(entry.realized_pnl or 0.0)
-                closed.append(ClosedTradeRecord(exit_ts=int(entry.effective_ts), entry_ts=entry_ts, net_pnl=pnl, entry_price=entry_price, exit_price=float(fill.avg_fill_price or 0.0), fee_total=entry_fee+entry.fee, slippage_total=entry_slippage+entry.slippage, exit_rule=fill.exit_rule, exit_reason=fill.exit_reason))
-                intervals[-1] = PositionInterval(open_ts=intervals[-1].open_ts, close_ts=int(entry.effective_ts))
-                open_entry = None
+            elif entry is not None and open_entry is not None:
+                entry_ts, entry_price, entry_qty, accumulated_fee, accumulated_slippage, accumulated_pnl = open_entry
+                accumulated_fee += entry.fee
+                accumulated_slippage += entry.slippage
+                accumulated_pnl += float(entry.realized_pnl or 0.0)
+                if ledger.asset_qty <= 1e-12:
+                    closed.append(ClosedTradeRecord(exit_ts=int(entry.effective_ts), entry_ts=entry_ts, net_pnl=accumulated_pnl, entry_price=entry_price, exit_price=float(fill.avg_fill_price or 0.0), fee_total=accumulated_fee, slippage_total=accumulated_slippage, exit_rule=fill.exit_rule, exit_reason=fill.exit_reason))
+                    intervals[-1] = PositionInterval(open_ts=intervals[-1].open_ts, close_ts=int(entry.effective_ts))
+                    open_entry = None
+                else:
+                    open_entry = (entry_ts, entry_price, entry_qty, accumulated_fee, accumulated_slippage, accumulated_pnl)
 
     for event in events:
         candle = candle_by_ts[int(event.candle_ts)]
         index = candle_index_by_ts[int(event.candle_ts)]
-        apply_ready(int(candle.ts))
+        mark_ts = build_signal_event(candle=candle, interval=dataset.interval, side="HOLD", policy=timing, feature_snapshot={}, regime_snapshot={}).signal_candle_close_ts
+        apply_ready(mark_ts)
         decision_id = event.decision_id()
         decisions.append(event)
         intent = event.exit_intent if event.exit_intent is not None and ledger.asset_qty > 0 else event.order_intent
         if exit_policy is not None and ledger.asset_qty > 0:
             view = ledger.snapshot()
             position = ResearchPosition(cash=view.cash, asset_qty=view.asset_qty, entry_price=view.cost_basis/view.asset_qty, entry_ts=(open_entry[0] if open_entry else None), sellable_qty=view.asset_qty)
-            exit_decision = evaluate_sma_exit_policy(policy=exit_policy, position=position, candle_ts=int(candle.ts), market_price=float(candle.close), exit_signal=str(event.exit_signal or "HOLD"), feature_state=event.feature_snapshot)
+            exit_decision = evaluate_sma_exit_policy(policy=exit_policy, position=position, candle_ts=int(event.decision_ts), market_price=float(candle.close), exit_signal=str(event.exit_signal or "HOLD"), feature_state=event.feature_snapshot)
             if exit_decision.triggered:
                 intent = OrderIntent.from_decision(decision_id=decision_id, side="SELL", sizing="full_position", reason=exit_decision.reason, decision_ts=event.decision_ts, exit_rule=exit_decision.rule, exit_reason=exit_decision.reason)
         if intent is not None and intent.decision_id != decision_id:
@@ -203,13 +210,13 @@ def run_common_simulation_backtest(
                 pending.append(fill)
             else:
                 trades.append(_trade_from_fill(fill, ledger, None))
-        apply_ready(int(candle.ts))
+        apply_ready(mark_ts)
         snapshot = ledger.snapshot()
         mark = snapshot.cash + snapshot.asset_qty * float(candle.close)
         peak = max(peak, mark)
         max_dd = max(max_dd, ((peak - mark) / peak * 100.0) if peak else 0.0)
-        equity.append(EquityPoint(ts=int(candle.ts), equity=mark, cash=snapshot.cash, asset_qty=snapshot.asset_qty))
-    final_ts = int(dataset.candles[-1].ts) if dataset.candles else 0
+        equity.append(EquityPoint(ts=mark_ts, equity=mark, cash=snapshot.cash, asset_qty=snapshot.asset_qty))
+    final_ts = (build_signal_event(candle=dataset.candles[-1], interval=dataset.interval, side="HOLD", policy=timing, feature_snapshot={}, regime_snapshot={}).signal_candle_close_ts if dataset.candles else 0)
     for fill in pending:
         trades.append(_trade_from_fill(fill, ledger, None) | {"pending_execution_at_end": True, "pending_execution_after_dataset_end": True, "dataset_final_mark_ts": final_ts})
     final = ledger.snapshot()
@@ -221,8 +228,27 @@ def run_common_simulation_backtest(
     ledger_entries = tuple(ledger.entries)
     timing_status = "PASS" if all((item.fill_status not in {"filled", "partial"} or item.filled_qty <= 0 or item.portfolio_effective_ts is not None) for item in fills) else "FAIL"
     summary = execution_event_summary(trades)
-    executed_timing_hash = canonical_payload_hash([{"request_id": r.request_id, "decision_ts": r.decision_ts, "order_intent_ts": r.order_intent_ts, "submit_ts_assumption": r.submit_ts_assumption, "fill_reference_ts": r.fill_reference_ts} for r in requests])
-    summary.update({"execution_request_count": len(requests), "execution_model_invocation_count": model_invocations, "fill_count": len(fills), "declared_execution_timing_hash": sha256_prefixed(timing.as_dict()), "executed_execution_timing_hash": executed_timing_hash, "declared_execution_model_hash": model_params_hash(model.params_payload()), "executed_execution_model_hash": model_params_hash(model.params_payload()), "execution_request_stream_hash": _stream_hash(tuple(requests)), "execution_fill_stream_hash": _stream_hash(tuple(fills)), "portfolio_ledger_hash": _stream_hash(ledger_entries), "timing_invariant_status": timing_status})
+    policy_hash = sha256_prefixed(timing.as_dict())
+    timing_stream_hash = canonical_payload_hash([{"request_id": r.request_id, "decision_ts": r.decision_ts, "order_intent_ts": r.order_intent_ts, "submit_ts_assumption": r.submit_ts_assumption, "fill_reference_ts": r.fill_reference_ts} for r in requests])
+    reference_failures = sum(1 for request in requests if request.execution_reference_failure_reason)
+    model_eligible = len(requests) - reference_failures
+    declared_model_hash = model_params_hash(model.params_payload())
+    invoked_model_hashes = {fill.model_params_hash for fill in fills if not fill.execution_reference_failure_reason}
+    executed_model_hash = next(iter(invoked_model_hashes)) if len(invoked_model_hashes) == 1 else (declared_model_hash if not invoked_model_hashes else "MISMATCH")
+    summary.update({
+        "execution_evidence_schema_version": 2,
+        "execution_attempt_count": len(requests), "execution_reference_failure_count": reference_failures,
+        "model_eligible_request_count": model_eligible, "execution_request_count": len(requests),
+        "execution_model_invocation_count": model_invocations, "fill_count": len(fills),
+        "declared_execution_timing_policy_hash": policy_hash, "executed_execution_timing_policy_hash": policy_hash,
+        "execution_timing_stream_hash": timing_stream_hash,
+        "declared_execution_model_hash": declared_model_hash, "executed_execution_model_hash": executed_model_hash,
+        "execution_request_stream_hash": _stream_hash(tuple(requests)), "execution_fill_stream_hash": _stream_hash(tuple(fills)),
+        "ledger_stream_hash": _stream_hash(ledger_entries), "timing_invariant_status": timing_status,
+        # Schema-v1 aliases retained for readers while their former mixed-domain semantics are retired.
+        "declared_execution_timing_hash": policy_hash, "executed_execution_timing_hash": policy_hash,
+        "portfolio_ledger_hash": _stream_hash(ledger_entries),
+    })
     result = BacktestRun(metrics=metrics, metrics_v2=metrics_v2, trades=tuple(trades), candle_count=len(dataset.candles), warnings=(), decisions=tuple(decisions), equity_curve=tuple(equity), position_intervals=tuple(intervals), closed_trades=tuple(closed), execution_event_summary=summary, order_intents=tuple(intents), execution_requests=tuple(requests), fills=tuple(fills), ledger_entries=ledger_entries, resource_usage={"common_execution_authority": "common_simulation_engine", "executed_portfolio_policy": policy.as_dict(), "executed_portfolio_policy_hash": policy.policy_hash(), "execution_evidence": summary, "final_cash": final.cash, "final_asset_qty": final.asset_qty, "final_marked_equity": final.cash + final.asset_qty * last_price, "open_position_at_end": final.asset_qty > 0, "final_position_marked_to_market": final.asset_qty > 0}, strategy_diagnostics={"strategy_diagnostics_namespace": plugin.diagnostics_namespace, "strategy_specific_diagnostics": {plugin.diagnostics_namespace: {"decision_count": len(decisions), "hold_decision_count": sum(1 for event in events if event.final_signal == "HOLD")}}})
     result.validate_execution_lineage()
     return result

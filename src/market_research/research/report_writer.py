@@ -1131,6 +1131,21 @@ def scenario_evidence_hash_inputs(scenario: dict[str, Any]) -> dict[str, Any]:
         "execution_contract_hash",
         "execution_capability_contract_hash",
         "model_params_hash",
+        "execution_timing_policy_hash",
+        "declared_execution_timing_policy_hash",
+        "executed_execution_timing_policy_hash",
+        "execution_timing_stream_hash",
+        "execution_model_hash",
+        "declared_execution_model_hash",
+        "executed_execution_model_hash",
+        "execution_request_stream_hash",
+        "execution_fill_stream_hash",
+        "ledger_stream_hash",
+        "portfolio_ledger_hash",
+        "execution_attempt_count",
+        "execution_reference_failure_count",
+        "model_eligible_request_count",
+        "execution_model_invocation_count",
     ):
         if scenario.get(key):
             evidence[key] = scenario[key]

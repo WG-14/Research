@@ -20,8 +20,8 @@ from .experiment_manifest import ExperimentManifest
 from .hashing import content_hash_payload, sha256_prefixed
 
 
-REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 4
-REPRODUCTION_RECEIPT_SCHEMA_VERSION = 4
+REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 5
+REPRODUCTION_RECEIPT_SCHEMA_VERSION = 5
 
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
@@ -289,7 +289,7 @@ def _scenario_fingerprint(scenario: Any, candidate_id: str) -> dict[str, object]
     trade_ledger_hash = _required_sha256(scenario, "trade_ledger_hash", context)
     equity_curve_hash = _required_sha256(scenario, "equity_curve_hash", context)
     composite_behavior_hash = _required_sha256(scenario, "composite_behavior_hash", context)
-    return {
+    result = {
         "scenario_index": _required_int(scenario, "scenario_index", context),
         "scenario_id": scenario_id,
         "scenario_role": _required_string(scenario, "scenario_role", context),
@@ -302,6 +302,34 @@ def _scenario_fingerprint(scenario: Any, candidate_id: str) -> dict[str, object]
         "execution_model_hash": _required_sha256(scenario, "execution_model_hash", context),
         "portfolio_policy_hash": _required_sha256(scenario, "portfolio_policy_hash", context),
     }
+    execution = scenario.get("execution_evidence")
+    if not isinstance(execution, dict):
+        for split_name in ("validation_resource_usage", "final_holdout_resource_usage"):
+            usage = scenario.get(split_name)
+            if isinstance(usage, dict) and isinstance(usage.get("execution_evidence"), dict):
+                execution = usage["execution_evidence"]
+                break
+    if isinstance(execution, dict):
+        aliases = {
+            "execution_timing_policy_hash": "executed_execution_timing_policy_hash",
+            "execution_timing_stream_hash": "execution_timing_stream_hash",
+            "execution_model_hash": "executed_execution_model_hash",
+            "request_stream_hash": "execution_request_stream_hash",
+            "fill_stream_hash": "execution_fill_stream_hash",
+            "ledger_stream_hash": "ledger_stream_hash",
+        }
+        for output_key, source_key in aliases.items():
+            legacy = {"executed_execution_timing_policy_hash": "executed_execution_timing_hash", "ledger_stream_hash": "portfolio_ledger_hash"}.get(source_key)
+            value = execution.get(source_key, execution.get(legacy) if legacy else None)
+            if value is not None:
+                if not isinstance(value, str) or not value.startswith("sha256:"):
+                    raise ReproductionContractError(f"{context}.{source_key} must be a sha256 hash")
+                result[output_key] = value
+        seed_rows = scenario.get("execution_fill_stream") or ()
+        seed_hashes = sorted({str(fill.get("derived_seed_hash")) for fill in seed_rows if isinstance(fill, dict) and fill.get("derived_seed_hash")})
+        if seed_hashes:
+            result["stochastic_seed_evidence_hash"] = sha256_prefixed(seed_hashes)
+    return result
 
 
 def _assert_report_execution_bindings(

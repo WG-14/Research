@@ -5,6 +5,9 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+from .decision_event import OrderIntent, ResearchDecisionEvent
+from .execution_model.base import ExecutionFill, ExecutionRequest
+from .portfolio_ledger import LedgerEntry
 
 from market_research.market_regime import RegimeCoverageRow, RegimePerformanceRow
 
@@ -274,7 +277,7 @@ class BacktestRun:
     regime_performance: tuple[RegimePerformanceRow, ...] = ()
     regime_coverage: tuple[RegimeCoverageRow, ...] = ()
     execution_event_summary: dict[str, object] | None = None
-    decisions: tuple[object, ...] = ()
+    decisions: tuple[ResearchDecisionEvent, ...] = ()
     equity_curve: tuple[EquityPoint, ...] = ()
     position_intervals: tuple[PositionInterval, ...] = ()
     closed_trades: tuple[ClosedTradeRecord, ...] = ()
@@ -284,10 +287,10 @@ class BacktestRun:
     retained_detail_summary: dict[str, object] | None = None
     audit_trace_index: dict[str, object] | None = None
     # Authoritative, independently hashable execution lineage streams.
-    order_intents: tuple[object, ...] = ()
-    execution_requests: tuple[object, ...] = ()
-    fills: tuple[object, ...] = ()
-    ledger_entries: tuple[object, ...] = ()
+    order_intents: tuple[OrderIntent, ...] = ()
+    execution_requests: tuple[ExecutionRequest, ...] = ()
+    fills: tuple[ExecutionFill, ...] = ()
+    ledger_entries: tuple[LedgerEntry, ...] = ()
 
     def validate_execution_lineage(self) -> None:
         """Fail closed on duplicate, orphaned, or inconsistent execution lineage."""
@@ -308,12 +311,18 @@ class BacktestRun:
             if intent.decision_id not in indexes["decision"]: raise ValueError("orphan_intent")
         for request in self.execution_requests:
             if request.intent_id not in indexes["intent"] or request.decision_id not in indexes["decision"]: raise ValueError("orphan_request")
+            if indexes["intent"][request.intent_id].decision_id != request.decision_id: raise ValueError("request_intent_decision_mismatch")
         for fill in self.fills:
             if fill.request_id not in indexes["request"]: raise ValueError("orphan_fill")
+            request = indexes["request"][fill.request_id]
+            if fill.decision_id != request.decision_id or fill.intent_id != request.intent_id: raise ValueError("fill_request_lineage_mismatch")
         for entry in self.ledger_entries:
             fill = indexes["fill"].get(entry.fill_id)
             if fill is None: raise ValueError("orphan_ledger_entry")
             if fill.fill_status not in {"filled", "partial"} or float(fill.filled_qty) <= 0: raise ValueError("invalid_ledger_fill")
+            if entry.side != fill.side or abs(float(entry.qty)-float(fill.filled_qty)) > 1e-8 or abs(float(entry.fee)-float(fill.fee)) > 1e-8 or entry.effective_ts != fill.portfolio_effective_ts: raise ValueError("ledger_fill_value_mismatch")
+        if len({entry.fill_id for entry in self.ledger_entries}) != len(self.ledger_entries):
+            raise ValueError("multiple_mutating_ledger_entries_for_fill")
         for trade in self.trades:
             if not trade.get("ledger_entry_id"): continue
             fill = indexes["fill"].get(str(trade.get("fill_id")))

@@ -151,8 +151,11 @@ def resolve_execution_reference(
             latency_reference_policy_warning=latency_warning,
         )
     if policy.fill_reference_policy == "next_candle_open":
-        next_index = signal_index + 1
-        if next_index >= len(dataset.candles):
+        next_candle = next(
+            (candle for candle in dataset.candles[signal_index + 1 :] if int(candle.ts) >= submit_ts),
+            None,
+        )
+        if next_candle is None:
             return _failed_reference(
                 signal=signal,
                 submit_ts=submit_ts,
@@ -161,7 +164,6 @@ def resolve_execution_reference(
                 reason="next_candle_missing",
                 model_latency_ms=latency_ms,
             )
-        next_candle = dataset.candles[next_index]
         return ExecutionReferenceEvent(
             submit_ts_assumption=submit_ts,
             fill_reference_ts=int(next_candle.ts),
