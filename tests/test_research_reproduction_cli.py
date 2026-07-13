@@ -74,11 +74,13 @@ def test_reproduce_run_rejects_changed_manifest_before_backtest(tmp_path: Path) 
     assert not (context.settings.artifact_root / "reproductions").exists()
 
 
-def test_reproduce_run_reports_dataset_drift(tmp_path: Path) -> None:
-    context, db_path, manifest_path = _context(tmp_path)
+def test_reproduce_run_rejects_frozen_dataset_tamper(tmp_path: Path) -> None:
+    context, _, manifest_path = _context(tmp_path)
     assert cmd_research_backtest(context=context, manifest_path=str(manifest_path)) == 0
     receipt = context.settings.artifact_root / "reports" / "research" / "sma_success_import_boundary" / "reproduction_receipt.json"
-    with sqlite3.connect(db_path) as conn:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    artifact_manifest = json.loads(Path(manifest["dataset"]["artifact_manifest_uri"]).read_text(encoding="utf-8"))
+    with sqlite3.connect(artifact_manifest["artifact"]["uri"]) as conn:
         conn.execute("UPDATE candles SET close = close + 0.25 WHERE rowid = 1")
     out = tmp_path / "drift.json"
 
@@ -88,9 +90,11 @@ def test_reproduce_run_reports_dataset_drift(tmp_path: Path) -> None:
 
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert rc == 1
-    assert payload["status"] == "DRIFT"
-    assert payload["phase"] == "fingerprint_comparison"
-    assert any(item["path"] == "dataset_fingerprint" for item in payload["mismatches"])
+    assert payload["status"] == "REPRODUCTION_FAILED"
+    assert payload["phase"] == "reproduction_execution"
+    assert payload["error_code"] == "backtest_failed"
+    assert payload["error"] == "dataset_verification_not_verified:MISMATCH"
+    assert payload["mismatches"] == []
 
 
 def test_reproduce_run_classifies_reproduced_receipt_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

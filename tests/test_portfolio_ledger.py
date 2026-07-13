@@ -8,7 +8,7 @@ from tests.test_common_simulation_engine import SpyModel, _run
 
 def test_failed_fill_does_not_mutate_ledger():
     run = _run(SpyModel())
-    failed = replace(run.fills[0], fill_status="failed", filled_qty=0.0)
+    failed = replace(run.fills[0], fill_id="", fill_status="failed", filled_qty=0.0)
     ledger = PortfolioLedger(starting_cash=1_000_000)
     assert ledger.apply(failed) is None
     assert ledger.snapshot().cash == 1_000_000

@@ -24,6 +24,7 @@ RESEARCH_COMMANDS = {
     "research-registry-inspect",
     "research-registry-validate",
     "research-mark-attempt-aborted",
+    "research-export-strategy-package",
 }
 
 FORBIDDEN_OPERATIONAL_COMMANDS = {
