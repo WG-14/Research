@@ -78,3 +78,16 @@ def test_generic_strategy_spec_rejects_legacy_concrete_spec_exports():
     for name in names:
         with pytest.raises(AttributeError):
             getattr(generic, name)
+
+
+def test_sdk_strategy_spec_requires_explicit_registry_and_has_no_catalog_import():
+    source = Path("src/market_research/research/strategy_spec.py").read_text()
+    assert "strategy_catalog" not in source
+    from market_research.research.strategy_spec import StrategySpecError, strategy_spec_for_name
+    with pytest.raises(StrategySpecError, match="explicit strategy registry required"):
+        strategy_spec_for_name("noop_baseline")
+
+
+def test_compatibility_exit_adapter_has_no_concrete_strategy_import():
+    source = Path("src/market_research/research/exit_rules.py").read_text()
+    assert "builtin_strategies" not in source

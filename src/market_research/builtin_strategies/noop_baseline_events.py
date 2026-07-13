@@ -8,7 +8,8 @@ from market_research.research.dataset_snapshot import DatasetSnapshot
 from market_research.research.decision_event import ResearchDecisionEvent
 from market_research.research.execution_timing import candle_close_ts
 from market_research.research.experiment_manifest import ExecutionTimingPolicy, PortfolioPolicy
-from .noop_baseline import NOOP_BASELINE_SPEC
+_STRATEGY_NAME = "noop_baseline"
+_STRATEGY_VERSION = "noop_baseline.research_contract.v1"
 
 
 def build_noop_baseline_events(
@@ -20,6 +21,7 @@ def build_noop_baseline_events(
     execution_timing_policy: ExecutionTimingPolicy,
     portfolio_policy: PortfolioPolicy,
     context: Any | None = None,
+    candle_index_offset: int = 0,
 ) -> tuple[ResearchDecisionEvent, ...]:
     """Emit HOLD-only decisions from the configured candle index onward."""
     del fee_rate, slippage_bps, portfolio_policy, context
@@ -28,7 +30,8 @@ def build_noop_baseline_events(
         parameter_values.get("NOOP_DECISION_REASON") or "noop_baseline_hold"
     )
     events: list[ResearchDecisionEvent] = []
-    for index, candle in enumerate(dataset.candles):
+    for local_index, candle in enumerate(dataset.candles):
+        index = int(candle_index_offset) + local_index
         if index < start_index:
             continue
         events.append(
@@ -38,8 +41,8 @@ def build_noop_baseline_events(
                     candle_close_ts(candle, interval=dataset.interval)
                     + int(execution_timing_policy.decision_guard_ms)
                 ),
-                strategy_name=NOOP_BASELINE_SPEC.strategy_name,
-                strategy_version=NOOP_BASELINE_SPEC.strategy_version,
+                strategy_name=_STRATEGY_NAME,
+                strategy_version=_STRATEGY_VERSION,
                 raw_signal="HOLD",
                 entry_signal="HOLD",
                 exit_signal="HOLD",
@@ -52,7 +55,7 @@ def build_noop_baseline_events(
                 },
                 strategy_diagnostics={
                     "schema_version": 1,
-                    "hold_decision_count": int(len(events) + 1),
+                    "hold_decision_count": int(index - start_index + 1),
                     "start_index": int(start_index),
                 },
                 extra_payload={

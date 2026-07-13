@@ -929,6 +929,9 @@ def parse_manifest_with_registry(payload: dict[str, Any], *, registry: "Strategy
 
 def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | None" = None) -> ExperimentManifest:
     """Legacy built-in convenience parser; use parse_manifest_with_registry for validation."""
+    if registry is None:
+        from .builtin_registry import builtin_strategy_registry
+        registry = builtin_strategy_registry()
     if not isinstance(payload, dict):
         raise ManifestValidationError("manifest must be a JSON object")
     allowed_fields = {

@@ -3,7 +3,7 @@ from typing import Any
 
 from market_research.research.backtest_types import BacktestRunContext
 from market_research.research.strategy_contract import ResearchStrategyPlugin
-from market_research.research.strategy_spec import StrategySpec, materialize_parameters_from_spec
+from market_research.research.strategy_spec import StrategySpec
 
 THRESHOLD_RESEARCH_ONLY_SPEC = StrategySpec(
     strategy_name="threshold_research_only", strategy_version="threshold_research_only.research_contract.v1",
@@ -40,10 +40,10 @@ def _runtime_factory(**values: Any) -> _ThresholdRuntime:
 
 
 def _materialize(*, plugin: ResearchStrategyPlugin, parameter_values: dict[str, Any], fee_rate: float,
-                 slippage_bps: float, context: BacktestRunContext | None = None) -> dict[str, Any]:
-    del plugin, context
-    return materialize_parameters_from_spec(THRESHOLD_RESEARCH_ONLY_SPEC, parameter_values,
-                                            fee_rate=fee_rate, slippage_bps=slippage_bps)
+                 slippage_bps: float, materialized_parameters: dict[str, Any],
+                 context: BacktestRunContext | None = None) -> dict[str, Any]:
+    del plugin, parameter_values, context, fee_rate, slippage_bps
+    return dict(materialized_parameters)
 
 
 def build_threshold_research_only_plugin() -> ResearchStrategyPlugin:

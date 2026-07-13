@@ -103,5 +103,5 @@ print(json.dumps({
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["execution_authority"] == "common_simulation_engine"
-    assert payload["event_builder"].startswith("market_research.research.strategies.")
+    assert payload["event_builder"].startswith("market_research.builtin_strategies.")
     assert payload["forbidden"] == []

@@ -130,17 +130,19 @@ class StrategySpec:
         return sha256_prefixed(self.as_dict())
 
 
-def strategy_spec_for_name(strategy_name: str) -> StrategySpec:
+def strategy_spec_for_name(strategy_name: str, *, registry: Any | None = None) -> StrategySpec:
+    """Resolve only through an explicitly supplied composition authority."""
+    if registry is None:
+        raise StrategySpecError("explicit strategy registry required")
     try:
-        from .strategy_catalog import ResearchStrategyCatalogError, resolve_research_strategy
-
-        return resolve_research_strategy(strategy_name).spec
-    except ResearchStrategyCatalogError as exc:
+        return registry.resolve(strategy_name).spec
+    except ValueError as exc:
         raise StrategySpecError(f"unsupported research strategy: {strategy_name}") from exc
 
 
-def runtime_bound_behavior_parameter_names(strategy_name: str) -> tuple[str, ...]:
-    return runtime_bound_behavior_parameter_names_from_spec(strategy_spec_for_name(strategy_name))
+def runtime_bound_behavior_parameter_names(strategy_name: str, *, registry: Any) -> tuple[str, ...]:
+    return runtime_bound_behavior_parameter_names_from_spec(
+        strategy_spec_for_name(strategy_name, registry=registry))
 
 
 def runtime_bound_behavior_parameter_names_from_spec(spec: StrategySpec) -> tuple[str, ...]:
@@ -159,8 +161,9 @@ def validate_parameter_space_against_strategy_spec(
     parameter_space: dict[str, tuple[object, ...]],
     research_classification: str,
     spec: StrategySpec | None = None,
+    registry: Any | None = None,
 ) -> StrategySpec:
-    spec = spec or strategy_spec_for_name(strategy_name)
+    spec = spec or strategy_spec_for_name(strategy_name, registry=registry)
     accepted = set(spec.accepted_parameter_names)
     unknown = sorted(key for key in parameter_space if key not in accepted)
     if unknown:
@@ -198,9 +201,10 @@ def strategy_parameter_source_map(
     *,
     fee_rate: float | None = None,
     slippage_bps: float | None = None,
+    registry: Any | None = None,
 ) -> dict[str, str]:
     return parameter_source_map_from_spec(
-        strategy_spec_for_name(strategy_name), parameter_values,
+        strategy_spec_for_name(strategy_name, registry=registry), parameter_values,
         fee_rate=fee_rate, slippage_bps=slippage_bps,
     )
 
@@ -237,9 +241,10 @@ def materialize_strategy_parameters(
     *,
     fee_rate: float | None = None,
     slippage_bps: float | None = None,
+    registry: Any | None = None,
 ) -> dict[str, Any]:
     return materialize_parameters_from_spec(
-        strategy_spec_for_name(strategy_name), parameter_values,
+        strategy_spec_for_name(strategy_name, registry=registry), parameter_values,
         fee_rate=fee_rate, slippage_bps=slippage_bps,
     )
 
@@ -281,12 +286,12 @@ def exit_policy_materialization_from_parameters(
     parameter_values: dict[str, Any],
     *,
     materialization_mode: str = "research_validation",
+    registry: Any | None = None,
 ) -> Any:
-    from .strategy_catalog import resolve_research_strategy
     from .strategy_contract import normalize_exit_policy_materialization
 
-    spec = strategy_spec_for_name(strategy_name)
-    plugin = resolve_research_strategy(strategy_name)
+    spec = strategy_spec_for_name(strategy_name, registry=registry)
+    plugin = registry.resolve(strategy_name)
     materializer = getattr(plugin, "exit_policy_materializer", None)
     if materializer is not None:
         result = materializer(strategy_name, dict(parameter_values))
@@ -322,7 +327,7 @@ def exit_policy_materialization_from_parameters(
             "strategy exit policy materializer required for strategy-owned rule(s): "
             + ",".join(strategy_owned)
         )
-    policy = _common_exit_policy_from_parameters(strategy_name, parameter_values)
+    policy = _common_exit_policy_from_parameters(strategy_name, parameter_values, spec=spec)
     return normalize_exit_policy_materialization(
         {
             "exit_policy": policy,
@@ -337,8 +342,10 @@ def exit_policy_materialization_from_parameters(
     )
 
 
-def exit_policy_from_parameters(strategy_name: str, parameter_values: dict[str, Any]) -> dict[str, Any]:
-    return dict(exit_policy_materialization_from_parameters(strategy_name, parameter_values).exit_policy)
+def exit_policy_from_parameters(strategy_name: str, parameter_values: dict[str, Any], *,
+                                registry: Any | None = None) -> dict[str, Any]:
+    return dict(exit_policy_materialization_from_parameters(
+        strategy_name, parameter_values, registry=registry).exit_policy)
 
 
 def _no_exit_policy(strategy_name: str) -> dict[str, Any]:
@@ -355,8 +362,9 @@ def _no_exit_policy(strategy_name: str) -> dict[str, Any]:
     }
 
 
-def _common_exit_policy_from_parameters(strategy_name: str, parameter_values: dict[str, Any]) -> dict[str, Any]:
-    values = materialize_strategy_parameters(strategy_name, parameter_values)
+def _common_exit_policy_from_parameters(strategy_name: str, parameter_values: dict[str, Any], *,
+                                        spec: StrategySpec) -> dict[str, Any]:
+    values = materialize_parameters_from_spec(spec, parameter_values)
     rules = _normalize_exit_rule_names(str(values.get("STRATEGY_EXIT_RULES") or ""))
     _validate_common_exit_rule_names(",".join(rules))
     common_rules = tuple(rule for rule in rules if rule in COMMON_EXIT_RULE_NAMES)

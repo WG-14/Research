@@ -8,8 +8,7 @@ from .sma_exit_rules import evaluate_sma_exit_policy, materialize_sma_exit_polic
 from market_research.research.position_model import ResearchPosition
 from market_research.research.strategy_contract import (ResearchDataRequirement,
     ResearchStrategyDataRequirements, ResearchStrategyPlugin)
-from market_research.research.strategy_spec import (StrategyParameterSchema, StrategySpec,
-    materialize_parameters_from_spec)
+from market_research.research.strategy_spec import StrategyParameterSchema, StrategySpec
 
 _SMA_ACCEPTED = (
     "SMA_SHORT", "SMA_LONG", "SMA_FILTER_GAP_MIN_RATIO", "SMA_FILTER_VOL_WINDOW",
@@ -51,10 +50,10 @@ from .sma_with_filter_events import build_sma_with_filter_research_events
 
 
 def _materialize(*, plugin: ResearchStrategyPlugin, parameter_values: dict[str, Any], fee_rate: float,
-                 slippage_bps: float, context: BacktestRunContext | None = None) -> dict[str, Any]:
-    del plugin, context
-    values = materialize_parameters_from_spec(SMA_WITH_FILTER_SPEC, parameter_values,
-        fee_rate=fee_rate, slippage_bps=slippage_bps)
+                 slippage_bps: float, materialized_parameters: dict[str, Any],
+                 context: BacktestRunContext | None = None) -> dict[str, Any]:
+    del plugin, context, fee_rate, slippage_bps
+    values = dict(materialized_parameters)
     for key, value in {"SMA_FILTER_GAP_MIN_RATIO": 0.0, "SMA_FILTER_VOL_MIN_RANGE_RATIO": 0.0,
                        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": 0.0, "SMA_COST_EDGE_ENABLED": False,
                        "SMA_MARKET_REGIME_ENABLED": False}.items():

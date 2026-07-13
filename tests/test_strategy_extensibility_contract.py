@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from market_research.research.strategy_contract import ResearchStrategyPlugin
-from market_research.research.strategy_spec import SMA_WITH_FILTER_SPEC
+from market_research.builtin_strategies.sma_with_filter import SMA_WITH_FILTER_SPEC
 
 
 def test_custom_strategy_specific_backtest_runner_is_rejected():

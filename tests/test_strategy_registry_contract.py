@@ -29,7 +29,7 @@ def test_nested_spec_mutation_is_rejected():
     with pytest.raises(TypeError):
         plugin.spec.default_parameters["SMA_FILTER_GAP_MIN_RATIO"] = 99
     with pytest.raises(TypeError):
-        plugin.spec.exit_policy_schema["opposite_cross"]["unit"] = "changed"
+        plugin.spec.exit_policy_schema["rules"] = ("changed",)
 
 
 def test_registry_detects_stale_plugin_contract():

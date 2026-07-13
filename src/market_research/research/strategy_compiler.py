@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import inspect
 from collections.abc import Mapping
 from typing import Any
 
@@ -41,10 +42,16 @@ class StrategyCompiler:
             plugin.spec, raw, fee_rate=fee_rate, slippage_bps=slippage_bps
         )
         if plugin.parameter_materializer is not None:
-            values = plugin.parameter_materializer(plugin=plugin, parameter_values=raw, fee_rate=fee_rate,
-                                                   slippage_bps=slippage_bps, context=context)
+            inputs = {
+                "plugin": plugin, "parameter_values": raw, "materialized_parameters": dict(baseline),
+                "fee_rate": fee_rate, "slippage_bps": slippage_bps, "context": context,
+            }
+            accepted = inspect.signature(plugin.parameter_materializer).parameters
+            accepts_kwargs = any(value.kind is inspect.Parameter.VAR_KEYWORD for value in accepted.values())
+            values = plugin.parameter_materializer(**(inputs if accepts_kwargs else
+                {key: value for key, value in inputs.items() if key in accepted}))
         else:
-            values = materialize_parameters_from_spec(plugin.spec, raw, fee_rate=fee_rate, slippage_bps=slippage_bps)
+            values = baseline
         values = dict(values)
         sources = parameter_source_map_from_spec(plugin.spec, raw, fee_rate=fee_rate, slippage_bps=slippage_bps)
         # Record the authority for the final value. A materializer which replaces
@@ -217,6 +224,7 @@ def validate_compiled_strategy_contract(
     expected_plugin_hash: str | None = None, expected_compiled_hash: str | None = None,
 ) -> CompiledStrategyContract:
     """Validate and freeze one complete v2 contract regardless of input representation."""
+    original_contract = contract_or_payload if isinstance(contract_or_payload, CompiledStrategyContract) else None
     if isinstance(contract_or_payload, CompiledStrategyContract):
         payload = contract_or_payload.as_dict()
     elif isinstance(contract_or_payload, Mapping):
@@ -283,6 +291,8 @@ def validate_compiled_strategy_contract(
             raise StrategyCompilationError("compiled_contract_identity_mismatch", name)
     if expected_compiled_hash is not None and recorded != expected_compiled_hash:
         raise StrategyCompilationError("compiled_contract_identity_mismatch", "compiled_contract_hash")
+    if original_contract is not None:
+        return original_contract
     return CompiledStrategyContract(
         schema_version=material["schema_version"], strategy_name=material["strategy_name"],
         strategy_version=material["strategy_version"],

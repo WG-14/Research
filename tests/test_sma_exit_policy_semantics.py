@@ -1,4 +1,4 @@
-from market_research.research.exit_rules import evaluate_sma_exit_policy
+from market_research.builtin_strategies.sma_exit_rules import evaluate_sma_exit_policy
 from market_research.research.position_model import ResearchPosition
 from dataclasses import replace
 from market_research.research.decision_event import OrderIntent, ResearchDecisionEvent
