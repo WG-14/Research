@@ -7,7 +7,7 @@ from typing import Any
 from .execution_evidence import REQUIRED_FIELDS, REQUIRED_FIELDS_V2
 from .final_selection import validate_final_selection_report
 from .hashing import report_content_hash_payload, sha256_prefixed
-from .strategy_compiler import StrategyCompilationError, compiled_contract_from_payload
+from .strategy_compiler import StrategyCompilationError, validate_compiled_strategy_contract
 
 
 class StrategyPackageError(ValueError):
@@ -93,7 +93,7 @@ def build_strategy_research_package(report: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(compiled_payload, dict):
         raise StrategyPackageError("strategy_package_compiled_contract_payload_missing")
     try:
-        hydrated = compiled_contract_from_payload(
+        hydrated = validate_compiled_strategy_contract(
             dict(compiled_payload), expected_compiled_hash=merged["compiled_strategy_contract_hash"],
             expected_registry_hash=merged["strategy_registry_hash"],
             expected_plugin_hash=merged["strategy_plugin_contract_hash"],
@@ -105,6 +105,29 @@ def build_strategy_research_package(report: dict[str, Any]) -> dict[str, Any]:
             or hydrated.capability_contract_hash != merged["capability_contract_hash"]
             or (merged.get("capability_contract") is not None and merged["capability_contract"] != capability)):
         raise StrategyPackageError("strategy_package_capability_contract_hash_mismatch")
+    effective_hash = merged.get("effective_strategy_parameters_hash")
+    if effective_hash != hydrated.materialized_parameters_hash:
+        raise StrategyPackageError("strategy_package_effective_parameter_hash_mismatch")
+    effective_payload = merged.get("effective_strategy_parameters")
+    if effective_payload is not None and sha256_prefixed(effective_payload) != effective_hash:
+        raise StrategyPackageError("strategy_package_effective_parameter_payload_hash_mismatch")
+    for scenario in scenarios:
+        scenario_payload = scenario.get("compiled_strategy_contract") if isinstance(scenario, dict) else None
+        scenario_hash = scenario.get("compiled_strategy_contract_hash") if isinstance(scenario, dict) else None
+        if not isinstance(scenario_payload, dict) or not isinstance(scenario_hash, str):
+            raise StrategyPackageError("strategy_package_scenario_compiled_contract_missing")
+        try:
+            scenario_contract = validate_compiled_strategy_contract(
+                scenario_payload, expected_compiled_hash=scenario_hash,
+                expected_strategy_name=hydrated.strategy_name,
+                expected_strategy_version=hydrated.strategy_version,
+                expected_registry_hash=hydrated.strategy_registry_hash,
+                expected_plugin_hash=hydrated.strategy_plugin_contract_hash,
+            )
+        except StrategyCompilationError as exc:
+            raise StrategyPackageError(f"strategy_package_scenario_identity_mismatch:{exc}") from exc
+        if scenario_contract.capability_contract_hash != hydrated.capability_contract_hash:
+            raise StrategyPackageError("strategy_package_scenario_capability_mismatch")
     decision_sources = {value for value in (evidence.get("decision_stream_hash"), selected.get("decision_stream_hash")) if value is not None}
     metrics_sources = {value for value in (selected.get("metrics_hash"), evidence.get("metrics_hash")) if value is not None}
     if len(decision_sources) > 1:

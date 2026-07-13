@@ -10,7 +10,9 @@ from market_research.research.strategy_compiler import (
     StrategyCompilationError,
     StrategyCompiler,
     compiled_contract_from_payload,
+    validate_compiled_strategy_contract,
 )
+from market_research.research.strategy_contract import CompiledStrategyContract
 
 
 def _contract(*, long: int = 30):
@@ -90,3 +92,38 @@ def test_hydrated_contract_remains_recursively_immutable():
     hydrated = compiled_contract_from_payload(_contract().as_dict())
     with pytest.raises(TypeError):
         hydrated.capability_contract["nested"] = {}
+
+
+@pytest.mark.parametrize("mutation", (
+    lambda p: p["capability_contract"].__setitem__("pyramiding", "false"),
+    lambda p: p["capability_contract"].__setitem__("direction", "short"),
+    lambda p: p["capability_contract"].__setitem__("portfolio_mode", "unknown"),
+    lambda p: p["capability_contract"].__setitem__("instrument_count", 0),
+    lambda p: p["capability_contract"].__setitem__("max_concurrent_positions", True),
+    lambda p: p["capability_contract"].__setitem__("max_intents_per_decision", -1),
+    lambda p: p["data_requirements"]["required_data"].append(1),
+    lambda p: p["data_requirements"]["required_data"].append("candles"),
+    lambda p: p["data_requirements"]["optional_data"].append("candles"),
+    lambda p: p["data_requirements"]["capabilities"].append(copy.deepcopy(p["data_requirements"]["capabilities"][0])),
+    lambda p: p["data_requirements"]["capabilities"][0].__setitem__("lookback_rows", "200"),
+    lambda p: p["data_requirements"]["capabilities"][0].__setitem__("min_rows", -1),
+    lambda p: p["data_requirements"]["capabilities"][0].__setitem__("min_coverage_pct", 101),
+    lambda p: p["parameter_source_map"].__setitem__("SMA_LONG", "unknown_source"),
+    lambda p: p["exit_policy"].__setitem__("rules", "stop_loss"),
+))
+def test_hydration_rejects_semantically_invalid_self_hashed_payload(mutation):
+    payload = _contract().as_dict(); mutation(payload)
+    payload["capability_contract_hash"] = sha256_prefixed(payload["capability_contract"])
+    _rehash(payload)
+    with pytest.raises(StrategyCompilationError):
+        compiled_contract_from_payload(payload)
+
+
+def test_direct_contract_object_uses_same_semantic_validator():
+    payload = _contract().as_dict()
+    payload["capability_contract"]["pyramiding"] = "false"
+    payload["capability_contract_hash"] = sha256_prefixed(payload["capability_contract"])
+    _rehash(payload)
+    direct = CompiledStrategyContract(**payload)
+    with pytest.raises(StrategyCompilationError, match="capability_payload_invalid"):
+        validate_compiled_strategy_contract(direct)

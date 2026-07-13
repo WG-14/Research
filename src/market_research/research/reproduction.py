@@ -18,7 +18,7 @@ from market_research.storage_io import write_json_atomic
 
 from .experiment_manifest import ExperimentManifest
 from .hashing import content_hash_payload, sha256_prefixed
-from .strategy_compiler import StrategyCompilationError, compiled_contract_from_payload
+from .strategy_compiler import StrategyCompilationError, validate_compiled_strategy_contract
 
 
 REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 7
@@ -261,7 +261,6 @@ def _candidate_fingerprint(candidate: Any) -> dict[str, object]:
     scenarios_value = candidate.get("scenario_results")
     if not isinstance(scenarios_value, list) or not scenarios_value:
         raise ReproductionContractError(f"candidate {candidate_id} has no scenario_results")
-    scenarios = tuple(sorted((_scenario_fingerprint(item, candidate_id) for item in scenarios_value), key=_scenario_sort_key))
     primary_scenario_id = _required_string(candidate, "primary_scenario_id", f"candidate {candidate_id}")
     recorded_compiled_hash = _required_sha256(candidate, "compiled_strategy_contract_hash", f"candidate {candidate_id}")
     primary = next((item for item in scenarios_value if isinstance(item, dict) and
@@ -275,7 +274,7 @@ def _candidate_fingerprint(candidate: Any) -> dict[str, object]:
     if candidate.get("compiled_strategy_contract") != compiled:
         raise ReproductionContractError(f"candidate {candidate_id}.compiled_strategy_contract primary mismatch")
     try:
-        hydrated = compiled_contract_from_payload(
+        hydrated = validate_compiled_strategy_contract(
             dict(compiled), expected_compiled_hash=recorded_compiled_hash,
             expected_registry_hash=_required_sha256(candidate, "strategy_registry_hash", f"candidate {candidate_id}"),
             expected_plugin_hash=_required_sha256(candidate, "strategy_plugin_contract_hash", f"candidate {candidate_id}"),
@@ -287,11 +286,22 @@ def _candidate_fingerprint(candidate: Any) -> dict[str, object]:
     if (candidate.get("capability_contract") is not None
             and candidate.get("capability_contract") != compiled.get("capability_contract")):
         raise ReproductionContractError(f"candidate {candidate_id}.capability_contract mismatch")
+    effective_hash = _required_sha256(candidate, "effective_strategy_parameters_hash", f"candidate {candidate_id}")
+    if effective_hash != hydrated.materialized_parameters_hash:
+        raise ReproductionContractError(f"candidate {candidate_id}.effective_strategy_parameters_hash mismatch")
+    effective_payload = candidate.get("effective_strategy_parameters")
+    if effective_payload is not None and sha256_prefixed(effective_payload) != effective_hash:
+        raise ReproductionContractError(f"candidate {candidate_id}.effective_strategy_parameters payload mismatch")
+    scenarios = tuple(sorted((_scenario_fingerprint(
+        item, candidate_id, expected_strategy_name=hydrated.strategy_name,
+        expected_strategy_version=hydrated.strategy_version,
+        expected_registry_hash=hydrated.strategy_registry_hash,
+        expected_plugin_hash=hydrated.strategy_plugin_contract_hash,
+        expected_capability_hash=hydrated.capability_contract_hash,
+    ) for item in scenarios_value), key=_scenario_sort_key))
     return {
         "candidate_id": candidate_id,
-        "effective_strategy_parameters_hash": _required_sha256(
-            candidate, "effective_strategy_parameters_hash", f"candidate {candidate_id}"
-        ),
+        "effective_strategy_parameters_hash": effective_hash,
         "strategy_spec_hash": _required_sha256(candidate, "strategy_spec_hash", f"candidate {candidate_id}"),
         "strategy_plugin_contract_hash": _required_sha256(
             candidate, "strategy_plugin_contract_hash", f"candidate {candidate_id}"
@@ -305,7 +315,11 @@ def _candidate_fingerprint(candidate: Any) -> dict[str, object]:
     }
 
 
-def _scenario_fingerprint(scenario: Any, candidate_id: str) -> dict[str, object]:
+def _scenario_fingerprint(
+    scenario: Any, candidate_id: str, *, expected_strategy_name: str | None = None,
+    expected_strategy_version: str | None = None, expected_registry_hash: str | None = None,
+    expected_plugin_hash: str | None = None, expected_capability_hash: str | None = None,
+) -> dict[str, object]:
     if not isinstance(scenario, dict):
         raise ReproductionContractError(f"candidate {candidate_id} scenario must be an object")
     scenario_id = _required_string(scenario, "scenario_id", f"candidate {candidate_id} scenario")
@@ -315,9 +329,17 @@ def _scenario_fingerprint(scenario: Any, candidate_id: str) -> dict[str, object]
     if not isinstance(compiled_payload, dict):
         raise ReproductionContractError(f"{context}.compiled_strategy_contract is required")
     try:
-        compiled_contract_from_payload(dict(compiled_payload), expected_compiled_hash=compiled_hash)
+        hydrated = validate_compiled_strategy_contract(
+            dict(compiled_payload), expected_compiled_hash=compiled_hash,
+            expected_strategy_name=expected_strategy_name,
+            expected_strategy_version=expected_strategy_version,
+            expected_registry_hash=expected_registry_hash,
+            expected_plugin_hash=expected_plugin_hash,
+        )
     except StrategyCompilationError as exc:
         raise ReproductionContractError(f"{context}.compiled_strategy_contract invalid:{exc}") from exc
+    if expected_capability_hash is not None and hydrated.capability_contract_hash != expected_capability_hash:
+        raise ReproductionContractError(f"{context}.compiled_strategy_contract capability mismatch")
     metrics_hash = _required_sha256(scenario, "metrics_hash", context)
     behavior_hash = _required_sha256(scenario, "behavior_hash", context)
     strategy_behavior_hash = _required_sha256(scenario, "strategy_behavior_hash", context)

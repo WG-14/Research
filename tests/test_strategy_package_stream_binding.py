@@ -60,7 +60,9 @@ def test_package_uses_primary_scenario_compiled_contract(monkeypatch):
         "strategy_registry_hash": stress["strategy_registry_hash"],
         "strategy_plugin_contract_hash": stress["strategy_plugin_contract_hash"],
         "capability_contract": stress["capability_contract"],
-        "capability_contract_hash": stress["capability_contract_hash"]})
+        "capability_contract_hash": stress["capability_contract_hash"],
+        "effective_strategy_parameters": stress["materialized_parameters"],
+        "effective_strategy_parameters_hash": stress["materialized_parameters_hash"]})
     candidate["scenario_results"] = [
         {"scenario_id": "base", "compiled_strategy_contract": base,
          "compiled_strategy_contract_hash": base["compiled_contract_hash"], "execution_evidence": evidence},

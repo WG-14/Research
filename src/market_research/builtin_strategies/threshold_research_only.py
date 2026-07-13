@@ -3,8 +3,17 @@ from typing import Any
 
 from market_research.research.backtest_types import BacktestRunContext
 from market_research.research.strategy_contract import ResearchStrategyPlugin
-from market_research.research.strategy_spec import THRESHOLD_RESEARCH_ONLY_SPEC, materialize_strategy_parameters
-from market_research.research.strategies.threshold_research_only_events import build_threshold_research_only_events
+from market_research.research.strategy_spec import StrategySpec, materialize_parameters_from_spec
+
+THRESHOLD_RESEARCH_ONLY_SPEC = StrategySpec(
+    strategy_name="threshold_research_only", strategy_version="threshold_research_only.research_contract.v1",
+    accepted_parameter_names=("THRESHOLD_CLOSE_ABOVE",), required_parameter_names=("THRESHOLD_CLOSE_ABOVE",),
+    behavior_affecting_parameter_names=("THRESHOLD_CLOSE_ABOVE",), metadata_only_parameter_names=(),
+    research_only_parameter_names=(), default_parameters={},
+    decision_contract_version="research_threshold_research_only_decision_contract.v1", required_data=("candles",),
+    optional_data=(), exit_policy_schema={"schema_version": 1, "rules": (),
+        "description": "Research-only threshold strategy with no explicit exit."})
+from .threshold_research_only_events import build_threshold_research_only_events
 
 
 class _ThresholdRuntime:
@@ -33,8 +42,8 @@ def _runtime_factory(**values: Any) -> _ThresholdRuntime:
 def _materialize(*, plugin: ResearchStrategyPlugin, parameter_values: dict[str, Any], fee_rate: float,
                  slippage_bps: float, context: BacktestRunContext | None = None) -> dict[str, Any]:
     del plugin, context
-    return materialize_strategy_parameters("threshold_research_only", parameter_values,
-                                           fee_rate=fee_rate, slippage_bps=slippage_bps)
+    return materialize_parameters_from_spec(THRESHOLD_RESEARCH_ONLY_SPEC, parameter_values,
+                                            fee_rate=fee_rate, slippage_bps=slippage_bps)
 
 
 def build_threshold_research_only_plugin() -> ResearchStrategyPlugin:
@@ -44,6 +53,7 @@ def build_threshold_research_only_plugin() -> ResearchStrategyPlugin:
         optional_data=THRESHOLD_RESEARCH_ONLY_SPEC.optional_data,
         event_builder=build_threshold_research_only_events, parameter_materializer=_materialize,
         decision_contract_version=THRESHOLD_RESEARCH_ONLY_SPEC.decision_contract_version,
-        diagnostics_namespace="threshold_research_only", runtime_factory=_runtime_factory)
+        diagnostics_namespace="threshold_research_only", runtime_factory=_runtime_factory,
+        reconstruction_module=__name__, reconstruction_qualname="build_threshold_research_only_plugin")
 
 __all__ = ["build_threshold_research_only_plugin"]

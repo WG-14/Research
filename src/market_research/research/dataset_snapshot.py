@@ -18,6 +18,7 @@ from .datasets.verification import DatasetVerificationResult, VerificationStatus
 from .datasets.registry import default_dataset_adapter_registry
 from .experiment_manifest import DateRange, ExperimentManifest, ManifestValidationError
 from .hashing import sha256_prefixed
+from .immutable_contract import deep_freeze
 from .dataset_freeze import sqlite_candles_schema_hash
 from .datasets.hashing_contract import artifact_content_hash
 from .datasets.hashing_contract import (
@@ -117,6 +118,16 @@ class DatasetSnapshot:
     orderbook_depth_source_content_hash: str | None = None
     orderbook_depth_source_schema_hash: str | None = None
     orderbook_depth_adapter_provenance: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        """Detach and recursively freeze all metadata exposed to strategies."""
+        for field_name in (
+            "locator", "options", "adapter_provenance",
+            "top_of_book_adapter_provenance", "orderbook_depth_adapter_provenance",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(self, field_name, deep_freeze(value))
 
     def _execution_evidence_payload(self) -> dict[str, object]:
         return {

@@ -1,10 +1,11 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "entrypoints": ["src/market_research/research_bootstrap.py", "src/market_research/research_cli"],
   "research_core": ["src/market_research/research_core", "src/market_research/research/simulation_engine.py", "src/market_research/research/portfolio_ledger.py"],
-  "strategy_sdk": ["src/market_research/strategy_sdk", "src/market_research/research/strategy_contract.py", "src/market_research/research/strategy_registry.py", "src/market_research/research/strategy_compiler.py"],
+  "strategy_sdk": ["src/market_research/strategy_sdk", "src/market_research/research/strategy_contract.py", "src/market_research/research/strategy_registry.py", "src/market_research/research/strategy_compiler.py", "src/market_research/research/strategy_spec.py", "src/market_research/research/exit_decision.py", "src/market_research/research/immutable_contract.py"],
   "builtin_strategies": ["src/market_research/builtin_strategies"],
   "compatibility_strategy_event_adapters": ["src/market_research/research/strategies"],
+  "compatibility_strategy_adapters": ["src/market_research/research/exit_rules.py", "src/market_research/research/strategy_catalog.py", "src/market_research/research/builtin_registry.py"],
   "composition_root": ["src/market_research/research_composition"],
   "dependency_rules": {
     "research_core_forbids": ["builtin_strategies", "research_composition"],

@@ -24,7 +24,7 @@ from .portfolio_ledger import LedgerEntry, PortfolioLedger
 from .risk_contract import ResearchRiskPolicy, evaluate_research_risk
 from .position_model import ResearchPosition
 from .strategy_contract import CompiledStrategyContract, ResearchStrategyPlugin
-from .strategy_compiler import StrategyCompiler
+from .strategy_compiler import StrategyCompiler, validate_compiled_strategy_contract
 from .strategy_registry import StrategyRegistry
 from .causal_market_view import CausalMarketView
 from .portfolio_view import ReadOnlyPortfolioView
@@ -74,7 +74,6 @@ def _failed_fill(*, request: ExecutionRequest, model: ExecutionModel, reason: st
         remaining_qty=float(request.requested_qty or 0.0), fill_status="failed", model_name=model.name,
         model_version=model.version, model_params_hash=model_params_hash(model.params_payload()),
         execution_reference_failure_reason=reason, request_id=request.request_id,
-        fill_id=sha256_prefixed({"request_id": request.request_id, "status": "failed", "reason": reason}),
         portfolio_effective_ts=request.fill_reference_ts,
     )
 
@@ -130,7 +129,13 @@ def _run_common_simulation_backtest(
         compiled = active_compiler.compile(strategy_name=plugin.name, raw_parameters=parameter_values,
             fee_rate=fee_rate, slippage_bps=slippage_bps, context=context)
     else:
-        compiled = compiled_contract
+        compiled = validate_compiled_strategy_contract(
+            compiled_contract,
+            expected_strategy_name=plugin.name,
+            expected_strategy_version=plugin.version,
+            expected_registry_hash=(registry.content_hash if registry is not None else None),
+            expected_plugin_hash=plugin.contract_hash(),
+        )
     if registry is not None and compiled.strategy_registry_hash != registry.content_hash:
         raise ValueError("compiled_strategy_registry_contract_mismatch")
     if compiled.strategy_plugin_contract_hash != plugin.contract_hash():
@@ -330,12 +335,11 @@ def _run_common_simulation_backtest(
             snapshot = ledger.snapshot()
             requested_notional = snapshot.cash * float(intent.buy_fraction if intent.buy_fraction is not None else policy.position_sizing.buy_fraction) if intent.side == "BUY" else None
             requested_qty = snapshot.asset_qty if intent.side == "SELL" else intent.requested_qty
-            request_id = sha256_prefixed({"run_id": run_id, "intent_id": intent.intent_id, "reference": reference.request_fields(), "requested_notional": requested_notional, "requested_qty": requested_qty})
             depth = dataset.first_depth_snapshot_after_or_equal(target_ts=int(reference.fill_reference_ts or signal.decision_ts), max_wait_ms=int(timing.max_quote_wait_ms))
             request = ExecutionRequest(signal_ts=signal.signal_candle_start_ts, decision_ts=signal.decision_ts, order_intent_ts=int(intent.order_intent_ts), side=intent.side,
                 reference_price=float(reference.fill_reference_price or signal.signal_reference_price), fee_rate=float(fee_rate),
                 requested_qty=requested_qty, requested_notional=requested_notional, run_id=run_id, decision_id=decision_id,
-                intent_id=intent.intent_id, request_id=request_id, **reference.request_fields(), signal_candle_start_ts=signal.signal_candle_start_ts,
+                intent_id=intent.intent_id, **reference.request_fields(), signal_candle_start_ts=signal.signal_candle_start_ts,
                 signal_candle_close_ts=signal.signal_candle_close_ts, signal_reference_price=signal.signal_reference_price,
                 signal_reference_source=signal.signal_reference_source, fill_reference_policy=timing.fill_reference_policy,
                 allow_same_candle_close_fill=timing.allow_same_candle_close_fill, feature_snapshot=event.feature_snapshot,
@@ -348,7 +352,7 @@ def _run_common_simulation_backtest(
             if not reference.failure_reason:
                 model_invocations += 1
             fill = _failed_fill(request=request, model=model, reason=str(reference.failure_reason)) if reference.failure_reason else model.simulate(request)
-            fill = replace(fill, request_id=request_id, fill_id=sha256_prefixed({"request_id": request_id, "model": fill.model_params_hash, "status": fill.fill_status, "filled_qty": fill.filled_qty, "price": fill.avg_fill_price}), portfolio_effective_ts=fill.fill_reference_ts, order_intent_ts=int(intent.order_intent_ts), decision_id=decision_id, intent_id=intent.intent_id, exit_rule=intent.exit_rule, exit_reason=intent.exit_reason)
+            fill = replace(fill, request_id=request.request_id, fill_id="", portfolio_effective_ts=fill.fill_reference_ts, order_intent_ts=int(intent.order_intent_ts), decision_id=decision_id, intent_id=intent.intent_id, exit_rule=intent.exit_rule, exit_reason=intent.exit_reason)
             _validate_fill_timeline(fill)
             fills.append(fill)
             trace_execution(context, fill.as_dict())

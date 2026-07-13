@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from ..immutable_contract import canonical_mutable, deep_freeze
+
 
 class VerificationStatus(str, Enum):
     VERIFIED = "VERIFIED"
@@ -32,6 +34,10 @@ class DatasetVerificationResult:
     adapter_version: str
 
     def __post_init__(self) -> None:
+        if self.declared_scope is not None:
+            object.__setattr__(self, "declared_scope", deep_freeze(self.declared_scope))
+        if self.actual_scope is not None:
+            object.__setattr__(self, "actual_scope", deep_freeze(self.actual_scope))
         statuses = (self.overall_status, self.content_status, self.schema_status,
                     self.locator_status, self.scope_status)
         if not all(isinstance(value, VerificationStatus) for value in statuses):
@@ -62,7 +68,7 @@ class DatasetVerificationResult:
             raise ValueError("dataset_verification_mismatch_component_required")
 
     def as_dict(self) -> dict[str, Any]:
-        return {key: (value.value if isinstance(value, VerificationStatus) else value)
+        return {key: canonical_mutable(value.value if isinstance(value, VerificationStatus) else value)
                 for key, value in self.__dict__.items()}
 
     def require_verified(self) -> None:

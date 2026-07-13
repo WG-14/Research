@@ -130,206 +130,6 @@ class StrategySpec:
         return sha256_prefixed(self.as_dict())
 
 
-SMA_WITH_FILTER_SPEC = StrategySpec(
-    strategy_name="sma_with_filter",
-    strategy_version="sma_with_filter.research_runtime_contract.v2",
-    accepted_parameter_names=(
-        "SMA_SHORT",
-        "SMA_LONG",
-        "SMA_FILTER_GAP_MIN_RATIO",
-        "SMA_FILTER_VOL_WINDOW",
-        "SMA_FILTER_VOL_MIN_RANGE_RATIO",
-        "SMA_FILTER_VOLUME_WINDOW",
-        "SMA_FILTER_LIQUIDITY_WINDOW",
-        "SMA_MARKET_REGIME_ENABLED",
-        "SMA_FILTER_OVEREXT_LOOKBACK",
-        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO",
-        "SMA_COST_EDGE_ENABLED",
-        "SMA_COST_EDGE_MIN_RATIO",
-        "ENTRY_EDGE_BUFFER_RATIO",
-        "STRATEGY_MIN_EXPECTED_EDGE_RATIO",
-        "STRATEGY_ENTRY_SLIPPAGE_BPS",
-        "LIVE_FEE_RATE_ESTIMATE",
-        "STRATEGY_EXIT_RULES",
-        "STRATEGY_EXIT_STOP_LOSS_RATIO",
-        "STRATEGY_EXIT_MAX_HOLDING_MIN",
-        "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO",
-        "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO",
-    ),
-    required_parameter_names=("SMA_SHORT", "SMA_LONG"),
-    behavior_affecting_parameter_names=(
-        "SMA_SHORT",
-        "SMA_LONG",
-        "SMA_FILTER_GAP_MIN_RATIO",
-        "SMA_FILTER_VOL_WINDOW",
-        "SMA_FILTER_VOL_MIN_RANGE_RATIO",
-        "SMA_FILTER_OVEREXT_LOOKBACK",
-        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO",
-        "SMA_MARKET_REGIME_ENABLED",
-        "SMA_COST_EDGE_ENABLED",
-        "SMA_COST_EDGE_MIN_RATIO",
-        "ENTRY_EDGE_BUFFER_RATIO",
-        "STRATEGY_MIN_EXPECTED_EDGE_RATIO",
-        "STRATEGY_ENTRY_SLIPPAGE_BPS",
-        "LIVE_FEE_RATE_ESTIMATE",
-        "STRATEGY_EXIT_RULES",
-        "STRATEGY_EXIT_STOP_LOSS_RATIO",
-        "STRATEGY_EXIT_MAX_HOLDING_MIN",
-        "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO",
-        "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO",
-    ),
-    metadata_only_parameter_names=(),
-    research_only_parameter_names=(
-        "SMA_FILTER_VOLUME_WINDOW",
-        "SMA_FILTER_LIQUIDITY_WINDOW",
-    ),
-    default_parameters={
-        "SMA_FILTER_GAP_MIN_RATIO": 0.0012,
-        "SMA_FILTER_VOL_WINDOW": 10,
-        "SMA_FILTER_VOL_MIN_RANGE_RATIO": 0.003,
-        "SMA_FILTER_VOLUME_WINDOW": 10,
-        "SMA_FILTER_LIQUIDITY_WINDOW": 10,
-        "SMA_FILTER_OVEREXT_LOOKBACK": 3,
-        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": 0.02,
-        "SMA_MARKET_REGIME_ENABLED": True,
-        "SMA_COST_EDGE_ENABLED": True,
-        "SMA_COST_EDGE_MIN_RATIO": 0.0,
-        "ENTRY_EDGE_BUFFER_RATIO": 0.0005,
-        "STRATEGY_MIN_EXPECTED_EDGE_RATIO": 0.0,
-        "STRATEGY_ENTRY_SLIPPAGE_BPS": 0.0,
-        "LIVE_FEE_RATE_ESTIMATE": 0.0004,
-        "STRATEGY_EXIT_RULES": "stop_loss,opposite_cross,max_holding_time",
-        "STRATEGY_EXIT_STOP_LOSS_RATIO": 0.0,
-        "STRATEGY_EXIT_MAX_HOLDING_MIN": 0,
-        "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": 0.0,
-        "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": 0.0,
-    },
-    parameter_schema=(
-        StrategyParameterSchema("SMA_SHORT", "int", required=True, min_value=1, unit="candles"),
-        StrategyParameterSchema("SMA_LONG", "int", required=True, min_value=1, unit="candles"),
-        StrategyParameterSchema("SMA_FILTER_GAP_MIN_RATIO", "float", min_value=0.0, unit="price_ratio"),
-        StrategyParameterSchema("SMA_FILTER_VOL_WINDOW", "int", min_value=1, unit="candles"),
-        StrategyParameterSchema("SMA_FILTER_VOL_MIN_RANGE_RATIO", "float", min_value=0.0, unit="price_range_ratio"),
-        StrategyParameterSchema(
-            "SMA_FILTER_VOLUME_WINDOW",
-            "int",
-            min_value=1,
-            unit="candles",
-            runtime_bound=False,
-            behavior_affecting=False,
-        ),
-        StrategyParameterSchema(
-            "SMA_FILTER_LIQUIDITY_WINDOW",
-            "int",
-            min_value=1,
-            unit="candles",
-            runtime_bound=False,
-            behavior_affecting=False,
-        ),
-        StrategyParameterSchema("SMA_FILTER_OVEREXT_LOOKBACK", "int", min_value=1, unit="candles"),
-        StrategyParameterSchema("SMA_FILTER_OVEREXT_MAX_RETURN_RATIO", "float", min_value=0.0, unit="return_ratio"),
-        StrategyParameterSchema("SMA_MARKET_REGIME_ENABLED", "bool", unit="enabled_flag"),
-        StrategyParameterSchema("SMA_COST_EDGE_ENABLED", "bool", unit="enabled_flag"),
-        StrategyParameterSchema("SMA_COST_EDGE_MIN_RATIO", "float", min_value=0.0, unit="edge_ratio"),
-        StrategyParameterSchema("ENTRY_EDGE_BUFFER_RATIO", "float", min_value=0.0, unit="edge_ratio"),
-        StrategyParameterSchema("STRATEGY_MIN_EXPECTED_EDGE_RATIO", "float", min_value=0.0, unit="edge_ratio"),
-        StrategyParameterSchema("STRATEGY_ENTRY_SLIPPAGE_BPS", "float", min_value=0.0, unit="basis_points"),
-        StrategyParameterSchema("LIVE_FEE_RATE_ESTIMATE", "float", min_value=0.0, unit="fee_ratio"),
-        StrategyParameterSchema(
-            "STRATEGY_EXIT_RULES",
-            "str",
-            unit="comma_separated_exit_rule_names",
-        ),
-        StrategyParameterSchema("STRATEGY_EXIT_STOP_LOSS_RATIO", "float", min_value=0.0, unit="unrealized_pnl_ratio"),
-        StrategyParameterSchema("STRATEGY_EXIT_MAX_HOLDING_MIN", "int", min_value=0, unit="minutes"),
-        StrategyParameterSchema("STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO", "float", min_value=0.0, unit="pnl_ratio"),
-        StrategyParameterSchema("STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO", "float", min_value=0.0, unit="pnl_ratio"),
-    ),
-    decision_contract_version="research_sma_decision_contract.v3_entry_exit_risk_exit",
-    required_data=("candles",),
-    optional_data=("top_of_book",),
-    exit_policy_schema={
-        "schema_version": 1,
-        "rules": ("stop_loss", "opposite_cross", "max_holding_time"),
-        "stop_loss": {
-            "unit": "unrealized_pnl_ratio",
-            "disabled_value": 0,
-            "evaluation_price_basis": "closed_candle_mark",
-            "intrabar_stop_modeled": False,
-            "limitation_reasons": (
-                "intra_candle_path_unavailable",
-                "candle_close_stop_may_exit_later_than_real_stop",
-            ),
-        },
-        "max_holding_time": {"unit": "minutes", "disabled_value": 0},
-        "opposite_cross": {
-            "min_take_profit_ratio": "max(configured, roundtrip_fee)",
-            "small_loss_tolerance_ratio": "defer_noise_band",
-        },
-    },
-)
-
-
-NOOP_BASELINE_SPEC = StrategySpec(
-    strategy_name="noop_baseline",
-    strategy_version="noop_baseline.research_contract.v1",
-    accepted_parameter_names=("NOOP_DECISION_START_INDEX", "NOOP_DECISION_REASON"),
-    required_parameter_names=(),
-    behavior_affecting_parameter_names=("NOOP_DECISION_START_INDEX", "NOOP_DECISION_REASON"),
-    metadata_only_parameter_names=(),
-    research_only_parameter_names=(),
-    default_parameters={"NOOP_DECISION_START_INDEX": 0, "NOOP_DECISION_REASON": "noop_baseline_hold"},
-    decision_contract_version="research_noop_baseline_decision_contract.v1",
-    required_data=("candles",),
-    optional_data=(),
-    exit_policy_schema={
-        "schema_version": 1,
-        "rules": (),
-        "description": "No-op baseline never emits executable entry or exit intent.",
-    },
-)
-
-
-BUY_AND_HOLD_BASELINE_SPEC = StrategySpec(
-    strategy_name="buy_and_hold_baseline",
-    strategy_version="buy_and_hold_baseline.research_contract.v1",
-    accepted_parameter_names=("BUY_HOLD_BUY_INDEX", "BUY_HOLD_DECISION_REASON"),
-    required_parameter_names=("BUY_HOLD_BUY_INDEX",),
-    behavior_affecting_parameter_names=("BUY_HOLD_BUY_INDEX", "BUY_HOLD_DECISION_REASON"),
-    metadata_only_parameter_names=(),
-    research_only_parameter_names=(),
-    default_parameters={"BUY_HOLD_DECISION_REASON": "buy_and_hold_architecture_canary"},
-    decision_contract_version="research_buy_and_hold_baseline_decision_contract.v1",
-    required_data=("candles",),
-    optional_data=(),
-    exit_policy_schema={
-        "schema_version": 1,
-        "rules": (),
-        "description": "Executable canary emits one BUY intent, then HOLD decisions.",
-    },
-)
-
-
-THRESHOLD_RESEARCH_ONLY_SPEC = StrategySpec(
-    strategy_name="threshold_research_only",
-    strategy_version="threshold_research_only.research_contract.v1",
-    accepted_parameter_names=("THRESHOLD_CLOSE_ABOVE",),
-    required_parameter_names=("THRESHOLD_CLOSE_ABOVE",),
-    behavior_affecting_parameter_names=("THRESHOLD_CLOSE_ABOVE",),
-    metadata_only_parameter_names=(),
-    research_only_parameter_names=(),
-    default_parameters={},
-    decision_contract_version="research_threshold_research_only_decision_contract.v1",
-    required_data=("candles",),
-    optional_data=(),
-    exit_policy_schema={
-        "schema_version": 1,
-        "rules": (),
-        "description": "Research-only threshold strategy with no explicit exit.",
-    },
-)
-
-
 def strategy_spec_for_name(strategy_name: str) -> StrategySpec:
     try:
         from .strategy_catalog import ResearchStrategyCatalogError, resolve_research_strategy
@@ -340,7 +140,11 @@ def strategy_spec_for_name(strategy_name: str) -> StrategySpec:
 
 
 def runtime_bound_behavior_parameter_names(strategy_name: str) -> tuple[str, ...]:
-    spec = strategy_spec_for_name(strategy_name)
+    return runtime_bound_behavior_parameter_names_from_spec(strategy_spec_for_name(strategy_name))
+
+
+def runtime_bound_behavior_parameter_names_from_spec(spec: StrategySpec) -> tuple[str, ...]:
+    """Return runtime-bound behavior names using only the supplied authority."""
     research_only = set(spec.research_only_parameter_names)
     return tuple(
         name
@@ -377,7 +181,7 @@ def validate_parameter_space_against_strategy_spec(
             + ",".join(research_only)
         )
     if requires_candidate_validation(research_classification):
-        runtime_bound_behavior = sorted(runtime_bound_behavior_parameter_names(strategy_name))
+        runtime_bound_behavior = sorted(runtime_bound_behavior_parameter_names_from_spec(spec))
         missing_behavior = [key for key in runtime_bound_behavior if key not in parameter_space]
         if missing_behavior:
             raise StrategySpecError(
@@ -395,7 +199,19 @@ def strategy_parameter_source_map(
     fee_rate: float | None = None,
     slippage_bps: float | None = None,
 ) -> dict[str, str]:
-    spec = strategy_spec_for_name(strategy_name)
+    return parameter_source_map_from_spec(
+        strategy_spec_for_name(strategy_name), parameter_values,
+        fee_rate=fee_rate, slippage_bps=slippage_bps,
+    )
+
+
+def parameter_source_map_from_spec(
+    spec: StrategySpec,
+    parameter_values: dict[str, Any],
+    *,
+    fee_rate: float | None = None,
+    slippage_bps: float | None = None,
+) -> dict[str, str]:
     raw = dict(parameter_values)
     sources = {key: "strategy_spec_default" for key in spec.default_parameters}
     for key in raw:
@@ -422,7 +238,19 @@ def materialize_strategy_parameters(
     fee_rate: float | None = None,
     slippage_bps: float | None = None,
 ) -> dict[str, Any]:
-    spec = strategy_spec_for_name(strategy_name)
+    return materialize_parameters_from_spec(
+        strategy_spec_for_name(strategy_name), parameter_values,
+        fee_rate=fee_rate, slippage_bps=slippage_bps,
+    )
+
+
+def materialize_parameters_from_spec(
+    spec: StrategySpec,
+    parameter_values: dict[str, Any],
+    *,
+    fee_rate: float | None = None,
+    slippage_bps: float | None = None,
+) -> dict[str, Any]:
     values = {**spec.default_parameters, **dict(parameter_values)}
     spec.validate_parameters(values)
     if (

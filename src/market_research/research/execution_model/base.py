@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from market_research.research.hashing import sha256_prefixed
+from market_research.research.immutable_contract import canonical_mutable, deep_freeze
 
 
 @dataclass(frozen=True)
@@ -73,9 +74,41 @@ class ExecutionRequest:
     intent_id: str = ""
     request_id: str = ""
 
+    def __post_init__(self) -> None:
+        for field_name in ("feature_snapshot", "regime_snapshot"):
+            value = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(self, field_name, deep_freeze(value))
+        object.__setattr__(self, "execution_realism_limitations", tuple(self.execution_realism_limitations))
+        payload = self.as_dict()
+        recorded = str(payload.pop("request_id") or "")
+        calculated = sha256_prefixed(payload)
+        if recorded and recorded != calculated:
+            raise ValueError("execution_request_id_content_mismatch")
+        object.__setattr__(self, "request_id", calculated)
+
     def as_dict(self) -> dict[str, Any]:
         """Canonical evidence representation; excludes no authoritative field."""
-        return self.__dict__.copy()
+        payload = canonical_mutable(self.__dict__)
+        depth = self.orderbook_depth_snapshot
+        if depth is not None:
+            payload["orderbook_depth_snapshot"] = {
+                "ts": int(depth.ts), "pair": str(depth.pair), "source": str(depth.source),
+                "observed_at_epoch_sec": depth.observed_at_epoch_sec,
+                "bids": [
+                    {"level_index": int(level.level_index), "price": float(level.price),
+                     "size": float(level.size), "cumulative_size": float(level.cumulative_size),
+                     "cumulative_notional": float(level.cumulative_notional)}
+                    for level in depth.bids
+                ],
+                "asks": [
+                    {"level_index": int(level.level_index), "price": float(level.price),
+                     "size": float(level.size), "cumulative_size": float(level.cumulative_size),
+                     "cumulative_notional": float(level.cumulative_notional)}
+                    for level in depth.asks
+                ],
+            }
+        return payload
 
 
 @dataclass(frozen=True)
@@ -155,6 +188,20 @@ class ExecutionFill:
     exit_rule: str | None = None
     exit_reason: str | None = None
 
+    def __post_init__(self) -> None:
+        for field_name in ("feature_snapshot", "regime_snapshot", "seed_derivation_inputs"):
+            value = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(self, field_name, deep_freeze(value))
+        object.__setattr__(self, "execution_realism_limitations", tuple(self.execution_realism_limitations))
+        if self.request_id:
+            payload = self.as_dict()
+            recorded = str(payload.pop("fill_id") or "")
+            calculated = sha256_prefixed(payload)
+            if recorded and recorded != calculated:
+                raise ValueError("execution_fill_id_content_mismatch")
+            object.__setattr__(self, "fill_id", calculated)
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "request_id": self.request_id,
@@ -213,14 +260,14 @@ class ExecutionFill:
             "latency_applied_to_submit_ts": self.latency_applied_to_submit_ts,
             "latency_applied_to_fill_reference": self.latency_applied_to_fill_reference,
             "latency_reference_policy_warning": self.latency_reference_policy_warning,
-            "feature_snapshot": self.feature_snapshot,
-            "regime_snapshot": self.regime_snapshot,
+            "feature_snapshot": canonical_mutable(self.feature_snapshot),
+            "regime_snapshot": canonical_mutable(self.regime_snapshot),
             "entry_signal_source": self.entry_signal_source,
             "entry_sizing_source": self.entry_sizing_source,
             "intra_candle_policy": self.intra_candle_policy,
             "base_seed": self.base_seed,
             "derived_seed_hash": self.derived_seed_hash,
-            "seed_derivation_inputs": self.seed_derivation_inputs,
+            "seed_derivation_inputs": canonical_mutable(self.seed_derivation_inputs),
             "portfolio_effective_ts": self.portfolio_effective_ts,
             "decision_id": self.decision_id, "intent_id": self.intent_id,
             "exit_rule": self.exit_rule, "exit_reason": self.exit_reason,

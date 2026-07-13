@@ -23,6 +23,8 @@ def _result():
                  "strategy_plugin_contract_hash": compiled["strategy_plugin_contract_hash"],
                  "compiled_strategy_contract": compiled, "compiled_strategy_contract_hash": compiled["compiled_contract_hash"],
                  "capability_contract_hash": compiled["capability_contract_hash"], "capability_contract": capability,
+                 "effective_strategy_parameters_hash": compiled["materialized_parameters_hash"],
+                 "effective_strategy_parameters": compiled["materialized_parameters"],
                  "metrics_hash": "sha256:metrics", "decision_contract_version": "v1", "execution_evidence": evidence,
                  "data_requirements": {}, "execution_timing_policy": {}, "execution_model": {}, "cost_assumption": {},
                  "partial_fill_assumptions": {}, "order_failure_assumptions": {}, "portfolio_policy": {}, "risk_policy": {},

@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Any
 
 from .hashing import sha256_prefixed
+from .immutable_contract import canonical_mutable, deep_freeze
 
 
 class IntentSizing(str, Enum):
@@ -94,6 +95,10 @@ class ResearchDecisionEvent:
     authoritative_decision_id: str = ""
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "feature_snapshot", deep_freeze(self.feature_snapshot))
+        object.__setattr__(self, "strategy_diagnostics", deep_freeze(self.strategy_diagnostics))
+        object.__setattr__(self, "extra_payload", deep_freeze(self.extra_payload))
+        object.__setattr__(self, "blocked_filters", tuple(self.blocked_filters))
         calculated = self._calculated_decision_id()
         if self.authoritative_decision_id and self.authoritative_decision_id != calculated:
             raise ValueError("decision_id_content_mismatch")
@@ -117,8 +122,8 @@ class ResearchDecisionEvent:
             "strategy_version": self.strategy_version, "raw_signal": self.raw_signal,
             "entry_signal": self.entry_signal, "exit_signal": self.exit_signal,
             "final_signal": self.final_signal, "reason": self.reason,
-            "feature_snapshot": self.feature_snapshot,
-            "strategy_diagnostics": self.strategy_diagnostics,
+            "feature_snapshot": canonical_mutable(self.feature_snapshot),
+            "strategy_diagnostics": canonical_mutable(self.strategy_diagnostics),
         }
 
     def __getitem__(self, key: str) -> object:

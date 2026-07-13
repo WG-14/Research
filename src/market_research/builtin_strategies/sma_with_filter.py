@@ -4,18 +4,56 @@ from typing import Any, Mapping
 
 from market_research.research.backtest_types import BacktestRunContext
 from market_research.research.exit_decision import ExitDecision
-from market_research.research.exit_rules import evaluate_sma_exit_policy, materialize_sma_exit_policy
+from .sma_exit_rules import evaluate_sma_exit_policy, materialize_sma_exit_policy
 from market_research.research.position_model import ResearchPosition
 from market_research.research.strategy_contract import (ResearchDataRequirement,
     ResearchStrategyDataRequirements, ResearchStrategyPlugin)
-from market_research.research.strategy_spec import SMA_WITH_FILTER_SPEC, materialize_strategy_parameters
-from market_research.research.strategies.sma_with_filter_events import build_sma_with_filter_research_events
+from market_research.research.strategy_spec import (StrategyParameterSchema, StrategySpec,
+    materialize_parameters_from_spec)
+
+_SMA_ACCEPTED = (
+    "SMA_SHORT", "SMA_LONG", "SMA_FILTER_GAP_MIN_RATIO", "SMA_FILTER_VOL_WINDOW",
+    "SMA_FILTER_VOL_MIN_RANGE_RATIO", "SMA_FILTER_VOLUME_WINDOW", "SMA_FILTER_LIQUIDITY_WINDOW",
+    "SMA_MARKET_REGIME_ENABLED", "SMA_FILTER_OVEREXT_LOOKBACK", "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO",
+    "SMA_COST_EDGE_ENABLED", "SMA_COST_EDGE_MIN_RATIO", "ENTRY_EDGE_BUFFER_RATIO",
+    "STRATEGY_MIN_EXPECTED_EDGE_RATIO", "STRATEGY_ENTRY_SLIPPAGE_BPS", "LIVE_FEE_RATE_ESTIMATE",
+    "STRATEGY_EXIT_RULES", "STRATEGY_EXIT_STOP_LOSS_RATIO", "STRATEGY_EXIT_MAX_HOLDING_MIN",
+    "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO", "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO")
+_SMA_RESEARCH_ONLY = ("SMA_FILTER_VOLUME_WINDOW", "SMA_FILTER_LIQUIDITY_WINDOW")
+_SMA_DEFAULTS = {
+    "SMA_FILTER_GAP_MIN_RATIO": .0012, "SMA_FILTER_VOL_WINDOW": 10,
+    "SMA_FILTER_VOL_MIN_RANGE_RATIO": .003, "SMA_FILTER_VOLUME_WINDOW": 10,
+    "SMA_FILTER_LIQUIDITY_WINDOW": 10, "SMA_FILTER_OVEREXT_LOOKBACK": 3,
+    "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": .02, "SMA_MARKET_REGIME_ENABLED": True,
+    "SMA_COST_EDGE_ENABLED": True, "SMA_COST_EDGE_MIN_RATIO": 0.0, "ENTRY_EDGE_BUFFER_RATIO": .0005,
+    "STRATEGY_MIN_EXPECTED_EDGE_RATIO": 0.0, "STRATEGY_ENTRY_SLIPPAGE_BPS": 0.0,
+    "LIVE_FEE_RATE_ESTIMATE": .0004, "STRATEGY_EXIT_RULES": "stop_loss,opposite_cross,max_holding_time",
+    "STRATEGY_EXIT_STOP_LOSS_RATIO": 0.0, "STRATEGY_EXIT_MAX_HOLDING_MIN": 0,
+    "STRATEGY_EXIT_MIN_TAKE_PROFIT_RATIO": 0.0, "STRATEGY_EXIT_SMALL_LOSS_TOLERANCE_RATIO": 0.0}
+_BOOL_PARAMETERS = {"SMA_MARKET_REGIME_ENABLED", "SMA_COST_EDGE_ENABLED"}
+_INT_PARAMETERS = {"SMA_SHORT", "SMA_LONG", "SMA_FILTER_VOL_WINDOW", "SMA_FILTER_VOLUME_WINDOW",
+                   "SMA_FILTER_LIQUIDITY_WINDOW", "SMA_FILTER_OVEREXT_LOOKBACK", "STRATEGY_EXIT_MAX_HOLDING_MIN"}
+SMA_WITH_FILTER_SPEC = StrategySpec(
+    strategy_name="sma_with_filter", strategy_version="sma_with_filter.research_runtime_contract.v2",
+    accepted_parameter_names=_SMA_ACCEPTED, required_parameter_names=("SMA_SHORT", "SMA_LONG"),
+    behavior_affecting_parameter_names=tuple(x for x in _SMA_ACCEPTED if x not in _SMA_RESEARCH_ONLY),
+    metadata_only_parameter_names=(), research_only_parameter_names=_SMA_RESEARCH_ONLY,
+    default_parameters=_SMA_DEFAULTS, decision_contract_version="research_sma_decision_contract.v3_entry_exit_risk_exit",
+    required_data=("candles",), optional_data=("top_of_book",),
+    exit_policy_schema={"schema_version": 1, "rules": ("stop_loss", "opposite_cross", "max_holding_time")},
+    parameter_schema=tuple(StrategyParameterSchema(name,
+        "bool" if name in _BOOL_PARAMETERS else "int" if name in _INT_PARAMETERS else "str" if name == "STRATEGY_EXIT_RULES" else "float",
+        required=name in {"SMA_SHORT", "SMA_LONG"}, min_value=(None if name in _BOOL_PARAMETERS or name == "STRATEGY_EXIT_RULES" else 1 if name in {"SMA_SHORT", "SMA_LONG", "SMA_FILTER_VOL_WINDOW", "SMA_FILTER_VOLUME_WINDOW", "SMA_FILTER_LIQUIDITY_WINDOW", "SMA_FILTER_OVEREXT_LOOKBACK"} else 0),
+        runtime_bound=name not in _SMA_RESEARCH_ONLY, behavior_affecting=name not in _SMA_RESEARCH_ONLY)
+        for name in _SMA_ACCEPTED))
+
+from .sma_with_filter_events import build_sma_with_filter_research_events
 
 
 def _materialize(*, plugin: ResearchStrategyPlugin, parameter_values: dict[str, Any], fee_rate: float,
                  slippage_bps: float, context: BacktestRunContext | None = None) -> dict[str, Any]:
     del plugin, context
-    values = materialize_strategy_parameters("sma_with_filter", parameter_values,
+    values = materialize_parameters_from_spec(SMA_WITH_FILTER_SPEC, parameter_values,
         fee_rate=fee_rate, slippage_bps=slippage_bps)
     for key, value in {"SMA_FILTER_GAP_MIN_RATIO": 0.0, "SMA_FILTER_VOL_MIN_RANGE_RATIO": 0.0,
                        "SMA_FILTER_OVEREXT_MAX_RETURN_RATIO": 0.0, "SMA_COST_EDGE_ENABLED": False,
@@ -90,6 +128,7 @@ def build_sma_with_filter_plugin() -> ResearchStrategyPlugin:
         decision_contract_version=SMA_WITH_FILTER_SPEC.decision_contract_version,
         diagnostics_namespace="sma_with_filter", data_requirements_builder=_requirements,
         exit_policy_materializer=_exit_policy_materializer, exit_decision_builder=_exit_decision,
-        exit_mode="strategy_owned", runtime_factory=_runtime_factory)
+        exit_mode="strategy_owned", runtime_factory=_runtime_factory,
+        reconstruction_module=__name__, reconstruction_qualname="build_sma_with_filter_plugin")
 
 __all__ = ["build_sma_with_filter_plugin"]

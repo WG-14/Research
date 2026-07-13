@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from market_research.storage_io import write_json_atomic
 
 from .artifact_store import ArtifactBudgetExceeded
-from .experiment_manifest import ManifestValidationError, load_manifest
+from .experiment_manifest import ManifestValidationError, load_manifest, load_manifest_with_registry
 from .experiment_registry import (
     VALIDATION_PERMITTED_STATUSES,
     append_attempt_aborted,
@@ -122,7 +122,7 @@ def cmd_research_backtest(
     try:
         try:
             strategy_registry = builtin_strategy_registry()
-            manifest = load_manifest(manifest_path, registry=strategy_registry)
+            manifest = load_manifest_with_registry(manifest_path, registry=strategy_registry)
             if diagnostic_mode is not None:
                 manifest = replace(
                     manifest,
@@ -184,7 +184,7 @@ def cmd_research_walk_forward(
     try:
         try:
             strategy_registry = builtin_strategy_registry()
-            manifest = load_manifest(manifest_path, registry=strategy_registry)
+            manifest = load_manifest_with_registry(manifest_path, registry=strategy_registry)
             calibration = load_calibration_artifact(execution_calibration_path) if execution_calibration_path else None
             report = run_research_walk_forward(
                 manifest=manifest,
@@ -286,7 +286,7 @@ def _write_artifact_budget_failure_payload(
 ) -> dict[str, object]:
     try:
         strategy_registry = builtin_strategy_registry()
-        manifest = load_manifest(manifest_path, registry=strategy_registry)
+        manifest = load_manifest_with_registry(manifest_path, registry=strategy_registry)
         experiment_id = manifest.experiment_id
     except Exception:
         experiment_id = "unknown"
@@ -316,7 +316,7 @@ def cmd_research_validate(
     try:
         try:
             strategy_registry = builtin_strategy_registry()
-            manifest = load_manifest(manifest_path, registry=strategy_registry)
+            manifest = load_manifest_with_registry(manifest_path, registry=strategy_registry)
             calibration = load_calibration_artifact(execution_calibration_path) if execution_calibration_path else None
             validation_run = run_research_validation(
                 manifest=manifest,

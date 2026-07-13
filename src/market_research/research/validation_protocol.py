@@ -118,9 +118,9 @@ from .statistical_selection import (
 )
 from .return_panel import build_candidate_return_panel, write_candidate_return_panel
 from .stress_suite import StressSuiteContext, analyze_stress_suite, stress_suite_required
-from .strategy_compiler import StrategyCompiler, compiled_contract_from_payload
-from .strategy_registry import StrategyRegistry
-from .strategy_spec import exit_policy_hash, strategy_spec_for_name
+from .strategy_compiler import StrategyCompiler, validate_compiled_strategy_contract
+from .strategy_registry import StrategyRegistry, reconstruct_strategy_registry
+from .strategy_spec import exit_policy_hash
 
 
 class ResearchValidationError(ValueError):
@@ -218,7 +218,11 @@ def _task_from_evaluation_context(*, work_unit: ResearchWorkUnit, context: Evalu
         "artifact_context": context.artifact_context,
         "work_unit": work_unit,
         "compiled_contract": context.compiled_contract,
-        "strategy_registry": context.strategy_registry,
+        "strategy_registry_descriptor": (
+            context.strategy_registry.descriptor()
+            if isinstance(context.strategy_registry, StrategyRegistry)
+            else context.strategy_registry
+        ),
     }
 
 
@@ -233,7 +237,12 @@ def _candidate_scenario_worker(task: dict[str, Any]) -> ResearchWorkResult:
 
 def _initialize_candidate_scenario_worker_context(context: dict[str, Any]) -> None:
     global _CANDIDATE_SCENARIO_WORKER_CONTEXT
-    _CANDIDATE_SCENARIO_WORKER_CONTEXT = dict(context)
+    material = dict(context)
+    descriptor = material.pop("strategy_registry_descriptor", None)
+    if descriptor is None:
+        raise RuntimeError("candidate_scenario_worker_registry_descriptor_missing")
+    material["strategy_registry"] = reconstruct_strategy_registry(descriptor)
+    _CANDIDATE_SCENARIO_WORKER_CONTEXT = material
 
 
 def _candidate_scenario_worker_from_context(task: dict[str, Any]) -> ResearchWorkResult:
@@ -306,9 +315,11 @@ def _evaluate_candidate_scenario_task(
     param_candidate_id = candidate_id(params, index)
     compiled_payload = task.get("compiled_contract")
     registry = task.get("strategy_registry")
+    if registry is None and task.get("strategy_registry_descriptor") is not None:
+        registry = reconstruct_strategy_registry(task["strategy_registry_descriptor"])
     if not isinstance(registry, StrategyRegistry):
         raise ResearchValidationError("strategy_registry_required")
-    compiled_contract = (compiled_contract_from_payload(dict(compiled_payload)) if isinstance(compiled_payload, dict)
+    compiled_contract = (validate_compiled_strategy_contract(dict(compiled_payload)) if isinstance(compiled_payload, dict)
         else StrategyCompiler(registry).compile(
             strategy_name=manifest.strategy_name, raw_parameters=params, fee_rate=scenario.fee_rate,
             slippage_bps=float(scenario.slippage_bps),
@@ -2304,6 +2315,7 @@ def _evaluate_candidates(
         progress_callback=progress_callback,
     )
     substage_timings.append(timing)
+    registry_descriptor = strategy_registry.descriptor()
     compiled_by_candidate_scenario: dict[tuple[int, int], dict[str, Any]] = {}
     for task in work_tasks:
         key = (int(task["candidate_index"]), int(task["scenario_index"]))
@@ -2315,7 +2327,7 @@ def _evaluate_candidates(
                 context=BacktestRunContext(policy_materialization_mode="research_validation"),
             ).as_dict()
         task["compiled_contract"] = compiled_by_candidate_scenario[key]
-        task["strategy_registry"] = strategy_registry
+        task["strategy_registry_descriptor"] = registry_descriptor
     if execution_plan is not None:
         selection = execution_plan.payload.get("work_unit_selection")
         if isinstance(selection, dict):
@@ -2389,6 +2401,7 @@ def _evaluate_candidates(
             "include_walk_forward": include_walk_forward,
             "raw_candidate_count": len(raw_candidates),
             "data_plane_policy": dict((execution_plan.payload.get("data_plane_policy") if execution_plan else {}) or {}),
+            "strategy_registry_descriptor": registry_descriptor,
         }
         worker_started = time.perf_counter()
         _emit_progress(
@@ -4889,7 +4902,7 @@ def _declare_candidate_scenario_semantics(
         primary_contract_hash = primary.get("compiled_strategy_contract_hash")
         if not isinstance(primary_contract, dict) or not primary_contract_hash:
             raise ResearchValidationError("primary_scenario_compiled_contract_missing")
-        compiled_contract_from_payload(
+        validate_compiled_strategy_contract(
             dict(primary_contract), expected_compiled_hash=str(primary_contract_hash)
         )
         candidate["compiled_strategy_contract"] = primary_contract

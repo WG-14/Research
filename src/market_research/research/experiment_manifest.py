@@ -906,13 +906,29 @@ class ExperimentManifest:
 
 
 def load_manifest(path: str | Path, *, registry: "StrategyRegistry | None" = None) -> ExperimentManifest:
+    """Legacy built-in convenience loader; authoritative callers pass a registry."""
     manifest_path = Path(path).expanduser()
     with manifest_path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
     return parse_manifest(payload, registry=registry)
 
 
+def load_manifest_with_registry(path: str | Path, *, registry: "StrategyRegistry") -> ExperimentManifest:
+    """Authoritative manifest loader bound to the runtime registry."""
+    if registry is None:
+        raise ManifestValidationError("authoritative_manifest_registry_required")
+    return load_manifest(path, registry=registry)
+
+
+def parse_manifest_with_registry(payload: dict[str, Any], *, registry: "StrategyRegistry") -> ExperimentManifest:
+    """Authoritative manifest parser bound to the runtime registry."""
+    if registry is None:
+        raise ManifestValidationError("authoritative_manifest_registry_required")
+    return parse_manifest(payload, registry=registry)
+
+
 def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | None" = None) -> ExperimentManifest:
+    """Legacy built-in convenience parser; use parse_manifest_with_registry for validation."""
     if not isinstance(payload, dict):
         raise ManifestValidationError("manifest must be a JSON object")
     allowed_fields = {

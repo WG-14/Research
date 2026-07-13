@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import inspect
+import marshal
 import re
 from typing import Any, Callable, Iterable, Mapping
 
@@ -42,31 +43,42 @@ def _source_artifact(value: Any) -> str:
         return inspect.getsource(value)
     except (OSError, TypeError):
         code = getattr(value, "__code__", None)
-        return repr((getattr(code, "co_code", b""), getattr(code, "co_consts", ())))
+        return marshal.dumps(code).hex() if code is not None else repr(type(value))
 
 
 def _transitive_behavior_binding(hook: Callable[..., Any]) -> dict[str, str]:
-    """Bind strategy-owned helpers/classes referenced by a public hook."""
-    components = {f"{hook.__module__}:{hook.__qualname__}": sha256_prefixed(_source_artifact(hook))}
-    code = getattr(hook, "__code__", None)
-    globals_map = getattr(hook, "__globals__", {})
-    for name in sorted(set(getattr(code, "co_names", ()))):
-        referenced = globals_map.get(name)
-        if not (inspect.isfunction(referenced) or inspect.isclass(referenced)):
-            continue
-        module = str(getattr(referenced, "__module__", ""))
+    """Bind the deterministic, cycle-safe graph of strategy-owned behavior."""
+    components: dict[str, str] = {}
+    visited: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if not (inspect.isfunction(value) or inspect.isclass(value)):
+            return
+        module = str(getattr(value, "__module__", ""))
         if not module.startswith("market_research"):
-            continue
-        identity = f"{module}:{getattr(referenced, '__qualname__', name)}"
-        if inspect.isclass(referenced):
-            methods = {method_name: sha256_prefixed(_source_artifact(member))
-                       for method_name, member in sorted(vars(referenced).items())
-                       if inspect.isfunction(member)}
-            components[identity] = sha256_prefixed({"class_source": _source_artifact(referenced),
-                                                    "runtime_methods": methods})
-        else:
-            components[identity] = sha256_prefixed(_source_artifact(referenced))
-    return components
+            return
+        identity = f"{module}:{getattr(value, '__qualname__', type(value).__qualname__)}"
+        if identity in visited:
+            return
+        visited.add(identity)
+        components[identity] = sha256_prefixed(_source_artifact(value))
+        if inspect.isclass(value):
+            for _, member in sorted(vars(value).items()):
+                if inspect.isfunction(member) or inspect.isclass(member):
+                    visit(member)
+            return
+        code = getattr(value, "__code__", None)
+        globals_map = getattr(value, "__globals__", {})
+        for name in sorted(set(getattr(code, "co_names", ()))):
+            visit(globals_map.get(name))
+        for cell in getattr(value, "__closure__", ()) or ():
+            try:
+                visit(cell.cell_contents)
+            except ValueError:
+                continue
+
+    visit(hook)
+    return {identity: components[identity] for identity in sorted(components)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +316,8 @@ class ResearchStrategyPlugin:
     exit_mode: str = "strategy_owned"
     required_capabilities: StrategyCapabilityContract = ENGINE_SUPPORTED_CAPABILITIES
     execution_authority: str = "common_simulation_engine"
+    reconstruction_module: str | None = None
+    reconstruction_qualname: str | None = None
 
     def __post_init__(self) -> None:
         name = str(self.name or "").strip().lower()
@@ -351,7 +365,7 @@ class ResearchStrategyPlugin:
                                "source_artifact_hash": sha256_prefixed(components),
                                "transitive_behavior_components": components}
         return {
-            "schema_version": 3,
+            "schema_version": 4,
             "name": self.name,
             "version": self.version,
             "strategy_spec_hash": self.spec.spec_hash(),
@@ -369,7 +383,11 @@ class ResearchStrategyPlugin:
             "parameter_materializer_module": (
                 self.parameter_materializer.__module__ if self.parameter_materializer is not None else None
             ),
-            "source_artifact_binding": "transitive_strategy_owned_components_v2",
+            "source_artifact_binding": "recursive_strategy_owned_components_v3",
+            "reconstruction_identity": {
+                "module": self.reconstruction_module,
+                "qualname": self.reconstruction_qualname,
+            },
         }
 
     def contract_hash(self) -> str:
