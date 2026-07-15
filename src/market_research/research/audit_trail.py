@@ -271,7 +271,7 @@ class AuditTraceScope:
 
 
 def trace_root(*, manager: ResearchPathManager, experiment_id: str) -> Path:
-    root = manager.data_dir() / "derived" / "research" / experiment_id
+    root = manager.research_artifact_path(experiment_id)
     _ensure_allowed(manager, root)
     return root
 

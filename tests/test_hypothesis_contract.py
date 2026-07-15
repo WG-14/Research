@@ -32,6 +32,7 @@ def _hypothesis_spec(**overrides):
 
 def _structured_manifest_payload():
     payload = copy.deepcopy(_manifest_payload())
+    payload["parameter_space"]["NOOP_DECISION_REASON"] = ["noop_baseline_hold"]
     payload["hypothesis_spec"] = _hypothesis_spec()
     payload["strategy_version"] = "noop_baseline.research_contract.v1"
     payload["execution_timing"] = {
@@ -62,6 +63,23 @@ def _structured_manifest_payload():
         "source": "manifest",
     }
     return payload
+
+
+def _enabled_validation_risk_policy():
+    return {
+        "schema_version": 1,
+        "max_daily_loss_krw": 1_000_000,
+        "max_position_loss_pct": 100,
+        "max_drawdown_pct": 100,
+        "max_daily_order_count": 1_000,
+        "max_trade_count_per_day": 1_000,
+        "cooldown_after_loss_min": 0,
+        "max_open_positions": 1,
+        "unresolved_order_policy": "block",
+        "policy_status": "enabled",
+        "missing_policy": "fail_closed_for_validation",
+        "source": "manifest",
+    }
 
 
 @pytest.mark.parametrize(
@@ -144,4 +162,33 @@ def test_validation_bound_manifest_requires_structured_hypothesis():
     payload = _manifest_payload()
     payload["research_classification"] = "validated_candidate"
     with pytest.raises(ManifestValidationError, match="hypothesis_spec is required"):
+        parse_builtin_manifest(payload)
+
+
+def test_validation_bound_manifest_requires_final_holdout_split():
+    payload = _structured_manifest_payload()
+    payload["research_classification"] = "validated_candidate"
+    payload["risk_policy"] = _enabled_validation_risk_policy()
+
+    with pytest.raises(
+        ManifestValidationError,
+        match="dataset.final_holdout is required",
+    ):
+        parse_builtin_manifest(payload)
+
+
+def test_validation_bound_manifest_cannot_disable_final_holdout_gate():
+    payload = _structured_manifest_payload()
+    payload["research_classification"] = "validated_candidate"
+    payload["dataset"]["final_holdout"] = {
+        "start": "2026-01-03",
+        "end": "2026-01-03",
+    }
+    payload["acceptance_gate"]["final_holdout_required_for_validation"] = False
+    payload["risk_policy"] = _enabled_validation_risk_policy()
+
+    with pytest.raises(
+        ManifestValidationError,
+        match="final_holdout_required_for_validation must be true",
+    ):
         parse_builtin_manifest(payload)

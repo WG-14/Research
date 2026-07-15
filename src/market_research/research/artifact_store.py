@@ -231,7 +231,7 @@ class ResearchArtifactContext:
     ) -> None:
         self.manager = manager
         self.experiment_id = experiment_id
-        self.derived_root = (manager.data_dir() / "derived" / "research" / experiment_id).resolve()
+        self.derived_root = manager.research_artifact_path(experiment_id).resolve()
         self.report_root = manager.report_path("research", experiment_id).resolve()
         self.store = ArtifactStore(
             root=manager.data_dir(), budget=budget, additional_roots=(manager.report_root,),

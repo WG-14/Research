@@ -80,6 +80,10 @@ class ResearchPathManager:
     def artifact_path(self, *parts: str) -> Path:
         return self.artifact_root.joinpath(*_safe_parts(*parts))
 
+    def research_artifact_path(self, experiment_id: str, *parts: str) -> Path:
+        """Canonical derived-artifact namespace for one research experiment."""
+        return self.artifact_path("derived", "research", experiment_id, *parts)
+
     def report_path(self, *parts: str) -> Path:
         return self.report_root.joinpath(*_safe_parts(*parts))
 

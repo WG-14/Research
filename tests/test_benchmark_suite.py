@@ -4,6 +4,8 @@ from types import SimpleNamespace
 import json
 from pathlib import Path
 
+import pytest
+
 from market_research.research.dataset_snapshot import Candle, DatasetSnapshot
 from market_research.research.experiment_manifest import (
     DateRange,
@@ -25,6 +27,7 @@ from market_research.research.benchmark_contract import (
 from market_research.research_composition import builtin_strategy_registry
 from market_research.research.hashing import content_hash_payload, sha256_prefixed
 from tests.test_strategy_research_package import _approval, _result
+from tests.test_run_lifecycle import _context
 
 
 def _snapshot() -> DatasetSnapshot:
@@ -155,8 +158,13 @@ def test_complete_benchmark_suite_is_deterministic_and_execution_backed(tmp_path
         },
     }
 
-    first = BenchmarkSuiteRunner(manifest, registry).run((snapshot,), candidates=[candidate])
-    second = BenchmarkSuiteRunner(manifest, registry).run((snapshot,), candidates=[candidate])
+    manager = _context(tmp_path / "governance").paths
+    first = BenchmarkSuiteRunner(manifest, registry, manager).run(
+        (snapshot,), candidates=[candidate]
+    )
+    second = BenchmarkSuiteRunner(manifest, registry, manager).run(
+        (snapshot,), candidates=[candidate]
+    )
 
     assert first == second
     split = first["validation"]
@@ -205,3 +213,44 @@ def test_approved_strategy_artifact_tampering_is_rejected(tmp_path: Path) -> Non
         assert str(exc) == "approved_strategy_artifact_hash_mismatch"
     else:
         raise AssertionError("tampered approval artifact must fail closed")
+
+
+def test_approved_strategy_rejects_copied_governance_registry(
+    tmp_path: Path,
+) -> None:
+    approval_file = tmp_path / "approved-strategy.json"
+    approval_path, _ = _approval_artifact(approval_file)
+    payload = json.loads(approval_file.read_text(encoding="utf-8"))
+    approval = payload["research_approval"]
+    canonical_path = Path(approval["governance_registry_path"])
+    copied_path = tmp_path / "copied-governance.jsonl"
+    copied_path.write_bytes(canonical_path.read_bytes())
+    approval["governance_registry_path"] = str(copied_path.resolve())
+    approval_material = {
+        key: value for key, value in approval.items() if key != "content_hash"
+    }
+    approval["content_hash"] = sha256_prefixed(
+        content_hash_payload(approval_material)
+    )
+    payload_material = {
+        key: value for key, value in payload.items() if key != "content_hash"
+    }
+    forged_approval_hash = sha256_prefixed(content_hash_payload(payload_material))
+    payload["content_hash"] = forged_approval_hash
+    approval_file.write_text(json.dumps(payload), encoding="utf-8")
+    manifest = _manifest(
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        benchmark_suite=_benchmark_contract(
+            approval_path, forged_approval_hash
+        ),
+    )
+
+    with pytest.raises(
+        ValueError, match="strategy_approval_registry_path_mismatch"
+    ):
+        BenchmarkSuiteRunner(
+            manifest,
+            builtin_strategy_registry(),
+            _context(tmp_path / "governance").paths,
+        ).run((_snapshot(),), candidates=[])

@@ -108,6 +108,18 @@ def test_builtin_strategy_discovery_uses_explicit_markers_in_stable_order(monkey
     assert builtins.discover_builtin_strategy_factories() == (first, second)
 
 
+def test_platform_documentation_matches_strategy_discovery_and_partial_exit_contracts():
+    documentation = Path("docs/investment-research-platform.md").read_text(encoding="utf-8")
+
+    assert "stable marker discovery" in documentation
+    assert "directory scanning were not selected" not in documentation
+    assert "opt-in partial exits" in documentation
+    assert "no partial exits" not in documentation
+    assert "selection artifact schema 2" in documentation
+    assert "Reproduction receipt schema 8" in documentation
+    assert "same backtest or walk-forward path" in documentation
+
+
 def test_generic_strategy_spec_rejects_legacy_concrete_spec_exports():
     source = Path("src/market_research/research/strategy_spec.py").read_text()
     names = ("SMA_WITH_FILTER_SPEC", "BUY_AND_HOLD_BASELINE_SPEC",

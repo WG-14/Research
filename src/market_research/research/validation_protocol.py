@@ -83,9 +83,13 @@ from .executor import (
     sort_work_results_deterministically,
 )
 from .final_selection import (
+    FINAL_HOLDOUT_CONFIRMATION_SCHEMA_VERSION,
+    FINAL_HOLDOUT_RESULT_HASH_SCHEMA_VERSION,
     apply_final_selection_contract,
     build_selection_artifact,
+    compute_final_holdout_result_hash,
     validate_selection_artifact,
+    validate_selection_artifact_binding,
 )
 from .hashing import content_hash_payload, observe_hashing, sha256_prefixed
 from .hash_chain import append_hash_chained_jsonl
@@ -785,7 +789,7 @@ def _validation_registry_required(manifest: ExperimentManifest) -> bool:
 
 
 def _research_artifact_root(manager: ResearchPathManager, experiment_id: str) -> Path:
-    root = manager.data_dir() / "derived" / "research" / experiment_id
+    root = manager.research_artifact_path(experiment_id)
     project_root = manager.project_root.resolve()
     if ResearchPathManager.is_within(root.resolve(), project_root):
         raise ResearchValidationError(f"research derived artifact path must be outside repository: {root.resolve()}")
@@ -1688,6 +1692,7 @@ def run_research_backtest(
     progress_callback: ProgressCallback | None = None,
     candidate_evaluator: CandidateScenarioEvaluator | None = None,
     strategy_registry: StrategyRegistry,
+    governance_authority_manager: ResearchPathManager | None = None,
 ) -> dict[str, Any]:
     if not strategy_registry.accepts_execution_hash(
         manifest.strategy_name, str(manifest.validated_strategy_registry_hash or "")
@@ -1837,6 +1842,7 @@ def run_research_backtest(
         execution_observability=execution_observability,
         strategy_registry=strategy_registry,
         artifact_context=artifact_context,
+        governance_authority_manager=governance_authority_manager,
     )
     report.setdefault("artifact_observability", {})["candidate_results"] = dict(
         evaluation.candidate_artifact_observability
@@ -1871,7 +1877,7 @@ def run_research_backtest(
     full_candidates = report.get("candidates")
     report.clear()
     report.update(write_result.report_payload or {})
-    if manifest.research_run.report_detail == "summary":
+    if manifest.research_run.report_detail in {"index", "summary", "standard"}:
         report["candidates"] = full_candidates
     _attach_authoritative_reproduction_receipt(
         report=report,
@@ -1901,6 +1907,7 @@ def run_research_walk_forward(
     progress_callback: ProgressCallback | None = None,
     candidate_evaluator: CandidateScenarioEvaluator | None = None,
     strategy_registry: StrategyRegistry,
+    governance_authority_manager: ResearchPathManager | None = None,
 ) -> dict[str, Any]:
     if not strategy_registry.accepts_execution_hash(
         manifest.strategy_name, str(manifest.validated_strategy_registry_hash or "")
@@ -2057,6 +2064,7 @@ def run_research_walk_forward(
         execution_observability=execution_observability,
         strategy_registry=strategy_registry,
         artifact_context=artifact_context,
+        governance_authority_manager=governance_authority_manager,
     )
     report.setdefault("artifact_observability", {})["candidate_results"] = dict(
         evaluation.candidate_artifact_observability
@@ -2091,7 +2099,7 @@ def run_research_walk_forward(
     full_candidates = report.get("candidates")
     report.clear()
     report.update(write_result.report_payload or {})
-    if manifest.research_run.report_detail == "summary":
+    if manifest.research_run.report_detail in {"index", "summary", "standard"}:
         report["candidates"] = full_candidates
     _attach_authoritative_reproduction_receipt(
         report=report,
@@ -2138,6 +2146,16 @@ def run_final_holdout_confirmation(
     )
     if selected is None:
         raise ResearchValidationError("selection_artifact_candidate_missing")
+    binding_reasons = validate_selection_artifact_binding(
+        report=selection_report,
+        selection_artifact=artifact,
+        selected_candidate=selected,
+    )
+    if binding_reasons:
+        raise ResearchValidationError(
+            "selection_artifact_report_binding_invalid:"
+            + ",".join(binding_reasons)
+        )
     parameter_values = dict(selected.get("parameter_values_raw") or selected.get("parameter_values") or {})
     if sha256_prefixed(parameter_values) != artifact.get("parameter_values_hash"):
         raise ResearchValidationError("selection_artifact_parameter_hash_mismatch")
@@ -2255,6 +2273,22 @@ def run_final_holdout_confirmation(
         dataset_artifact=artifact_evidence,
         final_holdout_evidence=holdout_evidence,
     )
+    candidate_results = [{
+        "candidate_id": selected_id,
+        "compiled_strategy_contract_hash": compiled_contract.compiled_contract_hash,
+        "metrics": metrics,
+        "metrics_v2": metrics_v2,
+        "execution_event_summary": run.execution_event_summary or execution_event_summary(run.trades),
+        "reproduction_hashes": _reproduction_result_hashes(run),
+    }]
+    result_binding = {
+        "selection_artifact_hash": artifact["content_hash"],
+        "selected_candidate_id": selected_id,
+        "candidate_results": candidate_results,
+        "confirmation_gate_result": gate_result,
+        "confirmation_gate_fail_reasons": gate_reasons,
+    }
+    final_holdout_result_hash = compute_final_holdout_result_hash(result_binding)
     completion = append_attempt_completion(
         manager=manager,
         reservation=authorization,
@@ -2264,27 +2298,45 @@ def run_final_holdout_confirmation(
             "selected_candidate_id": selected_id,
             "candidate_count": 1,
             "confirmation_gate_result": gate_result,
+            "final_holdout_result_hash_schema_version": (
+                FINAL_HOLDOUT_RESULT_HASH_SCHEMA_VERSION
+            ),
+            "final_holdout_result_hash": final_holdout_result_hash,
         },
         result_status="COMPLETED",
         created_at=generated_at,
     )
     material = {
-        "schema_version": 1,
+        "schema_version": FINAL_HOLDOUT_CONFIRMATION_SCHEMA_VERSION,
         "artifact_type": "final_holdout_confirmation",
         "manifest_hash": manifest.manifest_hash(),
         "selection_artifact_hash": artifact["content_hash"],
         "selected_candidate_id": selected_id,
-        "candidate_results": [{
-            "candidate_id": selected_id,
-            "compiled_strategy_contract_hash": compiled_contract.compiled_contract_hash,
-            "metrics": metrics,
-            "metrics_v2": metrics_v2,
-            "execution_event_summary": run.execution_event_summary or execution_event_summary(run.trades),
-            "reproduction_hashes": _reproduction_result_hashes(run),
-        }],
+        "candidate_results": candidate_results,
+        "final_holdout_result_hash_schema_version": (
+            FINAL_HOLDOUT_RESULT_HASH_SCHEMA_VERSION
+        ),
+        "final_holdout_result_hash": final_holdout_result_hash,
         "dataset_evidence": {**artifact_evidence, **holdout_evidence},
         **holdout_hashes,
         "experiment_registry_path": authorization["path"],
+        "experiment_registry_prior_hash": authorization["prior_hash"],
+        "experiment_registry_row_hash": authorization["row_hash"],
+        "experiment_registry_completion_row_hash": completion["row_hash"],
+        "declared_attempt_index": authorization["row"].get("declared_attempt_index"),
+        "declared_holdout_reuse_count": authorization["row"].get(
+            "declared_holdout_reuse_count"
+        ),
+        "selection_attempt_index": authorization["row"].get(
+            "selection_attempt_index"
+        ),
+        "selection_holdout_reuse_count": authorization["row"].get(
+            "selection_holdout_reuse_count"
+        ),
+        "computed_attempt_index": authorization.get("computed_attempt_index"),
+        "computed_holdout_reuse_count": completion["row"].get(
+            "computed_holdout_reuse_count"
+        ),
         "authorization_row_hash": authorization["row_hash"],
         "completion_row_hash": completion["row_hash"],
         "confirmation_gate_result": gate_result,
@@ -2328,6 +2380,14 @@ def _reserve_final_holdout_authorization(
     if pre_exposure_key is None:
         raise ResearchValidationError("final_holdout_pre_exposure_identity_incomplete")
     identity = research_identity_from_manifest(manifest)
+    declared_attempt_index = _optional_int(manifest.raw.get("attempt_index"))
+    declared_holdout_reuse_count = _optional_int(
+        manifest.raw.get("holdout_reuse_count")
+    )
+    selection_attempt_index = _optional_int(selection_report.get("attempt_index"))
+    selection_holdout_reuse_count = _optional_int(
+        selection_report.get("holdout_reuse_count")
+    )
     base_payload = {
         "run_id": manifest.experiment_id,
         "experiment_id": manifest.experiment_id,
@@ -2354,8 +2414,10 @@ def _reserve_final_holdout_authorization(
         "objective_metric": objective_metric_from_manifest(manifest),
         "selection_artifact_hash": selection_artifact["content_hash"],
         "selected_candidate_id": selection_artifact["selected_candidate_id"],
-        "declared_attempt_index": None,
-        "declared_holdout_reuse_count": None,
+        "declared_attempt_index": declared_attempt_index,
+        "declared_holdout_reuse_count": declared_holdout_reuse_count,
+        "selection_attempt_index": selection_attempt_index,
+        "selection_holdout_reuse_count": selection_holdout_reuse_count,
     }
     contract = manifest.statistical_validation.as_dict() if manifest.statistical_validation is not None else {"gates": {"max_holdout_reuse_count": 0}}
     reservation = reserve_research_attempt_checked(
@@ -6024,6 +6086,7 @@ def _report_payload(
     execution_observability: dict[str, Any] | None = None,
     artifact_context: ResearchArtifactContext | None = None,
     strategy_registry: StrategyRegistry,
+    governance_authority_manager: ResearchPathManager | None = None,
 ) -> dict[str, Any]:
     dataset_hash = combined_dataset_fingerprint(snapshots)
     dataset_quality_hash = combined_dataset_quality_hash(quality_reports)
@@ -6308,6 +6371,7 @@ def _report_payload(
         manifest=manifest,
         strategy_registry=strategy_registry,
         candidates=candidates,
+        manager=governance_authority_manager or manager,
     )
     _attach_benchmark_metrics(
         candidates=candidates,
@@ -6762,6 +6826,8 @@ def _report_payload(
         "scenario_cost_assumption_contract_hash": cost_authority["scenario_cost_assumption_contract_hash"],
         "portfolio_policy": portfolio_policy,
         "portfolio_policy_hash": portfolio_policy_hash,
+        "risk_policy": manifest.risk_policy.as_dict(),
+        "risk_policy_hash": manifest.risk_policy_hash(),
         "simulation_policy_hash": simulation_policy_hash,
         "research_run": manifest.research_run.as_dict(),
         "resource_budget": resource_budget,
@@ -7163,6 +7229,7 @@ def _validation_blocking_reasons(
                     candidate=best,
                     report=report,
                     evidence=statistical_evidence,
+                    require_experiment_registry_binding=False,
                 )
             )
         elif statistical_evidence.get("statistical_gate_result") != "PASS":
@@ -8021,10 +8088,12 @@ def _benchmark_metrics_for_splits(
     manifest: ExperimentManifest,
     strategy_registry: StrategyRegistry,
     candidates: list[dict[str, Any]],
+    manager: ResearchPathManager | None = None,
 ) -> dict[str, dict[str, Any]]:
     return BenchmarkSuiteRunner(
         manifest=manifest,
         strategy_registry=strategy_registry,
+        manager=manager,
     ).run(snapshots, candidates=candidates)
 
 
@@ -8359,6 +8428,7 @@ def _top_of_book_provenance_reasons(
         return []
     reasons: list[str] = []
     actual_content = str(payload.get("top_of_book_source_content_hash") or "")
+    split_content = str(payload.get("top_of_book_split_content_hash") or "")
     actual_schema = str(payload.get("top_of_book_source_schema_hash") or "")
     provenance = payload.get("top_of_book_adapter_provenance")
     provenance_hash = str(payload.get("top_of_book_adapter_provenance_hash") or "")
@@ -8368,6 +8438,8 @@ def _top_of_book_provenance_reasons(
         reasons.append(f"{split_name}:top_of_book_declared_source_schema_hash_missing")
     if not actual_content.startswith("sha256:"):
         reasons.append(f"{split_name}:top_of_book_source_content_hash_missing")
+    if not split_content.startswith("sha256:"):
+        reasons.append(f"{split_name}:top_of_book_split_content_hash_missing")
     if not actual_schema.startswith("sha256:"):
         reasons.append(f"{split_name}:top_of_book_source_schema_hash_missing")
     if top.source_content_hash and top.source_content_hash != actual_content:
@@ -8376,10 +8448,23 @@ def _top_of_book_provenance_reasons(
         reasons.append(f"{split_name}:top_of_book_source_schema_hash_mismatch")
     if not isinstance(provenance, dict) or not provenance:
         reasons.append(f"{split_name}:top_of_book_adapter_provenance_missing")
+    elif provenance.get("source_artifact_content_hash") != actual_content:
+        reasons.append(f"{split_name}:top_of_book_provenance_source_content_hash_mismatch")
+    elif provenance.get("source_schema_hash") != actual_schema:
+        reasons.append(f"{split_name}:top_of_book_provenance_source_schema_hash_mismatch")
     if not provenance_hash.startswith("sha256:"):
         reasons.append(f"{split_name}:top_of_book_adapter_provenance_hash_missing")
     elif provenance_hash != sha256_prefixed(provenance or {}):
         reasons.append(f"{split_name}:top_of_book_adapter_provenance_hash_mismatch")
+    try:
+        locator = parse_immutable_locator(top.locator)
+    except LocatorValidationError:
+        locator = None
+    if locator is not None:
+        if locator.artifact_content_hash != top.source_content_hash:
+            reasons.append(f"{split_name}:top_of_book_locator_declared_content_hash_mismatch")
+        if locator.artifact_content_hash != actual_content:
+            reasons.append(f"{split_name}:top_of_book_locator_actual_content_hash_mismatch")
     reasons.extend(f"{split_name}:{reason}" for reason in _locator_contract_reasons(manifest, "top_of_book"))
     return reasons
 
@@ -8415,10 +8500,24 @@ def _depth_provenance_reasons(
         reasons.append(f"{split_name}:depth_source_schema_hash_missing")
     if not isinstance(provenance, dict) or not provenance:
         reasons.append(f"{split_name}:depth_adapter_provenance_missing")
+    elif provenance.get("source_artifact_content_hash") != actual_content:
+        reasons.append(f"{split_name}:depth_provenance_source_content_hash_mismatch")
+    elif provenance.get("source_schema_hash") != actual_schema:
+        reasons.append(f"{split_name}:depth_provenance_source_schema_hash_mismatch")
     if not provenance_hash.startswith("sha256:"):
         reasons.append(f"{split_name}:depth_adapter_provenance_hash_missing")
     elif provenance_hash != sha256_prefixed(provenance or {}):
         reasons.append(f"{split_name}:depth_adapter_provenance_hash_mismatch")
+    if depth is not None:
+        try:
+            locator = parse_immutable_locator(depth.locator)
+        except LocatorValidationError:
+            locator = None
+        if locator is not None:
+            if locator.artifact_content_hash != depth.source_content_hash:
+                reasons.append(f"{split_name}:depth_locator_declared_content_hash_mismatch")
+            if locator.artifact_content_hash != actual_content:
+                reasons.append(f"{split_name}:depth_locator_actual_content_hash_mismatch")
     reasons.extend(f"{split_name}:{reason}" for reason in _locator_contract_reasons(manifest, "depth"))
     return reasons
 

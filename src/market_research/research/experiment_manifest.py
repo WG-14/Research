@@ -1057,6 +1057,14 @@ def parse_manifest(payload: dict[str, Any], *, registry: "StrategyRegistry | Non
     risk_policy = _parse_risk_policy(payload.get("risk_policy"), research_classification=research_classification)
     acceptance_gate = _parse_acceptance_gate(_required_dict(payload, "acceptance_gate"))
     if requires_candidate_validation(research_classification):
+        if dataset.split.final_holdout is None:
+            raise ManifestValidationError(
+                "dataset.final_holdout is required for validation-bound manifests"
+            )
+        if not acceptance_gate.final_holdout_required_for_validation:
+            raise ManifestValidationError(
+                "acceptance_gate.final_holdout_required_for_validation must be true for validation-bound manifests"
+            )
         acceptance_gate = replace(
             acceptance_gate,
             max_single_trade_dependency_score=(

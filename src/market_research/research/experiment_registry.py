@@ -26,6 +26,15 @@ PRE_CONTENT_COMPLETION_BOUND_FIELDS = {
     "dataset_quality_hash",
     "final_holdout_split_hash",
     "final_holdout_content_hash",
+    "final_holdout_reuse_key_hash_v1",
+    "final_holdout_reuse_key_hash",
+    "final_holdout_reuse_key_schema_version",
+    "final_holdout_reuse_key_hash_v2",
+    "final_holdout_query_hash",
+    "final_holdout_data_hash",
+    "final_holdout_fingerprint_hash",
+    "final_holdout_quality_hash",
+    "final_holdout_result_hash",
 }
 
 
@@ -353,6 +362,39 @@ def load_experiment_registry_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def experiment_registry_chain_reasons(rows: list[dict[str, Any]]) -> list[str]:
+    reasons: list[str] = []
+    for index, row in enumerate(rows):
+        if compute_row_hash(row) != row.get("row_hash"):
+            reasons.append("experiment_registry_row_hash_mismatch")
+        expected_prior = (
+            sha256_prefixed(rows[:index])
+            if index
+            else EMPTY_EXPERIMENT_REGISTRY_HASH
+        )
+        if row.get("prior_registry_hash") != expected_prior:
+            reasons.append("experiment_registry_prior_hash_mismatch")
+    return sorted(set(reasons))
+
+
+def _require_valid_registry_chain(rows: list[dict[str, Any]]) -> None:
+    reasons = experiment_registry_chain_reasons(rows)
+    if reasons:
+        raise ValueError("experiment_registry_chain_invalid:" + ",".join(reasons))
+
+
+def _terminal_rows_for_reservation(
+    rows: list[dict[str, Any]], reservation_row_hash: str
+) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in rows
+        if row.get("event_type")
+        in {"research_attempt_completed", "research_attempt_aborted"}
+        and str(row.get("reservation_row_hash") or "") == reservation_row_hash
+    ]
+
+
 def compute_research_attempt_counters(
     *,
     manager: ResearchPathManager,
@@ -399,6 +441,7 @@ def append_research_attempt_rejected(
     path = experiment_registry_path(manager=manager)
     with _locked_registry(path):
         rows = load_experiment_registry_rows(path)
+        _require_valid_registry_chain(rows)
         prior_hash = sha256_prefixed(rows) if rows else EMPTY_EXPERIMENT_REGISTRY_HASH
         row = {
             "schema_version": EXPERIMENT_REGISTRY_SCHEMA_VERSION,
@@ -427,6 +470,7 @@ def reserve_research_attempt(
     path = experiment_registry_path(manager=manager)
     with _locked_registry(path):
         rows = load_experiment_registry_rows(path)
+        _require_valid_registry_chain(rows)
         prior_hash = sha256_prefixed(rows) if rows else EMPTY_EXPERIMENT_REGISTRY_HASH
         counters = _compute_research_attempt_counters_from_rows(rows=rows, base_payload=base_payload)
         computed_attempt_index = counters["computed_attempt_index"]
@@ -473,6 +517,7 @@ def reserve_research_attempt_checked(
     path = experiment_registry_path(manager=manager)
     with _locked_registry(path):
         rows = load_experiment_registry_rows(path)
+        _require_valid_registry_chain(rows)
         prior_hash = sha256_prefixed(rows) if rows else EMPTY_EXPERIMENT_REGISTRY_HASH
         counters = _compute_research_attempt_counters_from_rows(rows=rows, base_payload=base_payload)
         computed_attempt_index = counters["computed_attempt_index"]
@@ -552,8 +597,20 @@ def append_attempt_aborted(
     path = experiment_registry_path(manager=manager)
     with _locked_registry(path):
         rows = load_experiment_registry_rows(path)
-        reservation = next((row for row in rows if row.get("row_hash") == reservation_row_hash), None)
-        if not isinstance(reservation, dict):
+        _require_valid_registry_chain(rows)
+        reservation = next(
+            (
+                row
+                for row in rows
+                if row.get("row_hash") == reservation_row_hash
+                and row.get("event_type") == "research_attempt_reserved"
+                and row.get("result_status") == "IN_PROGRESS"
+            ),
+            None,
+        )
+        if not isinstance(reservation, dict) or _terminal_rows_for_reservation(
+            rows, reservation_row_hash
+        ):
             return None
         prior_hash = sha256_prefixed(rows) if rows else EMPTY_EXPERIMENT_REGISTRY_HASH
         row = {
@@ -585,10 +642,36 @@ def append_attempt_completion(
     created_at: str | None = None,
 ) -> dict[str, Any]:
     path = experiment_registry_path(manager=manager)
-    reservation_row = reservation.get("row") if isinstance(reservation.get("row"), dict) else {}
     _require_completed_holdout_evidence(updates)
     with _locked_registry(path):
         rows = load_experiment_registry_rows(path)
+        _require_valid_registry_chain(rows)
+        reservation_row_hash = str(
+            reservation.get("row_hash")
+            or (
+                reservation.get("row", {}).get("row_hash")
+                if isinstance(reservation.get("row"), dict)
+                else ""
+            )
+            or ""
+        )
+        reservation_row = next(
+            (
+                row
+                for row in rows
+                if row.get("row_hash") == reservation_row_hash
+                and row.get("event_type") == "research_attempt_reserved"
+                and row.get("result_status") == "IN_PROGRESS"
+            ),
+            None,
+        )
+        if not isinstance(reservation_row, dict):
+            raise ValueError("experiment_registry_reservation_missing")
+        reservation_path = str(reservation.get("path") or "").strip()
+        if reservation_path and Path(reservation_path).resolve() != path.resolve():
+            raise ValueError("experiment_registry_path_mismatch")
+        if _terminal_rows_for_reservation(rows, reservation_row_hash):
+            raise ValueError("experiment_registry_attempt_already_terminal")
         prior_hash = sha256_prefixed(rows) if rows else EMPTY_EXPERIMENT_REGISTRY_HASH
         completed_reuse_key = str(updates["final_holdout_reuse_key_hash"])
         computed_holdout_reuse_count = sum(
@@ -605,7 +688,7 @@ def append_attempt_completion(
             **{key: value for key, value in reservation_row.items() if key not in {"event_type", "result_status", "prior_registry_hash", "row_hash", "created_at"}},
             **updates,
             "computed_holdout_reuse_count": computed_holdout_reuse_count,
-            "reservation_row_hash": reservation.get("row_hash") or reservation_row.get("row_hash"),
+            "reservation_row_hash": reservation_row_hash,
             "result_status": result_status,
             "prior_registry_hash": prior_hash,
             "created_at": created_at or datetime.now(timezone.utc).isoformat(),
@@ -616,17 +699,26 @@ def append_attempt_completion(
 
 
 def _require_completed_holdout_evidence(updates: dict[str, Any]) -> None:
-    required = (
+    required = [
         "dataset_artifact_evidence_hash",
         "final_holdout_query_hash",
         "final_holdout_data_hash",
         "final_holdout_fingerprint_hash",
         "final_holdout_quality_hash",
         "final_holdout_reuse_key_hash",
-    )
+    ]
+    if updates.get("selection_artifact_hash") is not None:
+        required.append("final_holdout_result_hash")
     missing = [field for field in required if not isinstance(updates.get(field), str) or not str(updates[field]).startswith("sha256:")]
     if missing or updates.get("final_holdout_reuse_key_schema_version") != FINAL_HOLDOUT_REUSE_KEY_SCHEMA_VERSION:
         raise ValueError("experiment_registry_completed_holdout_evidence_missing:" + ",".join(missing))
+    if updates.get("selection_artifact_hash") is not None and updates.get(
+        "final_holdout_result_hash_schema_version"
+    ) != 1:
+        raise ValueError(
+            "experiment_registry_completed_holdout_evidence_missing:"
+            "final_holdout_result_hash_schema_version"
+        )
 
 
 def validate_experiment_registry_binding(
@@ -635,6 +727,7 @@ def validate_experiment_registry_binding(
     evidence: dict[str, Any] | None = None,
     validation: dict[str, Any] | None = None,
     require_complete: bool = False,
+    expected_registry_path: Path | None = None,
 ) -> list[str]:
     source = evidence if isinstance(evidence, dict) else report
     validation = validation if isinstance(validation, dict) else {}
@@ -662,12 +755,18 @@ def validate_experiment_registry_binding(
     if not row_hash.startswith("sha256:"):
         return ["experiment_registry_row_hash_missing"]
     path = Path(path_value).expanduser()
+    if (
+        expected_registry_path is not None
+        and path.resolve() != expected_registry_path.resolve()
+    ):
+        reasons.append("experiment_registry_path_mismatch")
     if not path.exists():
         return ["experiment_registry_missing"]
     try:
         rows = load_experiment_registry_rows(path)
     except (OSError, json.JSONDecodeError):
         return ["experiment_registry_missing"]
+    reasons.extend(experiment_registry_chain_reasons(rows))
     row_index = next((index for index, row in enumerate(rows) if row.get("row_hash") == row_hash), None)
     if row_index is None:
         return ["experiment_registry_row_hash_mismatch"]
@@ -683,6 +782,9 @@ def validate_experiment_registry_binding(
         or validation.get("experiment_registry_completion_row_hash")
         or ""
     ).strip()
+    terminal_rows = _terminal_rows_for_reservation(rows, row_hash)
+    if len(terminal_rows) > 1:
+        reasons.append("experiment_registry_multiple_terminal_events")
     completion = _completion_for_reservation(rows, row_hash, completion_hash)
     _extend_registry_field_mismatch_reasons(
         reasons,
@@ -728,7 +830,7 @@ def _extend_registry_field_mismatch_reasons(
     evidence = evidence if isinstance(evidence, dict) else {}
     completion = completion if isinstance(completion, dict) else {}
     content_pending = bool(row.get("final_holdout_content_pending_until_completion"))
-    for field in (
+    registry_fields = (
         "experiment_id",
         "experiment_family_id",
         "hypothesis_id",
@@ -762,7 +864,16 @@ def _extend_registry_field_mismatch_reasons(
         "final_holdout_data_hash",
         "final_holdout_fingerprint_hash",
         "final_holdout_quality_hash",
-    ):
+        "final_holdout_result_hash",
+    )
+    if report.get("artifact_type") == "final_holdout_confirmation":
+        registry_fields += (
+            "selection_artifact_hash",
+            "selected_candidate_id",
+            "selection_attempt_index",
+            "selection_holdout_reuse_count",
+        )
+    for field in registry_fields:
         expected = evidence.get(field)
         if expected is None:
             expected = report.get(field)
@@ -785,7 +896,10 @@ def _extend_registry_field_mismatch_reasons(
             reasons.append("experiment_registry_identity_source_missing")
             break
     fingerprint = evidence.get("final_holdout_fingerprint") or report.get("final_holdout_fingerprint") or validation.get("final_holdout_fingerprint")
-    if fingerprint is not None and str(row.get("final_holdout_fingerprint") or "") != str(fingerprint or ""):
+    actual_fingerprint = row.get("final_holdout_fingerprint")
+    if content_pending and actual_fingerprint is None:
+        actual_fingerprint = completion.get("final_holdout_fingerprint")
+    if fingerprint is not None and str(actual_fingerprint or "") != str(fingerprint or ""):
         reasons.append("experiment_registry_final_holdout_fingerprint_mismatch")
     identity = evidence.get("final_holdout_identity_hash") or report.get("final_holdout_identity_hash") or validation.get("final_holdout_identity_hash")
     if identity is not None and str(row.get("final_holdout_identity_hash") or "") != str(identity or ""):
@@ -797,7 +911,10 @@ def _extend_registry_field_mismatch_reasons(
     if content is not None and str(actual_content or "") != str(content or ""):
         reasons.append("experiment_registry_final_holdout_content_mismatch")
     reuse_key = evidence.get("final_holdout_reuse_key_hash") or report.get("final_holdout_reuse_key_hash") or validation.get("final_holdout_reuse_key_hash")
-    if reuse_key is not None and str(row.get("final_holdout_reuse_key_hash") or "") != str(reuse_key or ""):
+    actual_reuse_key = row.get("final_holdout_reuse_key_hash")
+    if content_pending and actual_reuse_key is None:
+        actual_reuse_key = completion.get("final_holdout_reuse_key_hash")
+    if reuse_key is not None and str(actual_reuse_key or "") != str(reuse_key or ""):
         reasons.append("experiment_registry_final_holdout_reuse_key_mismatch")
     _extend_validation_reuse_identity_reasons(
         reasons,
@@ -834,6 +951,12 @@ def _extend_declared_counter_reasons(
     for declared_field, computed_field, code in (
         ("declared_attempt_index", "computed_attempt_index", "declared_attempt_index_mismatch"),
         ("declared_holdout_reuse_count", "computed_holdout_reuse_count", "declared_holdout_reuse_count_mismatch"),
+        ("selection_attempt_index", "computed_attempt_index", "selection_attempt_index_mismatch"),
+        (
+            "selection_holdout_reuse_count",
+            "computed_holdout_reuse_count",
+            "selection_holdout_reuse_count_mismatch",
+        ),
     ):
         declared = evidence.get(declared_field)
         if declared is None:
@@ -854,18 +977,35 @@ def _extend_completion_mismatch_reasons(
     validation: dict[str, Any],
 ) -> None:
     evidence = evidence if isinstance(evidence, dict) else {}
-    for field in ("return_panel_hash", "candidate_count"):
+    completion_fields = ["return_panel_hash", "candidate_count"]
+    confirmation_fields = {
+        "selection_artifact_hash",
+        "selected_candidate_id",
+        "confirmation_gate_result",
+        "final_holdout_result_hash",
+        "final_holdout_result_hash_schema_version",
+    }
+    if report.get("artifact_type") == "final_holdout_confirmation":
+        completion_fields.extend(sorted(confirmation_fields))
+    for field in completion_fields:
         expected = evidence.get(field)
         if expected is None:
             expected = report.get(field)
         if expected is None:
             expected = validation.get(field)
         actual = completion.get(field)
-        if expected is not None and actual is not None and str(actual or "") != str(expected or ""):
+        if expected is not None and (
+            (field in confirmation_fields and actual is None)
+            or (actual is not None and str(actual or "") != str(expected or ""))
+        ):
             reasons.append("experiment_registry_stale")
-    phase = str(completion.get("statistical_evidence_hash_phase") or "").strip()
-    if phase != EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE:
-        reasons.append("experiment_registry_evidence_hash_phase_mismatch")
+    statistical_binding_declared = bool(evidence) or bool(
+        completion.get("statistical_evidence_hash")
+    ) or bool(validation.get("experiment_registry_bound_evidence_hash"))
+    if statistical_binding_declared:
+        phase = str(completion.get("statistical_evidence_hash_phase") or "").strip()
+        if phase != EXPERIMENT_REGISTRY_EVIDENCE_HASH_PHASE:
+            reasons.append("experiment_registry_evidence_hash_phase_mismatch")
     if evidence:
         bound = str(evidence.get("experiment_registry_bound_evidence_hash") or "").strip()
         if not bound.startswith("sha256:"):
@@ -997,10 +1137,16 @@ def _checked_reservation_reasons(
     reasons: list[str] = []
     declared_attempt = _as_int(base_payload.get("declared_attempt_index"))
     declared_reuse = _as_int(base_payload.get("declared_holdout_reuse_count"))
+    selection_attempt = _as_int(base_payload.get("selection_attempt_index"))
+    selection_reuse = _as_int(base_payload.get("selection_holdout_reuse_count"))
     if declared_attempt is not None and declared_attempt != computed_attempt_index:
         reasons.append("declared_attempt_index_mismatch")
     if declared_reuse is not None and declared_reuse != computed_holdout_reuse_count:
         reasons.append("declared_holdout_reuse_count_mismatch")
+    if selection_attempt is not None and selection_attempt != computed_attempt_index:
+        reasons.append("selection_attempt_index_mismatch")
+    if selection_reuse is not None and selection_reuse != computed_holdout_reuse_count:
+        reasons.append("selection_holdout_reuse_count_mismatch")
     gates = statistical_validation_contract.get("gates") if isinstance(statistical_validation_contract, dict) else None
     if isinstance(gates, dict):
         max_attempt = _as_int(gates.get("max_attempt_index_without_new_hypothesis"))

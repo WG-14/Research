@@ -143,3 +143,18 @@ def test_declared_partial_exit_uses_common_execution_and_ledger_path():
     assert model.count == 1
     assert run.ledger_entries[0].qty == 0.5
     assert run.resource_usage["final_asset_qty"] == 0.5
+
+
+def test_declared_partial_exit_cannot_exceed_available_position():
+    plugin = replace(
+        _plugin_with_intents({
+            "side": "SELL",
+            "sizing": "explicit_quantity",
+            "requested_qty": 1.5,
+        }),
+        required_capabilities=StrategyCapabilityContract(partial_exit=True),
+    )
+
+    reason = _run(plugin, positioned=True)
+
+    assert "partial_exit_quantity_exceeds_position" in reason

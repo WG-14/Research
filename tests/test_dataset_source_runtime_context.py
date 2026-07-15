@@ -16,6 +16,34 @@ def test_sqlite_candle_source_requires_database_path() -> None:
     assert _required_runtime_db_path(SimpleNamespace(paths=paths), manifest) == "/tmp/data.sqlite"
 
 
+def test_immutable_execution_evidence_locators_do_not_require_runtime_database() -> None:
+    paths = SimpleNamespace(
+        require_database_path=lambda: (_ for _ in ()).throw(AssertionError("runtime database opened"))
+    )
+    locator = {
+        "type": "content_addressed_local",
+        "path": "/external/top.sqlite",
+        "artifact_content_hash": "sha256:" + "a" * 64,
+    }
+    manifest = SimpleNamespace(
+        dataset=SimpleNamespace(
+            source="frozen_sqlite_candles",
+            top_of_book=SimpleNamespace(
+                source="sqlite_orderbook_top_snapshots",
+                locator=locator,
+            ),
+            depth=None,
+        ),
+        execution_timing=SimpleNamespace(
+            depth_required=False,
+            min_execution_reality_level_for_validation=None,
+        ),
+        execution_model=SimpleNamespace(scenarios=()),
+    )
+
+    assert _required_runtime_db_path(SimpleNamespace(paths=paths), manifest) is None
+
+
 @pytest.mark.parametrize(
     ("top_of_book", "depth", "timing", "scenarios", "role"),
     (

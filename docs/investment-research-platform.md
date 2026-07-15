@@ -1,16 +1,24 @@
 # Investment research platform contracts
 
 The repository uses an explicit deterministic composition root at
-`market_research.research_composition`. It constructs one immutable registry
-snapshot before manifest validation or execution. Python entry points and
-directory scanning were not selected because installed-environment differences
-and arbitrary imports would weaken reproducibility and registry hash evidence.
+`market_research.research_composition`. The common core receives one immutable
+registry snapshot explicitly before manifest validation or execution; it never
+performs strategy discovery itself. The production built-in composition uses
+controlled package-local stable marker discovery: modules under
+`market_research.builtin_strategies` are imported in sorted module-name order
+and only callable `STRATEGY_PLUGIN_FACTORY` markers are registered. Python entry
+points, mutable global registration, and discovery outside that controlled
+package are not used by the production CLI. The completed registry and every
+selected plugin contract are hash-bound to execution evidence.
 
 `sma_with_filter` remains a supported built-in strategy: it is named by the
 root `AGENTS.md`, repository examples, fixtures, and research documentation.
 Its runtime and exit semantics live in the built-in package; removing its
-composition-root registration requires no common-engine change. External
-consumer usage could not be verified from this workspace.
+marker or module requires no common-engine change. Explicit custom registries
+remain available to API consumers and parallel workers; external strategy hooks
+are source-bound in the plugin contract, but they are not added to the
+production built-in catalog automatically. External consumer usage could not be
+verified from this workspace.
 
 ## Hypothesis, strategy, and experiment specifications
 
@@ -40,6 +48,26 @@ The hypothesis contract hash and version are included in the manifest hash,
 registry identity, and research-freedom hash. A `pre_registered` status is
 accepted only with a timestamp and evidence hash; omission never implies
 pre-registration.
+
+## Immutable execution-market evidence
+
+Validation-bound top-of-book and depth inputs use the existing
+`content_addressed_local` locator contract. For these SQLite evidence sources,
+`source_content_hash` and `locator.artifact_content_hash` are the same SHA-256
+of the complete SQLite file bytes, while `source_schema_hash` is the canonical
+fingerprint of the relevant table schema. A typed locator is the data authority
+and is opened directly; an unrelated runtime database path cannot override it.
+SQLite WAL, shared-memory, or journal sidecars are rejected for a declared
+immutable evidence artifact. Runtime database lookup remains only for legacy
+research-only manifests without an immutable locator.
+
+Artifact identity is deliberately separate from a materialized split. Dataset
+quality evidence records the whole-source identity in
+`top_of_book_source_content_hash` or `l2_depth_source_content_hash`. The
+split-specific joined/event projection is recorded in
+`top_of_book_split_content_hash` or `l2_depth_content_hash`. Train, validation,
+walk-forward, and final-holdout split hashes are therefore expected to differ,
+while every split remains bound to the same verified source artifact.
 
 ## Research lifecycle and human governance
 
@@ -92,6 +120,20 @@ performance ranges, limitations, and the bound approval record. Hash-only
 references are retained as integrity evidence but do not replace those semantic
 fields.
 
+The schema-3 `validation_summary.json` is the canonical machine-readable input
+to approval and package export. It extends the complete authoritative
+selection report with final-holdout confirmation, terminal gate statuses, and
+the reproduction binding, and uses the same logical report hash domain checked
+by both commands. The separate decision report is a bounded review projection,
+not a substitute package input.
+
+Official package export additionally resolves the experiment and governance
+registries through `ResearchPathManager` and rejects contradictory terminal or
+stage gates. A package is authoritative only when it records
+`CANONICAL_REGISTRIES_VERIFIED` and `PASS`. The manager-free Python compatibility
+path is explicitly `DECLARED_PATH_ONLY`/`UNVERIFIED`; it cannot serve as an
+official approval, benchmark, or strategy handoff artifact.
+
 End-to-end validation writes a separate `research_decision_report` rather than
 copying the validation summary. Its eleven fixed sections cover the review
 contract from hypothesis through conclusion. Automated conclusions explicitly
@@ -99,11 +141,24 @@ remain `NOT_REVIEWED` by a human and carry `operational_permission=false`.
 Hash-verified reports can be rendered with `research-render-report` and compared
 deterministically with `research-compare`.
 
-Capability schema v1 intentionally supports one instrument, long-only,
-one position, no pyramiding, no partial exits, one intent per decision, and a
-single-asset cash/quantity portfolio. Shorting, multi-asset portfolios,
-pyramiding, partial exits, derivatives, and target allocation fail during
-strategy compilation and are not silently transformed.
+Pre-holdout selection artifact schema 2 hashes a stable projection of each
+candidate identity, parameter and compiled-contract bindings, and the final
+selection score. Runtime duration, local paths, and their derived wrapper
+hashes are diagnostic observations and cannot change the selection evidence.
+Reproduction receipt schema 8 binds the source `report_kind`; replay therefore
+uses the same backtest or walk-forward path as the baseline run.
+
+Capability schema v1 intentionally supports one instrument, long-only, one
+position, no pyramiding, one intent per decision, and a single-asset
+cash/quantity portfolio. The common engine supports opt-in partial exits, but
+all current built-in strategies leave that capability disabled. A strategy
+that declares `partial_exit=true` may sell the full position or a positive
+explicit quantity no greater than the available position; undeclared partial
+exits, fractional-position sizing, ambiguous quantities, and overselling fail
+before the execution model is invoked. Partial exits are distinct from partial
+fills, which are execution-model outcomes applied to the same common ledger.
+Shorting, multi-asset portfolios, pyramiding, derivatives, and target
+allocation fail during strategy compilation and are not silently transformed.
 
 Historical `run_*_backtest` names remain delegated compatibility wrappers
 because external consumer usage is unavailable. The independent pending-fill

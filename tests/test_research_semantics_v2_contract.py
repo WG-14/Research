@@ -12,7 +12,9 @@ from market_research.research.final_selection import (
     apply_final_selection_contract,
     build_selection_artifact,
     validate_selection_artifact,
+    validate_selection_artifact_binding,
 )
+from market_research.research.report_writer import summarize_report_candidate
 from market_research.research_composition import (
     load_builtin_manifest as load_manifest,
     parse_builtin_manifest as parse_manifest,
@@ -135,6 +137,58 @@ def test_selection_and_artifact_are_invariant_to_final_holdout_metric_values() -
     assert validate_selection_artifact(first_artifact) == []
 
 
+def test_selection_artifact_excludes_runtime_only_candidate_observations() -> None:
+    payload = _manifest_payload()
+    payload["final_selection"] = _final_selection_payload()
+    manifest = parse_manifest(payload)
+    candidates = [_selection_candidate("candidate-a", 10.0, 1.0)]
+    candidates[0].update(
+        {
+            "candidate_payload_hash": "sha256:" + "3" * 64,
+            "candidate_profile_hash": "sha256:" + "4" * 64,
+            "scenario_results": [
+                {
+                    "scenario_id": "base",
+                    "validation_resource_usage": {"runtime_seconds": 0.1},
+                    "detail_artifact_hash": "sha256:" + "5" * 64,
+                }
+            ],
+        }
+    )
+    changed = copy.deepcopy(candidates)
+    changed[0]["candidate_payload_hash"] = "sha256:" + "6" * 64
+    changed[0]["candidate_profile_hash"] = "sha256:" + "7" * 64
+    changed[0]["scenario_results"][0]["validation_resource_usage"][
+        "runtime_seconds"
+    ] = 99.0
+    changed[0]["scenario_results"][0]["detail_artifact_hash"] = (
+        "sha256:" + "8" * 64
+    )
+
+    first_selection = apply_final_selection_contract(
+        contract=manifest.final_selection,
+        candidates=candidates,
+        report_context={"dataset_quality_gate_status": "PASS"},
+        validation_required=False,
+    )
+    changed_selection = apply_final_selection_contract(
+        contract=manifest.final_selection,
+        candidates=changed,
+        report_context={"dataset_quality_gate_status": "PASS"},
+        validation_required=False,
+    )
+
+    assert build_selection_artifact(
+        manifest_hash=manifest.manifest_hash(),
+        selection_result=first_selection,
+        candidates=candidates,
+    ) == build_selection_artifact(
+        manifest_hash=manifest.manifest_hash(),
+        selection_result=changed_selection,
+        candidates=changed,
+    )
+
+
 def test_selection_artifact_rejects_candidate_or_contract_hash_tampering() -> None:
     payload = _manifest_payload()
     payload["final_selection"] = _final_selection_payload()
@@ -153,6 +207,182 @@ def test_selection_artifact_rejects_candidate_or_contract_hash_tampering() -> No
     artifact["compiled_strategy_contract_hash"] = "sha256:" + "3" * 64
 
     assert "selection_artifact_content_hash_mismatch" in validate_selection_artifact(artifact)
+
+
+def test_selection_artifact_rejects_report_candidate_substitution() -> None:
+    payload = _manifest_payload()
+    payload["final_selection"] = _final_selection_payload()
+    manifest = parse_manifest(payload)
+    candidates = [_selection_candidate("candidate-a", 10.0, 1.0)]
+    selection = apply_final_selection_contract(
+        contract=manifest.final_selection,
+        candidates=candidates,
+        report_context={"dataset_quality_gate_status": "PASS"},
+        validation_required=False,
+    )
+    artifact = build_selection_artifact(
+        manifest_hash=manifest.manifest_hash(),
+        selection_result=selection,
+        candidates=candidates,
+    )
+    assert artifact is not None
+    substituted = copy.deepcopy(candidates[0])
+    substituted["compiled_strategy_contract_hash"] = "sha256:" + "9" * 64
+    report = {
+        "manifest_hash": manifest.manifest_hash(),
+        "selected_candidate_id": "candidate-a",
+        "final_selection_contract_hash": selection["final_selection_contract_hash"],
+        "candidate_final_scores": selection["candidate_final_scores"],
+        "candidate_final_scores_hash": selection["candidate_final_scores_hash"],
+        "selection_artifact": artifact,
+        "selection_artifact_hash": artifact["content_hash"],
+        "candidates": [substituted],
+    }
+
+    reasons = validate_selection_artifact_binding(
+        report=report,
+        selection_artifact=artifact,
+    )
+
+    assert "selection_artifact_compiled_contract_hash_mismatch" in reasons
+    assert "selection_artifact_candidate_universe_hash_mismatch" in reasons
+
+
+def test_selection_binding_uses_materialized_values_when_raw_values_are_empty() -> None:
+    payload = _manifest_payload()
+    payload["final_selection"] = _final_selection_payload()
+    manifest = parse_manifest(payload)
+    candidate = _selection_candidate("candidate-a", 10.0, 1.0)
+    candidate["parameter_values_raw"] = {}
+    selection = apply_final_selection_contract(
+        contract=manifest.final_selection,
+        candidates=[candidate],
+        report_context={"dataset_quality_gate_status": "PASS"},
+        validation_required=False,
+    )
+    artifact = build_selection_artifact(
+        manifest_hash=manifest.manifest_hash(),
+        selection_result=selection,
+        candidates=[candidate],
+    )
+    assert artifact is not None
+    report = {
+        "manifest_hash": manifest.manifest_hash(),
+        "selected_candidate_id": "candidate-a",
+        "final_selection_contract_hash": selection["final_selection_contract_hash"],
+        "candidate_final_scores": selection["candidate_final_scores"],
+        "candidate_final_scores_hash": selection["candidate_final_scores_hash"],
+        "candidates": [candidate],
+    }
+
+    assert validate_selection_artifact_binding(
+        report=report,
+        selection_artifact=artifact,
+    ) == []
+
+
+def test_selection_binding_ignores_nested_confirmatory_holdout_fields() -> None:
+    payload = _manifest_payload()
+    payload["final_selection"] = _final_selection_payload()
+    manifest = parse_manifest(payload)
+    candidate = _selection_candidate("candidate-a", 10.0, 1.0)
+    candidate["validation_stress_suite"] = {
+        "gate_result": "PASS",
+        "scenarios": [
+            {
+                "scenario_id": "parameter-perturbation",
+                "validation_metrics": {"return_pct": 1.0},
+                "final_holdout_metrics": {"return_pct": 999.0},
+            }
+        ],
+    }
+    selection = apply_final_selection_contract(
+        contract=manifest.final_selection,
+        candidates=[candidate],
+        report_context={"dataset_quality_gate_status": "PASS"},
+        validation_required=False,
+    )
+    artifact = build_selection_artifact(
+        manifest_hash=manifest.manifest_hash(),
+        selection_result=selection,
+        candidates=[candidate],
+    )
+    assert artifact is not None
+
+    persisted = copy.deepcopy(candidate)
+    del persisted["validation_stress_suite"]["scenarios"][0][
+        "final_holdout_metrics"
+    ]
+    report = {
+        "manifest_hash": manifest.manifest_hash(),
+        "selected_candidate_id": "candidate-a",
+        "final_selection_contract_hash": selection[
+            "final_selection_contract_hash"
+        ],
+        "candidate_final_scores": selection["candidate_final_scores"],
+        "candidate_final_scores_hash": selection["candidate_final_scores_hash"],
+        "candidates": [persisted],
+    }
+
+    assert validate_selection_artifact_binding(
+        report=report,
+        selection_artifact=artifact,
+    ) == []
+
+
+def test_compact_report_preserves_complete_final_selection_input() -> None:
+    payload = _manifest_payload()
+    final_selection = _final_selection_payload(
+        metric="validation.stress.parameter_perturbation.return_retention_pct"
+    )
+    final_selection["must_pass"] = {
+        "dataset_quality_gate_status": "PASS",
+        "statistical_gate_result": "PASS",
+        "stress_suite_gate_result": "PASS",
+        "execution_calibration_policy_result": "PASS",
+        "metrics_schema_version": 2,
+    }
+    payload["final_selection"] = final_selection
+    manifest = parse_manifest(payload)
+    candidate = _selection_candidate("candidate-a", 10.0, 1.0)
+    candidate.update(
+        {
+            "statistical_gate_result": "PASS",
+            "stress_suite_gate_result": "PASS",
+            "execution_calibration_policy_result": {"status": "PASS"},
+            "metrics_schema_version": 2,
+            "validation_stress_suite": {
+                "parameter_perturbation": {"return_retention_pct": 91.0},
+                "unrelated_large_diagnostic": {"values": list(range(100))},
+            },
+        }
+    )
+    context = {
+        "dataset_quality_gate_status": "PASS",
+        "statistical_gate_result": "PASS",
+        "stress_suite_gate_result": "PASS",
+    }
+    original = apply_final_selection_contract(
+        contract=manifest.final_selection,
+        candidates=[candidate],
+        report_context=context,
+        validation_required=False,
+    )
+    compact = summarize_report_candidate(
+        candidate,
+        final_selection_contract=manifest.final_selection.as_dict(),
+    )
+    reconstructed = apply_final_selection_contract(
+        contract=manifest.final_selection,
+        candidates=[compact],
+        report_context=context,
+        validation_required=False,
+    )
+
+    assert reconstructed == original
+    assert compact["final_selection_input"]["validation_stress_suite"] == {
+        "parameter_perturbation": {"return_retention_pct": 91.0}
+    }
 
 
 def test_manifest_uses_research_classification_and_validation_contract_names() -> None:

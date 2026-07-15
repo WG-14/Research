@@ -3,14 +3,51 @@ import copy
 import pytest
 
 from market_research.research.hashing import report_content_hash_payload, sha256_prefixed
+from market_research.research.final_selection import compute_final_holdout_result_hash
 from market_research.research.strategy_package import StrategyPackageError, build_strategy_research_package
 from tests.test_strategy_research_package import _approval, _result
+from tests.test_run_lifecycle import _context
 from market_research.research_composition import builtin_strategy_registry
 from market_research.research.strategy_compiler import StrategyCompiler
 
 
 def _rehash(report):
     report["content_hash"] = sha256_prefixed(report_content_hash_payload(report))
+
+
+def _bind_selection_to_candidate(report):
+    candidate = report["candidates"][0]
+    selection = report["selection_artifact"]
+    selection["parameter_values_hash"] = sha256_prefixed(
+        candidate.get("parameter_values_raw") or candidate.get("parameter_values") or {}
+    )
+    selection["effective_strategy_parameters_hash"] = candidate[
+        "effective_strategy_parameters_hash"
+    ]
+    selection["compiled_strategy_contract_hash"] = candidate[
+        "compiled_strategy_contract_hash"
+    ]
+    selection_material = {
+        key: value for key, value in selection.items() if key != "content_hash"
+    }
+    selection["content_hash"] = sha256_prefixed(
+        selection_material, label="selection_artifact"
+    )
+    confirmation = report["final_holdout_confirmation"]
+    confirmation["selection_artifact_hash"] = selection["content_hash"]
+    confirmation["candidate_results"][0]["compiled_strategy_contract_hash"] = (
+        candidate["compiled_strategy_contract_hash"]
+    )
+    confirmation["final_holdout_result_hash"] = compute_final_holdout_result_hash(
+        confirmation
+    )
+    confirmation_material = {
+        key: value for key, value in confirmation.items() if key != "content_hash"
+    }
+    confirmation["content_hash"] = sha256_prefixed(
+        confirmation_material, label="final_holdout_confirmation"
+    )
+    _rehash(report)
 
 
 def test_metrics_hash_mismatch_is_rejected(monkeypatch):
@@ -58,6 +95,8 @@ def test_package_uses_primary_scenario_compiled_contract(monkeypatch, tmp_path):
     evidence = candidate["execution_evidence"]
     candidate.update({"primary_scenario_id": "stress", "compiled_strategy_contract": stress,
         "compiled_strategy_contract_hash": stress["compiled_contract_hash"],
+        "parameter_values": {"SMA_SHORT": 1, "SMA_LONG": 2},
+        "parameter_values_raw": {"SMA_SHORT": 1, "SMA_LONG": 2},
         "strategy_registry_hash": stress["strategy_registry_hash"],
         "strategy_plugin_contract_hash": stress["strategy_plugin_contract_hash"],
         "capability_contract": stress["capability_contract"],
@@ -67,14 +106,50 @@ def test_package_uses_primary_scenario_compiled_contract(monkeypatch, tmp_path):
         "strategy_spec": strategy_spec, "strategy_spec_hash": sha256_prefixed(strategy_spec)})
     report["strategy_spec"] = strategy_spec
     report["strategy_spec_hash"] = sha256_prefixed(strategy_spec)
+    semantic_evidence = {
+        key: value
+        for key, value in candidate["scenario_results"][0].items()
+        if key in {
+            "execution_timing_policy",
+            "execution_model",
+            "cost_assumption",
+            "execution_reality_contract",
+            "portfolio_policy",
+        }
+    }
     candidate["scenario_results"] = [
         {"scenario_id": "base", "compiled_strategy_contract": base,
          "compiled_strategy_contract_hash": base["compiled_contract_hash"], "execution_evidence": evidence,
-         "validation_metrics": {"return_pct": 1.0}},
+         "validation_metrics": {"return_pct": 1.0}, **semantic_evidence},
         {"scenario_id": "stress", "compiled_strategy_contract": stress,
          "compiled_strategy_contract_hash": stress["compiled_contract_hash"], "execution_evidence": evidence,
-         "validation_metrics": {"return_pct": 0.5}},
+         "validation_metrics": {"return_pct": 0.5}, **semantic_evidence},
     ]
-    _rehash(report)
-    package = build_strategy_research_package(report, approval=_approval(report, tmp_path))
+    _bind_selection_to_candidate(report)
+    package = build_strategy_research_package(
+        report,
+        approval=_approval(report, tmp_path),
+        manager=_context(tmp_path).paths,
+    )
     assert package["compiled_strategy_contract_hash"] == stress["compiled_contract_hash"]
+
+
+def test_package_rejects_primary_contract_not_frozen_by_selection(monkeypatch):
+    monkeypatch.setattr("market_research.research.strategy_package.validate_final_selection_report", lambda report: [])
+    report = copy.deepcopy(_result())
+    changed = StrategyCompiler(builtin_strategy_registry()).compile(
+        strategy_name="sma_with_filter",
+        raw_parameters={"SMA_SHORT": 1, "SMA_LONG": 2},
+        fee_rate=.001,
+        slippage_bps=10,
+    ).as_dict()
+    primary = report["candidates"][0]["scenario_results"][0]
+    primary["compiled_strategy_contract"] = changed
+    primary["compiled_strategy_contract_hash"] = changed["compiled_contract_hash"]
+    _rehash(report)
+
+    with pytest.raises(
+        StrategyPackageError,
+        match="selection_artifact_primary_scenario_compiled_contract_hash_mismatch",
+    ):
+        build_strategy_research_package(report)

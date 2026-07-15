@@ -89,6 +89,9 @@ def test_research_settings_default_to_external_roots_without_creating_outputs(mo
     assert settings.db_path is None
     assert paths.data_root == tmp_path / "state" / "market-research" / "datasets"
     assert paths.artifact_path("derived", "candidate.json") == settings.artifact_root / "derived" / "candidate.json"
+    assert paths.research_artifact_path("experiment-1", "candidate.json") == (
+        settings.artifact_root / "derived" / "research" / "experiment-1" / "candidate.json"
+    )
     assert paths.report_path("research", "summary.json") == settings.report_root / "research" / "summary.json"
     assert not settings.data_root.exists()
 

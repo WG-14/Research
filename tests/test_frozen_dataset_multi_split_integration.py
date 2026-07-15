@@ -13,7 +13,14 @@ import pytest
 from market_research.paths import ResearchPathManager
 from market_research.settings import ResearchSettings
 from market_research.research.dataset_freeze import freeze_sqlite_candles_dataset
-from market_research.research.final_selection import apply_final_selection_contract, build_selection_artifact
+from market_research.research.experiment_registry import validate_experiment_registry_binding
+from market_research.research.final_selection import (
+    apply_final_selection_contract,
+    build_selection_artifact,
+    validate_confirmation_artifact,
+    validate_final_selection_report,
+)
+from market_research.research.hashing import report_content_hash_payload, sha256_prefixed
 from market_research.research_composition import parse_builtin_manifest as parse_manifest
 from market_research.research.validation_protocol import (
     ResearchValidationError,
@@ -149,6 +156,25 @@ def test_final_holdout_confirmation_executes_only_receipt_candidate(tmp_path, mo
         report_context={"dataset_quality_gate_status": "PASS"},
         validation_required=False,
     )
+    report.update(
+        {
+            "final_selection_contract": selection["final_selection_contract"],
+            "final_selection_contract_hash": selection[
+                "final_selection_contract_hash"
+            ],
+            "final_selection_gate_result": selection["gate_result"],
+            "final_selection_fail_reasons": selection["fail_reasons"],
+            "selected_candidate_id": selection["selected_candidate_id"],
+            "best_candidate_id": selection["selected_candidate_id"],
+            "selected_candidate_score_hash": selection[
+                "selected_candidate_score_hash"
+            ],
+            "candidate_final_scores_hash": selection[
+                "candidate_final_scores_hash"
+            ],
+            "candidate_final_scores": selection["candidate_final_scores"],
+        }
+    )
     report["selection_artifact"] = build_selection_artifact(
         manifest_hash=manifest.manifest_hash(),
         selection_result=selection,
@@ -167,6 +193,50 @@ def test_final_holdout_confirmation_executes_only_receipt_candidate(tmp_path, mo
     assert len(confirmation["candidate_results"]) == 1
     assert confirmation["candidate_results"][0]["candidate_id"] == report["selection_artifact"]["selected_candidate_id"]
     assert confirmation["selection_artifact_hash"] == report["selection_artifact_hash"]
+    assert confirmation["experiment_registry_row_hash"] == confirmation["authorization_row_hash"]
+    assert (
+        confirmation["experiment_registry_completion_row_hash"]
+        == confirmation["completion_row_hash"]
+    )
+    assert validate_confirmation_artifact(
+        confirmation,
+        selection_artifact=report["selection_artifact"],
+    ) == []
+    assert validate_experiment_registry_binding(
+        report=confirmation,
+        require_complete=True,
+    ) == []
+    assert confirmation["declared_attempt_index"] is None
+    assert confirmation["computed_attempt_index"] == 1
+    assert confirmation["declared_holdout_reuse_count"] is None
+    assert confirmation["computed_holdout_reuse_count"] == 0
+    assert confirmation["selection_attempt_index"] == 1
+    assert confirmation["selection_holdout_reuse_count"] == 0
+
+    changed_confirmation = {
+        **confirmation,
+        "candidate_results": [
+            {
+                **confirmation["candidate_results"][0],
+                "compiled_strategy_contract_hash": "sha256:" + "f" * 64,
+            }
+        ],
+    }
+    changed_material = {
+        key: value
+        for key, value in changed_confirmation.items()
+        if key not in {"content_hash", "confirmation_artifact_path"}
+    }
+    changed_confirmation["content_hash"] = sha256_prefixed(
+        changed_material,
+        label="final_holdout_confirmation",
+    )
+    assert "final_holdout_confirmation_compiled_contract_hash_mismatch" in (
+        validate_confirmation_artifact(
+            changed_confirmation,
+            selection_artifact=report["selection_artifact"],
+        )
+    )
 
     monkeypatch.setattr(
         "market_research.research.validation_protocol.load_dataset_split",
@@ -230,6 +300,25 @@ def test_research_validate_executes_final_holdout_exactly_once(tmp_path, monkeyp
         report_context={"dataset_quality_gate_status": "PASS"},
         validation_required=False,
     )
+    selection_report.update(
+        {
+            "final_selection_contract": selection["final_selection_contract"],
+            "final_selection_contract_hash": selection[
+                "final_selection_contract_hash"
+            ],
+            "final_selection_gate_result": selection["gate_result"],
+            "final_selection_fail_reasons": selection["fail_reasons"],
+            "selected_candidate_id": selection["selected_candidate_id"],
+            "best_candidate_id": selection["selected_candidate_id"],
+            "selected_candidate_score_hash": selection[
+                "selected_candidate_score_hash"
+            ],
+            "candidate_final_scores_hash": selection[
+                "candidate_final_scores_hash"
+            ],
+            "candidate_final_scores": selection["candidate_final_scores"],
+        }
+    )
     selection_report["selection_artifact"] = build_selection_artifact(
         manifest_hash=manifest.manifest_hash(),
         selection_result=selection,
@@ -262,6 +351,19 @@ def test_research_validate_executes_final_holdout_exactly_once(tmp_path, monkeyp
 
     assert calls == [selection_report["selection_artifact"]["selected_candidate_id"]]
     assert summary["final_holdout_confirmation"]["candidate_results"][0]["candidate_id"] == calls[0]
+    assert summary["schema_version"] == 3
+    assert summary["artifact_type"] == "validated_research_result"
+    assert summary["final_selection_contract"] == selection_report[
+        "final_selection_contract"
+    ]
+    assert summary["content_hash"] == sha256_prefixed(
+        report_content_hash_payload(summary)
+    )
+    assert validate_final_selection_report(summary) == []
+    validation_path = manager.report_path(
+        "research", manifest.experiment_id, "validation_summary.json"
+    )
+    assert json.loads(validation_path.read_text(encoding="utf-8")) == summary
     report_path = manager.report_path("research", manifest.experiment_id, "research_candidate_report.json")
     assert report_path.is_file()
     decision_report = json.loads(report_path.read_text(encoding="utf-8"))

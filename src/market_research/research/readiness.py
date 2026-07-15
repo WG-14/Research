@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 def build_research_readiness_report(
     *,
     manifest_path: str | Path,
-    db_path: str | Path,
+    db_path: str | Path | None,
     execution_calibration_path: str | Path | None = None,
     progress_callback: Any | None = None,
     mode: str = "research",
@@ -31,21 +31,32 @@ def build_research_readiness_report(
 ) -> dict[str, Any]:
     resolved_manifest_path = Path(manifest_path).expanduser().resolve()
     manifest = load_manifest_with_registry(resolved_manifest_path, registry=strategy_registry)
-    resolved_db_path = Path(db_path).expanduser().resolve()
+    resolved_db_path = (
+        Path(db_path).expanduser().resolve() if db_path is not None else None
+    )
     env_summary = environment_summary or {
         "settings_source": "RESEARCH_*",
-        "db_path_configured": True,
+        "db_path_configured": resolved_db_path is not None,
     }
 
     split_reports: dict[str, dict[str, Any]] = {}
     failed = False
     registry = default_dataset_adapter_registry()
     adapter = registry.resolve(manifest.dataset.source)
+    if bool(getattr(adapter, "requires_runtime_db", False)) and resolved_db_path is None:
+        raise ValueError(
+            f"runtime_context_missing:{manifest.dataset.source}:requires_runtime_db"
+        )
     if manifest.dataset.top_of_book is not None:
         registry.resolve_top_of_book(manifest.dataset.top_of_book.source)
     for split_name in split_names(manifest):
         if progress_callback is not None:
-            method = "sqlite_streaming" if getattr(adapter, "supports_sqlite_streaming_quality_scan", False) else "adapter_snapshot"
+            method = (
+                "sqlite_streaming"
+                if bool(getattr(adapter, "requires_runtime_db", False))
+                and getattr(adapter, "supports_sqlite_streaming_quality_scan", False)
+                else "adapter_snapshot"
+            )
             progress_callback(split_name, method)
         report = _adapter_quality_report(
             adapter=adapter,
@@ -83,14 +94,15 @@ def build_research_readiness_report(
         "manifest_path": str(resolved_manifest_path),
         "manifest_hash": manifest.manifest_hash(),
         "mode": mode,
-        "db_path": str(resolved_db_path),
+        "db_path": str(resolved_db_path) if resolved_db_path is not None else None,
         "dataset_adapter": {
             "dataset_source": manifest.dataset.source,
             "adapter_name": adapter.adapter_name,
             "adapter_version": adapter.adapter_version,
             "quality_backend": (
                 "sqlite_streaming"
-                if getattr(adapter, "supports_sqlite_streaming_quality_scan", False)
+                if bool(getattr(adapter, "requires_runtime_db", False))
+                and getattr(adapter, "supports_sqlite_streaming_quality_scan", False)
                 else "adapter_snapshot"
             ),
         },
@@ -129,7 +141,7 @@ def cmd_research_readiness(
         strategy_registry = builtin_strategy_registry()
         report = build_research_readiness_report(
             manifest_path=manifest_path,
-            db_path=context.paths.require_database_path(),
+            db_path=context.paths.db_path,
             execution_calibration_path=execution_calibration_path,
             strategy_registry=strategy_registry,
             environment_summary=(context.environment.as_dict() if context.environment is not None else None),
@@ -154,9 +166,16 @@ def _adapter_quality_report(
     adapter: Any,
     manifest: ExperimentManifest,
     split_name: str,
-    db_path: Path,
+    db_path: Path | None,
 ) -> Any:
-    if getattr(adapter, "supports_sqlite_streaming_quality_scan", False):
+    if (
+        bool(getattr(adapter, "requires_runtime_db", False))
+        and getattr(adapter, "supports_sqlite_streaming_quality_scan", False)
+    ):
+        if db_path is None:
+            raise ValueError(
+                f"runtime_context_missing:{manifest.dataset.source}:requires_runtime_db"
+            )
         return build_dataset_quality_report_sql(
             db_path=db_path,
             manifest=manifest,

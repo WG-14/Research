@@ -9,19 +9,28 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+from market_research.paths import ResearchPathManager
 from market_research.storage_io import write_json_atomic
 
 from .experiment_manifest import ExperimentManifest
-from .final_selection import validate_selection_artifact
-from .hashing import content_hash_payload, sha256_prefixed
+from .experiment_registry import (
+    experiment_registry_path,
+    research_identity_from_manifest,
+    validate_experiment_registry_binding,
+)
+from .final_selection import (
+    validate_confirmation_artifact,
+    validate_selection_artifact_binding,
+)
+from .hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
 from .validation_protocol import (
     run_final_holdout_confirmation,
     run_research_backtest,
     run_research_walk_forward,
 )
 from .strategy_registry import StrategyRegistry
-from .experiment_registry import research_identity_from_manifest
 from .research_decision_report import build_research_decision_report
+from .research_classification import requires_candidate_validation
 
 
 class ValidationRunError(ValueError):
@@ -41,6 +50,87 @@ VALIDATION_STAGE_ORDER = (
 )
 
 
+def validate_validated_research_result(report: object) -> list[str]:
+    """Validate the terminal schema-3 result used for approval and packaging."""
+
+    if not isinstance(report, dict):
+        return ["validated_research_result_must_be_object"]
+    reasons: list[str] = []
+    if (
+        report.get("schema_version") != 3
+        or report.get("artifact_type") != "validated_research_result"
+    ):
+        reasons.append("validated_research_result_contract_invalid")
+    try:
+        validation_bound = requires_candidate_validation(
+            report.get("research_classification")
+        )
+    except ValueError:
+        validation_bound = False
+    if not validation_bound:
+        reasons.append("validated_research_result_classification_invalid")
+    if report.get("end_to_end_validation_result") != "PASS":
+        reasons.append("validated_research_result_terminal_gate_not_passed")
+    blocking = report.get("validation_blocking_reasons")
+    if not isinstance(blocking, list) or blocking:
+        reasons.append("validated_research_result_blocking_reasons_present")
+
+    stages = report.get("validation_stages")
+    if not isinstance(stages, list) or not all(
+        isinstance(stage, dict) for stage in stages
+    ):
+        reasons.append("validated_research_result_stages_invalid")
+        stage_status: dict[str, str] = {}
+    else:
+        names = [str(stage.get("name") or "") for stage in stages]
+        if names != list(VALIDATION_STAGE_ORDER) or len(set(names)) != len(names):
+            reasons.append("validated_research_result_stages_invalid")
+        stage_status = {
+            str(stage.get("name") or ""): str(stage.get("status") or "")
+            for stage in stages
+        }
+    for name in (
+        "readiness",
+        "dataset_quality",
+        "final_holdout",
+        "stress_suite",
+        "statistical_validation",
+        "final_selection",
+        "research_candidate_report",
+    ):
+        if stage_status.get(name) != "PASS":
+            reasons.append(f"validated_research_result_stage_not_passed:{name}")
+    backtest = stage_status.get("backtest")
+    walk_forward = stage_status.get("walk_forward")
+    if (backtest, walk_forward) not in {
+        ("PASS", "NOT_REQUIRED"),
+        ("NOT_RUN", "PASS"),
+    }:
+        reasons.append("validated_research_result_execution_stage_invalid")
+    for field in (
+        "dataset_quality_gate_status",
+        "stress_suite_gate_result",
+        "statistical_gate_result",
+        "final_selection_gate_result",
+        "validation_eligibility_gate_result",
+        "gate_result",
+    ):
+        if report.get(field) != "PASS":
+            reasons.append(f"validated_research_result_gate_not_passed:{field}")
+    confirmation = report.get("final_holdout_confirmation")
+    if not isinstance(confirmation, dict) or confirmation.get(
+        "confirmation_gate_result"
+    ) != "PASS":
+        reasons.append("validated_research_result_confirmation_not_passed")
+    selected_id = str(report.get("selected_candidate_id") or "")
+    selected = report.get("selected_candidate")
+    if not selected_id or not isinstance(selected, dict) or str(
+        selected.get("parameter_candidate_id") or selected.get("candidate_id") or ""
+    ) != selected_id:
+        reasons.append("validated_research_result_selected_candidate_mismatch")
+    return sorted(set(reasons))
+
+
 def validation_next_action_payload(reasons: Any) -> dict[str, str]:
     del reasons
     return {"next_required_action": "inspect_research_validation_summary", "recommended_command": "research-validate"}
@@ -53,6 +143,7 @@ def aggregate_validation_gates(
     selection_artifact: dict[str, Any] | None,
     selected_candidate: dict[str, Any] | None,
     final_holdout_confirmation: dict[str, Any] | None,
+    manager: ResearchPathManager | None = None,
 ) -> tuple[str, dict[str, str], list[str]]:
     """Derive the terminal result from the authoritative stage evidence."""
     walk_forward_required = bool(manifest.acceptance_gate.walk_forward_required)
@@ -67,7 +158,11 @@ def aggregate_validation_gates(
 
     reasons: list[str] = []
     artifact_reasons = (
-        validate_selection_artifact(selection_artifact)
+        validate_selection_artifact_binding(
+            report=selection_report,
+            selection_artifact=selection_artifact,
+            selected_candidate=selected_candidate,
+        )
         if isinstance(selection_artifact, dict)
         else ["selection_artifact_missing"]
     )
@@ -108,10 +203,37 @@ def aggregate_validation_gates(
             reasons.append("final_holdout_confirmation_missing")
             final_holdout_status = "INSUFFICIENT_EVIDENCE"
         else:
-            final_holdout_status = str(final_holdout_confirmation.get("confirmation_gate_result") or "")
+            confirmation_reasons = validate_confirmation_artifact(
+                final_holdout_confirmation,
+                selection_artifact=selection_artifact or {},
+            )
+            confirmation_reasons.extend(
+                validate_experiment_registry_binding(
+                    report=final_holdout_confirmation,
+                    require_complete=True,
+                    expected_registry_path=(
+                        experiment_registry_path(manager=manager)
+                        if manager is not None
+                        else None
+                    ),
+                )
+            )
+            if confirmation_reasons:
+                reasons.extend(confirmation_reasons)
+                reasons.append("final_holdout_confirmation_invalid")
+                final_holdout_status = "FAIL"
+            else:
+                final_holdout_status = str(
+                    final_holdout_confirmation.get("confirmation_gate_result") or ""
+                )
             if final_holdout_status != "PASS":
                 reasons.extend(
-                    str(item) for item in final_holdout_confirmation.get("confirmation_gate_reasons") or []
+                    str(item)
+                    for item in (
+                        final_holdout_confirmation.get("confirmation_gate_fail_reasons")
+                        or final_holdout_confirmation.get("confirmation_gate_reasons")
+                        or []
+                    )
                 )
                 reasons.append("final_holdout_confirmation_not_passed")
     else:
@@ -212,6 +334,7 @@ def run_research_validation(
         selection_artifact=artifact if isinstance(artifact, dict) else None,
         selected_candidate=selected,
         final_holdout_confirmation=confirmation,
+        manager=manager,
     )
     stages = [
         {"name": name, "status": stage_status.get(name, "INSUFFICIENT_EVIDENCE")}
@@ -227,8 +350,18 @@ def run_research_validation(
         "content_hash": sha256_prefixed(reproduction_binding_material, label="selection_confirmation_reproduction"),
     }
     hypothesis_identity = research_identity_from_manifest(manifest)
+    # The validation summary is the canonical approval/package input.  Preserve
+    # the complete authoritative selection report and extend it with terminal
+    # validation and holdout evidence instead of emitting a lossy parallel
+    # schema that cannot be independently verified by downstream consumers.
     summary = {
-        "schema_version": 2,
+        **{
+            key: value
+            for key, value in selection_report.items()
+            if key != "content_hash"
+        },
+        "schema_version": 3,
+        "artifact_type": "validated_research_result",
         "experiment_id": manifest.experiment_id,
         "run_id": run_id,
         "manifest_hash": manifest.manifest_hash(),
@@ -279,7 +412,6 @@ def run_research_validation(
         run_id=run_id,
     )
     summary["research_candidate_report_hash"] = decision_report["content_hash"]
-    summary["content_hash"] = sha256_prefixed(content_hash_payload(summary))
     report_root = manager.report_path("research", manifest.experiment_id)
     target = (
         manager.external_output_path(out_path, label="research validation output")
@@ -287,10 +419,13 @@ def run_research_validation(
     )
     candidate_target = report_root / "research_candidate_report.json"
     selected_target = report_root / "selected_candidate.json"
+    summary["validation_run_path"] = str(target.resolve())
+    summary["research_candidate_report_path"] = str(candidate_target.resolve())
+    summary["selected_candidate_path"] = str(selected_target.resolve())
+    summary["content_hash"] = sha256_prefixed(
+        report_content_hash_payload(summary)
+    )
     write_json_atomic(target, summary)
     write_json_atomic(candidate_target, decision_report)
     write_json_atomic(selected_target, selected or {})
-    summary["validation_run_path"] = str(target)
-    summary["research_candidate_report_path"] = str(candidate_target)
-    summary["selected_candidate_path"] = str(selected_target)
     return summary

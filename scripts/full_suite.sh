@@ -30,8 +30,9 @@ RESEARCH_DATA_ROOT="${run_root}/datasets"
 RESEARCH_ARTIFACT_ROOT="${run_root}/artifacts"
 RESEARCH_REPORT_ROOT="${run_root}/reports"
 RESEARCH_CACHE_ROOT="${run_root}/cache"
+PYTEST_TMP_ROOT="${run_root}/tmp"
 mkdir -p "${RESEARCH_DATA_ROOT}" "${RESEARCH_ARTIFACT_ROOT}" \
-  "${RESEARCH_REPORT_ROOT}" "${RESEARCH_CACHE_ROOT}"
+  "${RESEARCH_REPORT_ROOT}" "${RESEARCH_CACHE_ROOT}" "${PYTEST_TMP_ROOT}"
 
 log_file="${LOG_DIR}/full_suite_${timestamp}_iter${ITERATION}.log"
 latest_log_file="${WORK_DIR}/latest_full_suite_log"
@@ -66,6 +67,7 @@ run_stage() {
   echo "[FULL-SUITE] research_artifact_root=${RESEARCH_ARTIFACT_ROOT}"
   echo "[FULL-SUITE] research_report_root=${RESEARCH_REPORT_ROOT}"
   echo "[FULL-SUITE] research_cache_root=${RESEARCH_CACHE_ROOT}"
+  echo "[FULL-SUITE] pytest_tmp_root=${PYTEST_TMP_ROOT}"
   echo "[FULL-SUITE] log_file=${log_file}"
   echo
 } | tee "${log_file}"
@@ -76,6 +78,9 @@ research_env=(
   "RESEARCH_ARTIFACT_ROOT=${RESEARCH_ARTIFACT_ROOT}"
   "RESEARCH_REPORT_ROOT=${RESEARCH_REPORT_ROOT}"
   "RESEARCH_CACHE_ROOT=${RESEARCH_CACHE_ROOT}"
+  "TMPDIR=${PYTEST_TMP_ROOT}"
+  "TEMP=${PYTEST_TMP_ROOT}"
+  "TMP=${PYTEST_TMP_ROOT}"
 )
 
 run_stage "compile" "${research_env[@]}" uv run python -m compileall -q src/market_research

@@ -8,6 +8,7 @@ results to the portfolio ledger.
 from __future__ import annotations
 
 from dataclasses import replace
+import math
 from typing import Any
 
 from .backtest_common import execution_event_summary
@@ -45,7 +46,8 @@ class ExecutionTimelineError(ValueError):
 
 
 def _validate_runtime_intent(*, intent: OrderIntent, compiled: CompiledStrategyContract,
-                             has_position: bool, pending_buy: bool) -> None:
+                             has_position: bool, available_position_qty: float,
+                             pending_buy: bool) -> None:
     capability = compiled.capability_contract
     if intent.side not in {"BUY", "SELL"}:
         raise ValueError("strategy_capability_direction_rejected")
@@ -62,10 +64,12 @@ def _validate_runtime_intent(*, intent: OrderIntent, compiled: CompiledStrategyC
                 raise ValueError("strategy_capability_partial_or_ambiguous_exit_rejected")
         elif intent.sizing not in {IntentSizing.FULL_POSITION, IntentSizing.EXPLICIT_QUANTITY}:
             raise ValueError("strategy_capability_sell_sizing_rejected")
-        elif intent.sizing is IntentSizing.EXPLICIT_QUANTITY and (
-            intent.requested_qty is None or float(intent.requested_qty) <= 0.0
-        ):
-            raise ValueError("strategy_capability_partial_exit_quantity_invalid")
+        elif intent.sizing is IntentSizing.EXPLICIT_QUANTITY:
+            requested_qty = float(intent.requested_qty or 0.0)
+            if not math.isfinite(requested_qty) or requested_qty <= 0.0:
+                raise ValueError("strategy_capability_partial_exit_quantity_invalid")
+            if requested_qty > float(available_position_qty) + 1e-12:
+                raise ValueError("strategy_capability_partial_exit_quantity_exceeds_position")
 
 
 def _stream_hash(values: tuple[object, ...]) -> str:
@@ -363,7 +367,9 @@ def _run_common_simulation_backtest(
             raise ValueError("intent_decision_lineage_mismatch")
         if intent is not None:
             _validate_runtime_intent(intent=intent, compiled=compiled,
-                                     has_position=ledger.asset_qty > 0, pending_buy=pending_buy)
+                                     has_position=ledger.asset_qty > 0,
+                                     available_position_qty=ledger.asset_qty,
+                                     pending_buy=pending_buy)
             if intent.side == "SELL":
                 event_key = (decision_id, int(event.decision_ts))
                 if event_key in sell_event_keys:

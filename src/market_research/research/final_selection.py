@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import math
 from typing import Any
 
@@ -8,7 +9,12 @@ from .hashing import sha256_prefixed
 
 
 FINAL_SELECTION_SCHEMA_VERSION = 2
-SELECTION_ARTIFACT_SCHEMA_VERSION = 1
+SELECTION_ARTIFACT_SCHEMA_VERSION = 2
+FINAL_HOLDOUT_CONFIRMATION_SCHEMA_VERSION = 2
+FINAL_HOLDOUT_RESULT_HASH_SCHEMA_VERSION = 1
+SELECTION_UNIVERSE_HASH_SEMANTICS = (
+    "candidate_identity_contract_and_final_score_hashes_v1"
+)
 LEGACY_IMPLICIT_FINAL_RANK_WARNING = "legacy_implicit_final_rank_policy_v1"
 
 
@@ -45,7 +51,14 @@ def apply_final_selection_contract(
         }
 
     contract_hash = sha256_prefixed(contract_payload)
-    candidate_ids = [str(candidate.get("parameter_candidate_id") or "") for candidate in candidates]
+    selection_inputs = [
+        final_selection_candidate_input(candidate, contract_payload)
+        for candidate in candidates
+    ]
+    candidate_ids = [
+        str(candidate.get("parameter_candidate_id") or "")
+        for candidate in selection_inputs
+    ]
     duplicate_ids = sorted({candidate_id for candidate_id in candidate_ids if candidate_ids.count(candidate_id) > 1})
     if duplicate_ids:
         return {
@@ -68,7 +81,7 @@ def apply_final_selection_contract(
             candidate=candidate,
             report_context=report_context,
         )
-        for candidate in candidates
+        for candidate in selection_inputs
     ]
     eligible = [item for item in scored if item["eligible"]]
     selected: dict[str, Any] | None = None
@@ -120,6 +133,247 @@ def apply_final_selection_contract(
     }
 
 
+def final_selection_candidate_input(
+    candidate: dict[str, Any],
+    contract: FinalSelectionContract | dict[str, Any],
+) -> dict[str, Any]:
+    """Return the bounded candidate projection that can reproduce selection.
+
+    Compact persisted reports must carry every value that the selection
+    contract consumed, without retaining unrelated curves, streams, or later
+    confirmatory holdout evidence.
+    """
+
+    existing = candidate.get("final_selection_input")
+    if isinstance(existing, dict):
+        return copy.deepcopy(existing)
+    contract_payload = _contract_payload(contract) or {}
+    fixed_fields = (
+        "parameter_candidate_id",
+        "acceptance_gate_result",
+        "aggregate_acceptance_gate_result",
+        "primary_metric_source",
+        "primary_metric_source_semantics",
+        "primary_metric_scenario_role",
+        "primary_metric_scenario_id",
+        "aggregate_gate_source",
+        "candidate_failed_before_complete_metrics",
+        "evaluation_status",
+        "metrics_status",
+        "metrics_v2_source",
+        "statistical_gate_result",
+        "stress_suite_gate_result",
+        "execution_calibration_policy_result",
+        "metrics_schema_version",
+    )
+    projection = {
+        field: copy.deepcopy(candidate[field])
+        for field in fixed_fields
+        if field in candidate
+    }
+    status_fields = (
+        "metrics_status",
+        "metrics_v2_source",
+        "candidate_failed_before_complete_metrics",
+    )
+    for metrics_field in ("train_metrics_v2", "validation_metrics_v2"):
+        metrics = candidate.get(metrics_field)
+        if isinstance(metrics, dict):
+            compact = {
+                field: copy.deepcopy(metrics[field])
+                for field in status_fields
+                if field in metrics
+            }
+            if compact:
+                projection[metrics_field] = compact
+    for rule in contract_payload.get("ranking") or []:
+        if not isinstance(rule, dict):
+            continue
+        metric = str(rule.get("metric") or "")
+        if not metric or metric == "parameter_candidate_id":
+            continue
+        prefixes = (
+            ("validation.metrics_v2.", "validation_metrics_v2."),
+            ("validation.stress.", "validation_stress_suite."),
+            ("validation.benchmark.", "benchmark_metrics.validation."),
+        )
+        source_path = metric
+        target_path = metric
+        for prefix, replacement in prefixes:
+            if metric.startswith(prefix):
+                source_path = replacement + metric[len(prefix):]
+                target_path = source_path
+                break
+        _copy_nested_selection_value(
+            source=candidate,
+            source_path=source_path,
+            target=projection,
+            target_path=target_path,
+        )
+    return projection
+
+
+def _copy_nested_selection_value(
+    *, source: dict[str, Any], source_path: str,
+    target: dict[str, Any], target_path: str,
+) -> None:
+    source_parts = source_path.split(".")
+    value: Any = source
+    for part in source_parts:
+        if not isinstance(value, dict) or part not in value:
+            return
+        value = value[part]
+    target_parts = target_path.split(".")
+    cursor = target
+    for part in target_parts[:-1]:
+        existing = cursor.get(part)
+        if not isinstance(existing, dict):
+            existing = {}
+            cursor[part] = existing
+        cursor = existing
+    cursor[target_parts[-1]] = copy.deepcopy(value)
+
+
+def _selection_candidate_bindings(
+    *,
+    candidates: list[dict[str, Any]],
+    candidate_scores: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    scores_by_candidate_id = {
+        str(score.get("candidate_id") or ""): score for score in candidate_scores
+    }
+    candidate_ids = [
+        str(
+            candidate.get("parameter_candidate_id")
+            or candidate.get("candidate_id")
+            or ""
+        )
+        for candidate in candidates
+    ]
+    if (
+        any(not candidate_id for candidate_id in candidate_ids)
+        or len(set(candidate_ids)) != len(candidate_ids)
+        or len(scores_by_candidate_id) != len(candidate_scores)
+        or set(scores_by_candidate_id) != set(candidate_ids)
+    ):
+        raise ValueError("selection_result_candidate_score_universe_mismatch")
+    bindings: list[dict[str, Any]] = []
+    for candidate_id, candidate in sorted(
+        zip(candidate_ids, candidates, strict=True), key=lambda item: item[0]
+    ):
+        candidate_binding = selection_candidate_binding_summary(candidate)
+        bindings.append(
+            {
+                "candidate_id": candidate_id,
+                "parameter_values_hash": candidate_binding["parameter_values_hash"],
+                "effective_strategy_parameters_hash": candidate_binding[
+                    "effective_strategy_parameters_hash"
+                ],
+                "compiled_strategy_contract_hash": candidate_binding[
+                    "compiled_strategy_contract_hash"
+                ],
+                "selection_score_hash": scores_by_candidate_id[candidate_id].get(
+                    "score_hash"
+                ),
+            }
+        )
+    return bindings
+
+
+def _selection_validation_evidence_hash(
+    *, selected: dict[str, Any], selected_id: str
+) -> str:
+    # Selection evidence must never depend on confirmatory holdout fields.  The
+    # persisted candidate report removes those fields recursively, so use the
+    # same canonical view both before and after holdout execution.
+    selected_payload = _selection_only_payload(selected)
+    return sha256_prefixed(
+        {
+            "candidate_id": selected_id,
+            "validation_metrics": selected_payload.get("validation_metrics"),
+            "validation_metrics_v2": selected_payload.get("validation_metrics_v2"),
+            "validation_stress_suite": selected_payload.get("validation_stress_suite"),
+            "walk_forward_metrics": selected_payload.get("walk_forward_metrics"),
+            "acceptance_gate_result": selected_payload.get("acceptance_gate_result"),
+        }
+    )
+
+
+def _selection_parameter_values(candidate: dict[str, Any]) -> dict[str, Any]:
+    values = (
+        candidate.get("parameter_values_raw")
+        or candidate.get("parameter_values")
+        or {}
+    )
+    return dict(values) if isinstance(values, dict) else {}
+
+
+def _selection_only_payload(value: Any) -> Any:
+    """Canonicalize pre-holdout evidence by removing confirmatory fields."""
+
+    if isinstance(value, dict):
+        return {
+            key: _selection_only_payload(item)
+            for key, item in sorted(value.items())
+            if "final_holdout" not in str(key)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_selection_only_payload(item) for item in value]
+    return value
+
+
+def selection_candidate_binding_summary(
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the compact candidate evidence needed to verify selection later."""
+
+    existing = candidate.get("selection_binding")
+    if isinstance(existing, dict):
+        return dict(existing)
+    candidate_id = str(
+        candidate.get("parameter_candidate_id")
+        or candidate.get("candidate_id")
+        or ""
+    )
+    primary_id = str(candidate.get("primary_scenario_id") or "")
+    scenarios = candidate.get("scenario_results") or candidate.get("scenarios")
+    primary = (
+        next(
+            (
+                scenario
+                for scenario in scenarios
+                if isinstance(scenario, dict)
+                and str(scenario.get("scenario_id") or "") == primary_id
+            ),
+            None,
+        )
+        if primary_id and isinstance(scenarios, list)
+        else None
+    )
+    return {
+        "candidate_id": candidate_id,
+        "parameter_values_hash": sha256_prefixed(
+            _selection_parameter_values(candidate)
+        ),
+        "effective_strategy_parameters_hash": candidate.get(
+            "effective_strategy_parameters_hash"
+        ),
+        "compiled_strategy_contract_hash": candidate.get(
+            "compiled_strategy_contract_hash"
+        ),
+        "validation_evidence_hash": _selection_validation_evidence_hash(
+            selected=candidate,
+            selected_id=candidate_id,
+        ),
+        "primary_scenario_id": primary_id or None,
+        "primary_scenario_compiled_strategy_contract_hash": (
+            primary.get("compiled_strategy_contract_hash")
+            if isinstance(primary, dict)
+            else None
+        ),
+    }
+
+
 def build_selection_artifact(
     *,
     manifest_hash: str,
@@ -134,29 +388,36 @@ def build_selection_artifact(
     )
     if selected is None:
         return None
-    selection_candidates = [_selection_only_payload(candidate) for candidate in candidates]
-    selected_payload = _selection_only_payload(selected)
+    candidate_scores = selection_result.get("candidate_final_scores")
+    if not isinstance(candidate_scores, list) or not all(
+        isinstance(score, dict) for score in candidate_scores
+    ):
+        raise ValueError("selection_result_candidate_scores_missing")
+    candidate_scores_hash = sha256_prefixed(candidate_scores)
+    if candidate_scores_hash != selection_result.get("candidate_final_scores_hash"):
+        raise ValueError("selection_result_candidate_scores_hash_mismatch")
+    selection_candidates = _selection_candidate_bindings(
+        candidates=candidates,
+        candidate_scores=candidate_scores,
+    )
     material = {
         "schema_version": SELECTION_ARTIFACT_SCHEMA_VERSION,
         "artifact_type": "pre_holdout_candidate_selection",
         "manifest_hash": manifest_hash,
         "selected_candidate_id": selected_id,
-        "parameter_values_hash": sha256_prefixed(selected.get("parameter_values_raw") or selected.get("parameter_values") or {}),
+        "parameter_values_hash": sha256_prefixed(
+            _selection_parameter_values(selected)
+        ),
         "effective_strategy_parameters_hash": selected.get("effective_strategy_parameters_hash"),
         "compiled_strategy_contract_hash": selected.get("compiled_strategy_contract_hash"),
+        "selection_universe_hash_semantics": SELECTION_UNIVERSE_HASH_SEMANTICS,
         "selection_universe_hash": sha256_prefixed(selection_candidates),
-        "validation_evidence_hash": sha256_prefixed(
-            {
-                "candidate_id": selected_id,
-                "validation_metrics": selected_payload.get("validation_metrics"),
-                "validation_metrics_v2": selected_payload.get("validation_metrics_v2"),
-                "validation_stress_suite": selected_payload.get("validation_stress_suite"),
-                "walk_forward_metrics": selected_payload.get("walk_forward_metrics"),
-                "acceptance_gate_result": selected_payload.get("acceptance_gate_result"),
-            }
+        "validation_evidence_hash": _selection_validation_evidence_hash(
+            selected=selected,
+            selected_id=selected_id,
         ),
         "final_selection_contract_hash": selection_result.get("final_selection_contract_hash"),
-        "candidate_scores_hash": selection_result.get("candidate_final_scores_hash"),
+        "candidate_scores_hash": candidate_scores_hash,
     }
     return {**material, "content_hash": sha256_prefixed(material, label="selection_artifact")}
 
@@ -167,6 +428,8 @@ def validate_selection_artifact(artifact: dict[str, Any]) -> list[str]:
         reasons.append("selection_artifact_schema_version_unsupported")
     if artifact.get("artifact_type") != "pre_holdout_candidate_selection":
         reasons.append("selection_artifact_type_invalid")
+    if artifact.get("selection_universe_hash_semantics") != SELECTION_UNIVERSE_HASH_SEMANTICS:
+        reasons.append("selection_artifact_universe_hash_semantics_invalid")
     required_hashes = (
         "manifest_hash",
         "parameter_values_hash",
@@ -192,16 +455,176 @@ def validate_selection_artifact(artifact: dict[str, Any]) -> list[str]:
     return sorted(set(reasons))
 
 
+def validate_selection_artifact_binding(
+    *,
+    report: dict[str, Any],
+    selection_artifact: dict[str, Any],
+    selected_candidate: dict[str, Any] | None = None,
+) -> list[str]:
+    """Bind a self-valid selection receipt to its authoritative report candidate.
+
+    A content-valid receipt is insufficient on its own: a stale receipt and its
+    matching confirmation must not be combined with a different report or
+    compiled strategy contract.
+    """
+
+    reasons = validate_selection_artifact(selection_artifact)
+    embedded = report.get("selection_artifact")
+    if isinstance(embedded, dict) and embedded.get("content_hash") != selection_artifact.get(
+        "content_hash"
+    ):
+        reasons.append("report_selection_artifact_hash_mismatch")
+    report_artifact_hash = report.get("selection_artifact_hash")
+    if report_artifact_hash is not None and report_artifact_hash != selection_artifact.get(
+        "content_hash"
+    ):
+        reasons.append("report_selection_artifact_hash_mismatch")
+
+    for report_field, artifact_field, reason in (
+        ("manifest_hash", "manifest_hash", "selection_artifact_manifest_hash_mismatch"),
+        (
+            "selected_candidate_id",
+            "selected_candidate_id",
+            "selection_artifact_selected_candidate_mismatch",
+        ),
+        (
+            "final_selection_contract_hash",
+            "final_selection_contract_hash",
+            "selection_artifact_final_selection_contract_hash_mismatch",
+        ),
+        (
+            "candidate_final_scores_hash",
+            "candidate_scores_hash",
+            "selection_artifact_candidate_scores_hash_mismatch",
+        ),
+    ):
+        report_value = report.get(report_field)
+        if report_value is not None and report_value != selection_artifact.get(artifact_field):
+            reasons.append(reason)
+
+    selected_id = str(selection_artifact.get("selected_candidate_id") or "")
+    candidates = report.get("candidates")
+    candidate_rows = (
+        [item for item in candidates if isinstance(item, dict)]
+        if isinstance(candidates, list)
+        else []
+    )
+    selected = selected_candidate
+    if selected is not None:
+        provided_id = str(
+            selected.get("parameter_candidate_id") or selected.get("candidate_id") or ""
+        )
+        if provided_id != selected_id:
+            reasons.append("selection_artifact_selected_candidate_mismatch")
+    else:
+        selected = next(
+            (
+                candidate
+                for candidate in candidate_rows
+                if str(
+                    candidate.get("parameter_candidate_id")
+                    or candidate.get("candidate_id")
+                    or ""
+                )
+                == selected_id
+            ),
+            None,
+        )
+    if selected is None:
+        reasons.append("selection_artifact_candidate_missing")
+        return sorted(set(reasons))
+
+    persisted_binding = selected.get("selection_binding")
+    if not isinstance(persisted_binding, dict) and (
+        "parameter_values_raw" not in selected and "parameter_values" not in selected
+    ):
+        reasons.append("selection_artifact_parameter_values_missing")
+    candidate_binding = selection_candidate_binding_summary(selected)
+    if candidate_binding.get("candidate_id") != selected_id:
+        reasons.append("selection_artifact_selected_candidate_mismatch")
+    for binding_field, artifact_field, reason in (
+        (
+            "parameter_values_hash",
+            "parameter_values_hash",
+            "selection_artifact_parameter_hash_mismatch",
+        ),
+        (
+            "effective_strategy_parameters_hash",
+            "effective_strategy_parameters_hash",
+            "selection_artifact_effective_parameter_hash_mismatch",
+        ),
+        (
+            "compiled_strategy_contract_hash",
+            "compiled_strategy_contract_hash",
+            "selection_artifact_compiled_contract_hash_mismatch",
+        ),
+    ):
+        if candidate_binding.get(binding_field) != selection_artifact.get(artifact_field):
+            reasons.append(reason)
+
+    if candidate_binding.get("validation_evidence_hash") != selection_artifact.get(
+        "validation_evidence_hash"
+    ):
+        reasons.append("selection_artifact_validation_evidence_hash_mismatch")
+
+    primary_id = str(candidate_binding.get("primary_scenario_id") or "")
+    primary_contract_hash = candidate_binding.get(
+        "primary_scenario_compiled_strategy_contract_hash"
+    )
+    if primary_id and primary_contract_hash is None:
+        reasons.append("selection_artifact_primary_scenario_missing")
+    elif primary_id and primary_contract_hash != selection_artifact.get(
+        "compiled_strategy_contract_hash"
+    ):
+        reasons.append(
+            "selection_artifact_primary_scenario_compiled_contract_hash_mismatch"
+        )
+
+    candidate_scores = report.get("candidate_final_scores")
+    if isinstance(candidate_scores, list) and all(
+        isinstance(score, dict) for score in candidate_scores
+    ):
+        candidate_scores_hash = sha256_prefixed(candidate_scores)
+        if candidate_scores_hash != selection_artifact.get("candidate_scores_hash"):
+            reasons.append("selection_artifact_candidate_scores_hash_mismatch")
+        try:
+            bindings = _selection_candidate_bindings(
+                candidates=candidate_rows,
+                candidate_scores=candidate_scores,
+            )
+        except ValueError:
+            reasons.append("selection_artifact_candidate_universe_mismatch")
+        else:
+            if sha256_prefixed(bindings) != selection_artifact.get(
+                "selection_universe_hash"
+            ):
+                reasons.append("selection_artifact_candidate_universe_hash_mismatch")
+    elif report.get("final_selection_required"):
+        reasons.append("selection_artifact_candidate_scores_missing")
+
+    return sorted(set(reasons))
+
+
 def validate_confirmation_artifact(
     confirmation: dict[str, Any],
     *,
     selection_artifact: dict[str, Any],
 ) -> list[str]:
     reasons = validate_selection_artifact(selection_artifact)
-    if confirmation.get("schema_version") != 1 or confirmation.get("artifact_type") != "final_holdout_confirmation":
+    if (
+        confirmation.get("schema_version")
+        != FINAL_HOLDOUT_CONFIRMATION_SCHEMA_VERSION
+        or confirmation.get("artifact_type") != "final_holdout_confirmation"
+    ):
         reasons.append("final_holdout_confirmation_contract_invalid")
     if confirmation.get("selection_artifact_hash") != selection_artifact.get("content_hash"):
         reasons.append("final_holdout_confirmation_selection_hash_mismatch")
+    if confirmation.get("manifest_hash") != selection_artifact.get("manifest_hash"):
+        reasons.append("final_holdout_confirmation_manifest_hash_mismatch")
+    if confirmation.get("selected_candidate_id") != selection_artifact.get(
+        "selected_candidate_id"
+    ):
+        reasons.append("final_holdout_confirmation_selected_candidate_mismatch")
     candidate_results = confirmation.get("candidate_results")
     if not isinstance(candidate_results, list) or len(candidate_results) != 1:
         reasons.append("final_holdout_confirmation_candidate_count_invalid")
@@ -209,6 +632,27 @@ def validate_confirmation_artifact(
         candidate_id = str(candidate_results[0].get("candidate_id") or "") if isinstance(candidate_results[0], dict) else ""
         if candidate_id != str(selection_artifact.get("selected_candidate_id") or ""):
             reasons.append("final_holdout_confirmation_candidate_mismatch")
+        compiled_hash = (
+            str(candidate_results[0].get("compiled_strategy_contract_hash") or "")
+            if isinstance(candidate_results[0], dict)
+            else ""
+        )
+        if compiled_hash != str(
+            selection_artifact.get("compiled_strategy_contract_hash") or ""
+        ):
+            reasons.append("final_holdout_confirmation_compiled_contract_hash_mismatch")
+    if (
+        confirmation.get("final_holdout_result_hash_schema_version")
+        != FINAL_HOLDOUT_RESULT_HASH_SCHEMA_VERSION
+    ):
+        reasons.append("final_holdout_result_hash_schema_version_invalid")
+    recorded_result_hash = str(
+        confirmation.get("final_holdout_result_hash") or ""
+    )
+    if not recorded_result_hash.startswith("sha256:"):
+        reasons.append("final_holdout_result_hash_missing")
+    elif recorded_result_hash != compute_final_holdout_result_hash(confirmation):
+        reasons.append("final_holdout_result_hash_mismatch")
     recorded = confirmation.get("content_hash")
     material = {
         key: value
@@ -218,6 +662,24 @@ def validate_confirmation_artifact(
     if recorded != sha256_prefixed(material, label="final_holdout_confirmation"):
         reasons.append("final_holdout_confirmation_content_hash_mismatch")
     return sorted(set(reasons))
+
+
+def compute_final_holdout_result_hash(payload: dict[str, Any]) -> str:
+    """Hash the non-circular final-holdout result fixed by registry completion."""
+
+    return sha256_prefixed(
+        {
+            "schema_version": FINAL_HOLDOUT_RESULT_HASH_SCHEMA_VERSION,
+            "selection_artifact_hash": payload.get("selection_artifact_hash"),
+            "selected_candidate_id": payload.get("selected_candidate_id"),
+            "candidate_results": payload.get("candidate_results"),
+            "confirmation_gate_result": payload.get("confirmation_gate_result"),
+            "confirmation_gate_fail_reasons": payload.get(
+                "confirmation_gate_fail_reasons"
+            ),
+        },
+        label="final_holdout_result",
+    )
 
 
 def validate_final_selection_report(report: dict[str, Any]) -> list[str]:
@@ -259,6 +721,17 @@ def validate_final_selection_report(report: dict[str, Any]) -> list[str]:
         reasons.append("final_selection_selected_candidate_mismatch")
     if report.get("final_selection_gate_result") != "PASS" or recomputed.get("gate_result") != "PASS":
         reasons.append("final_selection_gate_not_passed")
+    selection_artifact = report.get("selection_artifact")
+    if report.get("final_selection_gate_result") == "PASS" or selection_artifact is not None:
+        if not isinstance(selection_artifact, dict):
+            reasons.append("selection_artifact_missing")
+        else:
+            reasons.extend(
+                validate_selection_artifact_binding(
+                    report=report,
+                    selection_artifact=selection_artifact,
+                )
+            )
     return sorted(set(reasons))
 
 
@@ -461,18 +934,6 @@ def _nested_value(payload: Any, dotted: str) -> Any:
     if isinstance(current, bool):
         return current
     return None
-
-
-def _selection_only_payload(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: _selection_only_payload(item)
-            for key, item in sorted(value.items())
-            if "final_holdout" not in str(key)
-        }
-    if isinstance(value, (list, tuple)):
-        return [_selection_only_payload(item) for item in value]
-    return value
 
 
 def _unsupported_metric_reason(metric: str) -> str | None:

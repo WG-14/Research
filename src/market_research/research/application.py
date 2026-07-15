@@ -11,7 +11,7 @@ from market_research.storage_io import write_json_atomic, write_text_atomic
 
 from .research_reporting import compare_research_decision_reports, render_research_decision_report_markdown
 from .run_lifecycle import start_run
-from .strategy_package import build_strategy_research_package
+from .strategy_package import StrategyPackageError, build_strategy_research_package
 from .validation_pipeline import run_research_validation
 
 
@@ -71,7 +71,18 @@ class ResearchApplicationService:
     def export_strategy_package(
         self, *, report: dict[str, Any], approval: dict[str, Any], out_path: str | Path,
     ) -> dict[str, Any]:
-        package = build_strategy_research_package(report, approval=approval)
+        package = build_strategy_research_package(
+            report,
+            approval=approval,
+            manager=self.paths,
+        )
+        if (
+            package.get("authoritative") is not True
+            or package.get("package_authority_result") != "PASS"
+        ):
+            raise StrategyPackageError(
+                "official_strategy_package_must_be_authoritative"
+            )
         target = self.paths.external_output_path(out_path, label="strategy package output")
         write_json_atomic(target, package)
         return package

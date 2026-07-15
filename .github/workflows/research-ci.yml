@@ -84,7 +84,7 @@ jobs:
             env -u PYTHONPATH "./$environment-venv/bin/market-research" --help > "$environment-console-help.txt"
             env -u PYTHONPATH "./$environment-venv/bin/python" -m market_research --help > "$environment-module-help.txt"
             diff -u "$environment-console-help.txt" "$environment-module-help.txt"
-            env -u PYTHONPATH "./$environment-venv/bin/python" -c "import importlib.metadata, json; from market_research.research.strategy_catalog import list_research_strategies; print(json.dumps({'version': importlib.metadata.version('market-research'), 'namespace': 'market_research', 'strategies': [item.name for item in list_research_strategies()]}))" > "$environment-probe.json"
+            env -u PYTHONPATH "./$environment-venv/bin/python" -c "import importlib.metadata, json; from market_research.research.strategy_catalog import list_research_strategies; from market_research.research_composition import builtin_strategy_registry; print(json.dumps({'version': importlib.metadata.version('market-research'), 'namespace': 'market_research', 'strategies': [item.name for item in list_research_strategies(registry=builtin_strategy_registry())]}))" > "$environment-probe.json"
           done
           diff -u wheel-console-help.txt sdist-console-help.txt
           diff -u wheel-probe.json sdist-probe.json

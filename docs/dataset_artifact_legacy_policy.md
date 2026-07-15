@@ -63,9 +63,11 @@ Policy:
 - Artifact manifest schema `2` is read-only legacy and is rejected by the
   normal loader. Recreate it from the original source and a reviewed
   provenance manifest; do not translate or relabel its old hash domains.
-- Receipt schema `7` is the current schema. Receipt schemas 1 and 2 are
+- Receipt schema `8` is the current schema. It binds the source report kind so
+  reproduction selects the same backtest or walk-forward execution path.
+  Earlier receipt schemas, including schemas 1, 2, and 7, are
   rejected; they cannot be silently reinterpreted because their dataset hashes
-  do not establish the artifact/snapshot domain separation.
+  or execution-path evidence do not establish the current contract.
 - Unknown manifest or receipt versions fail closed. There is no automatic
   hash-domain migration: a new immutable artifact must be frozen from the
   original input, leaving that input untouched. Identical inputs deterministically

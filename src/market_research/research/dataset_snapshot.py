@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import math
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from .datasets.registry import default_dataset_adapter_registry
 from .experiment_manifest import DateRange, ExperimentManifest, ManifestValidationError
 from .hashing import sha256_prefixed
 from .immutable_contract import deep_freeze
+from .research_classification import requires_candidate_validation
 from .dataset_freeze import sqlite_candles_schema_hash
 from .datasets.hashing_contract import artifact_content_hash, canonical_candle_rows
 from .datasets.hashing_contract import (
@@ -348,6 +350,30 @@ def load_dataset_range(
         + int(max((scenario.latency_ms for scenario in manifest.execution_model.scenarios), default=0))
         + int(manifest.execution_timing.max_quote_wait_ms)
     )
+    top_of_book_provenance = (
+        top_of_book_adapter.provenance(manifest=manifest, context=context)
+        if top_of_book_adapter is not None
+        else None
+    )
+    depth_provenance = (
+        depth_adapter.provenance(manifest=manifest, context=context)
+        if depth_adapter is not None
+        else None
+    )
+    if top_of_book_spec is not None and top_of_book_provenance is not None:
+        _require_execution_evidence_source_verified(
+            spec=top_of_book_spec,
+            provenance=top_of_book_provenance,
+            evidence="top_of_book",
+            validation_bound=requires_candidate_validation(manifest.research_classification),
+        )
+    if depth_spec is not None and depth_provenance is not None:
+        _require_execution_evidence_source_verified(
+            spec=depth_spec,
+            provenance=depth_provenance,
+            evidence="depth",
+            validation_bound=requires_candidate_validation(manifest.research_classification),
+        )
     top_of_book_quotes: tuple[TopOfBookQuote | None, ...] = ()
     top_of_book_event_quotes: tuple[TopOfBookQuote, ...] = ()
     if top_of_book_adapter is not None:
@@ -376,16 +402,6 @@ def load_dataset_range(
                 context=context,
             )
         )
-    top_of_book_provenance = (
-        top_of_book_adapter.provenance(manifest=manifest, context=context)
-        if top_of_book_adapter is not None
-        else None
-    )
-    depth_provenance = (
-        depth_adapter.provenance(manifest=manifest, context=context)
-        if depth_adapter is not None
-        else None
-    )
     snapshot = DatasetSnapshot(
         snapshot_id=snapshot.snapshot_id,
         source=snapshot.source,
@@ -609,7 +625,13 @@ def _build_source_agnostic_dataset_quality_report(
     actual_count = len(candles)
     present_expected_count = len(actual_expected_ts)
     coverage_pct = (present_expected_count / expected_count * 100.0) if expected_count else 0.0
-    if (
+    if snapshot.orderbook_depth_requested:
+        depth_summary = (
+            _orderbook_depth_summary_from_snapshot(snapshot=snapshot)
+            if snapshot.orderbook_depth_snapshots
+            else _empty_orderbook_depth_summary()
+        )
+    elif (
         db_path is not None
         and snapshot.source == "sqlite_candles"
         and (snapshot.orderbook_depth_source in {None, "orderbook_depth_levels"})
@@ -713,11 +735,10 @@ def _build_source_agnostic_dataset_quality_report(
         "l2_depth_requested": bool(snapshot.orderbook_depth_requested),
         "l2_depth_required": bool(snapshot.orderbook_depth_required),
         "l2_depth_source": snapshot.orderbook_depth_source,
-        "l2_depth_source_content_hash": depth_summary.get("l2_depth_content_hash"),
+        "l2_depth_source_content_hash": depth_provenance.get("source_artifact_content_hash"),
         "l2_depth_source_schema_hash": (
-            _db_table_schema_fingerprint(db_path, "orderbook_depth_levels")
-            if db_path is not None and snapshot.orderbook_depth_source in {None, "orderbook_depth_levels"}
-            else snapshot.orderbook_depth_source_schema_hash
+            depth_provenance.get("source_schema_hash")
+            or snapshot.orderbook_depth_source_schema_hash
         ),
         "l2_depth_adapter_provenance": depth_provenance,
         "l2_depth_adapter_provenance_hash": depth_provenance_hash,
@@ -1168,8 +1189,12 @@ def _add_top_of_book_quality_fields(*, payload: dict[str, Any], snapshot: Datase
             "top_of_book_coverage_pct": round(coverage_pct, 8),
             "top_of_book_gate_status": gate_status,
             "top_of_book_gate_reasons": reasons,
-            "top_of_book_source_content_hash": _top_of_book_content_hash(snapshot),
-            "top_of_book_source_schema_hash": snapshot.top_of_book_source_schema_hash,
+            "top_of_book_source_content_hash": top_provenance.get("source_artifact_content_hash"),
+            "top_of_book_split_content_hash": _top_of_book_content_hash(snapshot),
+            "top_of_book_source_schema_hash": (
+                top_provenance.get("source_schema_hash")
+                or snapshot.top_of_book_source_schema_hash
+            ),
             "top_of_book_adapter_name": top_provenance.get("adapter_name"),
             "top_of_book_adapter_version": top_provenance.get("adapter_version"),
             "top_of_book_adapter_provenance": top_provenance,
@@ -1192,6 +1217,118 @@ def _top_of_book_content_hash(snapshot: DatasetSnapshot) -> str | None:
             "event_quotes": [quote.as_tuple() for quote in snapshot.top_of_book_event_quotes],
         }
     )
+
+
+def _execution_evidence_source_path(
+    *,
+    spec: Any,
+    context: DatasetLoadContext,
+    evidence: str,
+) -> tuple[Path, dict[str, str] | None]:
+    """Resolve one execution-evidence authority.
+
+    A typed immutable locator is authoritative when present.  ``db_path`` is
+    retained only for research-only compatibility manifests that predate the
+    locator contract; it must never override a declared immutable artifact.
+    """
+    locator_payload = getattr(spec, "locator", None)
+    locator: dict[str, str] | None = None
+    if locator_payload is not None:
+        parsed = parse_immutable_locator(locator_payload)
+        path = Path(parsed.path)
+        locator = parsed.as_dict()
+    else:
+        if context.db_path is None:
+            raise ValueError(f"sqlite_{evidence}_adapter_db_path_missing")
+        path = Path(context.db_path).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"sqlite_{evidence}_artifact_missing")
+    if locator is not None and any(
+        Path(f"{path}{suffix}").exists() for suffix in ("-wal", "-shm", "-journal")
+    ):
+        raise ValueError(f"sqlite_{evidence}_immutable_artifact_has_mutable_sidecar")
+    return path, locator
+
+
+def _file_content_hash(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _execution_evidence_provenance(
+    *,
+    spec: Any,
+    context: DatasetLoadContext,
+    evidence: str,
+    table: str,
+    adapter_name: str,
+    adapter_version: str,
+) -> dict[str, Any]:
+    path, locator = _execution_evidence_source_path(spec=spec, context=context, evidence=evidence)
+    actual_content_hash = _file_content_hash(path)
+    actual_schema_hash = _db_table_schema_fingerprint(path, table)
+    return {
+        f"{evidence}_source": str(getattr(spec, "source", "")),
+        "adapter_name": adapter_name,
+        "adapter_version": adapter_version,
+        "source_locator": locator or "runtime_db_path_compatibility_source",
+        "source_locator_policy": (
+            "typed_immutable_locator_authoritative"
+            if locator is not None
+            else "runtime_db_path_research_only_compatibility"
+        ),
+        "source_artifact_content_hash": actual_content_hash,
+        "source_schema_hash": actual_schema_hash,
+        "declared_source_content_hash": getattr(spec, "source_content_hash", None),
+        "declared_source_schema_hash": getattr(spec, "source_schema_hash", None),
+        "locator_artifact_content_hash": (
+            locator.get("artifact_content_hash") if locator is not None else None
+        ),
+        "source_path_hash": sha256_prefixed(str(path)),
+        "source_content_hash_method": "sha256_complete_sqlite_file_bytes",
+        "source_schema_hash_method": "sqlite_table_schema_fingerprint",
+        "provenance_policy": "immutable_sqlite_execution_evidence_v1",
+    }
+
+
+def _require_execution_evidence_source_verified(
+    *,
+    spec: Any,
+    provenance: dict[str, Any],
+    evidence: str,
+    validation_bound: bool,
+) -> None:
+    declared_content = getattr(spec, "source_content_hash", None)
+    declared_schema = getattr(spec, "source_schema_hash", None)
+    locator_payload = getattr(spec, "locator", None)
+    actual_content = provenance.get("source_artifact_content_hash")
+    actual_schema = provenance.get("source_schema_hash")
+    reasons: list[str] = []
+    locator = None
+    if locator_payload is not None:
+        locator = parse_immutable_locator(locator_payload)
+        if locator.artifact_content_hash != actual_content:
+            reasons.append("locator_artifact_content_hash_mismatch")
+    elif validation_bound:
+        reasons.append("immutable_locator_missing")
+    if declared_content is None:
+        if validation_bound:
+            reasons.append("declared_source_content_hash_missing")
+    elif declared_content != actual_content:
+        reasons.append("declared_source_content_hash_mismatch")
+    if declared_schema is None:
+        if validation_bound:
+            reasons.append("declared_source_schema_hash_missing")
+    elif declared_schema != actual_schema:
+        reasons.append("declared_source_schema_hash_mismatch")
+    if locator is not None and declared_content is not None:
+        if locator.artifact_content_hash != declared_content:
+            reasons.append("locator_and_declared_source_content_hash_mismatch")
+    if reasons:
+        raise ValueError(f"{evidence}_artifact_verification_failed:" + ",".join(reasons))
 
 
 class SQLiteCandleAdapter:
@@ -1251,9 +1388,8 @@ class SQLiteCandleAdapter:
         depth_source = snapshot.orderbook_depth_source or "orderbook_depth_levels"
         depth_adapter = registry.resolve_depth(depth_source)
         top_schema_hash = (
-            _db_table_schema_fingerprint(context.db_path, "orderbook_top_snapshots")
-            if snapshot.top_of_book_requested and snapshot.top_of_book_source == "sqlite_orderbook_top_snapshots"
-            else snapshot.top_of_book_source_schema_hash
+            (snapshot.top_of_book_adapter_provenance or {}).get("source_schema_hash")
+            or snapshot.top_of_book_source_schema_hash
         )
         provenance = {
             "candle": {
@@ -1542,13 +1678,16 @@ class SQLiteTopOfBookAdapter:
         candles: tuple[Candle, ...],
         context: DatasetLoadContext,
     ) -> tuple[TopOfBookQuote | None, ...]:
-        if context.db_path is None:
-            raise ValueError("sqlite_top_of_book_adapter_db_path_missing")
         spec = manifest.dataset.top_of_book
         if spec is None:
             return ()
+        source_path, _locator = _execution_evidence_source_path(
+            spec=spec,
+            context=context,
+            evidence="top_of_book",
+        )
         return _load_top_of_book_quotes(
-            db_path=context.db_path,
+            db_path=source_path,
             market=manifest.market,
             candles=candles,
             join_tolerance_ms=spec.join_tolerance_ms,
@@ -1563,13 +1702,16 @@ class SQLiteTopOfBookAdapter:
         execution_quote_lookahead_ms: int,
         context: DatasetLoadContext,
     ) -> tuple[TopOfBookQuote, ...]:
-        if context.db_path is None:
-            raise ValueError("sqlite_top_of_book_adapter_db_path_missing")
         spec = manifest.dataset.top_of_book
         if spec is None:
             return ()
+        source_path, _locator = _execution_evidence_source_path(
+            spec=spec,
+            context=context,
+            evidence="top_of_book",
+        )
         return _load_top_of_book_event_quotes(
-            db_path=context.db_path,
+            db_path=source_path,
             market=manifest.market,
             interval=manifest.interval,
             candles=candles,
@@ -1583,12 +1725,19 @@ class SQLiteTopOfBookAdapter:
         manifest: ExperimentManifest,
         context: DatasetLoadContext,
     ) -> dict[str, Any]:
+        spec = manifest.dataset.top_of_book
+        if spec is None:
+            raise ValueError("sqlite_top_of_book_spec_missing")
         return {
-            "top_of_book_source": self.source,
-            "adapter_name": self.adapter_name,
-            "adapter_version": self.adapter_version,
-            "quote_source": manifest.dataset.top_of_book.quote_source if manifest.dataset.top_of_book else None,
-            "provenance_policy": "sqlite_top_of_book_compatibility_adapter",
+            **_execution_evidence_provenance(
+                spec=spec,
+                context=context,
+                evidence="top_of_book",
+                table="orderbook_top_snapshots",
+                adapter_name=self.adapter_name,
+                adapter_version=self.adapter_version,
+            ),
+            "quote_source": spec.quote_source,
         }
 
 
@@ -1606,16 +1755,21 @@ class SQLiteOrderbookDepthAdapter:
         execution_depth_lookahead_ms: int,
         context: DatasetLoadContext,
     ) -> tuple[OrderbookDepthSnapshot, ...]:
-        if context.db_path is None:
-            raise ValueError("sqlite_orderbook_depth_adapter_db_path_missing")
         spec = manifest.dataset.depth
+        if spec is None:
+            spec = _implicit_runtime_depth_spec(self.source)
+        source_path, _locator = _execution_evidence_source_path(
+            spec=spec,
+            context=context,
+            evidence="depth",
+        )
         options = spec.options if spec is not None else {}
         source_filter = options.get("quote_source") or options.get("source_filter")
         parsed_source_filter = str(source_filter).strip() if source_filter is not None else None
         if parsed_source_filter == "":
             parsed_source_filter = None
         return _load_orderbook_depth_event_snapshots(
-            db_path=context.db_path,
+            db_path=source_path,
             market=manifest.market,
             interval=manifest.interval,
             candles=candles,
@@ -1639,13 +1793,33 @@ class SQLiteOrderbookDepthAdapter:
         manifest: ExperimentManifest,
         context: DatasetLoadContext,
     ) -> dict[str, Any]:
+        spec = manifest.dataset.depth
+        if spec is None:
+            spec = _implicit_runtime_depth_spec(self.source)
         return {
-            "depth_source": self.source,
-            "adapter_name": self.adapter_name,
-            "adapter_version": self.adapter_version,
-            "options": dict(manifest.dataset.depth.options) if manifest.dataset.depth is not None else {},
-            "provenance_policy": "sqlite_orderbook_depth_compatibility_adapter",
+            **_execution_evidence_provenance(
+                spec=spec,
+                context=context,
+                evidence="depth",
+                table="orderbook_depth_levels",
+                adapter_name=self.adapter_name,
+                adapter_version=self.adapter_version,
+            ),
+            "options": dict(spec.options),
         }
+
+
+def _implicit_runtime_depth_spec(source: str) -> Any:
+    """Compatibility shape for research-only implicit depth requests."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        source=source,
+        locator=None,
+        source_content_hash=None,
+        source_schema_hash=None,
+        options={},
+    )
 
 
 def _sqlite_present_tables(db_path: str | Path) -> list[str]:

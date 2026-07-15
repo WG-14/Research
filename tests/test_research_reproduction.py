@@ -50,6 +50,7 @@ def test_receipt_binds_completed_backtest_to_stable_evidence(tmp_path: Path) -> 
 
     receipt = load_reproduction_receipt(report["reproduction_receipt_path"])
 
+    assert receipt["stable_fingerprint"]["report_kind"] == "backtest"
     assert receipt["manifest_hash"] == load_manifest(manifest_path).manifest_hash()
     assert receipt["source_report_hash"] == report["content_hash"]
     assert receipt["stable_fingerprint_hash"] == receipt["stable_fingerprint"]["stable_fingerprint_hash"]
@@ -97,6 +98,7 @@ def test_comparator_reports_exact_result_hash_path_and_is_order_independent() ->
     digest = lambda value: sha256_prefixed({"value": value})
     fingerprint = {
         "schema_version": REPRODUCTION_FINGERPRINT_SCHEMA_VERSION,
+        "report_kind": "backtest",
         "manifest_hash": digest("manifest"),
         "research_classification": "research_only",
         "dataset_fingerprint": digest("dataset"),

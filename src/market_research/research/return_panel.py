@@ -305,7 +305,7 @@ def write_candidate_return_panel(
     panel: dict[str, Any],
     artifact_context: ResearchArtifactContext | None = None,
 ) -> Path:
-    path = manager.data_dir() / "reports" / "research" / experiment_id / "candidate_return_panel.json"
+    path = manager.research_artifact_path(experiment_id, "candidate_return_panel.json")
     project_root = manager.project_root.resolve()
     if ResearchPathManager.is_within(path.resolve(), project_root):
         raise ValueError(f"candidate return panel path must be outside repository: {path.resolve()}")

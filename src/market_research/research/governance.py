@@ -498,8 +498,15 @@ def validate_strategy_approval(
     strategy_version: str,
     strategy_plugin_contract_hash: str,
     effective_strategy_parameters_hash: str,
+    expected_registry_path: Path | None = None,
 ) -> list[str]:
-    """Validate an approval artifact against the authoritative governance log."""
+    """Validate an approval artifact against the authoritative governance log.
+
+    ``expected_registry_path`` lets production consumers bind the approval to
+    the repository's canonical governance registry.  It remains optional for
+    compatibility with callers that validate a self-contained artifact, but a
+    caller with a :class:`ResearchPathManager` should always provide it.
+    """
 
     if not isinstance(approval, dict):
         return ["strategy_approval_missing"]
@@ -535,6 +542,13 @@ def validate_strategy_approval(
     if not path_value:
         return sorted(set(reasons + ["strategy_approval_registry_missing"]))
     path = Path(path_value).expanduser()
+    if (
+        expected_registry_path is not None
+        and path.resolve() != expected_registry_path.expanduser().resolve()
+    ):
+        return sorted(
+            set(reasons + ["strategy_approval_registry_path_mismatch"])
+        )
     chain = validate_hash_chained_jsonl(path=path, label=GOVERNANCE_HASH_LABEL)
     if chain["status"] != "PASS":
         return sorted(set(reasons + ["strategy_approval_registry_invalid"]))

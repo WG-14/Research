@@ -9,6 +9,10 @@ from typing import Any
 from market_research.paths import ResearchPathError, ResearchPathManager
 from market_research.storage_io import write_json_atomic as write_json_atomic_untracked
 from .artifact_store import ArtifactBudget, ArtifactStore, ResearchArtifactContext
+from .final_selection import (
+    final_selection_candidate_input,
+    selection_candidate_binding_summary,
+)
 from .hashing import observe_hashing, report_content_hash_payload, sha256_prefixed
 
 PARENT_SERIAL_REPORT_STAGES = {
@@ -68,7 +72,7 @@ class ReportFinalizationState:
 
 
 def research_paths(manager: ResearchPathManager, experiment_id: str, report_name: str) -> ResearchReportPaths:
-    research_derived_root = manager.data_dir() / "derived" / "research" / experiment_id
+    research_derived_root = manager.research_artifact_path(experiment_id)
     derived_path = research_derived_root / f"{report_name}_candidates.json"
     report_path = manager.report_path("research", experiment_id, f"{report_name}_report.json")
     candidate_events_path = research_derived_root / "candidate_events.jsonl"
@@ -555,7 +559,18 @@ def _reference_first_report_payload(
         label="derived_candidates_payload_hash",
     )
     if report_detail in {"index", "summary", "standard"}:
-        report_payload["candidates"] = [summarize_report_candidate(candidate) for candidate in candidates]
+        final_selection_contract = report_payload.get("final_selection_contract")
+        report_payload["candidates"] = [
+            summarize_report_candidate(
+                candidate,
+                final_selection_contract=(
+                    final_selection_contract
+                    if isinstance(final_selection_contract, dict)
+                    else None
+                ),
+            )
+            for candidate in candidates
+        ]
         report_payload["derived_candidates_ref"] = _relative_artifact_ref(paths.derived_path, manager.data_dir().resolve())
         report_payload["derived_candidates_path"] = str(paths.derived_path.resolve())
     return report_payload, derived_candidates_payload, derived_candidates_hash
@@ -569,11 +584,16 @@ def _report_detail(payload: dict[str, Any]) -> str:
     return "full"
 
 
-def summarize_report_candidate(candidate: Any) -> dict[str, Any]:
+def summarize_report_candidate(
+    candidate: Any,
+    *,
+    final_selection_contract: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not isinstance(candidate, dict):
         return {"candidate_repr_hash": sha256_prefixed({"repr": repr(candidate)}, label="candidate_repr_hash")}
     summary_keys = (
         "candidate_id",
+        "parameter_candidate_id",
         "acceptance_gate_result",
         "acceptance_gate_status",
         "status",
@@ -634,6 +654,12 @@ def summarize_report_candidate(candidate: Any) -> dict[str, Any]:
         "exploratory_result",
     )
     summary = {key: candidate[key] for key in summary_keys if key in candidate}
+    if isinstance(final_selection_contract, dict):
+        summary["final_selection_input"] = final_selection_candidate_input(
+            candidate,
+            final_selection_contract,
+        )
+    summary["selection_binding"] = selection_candidate_binding_summary(candidate)
     _attach_participation_summary(summary, candidate)
     _copy_compact_diagnostics(summary, candidate)
     summary["train_equity_curve"] = []

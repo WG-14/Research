@@ -416,7 +416,7 @@ def write_statistical_selection_evidence(
     evidence: dict[str, Any],
     artifact_context: ResearchArtifactContext | None = None,
 ) -> Path:
-    path = manager.data_dir() / "reports" / "research" / experiment_id / "statistical_selection_evidence.json"
+    path = manager.research_artifact_path(experiment_id, "statistical_selection_evidence.json")
     _ensure_research_output_path_allowed(manager, path)
     store = artifact_context or ResearchArtifactContext(manager=manager, experiment_id=experiment_id)
     store.write_json_atomic(path, evidence)
@@ -428,6 +428,7 @@ def validate_statistical_evidence_for_candidate(
     candidate: dict[str, Any],
     report: dict[str, Any],
     evidence: dict[str, Any] | None,
+    require_experiment_registry_binding: bool = True,
 ) -> list[str]:
     reasons: list[str] = []
     required = bool(candidate.get("statistical_validation_required")) or requires_candidate_validation(
@@ -509,13 +510,14 @@ def validate_statistical_evidence_for_candidate(
     if evidence_grade == SCREENING_SUMMARY_BOOTSTRAP and summary_p_value is None:
         reasons.append("summary_metric_max_bootstrap_p_value_missing")
     if validation_required:
-        reasons.extend(
-            validate_experiment_registry_binding(
-                report=report,
-                evidence=evidence,
-                require_complete=True,
+        if require_experiment_registry_binding:
+            reasons.extend(
+                validate_experiment_registry_binding(
+                    report=report,
+                    evidence=evidence,
+                    require_complete=True,
+                )
             )
-        )
         reasons.extend(validate_return_panel_binding(report=report, evidence=evidence, panel=_load_return_panel(evidence, report)))
         reasons.extend(validate_family_registry_binding(report=report, evidence=evidence))
     if evidence.get("effective_trial_count") is None:

@@ -21,8 +21,8 @@ from .hashing import content_hash_payload, sha256_prefixed
 from .strategy_compiler import StrategyCompilationError, validate_compiled_strategy_contract
 
 
-REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 7
-REPRODUCTION_RECEIPT_SCHEMA_VERSION = 7
+REPRODUCTION_FINGERPRINT_SCHEMA_VERSION = 8
+REPRODUCTION_RECEIPT_SCHEMA_VERSION = 8
 
 _SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
@@ -34,6 +34,7 @@ class ReproductionContractError(ValueError):
 @dataclass(frozen=True, slots=True)
 class ResearchReproductionFingerprint:
     schema_version: int
+    report_kind: str
     manifest_hash: str
     research_classification: str
     dataset_fingerprint: str
@@ -47,6 +48,7 @@ class ResearchReproductionFingerprint:
     def as_dict(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
+            "report_kind": self.report_kind,
             "manifest_hash": self.manifest_hash,
             "research_classification": self.research_classification,
             "dataset_fingerprint": self.dataset_fingerprint,
@@ -88,6 +90,9 @@ def build_reproduction_fingerprint(
     completion order can influence the result.
     """
 
+    report_kind = _required_string(report, "report_kind", "report")
+    if report_kind not in {"backtest", "walk_forward"}:
+        raise ReproductionContractError("report.report_kind is unsupported")
     manifest_hash = _required_sha256(report, "manifest_hash", "report")
     if manifest_hash != manifest.manifest_hash():
         raise ReproductionContractError("report.manifest_hash does not match manifest")
@@ -127,6 +132,7 @@ def build_reproduction_fingerprint(
     }
     material: dict[str, object] = {
         "schema_version": REPRODUCTION_FINGERPRINT_SCHEMA_VERSION,
+        "report_kind": report_kind,
         "manifest_hash": manifest_hash,
         "research_classification": research_classification,
         "dataset_fingerprint": dataset_fingerprint,
@@ -434,6 +440,9 @@ def _fingerprint_payload(value: Mapping[str, Any]) -> dict[str, Any]:
 def _validate_fingerprint_payload(payload: Mapping[str, Any], *, context: str) -> None:
     if payload.get("schema_version") != REPRODUCTION_FINGERPRINT_SCHEMA_VERSION:
         raise ReproductionContractError(f"{context}.schema_version is unsupported")
+    report_kind = _required_string(payload, "report_kind", context)
+    if report_kind not in {"backtest", "walk_forward"}:
+        raise ReproductionContractError(f"{context}.report_kind is unsupported")
     _required_sha256(payload, "manifest_hash", context)
     _required_string(payload, "research_classification", context)
     _required_sha256(payload, "dataset_fingerprint", context)

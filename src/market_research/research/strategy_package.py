@@ -4,11 +4,22 @@ from __future__ import annotations
 
 from typing import Any
 
+from market_research.paths import ResearchPathManager
+
 from .execution_evidence import REQUIRED_FIELDS, REQUIRED_FIELDS_V2
-from .final_selection import validate_confirmation_artifact, validate_final_selection_report
+from .experiment_registry import (
+    experiment_registry_path,
+    validate_experiment_registry_binding,
+)
+from .final_selection import (
+    validate_confirmation_artifact,
+    validate_final_selection_report,
+    validate_selection_artifact_binding,
+)
 from .hashing import report_content_hash_payload, sha256_prefixed
-from .governance import validate_strategy_approval
+from .governance import governance_registry_path, validate_strategy_approval
 from .strategy_compiler import StrategyCompilationError, validate_compiled_strategy_contract
+from .validation_pipeline import validate_validated_research_result
 
 
 class StrategyPackageError(ValueError):
@@ -150,10 +161,123 @@ def _stress_limitations(merged: dict[str, Any]) -> list[str]:
     return sorted(limitations)
 
 
+def _canonical_package_contract(
+    *,
+    report: dict[str, Any],
+    selected: dict[str, Any],
+    primary: dict[str, Any],
+    compiled_payload: dict[str, Any],
+    authoritative: bool,
+) -> dict[str, Any]:
+    """Project package semantics from their canonical production sources."""
+
+    strategy_spec = selected.get("strategy_spec") or report.get("strategy_spec")
+    reality = primary.get("execution_reality_contract")
+    hypothesis = report.get("hypothesis_spec")
+    risk_policy = report.get("risk_policy")
+    rule_spec = (
+        strategy_spec.get("rule_spec")
+        if isinstance(strategy_spec, dict)
+        else None
+    )
+    canonical = {
+        "decision_contract_version": (
+            strategy_spec.get("decision_contract_version")
+            if isinstance(strategy_spec, dict)
+            else None
+        ),
+        "data_requirements": compiled_payload.get("data_requirements"),
+        "execution_timing_policy": (
+            primary.get("execution_timing_policy")
+            or report.get("execution_timing_policy")
+        ),
+        "execution_model": report.get("execution_model") or primary.get(
+            "execution_model"
+        ),
+        "cost_assumption": primary.get("cost_assumption") or report.get(
+            "base_cost_assumption"
+        ),
+        "partial_fill_assumptions": (
+            reality.get("partial_fill_model")
+            if isinstance(reality, dict)
+            else None
+        ),
+        "order_failure_assumptions": (
+            reality.get("order_failure_model")
+            if isinstance(reality, dict)
+            else None
+        ),
+        "portfolio_policy": report.get("portfolio_policy") or primary.get(
+            "portfolio_policy"
+        ),
+        "risk_policy": risk_policy,
+        "execution_limitations": report.get("execution_limitations"),
+        "suspension_or_invalidation_criteria": (
+            {
+                "schema_version": 1,
+                "source": "hypothesis_strategy_risk_contracts",
+                "hypothesis_falsification_criteria": list(
+                    hypothesis.get("falsification_criteria") or []
+                ),
+                "edge_invalidation_rule": rule_spec.get("edge_invalidation"),
+                "risk_policy_hash": sha256_prefixed(risk_policy),
+                "blocked_market_regimes": list(
+                    report.get("blocked_live_regimes") or []
+                ),
+                "operational_permission": False,
+            }
+            if isinstance(hypothesis, dict)
+            and isinstance(rule_spec, dict)
+            and isinstance(risk_policy, dict)
+            else None
+        ),
+    }
+    if authoritative:
+        report_timing = report.get("execution_timing_policy")
+        primary_timing = primary.get("execution_timing_policy")
+        if (
+            isinstance(report_timing, dict)
+            and isinstance(primary_timing, dict)
+            and report_timing != primary_timing
+        ):
+            raise StrategyPackageError(
+                "strategy_package_execution_timing_contract_mismatch"
+            )
+        report_portfolio = report.get("portfolio_policy")
+        primary_portfolio = primary.get("portfolio_policy")
+        if (
+            isinstance(report_portfolio, dict)
+            and isinstance(primary_portfolio, dict)
+            and report_portfolio != primary_portfolio
+        ):
+            raise StrategyPackageError(
+                "strategy_package_portfolio_policy_contract_mismatch"
+            )
+        risk_hash = report.get("risk_policy_hash")
+        if risk_hash != sha256_prefixed(risk_policy):
+            raise StrategyPackageError(
+                "strategy_package_risk_policy_hash_mismatch"
+            )
+        return canonical
+    legacy = dict(report) | dict(selected)
+    return {
+        field: value if value is not None else legacy.get(field)
+        for field, value in canonical.items()
+    }
+
+
 def build_strategy_research_package(
-    report: dict[str, Any], *, approval: dict[str, Any] | None = None
+    report: dict[str, Any], *, approval: dict[str, Any] | None = None,
+    manager: ResearchPathManager | None = None,
 ) -> dict[str, Any]:
     """Build only from an internally valid authoritative final-selection report."""
+    if manager is not None:
+        result_reasons = validate_validated_research_result(report)
+        if result_reasons:
+            raise StrategyPackageError(
+                "strategy_package_validated_result_invalid:"
+                + ",".join(result_reasons)
+            )
     reasons = validate_final_selection_report(report)
     if reasons:
         raise StrategyPackageError("strategy_package_final_selection_invalid:" + ",".join(reasons))
@@ -163,6 +287,15 @@ def build_strategy_research_package(
     confirmation = report.get("final_holdout_confirmation")
     if not isinstance(selection_artifact, dict) or not isinstance(confirmation, dict):
         raise StrategyPackageError("strategy_package_requires_selection_and_confirmation_evidence")
+    selection_binding_reasons = validate_selection_artifact_binding(
+        report=report,
+        selection_artifact=selection_artifact,
+    )
+    if selection_binding_reasons:
+        raise StrategyPackageError(
+            "strategy_package_selection_binding_invalid:"
+            + ",".join(selection_binding_reasons)
+        )
     confirmation_reasons = validate_confirmation_artifact(
         confirmation,
         selection_artifact=selection_artifact,
@@ -212,6 +345,15 @@ def build_strategy_research_package(
         raise StrategyPackageError("strategy_package_primary_scenario_compiled_contract_missing")
     merged["compiled_strategy_contract"] = primary_contract
     merged["compiled_strategy_contract_hash"] = primary_contract_hash
+    merged.update(
+        _canonical_package_contract(
+            report=report,
+            selected=selected,
+            primary=primary,
+            compiled_payload=primary_contract,
+            authoritative=manager is not None,
+        )
+    )
     absent = [field for field in _CONTRACT_FIELDS if merged.get(field) is None]
     if absent:
         raise StrategyPackageError("strategy_package_missing_required_contract_field:" + ",".join(absent))
@@ -292,6 +434,15 @@ def build_strategy_research_package(
     )
     package = {
         "schema_version": 5, "selected_candidate_id": selected_id,
+        "authoritative": manager is not None,
+        "package_authority_status": (
+            "CANONICAL_REGISTRIES_VERIFIED"
+            if manager is not None
+            else "DECLARED_PATH_ONLY"
+        ),
+        "package_authority_result": (
+            "PASS" if manager is not None else "UNVERIFIED"
+        ),
         **{field: merged[field] for field in _CONTRACT_FIELDS},
         **semantic_contract,
         "execution_timing_hash": executed_timing,
@@ -332,6 +483,9 @@ def build_strategy_research_package(
         strategy_version=str(hydrated.strategy_version),
         strategy_plugin_contract_hash=str(merged["strategy_plugin_contract_hash"]),
         effective_strategy_parameters_hash=str(merged["effective_strategy_parameters_hash"]),
+        expected_registry_path=(
+            governance_registry_path(manager) if manager is not None else None
+        ),
     )
     if approval_reasons:
         raise StrategyPackageError(
@@ -339,6 +493,20 @@ def build_strategy_research_package(
         )
     if not isinstance(approval, dict):
         raise StrategyPackageError("strategy_package_research_approval_invalid:strategy_approval_missing")
+    registry_reasons = validate_experiment_registry_binding(
+        report=confirmation,
+        require_complete=True,
+        expected_registry_path=(
+            experiment_registry_path(manager=manager)
+            if manager is not None
+            else None
+        ),
+    )
+    if registry_reasons:
+        raise StrategyPackageError(
+            "strategy_package_confirmation_registry_invalid:"
+            + ",".join(registry_reasons)
+        )
     approved_at = str(approval.get("approved_at") or "").strip()
     if not approved_at:
         raise StrategyPackageError("strategy_package_research_approval_timestamp_missing")

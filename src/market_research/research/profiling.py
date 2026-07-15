@@ -72,7 +72,7 @@ def profile_artifact_path(
     split_name: str,
 ) -> Path:
     safe_name = "_".join(_safe_part(part) for part in (candidate_id, scenario_id, split_name))
-    path = manager.data_dir() / "derived" / "research" / experiment_id / "profiles" / f"{safe_name}.json"
+    path = manager.research_artifact_path(experiment_id, "profiles", f"{safe_name}.json")
     resolved = path.resolve()
     data_dir = manager.data_dir().resolve()
     if ResearchPathManager.is_within(resolved, manager.project_root.resolve()):

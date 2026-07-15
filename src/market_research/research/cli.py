@@ -15,11 +15,16 @@ from .experiment_registry import (
     VALIDATION_PERMITTED_STATUSES,
     append_attempt_aborted,
     compute_row_hash,
+    experiment_registry_chain_reasons,
     experiment_registry_path,
     load_experiment_registry_rows,
     validate_experiment_registry_binding,
 )
 from .hashing import content_hash_payload, report_content_hash_payload, sha256_prefixed
+from .final_selection import (
+    validate_confirmation_artifact,
+    validate_final_selection_report,
+)
 from .governance import (
     GovernanceError,
     GovernanceSubject,
@@ -39,7 +44,11 @@ from .return_panel import validate_return_panel_binding
 from .execution_calibration import ExecutionCalibrationError, load_calibration_artifact
 from .research_classification import requires_candidate_validation
 from .run_summary import ResearchRunSummary, build_research_run_summary
-from .validation_pipeline import ValidationRunError, validation_next_action_payload
+from .validation_pipeline import (
+    ValidationRunError,
+    validate_validated_research_result,
+    validation_next_action_payload,
+)
 from .validation_protocol import ResearchValidationError, run_research_backtest, run_research_walk_forward
 from .forward_diagnostics_cli import cmd_research_forward_diagnostics
 from .batch_runner import run_research_batch
@@ -134,6 +143,18 @@ def cmd_research_approve_strategy_candidate(
         actual_hash = sha256_prefixed(report_content_hash_payload(report))
         if recorded_hash != actual_hash:
             raise GovernanceError("strategy_approval_source_report_content_hash_mismatch")
+        result_reasons = validate_validated_research_result(report)
+        if result_reasons:
+            raise GovernanceError(
+                "strategy_approval_validated_result_invalid:"
+                + ",".join(result_reasons)
+            )
+        selection_reasons = validate_final_selection_report(report)
+        if selection_reasons:
+            raise GovernanceError(
+                "strategy_approval_final_selection_invalid:"
+                + ",".join(selection_reasons)
+            )
         candidate_id = str(report.get("selected_candidate_id") or "").strip()
         if not candidate_id:
             raise GovernanceError("strategy_approval_selected_candidate_missing")
@@ -144,6 +165,31 @@ def cmd_research_approve_strategy_candidate(
         )
         if not confirmation_hash:
             raise GovernanceError("strategy_approval_final_holdout_confirmation_missing")
+        selection_artifact = report.get("selection_artifact")
+        if not isinstance(selection_artifact, dict):
+            raise GovernanceError("strategy_approval_selection_artifact_missing")
+        confirmation_reasons = validate_confirmation_artifact(
+            confirmation,
+            selection_artifact=selection_artifact,
+        )
+        confirmation_reasons.extend(
+            validate_experiment_registry_binding(
+                report=confirmation,
+                require_complete=True,
+                expected_registry_path=experiment_registry_path(
+                    manager=context.paths
+                ),
+            )
+        )
+        if confirmation.get("confirmation_gate_result") != "PASS":
+            confirmation_reasons.append(
+                "final_holdout_confirmation_not_passed"
+            )
+        if confirmation_reasons:
+            raise GovernanceError(
+                "strategy_approval_final_holdout_invalid:"
+                + ",".join(sorted(set(confirmation_reasons)))
+            )
         hypothesis_id = str(report.get("hypothesis_id") or "").strip()
         hypothesis_version = str(report.get("hypothesis_version") or "").strip()
         hypothesis_contract_hash = str(report.get("hypothesis_contract_hash") or "").strip()
@@ -192,10 +238,19 @@ def _required_runtime_db_path(context: "ResearchAppContext", manifest: Any, *, r
     distinguish candle, top-of-book, and implicit depth dependencies.
     """
     registry = registry or default_dataset_adapter_registry()
-    adapters: list[tuple[Any, str, str]] = [(registry.resolve(manifest.dataset.source), manifest.dataset.source, "candles")]
+    adapters: list[tuple[Any, str, str, object | None]] = [
+        (registry.resolve(manifest.dataset.source), manifest.dataset.source, "candles", None)
+    ]
     if manifest.dataset.top_of_book is not None:
         source = manifest.dataset.top_of_book.source
-        adapters.append((registry.resolve_top_of_book(source), source, "top_of_book"))
+        adapters.append(
+            (
+                registry.resolve_top_of_book(source),
+                source,
+                "top_of_book",
+                getattr(manifest.dataset.top_of_book, "locator", None),
+            )
+        )
     timing = getattr(manifest, "execution_timing", None)
     execution_model = getattr(manifest, "execution_model", None)
     depth_needed = (
@@ -206,9 +261,21 @@ def _required_runtime_db_path(context: "ResearchAppContext", manifest: Any, *, r
     )
     if depth_needed:
         source = manifest.dataset.depth.source if manifest.dataset.depth else "orderbook_depth_levels"
-        adapters.append((registry.resolve_depth(source), source, "depth"))
+        adapters.append(
+            (
+                registry.resolve_depth(source),
+                source,
+                "depth",
+                getattr(manifest.dataset.depth, "locator", None) if manifest.dataset.depth else None,
+            )
+        )
     required = next(
-        ((source, role) for adapter, source, role in adapters if bool(getattr(adapter, "requires_runtime_db", False))),
+        (
+            (source, role)
+            for adapter, source, role, immutable_locator in adapters
+            if bool(getattr(adapter, "requires_runtime_db", False))
+            and immutable_locator is None
+        ),
         None,
     )
     if required is not None:
@@ -608,8 +675,8 @@ def cmd_research_reproduce_run(
         receipt_hash = str(receipt["receipt_content_hash"])
         prefix = receipt_hash.removeprefix("sha256:")[:12]
         try:
-            db_path = context.paths.require_database_path()
-            if not db_path.is_file():
+            db_path = _required_runtime_db_path(context, manifest)
+            if db_path is not None and not db_path.is_file():
                 raise OSError(f"dataset locator is not accessible: {db_path}")
             isolated_settings = replace(
                 context.settings,
@@ -620,14 +687,34 @@ def cmd_research_reproduce_run(
             isolated_paths = type(context.paths).from_settings(
                 isolated_settings, project_root=context.paths.project_root
             )
-            reproduced_report = run_research_backtest(
+            stable_fingerprint = receipt["stable_fingerprint"]
+            if not isinstance(stable_fingerprint, dict):
+                raise ReproductionContractError("receipt.stable_fingerprint is required")
+            source_report_kind = str(stable_fingerprint["report_kind"])
+            runner = (
+                run_research_walk_forward
+                if source_report_kind == "walk_forward"
+                else run_research_backtest
+            )
+            progress_callback = (
+                _print_research_walk_forward_progress
+                if source_report_kind == "walk_forward"
+                else _print_research_backtest_progress
+            )
+            reproduced_report = runner(
                 manifest=manifest,
                 db_path=db_path,
                 manager=isolated_paths,
                 manifest_path=manifest_path,
-                command_args={"manifest": manifest_path, "receipt": receipt_path, "reproduction": True},
-                progress_callback=_print_research_backtest_progress,
+                command_args={
+                    "manifest": manifest_path,
+                    "receipt": receipt_path,
+                    "reproduction": True,
+                    "source_report_kind": source_report_kind,
+                },
+                progress_callback=progress_callback,
                 strategy_registry=strategy_registry,
+                governance_authority_manager=context.paths,
             )
             reproduced_receipt_path = Path(str(reproduced_report["reproduction_receipt_path"]))
             try:
@@ -802,6 +889,7 @@ def cmd_research_registry_inspect(*, context: "ResearchAppContext", row_hash: st
 def cmd_research_registry_validate(*, context: "ResearchAppContext", experiment_id: str) -> int:
     path = experiment_registry_path(manager=context.paths)
     rows = load_experiment_registry_rows(path)
+    registry_chain_reasons = experiment_registry_chain_reasons(rows)
     reservations = [
         item
         for item in rows
@@ -820,32 +908,134 @@ def cmd_research_registry_validate(*, context: "ResearchAppContext", experiment_
             "warning": "artifact_binding_not_checked",
         }, sort_keys=True, indent=2))
         return 1
-    ok = True
-    report_path = context.paths.report_path("research", experiment_id, "backtest_report.json")
-    evidence_path = context.paths.data_dir() / "reports" / "research" / experiment_id / "statistical_selection_evidence.json"
-    panel_path = context.paths.data_dir() / "reports" / "research" / experiment_id / "candidate_return_panel.json"
-    report = _load_json_if_exists(report_path)
-    evidence = _load_json_if_exists(evidence_path)
-    panel = _load_json_if_exists(panel_path)
-    artifact_reasons: list[str] = []
-    validation_scope = "registry_and_artifacts" if isinstance(report, dict) else "registry_only"
+    ok = not registry_chain_reasons
+    report_candidates = [
+        (
+            report_kind,
+            context.paths.report_path(
+                "research", experiment_id, f"{report_kind}_report.json"
+            ),
+        )
+        for report_kind in ("backtest", "walk_forward")
+    ]
+    report_loads = [
+        (
+            report_kind,
+            candidate_path,
+            *_load_json_artifact(
+                candidate_path,
+                label=f"{report_kind}_report",
+            ),
+        )
+        for report_kind, candidate_path in report_candidates
+    ]
+    loaded_reports = [
+        (report_kind, candidate_path, payload)
+        for report_kind, candidate_path, payload, _error in report_loads
+        if isinstance(payload, dict)
+    ]
+    artifact_load_errors = [
+        error
+        for _report_kind, _candidate_path, _payload, error in report_loads
+        if error is not None
+    ]
+    report_resolution_error = len(loaded_reports) > 1
+    if len(loaded_reports) == 1:
+        report_kind, report_path, report = loaded_reports[0]
+    else:
+        report_kind = None
+        report_path = report_candidates[0][1]
+        report = None
+    confirmation_path = context.paths.report_path(
+        "research", experiment_id, "final_holdout_confirmation.json"
+    )
+    confirmation, confirmation_load_error = _load_json_artifact(
+        confirmation_path,
+        label="final_holdout_confirmation",
+    )
+    evidence_path = context.paths.research_artifact_path(experiment_id, "statistical_selection_evidence.json")
+    panel_path = context.paths.research_artifact_path(experiment_id, "candidate_return_panel.json")
+    evidence, evidence_load_error = _load_json_artifact(
+        evidence_path,
+        label="statistical_evidence",
+    )
+    panel, panel_load_error = _load_json_artifact(
+        panel_path,
+        label="return_panel",
+    )
+    artifact_load_errors.extend(
+        error
+        for error in (
+            confirmation_load_error,
+            evidence_load_error,
+            panel_load_error,
+        )
+        if error is not None
+    )
+    artifact_reasons: list[str] = [
+        *artifact_load_errors,
+        *registry_chain_reasons,
+    ]
+    if report_resolution_error:
+        artifact_reasons.append("multiple_research_reports_found")
+        ok = False
+    validation_scope = (
+        "registry_and_artifacts"
+        if (
+            isinstance(report, dict)
+            or isinstance(confirmation, dict)
+            or report_resolution_error
+            or artifact_load_errors
+        )
+        else "registry_only"
+    )
     report_loaded = isinstance(report, dict)
+    confirmation_loaded = isinstance(confirmation, dict)
     evidence_loaded = isinstance(evidence, dict)
     return_panel_loaded = isinstance(panel, dict)
+    artifact_bound_row_hashes: set[str] = set()
+    selection_bound_row_hash: str | None = None
+    confirmation_bound_row_hash: str | None = None
     artifact_bound_row_hash: str | None = None
     artifact_binding_valid: bool | str = "unknown"
+    canonical_registry_path = path.resolve()
+    for payload in (report, evidence, confirmation):
+        if not isinstance(payload, dict):
+            continue
+        recorded_registry_path = str(
+            payload.get("experiment_registry_path") or ""
+        ).strip()
+        if recorded_registry_path and Path(recorded_registry_path).expanduser().resolve() != canonical_registry_path:
+            artifact_reasons.append("experiment_registry_path_mismatch")
+    if (
+        report_loaded
+        and requires_candidate_validation(report.get("research_classification"))
+        and not confirmation_loaded
+    ):
+        artifact_reasons.append("final_holdout_confirmation_missing")
     if report_loaded:
         evidence_row_hash = str(evidence.get("experiment_registry_row_hash") or "").strip() if isinstance(evidence, dict) else ""
         report_row_hash = str(report.get("experiment_registry_row_hash") or "").strip()
         if evidence_row_hash and report_row_hash and evidence_row_hash != report_row_hash:
             artifact_reasons.append("experiment_registry_report_evidence_row_hash_mismatch")
             artifact_reasons.append("experiment_registry_artifact_bound_row_hash_mismatch")
-        artifact_bound_row_hash = evidence_row_hash or report_row_hash or None
-        if not artifact_bound_row_hash:
+        selection_bound_row_hash = evidence_row_hash or report_row_hash or None
+        if selection_bound_row_hash:
+            artifact_bound_row_hashes.add(selection_bound_row_hash)
+        if not selection_bound_row_hash and not confirmation_loaded:
             artifact_reasons.append("experiment_registry_row_hash_missing")
-        elif not any(row.get("row_hash") == artifact_bound_row_hash for row in reservations):
+        elif selection_bound_row_hash and not any(
+            row.get("row_hash") == selection_bound_row_hash for row in reservations
+        ):
             artifact_reasons.append("experiment_registry_artifact_bound_row_missing")
-        artifact_reasons.extend(_content_hash_reasons(report, report_hash=True, label="backtest_report"))
+        artifact_reasons.extend(
+            _content_hash_reasons(
+                report,
+                report_hash=True,
+                label=f"{report_kind}_report",
+            )
+        )
+        artifact_reasons.extend(validate_final_selection_report(report))
         evidence_required = bool(report.get("statistical_validation_required")) or bool(report.get("statistical_evidence_hash"))
         if evidence_required and not evidence_loaded:
             artifact_reasons.append("statistical_evidence_missing")
@@ -853,11 +1043,78 @@ def cmd_research_registry_validate(*, context: "ResearchAppContext", experiment_
             artifact_reasons.extend(_content_hash_reasons(evidence, report_hash=False, label="statistical_evidence"))
             artifact_reasons.extend(validate_return_panel_binding(report=report, evidence=evidence, panel=panel))
         artifact_reasons.extend(validate_audit_trail_binding(report=report, manager=context.paths))
-    else:
+    elif not confirmation_loaded:
         artifact_reasons.append("artifact_binding_not_checked")
-    if validation_scope == "registry_and_artifacts" and artifact_bound_row_hash and "experiment_registry_artifact_bound_row_missing" not in artifact_reasons:
+    if confirmation_loaded:
+        confirmation_bound_row_hash = str(
+            confirmation.get("experiment_registry_row_hash") or ""
+        ).strip() or None
+        authorization_row_hash = str(
+            confirmation.get("authorization_row_hash") or ""
+        ).strip() or None
+        completion_row_hash = str(
+            confirmation.get("experiment_registry_completion_row_hash") or ""
+        ).strip() or None
+        legacy_completion_row_hash = str(
+            confirmation.get("completion_row_hash") or ""
+        ).strip() or None
+        if (
+            confirmation_bound_row_hash
+            and authorization_row_hash
+            and confirmation_bound_row_hash != authorization_row_hash
+        ):
+            artifact_reasons.append("final_holdout_confirmation_authorization_row_hash_mismatch")
+        if (
+            completion_row_hash
+            and legacy_completion_row_hash
+            and completion_row_hash != legacy_completion_row_hash
+        ):
+            artifact_reasons.append("final_holdout_confirmation_completion_row_hash_mismatch")
+        if not confirmation_bound_row_hash:
+            artifact_reasons.append("final_holdout_confirmation_registry_row_hash_missing")
+        elif not any(
+            row.get("row_hash") == confirmation_bound_row_hash
+            for row in reservations
+        ):
+            artifact_reasons.append("final_holdout_confirmation_registry_row_missing")
+        else:
+            artifact_bound_row_hashes.add(confirmation_bound_row_hash)
+        canonical_completion = (
+            _completion_for_row(rows, confirmation_bound_row_hash)
+            if confirmation_bound_row_hash
+            else None
+        )
+        if (
+            not isinstance(canonical_completion, dict)
+            or canonical_completion.get("event_type") != "research_attempt_completed"
+            or not completion_row_hash
+            or canonical_completion.get("row_hash") != completion_row_hash
+        ):
+            artifact_reasons.append(
+                "final_holdout_confirmation_canonical_completion_row_mismatch"
+            )
+        selection_artifact = report.get("selection_artifact") if report_loaded else None
+        if not isinstance(selection_artifact, dict):
+            artifact_reasons.append("final_holdout_confirmation_selection_artifact_missing")
+        else:
+            if report.get("selection_artifact_hash") != selection_artifact.get(
+                "content_hash"
+            ):
+                artifact_reasons.append("report_selection_artifact_hash_mismatch")
+            artifact_reasons.extend(
+                validate_confirmation_artifact(
+                    confirmation,
+                    selection_artifact=selection_artifact,
+                )
+            )
+    artifact_bound_row_hash = confirmation_bound_row_hash or selection_bound_row_hash
+    if (
+        validation_scope == "registry_and_artifacts"
+        and selection_bound_row_hash
+        and any(row.get("row_hash") == selection_bound_row_hash for row in reservations)
+    ):
         bound_report = dict(report) if isinstance(report, dict) else {}
-        bound_completion = _completion_for_row(rows, artifact_bound_row_hash)
+        bound_completion = _completion_for_row(rows, selection_bound_row_hash)
         if isinstance(bound_completion, dict) and bound_report.get("experiment_registry_completion_row_hash") is None:
             bound_report["experiment_registry_completion_row_hash"] = bound_completion.get("row_hash")
         binding_reasons = validate_experiment_registry_binding(
@@ -866,21 +1123,55 @@ def cmd_research_registry_validate(*, context: "ResearchAppContext", experiment_
             require_complete=True,
         )
         artifact_reasons.extend(binding_reasons)
-        artifact_binding_valid = not artifact_reasons
-    elif validation_scope == "registry_and_artifacts":
-        artifact_binding_valid = False
+    if (
+        validation_scope == "registry_and_artifacts"
+        and confirmation_bound_row_hash
+        and any(row.get("row_hash") == confirmation_bound_row_hash for row in reservations)
+    ):
+        artifact_reasons.extend(
+            validate_experiment_registry_binding(
+                report=confirmation,
+                require_complete=True,
+            )
+        )
+    if validation_scope == "registry_and_artifacts":
+        artifact_binding_valid = bool(artifact_bound_row_hashes) and not artifact_reasons
     lifecycle_summary = []
     for row in reservations:
-        completion = _completion_for_row(rows, str(row.get("row_hash") or ""))
-        lifecycle = _registry_lifecycle_row(row=row, completion=completion, artifact_bound=row.get("row_hash") == artifact_bound_row_hash)
+        reservation_hash = str(row.get("row_hash") or "")
+        terminal_rows = [
+            item
+            for item in rows
+            if item.get("event_type")
+            in {"research_attempt_completed", "research_attempt_aborted"}
+            and item.get("reservation_row_hash") == reservation_hash
+        ]
+        completion = terminal_rows[0] if len(terminal_rows) == 1 else None
+        lifecycle = _registry_lifecycle_row(
+            row=row,
+            completion=completion,
+            artifact_bound=reservation_hash in artifact_bound_row_hashes,
+        )
+        lifecycle["terminal_event_count"] = len(terminal_rows)
+        if len(terminal_rows) > 1:
+            lifecycle["ok"] = False
+            lifecycle["lifecycle_complete"] = False
+            lifecycle["validation_permitted"] = False
+            lifecycle["reasons"] = sorted(
+                set(
+                    [str(item) for item in lifecycle["reasons"]]
+                    + ["experiment_registry_multiple_terminal_events"]
+                )
+            )
         lifecycle["report_loaded"] = report_loaded
+        lifecycle["final_holdout_confirmation_loaded"] = confirmation_loaded
         lifecycle["evidence_loaded"] = evidence_loaded
         lifecycle["return_panel_loaded"] = return_panel_loaded
         if lifecycle["artifact_bound"]:
             lifecycle["artifact_binding_valid"] = artifact_binding_valid
             lifecycle["reasons"] = sorted(set([str(item) for item in lifecycle["reasons"]] + artifact_reasons))
         lifecycle_summary.append(lifecycle)
-        ok = ok and lifecycle["registry_row_valid"]
+        ok = ok and bool(lifecycle["ok"])
     if validation_scope == "registry_and_artifacts":
         ok = ok and artifact_binding_valid is True
     payload = {
@@ -889,11 +1180,15 @@ def cmd_research_registry_validate(*, context: "ResearchAppContext", experiment_
         "experiment_id": experiment_id,
         "registry_path": str(path.resolve()),
         "artifact_bound_row_hash": artifact_bound_row_hash,
+        "artifact_bound_row_hashes": sorted(artifact_bound_row_hashes),
         "artifact_reasons": sorted(set(artifact_reasons)),
+        "report_kind": report_kind,
         "report_path": str(report_path.resolve()),
+        "final_holdout_confirmation_path": str(confirmation_path.resolve()),
         "evidence_path": str(evidence_path.resolve()),
         "return_panel_path": str(panel_path.resolve()),
         "report_loaded": report_loaded,
+        "final_holdout_confirmation_loaded": confirmation_loaded,
         "evidence_loaded": evidence_loaded,
         "return_panel_loaded": return_panel_loaded,
         "artifact_binding_valid": artifact_binding_valid,
@@ -966,12 +1261,23 @@ def _registry_lifecycle_row(
     }
 
 
-def _load_json_if_exists(path: Path) -> dict[str, object] | None:
+def _load_json_artifact(
+    path: Path,
+    *,
+    label: str,
+) -> tuple[dict[str, object] | None, str | None]:
     if not path.exists():
-        return None
-    with path.open("r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-    return payload if isinstance(payload, dict) else None
+        return None, None
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except json.JSONDecodeError:
+        return None, f"{label}_json_invalid"
+    except OSError:
+        return None, f"{label}_read_failed"
+    if not isinstance(payload, dict):
+        return None, f"{label}_must_be_object"
+    return payload, None
 
 
 def _content_hash_reasons(payload: dict[str, object], *, report_hash: bool, label: str) -> list[str]:

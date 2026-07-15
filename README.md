@@ -120,6 +120,19 @@ conditions, validation-to-holdout observed performance ranges, known
 limitations, and the human approval record. Missing semantic fields fail the
 export instead of producing a hash-only handoff.
 
+The official export command verifies the schema-3 terminal result against the
+canonical experiment and governance registries and emits
+`authoritative=true`, `package_authority_status=CANONICAL_REGISTRIES_VERIFIED`,
+and `package_authority_result=PASS`. Direct library calls without a path
+manager remain a compatibility surface only: their packages are marked
+`DECLARED_PATH_ONLY`/`UNVERIFIED` and are not valid approval, benchmark, or
+handoff artifacts.
+
+`validation_summary.json` schema 3 is the canonical input to both approval and
+package export. It retains the complete selection contract and candidate
+evidence, final-holdout confirmation, and terminal validation result in the
+same logical report-hash domain verified by both commands.
+
 `research-validate` also writes a hash-bound `research_candidate_report.json`
 with fixed sections for hypothesis and conditions, data quality, performance,
 trades, costs, regimes, robustness, out-of-sample evidence, failure periods,

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from market_research.paths import ResearchPathManager
+from market_research.research.hashing import content_hash_payload, sha256_prefixed
 from market_research.research.governance import (
     GovernanceError,
     GovernanceSubject,
@@ -267,6 +268,55 @@ def test_approval_is_bound_to_report_candidate_and_current_state(tmp_path: Path)
         , hypothesis_id="edge", hypothesis_version="1", hypothesis_contract_hash=_hash("4")
         , strategy_name="noop_baseline", strategy_version="v1", strategy_plugin_contract_hash=_hash("a"), effective_strategy_parameters_hash=_hash("b")
     )
+
+
+def test_approval_rejects_copied_noncanonical_governance_registry(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    subject = _out_of_sample_candidate(manager)
+    hypothesis = _supported_hypothesis(manager, source_report_hash=_hash("5"))
+    approval = approve_strategy_candidate(
+        manager=manager,
+        subject=subject,
+        source_report_hash=_hash("5"),
+        hypothesis_subject=hypothesis,
+        hypothesis_contract_hash=_hash("4"),
+        strategy_name="noop_baseline",
+        strategy_version="v1",
+        strategy_plugin_contract_hash=_hash("a"),
+        effective_strategy_parameters_hash=_hash("b"),
+        final_holdout_confirmation_hash=_hash("3"),
+        reviewer_id="approver-a",
+        rationale="economic and overfit review passed",
+    )
+    canonical_path = governance_registry_path(manager)
+    copied_path = tmp_path / "copied-governance.jsonl"
+    copied_path.write_bytes(canonical_path.read_bytes())
+    forged = {**approval, "governance_registry_path": str(copied_path.resolve())}
+    forged_material = {
+        key: value for key, value in forged.items() if key != "content_hash"
+    }
+    forged["content_hash"] = sha256_prefixed(
+        content_hash_payload(forged_material)
+    )
+
+    reasons = validate_strategy_approval(
+        forged,
+        source_report_hash=_hash("5"),
+        selected_candidate_id="candidate-a",
+        final_holdout_confirmation_hash=_hash("3"),
+        hypothesis_id="edge",
+        hypothesis_version="1",
+        hypothesis_contract_hash=_hash("4"),
+        strategy_name="noop_baseline",
+        strategy_version="v1",
+        strategy_plugin_contract_hash=_hash("a"),
+        effective_strategy_parameters_hash=_hash("b"),
+        expected_registry_path=canonical_path,
+    )
+
+    assert reasons == ["strategy_approval_registry_path_mismatch"]
 
 
 def test_generic_transition_api_cannot_self_approve_candidate(tmp_path: Path) -> None:

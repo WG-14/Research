@@ -91,12 +91,23 @@ def _transitive_behavior_binding(hook: Callable[..., Any]) -> dict[str, str]:
     """Bind the deterministic, cycle-safe graph of strategy-owned behavior."""
     components: dict[str, str] = {}
     visited: set[str] = set()
+    root_module = str(getattr(hook, "__module__", ""))
+    root_namespace = root_module.split(".", 1)[0]
+
+    def is_strategy_owned_module(module: str) -> bool:
+        if module.startswith("market_research"):
+            return True
+        if not root_module:
+            return False
+        return module == root_module or (
+            bool(root_namespace) and module.startswith(f"{root_namespace}.")
+        )
 
     def visit(value: Any) -> None:
         if not (inspect.isfunction(value) or inspect.isclass(value)):
             return
         module = str(getattr(value, "__module__", ""))
-        if not module.startswith("market_research"):
+        if not is_strategy_owned_module(module):
             return
         identity = f"{module}:{getattr(value, '__qualname__', type(value).__qualname__)}"
         if identity in visited:

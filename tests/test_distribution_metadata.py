@@ -12,3 +12,16 @@ def test_distribution_metadata_and_console_entry_point() -> None:
     assert payload["project"]["scripts"] == {
         "market-research": "market_research.research_bootstrap:run_cli"
     }
+
+
+def test_distribution_probe_uses_explicit_builtin_composition() -> None:
+    workflow = Path(".github/workflows/research-ci.yml").read_text(encoding="utf-8")
+
+    assert (
+        "from market_research.research_composition import builtin_strategy_registry"
+        in workflow
+    )
+    assert (
+        "list_research_strategies(registry=builtin_strategy_registry())"
+        in workflow
+    )

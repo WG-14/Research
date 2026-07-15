@@ -6,13 +6,15 @@ import random
 from pathlib import Path
 from typing import Any, Iterable
 
+from market_research.paths import ResearchPathManager
+
 from .backtest_types import BacktestRunContext
 from .benchmark_schedule import build_internal_schedule_benchmark_plugin
 from .dataset_snapshot import DatasetSnapshot
 from .execution_model import DepthWalkExecutionModel, FixedBpsExecutionModel, StressExecutionModel
 from .experiment_manifest import ExecutionScenario, ExperimentManifest
 from .hashing import content_hash_payload, sha256_prefixed
-from .governance import validate_strategy_approval
+from .governance import governance_registry_path, validate_strategy_approval
 from .strategy_spec import materialize_strategy_parameters
 from .intervals import interval_to_milliseconds
 from .simulation_engine import run_common_simulation_backtest
@@ -25,6 +27,7 @@ class BenchmarkSuiteRunner:
 
     manifest: ExperimentManifest
     strategy_registry: StrategyRegistry
+    manager: ResearchPathManager | None = None
 
     def run(
         self,
@@ -112,6 +115,11 @@ class BenchmarkSuiteRunner:
                 expected_hash=contract.approved_strategy.approval_artifact_hash,
                 reference=contract.approved_strategy.strategy,
                 registry=self.strategy_registry,
+                expected_governance_registry_path=(
+                    governance_registry_path(self.manager)
+                    if self.manager is not None
+                    else None
+                ),
             )
             payload["approved_strategy"] = {
                 **self._strategy_reference_benchmark(
@@ -389,6 +397,7 @@ def _load_approval_artifact(
     expected_hash: str,
     reference: Any,
     registry: StrategyRegistry,
+    expected_governance_registry_path: Path | None = None,
 ) -> dict[str, Any]:
     artifact_path = Path(path).expanduser().resolve(strict=True)
     with artifact_path.open("r", encoding="utf-8") as handle:
@@ -434,6 +443,7 @@ def _load_approval_artifact(
                 registry=registry,
             )
         ),
+        expected_registry_path=expected_governance_registry_path,
     )
     if approval_reasons:
         raise ValueError("approved_strategy_governance_approval_invalid:" + ",".join(approval_reasons))

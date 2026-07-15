@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from market_research.research.report_writer import summarize_report_candidate
 from market_research.research.return_panel import build_candidate_return_panel
 
 
@@ -23,6 +24,12 @@ def _candidate() -> dict[str, object]:
         },
         "scenario_results": [],
     }
+
+
+def test_compact_report_candidate_preserves_return_panel_identity() -> None:
+    summary = summarize_report_candidate(_candidate())
+
+    assert summary["parameter_candidate_id"] == "candidate-1"
 
 
 @pytest.mark.parametrize(
