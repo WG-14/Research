@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from typing import Any
 
-
-_EXCLUDED = frozenset({"artifact_path", "report_path", "runtime_observability", "wall_seconds"})
+from .hashing import logical_evidence_hash_payload
 
 
 def build_candidate_profile(candidate: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in candidate.items() if key not in _EXCLUDED}
+    """Build the path- and runtime-invariant logical candidate profile."""
+
+    profile = logical_evidence_hash_payload(candidate)
+    if not isinstance(profile, dict):  # pragma: no cover - input contract guard
+        raise TypeError("candidate_profile_must_be_object")
+    return profile
 
 
 def build_candidate_behavior_profile(

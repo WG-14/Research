@@ -46,6 +46,7 @@ jobs:
           required = {
               "market_research/__init__.py",
               "market_research/__main__.py",
+              "market_research/application/__init__.py",
               "market_research/research_bootstrap.py",
           }
           assert required <= names, required - names
@@ -61,9 +62,10 @@ jobs:
           required = {
               root + "pyproject.toml", root + "README.md", root + "CHANGELOG.md",
               root + "src/market_research/__init__.py",
+              root + "src/market_research/application/__init__.py",
           }
           assert required <= names, required - names
-          forbidden_parts = ("/dist/", "/.venv/", "/.git/", "/tests/", "/docs/", "/.github/")
+          forbidden_parts = ("/dist/", "/.venv/", "/.git/", "/tests/", "/docs/", "/.github/", "/apps/")
           forbidden_suffixes = (".sqlite", ".sqlite3", ".db", "/.env", "/.env.example")
           assert not [name for name in names if any(part in name for part in forbidden_parts) or name.endswith(forbidden_suffixes)]
           PY
@@ -105,3 +107,28 @@ jobs:
             dist/market_research-0.1.0.tar.gz
             dist/SHA256SUMS
           if-no-files-found: error
+
+  internal-web-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/internal_web
+    env:
+      INTERNAL_WEB_SECRET_KEY: ci-only-internal-web-secret-0123456789abcdef
+      INTERNAL_WEB_REQUIRE_BROWSER_E2E: "1"
+      INTERNAL_WEB_SECURE_SSL_REDIRECT: "false"
+      RESEARCH_DATA_ROOT: /tmp/market-research-web/datasets
+      RESEARCH_ARTIFACT_ROOT: /tmp/market-research-web/artifacts
+      RESEARCH_REPORT_ROOT: /tmp/market-research-web/reports
+      RESEARCH_CACHE_ROOT: /tmp/market-research-web/cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --dev
+      - run: uv run python -m playwright install --with-deps chromium
+      - run: uv run python manage.py check --settings=market_research_web.settings_test
+      - run: uv run python manage.py makemigrations --check --dry-run --settings=market_research_web.settings_test
+      - run: uv run pytest -q -s

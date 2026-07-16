@@ -65,8 +65,9 @@ def _batch(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-concurrent-manifests", type=int, default=1)
     parser.add_argument("--command", default="research-backtest", choices=("research-backtest",))
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--fail-fast", action="store_true")
-    mode.add_argument("--continue-on-error", action="store_true")
+    mode.add_argument("--fail-fast", dest="fail_fast", action="store_true")
+    mode.add_argument("--continue-on-error", dest="fail_fast", action="store_false")
+    parser.set_defaults(fail_fast=False)
     parser.add_argument("--out")
 
 

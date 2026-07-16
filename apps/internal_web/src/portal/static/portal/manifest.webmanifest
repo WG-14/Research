@@ -1,0 +1,19 @@
+{
+  "name": "Research Console",
+  "short_name": "Research",
+  "description": "Internal offline market-research workspace",
+  "lang": "ko-KR",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f6f9",
+  "theme_color": "#132238",
+  "icons": [
+    {
+      "src": "/static/portal/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

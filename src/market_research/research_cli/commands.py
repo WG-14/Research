@@ -1,7 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import json
+from time import monotonic
 from typing import Any
+
+from market_research.application.adapters import (
+    preflight_request_from_namespace,
+    validation_request_from_namespace,
+)
+from market_research.application.service import ResearchApplicationService
+from market_research.research_composition import builtin_strategy_registry
 
 from .context import ResearchAppContext
 
@@ -33,7 +42,6 @@ def execute_research_command(
     lifecycle_commands = {
         "research-backtest",
         "research-walk-forward",
-        "research-validate",
         "research-reproduce-run",
     }
     if command in lifecycle_commands:
@@ -85,20 +93,11 @@ def _dispatch_research_command(
             execution_calibration_path=args.execution_calibration,
         ))
     if command == "research-validate":
-        return int(cli.cmd_research_validate(
-            context=context, manifest_path=args.manifest,
-            execution_calibration_path=args.execution_calibration,
-            candidate_id=args.candidate_id, out_path=args.out, mode=args.mode,
-        ))
+        return _execute_validation_application(args=args, context=context, cli=cli)
     if command == "research-readiness":
-        from market_research.research.readiness import cmd_research_readiness
-
-        return int(cmd_research_readiness(
-            context=context, manifest_path=args.manifest,
-            execution_calibration_path=args.execution_calibration, as_json=args.json,
-        ))
+        return _execute_readiness_application(args=args, context=context)
     if command == "research-workload-estimate":
-        return int(cli.cmd_research_workload_estimate(context=context, manifest_path=args.manifest, as_json=args.json))
+        return _execute_workload_application(args=args, context=context)
     if command == "research-forward-diagnostics":
         from market_research.research.forward_diagnostics_cli import cmd_research_forward_diagnostics
 
@@ -172,3 +171,112 @@ def _namespace_payload(args: argparse.Namespace) -> dict[str, Any]:
         for key, value in vars(args).items()
         if key not in {"func", "handler"}
     }
+
+
+def _application_service(context: ResearchAppContext) -> ResearchApplicationService:
+    return ResearchApplicationService(
+        paths=context.paths,
+        strategy_registry=builtin_strategy_registry(),
+        environment_summary=(
+            context.environment.as_dict()
+            if context.environment is not None
+            else None
+        ),
+    )
+
+
+def _execute_readiness_application(
+    *,
+    args: argparse.Namespace,
+    context: ResearchAppContext,
+) -> int:
+    from market_research.research.readiness import _print_readiness
+
+    request = preflight_request_from_namespace(args)
+    result = _application_service(context).readiness(
+        request,
+        progress_callback=(
+            None
+            if args.json
+            else lambda event: context.printer(
+                "[RESEARCH-READINESS] "
+                f"scanning split={event.get('split')} method={event.get('method')}"
+            )
+        ),
+    )
+    if result.errors:
+        context.printer(f"[RESEARCH-READINESS] error={result.errors[0].message}")
+        return int(result.exit_code)
+    report = result.report or {}
+    if args.json:
+        context.printer(
+            json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2)
+        )
+    else:
+        _print_readiness(report, printer=context.printer)
+    return int(result.exit_code)
+
+
+def _execute_workload_application(
+    *,
+    args: argparse.Namespace,
+    context: ResearchAppContext,
+) -> int:
+    request = preflight_request_from_namespace(args)
+    result = _application_service(context).workload_estimate(request)
+    if result.errors:
+        context.printer(
+            f"[RESEARCH-WORKLOAD-ESTIMATE] error={result.errors[0].message}"
+        )
+        return int(result.exit_code)
+    payload = result.estimate or {}
+    if args.json:
+        context.printer(json.dumps(payload, sort_keys=True, indent=2))
+        return int(result.exit_code)
+    context.printer(
+        "[RESEARCH-WORKLOAD-ESTIMATE] "
+        f"experiment_id={payload['experiment_id']} "
+        f"candidate_count={payload['candidate_count']} "
+        f"scenario_count={payload['scenario_count']} "
+        f"split_count={payload['split_count']} "
+        f"work_unit_count={payload['work_unit_count']} "
+        f"available_parallel_work_tasks={payload.get('available_parallel_work_tasks')} "
+        f"pre_parallel_dataset_hash_call_count={payload['pre_parallel_dataset_hash_call_count']}"
+    )
+    return int(result.exit_code)
+
+
+def _execute_validation_application(
+    *,
+    args: argparse.Namespace,
+    context: ResearchAppContext,
+    cli: Any,
+) -> int:
+    started_at = monotonic()
+    request = validation_request_from_namespace(args)
+    rc = 1
+    try:
+        result = _application_service(context).validate(
+            request,
+            progress_callback=cli._print_research_backtest_progress,
+        )
+        context.run_id = result.run_id
+        context.run_result_hash = result.content_hash
+        rc = int(result.exit_code)
+        if result.errors:
+            context.printer(f"[RESEARCH-VALIDATE] error={result.errors[0].message}")
+        elif result.report is not None:
+            cli._print_validation_run_summary(result.report)
+    finally:
+        cli._print_research_command_finished(
+            context,
+            "research-validate",
+            started_at,
+            rc,
+            manifest=request.manifest_path,
+            execution_calibration=request.execution_calibration_path,
+            candidate_id=request.candidate_id,
+            out=request.out_path,
+            mode=request.mode,
+        )
+    return rc

@@ -30,6 +30,7 @@ market-research = "market_research.research_bootstrap:run_cli"
 [tool.pytest.ini_options]
 addopts = "--strict-markers"
 pythonpath = ["."]
+testpaths = ["tests"]
 tmp_path_retention_count = 1
 tmp_path_retention_policy = "failed"
 markers = [

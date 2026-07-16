@@ -1,0 +1,3 @@
+{% extends "portal/base.html" %}
+{% block title %}요청을 처리할 수 없음 · Research Console{% endblock %}
+{% block content %}<section class="error-page"><span aria-hidden="true">!</span><p class="eyebrow">REQUEST NOT COMPLETED</p><h1>{{ error_title|default:"요청을 처리할 수 없습니다" }}</h1><p>{{ error_message|default:"잠시 후 다시 시도하거나 관리자에게 문의해 주세요." }}</p>{% if correlation_id %}<p>관리자 문의 ID <code>{{ correlation_id }}</code></p>{% endif %}<a class="button button-primary" href="{% url 'portal:dashboard' %}">대시보드로 돌아가기</a></section>{% endblock %}

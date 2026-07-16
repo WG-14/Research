@@ -8,6 +8,12 @@ from typing import TYPE_CHECKING, Any
 
 from market_research.storage_io import write_json_atomic
 from market_research.paths import ResearchPathManager
+from market_research.application import (
+    ActorContext,
+    HumanReviewRequest,
+    ResearchGovernanceApplicationService,
+    StrategyApprovalRequest,
+)
 
 from .artifact_store import ArtifactBudgetExceeded
 from .experiment_manifest import ManifestValidationError, load_manifest, load_manifest_with_registry
@@ -29,10 +35,7 @@ from .governance import (
     GovernanceError,
     GovernanceSubject,
     GovernanceSubjectType,
-    HumanReviewDecision,
-    append_human_review,
     append_lifecycle_transition,
-    approve_strategy_candidate,
 )
 from .reproduction import (
     ReproductionContractError,
@@ -46,7 +49,6 @@ from .research_classification import requires_candidate_validation
 from .run_summary import ResearchRunSummary, build_research_run_summary
 from .validation_pipeline import (
     ValidationRunError,
-    validate_validated_research_result,
     validation_next_action_payload,
 )
 from .validation_protocol import ResearchValidationError, run_research_backtest, run_research_walk_forward
@@ -112,21 +114,30 @@ def cmd_research_record_human_review(
             if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
                 raise GovernanceError("human_review_requested_changes_file_must_be_array")
             requested = tuple(payload)
-        row = append_human_review(
-            manager=context.paths,
-            subject=_governance_subject(subject_type, subject_id, subject_version),
-            decision=HumanReviewDecision(decision),
-            reviewer_id=reviewer_id,
-            reviewer_role=reviewer_role,
-            rationale=rationale,
-            reviewed_artifact_hash=reviewed_artifact_hash,
-            requested_changes=requested,
-            resolved_requirement_ids=resolved_requirement_ids,
+        result = ResearchGovernanceApplicationService(context.paths).record_review(
+            HumanReviewRequest(
+                subject={
+                    "subject_type": subject_type,
+                    "subject_id": subject_id,
+                    "subject_version": subject_version,
+                },
+                decision=decision,
+                actor=ActorContext(
+                    actor_id=reviewer_id,
+                    roles=(reviewer_role,),
+                    permissions=frozenset({"*"}),
+                    source="cli",
+                ),
+                rationale=rationale,
+                reviewed_artifact_hash=reviewed_artifact_hash,
+                requested_changes=requested,
+                resolved_requirement_ids=resolved_requirement_ids,
+            )
         )
     except (OSError, json.JSONDecodeError, GovernanceError, ValueError) as exc:
         context.printer(f"[RESEARCH-HUMAN-REVIEW] error={exc}")
         return 1
-    context.printer(f"[RESEARCH-HUMAN-REVIEW] row_hash={row['row_hash']}")
+    context.printer(f"[RESEARCH-HUMAN-REVIEW] row_hash={result.row_hash}")
     return 0
 
 
@@ -136,97 +147,26 @@ def cmd_research_approve_strategy_candidate(
     out_path: str,
 ) -> int:
     try:
-        report = json.loads(Path(result_path).read_text(encoding="utf-8"))
-        if not isinstance(report, dict):
-            raise GovernanceError("strategy_approval_report_must_be_object")
-        recorded_hash = str(report.get("content_hash") or "")
-        actual_hash = sha256_prefixed(report_content_hash_payload(report))
-        if recorded_hash != actual_hash:
-            raise GovernanceError("strategy_approval_source_report_content_hash_mismatch")
-        result_reasons = validate_validated_research_result(report)
-        if result_reasons:
-            raise GovernanceError(
-                "strategy_approval_validated_result_invalid:"
-                + ",".join(result_reasons)
-            )
-        selection_reasons = validate_final_selection_report(report)
-        if selection_reasons:
-            raise GovernanceError(
-                "strategy_approval_final_selection_invalid:"
-                + ",".join(selection_reasons)
-            )
-        candidate_id = str(report.get("selected_candidate_id") or "").strip()
-        if not candidate_id:
-            raise GovernanceError("strategy_approval_selected_candidate_missing")
-        confirmation = report.get("final_holdout_confirmation")
-        confirmation_hash = (
-            str(confirmation.get("content_hash") or "")
-            if isinstance(confirmation, dict) else ""
-        )
-        if not confirmation_hash:
-            raise GovernanceError("strategy_approval_final_holdout_confirmation_missing")
-        selection_artifact = report.get("selection_artifact")
-        if not isinstance(selection_artifact, dict):
-            raise GovernanceError("strategy_approval_selection_artifact_missing")
-        confirmation_reasons = validate_confirmation_artifact(
-            confirmation,
-            selection_artifact=selection_artifact,
-        )
-        confirmation_reasons.extend(
-            validate_experiment_registry_binding(
-                report=confirmation,
-                require_complete=True,
-                expected_registry_path=experiment_registry_path(
-                    manager=context.paths
+        result = ResearchGovernanceApplicationService(context.paths).approve_candidate(
+            StrategyApprovalRequest(
+                source_report_path=result_path,
+                subject_version=subject_version,
+                actor=ActorContext(
+                    actor_id=reviewer_id,
+                    roles=("research_approver",),
+                    permissions=frozenset({"*"}),
+                    source="cli",
                 ),
+                rationale=rationale,
+                resolved_requirement_ids=resolved_requirement_ids,
+                output_path=out_path,
             )
         )
-        if confirmation.get("confirmation_gate_result") != "PASS":
-            confirmation_reasons.append(
-                "final_holdout_confirmation_not_passed"
-            )
-        if confirmation_reasons:
-            raise GovernanceError(
-                "strategy_approval_final_holdout_invalid:"
-                + ",".join(sorted(set(confirmation_reasons)))
-            )
-        hypothesis_id = str(report.get("hypothesis_id") or "").strip()
-        hypothesis_version = str(report.get("hypothesis_version") or "").strip()
-        hypothesis_contract_hash = str(report.get("hypothesis_contract_hash") or "").strip()
-        if not hypothesis_id or not hypothesis_version or not hypothesis_contract_hash:
-            raise GovernanceError("strategy_approval_hypothesis_identity_missing")
-        candidates = [item for item in report.get("candidates") or [] if isinstance(item, dict)]
-        selected = next(
-            (item for item in candidates if str(item.get("parameter_candidate_id") or item.get("candidate_id") or "") == candidate_id),
-            None,
-        )
-        compiled = selected.get("compiled_strategy_contract") if isinstance(selected, dict) else None
-        if not isinstance(selected, dict) or not isinstance(compiled, dict):
-            raise GovernanceError("strategy_approval_selected_candidate_contract_missing")
-        target = Path(out_path).expanduser().resolve()
-        if ResearchPathManager.is_within(target, context.paths.project_root):
-            raise GovernanceError("strategy_approval_output_must_be_repository_external")
-        approval = approve_strategy_candidate(
-            manager=context.paths,
-            subject=_governance_subject("strategy_candidate", candidate_id, subject_version),
-            hypothesis_subject=_governance_subject("hypothesis", hypothesis_id, hypothesis_version),
-            hypothesis_contract_hash=hypothesis_contract_hash,
-            strategy_name=str(compiled.get("strategy_name") or ""),
-            strategy_version=str(compiled.get("strategy_version") or ""),
-            strategy_plugin_contract_hash=str(selected.get("strategy_plugin_contract_hash") or ""),
-            effective_strategy_parameters_hash=str(selected.get("effective_strategy_parameters_hash") or ""),
-            source_report_hash=recorded_hash,
-            final_holdout_confirmation_hash=confirmation_hash,
-            reviewer_id=reviewer_id,
-            rationale=rationale,
-            resolved_requirement_ids=resolved_requirement_ids,
-        )
-        write_json_atomic(target, approval)
     except (OSError, json.JSONDecodeError, GovernanceError, ValueError) as exc:
         context.printer(f"[RESEARCH-APPROVE-STRATEGY-CANDIDATE] error={exc}")
         return 1
     context.printer(
-        f"[RESEARCH-APPROVE-STRATEGY-CANDIDATE] content_hash={approval['content_hash']}"
+        f"[RESEARCH-APPROVE-STRATEGY-CANDIDATE] content_hash={result.content_hash}"
     )
     return 0
 

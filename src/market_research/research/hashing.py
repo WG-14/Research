@@ -28,13 +28,23 @@ REPORT_TOP_LEVEL_HASH_EXCLUDED_FIELDS = frozenset(
 )
 REPORT_RUNTIME_ONLY_FIELDS = frozenset(
     {
+        "artifact_path",
+        "runtime_observability",
         "run_environment",
         "run_environment_hash",
+        "run_id",
+        "created_at",
+        "lineage_hash",
+        "manifest_path",
+        "normalized_command_args",
+        "command_args_hash",
+        "environment_config_fingerprint",
         "derived_candidates_path",
         "derived_path",
         "report_path",
         "validation_run_path",
         "research_candidate_report_path",
+        "research_candidate_report_hash",
         "selected_candidate_path",
         "failure_artifact_path",
         "statistical_evidence_path",
@@ -56,6 +66,7 @@ REPORT_RUNTIME_ONLY_FIELDS = frozenset(
         "peak_rss_source_units",
         "peak_rss_platform",
         "memory_measurement",
+        "runtime_seconds",
         "wall_seconds",
         "write_wall_seconds",
         "finalization_wall_seconds",
@@ -156,18 +167,26 @@ def report_content_hash_payload(payload: dict[str, Any]) -> dict[str, Any]:
         for key, value in payload.items()
         if key not in REPORT_TOP_LEVEL_HASH_EXCLUDED_FIELDS
     }
-    return _strip_report_runtime_only_fields(logical_payload)
+    return logical_evidence_hash_payload(logical_payload)
 
 
-def _strip_report_runtime_only_fields(value: Any) -> Any:
+def logical_evidence_hash_payload(value: Any) -> Any:
+    """Return a recursively projected payload for logical research evidence hashes.
+
+    Physical artifacts retain paths, timings, and their exact content hashes for
+    loading and integrity validation.  Logical evidence hashes omit those
+    observations so equivalent research executed in a different runtime or
+    repository-external root has the same identity.
+    """
+
     if isinstance(value, dict):
         return {
-            key: _strip_report_runtime_only_fields(item)
+            key: logical_evidence_hash_payload(item)
             for key, item in value.items()
             if key not in REPORT_RUNTIME_ONLY_FIELDS
         }
     if isinstance(value, list):
-        return [_strip_report_runtime_only_fields(item) for item in value]
+        return [logical_evidence_hash_payload(item) for item in value]
     if isinstance(value, tuple):
-        return [_strip_report_runtime_only_fields(item) for item in value]
+        return [logical_evidence_hash_payload(item) for item in value]
     return value

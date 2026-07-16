@@ -1,0 +1,49 @@
+{% extends "portal/base.html" %}
+{% block title %}대시보드 · Research Console{% endblock %}
+{% block breadcrumbs %}연구 운영 / <strong>대시보드</strong>{% endblock %}
+{% block content %}
+<section class="hero-panel">
+  <div>
+    <p class="eyebrow">TODAY'S WORKSPACE</p>
+    <h1>{{ request.user.get_full_name|default:request.user.username }}님, 무엇을 확인할까요?</h1>
+    <p>연구 입력은 자동으로 점검되고, 실행 결과는 원본 해시와 함께 보존됩니다.</p>
+  </div>
+  {% if perms.portal.upload_research_manifest %}<a class="button button-primary" href="{% url 'portal:manifest-upload' %}">새 연구 시작</a>{% endif %}
+</section>
+
+<section class="metric-grid" aria-label="작업 현황">
+  <article class="metric-card"><span>진행 중</span><strong>{{ metrics.active|default:0 }}</strong><small>대기·실행 작업</small></article>
+  <article class="metric-card"><span>검토 필요</span><strong>{{ metrics.review|default:0 }}</strong><small>완료된 후보 결과</small></article>
+  <article class="metric-card"><span>이번 주 완료</span><strong>{{ metrics.completed|default:0 }}</strong><small>검증이 끝난 작업</small></article>
+  <article class="metric-card metric-card-accent"><span>무결성 상태</span><strong>{{ metrics.integrity|default:"결과별 확인" }}</strong><small>상세 조회·다운로드 시 해시 검증</small></article>
+</section>
+
+<div class="two-column">
+  <section class="panel">
+    <div class="panel-head"><div><p class="eyebrow">RECENT ACTIVITY</p><h2>최근 작업</h2></div><a href="{% url 'portal:job-list' %}">전체 보기</a></div>
+    {% if jobs %}
+    <div class="job-list">
+      {% for job in jobs %}
+      <a class="job-row" href="{% url 'portal:job-detail' job.pk %}">
+        <span class="status-icon status-{{ job.status|lower }}" aria-hidden="true"></span>
+        <span class="job-main"><strong>{{ job.display_name|default:job.capability_id }}</strong><small>{{ job.created_at|date:"Y.m.d H:i" }} · {{ job.owner.get_full_name|default:job.owner.username }}</small></span>
+        <span class="badge badge-{{ job.status|lower }}">{{ job.status_label }}</span>
+        <span aria-hidden="true">›</span>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state"><span aria-hidden="true">◎</span><h3>아직 작업이 없습니다</h3><p>manifest를 등록하면 입력 점검부터 차근차근 안내합니다.</p></div>
+    {% endif %}
+  </section>
+  <aside class="panel guidance-panel">
+    <p class="eyebrow">SAFE WORKFLOW</p><h2>처음 이용하시나요?</h2>
+    <ol class="step-list">
+      <li><span>1</span><div><strong>연구 파일 선택</strong><small>서버 경로 대신 JSON 파일을 선택합니다.</small></div></li>
+      <li><span>2</span><div><strong>자동 사전 점검</strong><small>데이터 준비 상태와 예상 작업량을 확인합니다.</small></div></li>
+      <li><span>3</span><div><strong>검증 실행</strong><small>작업은 웹 요청과 분리된 대기열에 등록됩니다.</small></div></li>
+      <li><span>4</span><div><strong>결과와 근거 확인</strong><small>상태, 경고, 해시, 다음 행동을 함께 봅니다.</small></div></li>
+    </ol>
+  </aside>
+</div>
+{% endblock %}

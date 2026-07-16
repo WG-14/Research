@@ -1,0 +1,14 @@
+{% extends "portal/base.html" %}
+{% block title %}{{ manifest.display_name }} · Research Console{% endblock %}
+{% block breadcrumbs %}새 연구 / <strong>입력 확인</strong>{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">MANIFEST VERIFIED</p><h1>{{ manifest.display_name }}</h1><p>파일 형식 검사를 통과했습니다. 실행 전 데이터 준비 상태와 예상 작업량을 확인하세요.</p></div><span class="integrity-chip"><span>✓</span> 원본 해시 고정</span></div>
+<section class="summary-grid">
+  <article><span>실험 ID</span><strong>{{ manifest.experiment_id }}</strong></article>
+  <article><span>전략</span><strong>{{ manifest.strategy_name }}</strong></article>
+  <article><span>시장 · 간격</span><strong>{{ manifest.market }} · {{ manifest.interval }}</strong></article>
+  <article><span>등록자</span><strong>{{ manifest.owner.get_full_name|default:manifest.owner.username }}</strong></article>
+</section>
+<section class="panel evidence-panel"><div class="panel-head"><div><p class="eyebrow">INTEGRITY EVIDENCE</p><h2>입력 근거</h2></div></div><dl class="evidence-list"><div><dt>Manifest hash</dt><dd><code>{{ manifest.manifest_hash }}</code></dd></div><div><dt>원본 content hash</dt><dd><code>{{ manifest.content_hash }}</code></dd></div><div><dt>업로드 시각</dt><dd>{{ manifest.created_at|date:"Y.m.d H:i:s T" }}</dd></div></dl></section>
+{% if perms.portal.submit_research_job %}<div class="next-step-card"><div><span class="next-step-number">2</span><div><h2>사전 점검을 실행합니다</h2><p>데이터 누락, 실행 전제, 메모리 예산과 예상 작업 단위를 확인하는 작업을 등록합니다.</p></div></div><form method="post" action="{% url 'portal:manifest-preflight' manifest.pk %}">{% csrf_token %}<input type="hidden" name="idempotency_key" value="{{ idempotency_key }}"><button class="button button-primary" type="submit">사전 점검 시작</button></form></div>{% endif %}
+{% endblock %}

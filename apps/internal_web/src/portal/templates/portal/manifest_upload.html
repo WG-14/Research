@@ -1,0 +1,31 @@
+{% extends "portal/base.html" %}
+{% block title %}새 연구 · Research Console{% endblock %}
+{% block breadcrumbs %}연구 운영 / <strong>새 연구</strong>{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">NEW RESEARCH</p><h1>연구 정의 파일을 선택하세요</h1><p>manifest 내부 구조와 서버 경로는 시스템이 확인합니다. 데이터셋 자체는 업로드하지 않습니다.</p></div><span class="step-indicator">1 / 3 · 입력 선택</span></div>
+<div class="form-layout">
+  <section class="panel form-panel">
+    <form method="post" enctype="multipart/form-data" class="stack-form" novalidate data-upload-form>
+      {% csrf_token %}
+      {% for error in form.non_field_errors %}<div class="message message-error" role="alert">{{ error }}</div>{% endfor %}
+      <div class="upload-zone" data-drop-zone>
+        <span class="upload-symbol" aria-hidden="true">⇧</span>
+        <h2>JSON manifest를 놓거나 선택</h2>
+        <p>최대 2 MB · 파일 내용과 확장자를 모두 검사합니다.</p>
+        {{ form.manifest_file }}
+        <label class="button button-secondary" for="{{ form.manifest_file.id_for_label }}">파일 선택</label>
+        <strong class="selected-file" data-file-name>선택된 파일 없음</strong>
+        {% for error in form.manifest_file.errors %}<span class="field-error">{{ error }}</span>{% endfor %}
+      </div>
+      <div class="field">
+        <label for="{{ form.display_name.id_for_label }}">화면에 표시할 이름 <span class="optional">선택</span></label>
+        {{ form.display_name }}
+        <small>비워 두면 manifest의 실험 ID를 사용합니다.</small>
+        {% for error in form.display_name.errors %}<span class="field-error">{{ error }}</span>{% endfor %}
+      </div>
+      <div class="form-actions"><a class="button button-ghost" href="{% url 'portal:dashboard' %}">취소</a><button class="button button-primary" type="submit">파일 점검</button></div>
+    </form>
+  </section>
+  <aside class="panel help-panel"><h2>업로드 전에 확인하세요</h2><ul class="check-list"><li>Research Semantics v2 형식의 JSON입니다.</li><li>dataset은 이미 준비된 불변 입력을 참조합니다.</li><li>비밀번호, API 키, 계정 정보가 없어야 합니다.</li><li>업로드 후 원본 SHA-256이 고정됩니다.</li></ul><div class="callout"><strong>경로를 입력할 필요가 없습니다</strong><p>저장 위치와 결과 경로는 서버 정책에 따라 자동으로 정해집니다.</p></div></aside>
+</div>
+{% endblock %}

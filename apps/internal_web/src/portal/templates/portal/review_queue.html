@@ -1,0 +1,7 @@
+{% extends "portal/base.html" %}
+{% block title %}검토함 · Research Console{% endblock %}
+{% block breadcrumbs %}연구 운영 / <strong>검토함</strong>{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">REVIEW QUEUE</p><h1>검토가 필요한 결과</h1><p>자동 검증을 통과한 결과를 현재 hash에 묶어 검토합니다. 실행자와 검토·승인자는 서로 달라야 합니다.</p></div></div>
+<section class="panel table-panel"><div class="responsive-table"><table><thead><tr><th>후보 결과</th><th>검증 상태</th><th>결과 hash</th><th>완료 시각</th><th></th></tr></thead><tbody>{% for job in jobs %}<tr><td><strong>{{ job.display_name }}</strong><small>{{ job.run_id }}</small></td><td><span class="badge badge-succeeded">검증 완료</span></td><td><code>{{ job.result_hash|truncatechars:24 }}</code></td><td>{{ job.finished_at|date:"Y.m.d H:i" }}</td><td><a class="button button-secondary button-small" href="{% url 'portal:review-detail' job.pk %}">검토 열기</a></td></tr>{% empty %}<tr><td colspan="5"><div class="empty-state"><h3>현재 검토할 결과가 없습니다</h3><p>자동 검증을 통과한 결과가 생기면 이 목록에 표시됩니다.</p></div></td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

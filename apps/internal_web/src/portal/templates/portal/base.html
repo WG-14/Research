@@ -1,0 +1,76 @@
+{% load static %}
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#132238">
+  <title>{% block title %}Research Console{% endblock %}</title>
+  <link rel="icon" href="{% static 'portal/icon.svg' %}" type="image/svg+xml">
+  <link rel="manifest" href="{% static 'portal/manifest.webmanifest' %}">
+  <link rel="stylesheet" href="{% static 'portal/app.css' %}">
+  <script defer src="{% static 'portal/app.js' %}"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">본문으로 바로가기</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="주 메뉴">
+      <a class="brand" href="{% url 'portal:dashboard' %}" aria-label="Research Console 홈">
+        <span class="brand-mark" aria-hidden="true">R</span>
+        <span><strong>Research</strong><small>Console</small></span>
+      </a>
+      <nav class="nav-list">
+        <a class="nav-item {% if active_nav == 'dashboard' %}is-active{% endif %}" href="{% url 'portal:dashboard' %}">
+          <span aria-hidden="true">⌂</span><span>대시보드</span>
+        </a>
+        {% if perms.portal.upload_research_manifest %}
+          <a class="nav-item {% if active_nav == 'new' %}is-active{% endif %}" href="{% url 'portal:manifest-upload' %}">
+            <span aria-hidden="true">＋</span><span>새 연구</span>
+          </a>
+        {% endif %}
+        <a class="nav-item {% if active_nav == 'jobs' %}is-active{% endif %}" href="{% url 'portal:job-list' %}">
+          <span aria-hidden="true">◫</span><span>작업 기록</span>
+        </a>
+        <a class="nav-item {% if active_nav == 'reports' %}is-active{% endif %}" href="{% url 'portal:report-list' %}">
+          <span aria-hidden="true">≍</span><span>보고서 비교</span>
+        </a>
+        {% if perms.portal.record_research_review or perms.portal.approve_research_candidate %}
+        <a class="nav-item {% if active_nav == 'review' %}is-active{% endif %}" href="{% url 'portal:review-queue' %}">
+          <span aria-hidden="true">✓</span><span>검토함</span>
+        </a>
+        {% endif %}
+      </nav>
+      <div class="sidebar-foot">
+        <div class="system-boundary">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span><strong>오프라인 연구 전용</strong><small>실거래·계정 연결 없음</small></span>
+        </div>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <div class="breadcrumbs">{% block breadcrumbs %}연구 운영{% endblock %}</div>
+        <div class="account-menu">
+          <span class="account-avatar" aria-hidden="true">{{ request.user.username|slice:":1"|upper }}</span>
+          <span class="account-copy"><strong>{{ request.user.get_full_name|default:request.user.username }}</strong><small>{{ role_label|default:"사용자" }}</small></span>
+          <form method="post" action="{% url 'portal:logout' %}">
+            {% csrf_token %}
+            <button class="link-button" type="submit">로그아웃</button>
+          </form>
+        </div>
+      </header>
+
+      <main id="main-content" class="content" tabindex="-1">
+        {% if messages %}
+        <div class="message-stack" aria-live="polite">
+          {% for message in messages %}<div class="message message-{{ message.tags|default:'info' }}">{{ message }}</div>{% endfor %}
+        </div>
+        {% endif %}
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </div>
+</body>
+</html>

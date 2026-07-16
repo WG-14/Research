@@ -161,8 +161,6 @@ def _run_one_manifest(
         command,
         "--manifest",
         str(path),
-        "--notification-policy",
-        "disabled",
     ]
     completed = subprocess.run(
         cmd,

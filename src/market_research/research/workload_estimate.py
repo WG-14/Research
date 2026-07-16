@@ -11,17 +11,16 @@ from .execution_plan import (
     parallel_work_task_count,
 )
 from .experiment_manifest import ExperimentManifest, load_manifest, required_execution_scenarios
-from .parameter_space import iter_parameter_candidates
+from .parameter_space import count_parameter_candidates
 from .resource_planner import plan_research_resources
 
 
 def build_manifest_workload_estimate(manifest: ExperimentManifest) -> dict[str, Any]:
-    candidates = iter_parameter_candidates(manifest.parameter_space)
     scenarios = required_execution_scenarios(manifest.execution_model.scenarios)
     split_ranges = _dataset_split_ranges(manifest)
     split_name_values = [item["split_name"] for item in split_ranges]
     split_count = len(split_ranges)
-    candidate_count = len(candidates)
+    candidate_count = count_parameter_candidates(manifest.parameter_space)
     scenario_count = len(scenarios)
     work_unit_count = candidate_count * scenario_count
     resource_plan = plan_research_resources(
