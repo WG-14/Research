@@ -3,17 +3,23 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group, Permission
+from django.core.exceptions import ValidationError
 from django.urls import reverse
 
 from market_research.application import GovernanceSubjectRef
 from market_research.research.governance import GovernanceError
-from portal.forms import HumanReviewForm
-from portal.governance import approve_job_candidate, record_job_review
+from portal.forms import CandidateApprovalForm, HumanReviewForm
+from portal.governance import (
+    _approval_ready_subject,
+    approve_job_candidate,
+    record_job_review,
+)
 from portal.models import ResearchJob
 
 
@@ -62,8 +68,13 @@ def _context(*, prior_reviews: tuple[dict[str, object], ...] = ()) -> dict[str, 
     }
 
 
-def _approval_payload(*, password: str = "test-password") -> dict[str, object]:
+def _approval_payload(
+    *,
+    password: str = "test-password",
+    approval_request_id: str | None = None,
+) -> dict[str, object]:
     return {
+        "approval_request_id": approval_request_id or str(uuid.uuid4()),
         "rationale": "independent evidence review passed",
         "resolved_requirement_ids": "",
         "password": password,
@@ -137,6 +148,20 @@ def test_human_review_form_cannot_submit_final_approval() -> None:
 
     assert form.is_valid() is False
     assert "decision" in form.errors
+
+
+def test_candidate_approval_form_requires_hidden_idempotency_uuid() -> None:
+    missing = _approval_payload()
+    missing.pop("approval_request_id")
+    invalid = CandidateApprovalForm(data=missing)
+    valid = CandidateApprovalForm(
+        data=_approval_payload(approval_request_id=str(uuid.uuid4()))
+    )
+
+    assert invalid.is_valid() is False
+    assert "approval_request_id" in invalid.errors
+    assert valid.is_valid() is True
+    assert valid.fields["approval_request_id"].widget.is_hidden is True
 
 
 def test_candidate_approval_requires_current_password_reauthentication(
@@ -369,3 +394,151 @@ def test_approver_group_reaches_hash_bound_approval_validation(
             },
             correlation_id=str(uuid.uuid4()),
         )
+
+
+def test_approved_subject_resolves_for_exact_replay_but_ambiguous_version_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result_hash = "sha256:" + "5" * 64
+    rows = [
+        {
+            "event_type": "lifecycle_transition",
+            "subject_type": "strategy_candidate",
+            "subject_id": "candidate-1",
+            "subject_version": "1",
+            "to_state": "RESEARCH_APPROVED",
+        },
+        {
+            "event_type": "human_review_decision",
+            "decision": "APPROVED",
+            "subject_type": "strategy_candidate",
+            "subject_id": "candidate-1",
+            "subject_version": "1",
+            "reviewed_artifact_hash": result_hash,
+        },
+    ]
+    monkeypatch.setattr(
+        "portal.governance.validate_governance_registry",
+        lambda _paths: {"status": "PASS"},
+    )
+    monkeypatch.setattr(
+        "portal.governance.load_governance_rows",
+        lambda _path: list(rows),
+    )
+
+    subject, _loaded, state = _approval_ready_subject(
+        {"selected_candidate_id": "candidate-1"},
+        reviewed_artifact_hash=result_hash,
+    )
+
+    assert subject.subject_version == "1"
+    assert state == "RESEARCH_APPROVED"
+    rows.append(
+        {
+            "event_type": "lifecycle_transition",
+            "subject_type": "strategy_candidate",
+            "subject_id": "candidate-1",
+            "subject_version": "2",
+            "to_state": "OUT_OF_SAMPLE_PASSED",
+        }
+    )
+    with pytest.raises(
+        ValidationError,
+        match="governance_candidate_not_uniquely_approval_ready",
+    ):
+        _approval_ready_subject(
+            {"selected_candidate_id": "candidate-1"},
+            reviewed_artifact_hash=result_hash,
+        )
+
+
+def test_prior_approved_actor_is_not_added_to_replay_prohibition_set(
+    approver_user,
+    passed_validation_job,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "portal.governance.load_review_context",
+        lambda _job: _context(
+            prior_reviews=(
+                {
+                    "decision": "APPROVED",
+                    "reviewer_id": str(approver_user.pk),
+                },
+            )
+        ),
+    )
+    source_path = tmp_path / "source-report.json"
+    source_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        "portal.governance.resolve_artifact_ref",
+        lambda _value: source_path,
+    )
+    captured = []
+
+    def approve(_service, request):
+        captured.append(request)
+        return SimpleNamespace(
+            content_hash="sha256:" + "4" * 64,
+            review_row_hash="sha256:" + "5" * 64,
+            transition_row_hash="sha256:" + "6" * 64,
+            subject=_context()["subject"],
+        )
+
+    monkeypatch.setattr(
+        "portal.governance.ResearchGovernanceApplicationService.approve_candidate",
+        approve,
+    )
+    monkeypatch.setattr(
+        "portal.governance.record_web_audit_event",
+        lambda **_kwargs: {},
+    )
+    request_id = uuid.uuid4()
+
+    approve_job_candidate(
+        user=approver_user,
+        job=passed_validation_job,
+        cleaned_data={
+            "approval_request_id": request_id,
+            "rationale": "exact replay",
+            "resolved_requirement_ids": (),
+        },
+        correlation_id=str(uuid.uuid4()),
+    )
+
+    assert captured[0].idempotency_key == str(request_id)
+    assert str(approver_user.pk) not in captured[0].prohibited_actor_ids
+
+
+def test_approved_detail_hides_new_review_and_approval_forms(
+    client,
+    approver_user,
+    passed_validation_job,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "portal.views.load_review_context",
+        lambda _job: {
+            **_context(),
+            "candidate_state": "RESEARCH_APPROVED",
+            "approval_ready": False,
+        },
+    )
+    client.force_login(approver_user)
+
+    response = client.get(
+        reverse("portal:review-detail", args=(passed_validation_job.pk,))
+    )
+
+    content = response.content.decode("utf-8")
+    assert response.status_code == 200
+    assert "최종 승인이 기록되었습니다" in content
+    assert reverse(
+        "portal:review-approve",
+        args=(passed_validation_job.pk,),
+    ) not in content
+    assert reverse(
+        "portal:review-record",
+        args=(passed_validation_job.pk,),
+    ) not in content

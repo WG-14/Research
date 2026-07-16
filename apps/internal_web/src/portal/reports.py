@@ -16,6 +16,7 @@ from typing import Any
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.db.models import Q
 
 from market_research.application.authorization import ensure_capability_authorized
 from market_research.application.contracts import (
@@ -31,8 +32,9 @@ from market_research.research.research_decision_report import (
 )
 
 from .jobs import jobs_visible_to
-from .models import ResearchJob
+from .models import ImportedDecisionReport, ResearchJob
 from .presenters import redact_server_topology
+from .report_imports import validate_managed_import_record
 from .security import actor_snapshot, reject_symlink_components, validate_sha256
 from .storage import SafeArtifactRef, resolve_artifact_ref, verify_result_artifact
 
@@ -57,6 +59,7 @@ class VerifiedDecisionReport:
     interval: str
     strategy_name: str
     strategy_version: str
+    catalog_source: str
     payload: dict[str, Any]
 
     def catalog_item(self) -> dict[str, Any]:
@@ -74,6 +77,7 @@ class VerifiedDecisionReport:
             "interval": self.interval,
             "strategy_name": self.strategy_name,
             "strategy_version": self.strategy_version,
+            "catalog_source": self.catalog_source,
             "integrity_status": "VERIFIED",
         }
         safe_item = redact_server_topology(item)
@@ -140,6 +144,26 @@ class VisibleDecisionReportResolver:
             except ValidationError:
                 # An invalid candidate never becomes catalog authority.  Exact
                 # lookups still fail closed with a generic not-found response.
+                continue
+            if verified.report_id not in seen:
+                seen.add(verified.report_id)
+                reports.append(verified)
+        imported = ImportedDecisionReport.objects.select_related("owner")
+        if not self.user.has_perm("portal.view_all_research_jobs"):
+            imported = imported.filter(
+                Q(owner=self.user)
+                | Q(
+                    visibility=(
+                        ImportedDecisionReport.Visibility.ORGANIZATION
+                    )
+                )
+            )
+        for record in imported.order_by("-created_at", "-pk")[
+            :MAX_VISIBLE_VALIDATION_JOBS
+        ]:
+            try:
+                verified = _verify_imported_report(record)
+            except ValidationError:
                 continue
             if verified.report_id not in seen:
                 seen.add(verified.report_id)
@@ -269,6 +293,39 @@ def _verify_validation_job_report(job: ResearchJob) -> VerifiedDecisionReport:
         interval=str(conditions["interval"]),
         strategy_name=str(conditions["strategy_name"]),
         strategy_version=str(conditions["strategy_version"]),
+        catalog_source="WEB_VALIDATION",
+        payload=report,
+    )
+
+
+def _verify_imported_report(
+    record: ImportedDecisionReport,
+) -> VerifiedDecisionReport:
+    try:
+        reference = SafeArtifactRef.parse(record.storage_ref)
+    except ValidationError as exc:
+        raise ValidationError("historical_report_catalog_ref_invalid") from exc
+    if reference.root != "report":
+        raise ValidationError("historical_report_catalog_ref_invalid")
+    resolved = resolve_artifact_ref(reference)
+    report = _read_bounded_json(resolved)
+    binding = validate_managed_import_record(record, report)
+    return VerifiedDecisionReport(
+        report_id=record.report_id,
+        report_hash=binding["report_hash"],
+        summary_hash=record.import_manifest_hash,
+        manifest_hash=binding["manifest_hash"],
+        experiment_id=binding["experiment_id"],
+        run_id=binding["run_id"],
+        validation_result=binding["validation_result"],
+        selected_candidate_id=(
+            binding["selected_candidate_id"] or None
+        ),
+        market=binding["market"],
+        interval=binding["interval"],
+        strategy_name=binding["strategy_name"],
+        strategy_version=binding["strategy_version"],
+        catalog_source="HISTORICAL_CLI_IMPORT",
         payload=report,
     )
 

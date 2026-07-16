@@ -9,6 +9,7 @@ from typing import Any
 from market_research.paths import ResearchPathManager
 from market_research.storage_io import write_json_atomic, write_text_atomic
 
+from .experiment_identity import bind_research_validation_experiment
 from .research_reporting import compare_research_decision_reports, render_research_decision_report_markdown
 from .run_lifecycle import start_run
 from .strategy_package import StrategyPackageError, build_strategy_research_package
@@ -28,6 +29,11 @@ class ResearchApplicationService:
         progress_callback: Any | None = None, run_id: str | None = None,
         record_lifecycle: bool = True,
     ) -> dict[str, Any]:
+        bind_research_validation_experiment(
+            manager=self.paths,
+            experiment_id=manifest.experiment_id,
+            manifest_hash=manifest.manifest_hash(),
+        )
         command_args = {
             "manifest": manifest_path, "execution_calibration": execution_calibration_path,
             "candidate_id": candidate_id, "out": str(out_path) if out_path is not None else None,

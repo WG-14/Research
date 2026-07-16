@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -225,6 +226,7 @@ def test_validation_result_separates_completed_gate_failure_from_execution_error
         actor=cli_actor_context(),
     )
     finishes: list[dict[str, object]] = []
+    call_order: list[str] = []
 
     class Handle:
         run_id = "RUN-test"
@@ -238,7 +240,14 @@ def test_validation_result_separates_completed_gate_failure_from_execution_error
     )
     monkeypatch.setattr(
         "market_research.application.service.load_manifest_with_registry",
-        lambda *_args, **_kwargs: object(),
+        lambda *_args, **_kwargs: SimpleNamespace(
+            experiment_id="application-service-experiment",
+            manifest_hash=lambda: "sha256:" + "b" * 64,
+        ),
+    )
+    monkeypatch.setattr(
+        "market_research.application.service.bind_research_validation_experiment",
+        lambda **_: call_order.append("bind"),
     )
     monkeypatch.setattr(
         "market_research.application.service._required_runtime_db_path",
@@ -246,11 +255,14 @@ def test_validation_result_separates_completed_gate_failure_from_execution_error
     )
     monkeypatch.setattr(
         "market_research.application.service.run_research_validation",
-        lambda **_: {
-            "end_to_end_validation_result": "FAIL",
-            "content_hash": "sha256:" + "a" * 64,
-            "validation_run_path": "/external/validation.json",
-        },
+        lambda **_: (
+            call_order.append("engine")
+            or {
+                "end_to_end_validation_result": "FAIL",
+                "content_hash": "sha256:" + "a" * 64,
+                "validation_run_path": "/external/validation.json",
+            }
+        ),
     )
 
     completed = service.validate(request)
@@ -259,6 +271,7 @@ def test_validation_result_separates_completed_gate_failure_from_execution_error
     assert completed.research_outcome == "FAIL"
     assert completed.exit_code == 1
     assert completed.errors == ()
+    assert call_order == ["bind", "engine"]
     assert finishes == [
         {
             "status": "FAILED",

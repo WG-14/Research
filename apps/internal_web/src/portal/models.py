@@ -126,6 +126,261 @@ class WebAuditEvent(models.Model):
         raise ValidationError("web_audit_event_is_immutable")
 
 
+class GovernanceSubjectState(models.Model):
+    """Authoritative web-governance state for one candidate version.
+
+    The research governance JSONL remains hash-bound evidence.  This row is the
+    transactional admission and idempotency authority used by the web service.
+    """
+
+    class LifecycleState(models.TextChoices):
+        OUT_OF_SAMPLE_PASSED = "OUT_OF_SAMPLE_PASSED", "Ready for approval"
+        RESEARCH_APPROVED = "RESEARCH_APPROVED", "Research approved"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    source_job = models.ForeignKey(
+        "ResearchJob",
+        on_delete=models.PROTECT,
+        related_name="governance_subject_states",
+    )
+    subject_type = models.CharField(max_length=64)
+    subject_id = models.CharField(max_length=255)
+    subject_version = models.CharField(max_length=255)
+    reviewed_artifact_hash = models.CharField(max_length=71)
+    lifecycle_state = models.CharField(
+        max_length=32,
+        choices=LifecycleState.choices,
+        default=LifecycleState.OUT_OF_SAMPLE_PASSED,
+    )
+    lifecycle_version = models.PositiveBigIntegerField(default=0)
+    approved_by = models.CharField(max_length=255, blank=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("subject_type", "subject_id", "subject_version"),
+                name="portal_governance_subject_identity_uniq",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(
+                        lifecycle_state="OUT_OF_SAMPLE_PASSED",
+                        approved_by="",
+                        approved_at__isnull=True,
+                    )
+                    | (
+                        Q(
+                            lifecycle_state="RESEARCH_APPROVED",
+                            approved_at__isnull=False,
+                        )
+                        & ~Q(approved_by="")
+                    )
+                ),
+                name="portal_governance_approval_state_valid",
+            ),
+        ]
+
+
+class GovernanceDutyClaim(models.Model):
+    """One immutable governance duty per actor and candidate.
+
+    The unique pair is the database-level separation-of-duties guard: an
+    originator or reviewer cannot concurrently acquire the approver duty.
+    """
+
+    class Duty(models.TextChoices):
+        ORIGINATOR = "ORIGINATOR", "Originator"
+        REVIEWER = "REVIEWER", "Reviewer"
+        APPROVER = "APPROVER", "Approver"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    subject = models.ForeignKey(
+        GovernanceSubjectState,
+        on_delete=models.PROTECT,
+        related_name="duty_claims",
+    )
+    actor_id = models.CharField(max_length=255)
+    duty = models.CharField(max_length=16, choices=Duty.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("subject", "actor_id"),
+                name="portal_governance_actor_duty_uniq",
+            ),
+            models.CheckConstraint(
+                condition=~Q(actor_id=""),
+                name="portal_governance_duty_actor_required",
+            ),
+        ]
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        if not self._state.adding:
+            raise ValidationError("governance_duty_claim_is_immutable")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args: Any, **kwargs: Any) -> tuple[int, dict[str, int]]:
+        raise ValidationError("governance_duty_claim_is_immutable")
+
+
+class GovernanceDecision(models.Model):
+    """Immutable, idempotent review or atomic approval decision."""
+
+    class Action(models.TextChoices):
+        REVIEW = "REVIEW", "Human review"
+        APPROVAL = "APPROVAL", "Final approval"
+
+    class Decision(models.TextChoices):
+        CHANGES_REQUESTED = "CHANGES_REQUESTED", "Changes requested"
+        REJECTED = "REJECTED", "Rejected"
+        APPROVED = "APPROVED", "Approved"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    subject = models.ForeignKey(
+        GovernanceSubjectState,
+        on_delete=models.PROTECT,
+        related_name="decisions",
+    )
+    operation_id = models.CharField(max_length=128, unique=True)
+    operation_payload_hash = models.CharField(max_length=71)
+    action = models.CharField(max_length=16, choices=Action.choices)
+    decision = models.CharField(max_length=32, choices=Decision.choices)
+    actor_id = models.CharField(max_length=255)
+    actor_role = models.CharField(max_length=64)
+    rationale = models.TextField()
+    reviewed_artifact_hash = models.CharField(max_length=71)
+    content_hash = models.CharField(max_length=71)
+    review_row_hash = models.CharField(max_length=71)
+    transition_row_hash = models.CharField(max_length=71, blank=True)
+    approval_artifact_ref = models.CharField(max_length=1024, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("created_at",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=("subject",),
+                condition=Q(action="APPROVAL"),
+                name="portal_governance_subject_approval_uniq",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (
+                        Q(action="REVIEW")
+                        & Q(decision__in=("CHANGES_REQUESTED", "REJECTED"))
+                        & Q(transition_row_hash="")
+                        & Q(approval_artifact_ref="")
+                    )
+                    | (
+                        Q(action="APPROVAL", decision="APPROVED")
+                        & ~Q(transition_row_hash="")
+                        & ~Q(approval_artifact_ref="")
+                    )
+                ),
+                name="portal_governance_decision_shape_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~Q(actor_id="")
+                    & ~Q(actor_role="")
+                    & ~Q(rationale="")
+                    & ~Q(content_hash="")
+                    & ~Q(review_row_hash="")
+                ),
+                name="portal_governance_decision_fields_required",
+            ),
+        ]
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        if not self._state.adding:
+            raise ValidationError("governance_decision_is_immutable")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args: Any, **kwargs: Any) -> tuple[int, dict[str, int]]:
+        raise ValidationError("governance_decision_is_immutable")
+
+
+class ImportedDecisionReport(models.Model):
+    """Verified, immutable catalog manifest for one historical CLI report."""
+
+    class Visibility(models.TextChoices):
+        OWNER = "OWNER", "Owner only"
+        ORGANIZATION = "ORGANIZATION", "All research users"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    report_id = models.CharField(max_length=71, unique=True)
+    report_hash = models.CharField(max_length=71, unique=True)
+    storage_ref = models.CharField(max_length=1024, unique=True)
+    import_manifest_hash = models.CharField(max_length=71, unique=True)
+    source_size_bytes = models.PositiveBigIntegerField()
+    manifest_hash = models.CharField(max_length=71)
+    experiment_id = models.CharField(max_length=255)
+    run_id = models.CharField(max_length=255)
+    validation_result = models.CharField(max_length=32)
+    selected_candidate_id = models.CharField(max_length=255, blank=True)
+    market = models.CharField(max_length=255)
+    interval = models.CharField(max_length=64)
+    strategy_name = models.CharField(max_length=255)
+    strategy_version = models.CharField(max_length=255)
+    dataset_snapshot_id = models.CharField(max_length=255)
+    dataset_content_hash = models.CharField(max_length=71)
+    code_revision = models.CharField(max_length=64)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="imported_research_reports",
+    )
+    visibility = models.CharField(
+        max_length=16,
+        choices=Visibility.choices,
+        default=Visibility.OWNER,
+    )
+    imported_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="research_report_imports_performed",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at", "-pk")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("experiment_id", "run_id"),
+                name="portal_imported_report_run_uniq",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(source_size_bytes__gt=0)
+                    & ~Q(experiment_id="")
+                    & ~Q(run_id="")
+                    & ~Q(market="")
+                    & ~Q(interval="")
+                    & ~Q(strategy_name="")
+                    & ~Q(strategy_version="")
+                    & ~Q(dataset_snapshot_id="")
+                    & ~Q(code_revision="")
+                ),
+                name="portal_imported_report_fields_required",
+            ),
+        ]
+        permissions = [
+            ("import_research_report", "Can import a historical research report"),
+        ]
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        if not self._state.adding:
+            raise ValidationError("imported_decision_report_is_immutable")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args: Any, **kwargs: Any) -> tuple[int, dict[str, int]]:
+        raise ValidationError("imported_decision_report_is_immutable")
+
+
 class ResearchJob(models.Model):
     class Status(models.TextChoices):
         QUEUED = "QUEUED", "Queued"

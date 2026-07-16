@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
@@ -86,6 +88,60 @@ def test_transition_rejects_skips_missing_evidence_and_stale_source_state(tmp_pa
             manager=manager, subject=subject, from_state=None, to_state="DRAFT",
             actor_id="researcher-b", reason="stale duplicate initialization",
         )
+
+
+def test_concurrent_lifecycle_transitions_use_snapshot_then_optimistic_append(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    subject = GovernanceSubject(
+        GovernanceSubjectType.STRATEGY_CANDIDATE,
+        "candidate-concurrent-transition",
+        "1",
+    )
+    append_lifecycle_transition(
+        manager=manager,
+        subject=subject,
+        from_state=None,
+        to_state="DRAFT",
+        actor_id="researcher-a",
+        reason="candidate initialized",
+    )
+    barrier = Barrier(2)
+
+    def advance(actor_id: str, evidence_hash: str) -> str:
+        barrier.wait(timeout=5)
+        try:
+            append_lifecycle_transition(
+                manager=manager,
+                subject=subject,
+                from_state="DRAFT",
+                to_state="BACKTESTED",
+                actor_id=actor_id,
+                reason="backtest completed",
+                evidence_hashes={"backtest_report_hash": evidence_hash},
+            )
+        except GovernanceError as exc:
+            return str(exc)
+        return "success"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(
+            executor.map(
+                lambda item: advance(*item),
+                (("researcher-a", _hash("1")), ("researcher-b", _hash("2"))),
+            )
+        )
+
+    assert outcomes.count("success") == 1
+    assert all(
+        outcome == "success"
+        or "governance_state_conflict" in outcome
+        or "hash_chain_concurrent_update" in outcome
+        for outcome in outcomes
+    )
+    assert current_lifecycle_state(manager=manager, subject=subject) == "BACKTESTED"
+    assert validate_governance_registry(manager)["status"] == "PASS"
 
 
 def test_rejected_and_terminal_states_cannot_be_silently_reactivated(tmp_path: Path) -> None:
@@ -363,3 +419,236 @@ def test_strategy_approval_requires_supported_hypothesis(tmp_path: Path) -> None
             final_holdout_confirmation_hash=_hash("3"), reviewer_id="approver-a",
             rationale="attempt premature approval",
         )
+
+
+def _approval_kwargs(
+    manager: ResearchPathManager,
+    subject: GovernanceSubject,
+    hypothesis: GovernanceSubject,
+    *,
+    reviewer_id: str = "approver-a",
+    rationale: str = "independent approval",
+    approval_request_id: str | None = None,
+) -> dict[str, object]:
+    return {
+        "manager": manager,
+        "subject": subject,
+        "hypothesis_subject": hypothesis,
+        "hypothesis_contract_hash": _hash("4"),
+        "strategy_name": "noop_baseline",
+        "strategy_version": "v1",
+        "strategy_plugin_contract_hash": _hash("a"),
+        "effective_strategy_parameters_hash": _hash("b"),
+        "source_report_hash": _hash("5"),
+        "final_holdout_confirmation_hash": _hash("3"),
+        "reviewer_id": reviewer_id,
+        "rationale": rationale,
+        "approval_request_id": approval_request_id,
+    }
+
+
+def test_approval_exact_replay_returns_one_atomic_pair_and_key_conflict_fails(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    subject = _out_of_sample_candidate(manager)
+    hypothesis = _supported_hypothesis(manager, source_report_hash=_hash("5"))
+    request = _approval_kwargs(
+        manager,
+        subject,
+        hypothesis,
+        approval_request_id="approval-request-1",
+    )
+
+    first = approve_strategy_candidate(**request)
+    replay = approve_strategy_candidate(**request)
+
+    assert replay == first
+    rows = [
+        json.loads(line)
+        for line in governance_registry_path(manager)
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert len(
+        [row for row in rows if row.get("decision") == "APPROVED"]
+    ) == 1
+    assert len(
+        [row for row in rows if row.get("to_state") == "RESEARCH_APPROVED"]
+    ) == 1
+    with pytest.raises(
+        GovernanceError,
+        match="governance_separation_of_duties_violation",
+    ):
+        approve_strategy_candidate(
+            **{
+                **request,
+                "prohibited_actor_ids": frozenset({"approver-a"}),
+            }
+        )
+    with pytest.raises(GovernanceError, match="idempotency_conflict"):
+        approve_strategy_candidate(
+            **{
+                **request,
+                "rationale": "different semantic request",
+            }
+        )
+
+
+def test_concurrent_approvers_leave_exactly_one_complete_approval_pair(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    subject = _out_of_sample_candidate(manager)
+    hypothesis = _supported_hypothesis(manager, source_report_hash=_hash("5"))
+    barrier = Barrier(2)
+
+    def submit(reviewer: str) -> tuple[str, str]:
+        barrier.wait(timeout=5)
+        try:
+            approval = approve_strategy_candidate(
+                **_approval_kwargs(
+                    manager,
+                    subject,
+                    hypothesis,
+                    reviewer_id=reviewer,
+                    approval_request_id=f"request-{reviewer}",
+                )
+            )
+            return "success", str(approval["content_hash"])
+        except GovernanceError as exc:
+            return "error", str(exc)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(submit, ("approver-a", "approver-b")))
+
+    assert [status for status, _detail in outcomes].count("success") == 1
+    rows = [
+        json.loads(line)
+        for line in governance_registry_path(manager)
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    reviews = [row for row in rows if row.get("decision") == "APPROVED"]
+    transitions = [
+        row for row in rows if row.get("to_state") == "RESEARCH_APPROVED"
+    ]
+    assert len(reviews) == len(transitions) == 1
+    assert (
+        transitions[0]["evidence_hashes"]["human_review_hash"]
+        == reviews[0]["row_hash"]
+    )
+    assert validate_governance_registry(manager)["status"] == "PASS"
+
+
+def test_core_rechecks_prior_same_result_reviewer_inside_approval_mutation(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    subject = _out_of_sample_candidate(manager)
+    hypothesis = _supported_hypothesis(manager, source_report_hash=_hash("5"))
+    append_human_review(
+        manager=manager,
+        subject=subject,
+        decision=HumanReviewDecision.REJECTED,
+        reviewer_id="approver-a",
+        reviewer_role="research_reviewer",
+        rationale="prior independent assessment",
+        reviewed_artifact_hash=_hash("5"),
+    )
+
+    with pytest.raises(GovernanceError, match="prior_reviewer_cannot_approve"):
+        approve_strategy_candidate(
+            **_approval_kwargs(manager, subject, hypothesis)
+        )
+
+
+def test_approval_and_change_request_race_never_leaves_late_outstanding_work(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    subject = _out_of_sample_candidate(manager)
+    hypothesis = _supported_hypothesis(manager, source_report_hash=_hash("5"))
+    barrier = Barrier(2)
+
+    def approve() -> str:
+        barrier.wait(timeout=5)
+        try:
+            approve_strategy_candidate(
+                **_approval_kwargs(manager, subject, hypothesis)
+            )
+            return "approved"
+        except GovernanceError:
+            return "approval_rejected"
+
+    def request_change() -> str:
+        barrier.wait(timeout=5)
+        try:
+            append_human_review(
+                manager=manager,
+                subject=subject,
+                decision=HumanReviewDecision.CHANGES_REQUESTED,
+                reviewer_id="reviewer-a",
+                reviewer_role="research_reviewer",
+                rationale="late material issue",
+                reviewed_artifact_hash=_hash("5"),
+                requested_changes=(
+                    {
+                        "requirement_id": "REQ-RACE",
+                        "description": "resolve race evidence",
+                        "verification_condition": "updated report binds evidence",
+                    },
+                ),
+            )
+            return "change_recorded"
+        except GovernanceError:
+            return "change_rejected"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        approval_future = executor.submit(approve)
+        review_future = executor.submit(request_change)
+        outcomes = {approval_future.result(), review_future.result()}
+
+    assert outcomes in (
+        {"approved", "change_rejected"},
+        {"approval_rejected", "change_recorded"},
+    )
+    assert validate_governance_registry(manager)["status"] == "PASS"
+
+
+def test_review_after_approval_is_rejected_and_orphan_approval_is_invalid(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    subject = _out_of_sample_candidate(manager)
+    hypothesis = _supported_hypothesis(manager, source_report_hash=_hash("5"))
+    approve_strategy_candidate(**_approval_kwargs(manager, subject, hypothesis))
+
+    with pytest.raises(GovernanceError, match="lifecycle_not_reviewable"):
+        append_human_review(
+            manager=manager,
+            subject=subject,
+            decision=HumanReviewDecision.CHANGES_REQUESTED,
+            reviewer_id="reviewer-a",
+            reviewer_role="research_reviewer",
+            rationale="late issue",
+            reviewed_artifact_hash=_hash("5"),
+            requested_changes=(
+                {
+                    "requirement_id": "REQ-LATE",
+                    "description": "late problem",
+                    "verification_condition": "must be fixed",
+                },
+            ),
+        )
+    assert validate_governance_registry(manager)["status"] == "PASS"
+
+    path = governance_registry_path(manager)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+    validation = validate_governance_registry(manager)
+    assert validation["status"] == "FAIL"
+    assert any(
+        reason.startswith("approval_review_unpaired:")
+        for reason in validation["reasons"]
+    )

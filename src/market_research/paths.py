@@ -87,6 +87,45 @@ class ResearchPathManager:
     def report_path(self, *parts: str) -> Path:
         return self.report_root.joinpath(*_safe_parts(*parts))
 
+    def experiment_identity_registry_path(self) -> Path:
+        """Return the one authority file for validation namespace bindings.
+
+        Sibling artifact/report roots derive a shared authority from their
+        common state bundle. Split mount layouts must configure the authority
+        explicitly so two adapters cannot share an output root while consulting
+        different identity registries.
+        """
+
+        configured = self.settings.experiment_identity_registry_path
+        if configured is None:
+            artifact_parent = self.artifact_root.resolve().parent
+            report_parent = self.report_root.resolve().parent
+            if artifact_parent != report_parent:
+                raise ResearchPathError(
+                    "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH is required "
+                    "when RESEARCH_ARTIFACT_ROOT and RESEARCH_REPORT_ROOT do not "
+                    "share one parent"
+                )
+            path = (
+                artifact_parent
+                / "_registry"
+                / "research_validate_experiment_identity.jsonl"
+            )
+        else:
+            raw = configured.expanduser()
+            if not raw.is_absolute():
+                raise ResearchPathError(
+                    "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH must be an "
+                    "absolute path"
+                )
+            path = raw.resolve()
+        if self.is_within(path, self.project_root):
+            raise ResearchPathError(
+                "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH must be outside "
+                f"the repository: {path}"
+            )
+        return path
+
     def external_output_path(self, value: str | Path, *, label: str) -> Path:
         """Validate an explicit output override without bypassing repository boundaries."""
         raw = Path(value).expanduser()

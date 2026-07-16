@@ -17,6 +17,7 @@ from portal.jobs import (
     IdempotencyConflict,
     JobCancellationRequested,
     JobExecutionResult,
+    JobLeaseLost,
     claim_next_job,
     complete_job_success,
     enqueue_research_job,
@@ -396,9 +397,53 @@ def test_cancel_queued_and_running_jobs_at_safe_boundary(
         )
 
 
+def test_authoritative_fenced_result_wins_cancellation_after_commit(
+    runner_user,
+    manifest_record,
+    settings,
+) -> None:
+    job = enqueue(runner_user, manifest_record).job
+    claimed = claim_next_job(worker_id="fenced-result-worker")
+    assert claimed is not None and claimed.pk == job.pk
+    requested = request_job_cancellation(actor=runner_user, job_id=job.pk)
+    assert requested.status == ResearchJob.Status.CANCEL_REQUESTED
+
+    payload = {"schema_version": 1, "artifact_type": "fenced-result-recovery"}
+    result_hash = sha256_prefixed(content_hash_payload(payload))
+    payload["content_hash"] = result_hash
+    path = settings.RESEARCH_PATHS.report_path(
+        "_internal_web", str(claimed.pk), "fenced-result.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    result = JobExecutionResult(
+        result_ref=make_artifact_ref("report", path),
+        result_hash=result_hash,
+        run_id="fenced-run",
+        research_outcome=ResearchJob.ResearchOutcome.PASS,
+    )
+
+    with pytest.raises(JobCancellationRequested):
+        complete_job_success(
+            job_id=claimed.pk,
+            lease_token=claimed.lease_token,
+            result=result,
+        )
+
+    completed = complete_job_success(
+        job_id=claimed.pk,
+        lease_token=claimed.lease_token,
+        result=result,
+        authoritative_result_committed=True,
+    )
+    assert completed.status == ResearchJob.Status.SUCCEEDED
+    assert completed.result_hash == result_hash
+
+
 def test_worker_does_not_mutate_an_expired_running_job(
     runner_user,
     manifest_record,
+    settings,
 ) -> None:
     job = enqueue(runner_user, manifest_record).job
     claimed = claim_next_job(worker_id="worker")
@@ -409,6 +454,32 @@ def test_worker_does_not_mutate_an_expired_running_job(
         lease_expires_at=datetime(2000, 1, 1, tzinfo=timezone.utc)
     )
 
+    with pytest.raises(JobLeaseLost, match="research_job_lease_lost"):
+        update_job_progress(
+            job_id=claimed.pk,
+            lease_token=claimed.lease_token,
+            stage="stale-worker-heartbeat",
+        )
+
+    payload = {"schema_version": 1, "artifact_type": "stale-worker-test"}
+    result_hash = sha256_prefixed(content_hash_payload(payload))
+    payload["content_hash"] = result_hash
+    path = settings.RESEARCH_PATHS.report_path(
+        "_internal_web", str(claimed.pk), "stale-worker-result.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(JobLeaseLost, match="research_job_lease_lost"):
+        complete_job_success(
+            job_id=claimed.pk,
+            lease_token=claimed.lease_token,
+            result=JobExecutionResult(
+                result_ref=make_artifact_ref("report", path),
+                result_hash=result_hash,
+                research_outcome=ResearchJob.ResearchOutcome.PASS,
+            ),
+        )
+
     class UnexpectedDispatcher:
         def execute(self, job, progress):
             raise AssertionError("expired running job must not be claimed or repaired")
@@ -418,6 +489,7 @@ def test_worker_does_not_mutate_an_expired_running_job(
 
     assert job.status == original_status == ResearchJob.Status.RUNNING
     assert job.lease_token == original_lease_token
+    assert job.lease_expires_at == datetime(2000, 1, 1, tzinfo=timezone.utc)
     assert job.finished_at is None
     assert job.error_code == ""
 
@@ -508,10 +580,10 @@ def test_success_audit_failure_never_reclassifies_the_terminal_job(
 
     monkeypatch.setattr("portal.audit._append_payload", fail_success_audit)
 
-    with pytest.raises(OSError, match="audit outage"):
-        run_worker_once(Dispatcher(), worker_id="worker-audit-failure")
+    result = run_worker_once(Dispatcher(), worker_id="worker-audit-failure")
 
     queued.refresh_from_db()
+    assert result is not None and result.pk == queued.pk
     assert queued.status == ResearchJob.Status.SUCCEEDED
     assert queued.progress_stage == "complete"
     assert queued.lease_token is None
@@ -520,6 +592,34 @@ def test_success_audit_failure_never_reclassifies_the_terminal_job(
         event
         for event in WebAuditEvent.objects.all()
         if event.payload.get("action") == "research_job_succeeded"
+    ]
+    assert len(pending) == 1
+    assert pending[0].projected_at is None
+
+
+@pytest.mark.django_db(transaction=True, serialized_rollback=True)
+def test_claim_projection_failure_returns_the_committed_claim(
+    runner_user,
+    manifest_record,
+    monkeypatch,
+) -> None:
+    queued = enqueue(runner_user, manifest_record).job
+    original_append = audit_module._append_payload
+
+    def fail_claim_audit(payload):
+        if payload.get("action") == "research_job_claimed":
+            raise OSError("simulated claim audit outage")
+        return original_append(payload)
+
+    monkeypatch.setattr("portal.audit._append_payload", fail_claim_audit)
+    claimed = claim_next_job(worker_id="worker-claim-audit-failure")
+
+    assert claimed is not None and claimed.pk == queued.pk
+    assert claimed.status == ResearchJob.Status.RUNNING
+    pending = [
+        event
+        for event in WebAuditEvent.objects.all()
+        if event.payload.get("action") == "research_job_claimed"
     ]
     assert len(pending) == 1
     assert pending[0].projected_at is None

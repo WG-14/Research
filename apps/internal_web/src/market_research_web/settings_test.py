@@ -15,4 +15,6 @@ SECURE_SSL_REDIRECT = False
 SESSION_COOKIE_SECURE = False
 CSRF_COOKIE_SECURE = False
 SECURE_HSTS_SECONDS = 0
-
+# Preserve the legacy single-file fixture surface unless a segmented audit
+# test opts in explicitly.  Production settings use bounded segments.
+INTERNAL_WEB_AUDIT_SEGMENT_ROWS = 0

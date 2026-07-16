@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+import market_research.application.governance_service as service_module
 from market_research.application import (
     ActorContext,
     ApplicationAuthorizationError,
@@ -32,6 +33,7 @@ from market_research.research.governance import (
     GovernanceSubject,
     GovernanceSubjectType,
     append_lifecycle_transition,
+    governance_registry_path,
 )
 from market_research.research.hashing import (
     report_content_hash_payload,
@@ -219,6 +221,7 @@ def _approval_request(
     *,
     report_path: Path,
     output_path: Path,
+    idempotency_key: str | None = None,
 ) -> StrategyApprovalRequest:
     return StrategyApprovalRequest(
         source_report_path=str(report_path),
@@ -230,6 +233,7 @@ def _approval_request(
         ),
         rationale="human research review passed",
         output_path=str(output_path),
+        idempotency_key=idempotency_key,
     )
 
 
@@ -360,7 +364,7 @@ def test_approval_enforces_its_own_permission_before_report_access(
         ResearchGovernanceApplicationService(context.paths).approve_candidate(request)
 
 
-def test_duplicate_approval_is_rejected_by_core_lifecycle_gate(
+def test_identical_approval_replay_materializes_same_artifact_and_changed_intent_rejects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -385,14 +389,134 @@ def test_duplicate_approval_is_rejected_by_core_lifecycle_gate(
     assert result.reviewer_id == request.actor.actor_id
     assert result.approval["reviewer_id"] == request.actor.actor_id
     second_output = tmp_path / "approval-2.json"
+    replay = service.approve_candidate(
+        request.model_copy(update={"output_path": str(second_output)})
+    )
+    assert replay.approval == result.approval
+    assert json.loads(second_output.read_text(encoding="utf-8")) == result.approval
+
     with pytest.raises(
         GovernanceError,
         match="strategy_approval_requires_out_of_sample_passed",
     ):
         service.approve_candidate(
-            request.model_copy(update={"output_path": str(second_output)})
+            request.model_copy(
+                update={
+                    "rationale": "materially different approval intent",
+                    "output_path": str(tmp_path / "approval-3.json"),
+                }
+            )
         )
-    assert not second_output.exists()
+
+
+def test_approval_commit_survives_projection_failure_and_exact_replay_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "market_research.application.governance_service.validate_final_selection_report",
+        lambda report: [],
+    )
+    context, report = _prepare_approval_report(tmp_path)
+    report_path = tmp_path / "validated-report.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    output_path = tmp_path / "approval.json"
+    request = _approval_request(
+        report_path=report_path,
+        output_path=output_path,
+        idempotency_key="recoverable-approval-request",
+    )
+    service = ResearchGovernanceApplicationService(context.paths)
+    real_publish = service_module.write_json_atomic_create_or_verify
+
+    def fail_publish(*_args, **_kwargs):
+        raise OSError("injected_projection_failure")
+
+    monkeypatch.setattr(
+        service_module,
+        "write_json_atomic_create_or_verify",
+        fail_publish,
+    )
+    with pytest.raises(OSError, match="injected_projection_failure"):
+        service.approve_candidate(request)
+    assert not output_path.exists()
+    rows_after_failure = governance_registry_path(context.paths).read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert sum('"decision":"APPROVED"' in row for row in rows_after_failure) == 1
+    assert sum('"to_state":"RESEARCH_APPROVED"' in row for row in rows_after_failure) == 1
+
+    monkeypatch.setattr(
+        service_module,
+        "write_json_atomic_create_or_verify",
+        real_publish,
+    )
+    recovered = service.approve_candidate(request)
+
+    assert json.loads(output_path.read_text(encoding="utf-8")) == recovered.approval
+    assert governance_registry_path(context.paths).read_text(
+        encoding="utf-8"
+    ).splitlines() == rows_after_failure
+
+
+def test_approval_explicit_key_conflict_and_projection_no_clobber(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "market_research.application.governance_service.validate_final_selection_report",
+        lambda report: [],
+    )
+    context, report = _prepare_approval_report(tmp_path)
+    report_path = tmp_path / "validated-report.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    output_path = tmp_path / "approval.json"
+    output_path.write_text('{"unrelated":true}\n', encoding="utf-8")
+    request = _approval_request(
+        report_path=report_path,
+        output_path=output_path,
+        idempotency_key="fixed-request-key",
+    )
+    service = ResearchGovernanceApplicationService(context.paths)
+
+    with pytest.raises(ValueError, match="atomic_json_target_conflict"):
+        service.approve_candidate(request)
+    assert output_path.read_text(encoding="utf-8") == '{"unrelated":true}\n'
+    with pytest.raises(GovernanceError, match="idempotency_conflict"):
+        service.approve_candidate(
+            request.model_copy(update={"rationale": "different intent"})
+        )
+
+
+def test_approval_projection_rejects_symlink_path_before_governance_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "market_research.application.governance_service.validate_final_selection_report",
+        lambda report: [],
+    )
+    context, report = _prepare_approval_report(tmp_path)
+    report_path = tmp_path / "validated-report.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    real_target = tmp_path / "real-approval.json"
+    real_target.write_text("sentinel\n", encoding="utf-8")
+    link_target = tmp_path / "approval-link.json"
+    link_target.symlink_to(real_target)
+
+    with pytest.raises(GovernanceError, match="output_path_must_not_use_symlink"):
+        ResearchGovernanceApplicationService(context.paths).approve_candidate(
+            _approval_request(
+                report_path=report_path,
+                output_path=link_target,
+            )
+        )
+
+    rows = governance_registry_path(context.paths).read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert not any('"decision":"APPROVED"' in row for row in rows)
+    assert real_target.read_text(encoding="utf-8") == "sentinel\n"
 
 
 def test_cli_approval_adapter_preserves_success_output_and_exit_code(

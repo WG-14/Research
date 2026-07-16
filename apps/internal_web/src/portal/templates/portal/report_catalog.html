@@ -38,6 +38,22 @@
   </section>
 </form>
 
+{% if report_import_form %}
+<section class="panel evidence-panel">
+  <div class="panel-head">
+    <div>
+      <h2>과거 CLI 보고서 가져오기</h2>
+      <p>관리자가 허용한 외부 경로의 결정 보고서만 검증하며, 원본 대신 content-addressed 관리 사본을 카탈로그에 등록합니다.</p>
+    </div>
+  </div>
+  <form method="post" action="{% url 'portal:report-import' %}">
+    {% csrf_token %}
+    {{ report_import_form.as_p }}
+    <button class="button button-primary" type="submit">검증 후 가져오기</button>
+  </form>
+</section>
+{% endif %}
+
 {% if comparison %}
 <section class="result-banner {% if comparison.comparison.comparison_compatibility == 'PASS' %}result-success{% else %}result-neutral{% endif %}">
   <span aria-hidden="true">{% if comparison.comparison.comparison_compatibility == 'PASS' %}✓{% else %}!{% endif %}</span>

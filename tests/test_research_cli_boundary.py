@@ -76,6 +76,7 @@ def test_research_settings_default_to_external_roots_without_creating_outputs(mo
         "RESEARCH_ARTIFACT_ROOT",
         "RESEARCH_REPORT_ROOT",
         "RESEARCH_CACHE_ROOT",
+        "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH",
         "RESEARCH_DB_PATH",
         "RESEARCH_MAX_WORKERS",
         "RESEARCH_RANDOM_SEED",
@@ -93,6 +94,13 @@ def test_research_settings_default_to_external_roots_without_creating_outputs(mo
         settings.artifact_root / "derived" / "research" / "experiment-1" / "candidate.json"
     )
     assert paths.report_path("research", "summary.json") == settings.report_root / "research" / "summary.json"
+    assert paths.experiment_identity_registry_path() == (
+        tmp_path
+        / "state"
+        / "market-research"
+        / "_registry"
+        / "research_validate_experiment_identity.jsonl"
+    )
     assert not settings.data_root.exists()
 
 

@@ -6,6 +6,8 @@ from pathlib import Path
 from market_research.paths import ResearchPathManager
 from market_research.settings import ResearchSettings
 
+from .database import build_database_settings
+
 
 def _bool_env(name: str, *, default: bool) -> bool:
     value = os.getenv(name)
@@ -24,6 +26,23 @@ def _csv_env(name: str, *, default: tuple[str, ...] = ()) -> list[str]:
     if value is None:
         return list(default)
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _absolute_csv_paths_env(name: str) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for item in _csv_env(name):
+        candidate = Path(item)
+        if (
+            not candidate.is_absolute()
+            or "\x00" in item
+            or any(part in {".", ".."} for part in candidate.parts)
+        ):
+            raise RuntimeError(f"{name} must contain only absolute paths")
+        if candidate == Path(candidate.anchor):
+            raise RuntimeError(f"{name} must not allowlist a filesystem root")
+        if candidate not in paths:
+            paths.append(candidate)
+    return tuple(paths)
 
 
 def _positive_int_env(name: str, *, default: int) -> int:
@@ -56,8 +75,29 @@ def _bounded_positive_int_env(
     return parsed
 
 
+def _repository_external_path_env(name: str, *, default: Path) -> Path:
+    raw = os.getenv(name)
+    path = default if raw is None else Path(raw).expanduser()
+    if not path.is_absolute():
+        raise RuntimeError(f"{name} must be an absolute path")
+    resolved = path.resolve(strict=False)
+    if resolved.is_relative_to(REPOSITORY_ROOT.resolve()):
+        raise RuntimeError(f"{name} must be outside the repository")
+    return resolved
+
+
+def _source_root_env() -> Path:
+    raw = os.getenv("RESEARCH_OPS_SOURCE_ROOT")
+    if raw is None:
+        return Path(__file__).resolve().parents[4]
+    path = Path(raw).expanduser()
+    if not path.is_absolute() or path == Path(path.anchor):
+        raise RuntimeError("RESEARCH_OPS_SOURCE_ROOT must be an absolute non-root path")
+    return path.resolve(strict=False)
+
+
 BASE_DIR = Path(__file__).resolve().parents[2]
-REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
+REPOSITORY_ROOT = _source_root_env()
 RESEARCH_SETTINGS = ResearchSettings.from_env()
 RESEARCH_PATHS = ResearchPathManager.from_settings(
     RESEARCH_SETTINGS,
@@ -68,11 +108,12 @@ INTERNAL_WEB_STATE_ROOT = RESEARCH_PATHS.artifact_path("_internal_web")
 INTERNAL_WEB_DATABASE_PATH = RESEARCH_PATHS.artifact_path(
     "_internal_web", "operations.sqlite3"
 )
-INTERNAL_WEB_MANIFEST_ROOT = RESEARCH_PATHS.dataset_path(
-    "_internal_web", "manifests"
-)
+INTERNAL_WEB_MANIFEST_ROOT = RESEARCH_PATHS.dataset_path("_internal_web", "manifests")
 INTERNAL_WEB_AUDIT_PATH = RESEARCH_PATHS.artifact_path(
     "_internal_web", "audit", "web_audit.jsonl"
+)
+INTERNAL_WEB_REPORT_IMPORT_ROOTS = _absolute_csv_paths_env(
+    "INTERNAL_WEB_REPORT_IMPORT_ROOTS"
 )
 INTERNAL_WEB_STATE_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -128,20 +169,12 @@ TEMPLATES = [
     }
 ]
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": INTERNAL_WEB_DATABASE_PATH,
-        "OPTIONS": {"timeout": 30},
-        "ATOMIC_REQUESTS": True,
-        # Django's isolated shared-memory SQLite test database avoids a fixed
-        # test file that concurrent local/CI processes could create or delete.
-        "TEST": {"NAME": None},
-    }
-}
+DATABASES = build_database_settings(sqlite_path=INTERNAL_WEB_DATABASE_PATH)
 
 AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
+    },
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
@@ -154,6 +187,10 @@ USE_TZ = True
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 STATIC_URL = "/static/"
+STATIC_ROOT = _repository_external_path_env(
+    "INTERNAL_WEB_STATIC_ROOT",
+    default=RESEARCH_PATHS.artifact_path("_internal_web", "static"),
+)
 LOGIN_URL = "portal:login"
 LOGIN_REDIRECT_URL = "portal:dashboard"
 LOGOUT_REDIRECT_URL = "portal:login"
@@ -194,6 +231,12 @@ INTERNAL_WEB_LOGIN_BLOCK_SECONDS = _bounded_positive_int_env(
     maximum=86400,
 )
 INTERNAL_WEB_JOB_LEASE_SECONDS = 120
+INTERNAL_WEB_AUDIT_SEGMENT_ROWS = _bounded_positive_int_env(
+    "INTERNAL_WEB_AUDIT_SEGMENT_ROWS",
+    default=10_000,
+    minimum=2,
+    maximum=1_000_000,
+)
 FILE_UPLOAD_HANDLERS = [
     "portal.upload_handlers.BoundedManifestUploadHandler",
     "django.core.files.uploadhandler.MemoryFileUploadHandler",
@@ -213,7 +256,11 @@ SECURE_HSTS_SECONDS = int(os.getenv("INTERNAL_WEB_HSTS_SECONDS", "3600"))
 SECURE_HSTS_INCLUDE_SUBDOMAINS = _bool_env(
     "INTERNAL_WEB_HSTS_INCLUDE_SUBDOMAINS", default=False
 )
-SECURE_HSTS_PRELOAD = False
+SECURE_HSTS_PRELOAD = _bool_env("INTERNAL_WEB_HSTS_PRELOAD", default=False)
+# Private DNS names are not eligible for the public browser preload list.  A
+# deliberate false setting therefore silences only that inapplicable deploy
+# warning; HSTS itself, HTTPS redirect, and secure cookies stay enforced.
+SILENCED_SYSTEM_CHECKS = [] if SECURE_HSTS_PRELOAD else ["security.W021"]
 X_FRAME_OPTIONS = "DENY"
 
 if _bool_env("INTERNAL_WEB_TRUST_X_FORWARDED_PROTO", default=False):

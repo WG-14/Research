@@ -8,6 +8,7 @@ from typing import Any
 
 from django import forms
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, transaction
 
@@ -21,6 +22,11 @@ from .admission import validate_raw_manifest_admission
 from .audit import append_web_audit_event, record_web_audit_event
 from .jobs import EnqueueResult, enqueue_research_job
 from .models import ManifestUpload, ResearchJob
+from .models import ImportedDecisionReport
+from .report_imports import (
+    HistoricalReportImportResult,
+    import_historical_decision_report,
+)
 from .security import (
     actor_snapshot,
     normalize_display_filename,
@@ -233,6 +239,84 @@ class ManifestUploadForm(forms.Form):
         return record, created
 
 
+class HistoricalDecisionReportImportForm(forms.Form):
+    source_path = forms.CharField(
+        label="허용된 CLI 보고서 절대 경로",
+        max_length=4096,
+        widget=forms.PasswordInput(render_value=False),
+    )
+    expected_report_hash = forms.CharField(
+        label="예상 보고서 hash",
+        max_length=71,
+    )
+    expected_manifest_hash = forms.CharField(
+        label="예상 manifest hash",
+        max_length=71,
+    )
+    expected_experiment_id = forms.CharField(
+        label="예상 experiment ID",
+        max_length=255,
+    )
+    expected_run_id = forms.CharField(
+        label="예상 run ID",
+        max_length=255,
+    )
+    expected_dataset_snapshot_id = forms.CharField(
+        label="예상 dataset snapshot ID",
+        max_length=255,
+    )
+    expected_dataset_content_hash = forms.CharField(
+        label="예상 dataset content hash",
+        max_length=71,
+    )
+    code_revision = forms.RegexField(
+        label="실행 코드 revision",
+        regex=r"^[0-9a-f]{7,64}$",
+        max_length=64,
+    )
+    owner = forms.ModelChoiceField(
+        label="보고서 소유자",
+        queryset=get_user_model().objects.none(),
+    )
+    visibility = forms.ChoiceField(
+        label="공개 범위",
+        choices=ImportedDecisionReport.Visibility.choices,
+    )
+
+    def __init__(self, *args: Any, operator: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.operator = operator
+        self.fields["owner"].queryset = get_user_model().objects.filter(
+            is_active=True
+        ).order_by("username", "pk")
+
+    def save(
+        self,
+        *,
+        correlation_id: str | uuid.UUID,
+    ) -> HistoricalReportImportResult:
+        if not self.is_valid():
+            raise ValueError("cannot_save_invalid_historical_report_import_form")
+        return import_historical_decision_report(
+            actor=self.operator,
+            owner=self.cleaned_data["owner"],
+            source_path=self.cleaned_data["source_path"],
+            expected_report_hash=self.cleaned_data["expected_report_hash"],
+            expected_manifest_hash=self.cleaned_data["expected_manifest_hash"],
+            expected_experiment_id=self.cleaned_data["expected_experiment_id"],
+            expected_run_id=self.cleaned_data["expected_run_id"],
+            expected_dataset_snapshot_id=(
+                self.cleaned_data["expected_dataset_snapshot_id"]
+            ),
+            expected_dataset_content_hash=(
+                self.cleaned_data["expected_dataset_content_hash"]
+            ),
+            code_revision=self.cleaned_data["code_revision"],
+            visibility=self.cleaned_data["visibility"],
+            correlation_id=str(correlation_id),
+        )
+
+
 class ResearchJobSubmissionForm(forms.Form):
     manifest = forms.ModelChoiceField(queryset=ManifestUpload.objects.none())
     capability_id = forms.ChoiceField(choices=ResearchJob.Capability.choices)
@@ -317,6 +401,10 @@ class HumanReviewForm(forms.Form):
 
 
 class CandidateApprovalForm(forms.Form):
+    approval_request_id = forms.UUIDField(
+        widget=forms.HiddenInput,
+        initial=uuid.uuid4,
+    )
     rationale = forms.CharField(
         label="최종 승인 근거",
         max_length=4000,

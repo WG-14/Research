@@ -18,6 +18,9 @@ from market_research.research.execution_calibration import (
     ExecutionCalibrationError,
     load_calibration_artifact,
 )
+from market_research.research.experiment_identity import (
+    bind_research_validation_experiment,
+)
 from market_research.research.experiment_manifest import (
     ManifestValidationError,
     load_manifest_with_registry,
@@ -45,6 +48,7 @@ from .contracts import (
     ReportComparisonResult,
     ReportComparisonSource,
     ResearchPreflightRequest,
+    ResearchPreflightResult,
     ResearchReadinessResult,
     ResearchValidationRequest,
     ResearchValidationResult,
@@ -71,10 +75,8 @@ class ResearchApplicationService:
         *,
         progress_callback: ProgressCallback | None = None,
         cancellation_check: CancellationCheck | None = None,
-    ) -> "ResearchPreflightResult":
+    ) -> ResearchPreflightResult:
         """Run the two preflight projections through their canonical services."""
-
-        from .contracts import ResearchPreflightResult
 
         ensure_capability_authorized("research-preflight", request.actor)
         readiness = self.readiness(
@@ -301,6 +303,11 @@ class ResearchApplicationService:
             manifest = load_manifest_with_registry(
                 request.manifest_path,
                 registry=self.strategy_registry,
+            )
+            bind_research_validation_experiment(
+                manager=self.paths,
+                experiment_id=manifest.experiment_id,
+                manifest_hash=manifest.manifest_hash(),
             )
             calibration = (
                 load_calibration_artifact(request.execution_calibration_path)

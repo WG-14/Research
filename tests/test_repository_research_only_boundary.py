@@ -26,6 +26,7 @@ def test_repository_has_only_research_entrypoints_and_environment_template() -> 
         "RESEARCH_ARTIFACT_ROOT",
         "RESEARCH_REPORT_ROOT",
         "RESEARCH_CACHE_ROOT",
+        "RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH",
         "RESEARCH_DB_PATH",
         "RESEARCH_MAX_WORKERS",
         "RESEARCH_RANDOM_SEED",

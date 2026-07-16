@@ -29,6 +29,7 @@ from market_research.research_composition import builtin_strategy_registry
 from .audit import append_web_audit_event
 from .forms import (
     CandidateApprovalForm,
+    HistoricalDecisionReportImportForm,
     HumanReviewForm,
     ManifestExperimentConflict,
     ManifestUploadForm,
@@ -463,6 +464,7 @@ def _report_catalog_context(
     request: HttpRequest,
     *,
     comparison: dict[str, Any] | None = None,
+    import_form: HistoricalDecisionReportImportForm | None = None,
 ) -> dict[str, Any]:
     try:
         reports = list_visible_reports(request.user, limit=50, offset=0)
@@ -472,6 +474,15 @@ def _report_catalog_context(
         **_base_context(request, active_nav="reports"),
         "reports": reports,
         "comparison": comparison,
+        "report_import_form": (
+            import_form
+            if import_form is not None
+            else (
+                HistoricalDecisionReportImportForm(operator=request.user)
+                if request.user.has_perm("portal.import_research_report")
+                else None
+            )
+        ),
     }
 
 
@@ -484,6 +495,46 @@ def report_list(request: HttpRequest) -> HttpResponse:
         "portal/report_catalog.html",
         _report_catalog_context(request),
     )
+
+
+@login_required
+@permission_required("portal.import_research_report", raise_exception=True)
+@require_POST
+def report_import(request: HttpRequest) -> HttpResponse:
+    form = HistoricalDecisionReportImportForm(
+        request.POST,
+        operator=request.user,
+    )
+    if not form.is_valid():
+        messages.error(request, "가져오기 입력값을 다시 확인해 주세요.")
+        return render(
+            request,
+            "portal/report_catalog.html",
+            _report_catalog_context(request, import_form=form),
+            status=400,
+        )
+    try:
+        result = form.save(correlation_id=_correlation_id(request))
+    except (PermissionDenied, ValidationError, ValueError):
+        messages.error(
+            request,
+            "보고서의 경로, hash 또는 증거 바인딩을 확인하지 못했습니다.",
+        )
+        return render(
+            request,
+            "portal/report_catalog.html",
+            _report_catalog_context(request, import_form=form),
+            status=400,
+        )
+    messages.success(
+        request,
+        (
+            "검증된 CLI 보고서를 카탈로그에 등록했습니다."
+            if result.created
+            else "동일한 검증 보고서가 이미 등록되어 기존 항목을 사용합니다."
+        ),
+    )
+    return redirect("portal:report-list")
 
 
 @login_required

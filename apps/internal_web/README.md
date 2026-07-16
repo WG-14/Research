@@ -21,7 +21,10 @@ operation rechecks the source bindings and hashes. Reviewers can record change
 requests or rejection against a hash-verified `PASS` result. A distinct
 `research_approver` can record final approval only after current-password
 confirmation, registry/lifecycle validation, unresolved-requirement checks, and
-originator/prior-reviewer separation. Arbitrary governance transitions,
+originator/prior-reviewer separation. The core rechecks those conditions under
+the governance-stream lock, publishes the review and transition as one atomic
+old-or-new file update, and returns the same evidence for an exact request-ID
+replay. Arbitrary governance transitions,
 historical CLI report discovery, reproduction, retry, and state repair remain
 disabled.
 
@@ -30,7 +33,10 @@ source-address subjects. Web manifest metadata globally reserves each
 `experiment_id`, preventing different web users from targeting the same
 experiment-scoped core output. Job and manifest ORM changes commit with an
 immutable database audit intent; the external JSONL projection is checked
-separately and a failed projection remains visible as pending evidence.
+separately and a failed projection remains visible as pending evidence. A
+single-event public projection primitive is event-ID idempotent and can safely
+adopt the append-before-marker crash window, but this project contains no
+persistent scanner, retry scheduler, lease, backoff, or dead-letter worker.
 
 ## Development setup (WSL/Linux only)
 
@@ -43,10 +49,13 @@ export RESEARCH_DATA_ROOT=/absolute/external/research/datasets
 export RESEARCH_ARTIFACT_ROOT=/absolute/external/research/artifacts
 export RESEARCH_REPORT_ROOT=/absolute/external/research/reports
 export RESEARCH_CACHE_ROOT=/absolute/external/research/cache
+export RESEARCH_EXPERIMENT_IDENTITY_REGISTRY_PATH=/absolute/external/research/_registry/research_validate_experiment_identity.jsonl
 export RESEARCH_DB_PATH=/absolute/external/research/input.sqlite
 export INTERNAL_WEB_SECRET_KEY='replace-with-a-development-secret'
 export INTERNAL_WEB_SECURE_SSL_REDIRECT=false
 export INTERNAL_WEB_SECURE_COOKIES=false
+# Optional comma-separated, absolute external roots. Empty disables import.
+export INTERNAL_WEB_REPORT_IMPORT_ROOTS=/absolute/external/cli-report-exports
 
 uv sync --dev
 uv run python manage.py migrate
@@ -75,12 +84,29 @@ or 32,768 candidate/scenario work units. The positive-integer settings
 only be changed as an explicit server-side policy; browser users cannot
 override them. The CLI research contract is not changed by these web limits.
 
+Historical CLI decision-report import is restricted to the
+`portal.import_research_report` permission granted to `research_admin`. Source
+files must be beneath `INTERNAL_WEB_REPORT_IMPORT_ROOTS`; the adapter performs a
+bounded no-follow read, validates explicit report, manifest, dataset, run and
+code-revision bindings, and catalogs only a content-addressed copy under the
+managed external report root. It never executes a reproduction workflow and
+never serves the administrator-supplied source path.
+
 The login-throttle settings default to five failures in 900 seconds followed by
 a 900-second block. `INTERNAL_WEB_LOGIN_FAILURE_LIMIT`,
 `INTERNAL_WEB_LOGIN_FAILURE_WINDOW_SECONDS`, and
 `INTERNAL_WEB_LOGIN_BLOCK_SECONDS` accept only bounded positive ASCII integers.
 These controls use the same development SQLite metadata database and are not
 evidence of supported multi-host enforcement.
+
+The Django metadata database defaults to that development SQLite file. An
+explicit PostgreSQL integration profile is available through
+`INTERNAL_WEB_DATABASE_ENGINE=postgresql` and the required
+`INTERNAL_WEB_DATABASE_NAME`, `USER`, `PASSWORD`, `HOST`, and `PORT` settings;
+install its driver with `uv sync --extra postgresql --dev`. This is a testable
+configuration boundary, not a supported-database declaration. A live
+PostgreSQL run of the separately marked concurrency contract is mandatory
+before operational adoption.
 
 ## Verification
 
@@ -115,11 +141,15 @@ backup/restore, rollback, and incident procedures, Windows users can open that
 HTTPS URL in Edge and install it as an app/shortcut. Until those gates exist,
 this adapter must not be described or used as a long-term operated service.
 
-SQLite multi-user/multi-worker behavior, concurrent multi-row final approval,
-automatic audit projection recovery, and safe reproduction remain explicitly
+SQLite multi-user/multi-worker behavior, automatic audit projection scheduling,
+shared-filesystem qualification, and safe reproduction remain explicitly
 unproven. The report catalog does not scan arbitrary paths or infer authority
-from unindexed legacy CLI artifacts.
+from unindexed legacy CLI artifacts. Common CLI/web identity binding currently
+covers `research-validate`; standalone backtest/walk-forward and legacy output
+namespaces remain outside it.
 
 See `docs/internal-web-architecture.md` and
 `docs/internal-web-iterations.md` for the decision record, verified scope, and
-residual risks.
+residual risks. The exact external database, worker, health, TLS, monitoring,
+backup/recovery, and historical-report acceptance gates are in
+`docs/internal-web-operations-handoff.md`.

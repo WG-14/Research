@@ -1,7 +1,10 @@
 # Internal Web GUI Architecture Contract
 
-Status: architecture accepted for an isolated adapter; operational use deferred
-until the completion gates in this document are met.
+Status: the Research application and isolated web-adapter architecture is
+accepted. Its separately authorized operational implementation exists in the
+sibling `/home/vorac/work/ResearchOperations`, but the evidence recorded below
+supports only a limited, single-host internal trial. It is not a production-
+readiness or multi-host claim.
 
 This document defines how an internal web GUI may adapt the offline
 `market-research` library without changing its research semantics or turning the
@@ -33,10 +36,12 @@ The reviewed implementation has several properties that must remain true:
   `ABORTED`. It is not a durable queue and does not currently prove cancellation,
   worker leasing, restart recovery, or exactly-once execution.
 - Governance actor values are research evidence, not authentication. The web
-  adapter now supplies sessions, RBAC, step-up password confirmation for final
-  approval, and explicit originator/reviewer/approver separation. The canonical
-  governance stream is still an external multi-row append, so those controls do
-  not make final approval a single multi-resource transaction.
+  adapter supplies sessions, RBAC, step-up password confirmation for final
+  approval, and explicit originator/reviewer/approver separation. Approval now
+  validates a locked governance snapshot and atomically publishes its review
+  and lifecycle rows as one old-or-new JSONL replacement. The approval artifact
+  is an idempotent projection of that authoritative pair; this is a filesystem
+  evidence transaction, not a database/filesystem transaction.
 - The root distribution has no Django or worker/runtime dependencies. This is
   deliberate and is enforced by tests.
 
@@ -81,10 +86,16 @@ Adding any excluded capability requires an explicit, reviewed change to
    placement alone is never treated as authentication or authorization.
 3. The research library stays deterministic and framework-neutral. The same
    typed application request must mean the same thing from CLI and web adapters.
-4. Web metadata is non-authoritative. Canonical research artifacts, hashes, and
-   append-only audit evidence remain authoritative.
-5. Users select opaque IDs or uploaded immutable manifests; they do not submit
-   host filesystem paths.
+4. Canonical research artifacts, hashes, and append-only evidence remain the
+   research-result authority. PostgreSQL is authoritative for web identity,
+   permissions, jobs, immutable audit intents, governance coordination and
+   lifecycle, and the managed imported-report catalog. Database and filesystem
+   evidence cannot share one physical transaction, so validators and recovery
+   receipts must bind and check both authorities.
+5. Ordinary users select opaque IDs or uploaded immutable manifests; they do
+   not submit host filesystem paths. The sole exception is the administrator-
+   only historical report importer described below, which accepts one absolute
+   selector only beneath preconfigured roots and never retains or returns it.
 6. Safe execution, durable queueing, concurrency control, and recovery are
    separate completion gates. A page labelled “job” does not imply that those
    guarantees exist.
@@ -134,7 +145,10 @@ application contracts; they must not call one another.
 All persistent state remains at absolute, repository-external locations chosen
 through `ResearchSettings` and `ResearchPathManager`.
 
-- A browser sends an opaque manifest/job/report ID, never an absolute path.
+- Normal browser workflows send opaque manifest/job/report IDs, never absolute
+  paths. The admin-only historical importer is the explicit narrow exception:
+  it accepts one allowlisted absolute source selector for bounded no-follow
+  validation and immediately publishes a path-free managed copy.
 - A stored web reference is a root kind plus a validated POSIX-relative path.
   Reject absolute paths, drive letters, `.`/`..`, separators embedded in a path
   segment, NUL/control characters, and symlink escapes.
@@ -187,9 +201,14 @@ originating owner/execution actor, and prevent a prior reviewer from approving
 the same result. Final approval additionally requires the `research_approver`
 role, current-password confirmation, a hash-valid PASS result, a uniquely
 approval-ready registry subject, and resolution of all outstanding requirements.
-The core lifecycle gate rejects a sequential second approval. Raw governance
-transition remains unavailable, and concurrent multi-row governance mutation
-is still a residual risk rather than an operated-service guarantee.
+The core approval service records a request ID and canonical request hash,
+rechecks lifecycle, evidence, unresolved requirements, and prior-reviewer
+separation while holding the governance-stream lock, and publishes the approval
+review and transition together. An exact replay returns the same evidence;
+changed material under the same request ID and a distinct second approval fail
+closed. Raw governance transition remains unavailable. This file-lock contract
+is tested on Linux, but it is not evidence for an untested shared filesystem or
+supported operating database.
 
 ## Capability and GUI policy
 
@@ -228,7 +247,7 @@ Every public CLI command has exactly one policy:
 | `research-render-report` | `cli_only` | The adapter renders bounded summaries; it does not implement the CLI report-rendering contract. |
 | `research-governance-transition` | `admin_only` | Critical authoritative state transition; disabled until governance gates pass. |
 | `research-record-human-review` | `admin_only` | Records change requests or rejection against the current result hash with application-layer authorization and originator separation. |
-| `research-approve-strategy-candidate` | `admin_only` | Records a hash-bound final approval with an approver-only role, password step-up, unresolved-requirement gate, and reviewer/originator separation; operational concurrency remains unproven. |
+| `research-approve-strategy-candidate` | `admin_only` | Records a hash-bound, request-idempotent final approval with an approver-only role, password step-up, locked lifecycle/evidence checks, atomic governance-pair publication, and reviewer/originator separation. |
 
 GUI-only query capabilities such as `jobs.list`, `jobs.detail`, `reports.list`,
 `reports.detail`, and `reports.download` are projections over bounded metadata or
@@ -255,9 +274,8 @@ The prototype adapter permits cooperative cancellation only at explicit
 application-service boundaries. That behavior does not prove that an arbitrary
 research execution can be interrupted safely, and it must not be treated as
 restart reconciliation or state repair. Retry and automatic recovery controls
-remain unavailable. The unlocked family registry and multi-step governance
-writes also require concurrency remediation before multi-user mutation is
-enabled.
+remain unavailable. Shared-filesystem and supported-database behavior still
+require the external concurrency gates below.
 
 An expired lease is observational evidence only. A repository worker must not
 automatically requeue, fail, cancel, clear a lease, increment an attempt, or
@@ -268,20 +286,36 @@ Any reconciliation or repair decision requires a separately reviewed and
 authorized operational layer. Such a layer cannot be implemented in this
 repository while `AGENTS.md` forbids state repair and operator tooling.
 
-ORM state transitions and immutable audit intents now commit in the same
-database transaction. An `on_commit` projection appends each intent to the
-external hash-chained JSONL stream; projection failure leaves a detectable
-pending intent and never reclassifies a successful job. This is a transactional
-outbox boundary, not an atomic commit across the database and filesystem, and
-this repository intentionally provides no retry or repair worker. Audit
-validation cross-checks projected rows and pending intents.
+ORM state transitions and immutable audit intents commit in the same database
+transaction. A robust `on_commit` callback invokes a single-event projection
+primitive; projection failure leaves a detectable pending intent and cannot
+reclassify the committed job. The event-ID append is idempotent under the JSONL
+stream lock, so an append-before-marker interruption can be adopted without a
+second row. Validation distinguishes pending, duplicate, orphan, unmarked,
+missing, malformed, and hash/payload-mismatched evidence. This remains an
+eventually consistent outbox boundary, not an atomic database/filesystem
+transaction. This repository intentionally provides no scanner, lease,
+backoff, dead-letter queue, retry loop, or repair command.
 
-The metadata database globally binds each web-uploaded `experiment_id`, so two
-web users cannot register different manifests that would target the same
-experiment-scoped core outputs. The migration fails closed if legacy duplicate
-rows exist. This does not reserve identifiers used only by an external CLI or
-replace a future run-scoped core namespace. The SQLite test database also does
-not prove multi-user or multi-worker concurrency and remains development-only.
+The metadata database globally binds each web-uploaded `experiment_id`, and its
+migration fails closed on legacy duplicates. In addition, both CLI and web
+`research-validate` application paths bind `experiment_id` to the canonical
+manifest hash in one repository-external append-only authority before invoking
+the engine. Split artifact/report mount layouts require an explicit common
+authority path and otherwise fail closed. Identical bindings are idempotent; a
+different manifest loses the same-ID race before validation output. This is
+manifest consistency, not actor ownership or exclusive execution. Standalone
+backtest/walk-forward and unregistered legacy namespaces are not covered, and
+the experiment path still is not a run-ID namespace.
+
+SQLite remains the local-development metadata profile and carries no multi-user
+or multi-worker support claim. The isolated web package has a strict PostgreSQL
+connection-settings boundary and an optional psycopg extra. On 2026-07-16 the
+complete web suite ran against PostgreSQL 16.14 over TLS `verify-full` with
+`158 passed, 0 skipped`; all eight PostgreSQL-specific concurrency and
+governance-atomicity tests executed. This is real single-host database evidence,
+not evidence for multi-host storage, failover, every prior-release upgrade, or a
+site production database policy.
 
 ## Phased completion criteria
 
@@ -298,10 +332,15 @@ Complete when an authenticated user can list and view bounded job/report
 projections, download only hash-verified approved artifacts without
 absolute-path leakage, and authorization/audit negative tests pass. The UI must
 show evidence scope, schema version, hashes, dataset binding, parameters,
-execution assumptions, and seed where applicable. The implemented comparison
-catalog indexes only visible succeeded web-validation jobs and re-verifies the
-canonical reports on every read; it is not a filesystem catalog of arbitrary
-historical CLI outputs. CLI report rendering remains outside Phase B.
+execution assumptions, and seed where applicable. The comparison catalog
+indexes visible succeeded web-validation jobs and explicitly imported decision
+reports, and re-verifies managed content-addressed copies on every read. The
+import workflow is admin-only: an administrator may submit an absolute source
+path only when it is below a server-configured allowlisted root; bounded
+no-follow reads, explicit expected bindings, transactional catalog/audit intent,
+and owner or organization visibility apply. The original source path is never
+retained or served. Arbitrary discovery, CLI report rendering, and reproduction
+remain outside Phase B.
 
 ### Phase C — research execution
 
@@ -321,18 +360,22 @@ step-up confirmation, concurrency-safe transaction/evidence design,
 separation-of-duties policy where applicable, append-only audit coverage, and
 positive and negative authorization tests. Capabilities without all gates stay
 disabled. Human review and approval now satisfy the web authorization, step-up,
-hash-binding, and separation gates, but Phase D as a whole remains incomplete:
-raw transitions, reproduction, exports, and a concurrency-safe single approval
-transaction are not implemented as web workflows.
+hash-binding, locked concurrency, idempotent replay, and separation gates, but
+Phase D as a whole remains incomplete: raw transitions, reproduction, and
+exports are not implemented as web workflows.
 
 ### Phase E — operational adoption
 
-Not implementable in this repository under the current `AGENTS.md`. A separate
-review must establish ownership, supported database, identity integration,
-secrets lifecycle, availability objectives, deployment, monitoring, backup and
-restore, and incident response in an authorized operational repository. This
-phase is necessary before describing the GUI as a long-term operated internal
-system.
+Not implementable *inside this repository* under the current `AGENTS.md`. The
+separate `ResearchOperations` trust domain now implements PostgreSQL
+coordination, persistent workers, guarded probes, TLS/proxy configuration,
+backup fencing, signed verification, and isolated recovery activation. Its
+single-host acceptance evidence is summarized below and specified in the
+handoff document. Site identity integration, immutable-image execution,
+production certificate lifecycle, off-site retention and approved RPO/RTO,
+incident ownership, and any multi-host promotion remain external gates. Until
+those gates are accepted, Phase E permits only a limited internal trial and not
+a general long-term-production claim.
 
 ## Verification gates
 
@@ -340,9 +383,75 @@ Repository CI must keep focused tests for dependency direction, root dependency
 isolation, capability-policy completeness, relative-path confinement, upload
 validation, hash verification, redaction, CSRF, permissions, audit-chain
 validation, unchanged strategy/research semantics, and non-mutation of expired
-jobs. A future operational project additionally needs migration, browser
-workflow, security-header, concurrency, restart/reconciliation, and
-supported-database tests in its own pipeline.
+jobs. `ResearchOperations` additionally owns migration, browser workflow,
+security-header, live concurrency, restart/reconciliation, backup/recovery, and
+supported-database tests in its own validation pipeline.
 
 No phase is complete because files merely exist. Completion requires its tests
 to pass and its residual risks to be accepted by the responsible reviewer.
+
+## Single-host implementation and acceptance evidence
+
+The 2026-07-16 acceptance run used PostgreSQL 16.14 and repository-external
+Linux ext4 roots. It established the following without moving operational code
+into this repository:
+
+- the Research suite completed with `596 passed`; the live-PostgreSQL web suite
+  completed with `158 passed, 0 skipped`, and the required browser E2E completed;
+- the Operations suite completed with `43 passed, 0 skipped`, including 16 live
+  PostgreSQL integration tests; lint, format, shell syntax, lock, compile, and
+  sdist/wheel build checks passed;
+- two audit-delivery workers and one research-job worker remained ready, a
+  stopped delivery worker made workflow readiness fail closed, and restart
+  restored it; a restored outbox event was projected exactly once;
+- native nginx and Gunicorn passed HTTP-to-HTTPS redirect, valid CA/hostname,
+  invalid CA and hostname, security-header, secure-cookie/CSRF login, report
+  access, employee-ingress isolation, operations mTLS, Basic authorization,
+  diagnostics, metrics, and both readiness checks;
+- an installed-package smoke test first exposed that web templates/static files
+  were missing from the wheel and that an installed adapter could infer the
+  wrong source root. Package data and an explicit absolute
+  `RESEARCH_OPS_SOURCE_ROOT` fixed both defects. The final bundle digest was
+  `sha256:547577d7239b5276cb35d42cbcf2c3bfcb57cb6ef72c073c81f2adc6d6b64674`;
+- backup `df9ac410-a085-452e-be09-50c27a312bee` produced signed manifest
+  `sha256:ec7ea9a51985e90696eb415478104afe2aaaac715007414c7c0a18e21ebf0fe4`.
+  A blank isolated restore passed all 17 checks, its signed receipt hash was
+  `sha256:b3cbfad45032debf4cab9d3a7768c309e0aa3d0259a3b9094783560d7efc814d`,
+  and deterministic drill ID `ec28ec13-f19d-5bc1-aa79-f1156d708ff1` was recorded;
+- checked database ACLs were reapplied before restored service startup.
+  Recovery activation opened generation 4 and an exact retry returned the same
+  activation and drill evidence. The restored service reached readiness with
+  two delivery workers and one research worker, completed CSRF login and report
+  access, projected event `4a7c1f83-0b23-49dc-8071-51330a7ea76a` exactly once,
+  failed closed with `database_unavailable` against a dead endpoint, and became
+  ready again after the valid database endpoint was restored.
+
+The UI now describes approval as an active guarded workflow rather than a
+disabled feature, hides review/approval forms after final approval while
+explaining exact replay, and displays the historical import form only to an
+authorized administrator. These are application-state and usability guarantees,
+not substitutes for the operational gates below.
+
+## Final transaction and operational responsibility map
+
+| Boundary | Current repository guarantee | Deliberately external or unresolved |
+| --- | --- | --- |
+| Application transaction | Capability authorization is independently checked; job mutations use database transactions, conditional updates, and constraints; the live PostgreSQL matrix passed. | Multi-host, failover, and site identity-policy acceptance. |
+| Audit outbox transaction | Related ORM state and immutable `WebAuditEvent` intent commit together. | The JSONL append cannot share that database transaction. |
+| JSONL projection | Segmented stream, event-ID idempotency, lock and fencing checks, persistent discovery/lease/backoff/DLQ worker, incremental validation, and independent full validation. | The database/filesystem gap remains detectable rather than physically atomic; site alert delivery and retention ownership remain external. |
+| Governance approval | PostgreSQL row locking, unique decision/duty constraints, DB-authoritative lifecycle, locked old-or-new core evidence publication, and exact request replay passed live concurrency tests. | Database and filesystem cannot physically commit together; recovery must continue to bind both. Multi-host filesystem qualification remains absent. |
+| Database locking | PostgreSQL 16.14 `verify-full` tests passed with no backend skips; SQLite remains development-only. | Prior-release upgrade, failover, capacity, and patch policy belong to the site. |
+| CLI/web ID consistency | Web DB uniqueness, common manifest identity, and Operations admission/fencing serialize admitted web and CLI execution. | Standalone Research CLI entrypoints can bypass Operations admission and must be excluded by deployment policy; eventual run-ID namespace migration remains open. |
+| Artifact catalog | Visible web results and explicitly imported, owner/organization-scoped managed copies use opaque IDs and are hash-revalidated on every read. | Arbitrary discovery is forbidden; reproduction remains disabled. |
+| Reproduction | Trusted local CLI contract only. | Web reproduction remains disabled until catalog, revision/environment binding, isolated outputs, admission, authorization, and supervision gates pass. |
+| Liveness/readiness/diagnostics | Operations WSGI supplies fixed liveness, split readiness, authenticated bounded diagnostics and label-free metrics; negative transitions were exercised. | Persistent monitoring transport, alert ownership, and SLO approval remain site responsibilities. |
+| Backup and recovery | Operations supplies a two-phase fence, signed manifest/receipt, exact resume, blank-namespace verifier, deterministic drill record and explicit idempotent activation; the exact final bundle was restored. | Off-site copy, encryption/retention/key policy, scheduled drills and approved RPO/RTO remain site responsibilities; no repair mode is allowed. |
+| Deployment/TLS/workers | Native nginx/Gunicorn TLS and persistent worker behavior passed single-host acceptance. | The compose reference was not executed as an immutable production image; site PKI lifecycle, supervisor integration, multi-host storage and incident ownership remain open. |
+
+The concrete external acceptance criteria, recovery order, probe semantics,
+environment and mount contract, PostgreSQL concurrency matrix, and historical
+report/reproduction threat model are defined in
+`docs/internal-web-operations-handoff.md`. The sibling
+`ResearchOperations` project is the authorized operational trust domain. The
+separate `Operation` repository is a trading runtime with a different active
+scope and is not an authorized home for these responsibilities.

@@ -28,6 +28,7 @@ urlpatterns = [
     ),
     path("jobs/<uuid:pk>/download/", views.job_download, name="job-download"),
     path("reports/", views.report_list, name="report-list"),
+    path("reports/import/", views.report_import, name="report-import"),
     path("reports/compare/", views.report_compare, name="report-compare"),
     path("review/", views.review_queue, name="review-queue"),
     path("review/<uuid:pk>/", views.review_detail, name="review-detail"),

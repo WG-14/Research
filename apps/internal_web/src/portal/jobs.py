@@ -411,6 +411,7 @@ def update_job_progress(
     updated = ResearchJob.objects.filter(
         pk=job_id,
         lease_token=lease_token,
+        lease_expires_at__gt=observed_at,
         status__in=(
             ResearchJob.Status.RUNNING,
             ResearchJob.Status.CANCEL_REQUESTED,
@@ -496,6 +497,7 @@ def complete_job_success(
     job_id: uuid.UUID,
     lease_token: uuid.UUID,
     result: JobExecutionResult,
+    authoritative_result_committed: bool = False,
 ) -> ResearchJob:
     validate_sha256(result.result_hash, field="result_hash")
     verify_result_artifact(result.result_ref, expected_hash=result.result_hash)
@@ -512,10 +514,16 @@ def complete_job_success(
         raise ValidationError("job_result_research_outcome_invalid")
     with transaction.atomic():
         now = timezone.now()
+        allowed_statuses = (
+            (ResearchJob.Status.RUNNING, ResearchJob.Status.CANCEL_REQUESTED)
+            if authoritative_result_committed
+            else (ResearchJob.Status.RUNNING,)
+        )
         updated = ResearchJob.objects.filter(
             pk=job_id,
             lease_token=lease_token,
-            status=ResearchJob.Status.RUNNING,
+            lease_expires_at__gt=now,
+            status__in=allowed_statuses,
         ).update(
             status=ResearchJob.Status.SUCCEEDED,
             result_ref=str(result.result_ref),
@@ -547,6 +555,7 @@ def complete_job_success(
                 "result_ref": str(result.result_ref),
                 "result_hash": result.result_hash,
                 "research_outcome": research_outcome,
+                "authoritative_result_committed": authoritative_result_committed,
             },
         )
     return job
@@ -567,6 +576,7 @@ def fail_job(
         updated = ResearchJob.objects.filter(
             pk=job_id,
             lease_token=lease_token,
+            lease_expires_at__gt=now,
             status=ResearchJob.Status.RUNNING,
         ).update(
             status=ResearchJob.Status.FAILED,
@@ -610,6 +620,7 @@ def finalize_cancelled(
         updated = ResearchJob.objects.filter(
             pk=job_id,
             lease_token=lease_token,
+            lease_expires_at__gt=now,
             status__in=(ResearchJob.Status.RUNNING, ResearchJob.Status.CANCEL_REQUESTED),
         ).update(
             status=ResearchJob.Status.CANCELLED,

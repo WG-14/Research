@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,7 +32,7 @@ from market_research.research.hashing import (
 from market_research.research.validation_pipeline import (
     validate_validated_research_result,
 )
-from market_research.storage_io import write_json_atomic
+from market_research.storage_io import write_json_atomic_create_or_verify
 
 from .authorization import ensure_capability_authorized
 from .contracts import (
@@ -125,8 +126,12 @@ class ResearchGovernanceApplicationService:
             expected_source_report_hash=request.expected_source_report_hash,
         )
         evidence = self._extract_approval_evidence(report)
-        target = Path(request.output_path).expanduser().resolve()
-        if ResearchPathManager.is_within(target, self.paths.project_root):
+        requested_target = Path(request.output_path).expanduser()
+        target = Path(os.path.abspath(requested_target))
+        resolved_target = target.resolve(strict=False)
+        if target.is_symlink() or resolved_target != target:
+            raise GovernanceError("strategy_approval_output_path_must_not_use_symlink")
+        if ResearchPathManager.is_within(resolved_target, self.paths.project_root):
             raise GovernanceError(
                 "strategy_approval_output_must_be_repository_external"
             )
@@ -158,8 +163,10 @@ class ResearchGovernanceApplicationService:
             reviewer_id=actor.actor_id,
             rationale=request.rationale,
             resolved_requirement_ids=request.resolved_requirement_ids,
+            approval_request_id=request.idempotency_key,
+            prohibited_actor_ids=request.prohibited_actor_ids,
         )
-        write_json_atomic(target, approval)
+        write_json_atomic_create_or_verify(target, approval)
         content_hash = str(approval["content_hash"])
         return StrategyApprovalResult(
             capability_id="research-approve-strategy-candidate",
